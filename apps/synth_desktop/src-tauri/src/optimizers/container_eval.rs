@@ -2872,27 +2872,11 @@ pub(super) async fn reconcile_evidence(
             .and_then(Value::as_array)
             .and_then(|traces| traces.first())
             .context("sealed bundle indexed no trace")?;
-        let trace_ref = imported_trace
-            .get("traceId")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .with_context(|| {
-                format!("sealed bundle for rollout `{rollout_id}` indexed no trace")
-            })?;
-        let trace_digest = imported_trace
-            .get("digest")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|digest| valid_sha256_digest(digest))
-            .with_context(|| {
-                format!("sealed bundle for rollout `{rollout_id}` indexed a trace without an immutable digest")
-            })?
-            .to_string();
-        if trace_ref != producer_trace_id {
-            bail!(
-                "trace_identity_mismatch: rollout `{rollout_id}` declared `{producer_trace_id}` but the immutable bundle indexed `{trace_ref}`"
-            );
-        }
+        let (trace_ref, trace_digest) = verify_reconciled_trace_identity(
+            imported_trace,
+            producer_trace_id,
+            &rollout_id,
+        )?;
         record
             .as_object_mut()
             .with_context(|| format!("terminal record for seed {seed} is not an object"))?
@@ -2932,7 +2916,10 @@ pub(super) async fn reconcile_evidence(
         .and_then(|visuals| visuals.get("trace_workbench"))
         .and_then(Value::as_str)
         .context("evaluation run has no trace workbench visualId")?;
-    persist_progress(
+    // The terminal manifest and summary are immutable. Reconciliation amends
+    // evidence through the append-only event above, then republishes only the
+    // derived visuals from that authoritative projection.
+    publish_terminal_visual_projection(
         service,
         run_id,
         &spec,
@@ -2944,6 +2931,48 @@ pub(super) async fn reconcile_evidence(
     )
     .await?;
     service.get(run_id.to_string()).await
+}
+
+/// Validate the identity sealed by the producer while returning Workshop's
+/// local trace reference. Producer ids (often the rollout id) and local
+/// `tracev5_...` row ids are separate namespaces and must never be compared.
+fn verify_reconciled_trace_identity(
+    imported_trace: &Value,
+    declared_producer_trace_id: &str,
+    rollout_id: &str,
+) -> Result<(String, String)> {
+    let trace_ref = imported_trace
+        .get("traceId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|identity| !identity.is_empty())
+        .with_context(|| format!("sealed bundle for rollout `{rollout_id}` indexed no trace"))?
+        .to_string();
+    let indexed_producer_trace_id = imported_trace
+        .get("producerTraceId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|identity| !identity.is_empty())
+        .with_context(|| {
+            format!(
+                "sealed bundle for rollout `{rollout_id}` indexed no producer trace identity"
+            )
+        })?;
+    if indexed_producer_trace_id != declared_producer_trace_id {
+        bail!(
+            "trace_identity_mismatch: rollout `{rollout_id}` declared producer trace `{declared_producer_trace_id}` but the immutable bundle declared `{indexed_producer_trace_id}` (Workshop index `{trace_ref}`)"
+        );
+    }
+    let trace_digest = imported_trace
+        .get("digest")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|digest| valid_sha256_digest(digest))
+        .with_context(|| {
+            format!("sealed bundle for rollout `{rollout_id}` indexed a trace without an immutable digest")
+        })?
+        .to_string();
+    Ok((trace_ref, trace_digest))
 }
 
 /// Refresh a completed inline evaluation's visual from its authoritative run
@@ -8565,6 +8594,35 @@ max_total_rollouts = 1
             "importedFrameSteps": [0, 1, 2],
         });
         verify_required_sealed_trace(&terminal, &complete, "roll_complete").unwrap();
+    }
+
+    #[test]
+    fn reconciliation_keeps_producer_and_workshop_trace_ids_in_separate_namespaces() {
+        let imported = json!({
+            "traceId": "tracev5_0062f1795c9ada2fba747b94",
+            "producerTraceId": "roll_craftax_train_780018_674963f8",
+            "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        });
+        let (trace_ref, digest) = verify_reconciled_trace_identity(
+            &imported,
+            "roll_craftax_train_780018_674963f8",
+            "roll_craftax_train_780018_674963f8",
+        )
+        .unwrap();
+        assert_eq!(trace_ref, "tracev5_0062f1795c9ada2fba747b94");
+        assert_eq!(
+            digest,
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+
+        let mismatch = verify_reconciled_trace_identity(
+            &imported,
+            "roll_craftax_train_780018_other",
+            "roll_craftax_train_780018_other",
+        )
+        .unwrap_err();
+        assert!(format!("{mismatch:#}").contains("trace_identity_mismatch"));
+        assert!(format!("{mismatch:#}").contains("Workshop index"));
     }
 
     #[test]

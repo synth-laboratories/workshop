@@ -4222,7 +4222,16 @@ pub(crate) async fn import_container_trace_into(
     let indexed: Vec<Value> = result
         .traces
         .iter()
-        .map(|trace| json!({"traceId": trace.id, "digest": trace.digest}))
+        .map(|trace| {
+            json!({
+                // `traceId` is Workshop's stable local index identity.
+                "traceId": trace.id,
+                // `producerTraceId` is the identity sealed inside Trace V5.
+                // They are not interchangeable and usually differ.
+                "producerTraceId": trace.metadata.get("producerTraceId"),
+                "digest": trace.digest,
+            })
+        })
         .collect();
     Ok((
         json!({
