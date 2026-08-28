@@ -177,6 +177,7 @@ impl From<anyhow::Error> for AppError {
                 message: failure.message.clone(),
                 detail: serde_json::to_string(failure).unwrap_or_else(|_| failure.to_string()),
                 failure: None,
+                structured: None,
             };
         }
         Self::internal(error)

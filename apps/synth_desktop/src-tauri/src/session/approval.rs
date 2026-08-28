@@ -671,6 +671,16 @@ struct PendingApproval {
     settle: Mutex<bool>,
 }
 
+#[derive(Clone, Debug, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingApprovalView {
+    pub approval_id: String,
+    pub session_id: String,
+    pub kind: String,
+    pub requires_human: bool,
+    pub preparation_digest: Option<String>,
+}
+
 pub(crate) struct ApprovalBroker {
     pending: Mutex<HashMap<String, Arc<PendingApproval>>>,
     session_grants: Mutex<HashSet<(String, String)>>,
@@ -697,6 +707,54 @@ impl ApprovalBroker {
             restore_started: AtomicBool::new(false),
             paid_compute_lock: Mutex::new(()),
         }
+    }
+
+    pub(crate) async fn pending_snapshot(&self) -> Vec<PendingApprovalView> {
+        let mut views = self
+            .pending
+            .lock()
+            .await
+            .iter()
+            .map(|(approval_id, pending)| PendingApprovalView {
+                approval_id: approval_id.clone(),
+                session_id: pending.origin.session_id.clone(),
+                kind: pending.kind.name().to_owned(),
+                requires_human: pending.kind.requires_human(),
+                preparation_digest: pending.kind.approval_digest().map(str::to_owned),
+            })
+            .collect::<Vec<_>>();
+        views.sort_by(|left, right| left.approval_id.cmp(&right.approval_id));
+        views
+    }
+
+    pub(crate) async fn approve_digest<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        digest: &str,
+    ) -> Result<(String, bool)> {
+        let matched = self.pending.lock().await.iter().find_map(|(id, pending)| {
+            (pending.kind.approval_digest() == Some(digest)).then(|| {
+                (
+                    id.clone(),
+                    pending.origin.session_id.clone(),
+                    pending.kind.clone(),
+                )
+            })
+        });
+        let Some((approval_id, session_id, kind)) = matched else {
+            return Err(anyhow!("no approval sheet is open for digest {digest}"));
+        };
+        let decision = match kind {
+            ApprovalKind::PaidCompute { requested_cap, .. } => {
+                ApprovalDecision::ApproveWithCap { cap: requested_cap }
+            }
+            _ => ApprovalDecision::Approve {
+                scope: ApprovalScope::Once,
+            },
+        };
+        self.resolve(app, &session_id, &approval_id, decision)
+            .await?;
+        Ok((approval_id, false))
     }
 
     /// Seal the profile a session start resolved and persist the atomic

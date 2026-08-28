@@ -1025,7 +1025,10 @@ fn the_disclosure_states_what_the_lifetime_actually_admits() {
     let context = context();
     let admissible = admit(&request(), &context).expect("admissible");
     let disclosure = admissible.approval_disclosure();
-    assert_eq!(disclosure["pacing"]["capabilityLifetimeSeconds"], json!(900));
+    assert_eq!(
+        disclosure["pacing"]["capabilityLifetimeSeconds"],
+        json!(900)
+    );
     assert_eq!(
         disclosure["pacing"]["minimumRequestIntervalSeconds"],
         json!(crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL.as_secs())

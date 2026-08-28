@@ -1277,7 +1277,7 @@ fn experiment_bindings(
                     {"label": "Overall mean", "value": mean_reward, "detail": "missing rewards stay missing"},
                     {"label": "Provider requests", "value": provider_requests, "detail": "authoritative Workshop proxy request attempts across the run"}
                 ],
-                "providerUsage": provider_usage,
+                "providerUsage": Value::Null,
                 "results": {
                     "rollouts": rollouts,
                 },

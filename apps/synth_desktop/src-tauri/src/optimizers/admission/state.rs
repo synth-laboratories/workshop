@@ -449,6 +449,7 @@ impl RunProgress {
             state: RunState::Starting,
             rollouts,
             credential_revocation_confirmed: false,
+            cancel_requested: false,
         }
     }
 
@@ -1183,5 +1184,4 @@ mod tests {
             "a settled run cannot be reopened by a late stop"
         );
     }
-
 }

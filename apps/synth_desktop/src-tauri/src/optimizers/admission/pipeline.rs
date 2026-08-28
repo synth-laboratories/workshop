@@ -796,8 +796,14 @@ impl ExecutionSpecDraft {
             std::time::Duration::from_secs(lifetime_seconds),
             crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL,
         );
-        let declared_calls = u64::from(recipe.resource_limits.maximum_model_calls_per_rollout.0.get())
-            .saturating_mul(u64::from(recipe.rollout_plan.maximum_rollouts.0.get()));
+        let declared_calls = u64::from(
+            recipe
+                .resource_limits
+                .maximum_model_calls_per_rollout
+                .0
+                .get(),
+        )
+        .saturating_mul(u64::from(recipe.rollout_plan.maximum_rollouts.0.get()));
         if declared_calls > u64::from(realizable) {
             return Err(AdmissionError::requested_limit_unsupported(
                 "maximum_model_calls_per_rollout",

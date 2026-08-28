@@ -438,9 +438,10 @@ async fn send_with_rate_limit_retry(
         }
         // Teach the pacer what the route just said, whether or not another
         // attempt remains: the next logical call is paced by this too.
-        state
-            .capabilities
-            .observe_rate_limit(handle, provider_reset_hint_at(response.headers(), Utc::now()));
+        state.capabilities.observe_rate_limit(
+            handle,
+            provider_reset_hint_at(response.headers(), Utc::now()),
+        );
         if retry_number == crate::limits::CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES {
             return Ok(response);
         }
@@ -1384,7 +1385,10 @@ mod tests {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             "x-ratelimit-reset",
-            (now.timestamp_millis() + 42_000).to_string().parse().unwrap(),
+            (now.timestamp_millis() + 42_000)
+                .to_string()
+                .parse()
+                .unwrap(),
         );
         assert_eq!(
             provider_reset_hint_at(&headers, now),
@@ -1413,7 +1417,10 @@ mod tests {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             "x-ratelimit-reset",
-            (now.timestamp_millis() - 5_000).to_string().parse().unwrap(),
+            (now.timestamp_millis() - 5_000)
+                .to_string()
+                .parse()
+                .unwrap(),
         );
         assert_eq!(provider_reset_hint_at(&headers, now), None);
     }
