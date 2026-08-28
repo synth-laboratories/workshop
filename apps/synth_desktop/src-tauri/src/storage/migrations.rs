@@ -64,6 +64,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_59,
     MIGRATION_60,
     MIGRATION_61,
+    MIGRATION_62,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -222,6 +223,14 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("container_sources", MIGRATION_59),
     ("optimizer_recipe_sources", MIGRATION_60),
     ("project_source_requests", MIGRATION_61),
+    (
+        "paid_compute_conversation_budgets",
+        PAID_COMPUTE_BUDGET_CREATE_ONLY,
+    ),
+    (
+        "paid_compute_reservations",
+        PAID_COMPUTE_BUDGET_CREATE_ONLY,
+    ),
 ];
 
 const PROJECTION_OUTBOX_CREATE_ONLY: &str = r#"
@@ -237,6 +246,31 @@ CREATE TABLE IF NOT EXISTS optimizer_projection_outbox (
 );
 CREATE INDEX IF NOT EXISTS optimizer_projection_outbox_pending
 ON optimizer_projection_outbox(delivery_state, updated_at);
+"#;
+
+const PAID_COMPUTE_BUDGET_CREATE_ONLY: &str = r#"
+CREATE TABLE IF NOT EXISTS paid_compute_conversation_budgets (
+    session_id TEXT PRIMARY KEY,
+    conversation_cap_usd_micros INTEGER NOT NULL,
+    max_request_usd_micros INTEGER NOT NULL,
+    providers_json TEXT NOT NULL,
+    settled_spend_usd_micros INTEGER NOT NULL DEFAULT 0,
+    auto_disabled INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS paid_compute_reservations (
+    approval_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    reserved_usd_micros INTEGER NOT NULL,
+    preparation_digest TEXT,
+    status TEXT NOT NULL CHECK (status IN ('reserved', 'settled', 'released')),
+    settled_usd_micros INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS paid_compute_reservations_session
+ON paid_compute_reservations(session_id, status);
 "#;
 
 fn heal_missing_tables(conn: &Connection) -> Result<()> {
@@ -3612,6 +3646,10 @@ CREATE TABLE IF NOT EXISTS project_source_requests (
 CREATE INDEX IF NOT EXISTS project_source_requests_status ON project_source_requests(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS project_source_requests_session ON project_source_requests(session_id, created_at DESC);
 "#;
+
+/// Conversation-scoped paid-compute auto-approval projection. Sealed at
+/// session start; reservations and settled spend survive Workshop restart.
+const MIGRATION_62: &str = PAID_COMPUTE_BUDGET_CREATE_ONLY;
 
 #[cfg(test)]
 mod tests {

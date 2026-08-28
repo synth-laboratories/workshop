@@ -4134,6 +4134,7 @@ fn commit_validated_events(
             "error": run.error.clone().unwrap_or(Value::Null),
         });
         let sealed = terminal::seal(conn, &run.id, &manifest)?;
+        settle_paid_compute_conversation(conn, &run)?;
         if let Some(object) = run.summary.as_object_mut() {
             object.insert("terminalManifest".into(), sealed);
         }
@@ -4529,6 +4530,7 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
         let events = load_events_upto(conn, &run.id, run.cursor_seq)?;
         let manifest = terminal::derive(&run, &events, "interrupted", None);
         let sealed = terminal::seal(conn, &run.id, &manifest)?;
+        settle_paid_compute_conversation(conn, &run)?;
         if let Some(object) = run.summary.as_object_mut() {
             object.insert("terminalManifest".into(), sealed);
         }
@@ -4870,6 +4872,78 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
     }
     if let Some(error) = &event.error {
         run.error = Some(error.clone());
+    }
+}
+
+fn settle_paid_compute_conversation(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
+    let Some(session_id) = run
+        .session_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let Some(approval_id) = run
+        .usage
+        .extra
+        .get("paidComputeApproval")
+        .and_then(|value| value.get("approvalId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let outcome = paid_compute_settlement_outcome(conn, run)?;
+    let Some(snapshot) =
+        crate::session::paid_compute_budget::settle(conn, session_id, approval_id, outcome)?
+    else {
+        return Ok(());
+    };
+    if run
+        .usage
+        .extra
+        .get("paidComputeApproval")
+        .and_then(|value| value.get("receiptViolation"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        crate::session::paid_compute_budget::disable_auto(conn, session_id)?;
+    }
+    crate::session::paid_compute_budget::append_settlement_receipt(
+        conn,
+        session_id,
+        approval_id,
+        outcome,
+        &snapshot,
+    )?;
+    Ok(())
+}
+
+fn paid_compute_settlement_outcome(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+) -> Result<crate::session::paid_compute_budget::SettlementOutcome> {
+    use crate::session::paid_compute_budget::{micros_from_reported_cost, SettlementOutcome};
+    if let Ok(Some(receipt)) = crate::secrets::capability::provider_usage_receipt(conn, &run.id) {
+        return Ok(match receipt.cost_usd.and_then(micros_from_reported_cost) {
+            Some(cost_usd_micros) => SettlementOutcome::Exact { cost_usd_micros },
+            None => SettlementOutcome::Unknown,
+        });
+    }
+    let complete = run
+        .usage
+        .extra
+        .get("costTelemetryComplete")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if !complete {
+        return Ok(SettlementOutcome::Unknown);
+    }
+    match run.usage.cost_usd.and_then(micros_from_reported_cost) {
+        Some(cost_usd_micros) => Ok(SettlementOutcome::Exact { cost_usd_micros }),
+        None => Ok(SettlementOutcome::Unknown),
     }
 }
 

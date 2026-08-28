@@ -113,6 +113,56 @@ test("recognized approval lifecycle events retain explicit Synth labels", () => 
 	assert.equal(paid.__active__?.[0]?.label, "Paid compute granted");
 });
 
+test("conversation paid-compute auto-approval is a notice, not a pending modal card", () => {
+	const activity = eventsToLocalActivity([
+		event({
+			sequence: 4,
+			eventKind: "approval.granted",
+			payload: {
+				approvalId: "approval-auto-1",
+				kind: "paid_compute",
+				policyAuto: true,
+				approvalPolicy: "conversation_paid_compute_budget",
+				reservedUsdMicros: 60_000,
+				settledSpendUsdMicros: 0,
+				remainingUsdMicros: 190_000,
+				conversationCapUsdMicros: 250_000,
+				cap: { maxCostUsdMicros: 60_000, maxRollouts: 8 }
+			}
+		})
+	], []);
+	const line = activity.__active__?.[0];
+	assert.equal(
+		line?.label,
+		"Auto-approved a $0.06 maximum · $0.06 of $0.25 conversation allowance used"
+	);
+	assert.equal(line?.approvalId, undefined);
+	assert.equal(line?.approvalKind, "paid_compute");
+	assert.match(line?.detail ?? "", /reserved \$0\.06/);
+	assert.match(line?.detail ?? "", /remaining \$0\.19/);
+	assert.equal(line?.approvalPayload?.policyAuto, true);
+	assert.equal(line?.approvalPayload?.reservedUsdMicros, 60_000);
+});
+
+test("ineligible paid-compute requests still project a blocking modal card", () => {
+	const activity = eventsToLocalActivity([
+		event({
+			sequence: 5,
+			eventKind: "approval.requested",
+			payload: {
+				approvalId: "approval-modal",
+				kind: "paid_compute",
+				operation: "optimizer.evaluation.inline.start",
+				requestedCap: { maxCostUsdMicros: 200_000 }
+			}
+		})
+	], []);
+	const line = activity.__active__?.[0];
+	assert.equal(line?.approvalId, "approval-modal");
+	assert.equal(line?.approvalKind, "paid_compute");
+	assert.equal(line?.label, "Paid compute approval");
+});
+
 test("duplicate provider failures render once and hide raw provider payloads", () => {
 	const rawFailure = JSON.stringify({
 		error: {

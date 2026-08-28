@@ -18,6 +18,7 @@ import { SettingsCard, SettingsRow } from "./SettingsCard";
 import { bridges } from "../runtime/desktopBridge";
 import type { ProductTelemetryEvent, ProductTelemetryPolicy, ReleaseTierReport } from "../bridge";
 import { BUILD_TIER } from "../flags/tier";
+import { PaidComputePermissionSettings } from "./PaidComputePermissionSettings";
 
 type Props = {
 	preferences: DesktopPreferences;
@@ -356,6 +357,7 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 			<PrivacyTelemetrySettings />
 
 			<BuildEnvelopeSettings />
+			<PaidComputePermissionSettings />
 
 			<SettingsCard
 				title="Prompt submission"

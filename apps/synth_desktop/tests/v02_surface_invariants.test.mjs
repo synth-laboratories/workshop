@@ -81,6 +81,18 @@ test("paid-compute approval is a cap-scoped modal, not a transcript card", () =>
 	assert.match(transcript, /requestingAgent/);
 	assert.match(transcript, /line\.approvalKind !== "paid_compute"/);
 	assert.match(transcript, /Escape/);
+	assert.match(transcript, /pendingApprovals\.find\(\(line\) => line\.approvalKind === "paid_compute"\)/);
+});
+
+test("paid-compute auto-approval settings live on the Workshop permission surface", () => {
+	const settings = read("components/PaidComputePermissionSettings.tsx");
+	const general = read("components/GeneralPreferencesSettings.tsx");
+	assert.match(general, /PaidComputePermissionSettings/);
+	assert.match(settings, /data-testid="paid-compute-auto-approve"/);
+	assert.match(settings, /data-testid="paid-compute-max-request"/);
+	assert.match(settings, /data-testid="paid-compute-max-conversation"/);
+	assert.match(settings, /Limits apply to each request’s hard ceiling/);
+	assert.match(settings, /parseUsdAmount/);
 });
 
 test("optimizer MCP recipe starts cannot bypass the typed approval broker", () => {

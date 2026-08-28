@@ -6,7 +6,7 @@
 
 mod audit;
 mod backend;
-mod capability;
+pub(crate) mod capability;
 mod fingerprint;
 mod importer;
 pub mod lease;

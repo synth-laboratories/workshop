@@ -6,6 +6,7 @@
 //! that setting into an undocumented "Always ask" mode.
 
 use super::approval::{ApprovalDecision, ApprovalKind};
+use crate::synth_config::PaidComputeAutoApprovalPolicy;
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
@@ -25,6 +26,8 @@ pub(crate) struct EffectiveApprovalProfile {
     pub mcp_tools_approval_mode: String,
     /// Where the machine half of the agreement was read from.
     pub machine_config_path: String,
+    /// Frozen at session start. Config edits apply only to new conversations.
+    pub paid_compute: PaidComputeAutoApprovalPolicy,
 }
 
 impl EffectiveApprovalProfile {
@@ -35,6 +38,12 @@ impl EffectiveApprovalProfile {
             "sandbox": self.sandbox_mode,
             "mcpToolsApprovalMode": self.mcp_tools_approval_mode,
             "machineConfigPath": self.machine_config_path,
+            "paidComputeAutoApproval": {
+                "enabled": self.paid_compute.enabled,
+                "maxRequestUsdMicros": self.paid_compute.max_request_usd_micros,
+                "maxConversationUsdMicros": self.paid_compute.max_conversation_usd_micros,
+                "providers": self.paid_compute.providers,
+            },
         })
     }
 }
@@ -77,6 +86,7 @@ pub(crate) fn resolve_effective(
         sandbox_mode,
         mcp_tools_approval_mode: MCP_TOOLS_APPROVAL_MODE.into(),
         machine_config_path: machine.config_path,
+        paid_compute: machine.paid_compute.policy()?,
     })
 }
 
