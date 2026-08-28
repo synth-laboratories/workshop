@@ -26,6 +26,7 @@ export type VisualRunRollout = {
 	steps?: number;
 	calls?: number;
 	tokens?: number;
+	costUsd?: number;
 	achievements?: string[];
 };
 
@@ -245,6 +246,9 @@ export function projectVisualRunLifecycle(
 		const steps = finite(reportedFact(item, "steps")) ?? finite(item.steps);
 		const calls = finite(reportedFact(item, "calls")) ?? finite(usage.calls);
 		const tokens = finite(reportedFact(item, "tokens")) ?? finite(usage.total_tokens);
+		const costUsd = finite(reportedFact(item, "costUsd"))
+			?? finite(usage.cost_usd)
+			?? finite(usage.costUsd);
 		const achievements = stringList(reportedFact(item, "achievements"))
 			?? stringList(item.checkpointAchievements);
 		return {
@@ -255,6 +259,7 @@ export function projectVisualRunLifecycle(
 			...(steps != null ? { steps } : {}),
 			...(calls != null ? { calls } : {}),
 			...(tokens != null ? { tokens } : {}),
+			...(costUsd != null ? { costUsd } : {}),
 			...(achievements ? { achievements } : {})
 		};
 	}).sort((left, right) => (left.seed ?? Number.MAX_SAFE_INTEGER) - (right.seed ?? Number.MAX_SAFE_INTEGER));

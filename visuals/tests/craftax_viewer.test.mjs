@@ -123,14 +123,14 @@ test("terminal and enrichment optimizer lanes rejoin into 50 calls and 303 compl
 test("run overview aggregates rollout distributions without inventing partial token totals", () => {
   const rows = [
     event("rollout-a", "span.policy.opened", 1, { call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" } }),
-    event("rollout-a", "span.policy.data", 2, { usage: { total_tokens: 120 } }),
+    event("rollout-a", "span.policy.data", 2, { usage: { total_tokens: 120, cost_usd: 0.0012 } }),
     event("rollout-a", "span.policy.closed", 3),
     event("rollout-a", "span.step.closed", 4, { step: 0 }),
     event("rollout-a", "span.step.closed", 5, { step: 1 }),
     event("rollout-a", "reward_signal", 6, { value: 4 }),
     event("rollout-a", "achievement_unlocked", 7, { achievement: "collect_wood" }),
     event("rollout-b", "span.policy.opened", 1, { call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" } }),
-    event("rollout-b", "span.policy.data", 2, { usage: { total_tokens: 80 } }),
+    event("rollout-b", "span.policy.data", 2, { usage: { total_tokens: 80, cost_usd: 0.0008 } }),
     event("rollout-b", "span.policy.closed", 3),
     event("rollout-b", "span.step.closed", 4, { step: 0 }),
     event("rollout-b", "reward_signal", 5, { value: 2 }),
@@ -143,7 +143,10 @@ test("run overview aggregates rollout distributions without inventing partial to
   assert.deepEqual([aggregate.totalSteps, aggregate.minSteps, aggregate.maxSteps], [3, 1, 2]);
   assert.deepEqual([aggregate.totalCalls, aggregate.minCalls, aggregate.maxCalls], [2, 1, 1]);
   assert.equal(aggregate.totalTokens, 200);
+  assert.equal(aggregate.totalCostUsd, 0.002);
+  assert.equal(aggregate.reportedCosts, 2);
   assert.deepEqual(aggregate.achievementNames, ["collect_stone", "collect_wood"]);
+  assert.deepEqual([aggregate.totalAchievements, aggregate.minAchievements, aggregate.maxAchievements], [2, 1, 1]);
   assert.equal(aggregate.achievementRollouts, 2);
 
   const partial = summarizeCraftaxRun([
@@ -153,6 +156,9 @@ test("run overview aggregates rollout distributions without inventing partial to
   ]);
   assert.equal(partial.totalCalls, 3);
   assert.equal(partial.totalTokens, undefined, "one call without usage makes the run token total unavailable");
+  assert.equal(partial.totalCostUsd, undefined, "one unpriced rollout makes the exact run total unavailable");
+  assert.equal(partial.knownCostUsd, 0.002, "known rollout costs remain a labelled subtotal");
+  assert.equal(partial.reportedCosts, 2);
 });
 
 test("terminal overview replaces provisional rewards with scored record truth", () => {
@@ -170,7 +176,7 @@ test("terminal overview replaces provisional rewards with scored record truth", 
     { lane: "rollout-5", status: "failed", steps: 46 },
     { lane: "rollout-6", status: "failed", steps: 60 },
     { lane: "rollout-7", status: "failed", steps: 58 },
-    { lane: "rollout-8", status: "completed", reward: 6, steps: 40, achievements: ["collect_wood"] },
+    { lane: "rollout-8", seed: 780008, status: "completed", reward: 6, steps: 40, costUsd: 0.0042, achievements: ["collect_wood"] },
     { lane: "rollout-9", status: "failed", steps: 80 }
   ];
   const aggregate = summarizeCraftaxRun(journal, terminal);
@@ -180,6 +186,11 @@ test("terminal overview replaces provisional rewards with scored record truth", 
   assert.equal(aggregate.totalSteps, 284);
   assert.equal(aggregate.reportedSteps, 5);
   assert.equal(aggregate.totalCalls, 5, "retained call starts remain a separately labelled journal count");
+  assert.equal(aggregate.totalCostUsd, undefined);
+  assert.equal(aggregate.knownCostUsd, 0.0042);
+  assert.equal(aggregate.reportedCosts, 1);
+  assert.equal(aggregate.rollouts[3].seed, 780008);
+  assert.equal(aggregate.rollouts[3].costUsd, 0.0042);
   assert.equal(aggregate.reportedAchievements, 1);
 });
 

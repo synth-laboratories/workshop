@@ -22,7 +22,7 @@ import {
   replayMomentIndexes,
   type CraftaxSemanticTraceItem
 } from "./projectCraftax.ts";
-import { summarizeCraftaxRun, type CraftaxRolloutAggregate } from "./aggregateCraftax.ts";
+import { summarizeCraftaxRun, type CraftaxRolloutAggregate, type CraftaxRunAggregate } from "./aggregateCraftax.ts";
 import "./viewer.css";
 
 // Vite turns these template-local fixtures into packaged assets. Persisted
@@ -61,6 +61,7 @@ type RunLifecycle = {
     steps?: number;
     calls?: number;
     tokens?: number;
+    costUsd?: number;
     achievements?: string[];
   }>;
   evidence: {
@@ -287,41 +288,115 @@ function rangeLabel(min: number | undefined, max: number | undefined, suffix: st
   return min === max ? `${min} ${suffix} each` : `${min}–${max} ${suffix} per rollout`;
 }
 
-function runCostSummary(lifecycle: RunLifecycle | undefined, producerCost: number | undefined): { value: string; detail: string } {
+function compactUsd(value: number): string {
+  return value < 0.1
+    ? `$${value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`
+    : formatMissingUsd(value);
+}
+
+function runCostSummary(
+  lifecycle: RunLifecycle | undefined,
+  producerCost: number | undefined,
+  aggregate: CraftaxRunAggregate
+): { value: string; detail: string } {
   const label = runCostLabel(lifecycle, producerCost);
-  if (label.startsWith("unavailable")) {
+  if (label.startsWith("unavailable") || label === "not emitted") {
     const calls = lifecycle?.usage.calls;
+    if (aggregate.totalCostUsd != null) {
+      return {
+        value: compactUsd(aggregate.totalCostUsd),
+        detail: lifecycle?.usage.costSource === "workshop_proxy"
+          ? `Complete across ${aggregate.reportedCosts} rollout records · proxy aggregate omitted`
+          : `Complete across ${aggregate.reportedCosts} rollout records · per-rollout telemetry`
+      };
+    }
+    if (aggregate.knownCostUsd != null) {
+      return {
+        value: `Known ${compactUsd(aggregate.knownCostUsd)}`,
+        detail: `${aggregate.reportedCosts}/${aggregate.rollouts.length} rollouts priced · exact total unavailable`
+      };
+    }
+    if (label === "not emitted") return { value: "Not emitted", detail: "No authoritative cost amount" };
     return {
       value: "Unavailable",
       detail: calls == null ? "Workshop proxy omitted an amount" : `${calls} proxy calls counted · amount omitted`
     };
   }
-  if (label === "not emitted") return { value: "Not emitted", detail: "No authoritative cost amount" };
   const [value, detail] = label.split(" · ", 2);
   return { value, detail: detail ?? "Authoritative run telemetry" };
 }
 
-function comparisonWidth(value: number | undefined, maximum: number): string {
+function distributionHeight(value: number | undefined, maximum: number): string {
   if (value == null || maximum <= 0) return "0%";
-  return `${Math.max(4, Math.min(100, Math.abs(value) / maximum * 100)).toFixed(1)}%`;
+  return `${Math.max(3, Math.min(100, Math.abs(value) / maximum * 100)).toFixed(1)}%`;
 }
 
-function RolloutComparison({ rollouts }: { rollouts: CraftaxRolloutAggregate[] }) {
-  const maxReward = Math.max(0, ...rollouts.flatMap((rollout) => rollout.reward == null ? [] : [Math.abs(rollout.reward)]));
-  const maxSteps = Math.max(0, ...rollouts.flatMap((rollout) => rollout.steps == null ? [] : [rollout.steps]));
-  const maxCalls = Math.max(0, ...rollouts.flatMap((rollout) => rollout.calls == null ? [] : [rollout.calls]));
-  return <figure className="cv-comparison" aria-label="Rollout comparison">
-    <figcaption><strong>Rollout comparison</strong><span>Terminal reward · steps · retained call starts</span></figcaption>
-    <div className="cv-comparison-table" role="table" aria-label="Terminal reward, environment steps, and retained call starts by rollout">
-      <div className="cv-comparison-head" role="row"><span role="columnheader">Rollout</span><span role="columnheader">Reward</span><span role="columnheader">Steps</span><span role="columnheader">Retained calls</span></div>
-      {rollouts.map((rollout) => <div className="cv-comparison-row" role="row" data-rollout-status={rollout.status} key={rollout.lane} aria-label={`${rollout.lane}: terminal status ${rollout.status ?? "unknown"}, reward ${formatMissingNumber(rollout.reward)}, ${formatMissingNumber(rollout.steps, 0)} environment steps, ${formatMissingNumber(rollout.calls, 0)} retained call starts`}>
-        <span role="cell"><Identifier value={rollout.lane} max={16} copy={false} />{rollout.status ? <em>{rollout.status}</em> : null}</span>
-        <span role="cell"><i aria-hidden="true" className={rollout.reward != null && rollout.reward < 0 ? "negative" : ""} style={{ width: comparisonWidth(rollout.reward, maxReward) }} /><b>{formatMissingNumber(rollout.reward)}</b></span>
-        <span role="cell"><i aria-hidden="true" style={{ width: comparisonWidth(rollout.steps, maxSteps) }} /><b>{formatMissingNumber(rollout.steps, 0)}</b></span>
-        <span role="cell"><i aria-hidden="true" style={{ width: comparisonWidth(rollout.calls, maxCalls) }} /><b>{formatMissingNumber(rollout.calls, 0)}</b></span>
-      </div>)}
-    </div>
+type DistributionMetric = {
+  key: "reward" | "achievements" | "steps" | "calls" | "tokens" | "cost";
+  label: string;
+  className: string;
+  value: (rollout: CraftaxRolloutAggregate) => number | undefined;
+  format: (value: number | undefined) => string;
+};
+
+function AggregateDistribution({
+  title,
+  detail,
+  rollouts,
+  metrics,
+  selectedLane,
+  onSelect
+}: {
+  title: string;
+  detail: string;
+  rollouts: CraftaxRolloutAggregate[];
+  metrics: DistributionMetric[];
+  selectedLane?: string;
+  onSelect: (lane: string) => void;
+}) {
+  const maxima = new Map(metrics.map((metric) => [
+    metric.key,
+    Math.max(0, ...rollouts.flatMap((rollout) => {
+      const value = metric.value(rollout);
+      return value == null ? [] : [Math.abs(value)];
+    }))
+  ]));
+  return <figure className="cv-distribution">
+    <figcaption><div><strong>{title}</strong><span>{detail}</span></div><div className="cv-distribution-legend" aria-label={`${title} legend`}>{metrics.map((metric) => <i className={metric.className} key={metric.key}>{metric.label}</i>)}</div></figcaption>
+    <ol className="cv-distribution-chart" aria-label={`${title} across all evaluation rollouts`}>
+      {rollouts.map((rollout) => {
+        const values = metrics.map((metric) => metric.value(rollout));
+        const label = `${rollout.seed != null ? `seed ${rollout.seed}` : rollout.lane}: ${metrics.map((metric, index) => `${metric.label} ${metric.format(values[index])}`).join(", ")}`;
+        return <li key={rollout.lane} data-rollout-status={rollout.status}>
+          <button type="button" title={label} aria-label={`${label}. Inspect rollout.`} aria-current={rollout.lane === selectedLane} onClick={() => onSelect(rollout.lane)}>
+            <span className="cv-distribution-bars" aria-hidden="true">{metrics.map((metric, index) => <span className={`cv-distribution-bar ${metric.className}${values[index] == null ? " missing" : values[index]! < 0 ? " negative" : ""}`} key={metric.key}><i style={{ height: distributionHeight(values[index], maxima.get(metric.key) ?? 0) }} /><b>{metric.format(values[index])}</b></span>)}</span>
+            <span className="cv-distribution-id">{rollout.seed != null ? `seed ${rollout.seed}` : <Identifier value={rollout.lane} max={11} copy={false} />}</span>
+            <em>{rollout.status ?? "in progress"}</em>
+          </button>
+        </li>;
+      })}
+    </ol>
   </figure>;
+}
+
+function RunDistributions({ rollouts, selectedLane, onSelect }: { rollouts: CraftaxRolloutAggregate[]; selectedLane?: string; onSelect: (lane: string) => void }) {
+  const outcomeMetrics: DistributionMetric[] = [
+    { key: "reward", label: "Reward", className: "reward", value: (rollout) => rollout.reward, format: (value) => formatMissingNumber(value) },
+    { key: "achievements", label: "Achievements", className: "achievements", value: (rollout) => rollout.achievementsReported ? rollout.achievements.length : undefined, format: (value) => formatMissingNumber(value, 0) }
+  ];
+  const usageMetrics: DistributionMetric[] = [
+    { key: "steps", label: "Steps", className: "steps", value: (rollout) => rollout.steps, format: (value) => formatMissingNumber(value, 0) },
+    { key: "calls", label: "Retained calls", className: "calls", value: (rollout) => rollout.calls, format: (value) => formatMissingNumber(value, 0) },
+    { key: "tokens", label: "Tokens", className: "tokens", value: (rollout) => rollout.tokens, format: (value) => formatMissingNumber(value, 0) },
+    { key: "cost", label: "Cost", className: "cost", value: (rollout) => rollout.costUsd, format: (value) => value == null ? "—" : compactUsd(value) }
+  ];
+  const outcomeCoverage = `${rollouts.filter((rollout) => rollout.reward != null).length}/${rollouts.length} rewards · ${rollouts.filter((rollout) => rollout.achievementsReported).length}/${rollouts.length} achievement sets`;
+  const usageCoverage = `${rollouts.filter((rollout) => rollout.steps != null).length}/${rollouts.length} steps · ${rollouts.filter((rollout) => rollout.tokens != null).length}/${rollouts.length} tokens · ${rollouts.filter((rollout) => rollout.costUsd != null).length}/${rollouts.length} costs`;
+  return <section className="cv-run-distributions" aria-label="Combined evaluation distributions">
+    <AggregateDistribution title="Outcome distribution" detail={outcomeCoverage} rollouts={rollouts} metrics={outcomeMetrics} selectedLane={selectedLane} onSelect={onSelect} />
+    <AggregateDistribution title="Work and usage distribution" detail={usageCoverage} rollouts={rollouts} metrics={usageMetrics} selectedLane={selectedLane} onSelect={onSelect} />
+    <p className="cv-distribution-note">Each metric is normalized to its own maximum within this evaluation. Hover or focus for exact values; select a rollout to inspect its trace.</p>
+  </section>;
 }
 
 function truthNumber(value: number | undefined, terminal: boolean, format: (value: number) => string): string {
@@ -428,7 +503,7 @@ export function Shell(props: ShellProps) {
   );
   const observation = latestObservation(visibleEvents);
   const inventory = inventoryFrom(observation);
-  const runCost = runCostSummary(props.runLifecycle, finite(policy.usage.cost_usd));
+  const runCost = runCostSummary(props.runLifecycle, finite(policy.usage.cost_usd), runAggregate);
   const receiptCalls = props.runLifecycle?.usage.calls;
   const retainedCalls = runAggregate.totalCalls;
   const callValue = receiptCalls == null ? formatMissingNumber(retainedCalls, 0) : `${formatMissingNumber(receiptCalls, 0)} billed`;
@@ -639,18 +714,18 @@ export function Shell(props: ShellProps) {
         <div><p className="cv-eyebrow">Durable replay</p><h3>Loading retained rollout journals…</h3><p>Workshop is rebuilding the visual from persisted optimizer evidence. Counts and replay controls will appear only after the journal is available.</p></div>
       </section> : <>
       <section className="cv-overview cv-surface-replay" aria-label="Overall run summary" data-visual-landmark="run-overview">
-        <div className="cv-overview-heading"><div><p className="cv-eyebrow">Overall · all rollouts</p><h3>Run overview</h3></div><span>At the current evaluation cutoff</span></div>
+        <div className="cv-overview-heading"><div><p className="cv-eyebrow">Overall · all rollouts</p><h3>Evaluation overview</h3></div><span>Combined at the current evaluation cutoff</span></div>
         <div className="cv-overview-grid">
           <OverviewStat label="Rollouts" value={String(runAggregate.rollouts.length || "—")} detail={`${terminalLanes} terminal`} />
           <OverviewStat label="Mean terminal reward" value={formatMissingNumber(runAggregate.rewardMean)} detail={runAggregate.reportedRewards ? `${formatMissingNumber(runAggregate.rewardMin)}–${formatMissingNumber(runAggregate.rewardMax)} · ${runAggregate.reportedRewards}/${runAggregate.rollouts.length} scored` : "No terminal numeric rewards reported"} />
           <OverviewStat label="Environment steps" value={formatMissingNumber(runAggregate.totalSteps, 0)} detail={`${rangeLabel(runAggregate.minSteps, runAggregate.maxSteps, "steps")} · ${runAggregate.reportedSteps}/${runAggregate.rollouts.length} reported`} />
           <OverviewStat label="Provider calls" value={callValue} detail={callDetail} />
           <OverviewStat label="Provider tokens" value={tokenValue == null ? "Not emitted" : formatMissingNumber(tokenValue, 0)} detail={tokenDetail} />
-          <OverviewStat label="Achievement coverage" value={`${runAggregate.achievementNames.length} unique`} detail={`${runAggregate.achievementRollouts} unlocked ≥1 · ${runAggregate.reportedAchievements}/${runAggregate.rollouts.length} reported`} />
+          <OverviewStat label="Achievements" value={runAggregate.totalAchievements == null ? "Not emitted" : `${runAggregate.totalAchievements} unlocks`} detail={`${runAggregate.achievementNames.length} unique · ${runAggregate.achievementRollouts} rollouts unlocked ≥1 · ${runAggregate.reportedAchievements}/${runAggregate.rollouts.length} reported`} />
         </div>
         <div className="cv-cost-line" data-cost-authority={props.runLifecycle?.usage.costSource}><span>Run cost</span><strong>{runCost.value}</strong><small>{runCost.detail}</small></div>
         {runAggregate.achievementNames.length ? <div className="cv-coverage" aria-label="Achievements unlocked across all rollouts"><span>Across run</span>{runAggregate.achievementNames.map((name) => <i key={name}>{name}</i>)}</div> : null}
-        <RolloutComparison rollouts={runAggregate.rollouts} />
+        <RunDistributions rollouts={runAggregate.rollouts} selectedLane={selectedLane} onSelect={(lane) => { setChosenLane(lane); setLaneCutoff(null); setSurface("replay"); }} />
       </section>
 
       {bindingError || error ? <p role="alert" className="cv-error">{bindingError ?? error}</p> : null}

@@ -297,20 +297,26 @@ test("live Craftax renders a subscribed optimizer journal immediately instead of
   assert.match(shell, /optimizerEvents \|\| declaredStreamCount > 0 \? undefined : stream\.events/);
 });
 
-test("live Craftax names durable-journal hydration and exposes a run-wide comparison", () => {
+test("live Craftax names durable-journal hydration and exposes responsive run-wide distributions", () => {
   const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
   const css = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/viewer.css"), "utf8");
   assert.match(shell, /optimizerJournalBound && optimizerEvents === undefined/);
   assert.match(shell, /Loading retained rollout journals/);
   assert.match(shell, /Counts and replay controls will appear only after the journal is available/);
   assert.match(shell, /Overall · all rollouts/);
-  assert.match(shell, /Achievement coverage/);
-  assert.match(shell, /role="table" aria-label="Terminal reward, environment steps, and retained call starts by rollout"/);
+  assert.match(shell, /Combined evaluation distributions/);
+  assert.match(shell, /Outcome distribution/);
+  assert.match(shell, /Work and usage distribution/);
+  assert.match(shell, /exact total unavailable/);
+  assert.match(shell, /onSelect=\{\(lane\) => \{ setChosenLane\(lane\)/);
   assert.match(shell, /Mean terminal reward/);
   assert.match(shell, /Workshop receipt covers/);
   assert.match(css, /\.cv-overview-grid\{display:grid/);
   assert.match(css, /@media\(max-width:760px\).*\.cv-overview-grid\{grid-template-columns:1fr 1fr\}/s);
-  assert.doesNotMatch(css, /\.cv-comparison-table\{min-width:470px\}/);
+  assert.match(css, /\.cv-overview-grid\{display:grid;grid-template-columns:repeat\(3,minmax\(180px,1fr\)\)/);
+  assert.match(css, /\.cv-cost-line>small\{color:var\(--cv-faint\).*overflow-wrap:anywhere/);
+  assert.match(css, /@media\(max-width:520px\)\{\.cv-overview-grid\{grid-template-columns:1fr\}/);
+  assert.doesNotMatch(css, /\.cv-comparison/);
 });
 
 test("live Craftax loads retained frame CAS through the host and never guesses a relative rollout URL", () => {

@@ -89,7 +89,7 @@ test("failed terminal Craftax exposes only scored rewards and the exact provider
 		{ seed: 780005, rolloutId: "rollout-5", status: "failed", reward: null, reportedFacts: { steps: { value: 46 }, achievements: { value: null } } },
 		{ seed: 780006, rolloutId: "rollout-6", status: "failed", reward: null, reportedFacts: { steps: { value: 60 }, achievements: { value: null } } },
 		{ seed: 780007, rolloutId: "rollout-7", status: "failed", reward: null, reportedFacts: { steps: { value: 58 }, achievements: { value: null } } },
-		{ seed: 780008, rolloutId: "rollout-8", status: "completed", reward: 6, reportedFacts: { steps: { value: 40 }, calls: { value: 10 }, tokens: { value: 25891 }, achievements: { value: ["collect_wood"] } } },
+		{ seed: 780008, rolloutId: "rollout-8", status: "completed", reward: 6, reportedFacts: { steps: { value: 40 }, calls: { value: 10 }, tokens: { value: 25891 }, costUsd: { value: 0.0042 }, achievements: { value: ["collect_wood"] } } },
 		{ seed: 780009, rolloutId: "rollout-9", status: "failed", reward: null, reportedFacts: { steps: { value: 80 }, achievements: { value: null } } }
 	];
 	const lifecycle = projectVisualRunLifecycle({
@@ -126,6 +126,8 @@ test("failed terminal Craftax exposes only scored rewards and the exact provider
 		{ seed: 780009, reward: undefined, steps: 80 }
 	]);
 	assert.equal(lifecycle.rollouts.filter((rollout) => rollout.reward != null).length, 1);
+	assert.equal(lifecycle.rollouts[3].costUsd, 0.0042, "authoritative per-rollout cost remains available to aggregate plots");
+	assert.equal(lifecycle.rollouts.filter((rollout) => rollout.costUsd != null).length, 1);
 	assert.equal(lifecycle.usage.calls, 50);
 	assert.equal(lifecycle.usage.costUsd, 0.017912);
 	assert.equal(lifecycle.usage.promptTokens + lifecycle.usage.completionTokens, 123957);
