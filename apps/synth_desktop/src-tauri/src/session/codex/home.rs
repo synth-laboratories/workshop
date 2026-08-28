@@ -339,6 +339,10 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         visuals_skill.join("references/visual-recipes.md"),
         include_str!("../../../../skills/use-synth-visuals/references/visual-recipes.md"),
     )?;
+    fs::write(
+        visuals_skill.join("references/ad-hoc-visuals.md"),
+        include_str!("../../../../skills/use-synth-visuals/references/ad-hoc-visuals.md"),
+    )?;
     let diagrams_skill = home.join("skills/author-synth-diagrams");
     fs::create_dir_all(diagrams_skill.join("references"))?;
     fs::write(

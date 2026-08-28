@@ -2071,9 +2071,21 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
     assert!(visual_skill.contains("`analysis.chart.v1`"));
     assert!(visual_skill.contains("diagram.systems.v1"));
     assert!(visual_skill.contains("diagram.systems.dynamic.v1"));
+    assert!(visual_skill.contains("references/ad-hoc-visuals.md"));
+    assert!(visual_skill.contains("default to operation `chart` even when"));
     assert!(visual_skill.contains("There is\n**no** top-level `method` field"));
     assert!(!visual_skill.contains("`method: \"visual_manage\"`"));
     assert!(!visual_skill.contains("{\"method\":\"visual_manage\""));
+
+    let ad_hoc_visuals =
+        fs::read_to_string(home.join("skills/use-synth-visuals/references/ad-hoc-visuals.md"))
+            .unwrap();
+    assert!(ad_hoc_visuals.contains("Evidence and event-source matrix"));
+    assert!(ad_hoc_visuals.contains("sum(scored rollout scores)"));
+    assert!(ad_hoc_visuals.contains("kind: \"optimizer_run\""));
+    assert!(ad_hoc_visuals.contains("kind: \"live_sse\""));
+    assert!(ad_hoc_visuals.contains("synth.trace-stream-event.v1"));
+    assert!(ad_hoc_visuals.contains("operation: \"chart\""));
 
     let session_skill = fs::read_to_string(home.join("skills/use-synth-session/SKILL.md")).unwrap();
     let optimizers_skill =
