@@ -188,7 +188,6 @@ pub const EVAL: RuntimeContract = RuntimeContract {
     algorithms: &["eval"],
     templates: &["optimizer.eval.live.v1", "optimizer.run.v1"],
     bounded_recipes: &[
-        "eval.fixture.policy-smoke.v1",
         "eval.craftax.code-policy.smoke.v1",
         "eval.gamebench.craftax-code-policy.confirm.v1",
         "eval.gamebench.llm-policy.confirm.v1",
@@ -323,6 +322,12 @@ mod tests {
         assert!(EVAL.meets_floor("0.2.19"));
         assert!(!EVAL.meets_floor("0.2.14"));
         assert!(OPTIMIZERS.provisioned_by_desktop);
+        assert!(
+            !EVAL
+                .bounded_recipes
+                .contains(&"eval.fixture.policy-smoke.v1"),
+            "product runtime contracts must not publish test fixtures"
+        );
     }
 
     /// The app version has two homes the build reads independently. They are

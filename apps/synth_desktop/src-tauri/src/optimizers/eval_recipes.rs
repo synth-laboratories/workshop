@@ -53,6 +53,7 @@ use super::{
 };
 
 pub const EVAL_ALGORITHM_ID: &str = "eval";
+#[cfg(test)]
 pub const EVAL_FIXTURE_SMOKE_RECIPE: &str = "eval.fixture.policy-smoke.v1";
 pub const EVAL_CRAFTAX_SMOKE_RECIPE: &str = "eval.craftax.code-policy.smoke.v1";
 pub const EVAL_GAMEBENCH_CONFIRM_RECIPE: &str = "eval.gamebench.craftax-code-policy.confirm.v1";
@@ -71,8 +72,7 @@ const CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE: u64 = 10;
 
 /// The allowlist the MCP schema publishes. A recipe id outside it never
 /// reaches the worker.
-pub const EVAL_RECIPE_IDS: [&str; 6] = [
-    EVAL_FIXTURE_SMOKE_RECIPE,
+pub const EVAL_RECIPE_IDS: [&str; 5] = [
     EVAL_CRAFTAX_SMOKE_RECIPE,
     EVAL_GAMEBENCH_CONFIRM_RECIPE,
     EVAL_CRAFTAX_MLX_LOCAL_RECIPE,
@@ -1942,6 +1942,7 @@ mod tests {
     fn only_allowlisted_recipe_ids_are_eval() {
         assert!(is_eval_recipe(EVAL_CRAFTAX_SMOKE_RECIPE));
         assert!(is_eval_recipe(EVAL_MLX_LOCAL_RECIPE));
+        assert!(!is_eval_recipe(EVAL_FIXTURE_SMOKE_RECIPE));
         assert!(!is_eval_recipe("eval.anything.else.v1"));
         assert!(!is_eval_recipe("sft.craftax.gpt-oss.smoke.v1"));
     }

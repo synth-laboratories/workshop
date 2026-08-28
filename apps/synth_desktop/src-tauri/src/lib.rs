@@ -978,11 +978,11 @@ pub(crate) async fn authorize_optimizer_recipe_start(
                 request.recipe_id
             ))
         })?;
-    // Local MLX recipes and the pinned local eval smoke do not incur provider
-    // charges. The click itself is the operator's explicit instruction.
+    // Local MLX recipes do not incur provider charges. The click itself is the
+    // operator's explicit instruction.
     if matches!(
         request.recipe_id.as_str(),
-        "sft.qwen35-2b.mlx.v1" | "cispo.mlx.v1" | "eval.fixture.policy-smoke.v1"
+        "sft.qwen35-2b.mlx.v1" | "cispo.mlx.v1"
     ) {
         let (run, event) = state
             .optimizers()
