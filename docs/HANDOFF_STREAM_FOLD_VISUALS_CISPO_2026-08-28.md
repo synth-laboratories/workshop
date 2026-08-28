@@ -32,6 +32,24 @@ would show raw envelope JSON. In practice it cannot even get that far: `freeze_b
 (`artifacts.rs:783-820`) requires a `snapshot` key that **no production code ever writes** (only
 tests do), so sealing a live-eval visual fails outright — the live-eval export path is dead code.
 
+## Scope beyond the three pipelines
+
+The table above covers the three *pipelines*. The `sequence_fold_outside` conform ratchet (item 31),
+run 2026-08-28, counts **16 further matches** — partial replay-skip / gap-detect folds re-implemented
+outside any of them:
+
+`optimizers/sidecar_training.rs` (5) · `cloud/intern/ingestion.rs` (3) · `optimizers/training.rs` (2)
+· `optimizers/training_adapter.rs` (2) · `optimizers/eval_relay.rs` (2, a verbatim copy of the
+`training_adapter.rs` fold) · `components/TerminalPanel.tsx` (2)
+
+The renderer match is an independent defect: `TerminalPanel.tsx` keeps its own
+`seen.current.has/add(event.sequence)` dedupe, which violates the style guide §8 rule that the
+renderer renders projections and does not invent durable state. It should be removed under item 1
+regardless of where the fold ultimately lives.
+
+**Item 1 should be sized from all seven sites, not from the three pipelines.** The ratchet is the
+inventory; it reaches zero only when the fold has one home.
+
 ## The target: pattern B
 
 Three patterns already exist in-repo. Live-eval is the odd one out.
@@ -535,6 +553,12 @@ The mitigation is a `REQUIRED_TABLES` repair list plus `heal_missing_tables()`,
 architecture is parallel development made permanent**, so that failure mode stops being an incident
 and becomes the steady state.
 
+**A second schema already exists outside the lineage.** The `create_table_outside` ratchet counts 2,
+both in `optimizers/local_lora.rs`: `LOCAL_LORA_DDL` (`local_lora_checkpoints`, 18 columns, :17) and
+`HOSTED_LORA_OVERLAY_DDL` (`hosted_lora_overlays`, :41). Both are `#[allow(dead_code)] pub const` and
+currently unreferenced — table definitions no migration ever creates or upgrades. The per-plugin
+schema drift this part proposes to prevent has already arrived by accident. See item 22a.
+
 Namespacing already exists informally and is enforced nowhere: `experiment_*` (12 tables),
 `optimizer_*` (10), `report_*` (9), `trace_*` (8), `visual_*` (6), `secret_*` (4), `usage_*` (3),
 `failure_*` (3), `evaluation_*` (3).
@@ -785,6 +809,7 @@ path, not a data migration. The one genuine defect is `managed_templates_root()`
 | 20 | IV | Register projections by schema id (`provides` / `consumes` / `filter`) | 1 |
 | 21 | IV | Let plugins contribute allowlisted columns to `trace_query.rs` | 19 |
 | 22 | IV | Record producing plugin + projection schema in the seal | 3 |
+| 22a | IV | Fold `LOCAL_LORA_DDL` / `HOSTED_LORA_OVERLAY_DDL` (`optimizers/local_lora.rs`) into the migration lineage, or delete them | 18 |
 | 23 | V | **Fix `managed_templates_root()` to use `instance::state_root()`** — live bug | — |
 | 24 | V | Accept `template.json` + `shell.tsx` (`source_kind: "user"`) in the registry scan; add symlink refusal + size cap to the scan tier | 23 |
 | 25 | V | Merge runtime user templates into `listTemplates()` (new shell-source command; branch on `source_kind`, not template id); compile via `compileSourcedModule` | 24 |
