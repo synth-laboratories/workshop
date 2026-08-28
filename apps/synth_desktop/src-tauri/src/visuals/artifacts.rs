@@ -134,6 +134,58 @@ impl VisualRegistry {
         Ok(hex_sha256(&canonical_json(&serde_json::to_value(active)?)?))
     }
 
+    /// Derive every Trace V5 projection this revision's bindings name, before
+    /// the bindings are frozen.
+    ///
+    /// One async seam instead of an async recursion: the freeze walk stays a
+    /// pure function over documents, and the one call that has to touch the
+    /// database and possibly the trace CLI happens once per distinct
+    /// (archive, projection) pair rather than once per binding.
+    ///
+    /// The resolver is `crate::data::DataStore::resolve_trace_projection` —
+    /// the same one `registry.rs` uses to read a `trace_v5` chart input, so a
+    /// seal and a render agree about what that binding means by construction.
+    /// A failure is the seal's failure: the alternative is a bundle that
+    /// carries a CAS pointer the reader cannot follow, which is the defect
+    /// this closes.
+    async fn resolve_trace_projections(
+        &self,
+        bindings: &Value,
+        visual_id: &str,
+        revision: i64,
+    ) -> Result<BTreeMap<TraceRequest, ResolvedTraceEvidence>> {
+        let requests = trace_binding_requests(bindings);
+        if requests.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let data = crate::data::DataStore::new(self.db.clone(), self.content.clone());
+        let mut resolved = BTreeMap::new();
+        for request in requests {
+            let projection = data
+                .resolve_trace_projection(request.0.clone(), request.1.clone())
+                .await
+                .with_context(|| {
+                    format!(
+                        "sealing visual {visual_id} revision {revision}: binding names Trace V5 \
+                         archive {} but this host holds no trusted, self-contained bundle it can \
+                         derive the {} projection from. Import the sealed Trace V5 bundle before \
+                         sealing.",
+                        request.0, request.1,
+                    )
+                })?;
+            resolved.insert(
+                request,
+                ResolvedTraceEvidence {
+                    payload: projection.payload,
+                    trace_digest: projection.trace_digest,
+                    projection_schema: projection.projection_schema,
+                    payload_digest: projection.payload_digest,
+                },
+            );
+        }
+        Ok(resolved)
+    }
+
     pub async fn seal(&self, visual_id: String, revision: i64) -> Result<(VisualSeal, Value)> {
         let visual = self.get(visual_id.clone()).await?;
         let gate = visual
@@ -153,12 +205,16 @@ impl VisualRegistry {
             .bindings
             .clone()
             .unwrap_or_else(|| visual.bindings.clone());
+        let traces = self
+            .resolve_trace_projections(&bindings, &visual.id, revision)
+            .await?;
         let (frozen_bindings, live_views) = freeze_bindings(
             bindings,
             &SealEvidence {
                 visual_id: &visual.id,
                 revision,
                 content: &self.content,
+                traces,
             },
         )?;
         let annotations = self
@@ -219,18 +275,26 @@ impl VisualRegistry {
         // the user template that owned it is uninstalled. Absent, not empty,
         // when there is nothing to name: an always-present key would
         // re-digest every seal this build has ever written.
+        let folded_live = !live_views.is_empty();
         let mut views = live_views;
         views.extend(locate_sealed_projections(&data["bindings"]));
         if !views.is_empty() {
             let sealed_template_id = data["template_id"].clone();
+            let mut produced_by = json!({
+                "compiler": COMPILER_NAME,
+                "compiler_version": env!("CARGO_PKG_VERSION"),
+                "template_id": sealed_template_id,
+            });
+            // Named only when a fold actually ran. A trace inspector's views
+            // are a projection the trace tooling derived from a sealed
+            // archive; a receipt claiming the live-eval fold produced them
+            // would send a verifier to code that never saw the bytes.
+            if folded_live {
+                produced_by["fold"] = json!(LIVE_FOLD_ID);
+            }
             let projection = json!({
                 "schema_version": VISUAL_PROJECTION_SCHEMA,
-                "produced_by": {
-                    "compiler": COMPILER_NAME,
-                    "compiler_version": env!("CARGO_PKG_VERSION"),
-                    "fold": LIVE_FOLD_ID,
-                    "template_id": sealed_template_id,
-                },
+                "produced_by": produced_by,
                 "views": views,
             });
             data["projection"] = projection;
@@ -893,15 +957,45 @@ fn embedded_template_source(template_id: &str) -> Result<Option<Value>> {
     })))
 }
 
-/// Where a seal looks for the evidence behind a `live_sse` binding.
+/// Where a seal looks for the evidence behind a `live_sse` or `trace_v5`
+/// binding.
 ///
 /// Held together rather than passed as four arguments because the ladder in
 /// [`resolve_live_evidence`] consults all of it, in order, for every live
 /// binding a visual declares.
+///
+/// `traces` is resolved before the walk rather than during it: reading a Trace
+/// V5 projection is `async` (it may shell out to the trace CLI against a
+/// trusted archive) and the walk is not. Pre-resolving keeps one async seam at
+/// the top of `seal` instead of an async recursion through every binding, and
+/// it makes the freeze itself a pure function of documents a test can supply.
 struct SealEvidence<'a> {
     visual_id: &'a str,
     revision: i64,
     content: &'a crate::storage::ContentStore,
+    traces: BTreeMap<TraceRequest, ResolvedTraceEvidence>,
+}
+
+/// The trace projection one `trace_v5` descriptor names: the sealed archive
+/// digest it points at, and the consumer projection it wants derived from it.
+type TraceRequest = (String, String);
+
+/// A Trace V5 projection document the seal froze into a binding, and the
+/// provenance a verifier reads to know which archive it came from.
+struct ResolvedTraceEvidence {
+    /// The projection payload, verbatim. It is self-describing — it carries
+    /// its own `schema_version` — which is what lets
+    /// [`locate_sealed_projections`] name it as a view without a second
+    /// registry of where projections live.
+    payload: Value,
+    /// The `sha256:`-qualified digest of the sealed archive it was derived
+    /// from, as the resolver normalised it.
+    trace_digest: String,
+    /// The format the archive's own manifest declared.
+    projection_schema: String,
+    /// The digest of the projection payload, as the trace tooling computed it.
+    /// A verifier re-deriving the projection compares this, not the bindings.
+    payload_digest: String,
 }
 
 /// Replayable evidence for one live binding, and where the seal found it.
@@ -937,6 +1031,111 @@ fn binding_stream_id(object: &Map<String, Value>) -> Option<String> {
         }
     }
     None
+}
+
+/// The archive digest and projection kind one `trace_v5` descriptor names.
+///
+/// `projection` is the key a chart panel writes; `schema` is the key the trace
+/// pane stamps when it creates the inspector visual. Both name the same thing —
+/// which consumer projection to derive — so both are read here rather than one
+/// being privileged and the other silently defaulted. The strip mirrors
+/// `data.rs::projection_consumer_kind`, which does the same in the other
+/// direction for the cache key.
+fn trace_binding_request(object: &Map<String, Value>) -> Option<TraceRequest> {
+    let source = object
+        .get("source")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())?;
+    let kind = object
+        .get("projection")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            object
+                .get("schema")
+                .and_then(Value::as_str)
+                .and_then(|schema| schema.strip_prefix("synth.trace-projection."))
+                .and_then(|rest| rest.strip_suffix(".v1"))
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| super::registry::CHART_DEFAULT_PROJECTION.to_string());
+    Some((source.to_string(), kind))
+}
+
+/// Every distinct Trace V5 projection a bindings tree asks for.
+///
+/// Two descriptors naming the same archive and the same projection resolve
+/// once; two naming different projections of one archive resolve twice, which
+/// is what the key being a pair buys.
+fn trace_binding_requests(bindings: &Value) -> Vec<TraceRequest> {
+    fn walk(value: &Value, out: &mut Vec<TraceRequest>) {
+        match value {
+            Value::Object(object) => {
+                if object.get("kind").and_then(Value::as_str) == Some("trace_v5") {
+                    if let Some(request) = trace_binding_request(object) {
+                        if !out.contains(&request) {
+                            out.push(request);
+                        }
+                    }
+                }
+                for child in object.values() {
+                    walk(child, out);
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    walk(child, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(bindings, &mut out);
+    out
+}
+
+/// Freeze one `trace_v5` binding into the projection it names.
+///
+/// The defect this closes is the live-eval one in the other major visual
+/// class. A `trace.rollout_inspector.v1` seal carried `{kind: "trace_v5",
+/// source: <digest>}` verbatim: a pointer into a content-addressed store the
+/// reader does not have. The bundle was reproducible only on the machine that
+/// wrote it, and the frozen viewer — having nothing to render — printed the
+/// bindings into a `<pre>`.
+///
+/// There is deliberately no caller-supplied rung here, unlike the live ladder.
+/// `visuals_ipc` already refuses an MCP caller's projection bytes outright and
+/// re-resolves from the local inventory; a seal that accepted them would
+/// reopen that door in the one place whose whole product is a receipt. The
+/// single rung is the trusted local Trace V5 inventory, which requires nothing
+/// of any caller — the property the live ladder was rebuilt around.
+fn resolve_trace_evidence<'a>(
+    object: &Map<String, Value>,
+    evidence: &'a SealEvidence<'_>,
+) -> Result<&'a ResolvedTraceEvidence> {
+    let input = super::descriptor_input_name(&Value::Object(object.clone()))
+        .unwrap_or_else(|_| "projection".to_string());
+    let Some(request) = trace_binding_request(object) else {
+        bail!(
+            "trace input \"{input}\" is bound as trace_v5 but names no `source`, so the seal has \
+             no sealed archive to derive its projection from. Bind the Trace V5 digest with \
+             visual_bind_data_source before sealing."
+        );
+    };
+    evidence.traces.get(&request).ok_or_else(|| {
+        anyhow!(
+            "trace input \"{input}\" names Trace V5 archive {} but the seal found no replayable \
+             evidence for it: this host holds no trusted, self-contained bundle for that digest, \
+             so the {} projection cannot be derived. Import the sealed Trace V5 bundle on this \
+             machine before sealing visual {} revision {}.",
+            request.0,
+            request.1,
+            evidence.visual_id,
+            evidence.revision,
+        )
+    })
 }
 
 /// Find replayable evidence for one `live_sse` binding, or say what is missing.
@@ -1116,6 +1315,58 @@ fn freeze_bindings(mut value: Value, evidence: &SealEvidence<'_>) -> Result<(Val
                         views.push(Value::Object(view));
                     }
                 }
+                if object.get("kind").and_then(Value::as_str) == Some("trace_v5") {
+                    froze_evidence = true;
+                    let projection_kind = trace_binding_request(object)
+                        .map(|request| request.1)
+                        .unwrap_or_default();
+                    let resolved = resolve_trace_evidence(object, evidence)?;
+                    // A projection that does not say what it is would be
+                    // frozen, sealed, and then silently unrenderable: the
+                    // viewer and `locate_sealed_projections` both key on the
+                    // document's own `schema_version`, and a document without
+                    // one falls through to the `<pre>` this change exists to
+                    // remove. Refusing here is the difference between a seal
+                    // that carries evidence and one that promises it.
+                    let declared = resolved
+                        .payload
+                        .get("schema_version")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if !declared.starts_with("synth.trace-projection.") {
+                        bail!(
+                            "Trace V5 archive {} resolved a {} projection whose document declares \
+                             schema_version {:?}; a sealed projection must declare its own \
+                             synth.trace-projection.* schema or no reader can render it.",
+                            resolved.trace_digest,
+                            resolved.projection_schema,
+                            declared,
+                        );
+                    }
+                    object.insert("kind".into(), Value::String("inline".into()));
+                    object.insert("data".into(), resolved.payload.clone());
+                    // The archive digest moves into `evidence` rather than
+                    // staying in `source`: a frozen binding whose `source`
+                    // still named a CAS entry is exactly the pointer this
+                    // change removes, and a reader must not be able to mistake
+                    // one for a thing they can fetch.
+                    object.remove("source");
+                    object.remove("projection");
+                    object.insert(
+                        "evidence".into(),
+                        json!({
+                            "origin": "trace_inventory",
+                            "trace_digest": resolved.trace_digest,
+                            "projection_kind": projection_kind,
+                            "projection_schema": resolved.projection_schema,
+                            "payload_digest": resolved.payload_digest,
+                        }),
+                    );
+                    // No view is pushed. The projection now *is* the binding's
+                    // document, so `locate_sealed_projections` names it by
+                    // pointer — one mechanism, and a bundle that does not carry
+                    // a megabyte-scale projection twice.
+                }
                 // Frozen evidence is producer data, not a binding tree. An
                 // envelope whose payload happens to describe a `live_sse`
                 // binding — an eval streaming a visual's own configuration —
@@ -1149,6 +1400,23 @@ fn freeze_bindings(mut value: Value, evidence: &SealEvidence<'_>) -> Result<(Val
     Ok((value, views))
 }
 
+/// Whether this descriptor is one the seal froze producer evidence into.
+///
+/// One predicate, because three passes over the frozen bindings — the
+/// limitations report, the projection locator and the redaction scan — all have
+/// to tell the host's own binding *metadata* from the producer bytes underneath
+/// it, and three spellings of that test would drift into three different
+/// answers about the same document.
+///
+/// A descriptor snapshot supplied inline by a caller is deliberately *not*
+/// this: it writes no `evidence` block (so that seals of that shape keep their
+/// digests), and it is author-supplied rather than host-observed, so it stays
+/// under the stricter reading everywhere.
+fn frozen_evidence_descriptor(object: &Map<String, Value>) -> bool {
+    object.get("kind").and_then(Value::as_str) == Some("inline")
+        && object.get("evidence").is_some_and(Value::is_object)
+}
+
 /// Projection documents a template's own resolver already placed in the
 /// bindings, named by JSON Pointer rather than copied.
 ///
@@ -1158,23 +1426,45 @@ fn freeze_bindings(mut value: Value, evidence: &SealEvidence<'_>) -> Result<(Val
 /// 3 removes. Naming its location at seal time moves that knowledge into the
 /// sealed document, where it is pinned, and costs a pointer rather than a
 /// second copy of a projection that can run to megabytes.
+///
+/// A frozen evidence document is a candidate, never a haystack. A `trace_v5`
+/// binding's frozen `data` *is* the projection, so it is checked; a live
+/// stream's frozen `data` is a hundred thousand producer envelopes, and one of
+/// them may legitimately quote a `synth.trace-projection.*` document — an
+/// optimizer event carrying a proposer's trace does exactly that. Searching
+/// inside producer bytes would name that envelope as the seal's own view and
+/// point the rollout inspector at it.
 fn locate_sealed_projections(bindings: &Value) -> Vec<Value> {
     fn escape(key: &str) -> String {
         key.replace('~', "~0").replace('/', "~1")
     }
+    fn projection_schema(value: &Value) -> Option<&str> {
+        value
+            .get("schema_version")
+            .and_then(Value::as_str)
+            .filter(|schema| schema.starts_with("synth.trace-projection."))
+    }
     fn walk(value: &Value, pointer: &str, out: &mut Vec<Value>) {
         match value {
             Value::Object(object) => {
-                if let Some(schema) = object.get("schema_version").and_then(Value::as_str) {
-                    if schema.starts_with("synth.trace-projection.") {
-                        out.push(json!({
-                            "schema_version": schema,
-                            "ref": format!("/bindings{pointer}"),
-                        }));
-                        return;
-                    }
+                if let Some(schema) = projection_schema(value) {
+                    out.push(json!({
+                        "schema_version": schema,
+                        "ref": format!("/bindings{pointer}"),
+                    }));
+                    return;
                 }
+                let frozen = frozen_evidence_descriptor(object);
                 for (key, child) in object {
+                    if frozen && key.as_str() == "data" {
+                        if let Some(schema) = projection_schema(child) {
+                            out.push(json!({
+                                "schema_version": schema,
+                                "ref": format!("/bindings{pointer}/data"),
+                            }));
+                        }
+                        continue;
+                    }
                     walk(child, &format!("{pointer}/{}", escape(key)), out);
                 }
             }
@@ -1214,8 +1504,7 @@ fn declared_limitations(value: &Value) -> Vec<String> {
                 // handful of limitations that mean something. Only the
                 // provenance-carrying descriptors this seal writes are
                 // skipped, so no binding shape that existed before is.
-                let frozen_evidence = object.contains_key("evidence")
-                    && object.get("kind").and_then(Value::as_str) == Some("inline");
+                let frozen_evidence = frozen_evidence_descriptor(object);
                 for (key, child) in object {
                     if frozen_evidence && key.as_str() == "data" {
                         continue;
@@ -1236,62 +1525,241 @@ fn declared_limitations(value: &Value) -> Vec<String> {
     out
 }
 
+/// Key fragments that name a secret wherever they appear.
+///
+/// A value filed under one of these is a credential by the writer's own
+/// account, whether the writer was the host or a producer. These stay in force
+/// inside frozen evidence.
+const SECRET_KEY_FRAGMENTS: [&str; 8] = [
+    "api_key",
+    "access_token",
+    "authorization",
+    "credential",
+    "password",
+    "process_env",
+    "refresh_token",
+    "secret",
+];
+
+/// Key fragments that name the *host's own configuration*.
+///
+/// This is the list the policy was written for: a sealed bundle must not carry
+/// the machine's provider endpoints, bucket names or environment. In producer
+/// evidence the same words are data — a Craftax rollout's `environment_ref`
+/// names a gym, not this laptop's env; an eval's `chain_of_thought` is the
+/// thing the run was recording — so they are enforced on binding metadata and
+/// not on the bytes the seal exists to preserve.
+const HOST_CONFIG_KEY_FRAGMENTS: [&str; 6] = [
+    "chain_of_thought",
+    "environment",
+    "hidden_reasoning",
+    "object_key",
+    "provider_url",
+    "storage_uri",
+];
+
+/// A credential *by shape*, wherever it appears.
+///
+/// Key names do not survive the trip into producer evidence, but the bytes of a
+/// real key do: they have recognisable, high-entropy forms. This is what keeps
+/// "producer evidence is data" from meaning "producer evidence is unscanned" —
+/// a run that leaked an access key into a log still refuses to seal.
+///
+/// Every pattern requires the marker to start a word and to be followed by an
+/// opaque run of the length that key format actually has. Prose that merely
+/// mentions a scheme does not trip it, and neither does a base64 payload that
+/// happens to contain the four letters `AKIA` somewhere in the middle — a
+/// false refusal on a megabyte of honest evidence is the same defect as the
+/// one this scope change is fixing.
+fn credential_literal(text: &str) -> Option<&'static str> {
+    fn is_token_byte(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+    }
+    fn token_run(text: &str, from: usize) -> usize {
+        text[from..]
+            .bytes()
+            .take_while(|&b| is_token_byte(b))
+            .count()
+    }
+    fn starts_a_word(text: &str, at: usize) -> bool {
+        at == 0 || !is_token_byte(text.as_bytes()[at - 1])
+    }
+    // Names of the variables themselves, which is how a dumped environment
+    // reaches a payload.
+    for name in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"] {
+        if text.contains(name) {
+            return Some(name);
+        }
+    }
+    if text.contains("-----BEGIN") && text.contains("PRIVATE KEY-----") {
+        return Some("private key block");
+    }
+    // (marker, the opaque run that must follow it, label). AWS ids are exactly
+    // twenty characters, so their run is pinned rather than bounded below; the
+    // longer markers are distinctive enough on their own.
+    for (marker, run, label) in [
+        ("AKIA", 16..=16, "AWS access key id"),
+        ("ASIA", 16..=16, "AWS session key id"),
+        ("sk-ant-", 24..=usize::MAX, "Anthropic API key"),
+        ("sk-proj-", 24..=usize::MAX, "OpenAI project key"),
+        ("ghp_", 20..=usize::MAX, "GitHub token"),
+        ("gho_", 20..=usize::MAX, "GitHub token"),
+        ("ghu_", 20..=usize::MAX, "GitHub token"),
+        ("ghs_", 20..=usize::MAX, "GitHub token"),
+        ("github_pat_", 20..=usize::MAX, "GitHub token"),
+        ("xoxb-", 20..=usize::MAX, "Slack token"),
+        ("xoxp-", 20..=usize::MAX, "Slack token"),
+        ("xapp-", 20..=usize::MAX, "Slack token"),
+        ("AIza", 30..=usize::MAX, "Google API key"),
+    ] {
+        let mut cursor = 0;
+        while let Some(offset) = text[cursor..].find(marker) {
+            let at = cursor + offset;
+            let start = at + marker.len();
+            if starts_a_word(text, at) && run.contains(&token_run(text, start)) {
+                return Some(label);
+            }
+            cursor = start;
+        }
+    }
+    // `Bearer` followed by an opaque run is a live token, not a description of
+    // one; `Bearer <token>` and `Bearer …` are not. The length guard is here
+    // because this is the one pattern that has to fold case, and folding every
+    // envelope body in a hundred-thousand-envelope seal to find a header that
+    // cannot fit is the kind of cost that turns a scan into a timeout.
+    if text.len() < "bearer ".len() + 24 {
+        return None;
+    }
+    let lowered = text.to_ascii_lowercase();
+    let mut cursor = 0;
+    while let Some(offset) = lowered[cursor..].find("bearer ") {
+        let start = cursor + offset + "bearer ".len();
+        if token_run(text, start) >= 24 {
+            return Some("bearer token");
+        }
+        cursor = start;
+    }
+    None
+}
+
+/// Refuse to seal a document that carries the host's configuration or anyone's
+/// credential.
+///
+/// Two scopes, because the document has two kinds of content in it. Binding
+/// *metadata* is written by this host and gets the full policy. Frozen producer
+/// evidence — the envelopes a run emitted, the projection a sealed trace
+/// declares — is the payload the seal exists to preserve verbatim, and is
+/// rendered as text rather than executed, so it is scanned for credentials by
+/// name and by shape but not for words that only mean something about a host.
+///
+/// Before commit b7926f5c this distinction did not have to exist: sealing a
+/// live visual always failed, so no producer evidence ever reached the scan.
+/// Once evidence did reach it, a Craftax payload with an `environment_ref` key
+/// refused an honest run, which is a fail-closed policy failing the wrong way.
 fn scan_forbidden(value: &Value, path: &str) -> Result<()> {
+    scan_document(value, path, false)
+}
+
+fn scan_document(value: &Value, path: &str, evidence: bool) -> Result<()> {
     match value {
         Value::Object(object) => {
+            let frozen = !evidence && frozen_evidence_descriptor(object);
             for (key, child) in object {
                 let normalized = key.to_ascii_lowercase().replace('-', "_");
-                if [
-                    "api_key",
-                    "access_token",
-                    "authorization",
-                    "chain_of_thought",
-                    "credential",
-                    "environment",
-                    "hidden_reasoning",
-                    "password",
-                    "process_env",
-                    "provider_url",
-                    "refresh_token",
-                    "secret",
-                    "storage_uri",
-                    "object_key",
-                ]
-                .iter()
-                .any(|needle| normalized.contains(needle))
+                if SECRET_KEY_FRAGMENTS
+                    .iter()
+                    .any(|needle| normalized.contains(needle))
                 {
                     bail!("seal policy forbids {path}.{key}");
                 }
-                scan_forbidden(child, &format!("{path}.{key}"))?;
+                if !evidence
+                    && HOST_CONFIG_KEY_FRAGMENTS
+                        .iter()
+                        .any(|needle| normalized.contains(needle))
+                {
+                    bail!("seal policy forbids host configuration at {path}.{key}");
+                }
+                let child_is_evidence = evidence || (frozen && key.as_str() == "data");
+                scan_document(child, &format!("{path}.{key}"), child_is_evidence)?;
             }
         }
         Value::Array(items) => {
             for (index, child) in items.iter().enumerate() {
-                scan_forbidden(child, &format!("{path}[{index}]"))?;
+                scan_document(child, &format!("{path}[{index}]"), evidence)?;
             }
         }
-        Value::String(text)
-            if text.contains("s3://")
-                || text.contains("gs://")
-                || text.contains("AWS_ACCESS_KEY_ID")
-                || text.contains("AWS_SECRET_ACCESS_KEY") =>
-        {
-            bail!("seal policy forbids storage or credential locator at {path}")
+        Value::String(text) => {
+            if let Some(label) = credential_literal(text) {
+                bail!("seal policy forbids a {label} at {path}");
+            }
+            // A storage locator is the host naming a bucket it can reach. A
+            // producer quoting `s3://dataset/...` in a message is describing
+            // where its data came from, which is evidence.
+            if !evidence && (text.contains("s3://") || text.contains("gs://")) {
+                bail!("seal policy forbids storage or credential locator at {path}");
+            }
         }
         _ => {}
     }
     Ok(())
 }
 
+/// The opening tag of the sealed page's data island, shared by the writer and
+/// the reader so the two cannot drift into disagreeing about where it starts.
+const DATA_ISLAND_OPEN: &str = r#"<script id="synth-artifact-data" type="application/json">"#;
+const SCRIPT_CLOSE: &str = "</script>";
+/// What actually ends a script element for the HTML tokenizer: the `>` may be
+/// any of `>`, `/`, or whitespace, so the prefix is the honest boundary.
+const SCRIPT_CLOSE_PREFIX: &str = "</script";
+
 fn build_index_html(data: &Value, runtime_digest: &str) -> Result<String> {
-    let inline = serde_json::to_string(data)?.replace("</script", "<\\/script");
+    // Every `<`, not just `</script`. In JSON a `<` can only occur inside a
+    // string and `<` parses back to exactly the same string, so this is
+    // free; what it buys is that the island cannot open a tag, close its own
+    // element, or start a comment. The previous escape was case-sensitive
+    // while HTML's end-tag matching is not, so a producer message containing
+    // `</SCRIPT>` closed the island and injected markup into the page — a
+    // theoretical hole while nothing producer-written reached the island, and
+    // a reachable one now that frozen evidence does.
+    let inline = serde_json::to_string(data)?.replace('<', "\\u003c");
     let css = INSPECTOR_CSS.replace("</style", "<\\/style");
     Ok(format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; frame-src 'none';"><title>Sealed Workshop visual</title><style>html{{font:14px system-ui;color:#20232a;background:#f7f7f5}}body{{margin:0}}#app{{max-width:1100px;margin:auto;padding:32px}}.kicker{{color:#6b7280}}h1{{font-size:30px}}.visual{{background:white;border:1px solid #ddd;border-radius:14px;padding:20px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}{css}</style></head><body><main id="app"></main><script id="synth-artifact-data" type="application/json">{inline}</script><script data-runtime-digest="{runtime_digest}">{FROZEN_RUNTIME}</script></body></html>"#
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; frame-src 'none';"><title>Sealed Workshop visual</title><style>html{{font:14px system-ui;color:#20232a;background:#f7f7f5}}body{{margin:0}}#app{{max-width:1100px;margin:auto;padding:32px}}.kicker{{color:#6b7280}}h1{{font-size:30px}}.visual{{background:white;border:1px solid #ddd;border-radius:14px;padding:20px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}{css}</style></head><body><main id="app"></main>{DATA_ISLAND_OPEN}{inline}{SCRIPT_CLOSE}<script data-runtime-digest="{runtime_digest}">{FROZEN_RUNTIME}</script></body></html>"#
     ))
 }
 
+/// Refuse a sealed page that could make a network request.
+///
+/// The page has two parts and only one of them runs. The `application/json`
+/// island is parsed as data and rendered through `textContent` and an escaping
+/// serialiser; the rest — the runtime script, the stylesheet, the markup — is
+/// what a browser executes and fetches from. Scanning the island for `fetch(`
+/// was scanning the evidence, and it refused a seal because a model had written
+/// `fetch(` in a message.
+///
+/// So the token scan runs over the executable remainder, and the island is held
+/// to a stronger rule instead: it must be unable to leave itself. It cannot
+/// close its own element or open an HTML comment, which is the whole of what
+/// makes it data. The page's Content-Security-Policy (`default-src 'none';
+/// connect-src 'none'`) is the enforcement underneath both.
 fn refuse_network_html(html: &str) -> Result<()> {
+    let (executable, island) = split_data_island(html)?;
+    if let Some(island) = island {
+        // The island runs to the *first* end tag a browser would honour, so
+        // this parse is the whole guarantee: if anything inside the data could
+        // close the element early, what remains is a truncated document and
+        // does not parse. A token list cannot make that promise; JSON can.
+        serde_json::from_str::<Value>(island).map_err(|error| {
+            anyhow!("sealed index.html data island is not a single JSON document: {error}")
+        })?;
+        // `<!--` followed by `<script` puts the tokenizer in the double-escaped
+        // state, where the writer's own end tag no longer ends the element.
+        // ASCII case-insensitive, because HTML tag matching is.
+        let lowered = island.to_ascii_lowercase();
+        if lowered.contains("<!--") || lowered.contains("<script") {
+            bail!("sealed index.html data island can change the parser's state");
+        }
+    }
     for token in [
         "fetch(",
         "XMLHttpRequest",
@@ -1302,11 +1770,35 @@ fn refuse_network_html(html: &str) -> Result<()> {
         "href=\"http",
         "@import",
     ] {
-        if html.contains(token) {
+        if executable.contains(token) {
             bail!("sealed index.html contains forbidden network capability: {token}");
         }
     }
     Ok(())
+}
+
+/// Split a sealed page into what a browser executes and the data it carries.
+///
+/// A page with no island — the frozen runtime on its own, in the ratchet test —
+/// is all executable, which is the conservative reading. An island that never
+/// closes is refused rather than guessed at.
+///
+/// The island ends at the first `</script`, case-insensitively, because that is
+/// where a browser ends it. Cutting anywhere later would scan as data bytes a
+/// browser would already be treating as markup.
+fn split_data_island(html: &str) -> Result<(String, Option<&str>)> {
+    let Some(open) = html.find(DATA_ISLAND_OPEN) else {
+        return Ok((html.to_string(), None));
+    };
+    let body = open + DATA_ISLAND_OPEN.len();
+    let Some(offset) = html[body..].to_ascii_lowercase().find(SCRIPT_CLOSE_PREFIX) else {
+        bail!("sealed index.html data island is never closed");
+    };
+    let end = body + offset;
+    Ok((
+        format!("{}{}", &html[..open], &html[end..]),
+        Some(&html[body..end]),
+    ))
 }
 
 fn validate_hosted_bundle(
@@ -1448,6 +1940,54 @@ mod tests {
         (dir, store, visual_id)
     }
 
+    /// A seal that has no Trace V5 bindings to resolve, which is every visual
+    /// class but the trace inspector and a chart that reads a sealed archive.
+    fn seal_evidence<'a>(
+        visual_id: &'a str,
+        revision: i64,
+        content: &'a ContentStore,
+    ) -> SealEvidence<'a> {
+        SealEvidence {
+            visual_id,
+            revision,
+            content,
+            traces: BTreeMap::new(),
+        }
+    }
+
+    /// The `rollout-inspector` projection of one sealed archive, as
+    /// `DataStore::resolve_trace_projection` hands it back.
+    fn trace_evidence(
+        digest: &str,
+        payload: Value,
+    ) -> BTreeMap<TraceRequest, ResolvedTraceEvidence> {
+        let mut traces = BTreeMap::new();
+        traces.insert(
+            (digest.to_string(), "rollout-inspector".to_string()),
+            ResolvedTraceEvidence {
+                payload,
+                trace_digest: digest.to_string(),
+                projection_schema: "synth.trace-projection.rollout-inspector.v1".into(),
+                payload_digest: "sha256:beef".into(),
+            },
+        );
+        traces
+    }
+
+    /// The bindings `presentation::trace` writes when it opens a sealed
+    /// archive in the inspector.
+    fn trace_bindings(digest: &str) -> Value {
+        json!({
+            "schemaVersion": "synth.visual-bindings.v1",
+            "inputs": [{
+                "input": "projection",
+                "kind": "trace_v5",
+                "source": digest,
+                "schema": "synth.trace-projection.rollout-inspector.v1",
+            }]
+        })
+    }
+
     /// A stream whose last envelope is the verifier that carries the reward.
     fn envelopes(stream: &str, count: i64) -> Vec<Value> {
         (1..=count)
@@ -1478,7 +2018,7 @@ mod tests {
         let (_dir, content, visual_id) = evidence_fixture("descriptor_snapshot");
         let (frozen, views) = freeze_bindings(
             json!({"slots":[{"input":"stream","kind":"live_sse","source":"http://127.0.0.1/events","snapshot":{"reward":null}}]}),
-            &SealEvidence { visual_id: &visual_id, revision: 1, content: &content },
+            &seal_evidence(&visual_id, 1, &content),
         )
         .unwrap();
         assert_eq!(frozen["inputs"][0]["kind"], "inline");
@@ -1508,7 +2048,7 @@ mod tests {
 
         let (frozen, views) = freeze_bindings(
             json!({"inputs":[{"input":"stream","kind":"live_sse","schema":"synth.trace-stream-event.v1","source":source,"poll_url":"http://127.0.0.1:8098/declared/stream_r1"}]}),
-            &SealEvidence { visual_id: &visual_id, revision: 3, content: &content },
+            &seal_evidence(&visual_id, 3, &content),
         )
         .unwrap();
 
@@ -1564,7 +2104,7 @@ mod tests {
                 .unwrap();
         let (frozen, views) = freeze_bindings(
             json!({"inputs":[{"input":"stream","kind":"live_sse","source":"http://127.0.0.1/declared/s1","spool_digest":spool.digest.clone()}]}),
-            &SealEvidence { visual_id: &visual_id, revision: 1, content: &content },
+            &seal_evidence(&visual_id, 1, &content),
         )
         .unwrap();
         let slot = &frozen["inputs"][0];
@@ -1586,7 +2126,7 @@ mod tests {
         let (_dir, content, visual_id) = evidence_fixture("no_evidence");
         let error = freeze_bindings(
             json!({"inputs":[{"input":"stream","kind":"live_sse","source":"http://127.0.0.1/declared/s9"}]}),
-            &SealEvidence { visual_id: &visual_id, revision: 2, content: &content },
+            &seal_evidence(&visual_id, 2, &content),
         )
         .unwrap_err()
         .to_string();
@@ -1611,34 +2151,12 @@ mod tests {
             &envelopes("s1", 2),
         );
         let bindings = json!({"inputs":[{"input":"stream","kind":"live_sse","source":"http://127.0.0.1/declared/a"}]});
-        assert!(freeze_bindings(
-            bindings.clone(),
-            &SealEvidence {
-                visual_id: &visual_id,
-                revision: 2,
-                content: &content
-            }
-        )
-        .is_err());
+        assert!(
+            freeze_bindings(bindings.clone(), &seal_evidence(&visual_id, 2, &content)).is_err()
+        );
         let other = json!({"inputs":[{"input":"stream","kind":"live_sse","source":"http://127.0.0.1/declared/b"}]});
-        assert!(freeze_bindings(
-            other,
-            &SealEvidence {
-                visual_id: &visual_id,
-                revision: 1,
-                content: &content
-            }
-        )
-        .is_err());
-        assert!(freeze_bindings(
-            bindings,
-            &SealEvidence {
-                visual_id: &visual_id,
-                revision: 1,
-                content: &content
-            }
-        )
-        .is_ok());
+        assert!(freeze_bindings(other, &seal_evidence(&visual_id, 1, &content)).is_err());
+        assert!(freeze_bindings(bindings, &seal_evidence(&visual_id, 1, &content)).is_ok());
     }
 
     /// A projection the template's resolver already placed in the bindings is
@@ -1718,6 +2236,284 @@ mod tests {
     fn redaction_and_network_policy_fail_closed() {
         assert!(scan_forbidden(&json!({"api_key":"nope"}), "$").is_err());
         assert!(refuse_network_html("<script>fetch('/x')</script>").is_err());
+    }
+
+    /// The defect, in the other major visual class. A trace inspector's
+    /// bindings were sealed verbatim as `{kind: "trace_v5", source: <digest>}`
+    /// — a pointer into a content store the reader does not have — so the
+    /// bundle was reproducible only on the machine that wrote it and the
+    /// frozen viewer rendered the `<pre>` fallback.
+    #[test]
+    fn a_trace_binding_freezes_the_projection_it_names() {
+        let (_dir, content, visual_id) = evidence_fixture("trace_projection");
+        let digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let payload = json!({
+            "schema_version": "synth.trace-projection.rollout-inspector.v1",
+            "trace_digest": digest,
+            "items": [{"kind": "message.assistant", "detail": {"text": "hello"}}],
+        });
+        let (frozen, views) = freeze_bindings(
+            trace_bindings(digest),
+            &SealEvidence {
+                visual_id: &visual_id,
+                revision: 1,
+                content: &content,
+                traces: trace_evidence(digest, payload.clone()),
+            },
+        )
+        .unwrap();
+
+        let slot = &frozen["inputs"][0];
+        assert_eq!(slot["kind"], "inline");
+        // The pointer is gone: nothing in the sealed binding invites a reader
+        // to resolve a digest against a store they do not have.
+        assert!(slot.get("source").is_none());
+        assert_eq!(slot["data"], payload);
+        assert_eq!(slot["evidence"]["origin"], "trace_inventory");
+        assert_eq!(slot["evidence"]["trace_digest"], digest);
+        assert_eq!(slot["evidence"]["projection_kind"], "rollout-inspector");
+        assert_eq!(
+            slot["evidence"]["projection_schema"],
+            "synth.trace-projection.rollout-inspector.v1"
+        );
+        assert_eq!(slot["evidence"]["payload_digest"], "sha256:beef");
+        // No live view: a trace projection is not folded here, it is named.
+        assert!(views.is_empty());
+
+        // And the seal names it, so the frozen runtime mounts the rollout
+        // inspector on it instead of printing the bindings.
+        let located = locate_sealed_projections(&frozen);
+        assert_eq!(located.len(), 1);
+        assert_eq!(
+            located[0]["schema_version"],
+            "synth.trace-projection.rollout-inspector.v1"
+        );
+        assert_eq!(located[0]["ref"], "/bindings/inputs/0/data");
+        // The projection rides once, by pointer, not copied into the view.
+        assert!(located[0].get("data").is_none());
+    }
+
+    /// A seal either contains replayable evidence or refuses with a reason
+    /// naming what is missing and how to supply it — the same contract the
+    /// live ladder is held to.
+    #[test]
+    fn a_trace_binding_without_a_trusted_archive_names_the_remedy() {
+        let (_dir, content, visual_id) = evidence_fixture("trace_missing");
+        let digest = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+        let error = freeze_bindings(
+            trace_bindings(digest),
+            &seal_evidence(&visual_id, 7, &content),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(digest), "{error}");
+        assert!(error.contains("rollout-inspector"), "{error}");
+        assert!(error.contains(&visual_id), "{error}");
+        assert!(error.contains("revision 7"), "{error}");
+        assert!(
+            error.contains("Import the sealed Trace V5 bundle"),
+            "{error}"
+        );
+    }
+
+    /// A projection that does not declare its own schema would seal, and then
+    /// render as the `<pre>` this change exists to remove. Refusing is the
+    /// difference between carrying evidence and promising it.
+    #[test]
+    fn a_projection_that_names_no_schema_refuses_rather_than_seals_blind() {
+        let (_dir, content, visual_id) = evidence_fixture("trace_unlabelled");
+        let digest = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
+        let error = freeze_bindings(
+            trace_bindings(digest),
+            &SealEvidence {
+                visual_id: &visual_id,
+                revision: 1,
+                content: &content,
+                traces: trace_evidence(digest, json!({"items": []})),
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("must declare its own"), "{error}");
+        assert!(error.contains(digest), "{error}");
+    }
+
+    /// Producer envelopes are not a haystack to search for the seal's own
+    /// views. An optimizer event that carries a proposer's trace projection
+    /// declares `synth.trace-projection.rollout-inspector.v1` inside its
+    /// delta; naming that envelope as a view would point the rollout inspector
+    /// at a log entry.
+    #[test]
+    fn projections_are_not_located_inside_producer_evidence() {
+        let frozen = json!({
+            "inputs": [{
+                "input": "stream",
+                "kind": "inline",
+                "evidence": {"origin": "host_observation"},
+                "data": {"events": [{"payload": {
+                    "schema_version": "synth.trace-projection.rollout-inspector.v1",
+                    "items": []
+                }}]}
+            }]
+        });
+        assert!(locate_sealed_projections(&frozen).is_empty());
+    }
+
+    /// The regression this branch introduced. Failing closed is right; failing
+    /// because a Craftax rollout names an `environment_ref`, or because a model
+    /// wrote `fetch(` in a message, refuses an honest run.
+    #[test]
+    fn producer_evidence_may_name_an_environment_and_quote_a_network_call() {
+        let data = json!({
+            "schema_version": BUNDLE_SCHEMA,
+            "title": "Craftax ten lane",
+            "bindings": {"inputs": [{
+                "input": "stream",
+                "kind": "inline",
+                "evidence": {"origin": "host_observation", "envelope_count": 2},
+                "data": {"events": [
+                    {"kind": "observation", "payload": {
+                        "environment_ref": "craftax/classic-v1",
+                        "environment": {"seed": 7},
+                        "storage_uri": "s3://synth-rollouts/craftax/lane-3.jsonl",
+                        "object_key": "lane-3.jsonl"
+                    }},
+                    {"kind": "message", "payload": {
+                        "text": "I would call fetch('/api/state') here, or new EventSource(url)",
+                        "chain_of_thought": "the agent reasoned about s3:// paths"
+                    }}
+                ]}
+            }]}
+        });
+        scan_forbidden(&data, "$").expect("producer evidence is data, not host configuration");
+        let html = build_index_html(&data, "digest").unwrap();
+        refuse_network_html(&html).expect("a message quoting fetch( is text, not a network call");
+        // And the evidence is still in the page it was sealed into.
+        assert!(html.contains("craftax/classic-v1"));
+    }
+
+    /// The other half: relaxing the scope must not mean scanning nothing. A
+    /// credential does not stop being a credential because a producer wrote it.
+    #[test]
+    fn a_real_credential_in_producer_evidence_still_refuses() {
+        let evidence = |payload: Value| {
+            json!({"bindings": {"inputs": [{
+                "input": "stream",
+                "kind": "inline",
+                "evidence": {"origin": "host_observation"},
+                "data": {"events": [{"payload": payload}]}
+            }]}})
+        };
+        // By shape, under a key that says nothing.
+        assert!(scan_forbidden(
+            &evidence(json!({"text": "exported AKIAIOSFODNN7EXAMPLE to the runner"})),
+            "$"
+        )
+        .is_err());
+        assert!(scan_forbidden(
+            &evidence(
+                json!({"text": "Authorization: Bearer sk_live_51H8xQ2eZvKYlo2CabcdefghijklmnopQ"})
+            ),
+            "$"
+        )
+        .is_err());
+        assert!(scan_forbidden(
+            &evidence(json!({"env": "AWS_SECRET_ACCESS_KEY=wJalrXUtn"})),
+            "$"
+        )
+        .is_err());
+        assert!(scan_forbidden(
+            &evidence(json!({"key": "-----BEGIN RSA PRIVATE KEY-----\nMIIE\n"})),
+            "$"
+        )
+        .is_err());
+        // And by name, wherever it appears: a key that says "secret" is one.
+        assert!(scan_forbidden(&evidence(json!({"api_key": "hunter2"})), "$").is_err());
+        assert!(scan_forbidden(&evidence(json!({"client_secret": "hunter2"})), "$").is_err());
+        // Prose that merely mentions the scheme is not a credential.
+        assert!(scan_forbidden(
+            &evidence(json!({"text": "set AKIA in your profile, then use Bearer <token>"})),
+            "$"
+        )
+        .is_ok());
+    }
+
+    /// Binding metadata is the host describing itself, and keeps the whole
+    /// policy. Only the frozen producer document underneath it is data.
+    #[test]
+    fn host_binding_metadata_still_refuses_its_own_configuration() {
+        for descriptor in [
+            json!({"input": "a", "kind": "inline", "provider_url": "http://127.0.0.1:8098"}),
+            json!({"input": "a", "kind": "inline", "storage_uri": "s3://bucket/key"}),
+            json!({"input": "a", "kind": "inline", "environment": {"HOME": "/Users/x"}}),
+            json!({"input": "a", "kind": "inline", "data": {"note": "s3://bucket/key"}}),
+        ] {
+            let data = json!({"bindings": {"inputs": [descriptor]}});
+            assert!(
+                scan_forbidden(&data, "$").is_err(),
+                "host metadata must keep the full policy: {data}"
+            );
+        }
+    }
+
+    /// The sealed page must stay unable to make a network request, and the
+    /// island must stay data. HTML end-tag matching is case-insensitive; the
+    /// escape that guarded it was not, so a producer message containing
+    /// `</SCRIPT>` closed the island and injected markup into the page.
+    #[test]
+    fn the_data_island_cannot_leave_itself() {
+        let data = json!({
+            "title": "</SCRIPT><img src=\"http://evil/x\" onerror=\"fetch('/y')\">",
+            "bindings": {"note": "<!-- <script>alert(1)</script> -->"}
+        });
+        let html = build_index_html(&data, "digest").unwrap();
+        refuse_network_html(&html).unwrap();
+        let (executable, island) = split_data_island(&html).unwrap();
+        let island = island.unwrap();
+        // Nothing the data carried can be a tag, a comment, or an end tag.
+        assert!(!island.contains('<'), "the island must carry no raw `<`");
+        assert!(!executable.to_ascii_lowercase().contains("<img"));
+        // And the value survives the escape: this is presentation, not
+        // redaction.
+        assert!(island.contains("\\u003c/SCRIPT>"));
+        assert_eq!(
+            serde_json::from_str::<Value>(island).unwrap()["title"],
+            data["title"]
+        );
+
+        // A page whose island really does close itself early is refused: what
+        // a browser would read as data stops being a JSON document, and that
+        // is what makes the relaxed token scan safe rather than merely quiet.
+        let forged = format!(
+            "{DATA_ISLAND_OPEN}{{\"t\":\"</SCRIPT><img src=\\\"http://evil\\\">\"}}{SCRIPT_CLOSE}"
+        );
+        let error = refuse_network_html(&forged).unwrap_err().to_string();
+        assert!(error.contains("not a single JSON document"), "{error}");
+        // As is a page whose island puts the tokenizer somewhere the writer's
+        // own end tag no longer ends the element.
+        let escaped = format!("{DATA_ISLAND_OPEN}{{\"t\":\"<!-- <script\"}}{SCRIPT_CLOSE}");
+        assert!(refuse_network_html(&escaped).is_err());
+        // And an island that never closes at all.
+        assert!(refuse_network_html(&format!("{DATA_ISLAND_OPEN}{{}}")).is_err());
+    }
+
+    /// The executable half of the page keeps the whole scan: the relaxation is
+    /// about where the tokens are looked for, not about dropping them.
+    #[test]
+    fn the_executable_page_still_refuses_a_network_capability() {
+        let island = format!("{DATA_ISLAND_OPEN}{{\"a\":1}}{SCRIPT_CLOSE}");
+        assert!(refuse_network_html(&format!("<html>{island}</html>")).is_ok());
+        for injected in [
+            "<script>fetch('/x')</script>",
+            "<link href=\"http://cdn/x.css\">",
+            "<style>@import url(x)</style>",
+            "<script>new EventSource('/e')</script>",
+        ] {
+            assert!(
+                refuse_network_html(&format!("<html>{island}{injected}</html>")).is_err(),
+                "{injected}"
+            );
+        }
     }
 
     /// A seal over a user template must carry the code, not a pointer to it.
@@ -1857,6 +2653,62 @@ mod tests {
         // and no resident projection has nothing new to say, so its
         // `data_digest` is the bytes it had before item 3 existed.
         assert!(bundle.data.get("projection").is_none());
+    }
+
+    /// The trace path through the public seal, not just through the freeze: a
+    /// visual whose binding names an archive this host does not hold refuses,
+    /// and the refusal says which archive and what to do about it.
+    ///
+    /// The other half — the same visual sealing once the archive is present —
+    /// needs a trusted, self-contained Trace V5 bundle and the `synth-trace`
+    /// CLI to derive a projection from, so it lives in the integration suite
+    /// rather than here.
+    #[tokio::test]
+    async fn sealing_a_trace_visual_without_its_archive_refuses_by_name() {
+        let _isolated = crate::instance::IsolatedDataRoot::new("visual-seal-trace-missing");
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let registry = VisualRegistry::new(
+            storage.database().clone(),
+            EventJournal::new(storage.database().clone()),
+            ContentStore::new(storage.content_root()),
+        );
+        let Some(template) = registry
+            .list_templates(None)
+            .unwrap()
+            .into_iter()
+            .find(|row| !crate::visuals::requires_canonical_source(&row.id))
+        else {
+            return;
+        };
+        let digest = "sha256:4444444444444444444444444444444444444444444444444444444444444444";
+        let (created, _) = registry
+            .create(VisualCreateRequest {
+                template_id: template.id,
+                title: Some("Rollout inspector".into()),
+                bindings: Some(trace_bindings(digest)),
+                id: Some("vis_seal_trace_missing".into()),
+                status: Some(VisualStatus::Saved),
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: Some("test".into()),
+                source_model: None,
+                content: None,
+                metadata: Some(json!({"qualityGate":{"ready":true,"revision":1}})),
+            })
+            .await
+            .unwrap();
+        let error = registry.seal(created.id, 1).await.unwrap_err().to_string();
+        assert!(error.contains(digest), "{error}");
+        assert!(error.contains("rollout-inspector"), "{error}");
+        assert!(
+            error.contains("Import the sealed Trace V5 bundle"),
+            "{error}"
+        );
     }
 
     /// End to end: a visual bound to a live eval stream seals, and the sealed
