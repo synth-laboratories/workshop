@@ -185,7 +185,11 @@ test("V5: actual Craftax viewer sustains 10 lanes and 100k envelopes with bounde
     await expect(viewer).toBeVisible();
     await viewer.getByRole("button", { name: "Replay", exact: true }).click();
     await expect(viewer.getByRole("navigation", { name: "Rollout lanes" }).getByRole("button")).toHaveCount(LANE_COUNT, { timeout: 180_000 });
-    await expect(viewer).toContainText("recorded and visible", { timeout: 180_000 });
+    // bbd9ae8d split the single terminal label: "sealed · accepted" is claimed
+    // only when the evidence was actually accepted, and a terminal viewer
+    // without that evidence says "terminal trace". This fixture seals nothing,
+    // so asserting the old combined string would be asserting an over-claim.
+    await expect(viewer).toContainText("terminal trace", { timeout: 180_000 });
 
     await viewer.getByRole("button", { name: "Raw trace", exact: true }).click();
     const traceMode = viewer.getByRole("button", { name: "Full trace" });
