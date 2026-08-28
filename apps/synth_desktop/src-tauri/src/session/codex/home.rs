@@ -498,6 +498,12 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         secrets_skill.join("SKILL.md"),
         include_str!("../../../../skills/use-synth-secrets/SKILL.md"),
     )?;
+    let banking77_skill = home.join("skills/run-banking77-gepa");
+    fs::create_dir_all(&banking77_skill)?;
+    fs::write(
+        banking77_skill.join("SKILL.md"),
+        include_str!("../../../../skills/run-banking77-gepa/SKILL.md"),
+    )?;
     // Apply the durable Context settings after bundled materialization. This
     // keeps the existing reference-file setup intact while making disabled
     // skills and edited SKILL.md copies authoritative for new sessions.
@@ -512,6 +518,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         "use-synth-session",
         "use-synth-secrets",
         "run-live-container-evals",
+        "run-banking77-gepa",
     ] {
         let directory = home.join("skills").join(id);
         if !crate::context::skill_enabled(id) {

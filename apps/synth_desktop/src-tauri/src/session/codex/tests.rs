@@ -2095,9 +2095,17 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
     assert!(secrets_skill.contains("request_env_import"));
     assert!(secrets_skill.contains("Codex sandbox cannot deny those reads"));
     assert!(!secrets_skill.contains("secrets_create"));
+    let banking77_skill =
+        fs::read_to_string(home.join("skills/run-banking77-gepa/SKILL.md")).unwrap();
+    assert_eq!(
+        banking77_skill,
+        fs::read_to_string(home.join("skills/.system/run-banking77-gepa/SKILL.md")).unwrap()
+    );
+    assert!(banking77_skill.contains("Submit exactly one final five-seed GEPA campaign"));
     let agents = fs::read_to_string(home.join("AGENTS.md")).unwrap();
     assert!(agents.contains(".env"));
     assert!(agents.contains("no read-denylist field"));
+    assert!(agents.contains("$run-banking77-gepa"));
     let generated = fs::read_to_string(home.join("config.toml")).unwrap();
     assert!(generated.contains("no sandbox read-denylist"));
     assert!(!generated.contains("read_deny"));
