@@ -28,6 +28,10 @@ fn strip_frame_body(container: &mut Map<String, Value>) {
         frame.remove("data_url");
         frame.remove("dataUrl");
     }
+    if let Some(payload) = container.get_mut("payload").and_then(Value::as_object_mut) {
+        payload.remove("data_url");
+        payload.remove("dataUrl");
+    }
 }
 
 fn mutable_container_event(
@@ -526,11 +530,19 @@ mod tests {
             framed(2, 91002, &format!("{prefix}other")),
             framed(3, 91001, &format!("{prefix}latest")),
         ];
+        page[0].delta.insert(
+            "containerEvent".into(),
+            json!({"kind": "frame", "payload": {
+                "data_url": format!("{prefix}direct"),
+                "width": 768, "media": {"casDigest": "a".repeat(64)}
+            }}),
+        );
         strip_frame_bodies_for_ipc(&mut page);
         assert!(serde_json::to_string(&page[0]).unwrap().contains("width"));
         assert!(page
             .iter()
             .all(|event| !serde_json::to_string(event).unwrap().contains(prefix)));
         assert!(page.iter().all(|event| event.item.is_none()));
+        assert!(serde_json::to_string(&page[0]).unwrap().contains("casDigest"));
     }
 }

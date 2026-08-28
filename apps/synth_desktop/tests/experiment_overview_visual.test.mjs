@@ -150,3 +150,54 @@ test("experiment overview does not offer a dead inspector action for lite seals"
 	assert.match(html, /Unavailable/);
 	assert.doesNotMatch(html, /data-reference-value="rollout_1"/);
 });
+
+test("RuneBench clip renders CAS frames, synchronized actions, health, terminal controls, and exports", () => {
+	const digest = "a".repeat(64);
+	const events = [
+		{ sequenceNumber: 1, type: "eval.trial.event", delta: { trial_id: "trial-a", containerEvent: {
+			kind: "frame", rollout_id: "rollout-a", payload: {
+				frame_index: 0, elapsed_ms: 1000, sha256: `sha256:${digest}`,
+				media: { casDigest: digest, mediaType: "image/png", width: 400, height: 300 },
+				stream_health: { frames_captured: 1, frames_dropped: 0, bytes_captured: 2048, average_capture_latency_ms: 42, source_interval_ms: 1000 }
+			}
+		} } },
+		{ sequenceNumber: 2, type: "eval.trial.event", delta: { trial_id: "trial-a", containerEvent: {
+			kind: "agent.action", rollout_id: "rollout-a", payload: { elapsed_ms: 900, frame_index: 0, tool: "execute_code", status: "completed", arguments_preview: "await bot.chopTree()" }
+		} } },
+		{ sequenceNumber: 3, type: "eval.trial.event", delta: { trial_id: "trial-a", containerEvent: {
+			kind: "trial.completed", rollout_id: "rollout-a", payload: { clip: { mp4: "http://127.0.0.1:8104/rollouts/rollout-a/clip.mp4" } }
+		} } }
+	];
+	const html = renderToStaticMarkup(createElement(Shell, {
+		experiment: { title: "RuneBench", status: "completed" },
+		run: { status: "completed" }, events
+	}));
+	assert.match(html, /Game client clip/);
+	assert.match(html, /Loading retained frame/);
+	assert.match(html, /Jump to latest/);
+	assert.match(html, /Playback speed/);
+	assert.match(html, /Previous frame/);
+	assert.match(html, /Synchronized actions/);
+	assert.match(html, /execute_code/);
+	assert.match(html, /42 ms/);
+	assert.match(html, /2\.0 KiB\/s/);
+	assert.match(html, /Download MP4/);
+	assert.match(html, /Export WebM/);
+	assert.match(html, /Keyboard:/);
+});
+
+test("RuneBench running clip exposes the fragmented encoded video mode", () => {
+	const digest = "b".repeat(64);
+	const html = renderToStaticMarkup(createElement(Shell, {
+		experiment: { title: "RuneBench live", status: "running" },
+		run: { status: "running" },
+		events: [{ sequenceNumber: 1, type: "eval.trial.event", delta: { trial_id: "trial-a", containerEvent: {
+			kind: "frame", rollout_id: "rollout-a", payload: {
+				frame_index: 0, elapsed_ms: 1000, live_video_url: "http://127.0.0.1:8104/rollouts/rollout-a/live.mp4",
+				media: { casDigest: digest, mediaType: "image/png", width: 400, height: 300 }
+			}
+		} } }]
+	}));
+	assert.match(html, /Encoded live video/);
+	assert.match(html, /Frame timeline/);
+});

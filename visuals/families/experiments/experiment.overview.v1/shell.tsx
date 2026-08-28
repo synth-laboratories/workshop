@@ -1,4 +1,5 @@
 import { VisualChrome } from "../../../chrome/VisualChrome.tsx";
+import { mediaRefFrom, type MediaClient } from "../../../runtime/mediaClient.ts";
 import type { VisualBinding } from "../../../runtime/types.ts";
 import { useEffect, useState, type ReactNode } from "react";
 
@@ -171,11 +172,39 @@ type LiveFrame = {
   sequence: number;
   frameIndex: number;
   elapsedMs: number;
-  dataUrl: string;
+  trialId: string;
+  rolloutId: string;
+  dataUrl?: string;
+  casDigest?: string;
+  liveVideoUrl?: string;
   sha256?: string;
   width?: number;
   height?: number;
+  health?: StreamHealth;
 };
+
+type AgentAction = {
+  sequence: number;
+  trialId: string;
+  rolloutId: string;
+  elapsedMs: number;
+  frameIndex?: number;
+  kind: "action" | "message";
+  label: string;
+  detail?: string;
+  status?: string;
+};
+
+type StreamHealth = {
+  framesCaptured?: number;
+  framesDropped?: number;
+  bytesCaptured?: number;
+  lastCaptureLatencyMs?: number;
+  averageCaptureLatencyMs?: number;
+  sourceIntervalMs?: number;
+};
+
+type ClipLinks = { mp4?: string; webm?: string };
 
 export type ShellProps = {
   title?: string;
@@ -185,6 +214,7 @@ export type ShellProps = {
   bindings?: VisualBinding[];
   events?: OptimizerEvent[];
   run?: { status?: string };
+  media?: MediaClient;
 };
 
 const MISSING = "—";
@@ -451,20 +481,77 @@ function liveFrames(events: OptimizerEvent[] | undefined): LiveFrame[] {
     if (!["frame", "game.frame"].includes(text(container?.kind ?? container?.event) ?? "")) return [];
     const payload = record(container?.payload) ?? container;
     const dataUrl = text(payload?.data_url ?? payload?.dataUrl);
-    if (!dataUrl?.startsWith("data:image/")) return [];
+    const media = mediaRefFrom(payload);
+    if (!dataUrl?.startsWith("data:image/") && !media) return [];
+    const health = normalizeStreamHealth(payload?.stream_health ?? payload?.streamHealth);
     return [{
       sequence: finiteNumber(event.sequenceNumber) ?? 0,
       frameIndex: finiteNumber(payload?.frame_index ?? payload?.frameIndex) ?? 0,
       elapsedMs: finiteNumber(payload?.elapsed_ms ?? payload?.elapsedMs) ?? 0,
-      dataUrl,
+      trialId: text(event.delta?.trial_id ?? event.delta?.trialId) ?? "trial",
+      rolloutId: text(container?.rollout_id ?? container?.rolloutId) ?? "rollout",
+      dataUrl: dataUrl?.startsWith("data:image/") ? dataUrl : undefined,
+      casDigest: media?.casDigest,
+      liveVideoUrl: text(payload?.live_video_url ?? payload?.liveVideoUrl),
       sha256: text(payload?.sha256),
-      width: finiteNumber(payload?.width),
-      height: finiteNumber(payload?.height)
+      width: media?.width ?? finiteNumber(payload?.width) ?? undefined,
+      height: media?.height ?? finiteNumber(payload?.height) ?? undefined,
+      health
     }];
   });
-  const unique = new Map<number, LiveFrame>();
-  for (const frame of frames) unique.set(frame.frameIndex, frame);
-  return [...unique.values()].sort((a, b) => a.frameIndex - b.frameIndex || a.sequence - b.sequence);
+  const unique = new Map<string, LiveFrame>();
+  for (const frame of frames) unique.set(`${frame.trialId}:${frame.frameIndex}`, frame);
+  return [...unique.values()].sort((a, b) => a.sequence - b.sequence);
+}
+
+function normalizeStreamHealth(value: unknown): StreamHealth | undefined {
+  const raw = record(value);
+  if (!raw) return undefined;
+  return {
+    framesCaptured: finiteNumber(raw.frames_captured ?? raw.framesCaptured),
+    framesDropped: finiteNumber(raw.frames_dropped ?? raw.framesDropped),
+    bytesCaptured: finiteNumber(raw.bytes_captured ?? raw.bytesCaptured),
+    lastCaptureLatencyMs: finiteNumber(raw.last_capture_latency_ms ?? raw.lastCaptureLatencyMs),
+    averageCaptureLatencyMs: finiteNumber(raw.average_capture_latency_ms ?? raw.averageCaptureLatencyMs),
+    sourceIntervalMs: finiteNumber(raw.source_interval_ms ?? raw.sourceIntervalMs)
+  };
+}
+
+function liveAgentActions(events: OptimizerEvent[] | undefined): AgentAction[] {
+  if (!Array.isArray(events)) return [];
+  return events.flatMap((event) => {
+    if (event.type !== "eval.trial.event") return [];
+    const container = record(event.delta?.containerEvent ?? event.delta?.container_event);
+    const eventKind = text(container?.kind ?? container?.event);
+    if (eventKind !== "agent.action" && eventKind !== "agent.message") return [];
+    const payload = record(container?.payload) ?? container;
+    const isAction = eventKind === "agent.action";
+    return [{
+      sequence: finiteNumber(event.sequenceNumber) ?? 0,
+      trialId: text(event.delta?.trial_id ?? event.delta?.trialId) ?? "trial",
+      rolloutId: text(container?.rollout_id ?? container?.rolloutId) ?? "rollout",
+      elapsedMs: finiteNumber(payload?.elapsed_ms ?? payload?.elapsedMs) ?? 0,
+      frameIndex: finiteNumber(payload?.frame_index ?? payload?.frameIndex),
+      kind: isAction ? "action" as const : "message" as const,
+      label: isAction ? text(payload?.tool) ?? text(payload?.action_type) ?? "tool call" : "Agent",
+      detail: isAction ? text(payload?.arguments_preview ?? payload?.argumentsPreview) : text(payload?.text),
+      status: text(payload?.status)
+    }];
+  }).sort((a, b) => a.sequence - b.sequence);
+}
+
+function clipLinks(events: OptimizerEvent[] | undefined): ClipLinks {
+  if (!Array.isArray(events)) return {};
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type !== "eval.trial.event") continue;
+    const container = record(event.delta?.containerEvent ?? event.delta?.container_event);
+    if (!["trial.completed", "trial.failed"].includes(text(container?.kind ?? container?.event) ?? "")) continue;
+    const payload = record(container?.payload) ?? container;
+    const clips = record(payload?.clip);
+    return { mp4: text(clips?.mp4), webm: text(clips?.webm) };
+  }
+  return {};
 }
 
 function durationLabel(milliseconds: number): string {
@@ -512,30 +599,110 @@ function LiveSkillTrajectory({ samples, status }: { samples: SkillSample[]; stat
   </section>;
 }
 
-function LiveGameClip({ frames, status }: { frames: LiveFrame[]; status?: string }) {
+function MediaFrame({ frame, media, alt }: { frame?: LiveFrame; media?: MediaClient; alt: string }) {
+  const [source, setSource] = useState(frame?.dataUrl);
+  useEffect(() => {
+    let cancelled = false;
+    setSource(frame?.dataUrl);
+    if (!frame?.dataUrl && frame?.casDigest && media) {
+      void media.load(frame.casDigest).then((loaded) => {
+        if (!cancelled) setSource(loaded.dataUrl);
+      }).catch(() => {
+        if (!cancelled) setSource(undefined);
+      });
+    }
+    return () => { cancelled = true; };
+  }, [frame?.casDigest, frame?.dataUrl, media]);
+  if (!frame) return <div style={{ minHeight: 180, display: "grid", placeItems: "center", color: "#cbd2dc" }}>No frame for this rollout</div>;
+  if (!source) return <div style={{ minHeight: 180, display: "grid", placeItems: "center", color: "#cbd2dc" }}>Loading retained frame…</div>;
+  return <img src={source} alt={alt} width={frame.width ?? 400} height={frame.height ?? 300} style={{ display: "block", width: "100%", height: "min(52vh, 520px)", objectFit: "contain", imageRendering: "auto" }} />;
+}
+
+async function exportFramesAsWebm(frames: LiveFrame[], media: MediaClient | undefined, fps: number): Promise<void> {
+  const sources = await Promise.all(frames.map(async (frame) => {
+    if (frame.dataUrl) return frame.dataUrl;
+    if (!frame.casDigest || !media) throw new Error("A retained frame cannot be resolved");
+    return (await media.load(frame.casDigest)).dataUrl;
+  }));
+  if (!sources.length) throw new Error("No frames are available to export");
+  const canvas = document.createElement("canvas");
+  canvas.width = frames[0].width ?? 400;
+  canvas.height = frames[0].height ?? 300;
+  const context = canvas.getContext("2d");
+  if (!context || typeof MediaRecorder === "undefined") throw new Error("WebM export is not supported by this runtime");
+  const stream = canvas.captureStream(fps);
+  const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+  const chunks: BlobPart[] = [];
+  recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+  const finished = new Promise<void>((resolve, reject) => {
+    recorder.onstop = () => resolve();
+    recorder.onerror = () => reject(new Error("WebM encoding failed"));
+  });
+  recorder.start();
+  for (const source of sources) {
+    const image = new Image();
+    image.src = source;
+    await image.decode();
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    await new Promise((resolve) => window.setTimeout(resolve, 1000 / fps));
+  }
+  recorder.stop();
+  await finished;
+  stream.getTracks().forEach((track) => track.stop());
+  const url = URL.createObjectURL(new Blob(chunks, { type: "video/webm" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `runebench-${frames[0].rolloutId}.webm`;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function LiveGameClip({ frames, actions, status, media, clips }: { frames: LiveFrame[]; actions: AgentAction[]; status?: string; media?: MediaClient; clips: ClipLinks }) {
   const live = !["completed", "failed", "cancelled", "canceled"].includes(status ?? "running");
-  const [cursor, setCursor] = useState(Math.max(0, frames.length - 1));
+  const trialIds = [...new Set(frames.map((frame) => frame.trialId))];
+  const [selectedTrial, setSelectedTrial] = useState(trialIds[0] ?? "trial");
+  const selectedFrames = frames.filter((frame) => frame.trialId === selectedTrial);
+  const [cursor, setCursor] = useState(Math.max(0, selectedFrames.length - 1));
   const [playing, setPlaying] = useState(true);
-  const [followingLive, setFollowingLive] = useState(true);
-  const lastIndex = Math.max(0, frames.length - 1);
+  const [followingLive, setFollowingLive] = useState(live);
+  const [fps, setFps] = useState(2);
+  const [compare, setCompare] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string>();
+  const [encodedVideo, setEncodedVideo] = useState(false);
+  const lastIndex = Math.max(0, selectedFrames.length - 1);
   useEffect(() => {
     if (followingLive) setCursor(lastIndex);
   }, [followingLive, lastIndex]);
   useEffect(() => {
-    if (!playing || frames.length < 2 || (followingLive && live)) return;
+    if (!playing || selectedFrames.length < 2 || (followingLive && live)) return;
     const timer = window.setInterval(() => {
       setCursor((current) => {
         if (current >= lastIndex) return live ? current : 0;
         return current + 1;
       });
-    }, 500);
+    }, 1000 / fps);
     return () => window.clearInterval(timer);
-  }, [frames.length, lastIndex, live, playing, followingLive]);
+  }, [selectedFrames.length, lastIndex, live, playing, followingLive, fps]);
+  useEffect(() => {
+    const digests = selectedFrames.map((frame) => frame.casDigest).filter((digest): digest is string => Boolean(digest));
+    const selectedDigest = selectedFrames[Math.min(cursor, lastIndex)]?.casDigest;
+    if (media && selectedDigest) void media.warm(digests, Math.max(0, digests.indexOf(selectedDigest)));
+  }, [cursor, lastIndex, media, selectedFrames]);
   if (!frames.length) return null;
-  const frame = frames[Math.min(cursor, lastIndex)] ?? frames[lastIndex];
+  const frame = selectedFrames[Math.min(cursor, lastIndex)] ?? selectedFrames[lastIndex];
+  const secondTrial = trialIds.find((trialId) => trialId !== selectedTrial);
+  const secondFrames = frames.filter((candidate) => candidate.trialId === secondTrial);
+  const secondFrame = secondFrames.reduce<LiveFrame | undefined>((closest, candidate) =>
+    Math.abs(candidate.elapsedMs - frame.elapsedMs) < Math.abs((closest?.elapsedMs ?? Number.MAX_SAFE_INTEGER) - frame.elapsedMs) ? candidate : closest, undefined);
+  const visibleActions = actions.filter((action) => action.trialId === selectedTrial && action.elapsedMs <= frame.elapsedMs).slice(-5);
+  const health = frame.health;
+  const elapsedSeconds = Math.max(1, frame.elapsedMs / 1000);
+  const bandwidth = health?.bytesCaptured == null ? undefined : health.bytesCaptured / elapsedSeconds / 1024;
+  const bufferLoaded = selectedFrames.filter((candidate) => candidate.dataUrl || (candidate.casDigest && media?.peek(candidate.casDigest))).length;
   const jumpToLive = () => {
     setFollowingLive(true);
-    setPlaying(true);
+    setPlaying(live);
     setCursor(lastIndex);
   };
   const scrub = (next: number) => {
@@ -543,21 +710,53 @@ function LiveGameClip({ frames, status }: { frames: LiveFrame[]; status?: string
     setFollowingLive(next === lastIndex);
     if (next !== lastIndex) setPlaying(false);
   };
-  return <section className="sv-section" aria-label="Live RuneBench game clip" data-testid="runebench-live-frame">
+  const move = (delta: number) => {
+    setCursor((current) => Math.max(0, Math.min(lastIndex, current + delta)));
+    setPlaying(false);
+    setFollowingLive(false);
+  };
+  return <section className="sv-section" tabIndex={0} onKeyDown={(event) => {
+    if (event.key === "ArrowLeft") { event.preventDefault(); move(-1); }
+    else if (event.key === "ArrowRight") { event.preventDefault(); move(1); }
+    else if (event.key === " ") { event.preventDefault(); setPlaying((value) => !value); setFollowingLive(false); }
+    else if (event.key === "End") { event.preventDefault(); jumpToLive(); }
+  }} aria-label="Live RuneBench game clip" data-testid="runebench-live-frame">
     <div className="sv-section-head">
       <h3>Game client clip</h3>
-      <span style={{ color: followingLive && live ? "#c2410c" : "#18794e" }}>{followingLive && live ? "● live" : playing ? "▶ replay" : "paused"} · frame {cursor + 1}/{frames.length} · {durationLabel(frame.elapsedMs)}</span>
+      <span style={{ color: followingLive && live ? "#c2410c" : "#18794e" }}>{followingLive && live ? "● live" : playing ? "▶ replay" : "paused"} · frame {cursor + 1}/{selectedFrames.length} · {durationLabel(frame.elapsedMs)}</span>
     </div>
+    {trialIds.length > 1 ? <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+      <label style={{ fontSize: 9 }}>Camera <select aria-label="Rollout camera" value={selectedTrial} onChange={(event) => { setSelectedTrial(event.currentTarget.value); setCursor(0); setFollowingLive(true); }} style={{ marginLeft: 5 }}>{trialIds.map((trialId) => <option key={trialId} value={trialId}>{trialId}</option>)}</select></label>
+      <label style={{ fontSize: 9 }}><input type="checkbox" checked={compare} onChange={(event) => setCompare(event.currentTarget.checked)} /> side-by-side</label>
+    </div> : null}
+    {live && frame.liveVideoUrl ? <div role="group" aria-label="Visual stream mode" style={{ display: "flex", gap: 5, marginBottom: 8 }}><button type="button" aria-pressed={!encodedVideo} onClick={() => setEncodedVideo(false)}>Frame timeline</button><button type="button" aria-pressed={encodedVideo} onClick={() => setEncodedVideo(true)}>Encoded live video</button></div> : null}
+    {encodedVideo && live && frame.liveVideoUrl ? <figure style={{ margin: 0, overflow: "hidden", border: "1px solid var(--sv-border)", borderRadius: 8, background: "#111" }}><video src={frame.liveVideoUrl} controls autoPlay muted playsInline style={{ display: "block", width: "100%", maxHeight: "52vh" }}><track kind="captions" /></video><figcaption style={{ padding: "6px 8px", color: "#cbd2dc", fontSize: 8 }}>Fragmented H.264 MP4 · encoded in the game container · 1 fps</figcaption></figure> : <>
+    <div style={{ display: "grid", gridTemplateColumns: compare && secondFrame ? "1fr 1fr" : "1fr", gap: 8 }}>
     <figure style={{ margin: 0, overflow: "hidden", border: "1px solid var(--sv-border)", borderRadius: 8, background: "#111" }}>
-      <img src={frame.dataUrl} alt={`RuneScape game client at ${durationLabel(frame.elapsedMs)}`} width={frame.width ?? 400} height={frame.height ?? 300} style={{ display: "block", width: "100%", height: "min(52vh, 520px)", objectFit: "contain", imageRendering: "auto" }} />
+      <MediaFrame frame={frame} media={media} alt={`RuneScape game client at ${durationLabel(frame.elapsedMs)}`} />
       <figcaption title={frame.sha256} style={{ padding: "6px 8px", overflow: "hidden", color: "#cbd2dc", fontFamily: "var(--sv-mono)", fontSize: 8, textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{frame.sha256 ?? "frame digest unavailable"}</figcaption>
     </figure>
-    <div style={{ display: "grid", gridTemplateColumns: "auto minmax(120px,1fr) auto", gap: 9, alignItems: "center", marginTop: 9 }}>
-      <button type="button" onClick={() => { setPlaying((value) => !value); setFollowingLive(false); }} aria-label={playing ? "Pause clip" : "Play clip"} style={{ padding: "5px 9px", border: "1px solid var(--sv-border)", borderRadius: 6, background: "#fff", cursor: "pointer", fontSize: 10 }}>{playing ? "Pause" : "Play"}</button>
-      <input type="range" min={0} max={lastIndex} value={Math.min(cursor, lastIndex)} onChange={(event) => scrub(Number(event.currentTarget.value))} aria-label="Rollout frame timeline" style={{ width: "100%", accentColor: "#f05f22" }} />
-      <button type="button" onClick={jumpToLive} disabled={followingLive && cursor === lastIndex} style={{ padding: "5px 9px", border: "1px solid var(--sv-border)", borderRadius: 6, background: followingLive ? "#f4f5f7" : "#fff7ed", color: followingLive ? "var(--sv-text-faint)" : "#c2410c", cursor: followingLive ? "default" : "pointer", fontSize: 10 }}>Jump to live</button>
+    {compare && secondFrame ? <figure style={{ margin: 0, overflow: "hidden", border: "1px solid var(--sv-border)", borderRadius: 8, background: "#111" }}><MediaFrame frame={secondFrame} media={media} alt={`Comparison rollout at ${durationLabel(secondFrame.elapsedMs)}`} /><figcaption style={{ padding: "6px 8px", color: "#cbd2dc", fontSize: 8 }}>{secondTrial} · {durationLabel(secondFrame.elapsedMs)}</figcaption></figure> : null}
     </div>
-    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 5, color: "var(--sv-text-faint)", fontFamily: "var(--sv-mono)", fontSize: 8 }}><span>{durationLabel(frames[0].elapsedMs)}</span><span>{frames.length} retained frames · replay 2 fps</span><span>{durationLabel(frames[lastIndex].elapsedMs)}</span></div>
+    </>}
+    <div style={{ display: "grid", gridTemplateColumns: "auto auto minmax(120px,1fr) auto auto", gap: 7, alignItems: "center", marginTop: 9 }}>
+      <button type="button" onClick={() => { setPlaying((value) => !value); setFollowingLive(false); }} aria-label={playing ? "Pause clip" : "Play clip"} style={{ padding: "5px 9px", border: "1px solid var(--sv-border)", borderRadius: 6, background: "#fff", cursor: "pointer", fontSize: 10 }}>{playing ? "Pause" : "Play"}</button>
+      <button type="button" onClick={() => move(-1)} disabled={cursor <= 0} aria-label="Previous frame">‹</button>
+      <input type="range" min={0} max={lastIndex} value={Math.min(cursor, lastIndex)} onChange={(event) => scrub(Number(event.currentTarget.value))} aria-label="Rollout frame timeline" style={{ width: "100%", accentColor: "#f05f22" }} />
+      <button type="button" onClick={() => move(1)} disabled={cursor >= lastIndex} aria-label="Next frame">›</button>
+      <button type="button" onClick={jumpToLive} disabled={followingLive && cursor === lastIndex} style={{ padding: "5px 9px", border: "1px solid var(--sv-border)", borderRadius: 6, background: followingLive ? "#f4f5f7" : "#fff7ed", color: followingLive ? "var(--sv-text-faint)" : "#c2410c", cursor: followingLive ? "default" : "pointer", fontSize: 10 }}>{live ? "Jump to live" : "Jump to latest"}</button>
+    </div>
+    <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between", marginTop: 6, color: "var(--sv-text-faint)", fontFamily: "var(--sv-mono)", fontSize: 8 }}><span>{durationLabel(selectedFrames[0].elapsedMs)}</span><label>Speed <select aria-label="Playback speed" value={fps} onChange={(event) => setFps(Number(event.currentTarget.value))}>{[.5, 1, 2, 4].map((value) => <option key={value} value={value}>{value} fps</option>)}</select></label><span>{selectedFrames.length} retained · {bufferLoaded} buffered</span><span>{durationLabel(selectedFrames[lastIndex].elapsedMs)}</span></div>
+    <div aria-label="Stream health" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 6, marginTop: 9 }}>
+      {[['Dropped', health?.framesDropped ?? 0], ['Latency', health?.averageCaptureLatencyMs == null ? MISSING : `${health.averageCaptureLatencyMs} ms`], ['Bandwidth', bandwidth == null ? MISSING : `${bandwidth.toFixed(1)} KiB/s`], ['Source cadence', health?.sourceIntervalMs == null ? MISSING : `${(health.sourceIntervalMs / 1000).toFixed(2)} s`]].map(([label, value]) => <div key={String(label)} className="sv-metric"><span>{label}</span><strong>{value}</strong></div>)}
+    </div>
+    {visibleActions.length ? <div style={{ marginTop: 10 }}><strong style={{ fontSize: 9 }}>Synchronized actions</strong><ol style={{ maxHeight: 150, margin: "6px 0 0", paddingLeft: 20, overflow: "auto", fontSize: 9 }}>{visibleActions.map((action) => <li key={action.sequence} style={{ marginBottom: 5 }}><code>{durationLabel(action.elapsedMs)}</code> · <strong>{action.label}</strong>{action.status ? ` · ${action.status}` : ""}{action.detail ? <small title={action.detail} style={{ display: "block", overflow: "hidden", color: "var(--sv-text-faint)", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{action.detail}</small> : null}</li>)}</ol></div> : null}
+    <div style={{ display: "flex", gap: 7, marginTop: 10 }}>
+      {clips.mp4 ? <a href={clips.mp4} download style={{ fontSize: 9 }}>Download MP4</a> : null}
+      {clips.webm ? <a href={clips.webm} download style={{ fontSize: 9 }}>Download WebM</a> : <button type="button" disabled={exporting} onClick={() => { setExporting(true); setExportError(undefined); void exportFramesAsWebm(selectedFrames, media, fps).catch((error: unknown) => setExportError(error instanceof Error ? error.message : String(error))).finally(() => setExporting(false)); }} style={{ fontSize: 9 }}>{exporting ? "Encoding WebM…" : "Export WebM"}</button>}
+    </div>
+    {exportError ? <p role="alert" style={{ margin: "5px 0 0", color: "#b42318", fontSize: 9 }}>{exportError}</p> : null}
+    <p style={{ margin: "7px 0 0", color: "var(--sv-text-faint)", fontSize: 8 }}>Keyboard: ←/→ step · Space play/pause · End {live ? "live" : "latest"}</p>
   </section>;
 }
 
@@ -638,9 +837,11 @@ export function Shell(props: ShellProps) {
   const hasMethod = Boolean(experiment.lineage?.length || experiment.limitations?.length);
   const skillSamples = liveSkillSamples(props.events);
   const frames = liveFrames(props.events);
+  const actions = liveAgentActions(props.events);
+  const clips = clipLinks(props.events);
   return <VisualChrome kicker={`Experiment · ${status}`} title={props.title ?? experiment.title ?? "Experiment overview"} lede={props.lede ?? experiment.question ?? experiment.hypothesis} testId="visual-experiment-overview">
     <OverviewStrip status={status} arms={experiment.arms ?? []} model={experiment.runtime?.model} progress={progress} />
-    <LiveGameClip frames={frames} status={props.run?.status ?? status} />
+    <LiveGameClip frames={frames} actions={actions} status={props.run?.status ?? status} media={props.media} clips={clips} />
     <LiveSkillTrajectory samples={skillSamples} status={props.run?.status ?? status} />
     {experiment.hypothesis || experiment.hypotheses?.length ? <Hypotheses legacyHypothesis={experiment.hypothesis} hypotheses={experiment.hypotheses ?? []} /> : null}
     {hasResults ? <Disclosure title="Comparison & results" summary={progressSummary} defaultOpen>

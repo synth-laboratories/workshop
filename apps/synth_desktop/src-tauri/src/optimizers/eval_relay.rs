@@ -81,7 +81,9 @@ impl Default for EventStreamSettings {
         Self {
             poll_interval: Duration::from_millis(150),
             page_limit: 1000,
-            max_events_per_rollout: 10_000,
+            // Durable cursor paging, not an in-memory UI window. This covers
+            // long visual rollouts without silently truncating their history.
+            max_events_per_rollout: 100_000,
         }
     }
 }
@@ -553,7 +555,31 @@ async fn relay_event(
         .to_string();
     let mut payload = event.get("payload").cloned().unwrap_or(json!({}));
 
+    // Download links are producer-relative. Make them usable by the bound
+    // desktop visual while retaining the registered loopback origin.
+    if matches!(kind.as_str(), "trial.completed" | "trial.failed") {
+        if let Some(clip) = payload.get_mut("clip").and_then(Value::as_object_mut) {
+            for value in clip.values_mut() {
+                if let Some(path) = value.as_str().filter(|path| path.starts_with('/')) {
+                    *value = Value::String(format!("{}{}", ctx.base.trim_end_matches('/'), path));
+                }
+            }
+        }
+    }
+
     if kind == "frame" {
+        if let Some(object) = payload.as_object_mut() {
+            if let Some(path) = object
+                .get("live_video_url")
+                .and_then(Value::as_str)
+                .filter(|path| path.starts_with('/'))
+            {
+                object.insert(
+                    "live_video_url".into(),
+                    Value::String(format!("{}{}", ctx.base.trim_end_matches('/'), path)),
+                );
+            }
+        }
         outcome.frames_declared += 1;
         match retain_frame(ctx, &payload, outcome).await {
             Ok(Some(media)) => {
