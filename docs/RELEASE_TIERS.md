@@ -33,12 +33,38 @@ and Vite builds default `WORKSHOP_TIER=stable` (the dev server defaults to
 `dev`). Dev instances (`scripts/desktop-instance.sh`) build
 `--features eval-driver,tier-dev` with `WORKSHOP_TIER=dev`.
 
-Building another tier:
+## Local builds
+
+`scripts/build-tier.sh` is the supported way to build any tier locally with
+both layers aligned in one command:
+
+```bash
+scripts/build-tier.sh beta            # one packaged app at the beta tier
+scripts/build-tier.sh all --debug     # all four channel tiers, debug profile
+npm --prefix apps/synth_desktop run build:tier -- alpha   # same, via npm
+```
+
+`all` builds stable, beta, alpha, and dev sequentially into
+`work/tier-builds/<tier>/`. Non-stable tiers get a tier-suffixed product name
+and bundle identifier (`Synth Workshop Beta` · `com.synth.desktop.beta`) so
+the four apps install and run side by side; stable keeps the canonical
+identity. Each output directory carries a `manifest.json` binding the app to
+its tier, profile, and source commit, and every app reports its own envelope
+in Settings → Build (with the pre-release badge on beta/alpha/dev). `core`
+builds individually the same way (the script handles the
+`--no-default-features` cargo dance it needs); it is a durability
+classification, not a channel, so `all` omits it.
+
+The raw two-knob form underneath, when you need it:
 
 ```bash
 # host                                            # renderer
 cargo build --features tier-beta                  WORKSHOP_TIER=beta npm run frontend:build
 ```
+
+If the knobs ever disagree, the startup cross-check reports the mismatch as a
+packaging defect. Changing tiers is always a rebuild/reinstall — there is no
+runtime switch, which is what keeps the envelope structural.
 
 ## Feature records
 
