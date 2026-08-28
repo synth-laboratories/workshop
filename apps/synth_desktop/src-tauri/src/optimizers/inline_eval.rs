@@ -68,7 +68,10 @@ pub(super) fn credential_capability_scope_for_policy(
     } else {
         GENERIC_PROVIDER_OPERATION
     };
-    admission::CredentialCapabilityScope::new([operation.to_string()], 3_600)
+    admission::CredentialCapabilityScope::new(
+        [operation.to_string()],
+        crate::limits::DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS,
+    )
 }
 
 /// Resolve current authority, construct the default inline recipe, validate it,
@@ -254,11 +257,23 @@ async fn discovery_context(
         .first()
         .context("no matching registered container")?;
     request.container_id = Some(selected.container_id.clone());
+    let materialization_limits = json!({
+        "max_calls": request
+            .maximum_model_calls_per_rollout
+            .context("inline evaluation requires maximumModelCallsPerRollout before task materialization")?,
+        "max_steps": request
+            .maximum_steps_per_rollout
+            .context("inline evaluation requires maximumStepsPerRollout before task materialization")?,
+        "max_cost_usd": request
+            .hard_total_cost_usd
+            .context("inline evaluation requires hardTotalCostUsd before task materialization")?,
+    });
     materialize_seed_instances(
         selected_base_url
             .as_deref()
             .context("registered container has no base URL")?,
         &request.seeds,
+        materialization_limits,
     )
     .await?;
     let revision = policy_revisions
@@ -317,7 +332,11 @@ async fn discovery_context(
     ))
 }
 
-async fn materialize_seed_instances(base_url: &str, seeds: &[admission::Seed]) -> Result<()> {
+async fn materialize_seed_instances(
+    base_url: &str,
+    seeds: &[admission::Seed],
+    limits: Value,
+) -> Result<()> {
     anyhow::ensure!(
         !seeds.is_empty(),
         "inline evaluation requires at least one seed"
@@ -344,7 +363,7 @@ async fn materialize_seed_instances(base_url: &str, seeds: &[admission::Seed]) -
             "{}/task_instances/materialize",
             base_url.trim_end_matches('/')
         ))
-        .json(&json!({"task_id": task_id, "seeds": requested}))
+        .json(&json!({"task_id": task_id, "seeds": requested, "limits": limits}))
         .send()
         .await
         .context("POST /task_instances/materialize")?;
