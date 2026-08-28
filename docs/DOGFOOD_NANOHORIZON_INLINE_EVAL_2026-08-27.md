@@ -472,9 +472,8 @@ exact 40-character Containers revision.
 
 ### Verification completed without Docker or provider calls
 
-- Workshop Rust library: 1,426 passed, 14 ignored, 0 failed before the final
-  approval-retention regression was added; its two focused terminal tests also
-  pass, and the full suite is rerun by the final readiness gate.
+- Workshop Rust library: 1,427 passed, 14 ignored, 0 failed on the final
+  approval-retention implementation.
 - Workshop desktop Node suite: 543 passed, 0 failed.
 - Workshop visual suite: 236 passed, 0 failed.
 - Desktop instance script, TypeScript typecheck, CSS lint, and production
