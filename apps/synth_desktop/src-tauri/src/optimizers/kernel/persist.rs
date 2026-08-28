@@ -441,7 +441,7 @@ fn load_current_evidence(
         if !evidence
             .refs
             .iter()
-            .any(|existing| existing.kind == reference.kind && existing.id == reference.id)
+            .any(|existing| evidence_refs_are_equivalent(existing, &reference))
         {
             evidence.refs.push(reference);
         }
@@ -451,6 +451,20 @@ fn load_current_evidence(
         evidence.reason = None;
     }
     Ok(amended.then_some(evidence))
+}
+
+fn evidence_refs_are_equivalent(existing: &EvidenceRef, candidate: &EvidenceRef) -> bool {
+    if existing.kind == candidate.kind && existing.id == candidate.id {
+        return true;
+    }
+    fn is_trace_kind(kind: &str) -> bool {
+        matches!(kind, "trace" | "trace_v5" | "trace_v5_partial")
+    }
+    existing.id == candidate.id
+        && is_trace_kind(&existing.kind)
+        && is_trace_kind(&candidate.kind)
+        && existing.digest.is_some()
+        && existing.digest == candidate.digest
 }
 
 pub fn insert_draft(conn: &Connection, draft: &RunDraft) -> Result<()> {
@@ -566,6 +580,32 @@ pub fn insert_spec(conn: &Connection, commit: &AdmissionCommit) -> Result<()> {
 mod tests {
     use super::*;
     use crate::optimizers::kernel::types::{TerminalKind, WorkItemKind};
+
+    #[test]
+    fn evidence_refs_dedupe_legacy_and_canonical_trace_kinds_only_by_digest() {
+        let canonical = EvidenceRef {
+            kind: "trace_v5".into(),
+            id: "tracev5_local".into(),
+            digest: Some("sha256:sealed".into()),
+        };
+        let legacy = EvidenceRef {
+            kind: "trace".into(),
+            ..canonical.clone()
+        };
+        assert!(evidence_refs_are_equivalent(&canonical, &legacy));
+
+        let changed_digest = EvidenceRef {
+            digest: Some("sha256:different".into()),
+            ..legacy.clone()
+        };
+        assert!(!evidence_refs_are_equivalent(&canonical, &changed_digest));
+
+        let evaluator = EvidenceRef {
+            kind: "evaluator".into(),
+            ..legacy
+        };
+        assert!(!evidence_refs_are_equivalent(&canonical, &evaluator));
+    }
 
     #[test]
     fn upsert_rejects_an_open_world_terminal_projection() {
