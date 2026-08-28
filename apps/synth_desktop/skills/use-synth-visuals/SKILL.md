@@ -65,6 +65,7 @@ not call a separate `experiment_create` tool.
 2. State the analytical question in one sentence: “Which arm achieves more per dollar?”, “Where do rewards diverge?”, or “What happened during this rollout?”
 3. Choose only visual forms that answer that question. Read [visual-recipes.md](references/visual-recipes.md) for mappings. For a one-off quantitative comparison, also read [ad-hoc-visuals.md](references/ad-hoc-visuals.md). It is the canonical guide for chart selection, style, metric denominators, and evidence/event-source bindings.
 4. Create the smallest useful visual with a stable ID and a title that names the task and comparison. Use operation `chart` for quantitative comparisons and `create`/`create_with_bind` for other registered templates. Use `presentation: "canvas"` for gameplay, trace workbenches, and dense live dashboards.
+   If instance-scope discovery finds a useful visual owned by another task, call `fork` first and revise the returned current-task visual ID. Never update or `show` the other task's original: its presentation event routes to its owner, not this chat.
 5. Show exact units and provenance. Preserve small costs rather than rounding them to `$0.00`.
 6. Call the `show` operation after creation or update so the result opens in the Desktop pane.
 7. Inspect the rendered visual in Desktop canvas mode. Fix clipped labels, empty sections, misleading encodings, weak hierarchy, and excessive whitespace.

@@ -2086,6 +2086,8 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
     assert!(ad_hoc_visuals.contains("kind: \"live_sse\""));
     assert!(ad_hoc_visuals.contains("synth.trace-stream-event.v1"));
     assert!(ad_hoc_visuals.contains("operation: \"chart\""));
+    assert!(ad_hoc_visuals.contains("call\n`fork`"));
+    assert!(ad_hoc_visuals.contains("leave the current chat's pane closed"));
 
     let session_skill = fs::read_to_string(home.join("skills/use-synth-session/SKILL.md")).unwrap();
     let optimizers_skill =

@@ -17,6 +17,13 @@ record. Use a task-family live template for streaming gameplay or eval state,
 and use the optimizer-owned visual for following one optimizer run. Never
 create a second generic live viewer for the same optimizer run.
 
+Instance-scope visual listing is cross-task discovery, not ownership transfer.
+When a durable visual from another task contains the required evidence, call
+`fork` and take the returned visual ID before revising it with operation
+`chart`. The fork is owned by the current chat and records its parent. Never
+revise or `show` the discovered original: `show` routes to the owner's session,
+so a successful tool response can still leave the current chat's pane closed.
+
 ## Compose the comparison
 
 Prefer this order:
