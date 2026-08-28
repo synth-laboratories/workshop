@@ -89,6 +89,9 @@ const PAGE_SIZE = 500;
 const POLL_INTERVAL_MS = 750;
 /** How long a hung get/eventsAfter may sit before the UI leaves Running. */
 const STALL_TIMEOUT_MS = 15_000;
+/** A broken producer gets a bounded automatic recovery budget. */
+const MAX_CONSECUTIVE_FAILURES = 5;
+const RETRY_BASE_MS = 250;
 /** Parked entries retained so a reopened dialog resumes instead of replaying. */
 const MAX_PARKED_ENTRIES = 32;
 
@@ -98,6 +101,10 @@ type Entry = {
 	listeners: Set<(snapshot: RunProgressSnapshot) => void>;
 	cursorState: OptimizerEventCursorState;
 	pending: Promise<void>;
+	/** Invalidates work still attached to an abandoned promise chain. */
+	queueEpoch: number;
+	/** Invalidates a transport result after its watchdog has unwedged the queue. */
+	loadEpoch: number;
 	/** Node and DOM disagree on the handle type; take whatever the platform returns. */
 	poll: ReturnType<typeof globalThis.setInterval> | null;
 	unlisten: (() => void) | null;
@@ -111,6 +118,9 @@ type Entry = {
 	lastTouchedAt: number;
 	disposed: boolean;
 	stallTimer: ReturnType<typeof globalThis.setTimeout> | null;
+	retryTimer: ReturnType<typeof globalThis.setTimeout> | null;
+	consecutiveFailures: number;
+	pollBusy: boolean;
 };
 
 /**
@@ -131,6 +141,7 @@ const entries = new Map<string, Entry>();
 let injectedTransport: RunProgressTransport | null = null;
 let pollIntervalMs = POLL_INTERVAL_MS;
 let stallTimeoutMs = STALL_TIMEOUT_MS;
+let retryBaseMs = RETRY_BASE_MS;
 let diagnosticSink: ((report: RunProgressDiagnostic) => void) | null = null;
 
 /** Install the renderer's diagnostic reporter. Called once, from the entry point. */
@@ -161,6 +172,11 @@ export function setRunProgressPollInterval(ms: number): void {
 /** Tests shorten the hung-read watchdog. */
 export function setRunProgressStallTimeout(ms: number): void {
 	stallTimeoutMs = ms;
+}
+
+/** Tests shorten the bounded reconnect ladder. */
+export function setRunProgressRetryBase(ms: number): void {
+	retryBaseMs = ms;
 }
 
 /** Tests only: drop every entry and every timer. */
@@ -245,7 +261,10 @@ async function readPersisted(
 		gap: false
 	};
 	for (;;) {
-		const page = await api.eventsAfter(entry.runId, state.cursor, PAGE_SIZE);
+		const page = await withDeadline(
+			() => api.eventsAfter(entry.runId, state.cursor, PAGE_SIZE),
+			`eventsAfter(${state.cursor})`
+		);
 		if (!Array.isArray(page) || page.length === 0) return state;
 		const before = state.cursor;
 		state = mergeOptimizerEventPage(state, page);
@@ -253,19 +272,103 @@ async function readPersisted(
 	}
 }
 
-function disarmStall(entry: Entry): void {
+function deadlineMs(): number {
+	return stallTimeoutMs * 2;
+}
+
+/**
+ * Every renderer/host boundary has a deadline. The underlying invoke may not
+ * be cancellable, so the load epoch below also prevents a late result from
+ * overwriting the recovery load that replaced it.
+ */
+function withDeadline<T>(read: () => Promise<T>, operation: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		let settled = false;
+		const timer = globalThis.setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			reject(new Error(`Optimizer subscription stalled — ${operation} exceeded the ${deadlineMs()}ms deadline`));
+		}, deadlineMs());
+		void Promise.resolve()
+			.then(read)
+			.then(
+				(value) => {
+					if (settled) return;
+					settled = true;
+					globalThis.clearTimeout(timer);
+					resolve(value);
+				},
+				(reason) => {
+					if (settled) return;
+					settled = true;
+					globalThis.clearTimeout(timer);
+					reject(reason);
+				}
+			);
+	});
+}
+
+function disarmStall(entry: Entry, epoch?: number): void {
+	if (epoch != null && epoch !== entry.loadEpoch) return;
 	if (entry.stallTimer != null) globalThis.clearTimeout(entry.stallTimer);
 	entry.stallTimer = null;
 }
 
-function armStall(entry: Entry): void {
+function clearRetry(entry: Entry): void {
+	if (entry.retryTimer != null) globalThis.clearTimeout(entry.retryTimer);
+	entry.retryTimer = null;
+}
+
+function enqueue(entry: Entry, api: RunProgressTransport, snapshot: boolean): void {
+	const queueEpoch = entry.queueEpoch;
+	entry.pending = entry.pending.then(async () => {
+		if (entry.disposed || queueEpoch !== entry.queueEpoch) return;
+		await load(entry, api, snapshot);
+	});
+}
+
+function scheduleRetry(entry: Entry, api: RunProgressTransport): void {
+	if (entry.disposed || entry.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES || entry.retryTimer != null) return;
+	const exponent = Math.max(0, entry.consecutiveFailures - 1);
+	const backoffMs = Math.min(4_000, retryBaseMs * (2 ** exponent));
+	entry.retryTimer = globalThis.setTimeout(() => {
+		entry.retryTimer = null;
+		if (entry.disposed || entry.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) return;
+		enqueue(entry, api, false);
+	}, backoffMs);
+}
+
+function recordFailure(entry: Entry, api: RunProgressTransport, reason: unknown): void {
+	if (entry.disposed) return;
+	const message = publicError(reason);
+	entry.consecutiveFailures += 1;
+	const exhausted = entry.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES;
+	report({
+		runId: entry.runId,
+		severity: "error",
+		event: exhausted ? "run_progress.stream.failed" : "run_progress.stream.interrupted",
+		code: "stream_interrupted",
+		message,
+		details: {
+			attempt: entry.consecutiveFailures,
+			maxAttempts: MAX_CONSECUTIVE_FAILURES
+		}
+	});
+	publish(entry, { state: exhausted ? "failed" : "interrupted", error: message });
+	if (!exhausted) scheduleRetry(entry, api);
+}
+
+function armStall(entry: Entry, api: RunProgressTransport, epoch: number): void {
 	disarmStall(entry);
-	if (entry.stopPolling || isTerminalRunStatus(entry.snapshot.run?.status)) return;
 	entry.stallTimer = globalThis.setTimeout(() => {
+		if (epoch !== entry.loadEpoch) return;
 		entry.stallTimer = null;
-		if (entry.disposed || entry.stopPolling) return;
-		if (isTerminalRunStatus(entry.snapshot.run?.status)) return;
-		if (entry.snapshot.state === "terminal") return;
+		if (entry.disposed) return;
+		// Abandon both the active load and anything chained behind it. The
+		// transport promise can still settle later, but its epoch is now stale.
+		entry.loadEpoch += 1;
+		entry.queueEpoch += 1;
+		entry.pending = Promise.resolve();
 		report({
 			runId: entry.runId,
 			severity: "error",
@@ -273,31 +376,51 @@ function armStall(entry: Entry): void {
 			code: "stream_stalled",
 			message: "Optimizer subscription stalled; the run is interrupted, not still working"
 		});
-		publish(entry, {
-			state: "interrupted",
-			error: "subscription stalled — the producer stopped answering; reconnecting resumes from the retained cursor"
-		});
+		recordFailure(
+			entry,
+			api,
+			new Error("subscription stalled — the producer stopped answering; reconnecting resumes from the retained cursor")
+		);
 	}, stallTimeoutMs);
 }
 
 async function load(entry: Entry, api: RunProgressTransport, requestSnapshot: boolean): Promise<void> {
 	if (entry.disposed) return;
+	const epoch = ++entry.loadEpoch;
 	// A previously seen hole is only healed by a full reload, so it upgrades an
 	// incremental wakeup into a snapshot read.
-	const snapshot = requestSnapshot || entry.needsSnapshot;
-	armStall(entry);
+	let snapshot = requestSnapshot || entry.needsSnapshot;
+	armStall(entry, api, epoch);
 	try {
 		publish(entry, {
-			state: snapshot
+			state: snapshot || entry.snapshot.state === "interrupted" || entry.snapshot.state === "failed"
 				? "replaying"
-				: entry.snapshot.state === "subscribed" || entry.snapshot.state === "interrupted"
+				: entry.snapshot.state === "subscribed"
 					? "reconnecting"
 					: entry.snapshot.state
 		});
-		const [run, viewV2] = await Promise.all([
-			api.get(entry.runId),
-			api.runViewV2?.(entry.runId)
-		]);
+		// Projection first: a reconnect must never converge below the durable
+		// reducer revision even when its event wakeup was missed.
+		const viewV2 = api.runViewV2
+			? await withDeadline(() => api.runViewV2!(entry.runId), "runViewV2")
+			: undefined;
+		if (entry.disposed || epoch !== entry.loadEpoch) return;
+		const cachedRevision = entry.snapshot.viewV2?.header.projectionRevision;
+		const durableRevision = viewV2?.header.projectionRevision;
+		const reconnecting = entry.consecutiveFailures > 0;
+		if (
+			cachedRevision != null &&
+			durableRevision != null &&
+			(
+				durableRevision < cachedRevision ||
+				durableRevision > cachedRevision + 1 ||
+				(reconnecting && durableRevision > cachedRevision)
+			)
+		) {
+			snapshot = true;
+		}
+		const run = await withDeadline(() => api.get(entry.runId), "get");
+		if (entry.disposed || epoch !== entry.loadEpoch) return;
 		let next = await readPersisted(entry, api, snapshot ? 0 : entry.cursorState.cursor);
 		const runCursor = typeof run.cursorSeq === "number" ? run.cursorSeq : next.cursor;
 		if (!snapshot && (next.gap || runCursor < entry.cursorState.cursor || next.cursor < runCursor)) {
@@ -305,8 +428,10 @@ async function load(entry: Entry, api: RunProgressTransport, requestSnapshot: bo
 			// Reload from the durable start; never patch over a sequence hole.
 			next = await readPersisted(entry, api, 0);
 		}
-		if (entry.disposed) return;
-		disarmStall(entry);
+		if (entry.disposed || epoch !== entry.loadEpoch) return;
+		disarmStall(entry, epoch);
+		clearRetry(entry);
+		entry.consecutiveFailures = 0;
 		entry.cursorState = next;
 		const terminal = viewV2
 			? viewV2.header.lifecycle === "terminal"
@@ -345,36 +470,50 @@ async function load(entry: Entry, api: RunProgressTransport, requestSnapshot: bo
 			error: undefined
 		});
 	} catch (reason) {
-		disarmStall(entry);
-		if (entry.disposed) return;
-		const message = publicError(reason);
-		report({
-			runId: entry.runId,
-			severity: "error",
-			event: "run_progress.stream.interrupted",
-			code: "stream_interrupted",
-			message
-		});
+		disarmStall(entry, epoch);
+		if (entry.disposed || epoch !== entry.loadEpoch) return;
 		// A failed read never discards what was already replayed: a card that
 		// showed 68 rollouts must not blank because one page timed out. The
-		// state is interrupted, not failed-running: reconnecting recovers.
-		publish(entry, { state: "interrupted", error: message });
+		// first four failures are interrupted; the bounded fifth is failed.
+		recordFailure(entry, api, reason);
 	}
 }
 
-function enqueue(entry: Entry, api: RunProgressTransport, snapshot: boolean): void {
-	entry.pending = entry.pending.then(() => load(entry, api, snapshot));
+async function pollDurableRevision(entry: Entry, api: RunProgressTransport): Promise<void> {
+	if (entry.disposed || entry.stopPolling || entry.pollBusy || entry.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) return;
+	entry.pollBusy = true;
+	try {
+		if (!api.runViewV2) {
+			await withDeadline(() => api.refresh(entry.runId), "refresh");
+			return;
+		}
+		const durable = await withDeadline(() => api.runViewV2!(entry.runId), "runViewV2 poll");
+		if (entry.disposed) return;
+		const cachedRevision = entry.snapshot.viewV2?.header.projectionRevision;
+		const durableRevision = durable.header.projectionRevision;
+		if (cachedRevision == null || durableRevision !== cachedRevision) {
+			if (cachedRevision != null && (durableRevision < cachedRevision || durableRevision > cachedRevision + 1)) {
+				entry.needsSnapshot = true;
+			}
+			enqueue(entry, api, cachedRevision == null);
+		}
+	} catch (reason) {
+		recordFailure(entry, api, reason);
+	} finally {
+		entry.pollBusy = false;
+	}
 }
 
 function activate(entry: Entry, api: RunProgressTransport): void {
 	entry.disposed = false;
 	entry.unlisten = api.onEvent((event) => {
 		const id = eventRunId(event);
+		// Producer notifications are never gated by the retry budget. A producer
+		// returning after five failed reads is the strongest recovery signal.
 		if (!id || id === entry.runId) enqueue(entry, api, false);
 	});
 	entry.poll = globalThis.setInterval(() => {
-		if (entry.stopPolling) return;
-		void api.refresh(entry.runId).catch(() => undefined);
+		void pollDurableRevision(entry, api);
 	}, pollIntervalMs);
 	// Resume from the retained cursor; a re-subscribe is not a replay.
 	enqueue(entry, api, entry.cursorState.cursor === 0);
@@ -382,7 +521,11 @@ function activate(entry: Entry, api: RunProgressTransport): void {
 
 function park(entry: Entry): void {
 	entry.disposed = true;
+	entry.queueEpoch += 1;
+	entry.loadEpoch += 1;
+	entry.pending = Promise.resolve();
 	disarmStall(entry);
+	clearRetry(entry);
 	if (entry.poll != null) globalThis.clearInterval(entry.poll);
 	entry.poll = null;
 	entry.unlisten?.();
@@ -415,7 +558,7 @@ export async function resolveOwnedRun(runId: string, sessionRef?: string): Promi
 	const api = transport();
 	if (!api) return null;
 	try {
-		const run = await api.get(runId);
+		const run = await withDeadline(() => api.get(runId), "ownership get");
 		if (!run || typeof run.id !== "string") return null;
 		if (sessionRef && run.sessionRef && run.sessionRef !== sessionRef) return null;
 		return run;
@@ -446,13 +589,18 @@ export function subscribeToRun(
 			listeners: new Set(),
 			cursorState: { events: [], cursor: 0, gap: false },
 			pending: Promise.resolve(),
+			queueEpoch: 0,
+			loadEpoch: 0,
 			poll: null,
 			unlisten: null,
 			stopPolling: false,
 			needsSnapshot: false,
 			lastTouchedAt: Date.now(),
 			disposed: true,
-			stallTimer: null
+			stallTimer: null,
+			retryTimer: null,
+			consecutiveFailures: 0,
+			pollBusy: false
 		};
 		entries.set(runId, entry);
 	}

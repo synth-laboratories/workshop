@@ -34,6 +34,7 @@ import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
 import type { SubagentState } from "../runtime/sessionView";
 import { bindingAuthorityKey } from "../runtime/visualRevisionState";
 import { openTraceReference, VISUAL_REFERENCE_ERROR_EVENT, VISUAL_REFERENCE_OPENED_EVENT } from "../runtime/visualReferences";
+import { previewVariantForTemplate, SEALED_TRACE_WORKBENCH_TEMPLATES } from "../runtime/templatePresentation";
 import { optimizerRunIdFromBindings } from "../runtime/visualBindings";
 
 type ShellProps = {
@@ -67,14 +68,7 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 		runId: optimizerRunIdFromBindings(visual.bindings) ?? visual.runId ?? undefined,
 		traceId: visual.traceId ?? undefined,
 		summary: typeof metadata?.summary === "string" ? metadata.summary : undefined,
-		preview: {
-			variant:
-				visual.templateId.includes("scrub") || visual.templateId.includes("rollout")
-					? "craftax_frame"
-					: visual.templateId.includes("craftax") || visual.templateId.includes("eval_matrix")
-						? "craftax_pareto"
-						: "generic"
-		}
+		preview: { variant: previewVariantForTemplate(visual.templateId) }
 	};
 }
 
@@ -975,7 +969,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			if (snapshot.state === "interrupted" || snapshot.state === "failed") {
 				if (payload) setOptimizerPayload(payload);
 				setOptimizerLoadError(snapshot.error ?? "Optimizer stream interrupted");
-				setConnectionState("interrupted");
+				setConnectionState(snapshot.state);
 				reportDiagnostic({
 					...visualIdentity,
 					optimizerRunId,
@@ -1040,7 +1034,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	// to the same shell that is already rendering the live fold.
 	useEffect(() => {
 		let cancelled = false;
-		if (artifact.templateId !== "craftax.trace_workbench.v1" || !bridges.inventory) {
+		// Keyed off the trace-workbench template set, not one hardcoded id, so
+		// the family-agnostic workstation resolves its sealed trials the same way.
+		if (!artifact.templateId || !SEALED_TRACE_WORKBENCH_TEMPLATES.has(artifact.templateId) || !bridges.inventory) {
 			setSealedTraceProjections([]);
 			return () => { cancelled = true; };
 		}
@@ -1069,7 +1065,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		void Promise.all(refs.map(async (ref) => {
 			const resolved = await bridges.inventory!.resolveTraceProjection(ref.digest, "rollout-inspector");
 			if (resolved.traceDigest !== ref.digest || resolved.projectionKind !== "rollout-inspector") {
-				throw new Error(`Sealed Craftax trace projection identity changed for ${ref.digest}`);
+				throw new Error(`Sealed trace projection identity changed for ${ref.digest}`);
 			}
 			return { ...ref, projection: resolved.payload };
 		})).then((rows) => {
@@ -1084,7 +1080,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				component: "visual-host",
 				event: "visual.sealed_trace.resolve_failed",
 				code: DIAGNOSTIC_CODES.visualBindingUnresolved,
-				message: publicError(reason, "Sealed Craftax trace projection failed")
+				message: publicError(reason, "Sealed trace projection failed")
 			});
 		});
 		return () => { cancelled = true; };

@@ -19,13 +19,13 @@ export function providerAccessFromSecrets({
 		displaySuffix?: string | null;
 		usedCalls: number;
 		maxCalls: number;
-		usedCostUsd: number;
-		maxCostUsd: number;
+		usedCostUsd: number | null;
+		maxCostUsd: number | null;
 	};
 	grant?: {
 		provider?: string | null;
 		maxCalls: number;
-		maxCostUsd: number;
+		maxCostUsd: number | null;
 	};
 	proxyRunning: boolean;
 }): RunProgressProjection["providerAccess"] | undefined {
@@ -70,8 +70,8 @@ export function providerAccessFromSecrets({
 			status: "proxy_down",
 			usedCalls: 0,
 			maxCalls: 0,
-			usedCostUsd: 0,
-			maxCostUsd: 0,
+			usedCostUsd: null,
+			maxCostUsd: null,
 			note: "Provider proxy is not running."
 		};
 	}

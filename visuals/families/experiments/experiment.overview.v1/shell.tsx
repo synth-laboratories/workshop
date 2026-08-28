@@ -161,8 +161,14 @@ export type ShellProps = {
   title?: string;
   lede?: string;
   experiment?: ExperimentOverview;
-  data?: ExperimentOverview;
+  data?: ExperimentOverview | Record<string, unknown>;
   bindings?: VisualBinding[];
+  /** Durable run record, spread in by VisualHost when a live run is bound. */
+  run?: Record<string, unknown>;
+  /** `run_progress.v1` agreement (phase/completed/total/cost), same source. */
+  runProgress?: Record<string, unknown>;
+  /** Kernel V2 view; `header.work` carries live state counts. */
+  runViewV2?: Record<string, unknown>;
 };
 
 const MISSING = "—";
@@ -444,11 +450,63 @@ function Lineage({ nodes }: { nodes: LineageNode[] }) {
   return <section className="sv-section"><div className="sv-section-head"><h3>Lineage</h3><span>ordered</span></div><ol aria-label="Experiment lineage" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, padding: 0, margin: 0, listStyle: "none" }}>{nodes.map((node, index) => <li key={node.id} style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={{ border: "1px solid var(--sv-border)", borderRadius: 99, padding: "6px 9px", fontSize: 10, background: "#fff" }}>{node.label}<small style={{ marginLeft: 5, color: statusTone(node.status) }}>{node.kind ?? ""}</small></span>{index < nodes.length - 1 ? <span aria-hidden style={{ color: "var(--sv-text-faint)" }}>→</span> : null}</li>)}</ol></section>;
 }
 
+/**
+ * What the live optimizer binding asserts about the run *now*.
+ *
+ * The inline `experiment` snapshot is baked at mint time and goes stale the
+ * moment the run moves — the incident run's overview showed its minting-time
+ * status forever. When VisualHost spreads a live payload in (`run`,
+ * `runProgress`, `runViewV2`), those override lifecycle/status/progress/state
+ * counts; the snapshot remains authoritative for immutable context (task,
+ * runtime, provenance, hypothesis) and for historical views with no binding —
+ * where this returns null and nothing changes.
+ */
+function liveOverlay(props: ShellProps): { status?: string; progress?: Progress } | null {
+  const run = record(props.run);
+  const agreement = record(props.runProgress);
+  if (!run && !agreement) return null;
+  const work = record(record(record(props.runViewV2)?.header)?.work);
+  const stateCounts: Record<string, number> = {};
+  if (work) {
+    for (const state of ["running", "queued", "succeeded", "failed", "cancelled"]) {
+      const count = finiteNumber(work[state]);
+      if (count != null && count > 0) stateCounts[state] = count;
+    }
+  }
+  const costUsd = finiteNumber(agreement?.costUsd);
+  const progress: Progress = {
+    phase: text(agreement?.phaseLabel),
+    completed: finiteNumber(agreement?.completed),
+    total: finiteNumber(agreement?.total),
+    cost: costUsd != null ? `$${costUsd.toFixed(2)}` : undefined,
+    ...(Object.keys(stateCounts).length ? { stateCounts } : {})
+  };
+  const hasProgress = Object.values(progress).some((value) => value != null);
+  return {
+    status: text(agreement?.status) ?? text(run?.status),
+    ...(hasProgress ? { progress } : {})
+  };
+}
+
+/** True when `data` is the live optimizer payload, not an overview document. */
+function isOptimizerPayload(value: unknown): boolean {
+  const raw = record(value);
+  return Boolean(raw && (raw.run != null || Array.isArray(raw.events)));
+}
+
 export function Shell(props: ShellProps) {
-  const experiment = normalizeOverview(props.experiment ?? props.data);
-  if (!experiment) return <VisualChrome title={props.title ?? "Experiment overview"} lede="No experiment projection was provided." testId="visual-experiment-overview"><></></VisualChrome>;
-  const status = experiment.status ?? "planned";
-  const progressSummary = experiment.progress?.completed != null && experiment.progress?.total != null ? `${experiment.progress.completed}/${experiment.progress.total} · ${experiment.progress.phase ?? status}` : status;
+  const live = liveOverlay(props);
+  const snapshot = normalizeOverview(
+    props.experiment ?? (isOptimizerPayload(props.data) ? null : props.data)
+  );
+  // No snapshot and no live binding: exactly the historical empty state.
+  if (!snapshot && !live) return <VisualChrome title={props.title ?? "Experiment overview"} lede="No experiment projection was provided." testId="visual-experiment-overview"><></></VisualChrome>;
+  const experiment: ExperimentOverview = snapshot ?? {};
+  const status = live?.status ?? experiment.status ?? "planned";
+  // Live progress replaces the baked one wholesale: a stale ETA or elapsed
+  // string beside a live completed/total would misattribute freshness.
+  const progress = live?.progress ?? experiment.progress;
+  const progressSummary = progress?.completed != null && progress?.total != null ? `${progress.completed}/${progress.total} · ${progress.phase ?? status}` : status;
   const metrics = [...(experiment.metrics ?? []), ...(experiment.results?.metrics ?? [])];
   const rollouts = experiment.results?.rollouts ?? [];
   const traces = experiment.traces?.items ?? [];
@@ -458,16 +516,16 @@ export function Shell(props: ShellProps) {
   const reconciliation = (experiment.reconciliationErrors ?? []).filter((item) => item.trim());
   const unavailableTraceIds = new Set(traces.filter((trace) => /lite seal|not self-contained/i.test(trace.summary ?? "")).map((trace) => trace.traceId).filter((id): id is string => Boolean(id)));
   const artifacts = experiment.artifacts?.items ?? [];
-  const hasResults = Boolean(experiment.progress || metrics.length || experiment.arms?.length || rollouts.length || experiment.assessment);
+  const hasResults = Boolean(progress || metrics.length || experiment.arms?.length || rollouts.length || experiment.assessment);
   const contextRecords = [{ label: "Task", data: experiment.task }, { label: "Runtime", data: experiment.runtime }, { label: "Provenance", data: experiment.provenance }];
   const hasContext = contextRecords.some((group) => Object.keys(group.data ?? {}).length);
   const hasMethod = Boolean(experiment.lineage?.length || experiment.limitations?.length);
   return <VisualChrome kicker={`Experiment · ${status}`} title={props.title ?? experiment.title ?? "Experiment overview"} lede={props.lede ?? experiment.question ?? experiment.hypothesis} testId="visual-experiment-overview">
     {reconciliation.length ? <section className="sv-terminal-receipt" role="alert" aria-label="Experiment record could not be reconciled" data-testid="experiment-reconciliation"><div className="sv-section-head"><h3>Couldn't reconcile this record</h3><span>{reconciliation.length === 1 ? "1 contradiction" : `${reconciliation.length} contradictions`}</span></div><ul>{reconciliation.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}
-    <OverviewStrip status={status} arms={experiment.arms ?? []} model={experiment.runtime?.model} progress={experiment.progress} />
+    <OverviewStrip status={status} arms={experiment.arms ?? []} model={experiment.runtime?.model} progress={progress} />
     {experiment.hypothesis || experiment.hypotheses?.length ? <Hypotheses legacyHypothesis={experiment.hypothesis} hypotheses={experiment.hypotheses ?? []} /> : null}
     {hasResults ? <Disclosure title="Comparison & results" summary={progressSummary} defaultOpen>
-      {experiment.progress ? <ProgressPanel progress={experiment.progress} status={status} /> : null}
+      {progress ? <ProgressPanel progress={progress} status={status} /> : null}
       <Metrics metrics={metrics} />
       <ComparisonTable arms={experiment.arms ?? []} comparison={experiment.comparison} />
       {experiment.arms?.length ? <Arms arms={experiment.arms} /> : null}

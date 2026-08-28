@@ -832,8 +832,25 @@ export type OptimizerRecipeInfo = {
 	availability: string;
 	availabilityReason?: string | null;
 	description?: string;
+	/** Producer-declared caps. Real keys are e.g. `trials`; nothing writes
+	 * screening/confirmation seed lists here. */
 	limits?: Record<string, unknown>;
+	/** Producer-declared spend ceiling, e.g. `{ max_usd: 0.30 }`. */
+	budget?: Record<string, unknown>;
+	/** Pinned model list, e.g. `[{ id: "gpt-5.6-luna" }]`. */
+	models?: Array<Record<string, unknown>>;
 	prerequisites?: string[];
+	/** Admission facts projected by `eval_recipes.rs::project_eval_recipe_state`.
+	 * Absent (not false) when a producer predates the projection. */
+	recipeDiscovered?: boolean;
+	executionSupported?: boolean;
+	targetPresent?: boolean;
+	targetDigestMatches?: boolean;
+	targetAdmitted?: boolean;
+	/** Structured admission failure, parsed from `availabilityReason` when that
+	 * string carries JSON. */
+	admissionError?: unknown;
+	executionKind?: string;
 };
 
 export type OptimizerInferDelta = {

@@ -46,6 +46,7 @@ const {
 	costSummary,
 	coverageLabel,
 	coveredMetric,
+	formatMissingUsd,
 	formatUsd,
 	metricExplanation,
 	metricSummary,
@@ -138,6 +139,12 @@ test("unreported cost is unavailable and names the gap; $0.00 is never printed f
 test("a reported zero is a value and reads as one", () => {
 	const free = coveredMetric(0, "provider", 12, 12);
 	assert.equal(metricSummary(free, formatUsd, "rollout"), "$0.00 reported · 100% rollout coverage");
+});
+
+test("nullable capability cost formats missing separately from a genuine zero", () => {
+	assert.equal(formatMissingUsd(null), "unavailable");
+	assert.equal(formatMissingUsd(0), "$0.00");
+	assert.equal(formatMissingUsd(2.45), "$2.45");
 });
 
 test("a partially covered total says how much of the run has reported", () => {

@@ -1,4 +1,3 @@
-// @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { OptimizerAlgorithmInfo, OptimizerRunRecord } from "@synth/runtime-protocol";
@@ -6,9 +5,10 @@ import type { HostedTrainingModel, OptimizerRecipeInfo, OptimizerRunOutputs, Plu
 import { bridges } from "../runtime/desktopBridge";
 import { isLagunaCompatibleAdapter, LOCAL_FT_POLICY } from "../runtime/lagunaPolicies";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
-import { publicError } from "../runtime/publicError";
 import { TrainingWorkspace } from "./TrainingWorkspace";
 import { TrainingEvaluationCurve } from "./TrainingEvaluationCurve";
+import { RunInspector } from "./optimizers/RunInspector";
+import { algorithmLabel, formatWhen, runFacets, runTitle, runWhenMs, sealedWorkCounts, statusChipClass, statusText, truncateMiddle, workFractionLabel } from "./optimizers/runPresentation";
 
 type OptimizerGuide = {
 	id: "gepa" | "go-ex" | "sft" | "cispo" | "ppo" | "eval";
@@ -54,6 +54,21 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 	},
 ];
 
+/**
+ * The page's four surfaces. `runs` is the landing tab: the page's primary job
+ * is inspecting work that exists, not launching more of it. No URL router
+ * exists in this app, so the tab is component state; cross-surface links
+ * (checkpoint → run, checkpoint → hosted launch) switch tabs explicitly
+ * instead of scrolling a single long page.
+ */
+const OPTIMIZER_TABS = [
+	{ id: "runs", label: "Runs" },
+	{ id: "launch", label: "Launch" },
+	{ id: "checkpoints", label: "Checkpoints" },
+	{ id: "plugin", label: "Plugin" }
+] as const;
+type OptimizersTab = (typeof OPTIMIZER_TABS)[number]["id"];
+
 type Props = {
 	onOpenVisual: (visualId: string) => void;
 	onStartAgent: (guide: OptimizerGuide) => Promise<void>;
@@ -69,14 +84,6 @@ function isWorkspaceBaselineEval(recipe: OptimizerRecipeInfo): boolean {
 	return recipe.algorithmId === "eval" && recipe.source === "workspace" && recipe.semantics === "baseline_eval";
 }
 
-function formatWhen(iso: string): string {
-	try {
-		return new Date(iso).toLocaleString();
-	} catch {
-		return iso;
-	}
-}
-
 function formatBytes(value: number | null | undefined): string {
 	if (value == null) return "—";
 	if (value < 1024) return `${value} B`;
@@ -85,13 +92,17 @@ function formatBytes(value: number | null | undefined): string {
 	return `${(value / 1024 ** 3).toFixed(1)} GB`;
 }
 
-function algorithmLabel(id: string): string {
-	if (id === "gepa") return "GEPA";
-	if (id === "go-ex") return "GELO";
-	if (id === "sft") return "SFT";
-	if (id === "cispo") return "CISPO · slime";
-	if (id === "eval") return "Eval";
-	return id;
+/** The generated catalog types `algorithms` as `unknown`; read it defensively. */
+type HostedAlgorithmSupport = { status?: string; block_reason?: string };
+
+function hostedAlgorithmSupport(
+	model: HostedTrainingModel | undefined,
+	algorithm: string
+): HostedAlgorithmSupport | undefined {
+	const algorithms = model?.algorithms;
+	if (!algorithms || typeof algorithms !== "object") return undefined;
+	const entry = (algorithms as Record<string, unknown>)[algorithm];
+	return entry && typeof entry === "object" ? entry as HostedAlgorithmSupport : undefined;
 }
 
 type EvalScorecard = {
@@ -146,14 +157,6 @@ function checkpointValue(value: unknown): Record<string, unknown> {
 	return objectValue(payload.checkpoint ?? payload);
 }
 
-type OptimizerDiagnostic = {
-	title: string;
-	message: string;
-	field?: string;
-	raw?: string;
-	logPath?: string;
-};
-
 type ErrorPresentation = {
 	message: string;
 	details?: string;
@@ -185,36 +188,6 @@ function presentError(reason: unknown): ErrorPresentation {
 		return { message, details };
 	}
 	return { message: "The optimizer operation failed." };
-}
-
-function optimizerDiagnostic(error: unknown): OptimizerDiagnostic | null {
-	if (!error) return null;
-	const value = typeof error === "object" ? error as Record<string, unknown> : {};
-	const message = typeof error === "string"
-		? error
-		: typeof value.message === "string" ? value.message : publicError(error);
-	const raw = typeof value.stderrTail === "string" ? value.stderrTail : message;
-	const missingField = raw.match(/configuration error:\s*([a-z0-9_.]+)\s+is required and must be positive/i)?.[1];
-	if (missingField) {
-		const estimate = missingField.includes("rollout") ? "rollout" : missingField.includes("proposer") ? "proposer" : "optimizer";
-		return {
-			title: `Missing ${estimate} cost estimate`,
-			message: "The safety budget rejected this recipe before compute started.",
-			field: missingField,
-			raw,
-			logPath: typeof value.logPath === "string" ? value.logPath : undefined
-		};
-	}
-	return {
-		title: "Optimizer run failed",
-		message,
-		raw: raw !== message ? raw : undefined,
-		logPath: typeof value.logPath === "string" ? value.logPath : undefined
-	};
-}
-
-function fileName(path: string): string {
-	return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
 
 /**
@@ -281,25 +254,6 @@ const LIFECYCLE_ACTIONS: readonly LifecycleAction[] = [
 	}
 ];
 
-function runTitle(run: OptimizerRunRecord): string {
-	const objective = run.objective ?? run.id;
-	const importedPath = objective.startsWith("imported from ")
-		? objective.slice("imported from ".length)
-		: null;
-	if (!importedPath) return objective;
-	const parts = importedPath.split(/[\\/]/).filter(Boolean);
-	let artifactName = parts.at(-1)?.includes("events.") ? parts.at(-2) : parts.at(-1);
-	if (artifactName === "artifacts") artifactName = parts.at(-3);
-	const algorithmTokens = new Set([run.algorithmId, algorithmLabel(run.algorithmId), "goex"]
-		.map((token) => token.toLowerCase().replace(/[^a-z0-9]/g, "")));
-	return (artifactName ?? run.id)
-		.split(/[_-]+/g)
-		.filter((token) => !algorithmTokens.has(token.toLowerCase().replace(/[^a-z0-9]/g, "")))
-		.join(" ")
-		.replace(/\bmed\b/gi, "medium")
-		.replace(/\b\w/g, (character) => character.toUpperCase());
-}
-
 export function OptimizersPage({
 	onOpenVisual,
 	onStartAgent,
@@ -308,12 +262,21 @@ export function OptimizersPage({
 	pluginStatuses = null,
 	onRefreshPlugins
 }: Props) {
+	const [tab, setTab] = useState<OptimizersTab>("runs");
 	const [runs, setRuns] = useState<OptimizerRunRecord[]>([]);
 	const [algorithms, setAlgorithms] = useState<OptimizerAlgorithmInfo[]>([]);
 	const [search, setSearch] = useState("");
 	const [status, setStatus] = useState("all");
 	const [algorithm, setAlgorithm] = useState("all");
 	const [source, setSource] = useState("all");
+	// Client-side facets over the loaded records; the list command has no
+	// recipe/container/model/date parameters, and the facets live in fields
+	// the payload already carries (summary, inputRefs, executionBindings).
+	const [recipeFilter, setRecipeFilter] = useState("all");
+	const [containerFilter, setContainerFilter] = useState("all");
+	const [modelFilter, setModelFilter] = useState("all");
+	const [dateFrom, setDateFrom] = useState("");
+	const [dateTo, setDateTo] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const [errorDetails, setErrorDetails] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
@@ -367,6 +330,19 @@ export function OptimizersPage({
 		setPluginOverride(null);
 		await onRefreshPlugins?.();
 	}, [onRefreshPlugins]);
+
+	/**
+	 * Switch tabs, then bring one section into view and hand it focus. The
+	 * timeout matters: the target section only exists after the tab renders.
+	 */
+	const revealSection = useCallback((nextTab: OptimizersTab, selector: string) => {
+		setTab(nextTab);
+		window.setTimeout(() => {
+			const element = document.querySelector<HTMLElement>(selector);
+			element?.scrollIntoView({ behavior: "smooth", block: "start" });
+			element?.focus({ preventScroll: true });
+		}, 0);
+	}, []);
 
 	const runLifecycle = async (action: LifecycleAction) => {
 		if (!bridges.plugins?.manage || !plugin) return;
@@ -436,7 +412,7 @@ export function OptimizersPage({
 			setHostedTrainingModels(catalog.models);
 			setHostedModelCatalogRevision(catalog.catalogRevision);
 			if (!catalog.models.some((model) => model.modelId === trainingModel)) {
-				const preferred = catalog.models.find((model) => model.algorithms[trainingAlgorithm]?.status !== "blocked");
+				const preferred = catalog.models.find((model) => hostedAlgorithmSupport(model, trainingAlgorithm)?.status !== "blocked");
 				if (preferred) setTrainingModel(preferred.modelId);
 			}
 		}).catch((reason) => {
@@ -486,7 +462,7 @@ export function OptimizersPage({
 		}).then((page) => {
 			if (!live) return;
 			setHostedSftWarmStarts(page.items.filter((checkpoint) =>
-				Boolean(checkpoint.lineage.providerCheckpointReference ?? checkpoint.providerCheckpointReference)
+				Boolean(checkpoint.lineage?.providerCheckpointReference ?? checkpoint.providerCheckpointReference)
 			));
 		}).catch((reason) => {
 			if (live) setError(presentError(reason).message);
@@ -609,7 +585,7 @@ export function OptimizersPage({
 
 	const openCheckpointRun = async (checkpoint: SavedLoraCheckpoint) => {
 		if (!bridges.optimizers) return;
-		const runId = checkpoint.lineage.runId ?? checkpoint.runId;
+		const runId = checkpoint.lineage?.runId ?? checkpoint.runId;
 		if (!runId) return;
 		try {
 			if (!runs.some((run) => run.id === runId)) {
@@ -617,7 +593,7 @@ export function OptimizersPage({
 				setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
 			}
 			setSelectedId(runId);
-			window.setTimeout(() => document.getElementById("optimizer-run-inspector")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+			revealSection("runs", "#optimizer-run-inspector");
 		} catch (reason) {
 			setError(presentError(reason).message);
 		}
@@ -625,13 +601,55 @@ export function OptimizersPage({
 
 	const showCheckpointInCatalog = (checkpoint: SavedLoraCheckpoint) => {
 		setSavedLoraSearch(checkpoint.name);
-		window.setTimeout(() => document.getElementById("optimizer-checkpoint-library")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+		revealSection("checkpoints", "#optimizer-checkpoint-library");
 	};
 
 	const selected = useMemo(
 		() => runs.find((run) => run.id === selectedId) ?? null,
 		[runs, selectedId]
 	);
+
+	const facetsById = useMemo(
+		() => new Map(runs.map((run) => [run.id, runFacets(run)] as const)),
+		[runs]
+	);
+	const facetOptions = useMemo(() => {
+		const recipes = new Set<string>();
+		const containers = new Set<string>();
+		const models = new Set<string>();
+		for (const facets of facetsById.values()) {
+			if (facets.recipeId) recipes.add(facets.recipeId);
+			if (facets.containerId) containers.add(facets.containerId);
+			if (facets.model) models.add(facets.model);
+		}
+		const sorted = (values: Set<string>) => [...values].sort((a, b) => a.localeCompare(b));
+		return { recipes: sorted(recipes), containers: sorted(containers), models: sorted(models) };
+	}, [facetsById]);
+	const clientFiltersActive = recipeFilter !== "all" || containerFilter !== "all"
+		|| modelFilter !== "all" || dateFrom !== "" || dateTo !== "";
+	const clearClientFilters = () => {
+		setRecipeFilter("all");
+		setContainerFilter("all");
+		setModelFilter("all");
+		setDateFrom("");
+		setDateTo("");
+	};
+	const visibleRuns = useMemo(() => {
+		if (!clientFiltersActive) return runs;
+		// Local midnight bounds: the inputs are dates, not instants.
+		const fromMs = dateFrom ? new Date(`${dateFrom}T00:00:00`).getTime() : null;
+		const toMs = dateTo ? new Date(`${dateTo}T23:59:59.999`).getTime() : null;
+		return runs.filter((run) => {
+			const facets = facetsById.get(run.id) ?? { recipeId: null, containerId: null, model: null };
+			if (recipeFilter !== "all" && facets.recipeId !== recipeFilter) return false;
+			if (containerFilter !== "all" && facets.containerId !== containerFilter) return false;
+			if (modelFilter !== "all" && facets.model !== modelFilter) return false;
+			const when = runWhenMs(run);
+			if (fromMs != null && when < fromMs) return false;
+			if (toMs != null && when > toMs) return false;
+			return true;
+		});
+	}, [clientFiltersActive, containerFilter, dateFrom, dateTo, facetsById, modelFilter, recipeFilter, runs]);
 
 	useEffect(() => {
 		if (!selected || selected.source !== "cloud" || !bridges.optimizers) {
@@ -740,7 +758,7 @@ export function OptimizersPage({
 	const reviewTrainingLaunch = async () => {
 		const guide = OPTIMIZER_GUIDES.find((item) => item.id === trainingAlgorithm);
 		if (!guide) return;
-		const warmStartReference = selectedWarmStart?.lineage.providerCheckpointReference
+		const warmStartReference = selectedWarmStart?.lineage?.providerCheckpointReference
 			?? selectedWarmStart?.providerCheckpointReference;
 		if (trainingAlgorithm === "cispo" && (!selectedWarmStart || !warmStartReference)) {
 			setError("Select a ready Tinker SFT training-state checkpoint before launching hosted CISPO.");
@@ -751,7 +769,7 @@ export function OptimizersPage({
 			return;
 		}
 		const warmStartLines = selectedWarmStart && warmStartReference
-			? `\n- SFT checkpoint id: ${selectedWarmStart.checkpointId}\n- SFT provider state: ${warmStartReference}\n- producing SFT run: ${selectedWarmStart.lineage.runId ?? selectedWarmStart.runId ?? "unknown"}\n- SFT base model: ${selectedWarmStart.baseModel}`
+			? `\n- SFT checkpoint id: ${selectedWarmStart.checkpointId}\n- SFT provider state: ${warmStartReference}\n- producing SFT run: ${selectedWarmStart.lineage?.runId ?? selectedWarmStart.runId ?? "unknown"}\n- SFT base model: ${selectedWarmStart.baseModel}`
 			: "";
 		await startAgent({
 			...guide,
@@ -776,7 +794,7 @@ export function OptimizersPage({
 			name: action === "evaluate" ? "Evaluate checkpoint" : action === "resume" ? "Resume checkpoint" : "Compare and report",
 			description: `${actionPrompt} Run ${selected.id}, checkpoint ${checkpointId}.`,
 			flow: action === "resume" ? ["Preflight", "Resume", "Follow"] : ["Evaluate", "Compare", "Report"],
-			prompt: `${actionPrompt}\n\nRun: ${selected.id}\nAlgorithm: ${selected.algorithmId}\nCheckpoint: ${checkpointId}\nTask: ${String(selected.summary?.taskId ?? "from the sealed run config")}\nDo not substitute another checkpoint. Verify ready/evaluation/resume eligibility from canonical backend evidence before acting.`
+			prompt: `${actionPrompt}\n\nRun: ${selected.id}\nAlgorithm: ${selected.algorithmId}\nCheckpoint: ${checkpointId}\nTask: ${String(objectValue(selected.summary).taskId ?? "from the sealed run config")}\nDo not substitute another checkpoint. Verify ready/evaluation/resume eligibility from canonical backend evidence before acting.`
 		});
 	};
 
@@ -792,7 +810,7 @@ export function OptimizersPage({
 			});
 			setSelectedId(run.id);
 			await refresh();
-			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
+			const visualId = run.visualRefs?.find((ref) => ref.kind === "visual")?.id;
 			if (visualId) onOpenVisual(visualId);
 		} catch (reason) {
 			setError(presentError(reason).message);
@@ -806,7 +824,7 @@ export function OptimizersPage({
 		setBusy(true);
 		try {
 			const run = await bridges.optimizers.openVisual(selected.id);
-			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
+			const visualId = run.visualRefs?.find((ref) => ref.kind === "visual")?.id;
 			if (visualId) onOpenVisual(visualId);
 			await refresh();
 		} catch (reason) {
@@ -831,7 +849,7 @@ export function OptimizersPage({
 			});
 			setSelectedId(run.id);
 			await refresh();
-			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
+			const visualId = run.visualRefs?.find((ref) => ref.kind === "visual")?.id;
 			if (visualId) onOpenVisual(visualId);
 		} catch (reason) {
 			setError(presentError(reason).message);
@@ -871,23 +889,19 @@ export function OptimizersPage({
 	};
 
 	const selectedExecution = selected
-		? selected.executionBindings.length > 0
-			? selected.executionBindings.map((binding) => binding.label ?? binding.kind).join(" · ")
+		? (selected.executionBindings ?? []).length > 0
+			? (selected.executionBindings ?? []).map((binding) => binding.label ?? binding.kind).join(" · ")
 			: selected.source === "hosted"
 				? "Hosted service"
 				: selected.source === "cloud"
 					? "Cloud managed"
 					: "Local process"
 		: null;
-	const selectedDiagnostic = optimizerDiagnostic(selected?.error);
-	const selectedRunDirectory = selected && typeof selected.summary?.runDirectory === "string"
-		? selected.summary.runDirectory
-		: null;
 	const selectedTrainingUsage = trainingProjection?.provider_usage ?? null;
 	const selectedTrainingCheckpoints = trainingProjection?.checkpoints.map(checkpointValue) ?? [];
 	const selectedTrainingEvaluations = trainingProjection?.evaluations ?? [];
 	const selectedHostedModel = hostedTrainingModels.find((model) => model.modelId === trainingModel);
-	const selectedHostedSupport = selectedHostedModel?.algorithms[trainingAlgorithm];
+	const selectedHostedSupport = hostedAlgorithmSupport(selectedHostedModel, trainingAlgorithm);
 	const selectedWarmStart = hostedSftWarmStarts.find((checkpoint) => checkpoint.checkpointId === trainingWarmStartCheckpointId);
 	const hostedCispoAdmitted = hostedCispoRecipe?.availability === "available";
 	const localCispoAvailable = localCispoRecipe?.availability === "available";
@@ -958,7 +972,25 @@ export function OptimizersPage({
 					) : null}
 				</section>
 			) : null}
-			{plugin ? (
+
+			<nav className="optimizer-tabs" aria-label="Optimizer sections" data-testid="optimizer-tabs">
+				{OPTIMIZER_TABS.map((item) => (
+					<button
+						key={item.id}
+						type="button"
+						aria-current={tab === item.id ? "page" : undefined}
+						onClick={() => setTab(item.id)}
+						data-testid={`optimizer-tab-${item.id}`}
+					>
+						{item.label}
+						{item.id === "plugin" && presentation.label && (presentation.tone === "warning" || presentation.tone === "danger") ? (
+							<span className="optimizer-tab-flag" data-tone={presentation.tone}>{presentation.label}</span>
+						) : null}
+					</button>
+				))}
+			</nav>
+
+			{tab === "plugin" ? (plugin ? (
 				<section className="optimizer-plugin-status" data-testid="optimizer-plugin-status" data-phase={plugin.phase}>
 					<div className="optimizer-plugin-summary">
 						<span className="optimizer-eyebrow">Plugin</span>
@@ -1013,8 +1045,15 @@ export function OptimizersPage({
 						</p>
 					) : null}
 				</section>
-			) : null}
+			) : (
+				<div className="optimizer-empty" role="status" data-testid="optimizer-plugin-missing">
+					<span className="optimizer-empty-icon" aria-hidden>◌</span>
+					<strong>No plugin status reported</strong>
+					<p>The plugin registry has not reported the Optimizers plugin in this session. Lifecycle controls appear when it does.</p>
+				</div>
+			)) : null}
 
+			{tab === "launch" ? (<>
 			<TrainingWorkspace onStartAgent={() => { const guide = OPTIMIZER_GUIDES.find((item) => item.id === "sft"); if (guide) void startAgent(guide); }} />
 
 			<section className="optimizer-recipes" aria-labelledby="optimizer-recipes-title">
@@ -1070,7 +1109,7 @@ export function OptimizersPage({
 				</div>
 				{hostedCispoAdmitted ? <><div className="optimizer-training-form">
 					<label><span>Algorithm</span><select value={trainingAlgorithm} disabled><option value="cispo">CISPO · slime reference</option></select></label>
-					<label><span>Model</span><select value={trainingModel} onChange={(event) => setTrainingModel(event.target.value)}>{hostedTrainingModels.map((model) => { const support = model.algorithms[trainingAlgorithm]; return <option key={model.modelId} value={model.modelId} disabled={support?.status === "blocked"}>{model.label} · {support?.status ?? "not validated"}</option>; })}</select></label>
+					<label><span>Model</span><select value={trainingModel} onChange={(event) => setTrainingModel(event.target.value)}>{hostedTrainingModels.map((model) => { const support = hostedAlgorithmSupport(model, trainingAlgorithm); return <option key={model.modelId} value={model.modelId} disabled={support?.status === "blocked"}>{model.label} · {support?.status ?? "not validated"}</option>; })}</select></label>
 					{trainingAlgorithm === "cispo" ? <label><span>SFT warm start</span><select aria-label="SFT warm-start checkpoint" value={trainingWarmStartCheckpointId} onChange={(event) => setTrainingWarmStartCheckpointId(event.target.value)} data-testid="hosted-cispo-warm-start"><option value="">Select a retained SFT training state…</option>{hostedSftWarmStarts.map((checkpoint) => <option key={checkpoint.checkpointId} value={checkpoint.checkpointId}>{checkpoint.name} · {checkpoint.baseModel} · step {checkpoint.step ?? "—"}</option>)}</select></label> : null}
 					<label><span>Task</span><input value={trainingTask} onChange={(event) => setTrainingTask(event.target.value)} /></label>
 					<label><span>Local Container URL</span><input value={trainingContainerUrl} onChange={(event) => setTrainingContainerUrl(event.target.value)} /></label>
@@ -1081,7 +1120,7 @@ export function OptimizersPage({
 				</div>
 				<div className="optimizer-training-launch-actions">
 					<button className="primary-button" type="button" disabled={startingAgent !== null || hostedLaunchBlocked || !trainingModel.trim() || !trainingTask.trim() || !trainingContainerUrl.trim()} onClick={() => void reviewTrainingLaunch()} data-testid="review-hosted-training-launch">Review &amp; launch</button>
-					{hostedLaunchBlocked ? <span className="optimizer-status failed">Unavailable</span> : null}
+					{hostedLaunchBlocked ? <span className="optimizer-availability" data-available={false}>Unavailable</span> : null}
 					<small>{trainingAlgorithm === "cispo" && !selectedWarmStart ? "Select a ready Tinker SFT training-state checkpoint; hosted CISPO never defaults to latest." : warmStartMismatch ? `Checkpoint/model mismatch: ${selectedWarmStart?.baseModel} ≠ ${trainingModel}.` : hostedLaunchBlocked ? selectedHostedSupport?.block_reason ?? "This model and algorithm combination is not admitted by the hosted catalog." : `Warm-start ${selectedWarmStart?.checkpointId} → CISPO → ${trainingTask}.`}{hostedModelCatalogRevision ? ` Catalog ${hostedModelCatalogRevision}; live provider preflight still required.` : ""}</small>
 				</div></> : (
 					<div className="optimizer-empty" data-testid="hosted-cispo-not-admitted" role="status">
@@ -1096,8 +1135,10 @@ export function OptimizersPage({
 					</div>
 				)}
 			</section>
+			</>) : null}
 
-			<section id="optimizer-checkpoint-library" className="optimizer-checkpoint-library" aria-labelledby="optimizer-checkpoint-library-title" data-testid="optimizer-checkpoint-library">
+			{tab === "checkpoints" ? (
+			<section id="optimizer-checkpoint-library" className="optimizer-checkpoint-library" aria-labelledby="optimizer-checkpoint-library-title" data-testid="optimizer-checkpoint-library" tabIndex={-1}>
 				<div className="optimizer-recipes-head">
 					<div><span className="optimizer-eyebrow">This Mac MLX · hosted Tinker SFT/CISPO</span><h2 id="optimizer-checkpoint-library-title">Checkpoint catalog</h2></div>
 					<p>{savedLoraTotal} visible. Inference LoRAs can be called with Chat Completions or Responses.</p>
@@ -1132,16 +1173,17 @@ export function OptimizersPage({
 							<p>{checkpoint.baseModel}</p>
 							<label className="optimizer-search"><span>Notes</span><input aria-label="Checkpoint notes" defaultValue={checkpoint.description} key={`${checkpoint.checkpointId}-notes-${checkpoint.updatedAt ?? ""}`} onBlur={(event) => { const description = event.target.value; if (description !== checkpoint.description) void patchSavedLora(checkpoint, { description }); }} /></label>
 							<label className="optimizer-search"><span>Tags</span><input aria-label="Checkpoint tags" defaultValue={checkpoint.tags.join(", ")} placeholder="comma-separated tags" key={`${checkpoint.checkpointId}-tags-${checkpoint.tags.join(",")}`} onBlur={(event) => { const tags = event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean); if (tags.join(",") !== checkpoint.tags.join(",")) void patchSavedLora(checkpoint, { tags }); }} /></label>
-							<dl><dt>Placement</dt><dd>{checkpoint.placement === "this_mac" ? "This Mac" : "Hosted"}</dd><dt>Base</dt><dd>{checkpoint.baseModel}</dd><dt>Algorithm</dt><dd>{checkpoint.lineage.optimizerAlgorithm ?? checkpoint.optimizerAlgorithm ?? "Imported"}</dd><dt>Run</dt><dd>{checkpoint.lineage.runId ?? checkpoint.runId ?? "—"}</dd><dt>Attempt</dt><dd>{checkpoint.lineage.attemptId ?? checkpoint.attemptId ?? "—"}</dd><dt>Source</dt><dd>{checkpoint.lineage.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? "—"}</dd><dt>Provider</dt><dd>{checkpoint.provider} · {checkpoint.checkpointKind}</dd><dt>Rank / step</dt><dd>{checkpoint.loraRank ?? "—"} / {checkpoint.step ?? "—"}</dd><dt>Storage</dt><dd>{checkpoint.storage.backend} · {formatBytes(checkpoint.storage.sizeBytes)}</dd><dt>Saved</dt><dd>{checkpoint.updatedAt ? formatWhen(checkpoint.updatedAt) : "—"}</dd></dl>
+							<dl><dt>Placement</dt><dd>{checkpoint.placement === "this_mac" ? "This Mac" : "Hosted"}</dd><dt>Base</dt><dd>{checkpoint.baseModel}</dd><dt>Algorithm</dt><dd>{checkpoint.lineage?.optimizerAlgorithm ?? checkpoint.optimizerAlgorithm ?? "Imported"}</dd><dt>Run</dt><dd>{checkpoint.lineage?.runId ?? checkpoint.runId ?? "—"}</dd><dt>Attempt</dt><dd>{checkpoint.lineage?.attemptId ?? checkpoint.attemptId ?? "—"}</dd><dt>Source</dt><dd>{checkpoint.lineage?.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? "—"}</dd><dt>Provider</dt><dd>{checkpoint.provider} · {checkpoint.checkpointKind}</dd><dt>Rank / step</dt><dd>{checkpoint.loraRank ?? "—"} / {checkpoint.step ?? "—"}</dd><dt>Storage</dt><dd>{checkpoint.storage.backend} · {formatBytes(checkpoint.storage.sizeBytes)}</dd><dt>Saved</dt><dd>{checkpoint.updatedAt ? formatWhen(checkpoint.updatedAt) : "—"}</dd></dl>
 							{checkpoint.tags.length > 0 ? <div className="optimizer-checkpoint-tags">{checkpoint.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
-							<div className="optimizer-checkpoint-actions">{hostedCispoAdmitted && hostedSftWarmStarts.some((candidate) => candidate.checkpointId === checkpoint.checkpointId) ? <button className="primary-button" type="button" onClick={() => { setTrainingAlgorithm("cispo"); setTrainingTask("banking77"); setTrainingModel(checkpoint.baseModel); setTrainingWarmStartCheckpointId(checkpoint.checkpointId); document.querySelector<HTMLElement>("[data-testid='optimizer-training-launch']")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} data-testid={`use-for-cispo-${checkpoint.checkpointId}`}>Use for hosted CISPO</button> : null}{checkpoint.lineage.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}{checkpoint.inferenceChatCompletions ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "chat_completions")}>{inferringId === `${checkpoint.checkpointId}:chat_completions` ? "Sampling…" : "Chat Completions"}</button> : null}{checkpoint.inferenceResponses ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "responses")}>{inferringId === `${checkpoint.checkpointId}:responses` ? "Sampling…" : "Responses"}</button> : null}{isLagunaCompatibleAdapter(checkpoint) ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void useInComposer(checkpoint)} data-testid={`use-in-composer-${checkpoint.checkpointId}`}>Use in Composer</button> : null}{checkpoint.placement === "this_mac" ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void publishSavedLora(checkpoint)}>Publish</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
+							<div className="optimizer-checkpoint-actions">{hostedCispoAdmitted && hostedSftWarmStarts.some((candidate) => candidate.checkpointId === checkpoint.checkpointId) ? <button className="primary-button" type="button" onClick={() => { setTrainingTask("banking77"); setTrainingModel(checkpoint.baseModel); setTrainingWarmStartCheckpointId(checkpoint.checkpointId); revealSection("launch", "[data-testid='optimizer-training-launch']"); }} data-testid={`use-for-cispo-${checkpoint.checkpointId}`}>Use for hosted CISPO</button> : null}{checkpoint.lineage?.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}{checkpoint.inferenceChatCompletions ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "chat_completions")}>{inferringId === `${checkpoint.checkpointId}:chat_completions` ? "Sampling…" : "Chat Completions"}</button> : null}{checkpoint.inferenceResponses ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "responses")}>{inferringId === `${checkpoint.checkpointId}:responses` ? "Sampling…" : "Responses"}</button> : null}{isLagunaCompatibleAdapter(checkpoint) ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void useInComposer(checkpoint)} data-testid={`use-in-composer-${checkpoint.checkpointId}`}>Use in Composer</button> : null}{checkpoint.placement === "this_mac" ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void publishSavedLora(checkpoint)}>Publish</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
 						</article>
 					))}
 					{savedLoras.length === 0 && !savedLoraBusy ? <div className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>◇</span><strong>No checkpoints match</strong><p>Local MLX adapters appear when a This Mac recipe emits them, or when you import an mlx-lora.v1 folder. Hosted SFT/CISPO LoRAs appear after object-storage verification.</p></div> : null}
 				</div>
 			</section>
+			) : null}
 
-			{evalRecipes.length > 0 ? (
+			{tab === "launch" && evalRecipes.length > 0 ? (
 				<section className="optimizer-recipes optimizer-eval-catalog" aria-labelledby="optimizer-eval-title">
 					<div className="optimizer-recipes-head">
 						<div><span className="optimizer-eyebrow">Eval · local</span><h2 id="optimizer-eval-title">Score staged policies</h2></div>
@@ -1149,27 +1191,63 @@ export function OptimizersPage({
 					</div>
 					<div className="optimizer-recipe-grid">
 						{evalRecipes.map((recipe) => {
+							// Only fields a producer actually writes: `limits.trials`,
+							// `budget.max_usd`, `models`, task/source/semantics, and the
+							// admission booleans projected by eval_recipes.rs. The old
+							// screening/confirmation/selection keys were never produced.
 							const limits = (recipe.limits ?? {}) as Record<string, unknown>;
-							const screening = (limits.screeningSeeds as number[] | undefined) ?? [];
-							const confirmation = (limits.confirmationSeeds as number[] | undefined) ?? [];
-							const selection = (limits.selection as Record<string, unknown> | undefined) ?? {};
+							const budget = (recipe.budget ?? {}) as Record<string, unknown>;
+							const models = (recipe.models ?? [])
+								.map((model) => (typeof model.id === "string" ? model.id : null))
+								.filter((id): id is string => id != null);
 							const available = recipe.availability === "available";
+							const admissionError = recipe.admissionError && typeof recipe.admissionError === "object"
+								? recipe.admissionError as Record<string, unknown>
+								: null;
+							const admissionReason = [admissionError?.message, admissionError?.error, admissionError?.detail]
+								.find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)
+								?? recipe.availabilityReason
+								?? null;
+							const admissionFlags = [
+								{ id: "recipe-discovered", label: "Recipe", ok: recipe.recipeDiscovered },
+								{ id: "execution-supported", label: "Execution", ok: recipe.executionSupported },
+								{ id: "target-present", label: "Target", ok: recipe.targetPresent },
+								{ id: "target-digest", label: "Digest", ok: recipe.targetDigestMatches },
+								{ id: "target-admitted", label: "Admitted", ok: recipe.targetAdmitted }
+							].filter((flag): flag is { id: string; label: string; ok: boolean } => typeof flag.ok === "boolean");
 							return (
 								<article className="optimizer-recipe-card" aria-labelledby={`optimizer-eval-${recipe.id}`} data-testid={`optimizer-eval-recipe-${recipe.id}`} key={recipe.id}>
 									<div className="optimizer-recipe-top">
 										<span className="optimizer-recipe-mark">EV</span>
-										<span className={`optimizer-status ${available ? "completed" : "failed"}`}>{recipe.availability}</span>
+										<span className="optimizer-availability" data-available={available} data-testid={`optimizer-eval-availability-${recipe.id}`}>{recipe.availability}</span>
 									</div>
 									<h3 id={`optimizer-eval-${recipe.id}`}>{recipe.title}</h3>
 									<code className="optimizer-eval-id">{recipe.id}</code>
 									<dl className="optimizer-eval-limits">
-										<dt>Screen</dt><dd>{screening.join(", ") || "—"}</dd>
-										<dt>Confirm</dt><dd>{confirmation.join(", ") || "—"}</dd>
-										<dt>Primary</dt><dd>{String(selection.primary_metric ?? "—")}</dd>
-										<dt>Decision</dt><dd>{String(selection.decision_mode ?? "—")}</dd>
-										<dt>Parallel</dt><dd>{String(limits.max_parallel_trials ?? "—")}</dd>
+										<dt>Trials</dt><dd>{limits.trials != null ? String(limits.trials) : "—"}</dd>
+										<dt>Budget</dt><dd>{typeof budget.max_usd === "number" ? `$${budget.max_usd.toFixed(2)}` : "—"}</dd>
+										<dt>Models</dt><dd>{models.join(", ") || "—"}</dd>
+										<dt>Task</dt><dd>{recipe.task ?? "—"}</dd>
+										<dt>Source</dt><dd>{[recipe.source, recipe.semantics].filter(Boolean).join(" · ") || "—"}</dd>
 									</dl>
-									{recipe.availabilityReason ? <small data-testid={`optimizer-eval-blocked-${recipe.id}`}>{recipe.availabilityReason}</small> : null}
+									{admissionFlags.length > 0 ? (
+										<ul className="optimizer-admission" aria-label={`${recipe.title} admission checks`} data-testid={`optimizer-eval-admission-${recipe.id}`}>
+											{admissionFlags.map((flag) => (
+												<li
+													key={flag.id}
+													className="optimizer-admission-flag"
+													data-ok={flag.ok}
+													data-testid={`optimizer-eval-admission-${recipe.id}-${flag.id}`}
+													title={flag.ok ? undefined : admissionReason ?? undefined}
+												>
+													<span aria-hidden>{flag.ok ? "✓" : "✕"}</span>
+													{flag.label}
+													<span className="sr-only">{flag.ok ? " passed" : admissionReason ? `: ${admissionReason}` : " failed"}</span>
+												</li>
+											))}
+										</ul>
+									) : null}
+									{!available && admissionReason ? <small data-testid={`optimizer-eval-blocked-${recipe.id}`}>{admissionReason}</small> : null}
 									<button
 										className="secondary-button"
 										type="button"
@@ -1201,6 +1279,7 @@ export function OptimizersPage({
 				</section>
 			) : null}
 
+			{tab === "runs" ? (<>
 			<div className="optimizer-toolbar" data-testid="optimizer-toolbar">
 				<div className="optimizer-filters">
 					<label className="optimizer-search">
@@ -1217,70 +1296,100 @@ export function OptimizersPage({
 					<select aria-label="Source filter" value={source} onChange={(e) => setSource(e.target.value)}>
 						<option value="all">All sources</option><option value="local">Local</option><option value="hosted">Hosted</option><option value="cloud">Cloud</option>
 					</select>
+					<select aria-label="Recipe filter" value={recipeFilter} onChange={(e) => setRecipeFilter(e.target.value)} data-testid="optimizer-filter-recipe">
+						<option value="all">All recipes</option>
+						{facetOptions.recipes.map((id) => <option key={id} value={id}>{id}</option>)}
+					</select>
+					<select aria-label="Container filter" value={containerFilter} onChange={(e) => setContainerFilter(e.target.value)} data-testid="optimizer-filter-container">
+						<option value="all">All containers</option>
+						{facetOptions.containers.map((id) => <option key={id} value={id}>{id}</option>)}
+					</select>
+					<select aria-label="Model filter" value={modelFilter} onChange={(e) => setModelFilter(e.target.value)} data-testid="optimizer-filter-model">
+						<option value="all">All models</option>
+						{facetOptions.models.map((id) => <option key={id} value={id}>{id}</option>)}
+					</select>
+					<label className="optimizer-date-filter"><span>From</span><input type="date" aria-label="Runs from date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} data-testid="optimizer-filter-date-from" /></label>
+					<label className="optimizer-date-filter"><span>To</span><input type="date" aria-label="Runs to date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} data-testid="optimizer-filter-date-to" /></label>
+					{clientFiltersActive ? (
+						<button className="secondary-button" type="button" onClick={clearClientFilters} data-testid="optimizer-clear-filters">Clear</button>
+					) : null}
 				</div>
 			</div>
 
 			<div className="optimizer-workbench">
 				<section className="optimizer-runs" aria-label="Optimizer runs">
-					<div className="optimizer-section-head"><div><span className="optimizer-eyebrow">Runs</span><strong>{runs.length} total</strong></div></div>
+					<div className="optimizer-section-head"><div><span className="optimizer-eyebrow">Runs</span><strong data-testid="optimizer-run-count">{clientFiltersActive ? `${visibleRuns.length} of ${runs.length}` : `${runs.length} total`}</strong></div></div>
 					<ul className="inventory-list optimizer-list">
-						{runs.map((run) => (
-							<li key={run.id}>
-								<button
-									type="button"
-									className={`inventory-row${selectedId === run.id ? " active" : ""}`}
-									data-testid={`optimizer-run-${run.id}`}
-									onClick={() => setSelectedId(run.id)}
-								>
-									<span className="optimizer-run-main"><span className="optimizer-algorithm">{algorithmLabel(run.algorithmId)}</span><strong>{runTitle(run)}</strong><small>{formatWhen(run.finishedAt ?? run.startedAt ?? run.createdAt)}</small></span>
-									<span className="optimizer-run-meta"><span className={`optimizer-status ${run.status}`}>{run.status}</span><small>{run.source} · {run.usage.costUsd == null ? "—" : `$${run.usage.costUsd.toFixed(2)}`}</small></span>
-								</button>
+						{visibleRuns.map((run) => {
+							// The mini-fraction comes from the sealed terminal manifest the
+							// list payload already carries. Live runs report their counts
+							// through the event log, not the list record, so they show the
+							// usage rollout floor when one exists and nothing otherwise —
+							// never a fabricated zero.
+							const counts = sealedWorkCounts(run);
+							const fraction = counts
+								? workFractionLabel(counts)
+								: run.usage?.rollouts
+									? `${run.usage.rollouts} rollouts`
+									: null;
+							return (
+								<li key={run.id}>
+									<button
+										type="button"
+										className={`inventory-row${selectedId === run.id ? " active" : ""}`}
+										data-testid={`optimizer-run-${run.id}`}
+										onClick={() => setSelectedId(run.id)}
+									>
+										<span className="optimizer-run-main">
+											<span className="optimizer-algorithm">{algorithmLabel(run.algorithmId)}</span>
+											<strong>{runTitle(run)}</strong>
+											<small>
+												<code className="optimizer-run-id-inline" title={run.id}>{truncateMiddle(run.id)}</code>
+												{" · "}
+												{run.finishedAt ? `finished ${formatWhen(run.finishedAt)}` : formatWhen(run.startedAt ?? run.createdAt)}
+											</small>
+										</span>
+										<span className="optimizer-run-meta">
+											<span className={statusChipClass(run.status)}>{statusText(run.status)}</span>
+											<small data-testid={`optimizer-run-facts-${run.id}`}>
+												{fraction ? `${fraction} · ` : ""}
+												{run.source} · {run.usage?.costUsd == null ? "—" : `$${run.usage.costUsd.toFixed(2)}`}
+											</small>
+										</span>
+									</button>
+								</li>
+							);
+						})}
+						{runs.length === 0 ? (
+							<li className="optimizer-empty" data-testid="optimizer-runs-empty">
+								<span className="optimizer-empty-icon" aria-hidden>↗</span>
+								<strong>No optimizer runs yet</strong>
+								<p>Plan one on the Launch tab, import an existing run, or sync cloud history.</p>
+								<button className="secondary-button" type="button" onClick={() => setTab("launch")} data-testid="optimizer-runs-empty-launch">Open Launch</button>
 							</li>
-						))}
-						{runs.length === 0 ? <li className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>↗</span><strong>No optimizer runs yet</strong><p>Plan one with an agent above, import an existing run, or sync cloud history.</p></li> : null}
+						) : visibleRuns.length === 0 ? (
+							<li className="optimizer-empty" data-testid="optimizer-runs-filtered-empty">
+								<span className="optimizer-empty-icon" aria-hidden>⌕</span>
+								<strong>No runs match these filters</strong>
+								<p>
+									{runs.length} loaded run{runs.length === 1 ? "" : "s"} were filtered out.
+									Recipe, container, and model are read from each run record; a run whose
+									producer never recorded that fact cannot match its filter.
+								</p>
+								<button className="secondary-button" type="button" onClick={clearClientFilters} data-testid="optimizer-runs-clear-filters">Clear filters</button>
+							</li>
+						) : null}
 					</ul>
 				</section>
 
-				<section id="optimizer-run-inspector" className="optimizer-inspector" aria-label="Optimizer inspector">
+				<section id="optimizer-run-inspector" className="optimizer-inspector" aria-label="Optimizer inspector" tabIndex={-1}>
 					{selected ? (
-						<div data-testid="optimizer-inspector">
-							<span className="optimizer-eyebrow">Run details</span><h2>{algorithmLabel(selected.algorithmId)}</h2><p>{runTitle(selected)}</p>
-							<dl>
-								<dt>Status</dt><dd>{selected.status}</dd>
-								<dt>Source</dt><dd>{selected.source}</dd>
-								<dt>Execution</dt><dd data-testid="optimizer-execution-mode">{selectedExecution}</dd>
-								<dt>Live events</dt><dd>{selected.capabilities.streamEvents ? "Available" : "Replay / refresh"}</dd>
-								<dt>Cursor</dt><dd>{selected.cursorSeq}</dd>
-								<dt>Cost</dt><dd>{selected.usage.costUsd == null ? "—" : `$${selected.usage.costUsd.toFixed(2)}`}</dd>
-								<dt>Created</dt><dd>{formatWhen(selected.createdAt)}</dd>
-							</dl>
-							{selectedDiagnostic ? (
-								<section className="optimizer-diagnostic" role="alert" data-testid="optimizer-diagnostic">
-									<span className="optimizer-diagnostic-kicker">Why it stopped</span>
-									<strong>{selectedDiagnostic.title}</strong>
-									<p>{selectedDiagnostic.message}</p>
-									{selectedDiagnostic.field ? <code className="optimizer-diagnostic-field">{selectedDiagnostic.field}</code> : null}
-									{selectedDiagnostic.raw ? (
-										<details className="optimizer-diagnostic-details">
-											<summary>Show technical details</summary>
-											<pre data-testid="optimizer-stderr-tail">{selectedDiagnostic.raw}</pre>
-										</details>
-									) : null}
-									{selectedDiagnostic.logPath ? <small>Log · {fileName(selectedDiagnostic.logPath)}</small> : null}
-								</section>
-							) : null}
-							{selectedRunDirectory ? (
-								<details className="optimizer-run-files" data-testid="optimizer-run-files">
-									<summary>Logs &amp; artifacts</summary>
-									<code>{selectedRunDirectory}</code>
-									<ul><li>workshop.stdout.log</li><li>workshop.stderr.log</li><li>events.jsonl</li><li>result_manifest.json</li></ul>
-								</details>
-							) : null}
+						<RunInspector run={selected} executionLabel={selectedExecution}>
 							{trainingProjection ? (
 								<section className="optimizer-training-progress" data-testid="optimizer-training-progress">
 									<div className="optimizer-training-title">
 										<span className="optimizer-eyebrow">Hosted training</span>
-										<span className={`optimizer-status ${trainingProjection.lifecycle}`}>{trainingProjection.lifecycle.replaceAll("_", " ")}</span>
+										<span className={statusChipClass(trainingProjection.lifecycle)}>{statusText(trainingProjection.lifecycle)}</span>
 									</div>
 									<dl>
 										<dt>Phase</dt><dd>{trainingProjection.phase ?? "—"}</dd>
@@ -1323,7 +1432,7 @@ export function OptimizersPage({
 									{selectedRunOutputs?.result ? <details open className="optimizer-run-files"><summary>Final result</summary><dl>{Object.entries(selectedRunOutputs.result).slice(0, 8).map(([name, value]) => <Fragment key={name}><dt>{name.replaceAll("_", " ")}</dt><dd>{typeof value === "object" ? JSON.stringify(value) : String(value)}</dd></Fragment>)}</dl></details> : <p>The final result will appear here when the run seals it.</p>}
 									{selectedRunOutputs?.artifacts.map((artifact) => <article key={artifact.artifactId} className="optimizer-run-output"><strong>{artifact.artifactName}</strong><small>{artifact.contentType ?? "artifact"} · {formatBytes(artifact.sizeBytes)} · {artifact.storageBackend}</small><code>{artifact.sha256 ?? artifact.uri}</code></article>)}
 									{["sft", "cispo", "ppo"].includes(selected.algorithmId) ? <p>{selectedCheckpointCounts.inference} inference LoRA · {selectedCheckpointCounts.training} resumable training state</p> : null}
-									{selectedRunCheckpoints.map((checkpoint) => <article key={checkpoint.checkpointId} className="optimizer-run-output"><strong>{checkpoint.name}</strong><small>{checkpoint.checkpointKind} · step {checkpoint.step ?? "—"} · {checkpoint.storage.backend}</small><code>{checkpoint.lineage.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? checkpoint.checkpointId}</code><div className="optimizer-checkpoint-actions"><button type="button" className="secondary-button" onClick={() => showCheckpointInCatalog(checkpoint)}>View in catalog</button><button type="button" className="secondary-button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button></div></article>)}
+									{selectedRunCheckpoints.map((checkpoint) => <article key={checkpoint.checkpointId} className="optimizer-run-output"><strong>{checkpoint.name}</strong><small>{checkpoint.checkpointKind} · step {checkpoint.step ?? "—"} · {checkpoint.storage.backend}</small><code>{checkpoint.lineage?.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? checkpoint.checkpointId}</code><div className="optimizer-checkpoint-actions"><button type="button" className="secondary-button" onClick={() => showCheckpointInCatalog(checkpoint)}>View in catalog</button><button type="button" className="secondary-button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button></div></article>)}
 									{selectedRunOutputs && selectedRunOutputs.counts.artifacts === 0 && selectedRunCheckpoints.length === 0 ? <p>No persisted outputs have been published yet. Results and checkpoints appear automatically as the run reaches publication boundaries.</p> : null}
 								</section>
 							) : null}
@@ -1366,16 +1475,17 @@ export function OptimizersPage({
 							<div className="optimizer-inspector-actions">
 								<button className="primary-button" type="button" disabled={busy} onClick={() => void openSelectedVisual()} data-testid="open-optimizer-visual">Open visual</button>
 								<button className="secondary-button" type="button" disabled={busy} onClick={() => void refreshSelected()} data-testid="refresh-optimizer-run">Refresh</button>
-								{selected.capabilities.pause && selected.status === "running" ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void controlSelected("pause")} data-testid="pause-optimizer-run">Pause</button> : null}
-								{selected.capabilities.resume && selected.status === "paused" ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void controlSelected("resume")} data-testid="resume-optimizer-run">Resume</button> : null}
-								{selected.capabilities.cancel && !["completed", "failed", "cancelled"].includes(selected.status) ? <button className="secondary-button optimizer-danger-button" type="button" disabled={busy} onClick={() => void controlSelected("cancel")} data-testid="cancel-optimizer-run">Cancel</button> : null}
+								{selected.capabilities?.pause && selected.status === "running" ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void controlSelected("pause")} data-testid="pause-optimizer-run">Pause</button> : null}
+								{selected.capabilities?.resume && selected.status === "paused" ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void controlSelected("resume")} data-testid="resume-optimizer-run">Resume</button> : null}
+								{selected.capabilities?.cancel && !["completed", "failed", "cancelled"].includes(selected.status) ? <button className="secondary-button optimizer-danger-button" type="button" disabled={busy} onClick={() => void controlSelected("cancel")} data-testid="cancel-optimizer-run">Cancel</button> : null}
 							</div>
-						</div>
+						</RunInspector>
 					) : (
 						<div className="optimizer-empty optimizer-empty-inspector"><span className="optimizer-empty-icon" aria-hidden>◎</span><strong>Select a run</strong><p>Run details, usage, and linked visuals appear here.</p></div>
 					)}
 				</section>
 			</div>
+			</>) : null}
 		</div>
 	);
 }

@@ -8,6 +8,7 @@ import type {
 } from "@synth/runtime-protocol";
 import { LOCAL_BASE_POLICY } from "./lagunaPolicies";
 import { optimizerRunIdFromBindings } from "./visualBindings";
+import { previewVariantForTemplate } from "./templatePresentation";
 import {
 	CHATGPT_LUNA_MODEL,
 	CHATGPT_SOL_MODEL,
@@ -1771,13 +1772,7 @@ function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 		runId: optimizerRunIdFromBindings(visual.bindings) ?? stringField(visual, "runId", "run_id"),
 		metadata,
 		status: parseArtifactRefStatus(stringField(visual, "status")),
-		preview: {
-			variant: templateId.includes("scrub") || templateId.includes("rollout")
-				? "craftax_frame"
-				: templateId.includes("craftax") || templateId.includes("eval_matrix")
-					? "craftax_pareto"
-					: "generic"
-		}
+		preview: { variant: previewVariantForTemplate(templateId) }
 	};
 }
 
@@ -1898,13 +1893,7 @@ export function visualRecordToArtifact(visual: VisualInstanceRecord): ArtifactRe
 		bindings: visual.bindings,
 		status: parseArtifactRefStatus(visual.metadata?.status),
 		preview: {
-			variant:
-				visual.templateId.includes("scrub") || visual.templateId.includes("rollout")
-					? "craftax_frame"
-					: visual.templateId.includes("craftax") ||
-						  visual.templateId.includes("eval_matrix")
-						? "craftax_pareto"
-						: "generic"
+			variant: previewVariantForTemplate(visual.templateId)
 		}
 	};
 }

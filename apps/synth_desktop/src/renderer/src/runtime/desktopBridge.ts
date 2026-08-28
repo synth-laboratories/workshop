@@ -103,6 +103,7 @@ function listenRuntimeAppEvents(listener: (event: AppEvent) => void, onAttached?
 }
 
 function browserRuntimeBridge(): RuntimeBridge {
+	const maxConsecutiveFailures = 10;
 	return {
 		async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
 			const response = await fetch(`/__runtime${path}`, {
@@ -116,6 +117,7 @@ function browserRuntimeBridge(): RuntimeBridge {
 		async subscribe(sessionId, afterSequence, onEvent, onStatus, _onActivity) {
 			let closed = false;
 			let cursor = afterSequence;
+			let consecutiveFailures = 0;
 			onStatus?.({ state: "connected" });
 			const poll = async () => {
 				if (closed) return;
@@ -127,8 +129,22 @@ function browserRuntimeBridge(): RuntimeBridge {
 						cursor = Math.max(cursor, event.sequence);
 						onEvent(event);
 					}
+					if (consecutiveFailures > 0) onStatus?.({ state: "connected" });
+					consecutiveFailures = 0;
 				} catch (reason) {
-					onStatus?.({ state: "reconnecting", detail: publicError(reason) });
+					consecutiveFailures += 1;
+					const detail = publicError(reason);
+					if (consecutiveFailures >= maxConsecutiveFailures) {
+						onStatus?.({
+							state: "failed",
+							detail: `${detail} · browser subscription stopped after ${maxConsecutiveFailures} attempts`
+						});
+						return;
+					}
+					onStatus?.({
+						state: "reconnecting",
+						detail: `${detail} · attempt ${consecutiveFailures}/${maxConsecutiveFailures}`
+					});
 				}
 				if (!closed) window.setTimeout(poll, 100);
 			};

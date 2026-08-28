@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { SettingsCard } from "./SettingsCard";
 import { publicError } from "../runtime/publicError";
 import { bridges } from "../runtime/desktopBridge";
+import { formatMissingUsd } from "../runtime/runProgress/usage";
 import type { CredentialLocatorSummary, MaskedImportCandidate, PendingGrantSummary, SecretAuditEvent, SecretCapabilitySummary, SecretImportPreview, SecretSummary, SecretsInbox } from "../bridge";
 
 const PROVIDERS = [
@@ -351,7 +352,7 @@ export function SecretsSettings() {
 						<div className="secrets-row" key={grant.requestId}>
 							<div>
 								<strong>{grant.alias ?? grant.secretId}</strong>
-								<p>{grant.provider} · {grant.recipeId} · {grant.maxCalls} calls · ${(grant.maxCostUsd ?? 0).toFixed(2)}</p>
+								<p>{grant.provider} · {grant.recipeId} · {grant.maxCalls} calls · {formatMissingUsd(grant.maxCostUsd)}</p>
 							</div>
 							<div className="secrets-row-actions">
 								<button type="button" className="settings-secondary-btn" disabled={busy} onClick={() => void allowGrant(grant, false)}>Allow once</button>
@@ -410,7 +411,7 @@ export function SecretsSettings() {
 					<div className="secrets-row" key={capability.id}>
 						<div>
 							<strong>{capability.provider} · {capability.recipeId}</strong>
-							<p>{capability.usedCalls} / {capability.maxCalls} calls · ${(capability.usedCostUsd ?? 0).toFixed(2)} / ${(capability.maxCostUsd ?? 0).toFixed(2)} · {capability.status}</p>
+							<p>{capability.usedCalls} / {capability.maxCalls} calls · {formatMissingUsd(capability.usedCostUsd)} / {formatMissingUsd(capability.maxCostUsd)} · {capability.status}</p>
 						</div>
 						<button type="button" className="settings-secondary-btn" onClick={() => void secrets?.revokeCapability(capability.id).then(refresh)}>Revoke</button>
 					</div>

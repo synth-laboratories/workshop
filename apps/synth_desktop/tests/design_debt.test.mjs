@@ -95,10 +95,19 @@ test("composer approval policy control is wired and test-addressable", () => {
 	assert.match(composer, /data-testid="approval-mode-menu"/);
 });
 
-test("design debt: VisualHost still uses Craftax string heuristics for preview variants", () => {
+test("intended design: preview variants come from one template classifier, not inline heuristics", () => {
+	// The debt this used to track is paid: the Craftax substring heuristic was
+	// copied between VisualHost and sessionView, and harbor/live-eval surfaces
+	// fell to "generic" by omission. One classifier now decides, and both
+	// consumers read it.
 	const host = read("components/VisualHost.tsx");
-	assert.match(host, /templateId\.includes\("craftax"\)/);
-	assert.match(host, /templateId\.includes\("scrub"\)/);
+	assert.match(host, /previewVariantForTemplate/);
+	assert.ok(!host.includes('templateId.includes("craftax")'));
+	const classifier = read("runtime/templatePresentation.ts");
+	assert.match(classifier, /includes\("harbor"\)/);
+	assert.match(classifier, /includes\("craftax"\)/);
+	const session = read("runtime/sessionView.ts");
+	assert.match(session, /previewVariantForTemplate/);
 });
 
 test("intended design: deferred LoRA support leaves no fixture catalog or placeholder UI", () => {

@@ -1,4 +1,3 @@
-// @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 /**
  * `useRunProgress` — the one hook every run-progress surface reads.
  *
