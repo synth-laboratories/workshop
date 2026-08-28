@@ -1377,7 +1377,7 @@ impl OptimizerService {
         &self,
         mut request: OptimizerCreateRequest,
         approved: super::admission::ApprovedExecutionSpec,
-        _declared_rollouts: usize,
+        declared_rollouts: usize,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let now = Utc::now().to_rfc3339();
         let id = request
@@ -1399,6 +1399,24 @@ impl OptimizerService {
             .capabilities
             .clone()
             .unwrap_or_else(|| OptimizerCapabilities::for_algorithm("eval"));
+        let binding = approved.binding();
+        let approved_rollouts = u64::from(binding.approved_rollouts.0.get());
+        anyhow::ensure!(
+            declared_rollouts as u64 == approved_rollouts,
+            "declared rollout count {declared_rollouts} does not match approved rollout count {approved_rollouts}"
+        );
+        let mut usage = OptimizerUsageSummary::default();
+        usage.extra.insert(
+            "paidComputeApproval".into(),
+            json!({
+                "approvalId": binding.receipt_id.as_str(),
+                "cap": {
+                    "maxCostUsdMicros": binding.approved_cost_micros.0.get(),
+                    "maxRollouts": approved_rollouts,
+                },
+                "receiptViolation": false,
+            }),
+        );
         let run = OptimizerRunRecord {
             schema_version: OPTIMIZER_RUN_SCHEMA_VERSION.into(),
             id: id.clone(),
@@ -1419,7 +1437,7 @@ impl OptimizerService {
             output_refs: vec![],
             visual_refs: vec![],
             summary: request.summary.clone().unwrap_or_else(|| json!({})),
-            usage: OptimizerUsageSummary::default(),
+            usage,
             error: None,
         };
         let db = self.db.clone();
@@ -8760,7 +8778,22 @@ pub(in crate::optimizers) mod tests {
             )
             .await
             .unwrap();
-        let terminal_sequence = 17;
+        svc.settle_run(
+            run.id.clone(),
+            super::super::kernel::SettleCause::Failed {
+                detail: "typed pre-dispatch refusal".into(),
+            },
+            Some(json!({"message": "typed pre-dispatch refusal"})),
+        )
+        .await
+        .unwrap();
+        let terminal_sequence = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap()["terminalCursor"]
+            .as_u64()
+            .unwrap();
         let draft = super::credential_revocation_amendment(
             &run,
             terminal_sequence,
@@ -8778,6 +8811,21 @@ pub(in crate::optimizers) mod tests {
             json!("run_terminal")
         );
         assert_eq!(draft.raw["source"], json!("settle_run"));
+
+        svc.append_event_payloads(run.id.clone(), vec![draft])
+            .await
+            .unwrap();
+        let events = svc.events_after(run.id, terminal_sequence, None).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "optimizer.evidence.amended");
+        assert_eq!(
+            events[0].delta["credentialRevocation"]["capabilityIds"],
+            json!(["cap_test"])
+        );
+        assert_eq!(
+            events[0].delta["credentialRevocation"]["kind"],
+            json!("credential.capability.revoked")
+        );
     }
 
     #[tokio::test]

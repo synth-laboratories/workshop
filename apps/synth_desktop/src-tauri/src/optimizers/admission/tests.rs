@@ -217,6 +217,78 @@ fn nanohorizon_completes_the_admission_path_without_a_catalog_recipe() {
     assert_eq!(approved.recipe().rollout_plan.declared_rollouts(), 5);
 }
 
+#[tokio::test]
+async fn paid_approval_receipt_survives_creation_settlement_and_reload() {
+    let admissible = admit(&request(), &context()).expect("NanoHorizon must be admissible inline");
+    let binding = binding_for(&admissible);
+    let receipt_id = binding.receipt_id.as_str().to_string();
+    let approved = admissible
+        .approve(binding)
+        .expect("the exact admitted specification must accept its receipt");
+    let (service, _dir, _) = crate::optimizers::service::tests::service().await;
+    let create = serde_json::from_value(json!({
+        "algorithmId": "eval",
+        "id": "approval_receipt_terminal",
+        "openVisual": false
+    }))
+    .unwrap();
+    let (run, _) = service
+        .create_admitted_eval(create, approved, 5)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        run.usage.extra["paidComputeApproval"]["approvalId"],
+        json!(receipt_id)
+    );
+    assert_eq!(
+        run.usage.extra["paidComputeApproval"]["cap"],
+        json!({"maxCostUsdMicros": 2_450_000, "maxRollouts": 5})
+    );
+
+    service
+        .settle_run(
+            run.id.clone(),
+            crate::optimizers::kernel::SettleCause::Failed {
+                detail: "typed pre-dispatch refusal".into(),
+            },
+            Some(json!({"message": "typed pre-dispatch refusal"})),
+        )
+        .await
+        .unwrap();
+
+    let reloaded = service.get(run.id.clone()).await.unwrap();
+    assert_eq!(
+        reloaded.usage.extra["paidComputeApproval"]["approvalId"],
+        json!(receipt_id)
+    );
+    let manifest = service
+        .terminal_manifest(run.id.clone())
+        .await
+        .unwrap()
+        .expect("settlement must seal a terminal manifest");
+    assert_eq!(
+        manifest["paidComputeApproval"]["approvalId"],
+        json!(receipt_id)
+    );
+
+    let authorization_json: String = service
+        .database()
+        .clone()
+        .run(move |conn| {
+            conn.query_row(
+                "SELECT authorization_json FROM optimizer_run_specs WHERE optimizer_run_id=?1",
+                [run.id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .await
+        .unwrap();
+    let authorization: serde_json::Value = serde_json::from_str(&authorization_json).unwrap();
+    assert_eq!(authorization["authorizationRef"], json!(receipt_id));
+}
+
 #[test]
 fn the_acceptance_run_starts_exactly_five_rollouts_and_settles_truthfully() {
     let admissible = admit(&request(), &context()).unwrap();
