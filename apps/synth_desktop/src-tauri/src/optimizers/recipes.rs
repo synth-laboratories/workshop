@@ -1226,6 +1226,17 @@ async fn append_terminal_event(
     if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
         return Ok(());
     }
+    // The terminal manifest is sealed by the status event below. Revoke and
+    // persist the credential chain first; relying on RevokeRunOnDrop is too
+    // late because its destructor runs only after this function has already
+    // made the write-once terminal receipt immutable.
+    if let Err(error) = service.seal_credential_chain(run_id).await {
+        crate::platform::logging::report(
+            "optimizers",
+            "eprintln",
+            format!("failed to seal credential chain before terminal event for {run_id}: {error:#}"),
+        );
+    }
     let status = if failed { "failed" } else { "completed" };
     append_status_event(
         service,
