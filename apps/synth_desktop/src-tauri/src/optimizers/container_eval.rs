@@ -2959,8 +2959,13 @@ pub(super) async fn reconcile_evidence(
             .with_context(|| format!("terminal record for seed {seed} is not an object"))?
             .insert("sealedTrace".into(), imported);
         attach_reported_facts(record);
+        let trace_kind = if matches!(frame_mode, FrameTraceMode::SealedPartial { .. }) {
+            "trace_v5_partial"
+        } else {
+            "trace_v5"
+        };
         evidence_refs.push(json!({
-            "kind": "trace",
+            "kind": trace_kind,
             "id": trace_ref,
             "digest": trace_digest,
         }));
