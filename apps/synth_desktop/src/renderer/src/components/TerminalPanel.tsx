@@ -47,7 +47,6 @@ export function TerminalPanel({
 	const viewport = useRef<HTMLDivElement>(null);
 	const xterm = useRef<Terminal | null>(null);
 	const fit = useRef<FitAddon | null>(null);
-	const seen = useRef(new Set<number>());
 	const resizeStart = useRef<{ y: number; height: number } | null>(null);
 
 	const createTerminal = useCallback(async () => {
@@ -109,10 +108,8 @@ export function TerminalPanel({
 			}
 		});
 		const addon = new FitAddon(); terminal.loadAddon(addon); terminal.open(viewport.current); addon.fit();
-		xterm.current = terminal; fit.current = addon; seen.current = new Set();
-		const apply = (event: TerminalEvent) => {
-			if (event.terminalId !== activeId || seen.current.has(event.sequence)) return;
-			seen.current.add(event.sequence);
+		xterm.current = terminal; fit.current = addon;
+		const write = (event: TerminalEvent) => {
 			if (event.dataBase64) { setConnection("live"); terminal.write(decode(event.dataBase64)); }
 			if (event.kind === "exit") {
 				setTerminals((current) => current.map((item) => item.id === activeId
@@ -125,8 +122,38 @@ export function TerminalPanel({
 				if (event.message) terminal.writeln(`\r\n[terminal error: ${event.message}]`);
 			}
 		};
+		/**
+		 * The snapshot and the live subscription are two deliveries of one
+		 * journal, and they overlap by design: the listener is installed first
+		 * so nothing is lost, which means anything emitted while the snapshot
+		 * is in flight arrives twice.
+		 *
+		 * This used to be a `seen` set of every sequence ever written — durable
+		 * state invented in the renderer, and wrong twice over: an event that
+		 * arrived live before the snapshot was written *before* the earlier
+		 * bytes the snapshot then supplied, so the pane rendered the tail of
+		 * the output ahead of its head. Buffer the live edge instead, merge it
+		 * with the replay page on sequence, write the result in order once,
+		 * and then run live. The renderer keeps a replay buffer for one turn,
+		 * not a fold for the lifetime of the tab.
+		 */
+		let replaying = true;
+		const buffered: TerminalEvent[] = [];
+		const apply = (event: TerminalEvent) => {
+			if (event.terminalId !== activeId) return;
+			if (replaying) { buffered.push(event); return; }
+			write(event);
+		};
 		const unlisten = bridges.terminal.onEvent(apply);
-		void bridges.terminal.snapshot(activeId).then((events) => events.sort((a, b) => a.sequence - b.sequence).forEach(apply));
+		void bridges.terminal.snapshot(activeId).then((events) => {
+			const merged = new Map<number, TerminalEvent>();
+			for (const event of [...events, ...buffered]) {
+				if (event.terminalId === activeId) merged.set(event.sequence, event);
+			}
+			buffered.length = 0;
+			replaying = false;
+			[...merged.keys()].sort((left, right) => left - right).forEach((key) => write(merged.get(key)!));
+		});
 		const data = terminal.onData((value) => void bridges.terminal.write(activeId, value));
 		const resize = new ResizeObserver(() => { addon.fit(); void bridges.terminal.resize(activeId, terminal.cols, terminal.rows); });
 		resize.observe(viewport.current);

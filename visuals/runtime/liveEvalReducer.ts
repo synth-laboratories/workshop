@@ -1,9 +1,32 @@
 /**
- * Shared live-eval projector for Craftax and Harbor.
+ * Shared live-eval projector for Craftax and Harbor — the TypeScript mirror.
  * Missing reward / usage / score stay null. Control envelopes are not evidence.
+ *
+ * The authoritative projector is `stream_fold::project_live_eval`; this is the
+ * copy hosts with no Rust underneath them need in order to draw. Both are
+ * pinned to `visuals/fixtures/live_fold_golden.json`. See `liveStream.ts` for
+ * what the mirror does and does not keep.
  */
 
-import { formatMissingNumber, isControlEnvelope, type LiveEnvelope } from "./liveStream.ts";
+import { envelopeStream, formatMissingNumber, isControlEnvelope, type LiveEnvelope } from "./liveStream.ts";
+
+/**
+ * A logical cutoff into a folded stream set: how many evidence envelopes of
+ * each stream to include.
+ *
+ * Not a sequence. The real multiplexed capture
+ * (`live.craftax.v1/examples/cua-luna-low-10.json`, one stream and ten lanes)
+ * sequences with non-numeric strings, so a scalar numeric cutoff is a no-op on
+ * it and a per-scope numeric vector cannot address its events either. Arrival
+ * order within a stream is the one total order that always exists — the spool
+ * persists it verbatim and the fold preserves it — so a cutoff is a prefix
+ * length per stream. A stream the vector does not name contributes nothing:
+ * a cutoff says what is included.
+ *
+ * This is also how the shipped shells already scrub, by array index rather
+ * than by sequence.
+ */
+export type CursorVector = Record<string, number>;
 
 export type LiveEvalProjection = {
   events: LiveEnvelope[];
@@ -12,17 +35,11 @@ export type LiveEvalProjection = {
   has_reward_txt: boolean;
   reward: number | null;
   usage: Record<string, number | null> | null;
-  cutoff_sequence: number | null;
+  /** The cutoff this projection was folded at, or null for the whole prefix. */
+  cutoff: CursorVector | null;
 };
 
 const FORBIDDEN_BLOBS = ["collector", "capability_blob", "capabilities_blob"] as const;
-
-function envelopeSequence(event: LiveEnvelope): number | null {
-  const raw = event.sequence_number ?? event.sequence;
-  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
-  if (typeof raw === "string" && raw.length > 0 && Number.isFinite(Number(raw))) return Number(raw);
-  return null;
-}
 
 function jsonKeys(payload: unknown, acc: Set<string> = new Set()): Set<string> {
   if (!payload || typeof payload !== "object") return acc;
@@ -44,15 +61,20 @@ function payloadNumber(payload: Record<string, unknown> | undefined, keys: strin
 
 export function projectLiveEval(
   events: LiveEnvelope[],
-  cutoffSequence?: number
+  cutoff?: CursorVector
 ): LiveEvalProjection {
   const rows: LiveEnvelope[] = [];
+  const taken = new Map<string, number>();
   for (const event of events) {
     // `isControlEnvelope` is the one control predicate; it honours the explicit
     // `control: true` flag, so the projector and the ingest fold agree.
     if (isControlEnvelope(event)) continue;
-    const seq = envelopeSequence(event);
-    if (cutoffSequence != null && seq != null && seq > cutoffSequence) continue;
+    if (cutoff) {
+      const stream = envelopeStream(event);
+      const already = taken.get(stream) ?? 0;
+      if (already >= (cutoff[stream] ?? 0)) continue;
+      taken.set(stream, already + 1);
+    }
     rows.push(event);
   }
   const kinds = rows.map((event) => String(event.kind ?? event.type ?? ""));
@@ -92,7 +114,7 @@ export function projectLiveEval(
     has_reward_txt,
     reward,
     usage,
-    cutoff_sequence: cutoffSequence ?? null
+    cutoff: cutoff ?? null
   };
   const blob = JSON.stringify(projection);
   for (const name of FORBIDDEN_BLOBS) {
