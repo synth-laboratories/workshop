@@ -237,7 +237,7 @@ export function RunProgressCard({ runId, sessionRef, onOpenFullRun }: Props) {
 						onClick={() => onOpenFullRun(projection.fullVisualRef!)}
 						data-testid={`run-progress-open-full-${runId}`}
 					>
-						Open full run
+						Open visual
 					</button>
 				) : null}
 				{canControl && projection.capabilities.cancel ? (

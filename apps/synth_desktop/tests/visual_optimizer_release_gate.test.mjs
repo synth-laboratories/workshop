@@ -13,7 +13,7 @@ test("product-owned primary optimizer visuals use terminal evidence instead of E
 	assert.match(host, /optimizerVisualRole === "string"/);
 	assert.match(host, /role === "primary"/);
 	assert.match(host, /semantics === "baseline_eval_trace"/);
-	assert.match(host, /authoringGateReady \|\| \(primaryOptimizerRunId && optimizerSealGate\.ready\)/);
+	assert.match(host, /primaryOptimizerRunId \? optimizerSealGate\.ready : authoringGateReady/);
 	assert.match(host, /data-run-evidence-state/);
 	assert.match(host, /data-visual-terminal/);
 	assert.match(host, /state !== "accepted"/);

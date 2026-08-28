@@ -140,14 +140,17 @@ test("a completed run accepts sealed record evidence and preserves cost unavaila
 		status: "completed",
 		evidenceState: "sealed_complete",
 		steps,
-		sealedTrace: { imported: true, traces: [{ digest: `sha256:${index}` }] }
+		sealedTrace: { imported: true, traces: [{ digest: `sha256:${index}` }] },
+		reportedFacts: { tokens: { value: 20_000 + index } },
+		policyRef: { authority: "synth.container-policy.v1" }
 	}));
 	const lifecycle = projectVisualRunLifecycle({
 		id: "opt_eval_craftax_313e406208e5",
 		algorithmId: "eval",
 		status: "completed",
-		summary: {
+			summary: {
 			bounds: { hardTotalCostUsd: 2.45 },
+			modelIdentity: { provider: "openrouter", model: "z-ai/glm-5.3-flash", authority: "approved_evaluation_spec" },
 			records,
 			progress: {
 				authoritative: {
@@ -177,6 +180,50 @@ test("a completed run accepts sealed record evidence and preserves cost unavaila
 	assert.equal(lifecycle.usage.costUsd, undefined);
 	assert.equal(lifecycle.usage.costSource, "workshop_proxy");
 	assert.equal(lifecycle.usage.provider, "openrouter");
+	assert.deepEqual(lifecycle.modelIdentity, {
+		provider: "openrouter",
+		model: "z-ai/glm-5.3-flash",
+		authority: "approved_evaluation_spec"
+	});
+	assert.equal(lifecycle.rollouts[0].tokens, 20_000);
+	assert.equal(lifecycle.rollouts[0].authority, "synth.container-policy.v1");
+});
+
+test("Workshop receipt stays the exact run authority while runtime rollout tokens remain distinct", () => {
+	const lifecycle = projectVisualRunLifecycle({
+		id: "opt_eval_craftax_success",
+		algorithmId: "eval",
+		status: "completed",
+		summary: {
+			records: [{
+				seed: 780005,
+				rolloutId: "rollout-5",
+				status: "completed",
+				reward: 4,
+				evidenceState: "sealed_complete",
+				reportedFacts: { calls: { value: 10 }, tokens: { value: 19_578 }, achievements: { value: ["wood"] } },
+				policyRef: { authority: "synth.container-policy.v1" },
+				sealedTrace: { imported: true, traces: [{ digest: "sha256:trace" }] }
+			}],
+			progress: { authoritative: { runState: "terminal", evidence: { completeness: "complete" } } }
+		},
+		usage: {
+			calls: 50,
+			promptTokens: 116385,
+			completionTokens: 6217,
+			costUsd: 0.016353,
+			extra: { providerUsageReceipt: {
+				authority: "workshop.secrets_proxy", calls: 50, promptTokens: 116385,
+				completionTokens: 6217, costUsd: 0.016353,
+				capabilities: [{ provider: "openrouter" }]
+			} }
+		}
+	}, { status: "completed", terminal: true });
+	assert.equal(lifecycle.usage.calls, 50);
+	assert.equal(lifecycle.usage.costUsd, 0.016353);
+	assert.equal(lifecycle.usage.promptTokens + lifecycle.usage.completionTokens, 122602);
+	assert.equal(lifecycle.rollouts[0].calls, 10);
+	assert.equal(lifecycle.rollouts[0].tokens, 19578);
 });
 
 test("sealed replay remains trustworthy when evaluator reward and declared terminal steps are missing", () => {

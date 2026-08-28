@@ -405,6 +405,14 @@ test("eval: the frozen plan is the denominator and the bar is campaign completio
 	assert.equal(projection.details.find((detail) => detail.label === "Candidate set").value, "cs_7ab21");
 });
 
+test("eval: Open visual targets the explicitly linked primary visual", () => {
+	const projection = projectRunProgress(snapshot(evalRun({
+		summary: { visualId: "visual-primary", visualIds: { primary: "visual-primary", trace_workbench: "visual-trace" } },
+		visualRefs: [{ kind: "visual", id: "visual-trace", role: "trace_workbench" }, { kind: "visual", id: "visual-primary", role: "primary" }]
+	}), evalEvents()), NOW);
+	assert.equal(projection.fullVisualRef, "visual-primary");
+});
+
 test("eval: a retried trial is counted as a retry, not as extra completed work", () => {
 	const clean = projectRunProgress(snapshot(evalRun(), evalEvents({ completed: 6 })), NOW);
 	const retried = projectRunProgress(snapshot(evalRun(), evalEvents({ completed: 6, retries: 2 })), NOW);

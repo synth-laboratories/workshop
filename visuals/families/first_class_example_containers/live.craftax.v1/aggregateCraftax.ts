@@ -17,6 +17,7 @@ export type CraftaxRolloutAggregate = {
   costUsd?: number;
   achievements: string[];
   achievementsReported: boolean;
+  authority?: string;
 };
 
 export type CraftaxTerminalRollout = {
@@ -29,11 +30,13 @@ export type CraftaxTerminalRollout = {
   tokens?: number;
   costUsd?: number;
   achievements?: string[];
+  authority?: string;
 };
 
 export type CraftaxRunAggregate = {
   rollouts: CraftaxRolloutAggregate[];
   rewardMean?: number;
+  rewardMedian?: number;
   rewardMin?: number;
   rewardMax?: number;
   reportedRewards: number;
@@ -56,6 +59,7 @@ export type CraftaxRunAggregate = {
   reportedCosts: number;
   achievementNames: string[];
   totalAchievements?: number;
+  achievementMedian?: number;
   minAchievements?: number;
   maxAchievements?: number;
   achievementRollouts: number;
@@ -68,6 +72,15 @@ function finite(value: unknown): number | undefined {
 
 function sum(values: number[]): number {
   return values.reduce((total, value) => total + value, 0);
+}
+
+function median(values: number[]): number | undefined {
+  if (!values.length) return undefined;
+  const ordered = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 === 1
+    ? ordered[middle]
+    : (ordered[middle - 1] + ordered[middle]) / 2;
 }
 
 /**
@@ -119,7 +132,8 @@ export function summarizeCraftaxRun(
           ...(terminal.tokens != null ? { tokens: terminal.tokens } : {}),
           ...(terminal.costUsd != null ? { costUsd: terminal.costUsd } : {}),
           achievements: terminal.achievements ?? [],
-          achievementsReported: terminal.achievements !== undefined
+          achievementsReported: terminal.achievements !== undefined,
+          ...(terminal.authority ? { authority: terminal.authority } : {})
         };
       })
     : [...journalRollouts.values()];
@@ -141,6 +155,7 @@ export function summarizeCraftaxRun(
   return {
     rollouts,
     rewardMean: rewards.length ? sum(rewards) / rewards.length : undefined,
+    rewardMedian: median(rewards),
     rewardMin: rewards.length ? Math.min(...rewards) : undefined,
     rewardMax: rewards.length ? Math.max(...rewards) : undefined,
     reportedRewards: rewards.length,
@@ -155,7 +170,7 @@ export function summarizeCraftaxRun(
     ...(costValues.length ? { knownCostUsd: sum(costValues), minCostUsd: Math.min(...costValues), maxCostUsd: Math.max(...costValues) } : {}),
     reportedCosts: costValues.length,
     achievementNames: [...new Set(rollouts.flatMap((rollout) => rollout.achievements))].sort(),
-    ...(achievementValues.length ? { totalAchievements: sum(achievementValues), minAchievements: Math.min(...achievementValues), maxAchievements: Math.max(...achievementValues) } : {}),
+    ...(achievementValues.length ? { totalAchievements: sum(achievementValues), achievementMedian: median(achievementValues), minAchievements: Math.min(...achievementValues), maxAchievements: Math.max(...achievementValues) } : {}),
     achievementRollouts: rollouts.filter((rollout) => rollout.achievements.length > 0).length,
     reportedAchievements: achievementsReported
   };

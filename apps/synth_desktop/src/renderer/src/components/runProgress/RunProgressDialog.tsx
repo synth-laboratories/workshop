@@ -302,7 +302,7 @@ export function RunProgressDialog({
 							onClick={() => onOpenFullRun(projection.fullVisualRef!)}
 							data-testid={`run-progress-dialog-open-full-${projection.runId}`}
 						>
-							Open full run
+							Open visual
 						</button>
 					) : null}
 					{!projection.terminal && projection.capabilities.pause && projection.status !== "paused" ? (

@@ -63,6 +63,7 @@ type RunLifecycle = {
     tokens?: number;
     costUsd?: number;
     achievements?: string[];
+    authority?: string;
   }>;
   evidence: {
     state: "pending" | "accepted" | "partial" | "missing" | "rejected";
@@ -82,6 +83,7 @@ type RunLifecycle = {
     promptTokens?: number;
     completionTokens?: number;
   };
+  modelIdentity?: { provider?: string; model?: string; authority?: string };
 };
 type ViewerConfig = {
   density: "comfortable" | "compact";
@@ -99,6 +101,7 @@ export type ShellProps = LiveTemplateProps & {
   bindings?: VisualBinding[] | { slots?: VisualBinding[] };
   visualMetadata?: VisualMetadata;
   runLifecycle?: RunLifecycle;
+  experiment?: Record<string, unknown>;
   /** Durable optimizer journal envelopes supplied by VisualHost. */
   events?: LiveEvalEvent[];
   /** Post-terminal retained trial evidence; not authoritative for run status. */
@@ -446,6 +449,7 @@ export function Shell(props: ShellProps) {
     ? `${missingTransportCount} live stream${missingTransportCount === 1 ? " is" : "s are"} missing required poll transport`
     : null;
   const config = { ...DEFAULT_CONFIG, ...props.visualMetadata?.visualConfig };
+  const experimentRuntime = object(object(props.experiment).runtime);
   const scopedEvents = useMemo(() => {
     // A visual bound to specific rollouts must never silently import every
     // run sharing the producer's storage root.
@@ -522,6 +526,7 @@ export function Shell(props: ShellProps) {
       ? `${runAggregate.reportedTokens}/${runAggregate.rollouts.length} rollouts reported complete token usage`
       : `Complete across ${runAggregate.reportedTokens} rollout records`;
   const terminalByLane = new Map((terminalRollouts ?? []).map((rollout) => [rollout.lane, rollout]));
+  const selectedTerminal = selectedLane ? terminalByLane.get(selectedLane) : undefined;
   const terminalLanes = terminalRollouts?.length ?? [...laneSummaries.values()].filter((summary) => summary.terminal).length;
   const allLanesTerminal = lanes.length > 0 && terminalLanes === lanes.length;
   const lifecycleGaps = props.runLifecycle?.evidence.gaps ?? [];
@@ -538,6 +543,31 @@ export function Shell(props: ShellProps) {
   const totalTokens = completeSum(turns.calls.map((call) => finite(call.usage.total_tokens)));
   const totalLatencyMs = completeSum(turns.calls.map((call) => call.latencyMs));
   const totalCostUsd = completeSum(turns.calls.map((call) => call.costUsd));
+  const selectedRolloutTokens = selectedTerminal?.tokens ?? totalTokens;
+  const selectedRolloutAuthority = selectedTerminal?.authority
+    ?? props.runLifecycle?.modelIdentity?.authority
+    ?? [...new Set(turns.calls.map((call) => call.authority).filter(Boolean))].join(", ")
+    ?? undefined;
+  const pinnedProvider = props.runLifecycle?.modelIdentity?.provider
+    ?? (typeof experimentRuntime.provider === "string" ? experimentRuntime.provider : undefined)
+    ?? props.runLifecycle?.usage.provider;
+  const pinnedModel = props.runLifecycle?.modelIdentity?.model
+    ?? (typeof experimentRuntime.model === "string" ? experimentRuntime.model : undefined);
+  const integrityAccepted = props.runLifecycle?.evidence.state === "accepted";
+  const reconciliationLabel = props.runLifecycle?.evidence.state === "rejected"
+    ? `${props.runLifecycle.evidence.rejected} rejected · ${props.runLifecycle.evidence.sealedTraces} sealed`
+    : integrityAccepted
+      ? `${props.runLifecycle?.evidence.valid ?? 0} terminal records accepted · ${props.runLifecycle?.evidence.sealedTraces ?? 0} sealed traces retained`
+      : lifecycleGaps.length > 0 && props.runLifecycle
+        ? `${props.runLifecycle.evidence.sealedTraces} sealed trace${props.runLifecycle.evidence.sealedTraces === 1 ? "" : "s"} retained · evaluation facts incomplete`
+        : semanticTrace.some((item) => item.kind === "trace.reconciled")
+          ? "recorded and visible"
+          : viewer.terminal ? "terminal trace retained; no reconciliation event emitted" : "pending";
+  const modelIdentityLabel = pinnedModel || pinnedProvider
+    ? `${pinnedProvider ?? "provider unavailable"}${pinnedModel ? ` · ${pinnedModel}` : ""} · pinned run identity`
+    : turns.calls.every((call) => call.model && call.provider)
+      ? "recorded on every retained call"
+      : "not recorded by the run or retained calls";
   // Keep the fallback render-derived. Persisting it in an effect adds a passive
   // state update for every replay page even when the selected call did not
   // change; an explicit click is the only reason to pin a call in state.
@@ -717,11 +747,11 @@ export function Shell(props: ShellProps) {
         <div className="cv-overview-heading"><div><p className="cv-eyebrow">Overall · all rollouts</p><h3>Evaluation overview</h3></div><span>Combined at the current evaluation cutoff</span></div>
         <div className="cv-overview-grid">
           <OverviewStat label="Rollouts" value={String(runAggregate.rollouts.length || "—")} detail={`${terminalLanes} terminal`} />
-          <OverviewStat label="Mean terminal reward" value={formatMissingNumber(runAggregate.rewardMean)} detail={runAggregate.reportedRewards ? `${formatMissingNumber(runAggregate.rewardMin)}–${formatMissingNumber(runAggregate.rewardMax)} · ${runAggregate.reportedRewards}/${runAggregate.rollouts.length} scored` : "No terminal numeric rewards reported"} />
+          <OverviewStat label="Terminal reward" value={formatMissingNumber(runAggregate.rewardMean)} detail={runAggregate.reportedRewards ? `mean · median ${formatMissingNumber(runAggregate.rewardMedian)} · range ${formatMissingNumber(runAggregate.rewardMin)}–${formatMissingNumber(runAggregate.rewardMax)} · ${runAggregate.reportedRewards}/${runAggregate.rollouts.length} scored` : "No terminal numeric rewards reported"} />
           <OverviewStat label="Environment steps" value={formatMissingNumber(runAggregate.totalSteps, 0)} detail={`${rangeLabel(runAggregate.minSteps, runAggregate.maxSteps, "steps")} · ${runAggregate.reportedSteps}/${runAggregate.rollouts.length} reported`} />
           <OverviewStat label="Provider calls" value={callValue} detail={callDetail} />
           <OverviewStat label="Provider tokens" value={tokenValue == null ? "Not emitted" : formatMissingNumber(tokenValue, 0)} detail={tokenDetail} />
-          <OverviewStat label="Achievements" value={runAggregate.totalAchievements == null ? "Not emitted" : `${runAggregate.totalAchievements} unlocks`} detail={`${runAggregate.achievementNames.length} unique · ${runAggregate.achievementRollouts} rollouts unlocked ≥1 · ${runAggregate.reportedAchievements}/${runAggregate.rollouts.length} reported`} />
+          <OverviewStat label="Achievements" value={runAggregate.totalAchievements == null ? "Not emitted" : `${runAggregate.totalAchievements} unlocks`} detail={runAggregate.totalAchievements == null ? `${runAggregate.reportedAchievements}/${runAggregate.rollouts.length} terminal records reported` : `median ${formatMissingNumber(runAggregate.achievementMedian)} · range ${formatMissingNumber(runAggregate.minAchievements, 0)}–${formatMissingNumber(runAggregate.maxAchievements, 0)} · ${runAggregate.achievementNames.length} unique · ${runAggregate.reportedAchievements}/${runAggregate.rollouts.length} reported`} />
         </div>
         <div className="cv-cost-line" data-cost-authority={props.runLifecycle?.usage.costSource}><span>Run cost</span><strong>{runCost.value}</strong><small>{runCost.detail}</small></div>
         {runAggregate.achievementNames.length ? <div className="cv-coverage" aria-label="Achievements unlocked across all rollouts"><span>Across run</span>{runAggregate.achievementNames.map((name) => <i key={name}>{name}</i>)}</div> : null}
@@ -809,7 +839,7 @@ export function Shell(props: ShellProps) {
       {config.showActivity ? <section className="cv-panel cv-activity cv-surface-raw" data-visual-landmark="ordered-activity"><div className="cv-heading"><div><p className="cv-eyebrow">Semantic activity</p><h3>Recent activity</h3></div><span>{semanticTrace.length} events · {visibleEvents.length} raw</span></div><ol>{semanticTrace.slice(-12).reverse().map((item) => <li key={item.id}><time>seq {item.sequenceEnd}</time><strong>{item.category}</strong><span>{item.kind}</span><p>{item.label}</p></li>)}</ol></section> : null}
 
       {config.showTraceInspector ? <section className="cv-panel cv-trace cv-surface-raw" data-visual-landmark="trace-inspector">
-        <div className="cv-heading"><div><p className="cv-eyebrow">Same temporal cutoff</p><h3>Trace V5 viewer</h3></div><div className="cv-trace-mode"><button type="button" aria-pressed={traceMode === "focus"} onClick={() => setTraceMode("focus")}>Policy focus</button><button type="button" aria-pressed={traceMode === "full"} onClick={() => setTraceMode("full")}>Full trace</button><button type="button" onClick={() => setSelectedTraceId(inspectedItems.at(-1)?.id ?? null)} disabled={!inspectedItems.length}>Jump to latest</button><span>{viewer.terminal ? "sealed/reconciled" : "live · unsealed"}</span></div></div>
+        <div className="cv-heading"><div><p className="cv-eyebrow">Same temporal cutoff</p><h3>Trace V5 viewer</h3></div><div className="cv-trace-mode"><button type="button" aria-pressed={traceMode === "focus"} onClick={() => setTraceMode("focus")}>Policy focus</button><button type="button" aria-pressed={traceMode === "full"} onClick={() => setTraceMode("full")}>Full trace</button><button type="button" onClick={() => setSelectedTraceId(inspectedItems.at(-1)?.id ?? null)} disabled={!inspectedItems.length}>Jump to latest</button><span>{integrityAccepted ? "sealed · accepted" : viewer.terminal ? "terminal trace" : "live · unsealed"}</span></div></div>
         <p className="cv-trace-summary">{traceMode === "full" ? `${semanticTrace.length} semantic events folded from ${visibleEvents.length} durable envelopes, grouped by environment step.` : `${inspectedItems.length} policy calls and trace-authority events; ${traceEvents.length} raw policy partials are folded.`}</p>
         <div className="cv-trace-grid">
           <div className="cv-trace-list">
@@ -856,8 +886,8 @@ export function Shell(props: ShellProps) {
         </div>
       </section> : null}
 
-      <section className="cv-panel cv-surface-metrics cv-facts"><div className="cv-heading"><div><p className="cv-eyebrow">At current cutoff</p><h3>Metrics</h3></div></div><dl><div><dt>Selected retained calls</dt><dd>{turns.calls.length}</dd></div><div><dt>Run provider calls</dt><dd>{receiptCalls == null ? "not emitted" : `${formatMissingNumber(receiptCalls, 0)} billed`}</dd></div><div><dt>Selected retained tokens</dt><dd>{totalTokens === undefined ? "not emitted" : formatMissingNumber(totalTokens, 0)}</dd></div><div><dt>Run provider tokens</dt><dd>{receiptTokens == null ? "not emitted" : formatMissingNumber(receiptTokens, 0)}</dd></div><div><dt>Latency</dt><dd>{totalLatencyMs === undefined ? "not emitted" : `${formatMissingNumber(totalLatencyMs, 0)} ms`}</dd></div><div><dt>Run cost</dt><dd>{runCostLabel(props.runLifecycle, totalCostUsd)}</dd></div><div><dt>Reward</dt><dd>{truthNumber(viewer.reward, viewer.terminal, formatMissingNumber)}</dd></div><div><dt>Authority</dt><dd>{[...new Set(turns.calls.map((call) => call.authority).filter(Boolean))].join(", ") || "not emitted"}</dd></div></dl></section>
-      <section className="cv-panel cv-surface-integrity cv-integrity"><div className="cv-heading"><div><p className="cv-eyebrow">Evidence health</p><h3>Integrity</h3></div><span>{props.runLifecycle?.evidence.state === "rejected" ? "rejected" : lifecycleGaps.length > 0 ? "trace sealed · facts incomplete" : viewer.terminal ? "sealed/reconciled" : "live · unsealed"}</span></div><ul><li><strong>Reconciliation</strong><span>{props.runLifecycle?.evidence.state === "rejected" ? `${props.runLifecycle.evidence.rejected} rejected · ${props.runLifecycle.evidence.sealedTraces} sealed` : lifecycleGaps.length > 0 && props.runLifecycle ? `${props.runLifecycle.evidence.sealedTraces} sealed trace${props.runLifecycle.evidence.sealedTraces === 1 ? "" : "s"} retained · evaluation facts incomplete` : semanticTrace.some((item) => item.kind === "trace.reconciled") ? "recorded and visible" : viewer.terminal ? "missing due to producer-contract defect" : "pending"}</span></li><li><strong>Model identity</strong><span>{turns.calls.every((call) => call.model && call.provider) ? "recorded and visible" : "missing on one or more calls"}</span></li><li><strong>Repairs / fallbacks</strong><span>{policy.fallback ? "recorded fallback" : "none recorded"}</span></li><li><strong>Malformed calls</strong><span>{turns.missingPolicyEnvelopeCount || "none"}</span></li><li><strong>Reasoning disclosure</strong><span>{turns.calls.some((call) => call.reasoning.state === "visible") ? "provider emitted visible reasoning evidence" : "Thinking not emitted"}</span></li></ul>{props.runLifecycle?.evidence.state === "rejected" ? <p className="cv-control-reason" data-testid="craftax-seal-disabled-reason">Seal unavailable — run failed because {props.runLifecycle.evidence.rejected} rollout journal{props.runLifecycle.evidence.rejected === 1 ? " was" : "s were"} rejected.</p> : lifecycleFailed && props.runLifecycle && props.runLifecycle.evidence.sealedTraces > 0 ? <p className="cv-control-reason" data-testid="craftax-trace-retained-status">Trace replay remains available from {props.runLifecycle.evidence.sealedTraces} sealed trace{props.runLifecycle.evidence.sealedTraces === 1 ? "" : "s"}; the evaluation failure does not reject them.</p> : null}</section>
+      <section className="cv-panel cv-surface-metrics cv-facts"><div className="cv-heading"><div><p className="cv-eyebrow">Terminal record + current cutoff</p><h3>Metrics</h3></div></div><dl><div><dt>Selected retained calls</dt><dd>{turns.calls.length}</dd></div><div><dt>Run provider calls</dt><dd>{receiptCalls == null ? "not emitted" : `${formatMissingNumber(receiptCalls, 0)} billed · Workshop receipt`}</dd></div><div><dt>Selected rollout tokens</dt><dd>{selectedRolloutTokens === undefined ? "not emitted" : `${formatMissingNumber(selectedRolloutTokens, 0)}${selectedTerminal?.tokens != null ? " · terminal runtime record" : " · retained calls"}`}</dd></div><div><dt>Run provider tokens</dt><dd>{receiptTokens == null ? "not emitted" : `${formatMissingNumber(receiptTokens, 0)} billed · Workshop receipt`}</dd></div><div><dt>Latency</dt><dd>{totalLatencyMs === undefined ? "not emitted" : `${formatMissingNumber(totalLatencyMs, 0)} ms`}</dd></div><div><dt>Run cost</dt><dd>{runCostLabel(props.runLifecycle, totalCostUsd)}</dd></div><div><dt>Terminal reward</dt><dd>{selectedTerminal?.reward == null ? truthNumber(viewer.reward, viewer.terminal, formatMissingNumber) : formatMissingNumber(selectedTerminal.reward)}</dd></div><div><dt>Selected authority</dt><dd>{selectedRolloutAuthority || "not emitted"}</dd></div></dl></section>
+      <section className="cv-panel cv-surface-integrity cv-integrity"><div className="cv-heading"><div><p className="cv-eyebrow">Evidence health</p><h3>Integrity</h3></div><span>{props.runLifecycle?.evidence.state === "rejected" ? "rejected" : lifecycleGaps.length > 0 ? "trace sealed · facts incomplete" : integrityAccepted ? "sealed · accepted" : viewer.terminal ? "terminal" : "live · unsealed"}</span></div><ul><li><strong>Reconciliation</strong><span>{reconciliationLabel}</span></li><li><strong>Model identity</strong><span>{modelIdentityLabel}</span></li><li><strong>Repairs / fallbacks</strong><span>{policy.fallback ? "recorded fallback" : "none recorded"}</span></li><li><strong>Malformed calls</strong><span>{turns.missingPolicyEnvelopeCount || "none"}</span></li><li><strong>Reasoning disclosure</strong><span>{turns.calls.some((call) => call.reasoning.state === "visible") ? "provider emitted visible reasoning evidence" : "Thinking not emitted"}</span></li></ul>{props.runLifecycle?.evidence.state === "rejected" ? <p className="cv-control-reason" data-testid="craftax-seal-disabled-reason">Seal unavailable — run failed because {props.runLifecycle.evidence.rejected} rollout journal{props.runLifecycle.evidence.rejected === 1 ? " was" : "s were"} rejected.</p> : lifecycleFailed && props.runLifecycle && props.runLifecycle.evidence.sealedTraces > 0 ? <p className="cv-control-reason" data-testid="craftax-trace-retained-status">Trace replay remains available from {props.runLifecycle.evidence.sealedTraces} sealed trace{props.runLifecycle.evidence.sealedTraces === 1 ? "" : "s"}; the evaluation failure does not reject them.</p> : null}</section>
       </>}
 
       <footer>live.craftax.v1 · synth.trace-stream-event.v1 · {props.visualMetadata?.qualityGate?.ready ? `ready rev ${props.visualMetadata.qualityGate.revision ?? "—"}` : "draft visual"}</footer>

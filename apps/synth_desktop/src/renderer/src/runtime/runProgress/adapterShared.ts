@@ -177,8 +177,20 @@ export function milestoneFromEvents(events: OptimizerEvent[]): RunProgressMilest
 	return undefined;
 }
 
-/** The visual instance the run published, for "Open full run". */
+/** The primary visual instance the run published, for "Open visual". */
 function visualRef(run: RunRecord): string | undefined {
+	const summary = run.summary ?? {};
+	const visualIds = summary.visualIds && typeof summary.visualIds === "object" && !Array.isArray(summary.visualIds)
+		? summary.visualIds as Record<string, unknown>
+		: {};
+	for (const candidate of [visualIds.primary, summary.visualId]) {
+		if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+	}
+	for (const ref of run.visualRefs ?? []) {
+		if (ref.role !== "primary") continue;
+		const id = ref.id;
+		if (typeof id === "string" && id.length > 0) return id;
+	}
 	for (const ref of run.visualRefs ?? []) {
 		const id = ref.id;
 		if (typeof id === "string" && id.length > 0) return id;

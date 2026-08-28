@@ -6,6 +6,15 @@
  * closed if malformed or historical input contains more than one identity.
  */
 export function optimizerRunIdFromBindings(value: unknown): string | undefined {
+	return uniqueBindingSource(value, new Set(["optimizer_run"]));
+}
+
+/** Read one unambiguous retained trace identity from typed bindings. */
+export function traceIdFromBindings(value: unknown): string | undefined {
+	return uniqueBindingSource(value, new Set(["trace_v5", "trace"]));
+}
+
+function uniqueBindingSource(value: unknown, kinds: Set<string>): string | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const bindings = value as Record<string, unknown>;
 	const rows = Array.isArray(bindings.inputs)
@@ -16,7 +25,7 @@ export function optimizerRunIdFromBindings(value: unknown): string | undefined {
 	const ids = new Set(rows.flatMap((row) => {
 		if (!row || typeof row !== "object" || Array.isArray(row)) return [];
 		const binding = row as Record<string, unknown>;
-		return binding.kind === "optimizer_run" && typeof binding.source === "string" && binding.source.trim()
+		return typeof binding.kind === "string" && kinds.has(binding.kind) && typeof binding.source === "string" && binding.source.trim()
 			? [binding.source.trim()]
 			: [];
 	}));

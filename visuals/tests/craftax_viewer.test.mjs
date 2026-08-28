@@ -139,6 +139,7 @@ test("run overview aggregates rollout distributions without inventing partial to
   const aggregate = summarizeCraftaxRun(rows);
   assert.equal(aggregate.rollouts.length, 2);
   assert.equal(aggregate.rewardMean, 3);
+  assert.equal(aggregate.rewardMedian, 3);
   assert.deepEqual([aggregate.rewardMin, aggregate.rewardMax], [2, 4]);
   assert.deepEqual([aggregate.totalSteps, aggregate.minSteps, aggregate.maxSteps], [3, 1, 2]);
   assert.deepEqual([aggregate.totalCalls, aggregate.minCalls, aggregate.maxCalls], [2, 1, 1]);
@@ -147,6 +148,7 @@ test("run overview aggregates rollout distributions without inventing partial to
   assert.equal(aggregate.reportedCosts, 2);
   assert.deepEqual(aggregate.achievementNames, ["collect_stone", "collect_wood"]);
   assert.deepEqual([aggregate.totalAchievements, aggregate.minAchievements, aggregate.maxAchievements], [2, 1, 1]);
+  assert.equal(aggregate.achievementMedian, 1);
   assert.equal(aggregate.achievementRollouts, 2);
 
   const partial = summarizeCraftaxRun([
@@ -192,6 +194,25 @@ test("terminal overview replaces provisional rewards with scored record truth", 
   assert.equal(aggregate.rollouts[3].seed, 780008);
   assert.equal(aggregate.rollouts[3].costUsd, 0.0042);
   assert.equal(aggregate.reportedAchievements, 1);
+});
+
+test("terminal aggregates use authoritative scored reward and achievement distributions", () => {
+  const terminal = [
+    { lane: "rollout-5", status: "completed", reward: 1, achievements: ["wood"] },
+    { lane: "rollout-6", status: "completed", reward: 2, achievements: ["wood", "stone"] },
+    { lane: "rollout-7", status: "completed", reward: 4, achievements: [] },
+    { lane: "rollout-8", status: "completed", reward: 6, achievements: ["wood", "stone", "table"] },
+    { lane: "rollout-9", status: "completed", reward: 9, achievements: ["wood"] },
+  ];
+  const aggregate = summarizeCraftaxRun([], terminal);
+  assert.deepEqual(
+    [aggregate.rewardMean, aggregate.rewardMedian, aggregate.rewardMin, aggregate.rewardMax],
+    [4.4, 4, 1, 9]
+  );
+  assert.deepEqual(
+    [aggregate.totalAchievements, aggregate.achievementMedian, aggregate.minAchievements, aggregate.maxAchievements],
+    [7, 1, 0, 3]
+  );
 });
 
 test("native GameBench reward_signal reward alias remains visible during replay", () => {

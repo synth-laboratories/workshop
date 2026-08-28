@@ -28,6 +28,7 @@ export type VisualRunRollout = {
 	tokens?: number;
 	costUsd?: number;
 	achievements?: string[];
+	authority?: string;
 };
 
 export type VisualRunLifecycle = {
@@ -56,6 +57,7 @@ export type VisualRunLifecycle = {
 		promptTokens?: number;
 		completionTokens?: number;
 	};
+	modelIdentity?: { provider?: string; model?: string; authority?: string };
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -151,6 +153,7 @@ export function projectVisualRunLifecycle(
 	const receiptCapabilities = rows(receipt.capabilities);
 	const credentialChain = record(summary.credentialChain);
 	const bounds = record(summary.bounds);
+	const modelIdentity = record(summary.modelIdentity);
 	const work = record(manifest.work);
 	const lifecycleStatus = text(terminal.kind) ?? progress?.status ?? text(run.status) ?? "unknown";
 	const isTerminal = text(summary.progress && record(summary.progress).authoritative
@@ -251,6 +254,7 @@ export function projectVisualRunLifecycle(
 			?? finite(usage.costUsd);
 		const achievements = stringList(reportedFact(item, "achievements"))
 			?? stringList(item.checkpointAchievements);
+		const authority = text(record(item.policyRef).authority);
 		return {
 			lane,
 			...(seed != null ? { seed } : {}),
@@ -260,7 +264,8 @@ export function projectVisualRunLifecycle(
 			...(calls != null ? { calls } : {}),
 			...(tokens != null ? { tokens } : {}),
 			...(costUsd != null ? { costUsd } : {}),
-			...(achievements ? { achievements } : {})
+			...(achievements ? { achievements } : {}),
+			...(authority ? { authority } : {})
 		};
 	}).sort((left, right) => (left.seed ?? Number.MAX_SAFE_INTEGER) - (right.seed ?? Number.MAX_SAFE_INTEGER));
 
@@ -286,6 +291,11 @@ export function projectVisualRunLifecycle(
 			provider: text(receiptCapabilities[0]?.provider) ?? text(credentialChain.provider),
 			...(promptTokens != null ? { promptTokens } : {}),
 			...(completionTokens != null ? { completionTokens } : {})
+		},
+		modelIdentity: {
+			provider: text(modelIdentity.provider) ?? text(receiptCapabilities[0]?.provider) ?? text(credentialChain.provider),
+			model: text(modelIdentity.model),
+			authority: text(modelIdentity.authority)
 		}
 	};
 }

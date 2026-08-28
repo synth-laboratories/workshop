@@ -1569,7 +1569,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const qualityGate = artifact.metadata?.qualityGate as { ready?: boolean; revision?: number } | undefined;
 	const authoringGateReady = Boolean(qualityGate?.ready && qualityGate.revision === revision);
 	const sealEligible = Boolean(visualId && revision && (
-		authoringGateReady || (primaryOptimizerRunId && optimizerSealGate.ready)
+		primaryOptimizerRunId ? optimizerSealGate.ready : authoringGateReady
 	));
 	const sealDisabledReason = primaryOptimizerRunId
 		? optimizerSealGate.reason

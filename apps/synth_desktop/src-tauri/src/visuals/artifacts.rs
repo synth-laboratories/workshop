@@ -145,9 +145,11 @@ impl VisualRegistry {
             .filter(|gate| gate.get("ready").and_then(Value::as_bool) == Some(true))
             .filter(|gate| gate.get("revision").and_then(Value::as_i64) == Some(revision))
             .is_some();
-        if !authoring_gate_ready {
-            self.require_terminal_primary_optimizer_evidence(&visual, &bindings)
-                .await?;
+        let optimizer_evidence_gate_ready = self
+            .terminal_primary_optimizer_evidence_ready(&visual, &bindings)
+            .await?;
+        if !optimizer_evidence_gate_ready && !authoring_gate_ready {
+            bail!("visual revision has not passed the E1 quality gate");
         }
         let frozen_bindings = freeze_bindings(bindings)?;
         let annotations = self
@@ -270,14 +272,14 @@ impl VisualRegistry {
     /// terminal evidence, so asking an operator to manufacture two E1 authoring
     /// reviews adds no evidence. Secondary/workbench visuals and every ordinary
     /// visual continue to use the E1 gate above.
-    async fn require_terminal_primary_optimizer_evidence(
+    async fn terminal_primary_optimizer_evidence_ready(
         &self,
         visual: &super::VisualRecord,
         bindings: &Value,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let run_ids = super::declared_optimizer_run_ids(bindings);
         let [run_id] = run_ids.as_slice() else {
-            bail!("visual revision has not passed the E1 quality gate");
+            return Ok(false);
         };
         let service = self.optimizer_runs.get().ok_or_else(|| {
             anyhow!(
@@ -286,7 +288,11 @@ impl VisualRegistry {
         })?;
         let run = service.get(run_id.clone()).await?;
         let view = serde_json::to_value(service.run_view_v2(run_id.clone()).await?)?;
-        require_primary_optimizer_seal_evidence(&visual.id, run_id, &run.summary, &view)
+        if !optimizer_view_is_primary(&visual.id, run_id, &view)? {
+            return Ok(false);
+        }
+        require_primary_optimizer_seal_evidence(&visual.id, run_id, &run.summary, &view)?;
+        Ok(true)
     }
 
     pub async fn list_seals(&self, visual_id: Option<String>) -> Result<Vec<VisualSeal>> {
@@ -813,25 +819,10 @@ fn require_primary_optimizer_seal_evidence(
     run_summary: &Value,
     run_view: &Value,
 ) -> Result<()> {
-    let header = run_view.get("header").ok_or_else(|| {
-        anyhow!("optimizer visual cannot be sealed because its durable run view has no header")
-    })?;
-    if header.get("runId").and_then(Value::as_str) != Some(run_id) {
-        bail!("optimizer visual cannot be sealed because its durable run identity changed");
-    }
-    let is_primary = header
-        .get("visualRefs")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .any(|reference| {
-            reference.get("kind").and_then(Value::as_str) == Some("visual")
-                && reference.get("id").and_then(Value::as_str) == Some(visual_id)
-                && reference.get("role").and_then(Value::as_str) == Some("primary")
-        });
-    if !is_primary {
+    if !optimizer_view_is_primary(visual_id, run_id, run_view)? {
         bail!("visual revision has not passed the E1 quality gate");
     }
+    let header = &run_view["header"];
     if header.get("lifecycle").and_then(Value::as_str) != Some("terminal")
         || header.get("terminal").is_none_or(Value::is_null)
     {
@@ -863,6 +854,25 @@ fn require_primary_optimizer_seal_evidence(
         bail!("optimizer visual cannot be sealed because runtime evidence was rejected");
     }
     Ok(())
+}
+
+fn optimizer_view_is_primary(visual_id: &str, run_id: &str, run_view: &Value) -> Result<bool> {
+    let header = run_view.get("header").ok_or_else(|| {
+        anyhow!("optimizer visual cannot be sealed because its durable run view has no header")
+    })?;
+    if header.get("runId").and_then(Value::as_str) != Some(run_id) {
+        bail!("optimizer visual cannot be sealed because its durable run identity changed");
+    }
+    Ok(header
+        .get("visualRefs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|reference| {
+            reference.get("kind").and_then(Value::as_str) == Some("visual")
+                && reference.get("id").and_then(Value::as_str) == Some(visual_id)
+                && reference.get("role").and_then(Value::as_str) == Some("primary")
+        }))
 }
 
 fn optimizer_runtime_evidence_rejected(summary: &Value) -> bool {

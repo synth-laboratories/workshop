@@ -241,7 +241,7 @@ export type RunProgressProjection = {
 		note?: string;
 	};
 	result?: RunProgressResult;
-	/** Visual instance id for "Open full run", when the run published one. */
+	/** Primary visual instance id for "Open visual", when the run published one. */
 	fullVisualRef?: string;
 	/** Durable event sequence this projection was computed at. */
 	cursorSeq: number;

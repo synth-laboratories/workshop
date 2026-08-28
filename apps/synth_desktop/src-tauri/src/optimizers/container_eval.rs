@@ -3168,6 +3168,8 @@ async fn persist_progress(
     let records_value = json!(records);
     let status_value = status.to_string();
     let cost_ceiling_usd = spec.cost_ceiling_usd;
+    let provider = spec.provider.clone();
+    let model = spec.model.clone();
     let run_before_patch = service.get(run_id.to_string()).await?;
     let started_at = run_before_patch
         .started_at
@@ -3196,6 +3198,14 @@ async fn persist_progress(
             }
             summary.insert("evalStatus".into(), json!(status_value));
             summary.insert("costCeilingUsd".into(), json!(cost_ceiling_usd));
+            summary.insert(
+                "modelIdentity".into(),
+                json!({
+                    "provider": provider,
+                    "model": model,
+                    "authority": "approved_evaluation_spec",
+                }),
+            );
             if let Some(cost) = usage.cost_usd {
                 summary.insert("costUsd".into(), json!(cost));
             }
@@ -3207,11 +3217,7 @@ async fn persist_progress(
                 }),
             );
             run.summary = Value::Object(summary);
-            let mut merged_usage = usage;
-            for (key, value) in run.usage.extra.clone() {
-                merged_usage.extra.entry(key).or_insert(value);
-            }
-            run.usage = merged_usage;
+            run.usage = usage_with_authoritative_provider_receipt(usage, &run.usage);
             Ok(())
         })
         .await?;
@@ -3489,6 +3495,55 @@ fn usage_from_records(
     usage.extra.insert("policyUsage".into(), policy.to_json());
     usage.extra.insert("graderUsage".into(), grader.to_json());
     usage
+}
+
+/// Keep the proxy's settled provider receipt canonical across later mutable
+/// projections. Per-rollout records describe producer/runtime telemetry and
+/// may legitimately have fewer tokens or no cost; they must not overwrite the
+/// provider authority that was reconciled immediately before settlement.
+fn usage_with_authoritative_provider_receipt(
+    mut measured: super::models::OptimizerUsageSummary,
+    current: &super::models::OptimizerUsageSummary,
+) -> super::models::OptimizerUsageSummary {
+    for (key, value) in &current.extra {
+        measured
+            .extra
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
+    let receipt = current
+        .extra
+        .get("providerUsageReceipt")
+        .and_then(Value::as_object);
+    if receipt
+        .and_then(|receipt| receipt.get("authority"))
+        .and_then(Value::as_str)
+        != Some("workshop.secrets_proxy")
+    {
+        return measured;
+    }
+    if let Some(calls) = receipt
+        .and_then(|receipt| receipt.get("calls"))
+        .and_then(Value::as_u64)
+    {
+        measured.calls = calls;
+    }
+    if let Some(tokens) = receipt
+        .and_then(|receipt| receipt.get("promptTokens"))
+        .and_then(Value::as_u64)
+    {
+        measured.prompt_tokens = tokens;
+    }
+    if let Some(tokens) = receipt
+        .and_then(|receipt| receipt.get("completionTokens"))
+        .and_then(Value::as_u64)
+    {
+        measured.completion_tokens = tokens;
+    }
+    measured.cost_usd = receipt
+        .and_then(|receipt| receipt.get("costUsd"))
+        .and_then(Value::as_f64);
+    measured
 }
 
 #[derive(Default)]
@@ -5125,6 +5180,53 @@ mod tests {
             manifest["usage"]["providerReceipt"]["receiptDigest"],
             json!(format!("sha256:{}", "a".repeat(64)))
         );
+    }
+
+    #[test]
+    fn final_record_projection_preserves_authoritative_provider_receipt() {
+        let measured = usage_from_records(
+            &[json!({
+                "usage": {"calls": 10, "prompt_tokens": 100_471, "completion_tokens": 3_517}
+            })],
+            2.45,
+        );
+        let mut current = crate::optimizers::models::OptimizerUsageSummary {
+            calls: 50,
+            prompt_tokens: 116_385,
+            completion_tokens: 6_217,
+            cost_usd: Some(0.016353),
+            ..Default::default()
+        };
+        current.extra.insert(
+            "providerUsageReceipt".into(),
+            json!({
+                "authority": "workshop.secrets_proxy",
+                "calls": 50,
+                "promptTokens": 116385,
+                "completionTokens": 6217,
+                "costUsd": 0.016353,
+            }),
+        );
+
+        let merged = usage_with_authoritative_provider_receipt(measured, &current);
+        assert_eq!(merged.calls, 50);
+        assert_eq!(merged.prompt_tokens, 116_385);
+        assert_eq!(merged.completion_tokens, 6_217);
+        assert_eq!(merged.cost_usd, Some(0.016353));
+        assert_eq!(merged.rollouts, 1, "runtime rollout count stays distinct");
+        assert_eq!(
+            merged.extra["policyUsage"]["promptTokens"],
+            json!(100_471),
+            "producer/runtime telemetry remains available as a separate lane"
+        );
+
+        let mut unknown_cost = current;
+        unknown_cost.extra.get_mut("providerUsageReceipt").unwrap()["costUsd"] = Value::Null;
+        let merged = usage_with_authoritative_provider_receipt(
+            usage_from_records(&[json!({"usage": {"cost_usd": 0.004}})], 2.45),
+            &unknown_cost,
+        );
+        assert_eq!(merged.cost_usd, None, "an unpriced provider receipt is not a producer subtotal");
     }
 
     #[tokio::test]
