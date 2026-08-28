@@ -661,7 +661,11 @@ function LiveGameClip({ frames, actions, status, media, clips }: { frames: LiveF
   const live = !["completed", "failed", "cancelled", "canceled"].includes(status ?? "running");
   const trialIds = [...new Set(frames.map((frame) => frame.trialId))];
   const [selectedTrial, setSelectedTrial] = useState(trialIds[0] ?? "trial");
-  const selectedFrames = frames.filter((frame) => frame.trialId === selectedTrial);
+  // The visual commonly mounts before the first streamed frame. In that case
+  // selectedTrial starts as the placeholder "trial" and must follow the first
+  // real trial id once frames arrive instead of leaving selectedFrames empty.
+  const activeTrial = trialIds.includes(selectedTrial) ? selectedTrial : (trialIds[0] ?? "trial");
+  const selectedFrames = frames.filter((frame) => frame.trialId === activeTrial);
   const [cursor, setCursor] = useState(Math.max(0, selectedFrames.length - 1));
   const [playing, setPlaying] = useState(true);
   const [followingLive, setFollowingLive] = useState(live);
@@ -691,11 +695,11 @@ function LiveGameClip({ frames, actions, status, media, clips }: { frames: LiveF
   }, [cursor, lastIndex, media, selectedFrames]);
   if (!frames.length) return null;
   const frame = selectedFrames[Math.min(cursor, lastIndex)] ?? selectedFrames[lastIndex];
-  const secondTrial = trialIds.find((trialId) => trialId !== selectedTrial);
+  const secondTrial = trialIds.find((trialId) => trialId !== activeTrial);
   const secondFrames = frames.filter((candidate) => candidate.trialId === secondTrial);
   const secondFrame = secondFrames.reduce<LiveFrame | undefined>((closest, candidate) =>
     Math.abs(candidate.elapsedMs - frame.elapsedMs) < Math.abs((closest?.elapsedMs ?? Number.MAX_SAFE_INTEGER) - frame.elapsedMs) ? candidate : closest, undefined);
-  const visibleActions = actions.filter((action) => action.trialId === selectedTrial && action.elapsedMs <= frame.elapsedMs).slice(-5);
+  const visibleActions = actions.filter((action) => action.trialId === activeTrial && action.elapsedMs <= frame.elapsedMs).slice(-5);
   const health = frame.health;
   const elapsedSeconds = Math.max(1, frame.elapsedMs / 1000);
   const bandwidth = health?.bytesCaptured == null ? undefined : health.bytesCaptured / elapsedSeconds / 1024;
@@ -726,7 +730,7 @@ function LiveGameClip({ frames, actions, status, media, clips }: { frames: LiveF
       <span style={{ color: followingLive && live ? "#c2410c" : "#18794e" }}>{followingLive && live ? "● live" : playing ? "▶ replay" : "paused"} · frame {cursor + 1}/{selectedFrames.length} · {durationLabel(frame.elapsedMs)}</span>
     </div>
     {trialIds.length > 1 ? <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-      <label style={{ fontSize: 9 }}>Camera <select aria-label="Rollout camera" value={selectedTrial} onChange={(event) => { setSelectedTrial(event.currentTarget.value); setCursor(0); setFollowingLive(true); }} style={{ marginLeft: 5 }}>{trialIds.map((trialId) => <option key={trialId} value={trialId}>{trialId}</option>)}</select></label>
+      <label style={{ fontSize: 9 }}>Camera <select aria-label="Rollout camera" value={activeTrial} onChange={(event) => { setSelectedTrial(event.currentTarget.value); setCursor(0); setFollowingLive(true); }} style={{ marginLeft: 5 }}>{trialIds.map((trialId) => <option key={trialId} value={trialId}>{trialId}</option>)}</select></label>
       <label style={{ fontSize: 9 }}><input type="checkbox" checked={compare} onChange={(event) => setCompare(event.currentTarget.checked)} /> side-by-side</label>
     </div> : null}
     {live && frame.liveVideoUrl ? <div role="group" aria-label="Visual stream mode" style={{ display: "flex", gap: 5, marginBottom: 8 }}><button type="button" aria-pressed={!encodedVideo} onClick={() => setEncodedVideo(false)}>Frame timeline</button><button type="button" aria-pressed={encodedVideo} onClick={() => setEncodedVideo(true)}>Encoded live video</button></div> : null}
