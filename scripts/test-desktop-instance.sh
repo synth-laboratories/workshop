@@ -92,8 +92,7 @@ awk '
 # bundle executable; checking a removed inline exec made this gate stale while
 # missing the stronger isolation contract.
 isolated_exec="$(sed -n '/^exec_isolated_cua_bundle()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
-grep -q 'local isolated_env=(env -i' <<<"$isolated_exec"
-grep -Fq 'exec "${isolated_env[@]}"' <<<"$isolated_exec"
+grep -q 'exec env -i' <<<"$isolated_exec"
 grep -q 'PWD="\$INSTANCE_ROOT"' <<<"$isolated_exec"
 grep -q 'SYNTH_OPTIMIZER_PROJECT_ROOT="\$optimizer_project_root"' <<<"$isolated_exec"
 grep -q '"\$CUA_EXE"' <<<"$isolated_exec"
@@ -315,13 +314,17 @@ rg -q 'print_runtime_identity' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'verify_packaged_provenance' "$ROOT/scripts/desktop-instance.sh"
 rebuild_body="$(sed -n '/^rebuild_run_instance()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
 case "$rebuild_body" in
-  *"exec_isolated_cua_bundle background"*) ;;
-  *) echo "rebuild-run did not share cua-run's isolated launch environment" >&2; exit 1 ;;
+  *"observe_rebuild_readiness &"*"exec_isolated_cua_bundle"*) ;;
+  *) echo "rebuild-run did not keep the app on cua-run's foreground exec path" >&2; exit 1 ;;
 esac
 case "$rebuild_body" in
-  *'"$CUA_EXE" &'*) echo "rebuild-run bypassed the canonical isolated launcher" >&2; exit 1 ;;
+  *'exec_isolated_cua_bundle &'*|*'"$CUA_EXE" &'*) echo "rebuild-run launched the app asynchronously" >&2; exit 1 ;;
   *) ;;
 esac
+readiness_body="$(sed -n '/^observe_rebuild_readiness()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
+grep -q 'trap - EXIT' <<<"$readiness_body"
+grep -q 'wait_for_health_instance' <<<"$readiness_body"
+grep -q 'print_runtime_identity' <<<"$readiness_body"
 set +e
 drift_out="$($ROOT/scripts/desktop-instance.sh cua-run alpha 2>&1)"
 drift_status=$?

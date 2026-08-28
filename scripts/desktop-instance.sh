@@ -858,7 +858,6 @@ stage_gepa_runtime() {
 # small. Provider credentials live in the named instance's private .env and
 # are loaded by the app, never inherited here.
 exec_isolated_cua_bundle() {
-  local launch_mode="${1:-foreground}"
   local oauth_file="${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}"
   local oauth_state="${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}"
   local sft_train_jsonl="${SYNTH_MLX_SFT_TRAIN_JSONL:-}"
@@ -877,7 +876,7 @@ exec_isolated_cua_bundle() {
 
   mark_runtime "launching" "$$"
   release_operation_lock_before_exec
-  local isolated_env=(env -i \
+  exec env -i \
     PATH="$PATH" \
     HOME="$home_dir" \
     USER="$user_name" \
@@ -902,12 +901,7 @@ exec_isolated_cua_bundle() {
     SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_project_root" \
     SYNTH_OPTIMIZER_WHEEL_FILE="$optimizer_wheel_file" \
     SYNTH_MLX_RL_URL="$mlx_rl_url" \
-    "$CUA_EXE")
-  if [[ "$launch_mode" == "background" ]]; then
-    "${isolated_env[@]}" &
-  else
-    exec "${isolated_env[@]}"
-  fi
+    "$CUA_EXE"
 }
 
 stage_instance() {
@@ -1382,6 +1376,17 @@ print_runtime_identity() {
   }' "$MANIFEST"
 }
 
+observe_rebuild_readiness() {
+  # This observer is the only asynchronous process in rebuild-run. The app
+  # itself must replace the launcher exactly as it does for cua-run; launching
+  # the app as a background child loses the foreground lifecycle under which
+  # the packaged debug runtime consumes its file-backed ChatGPT authorization.
+  # Do not let the observer's subshell run the launcher's operation-lock trap.
+  trap - EXIT
+  wait_for_health_instance >/dev/null
+  print_runtime_identity
+}
+
 # build → bundle → sign → record → verify → launch with descriptor →
 # wait for /health.instance == NAME → print runtime identity. One command.
 rebuild_run_instance() {
@@ -1399,9 +1404,8 @@ rebuild_run_instance() {
   export_instance_env
   echo "[desktop:$NAME] launching recorded bundle from $INSTANCE_ROOT"
   cd "$INSTANCE_ROOT"
-  exec_isolated_cua_bundle background
-  wait_for_health_instance >/dev/null
-  print_runtime_identity
+  observe_rebuild_readiness &
+  exec_isolated_cua_bundle
 }
 
 case "$COMMAND" in
