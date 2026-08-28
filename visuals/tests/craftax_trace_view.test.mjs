@@ -209,14 +209,23 @@ test("an unclosed policy call on terminal evidence is incomplete, never running"
 });
 
 test("the default workstation never substitutes a symbolic map for native PNG evidence", () => {
+  // The Craftax shell now delegates to the shared trace-workbench internals;
+  // the rule holds across both: no symbolic-map substitution anywhere, and the
+  // Craftax specialization stays frame-centric with its native-frame test ids.
   const shell = readFileSync(new URL(
     "../families/first_class_example_containers/craftax.trace_workbench.v1/shell.tsx",
     import.meta.url
   ), "utf8");
-  assert.doesNotMatch(shell, /localMapRows/);
-  assert.doesNotMatch(shell, /symbolic map/);
-  assert.match(shell, /craftax-native-frame-unavailable/);
-  assert.match(shell, /Native PNG unavailable/);
+  const shared = readFileSync(new URL(
+    "../families/first_class_example_containers/_shared/traceWorkbench.tsx",
+    import.meta.url
+  ), "utf8");
+  assert.doesNotMatch(shell + shared, /localMapRows/);
+  assert.doesNotMatch(shell + shared, /symbolic map/);
+  assert.match(shell, /frameTestId: "craftax-native-frame"/);
+  assert.match(shell, /frameCentric: true/);
+  assert.match(shared, /frameTestId\}-unavailable/);
+  assert.match(shared, /Native PNG unavailable/);
 });
 
 test("a run with no reward evidence reports nothing rather than zero", () => {

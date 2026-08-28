@@ -65,6 +65,7 @@ const EXPECTED_IDS = [
   "sourced.visual.v1",
   "trace.catalog.v1",
   "trace.rollout_inspector.v1",
+  "trace.workbench.v1",
 ];
 
 test("visuals package exposes the registered templates", () => {
@@ -94,6 +95,14 @@ test("visuals package exposes the registered templates", () => {
         (meta.components ?? []).map((row) => row.id).sort(),
         ["detail_modal.v1", "event_stream.v1", "metrics.v1", "scrubber.v1"]
       );
+    }
+    if (id === "trace.workbench.v1") {
+      // The family-agnostic workstation reads a run like the Craftax one, but
+      // must not demand rendered frames: liveFrames-unsupported and post_hoc
+      // families can never satisfy a minimum-frame readiness requirement.
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["optimizer_run"]);
+      assert.equal(meta.observationContract.readiness.minimumRenderedFrameCount, undefined);
+      assert.equal(meta.observationContract.readiness.minimumRolloutCount, 1);
     }
     if (id === "craftax.trace_workbench.v1") {
       // The workstation replays one container-eval run's relayed trials. It
