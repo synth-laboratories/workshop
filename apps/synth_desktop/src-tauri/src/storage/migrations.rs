@@ -59,6 +59,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_54,
     MIGRATION_55,
     MIGRATION_56,
+    MIGRATION_57,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -213,7 +214,23 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("optimizer_cancellation_requests", MIGRATION_55),
     ("optimizer_effective_contracts", MIGRATION_56),
     ("optimizer_run_artifacts", MIGRATION_56),
+    ("optimizer_projection_outbox", PROJECTION_OUTBOX_CREATE_ONLY),
 ];
+
+const PROJECTION_OUTBOX_CREATE_ONLY: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_projection_outbox (
+    run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    projection_revision INTEGER NOT NULL,
+    consumer TEXT NOT NULL,
+    delivery_state TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, projection_revision, consumer)
+);
+CREATE INDEX IF NOT EXISTS optimizer_projection_outbox_pending
+ON optimizer_projection_outbox(delivery_state, updated_at);
+"#;
 
 fn heal_missing_tables(conn: &Connection) -> Result<()> {
     for (table, ddl) in REQUIRED_TABLES {
@@ -3426,6 +3443,28 @@ CREATE INDEX IF NOT EXISTS optimizer_run_artifacts_work_item
 ON optimizer_run_artifacts(optimizer_run_id, work_item_id, sequence);
 CREATE INDEX IF NOT EXISTS optimizer_run_artifacts_rollout
 ON optimizer_run_artifacts(optimizer_run_id, rollout_id, sequence);
+"#;
+
+/// F5 delivery and cost truth. A projection commit also commits one durable
+/// wake-up per bound surface. Cost completeness is stored independently from
+/// the integer so a reported $0.00 cannot be confused with an absent charge.
+const MIGRATION_57: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_projection_outbox (
+    run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    projection_revision INTEGER NOT NULL,
+    consumer TEXT NOT NULL,
+    delivery_state TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, projection_revision, consumer)
+);
+CREATE INDEX IF NOT EXISTS optimizer_projection_outbox_pending
+ON optimizer_projection_outbox(delivery_state, updated_at);
+
+ALTER TABLE secret_capabilities ADD COLUMN used_cost_known INTEGER NOT NULL DEFAULT 0;
+UPDATE secret_capabilities
+SET used_cost_known = CASE WHEN used_calls = 0 THEN 1 ELSE 0 END;
 "#;
 
 #[cfg(test)]

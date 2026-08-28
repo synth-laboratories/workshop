@@ -1,4 +1,5 @@
 import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
+import { listen } from "@tauri-apps/api/event";
 import type {
 	ContainerDeployment,
 	OptimizerRunRecord,
@@ -263,6 +264,32 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		transcriptHistoryBySession,
 		loadOlderTranscript
 	} = props;
+	useEffect(() => {
+		let disposed = false;
+		let unlisten: (() => void) | undefined;
+		void listen<{ instance?: string | null; view: string; runId?: string | null }>(
+			"desktop:deep-link",
+			(event) => {
+				const route = event.payload;
+				if (route.instance && route.instance !== document.documentElement.dataset.desktopInstance) {
+					showToast(`This link targets Workshop instance ${route.instance}. Open it from the instance switcher.`);
+					return;
+				}
+				if (route.runId) persistLayoutSnapshot({ optimizers: { selectedRunId: route.runId } });
+				if (route.view === "optimizers" || route.runId) setView({ kind: "optimizers" });
+				else if (route.view === "experiments") setView({ kind: "experiments" });
+				else if (route.view === "visuals") setView({ kind: "visuals" });
+				else setView({ kind: "landing" });
+			}
+		).then((stop) => {
+			if (disposed) stop();
+			else unlisten = stop;
+		}).catch((reason) => showToast(publicError(reason)));
+		return () => {
+			disposed = true;
+			unlisten?.();
+		};
+	}, [persistLayoutSnapshot, setView, showToast]);
 	useEffect(() => {
 		const opened = (event: Event) => openVisualRecord((event as CustomEvent<VisualRecord>).detail);
 		const failed = (event: Event) => showToast((event as CustomEvent<string>).detail);
@@ -549,6 +576,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					{view.kind === "optimizers" ? (
 						<OptimizersPage
 							pluginStatuses={pluginStatuses}
+							initialRunId={preferences.layout.last.optimizers.selectedRunId}
+							onSelectedRunIdChange={(selectedRunId) => persistLayoutSnapshot({ optimizers: { selectedRunId } })}
 							selectedContainerId={openContainer?.id ?? null}
 							onRefreshPlugins={refreshPluginStatuses}
 							onStartAgent={(guide) => startOptimizerAgent(`Plan a ${guide.name} optimization`, guide.prompt)}

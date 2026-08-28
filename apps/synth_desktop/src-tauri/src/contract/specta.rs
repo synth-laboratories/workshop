@@ -23,7 +23,7 @@
 //!    (or debug-assert export in [`export_typescript_bindings`]).
 //! 5. Prefer generated types from `generated/protocol.ts` at the bridge edge.
 
-use crate::instance::{self, InstanceDiagnostics};
+use crate::instance::{self, InstanceDiagnostics, RegisteredInstance};
 use serde::{Deserialize, Serialize};
 use specta_typescript::Typescript;
 use tauri_specta::{collect_commands, Builder};
@@ -71,6 +71,12 @@ pub fn desktop_instance_diagnostics() -> InstanceDiagnostics {
     instance::diagnostics()
 }
 
+#[tauri::command]
+#[specta::specta]
+pub fn desktop_instances_list() -> Result<Vec<RegisteredInstance>, String> {
+    instance::registered_instances().map_err(|error| error.to_string())
+}
+
 /// Specta builder for the complete desktop command boundary.
 pub fn builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
@@ -89,6 +95,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         .typ::<crate::platform::failure::FailureView>()
         .commands(collect_commands![
             desktop_instance_diagnostics,
+            desktop_instances_list,
             crate::desktop_image_preview,
             crate::core_diagnostics,
             crate::runtime_contracts,
@@ -510,8 +517,9 @@ mod tests {
         // 277 → 283: credential roots, bindings, locators, external remember,
         // register, and forget commands.
         // 283 → 285: durable optimizer artifact list and bounded range read.
+        // 285 → 286: safe sibling instance registry projection.
         assert_eq!(
-            exported, 285,
+            exported, 286,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

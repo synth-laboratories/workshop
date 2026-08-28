@@ -727,7 +727,7 @@ fn capability_self(state: &ProxyState, request: &Request<Incoming>) -> Response<
         "status": live.status,
         "usedCalls": live.used_calls,
         "maxCalls": live.max_calls,
-        "usedCostUsd": live.used_cost_usd_micros as f64 / 1_000_000.0,
+        "usedCostUsd": live.used_cost_usd_micros.map(|micros| micros as f64 / 1_000_000.0),
         "maxCostUsd": live.max_cost_usd_micros as f64 / 1_000_000.0,
     })
     .to_string();

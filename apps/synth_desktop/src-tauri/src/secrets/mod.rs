@@ -2476,7 +2476,7 @@ mod tests {
             max_output_tokens: 10_000,
             used_output_tokens: 0,
             max_cost_usd_micros: 1_000_000,
-            used_cost_usd_micros: 0,
+            used_cost_usd_micros: Some(0),
             status: "granted".into(),
             expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
         };

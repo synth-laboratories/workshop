@@ -123,7 +123,7 @@ pub struct CapabilitySummary {
     pub max_calls: u32,
     pub used_calls: u32,
     pub max_cost_usd: f64,
-    pub used_cost_usd: f64,
+    pub used_cost_usd: Option<f64>,
     #[specta(type = specta_typescript::Number)]
     pub used_input_tokens: u64,
     #[specta(type = specta_typescript::Number)]
@@ -158,7 +158,9 @@ pub struct LiveCapability {
     pub used_calls: u32,
     pub used_input_tokens: u64,
     pub used_output_tokens: u64,
-    pub used_cost_usd_micros: u64,
+    /// `Some(0)` is a genuine measured zero. `None` means at least one
+    /// completed provider call did not report a settled charge.
+    pub used_cost_usd_micros: Option<u64>,
     pub status: String,
     pub expires_at_ms: i64,
 }
@@ -168,8 +170,9 @@ impl LiveCapability {
         self.max_calls.saturating_sub(self.used_calls)
     }
 
-    fn cost_usd(&self) -> f64 {
-        self.used_cost_usd_micros as f64 / 1_000_000.0
+    fn cost_usd(&self) -> Option<f64> {
+        self.used_cost_usd_micros
+            .map(|micros| micros as f64 / 1_000_000.0)
     }
 
     fn max_cost_usd(&self) -> f64 {
@@ -289,7 +292,11 @@ impl CapabilityStore {
             live.status = "exhausted".into();
             anyhow::bail!("capability call ceiling reached");
         }
-        if live.used_cost_usd_micros >= live.max_cost_usd_micros && live.max_cost_usd_micros > 0 {
+        if live
+            .used_cost_usd_micros
+            .is_some_and(|used| used >= live.max_cost_usd_micros)
+            && live.max_cost_usd_micros > 0
+        {
             live.status = "exhausted".into();
             anyhow::bail!("capability spend ceiling reached");
         }
@@ -312,12 +319,20 @@ impl CapabilityStore {
             .filter(|cost| cost.is_finite() && *cost >= 0.0)
         {
             let micros = (cost_usd * 1_000_000.0).round() as u64;
-            live.used_cost_usd_micros = live.used_cost_usd_micros.saturating_add(micros);
+            if let Some(used) = live.used_cost_usd_micros.as_mut() {
+                *used = used.saturating_add(micros);
+            }
+        } else {
+            // Once any billed call is missing cost the aggregate is unknown;
+            // later reported charges cannot make that missing amount vanish.
+            live.used_cost_usd_micros = None;
         }
         if live.used_input_tokens > live.max_input_tokens
             || live.used_output_tokens > live.max_output_tokens
             || (live.max_cost_usd_micros > 0
-                && live.used_cost_usd_micros > live.max_cost_usd_micros)
+                && live
+                    .used_cost_usd_micros
+                    .is_some_and(|used| used > live.max_cost_usd_micros))
             || live.used_calls >= live.max_calls
         {
             live.status = "exhausted".into();
@@ -347,8 +362,9 @@ pub fn issue(
             id, handle, secret_id, run_id, recipe_id, provider, operations_json, models_json,
             reasoning_efforts_json, max_calls, max_input_tokens, max_output_tokens,
             max_cost_usd_micros, used_calls, used_input_tokens, used_output_tokens,
-            used_cost_usd_micros, status, created_at, expires_at, revoked_at
-        ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,0,0,0,'granted',?14,?15,NULL)",
+            used_cost_usd_micros, status, created_at, expires_at, revoked_at,
+            used_cost_known
+        ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,0,0,0,'granted',?14,?15,NULL,1)",
         params![
             id,
             handle,
@@ -384,7 +400,7 @@ pub fn issue(
         used_calls: 0,
         used_input_tokens: 0,
         used_output_tokens: 0,
-        used_cost_usd_micros: 0,
+        used_cost_usd_micros: Some(0),
         status: "granted".into(),
         expires_at_ms: expires.timestamp_millis(),
     };
@@ -405,15 +421,16 @@ pub fn issue(
 pub fn persist_usage(conn: &Connection, live: &LiveCapability) -> Result<()> {
     conn.execute(
         "UPDATE secret_capabilities SET used_calls=?1, used_input_tokens=?2,
-         used_output_tokens=?3, used_cost_usd_micros=?4,
+         used_output_tokens=?3, used_cost_usd_micros=?4, used_cost_known=?5,
          revoked_at=CASE WHEN status='revoked' THEN revoked_at ELSE NULL END,
-         status=CASE WHEN status IN ('exhausted','expired','revoked') THEN status ELSE ?5 END
-         WHERE id=?6",
+         status=CASE WHEN status IN ('exhausted','expired','revoked') THEN status ELSE ?6 END
+         WHERE id=?7",
         params![
             live.used_calls as i64,
             live.used_input_tokens as i64,
             live.used_output_tokens as i64,
-            live.used_cost_usd_micros as i64,
+            live.used_cost_usd_micros.unwrap_or(0) as i64,
+            i64::from(live.used_cost_usd_micros.is_some()),
             live.status,
             live.id
         ],
@@ -564,3 +581,67 @@ pub fn persist_status(conn: &Connection, live: &LiveCapability) -> Result<()> {
 
 /// Shared store used by the proxy and the issuer.
 pub type SharedCapabilityStore = Arc<CapabilityStore>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn live() -> LiveCapability {
+        LiveCapability {
+            id: "cap-1".into(),
+            handle: "handle-1".into(),
+            secret_id: "secret-1".into(),
+            run_id: "run-1".into(),
+            recipe_id: "recipe-1".into(),
+            provider: "provider-1".into(),
+            operations: Vec::new(),
+            models: Vec::new(),
+            reasoning_efforts: Vec::new(),
+            max_calls: 5,
+            max_input_tokens: 1_000,
+            max_output_tokens: 1_000,
+            max_cost_usd_micros: 1_000_000,
+            used_calls: 0,
+            used_input_tokens: 0,
+            used_output_tokens: 0,
+            used_cost_usd_micros: Some(0),
+            status: "granted".into(),
+            expires_at_ms: Utc::now().timestamp_millis() + 60_000,
+        }
+    }
+
+    #[test]
+    fn reported_zero_and_unknown_cost_are_never_interchangeable() {
+        let store = CapabilityStore::new();
+        store.insert(live());
+        assert_eq!(
+            summary_from_live(&store.lookup("handle-1").unwrap(), None).used_cost_usd,
+            Some(0.0),
+            "a newly granted capability has a genuine known zero"
+        );
+        let unknown = store
+            .debit_usage(
+                "handle-1",
+                &MeasuredUsage {
+                    calls: 1,
+                    input_tokens: 10,
+                    output_tokens: 2,
+                    cost_usd: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(summary_from_live(&unknown, None).used_cost_usd, None);
+        let still_unknown = store
+            .debit_usage(
+                "handle-1",
+                &MeasuredUsage {
+                    calls: 1,
+                    input_tokens: 10,
+                    output_tokens: 2,
+                    cost_usd: Some(0.25),
+                },
+            )
+            .unwrap();
+        assert_eq!(summary_from_live(&still_unknown, None).used_cost_usd, None);
+    }
+}

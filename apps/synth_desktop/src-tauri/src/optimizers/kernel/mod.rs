@@ -12,6 +12,7 @@ pub mod commit;
 pub mod driver;
 pub mod error;
 pub mod evidence;
+pub mod outbox;
 pub mod persist;
 pub mod sequences;
 pub mod settle;

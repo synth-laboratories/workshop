@@ -71,6 +71,201 @@ pub struct InstanceDiagnostics {
     pub manifest: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisteredInstance {
+    pub name: String,
+    pub display_name: String,
+    pub release_line: Option<String>,
+    pub bundle_id: String,
+    pub app_bundle: String,
+    pub status: String,
+    pub current: bool,
+    pub deep_link: String,
+}
+
+#[derive(Clone, Debug, Serialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkshopDeepLink {
+    pub instance: Option<String>,
+    pub view: String,
+    pub run_id: Option<String>,
+}
+
+fn safe_registry_component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 96
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+/// Read launcher-owned manifests without trusting them as executable input.
+/// Only a minimal, validated switcher projection crosses the UI boundary.
+pub fn registered_instances_from(root: &Path) -> io::Result<Vec<RegisteredInstance>> {
+    let mut instances = Vec::new();
+    let current_name = name();
+    let current_bundle = bundle_id();
+    let Ok(releases) = fs::read_dir(root) else {
+        return Ok(instances);
+    };
+    for release in releases.flatten().filter(|entry| entry.path().is_dir()) {
+        let Ok(entries) = fs::read_dir(release.path()) else {
+            continue;
+        };
+        for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
+            let manifest_path = entry.path().join("instance.json");
+            let Ok(bytes) = fs::read(&manifest_path) else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue;
+            };
+            if value
+                .get("schemaVersion")
+                .and_then(serde_json::Value::as_str)
+                != Some("synth.desktop-instance.v1")
+            {
+                continue;
+            }
+            let Some(instance_name) = value.get("name").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Some(bundle_id) = value.get("bundleId").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if !safe_registry_component(instance_name) || !safe_registry_component(bundle_id) {
+                continue;
+            }
+            let instance_root = value
+                .get("instanceRoot")
+                .and_then(serde_json::Value::as_str)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| entry.path());
+            if instance_root != entry.path() {
+                continue;
+            }
+            let Some(app_bundle) = value
+                .get("appBundle")
+                .and_then(serde_json::Value::as_str)
+                .map(PathBuf::from)
+            else {
+                continue;
+            };
+            if !app_bundle.starts_with(&instance_root)
+                || app_bundle.extension().and_then(|ext| ext.to_str()) != Some("app")
+            {
+                continue;
+            }
+            let status = value
+                .pointer("/runtime/status")
+                .and_then(serde_json::Value::as_str)
+                .filter(|status| matches!(*status, "running" | "stopped" | "starting" | "failed"))
+                .unwrap_or("unknown")
+                .to_string();
+            let current = current_name.as_deref() == Some(instance_name)
+                || current_bundle.as_deref() == Some(bundle_id);
+            instances.push(RegisteredInstance {
+                name: instance_name.to_string(),
+                display_name: value
+                    .get("displayName")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(instance_name)
+                    .chars()
+                    .take(160)
+                    .collect(),
+                release_line: value
+                    .get("releaseLine")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|value| value.chars().take(32).collect()),
+                bundle_id: bundle_id.to_string(),
+                app_bundle: app_bundle.display().to_string(),
+                status,
+                current,
+                deep_link: format!("synth-workshop://open?instance={instance_name}"),
+            });
+        }
+    }
+    instances.sort_by(|left, right| {
+        right
+            .current
+            .cmp(&left.current)
+            .then_with(|| left.display_name.cmp(&right.display_name))
+    });
+    Ok(instances)
+}
+
+pub fn registered_instances() -> io::Result<Vec<RegisteredInstance>> {
+    let root = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".synth-desktop/instances");
+    registered_instances_from(&root)
+}
+
+fn decode_deep_link_component(value: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(value.len());
+    let raw = value.as_bytes();
+    let mut index = 0;
+    while index < raw.len() {
+        match raw[index] {
+            b'%' if index + 2 < raw.len() => {
+                let hex = std::str::from_utf8(&raw[index + 1..index + 3]).ok()?;
+                bytes.push(u8::from_str_radix(hex, 16).ok()?);
+                index += 3;
+            }
+            b'+' => {
+                bytes.push(b' ');
+                index += 1;
+            }
+            byte => {
+                bytes.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
+pub fn parse_workshop_deep_link(raw: &str) -> Result<WorkshopDeepLink, String> {
+    let query = raw
+        .strip_prefix("synth-workshop://open")
+        .ok_or_else(|| "unsupported Workshop deep link".to_string())?
+        .strip_prefix('?')
+        .unwrap_or_default();
+    let mut instance = None;
+    let mut view = "landing".to_string();
+    let mut run_id = None;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let value = decode_deep_link_component(value)
+            .ok_or_else(|| "invalid percent encoding in Workshop deep link".to_string())?;
+        match key {
+            "instance" if safe_registry_component(&value) => instance = Some(value),
+            "view"
+                if matches!(
+                    value.as_str(),
+                    "landing" | "optimizers" | "experiments" | "visuals"
+                ) =>
+            {
+                view = value
+            }
+            "runId" if safe_registry_component(&value) => run_id = Some(value),
+            "instance" | "view" | "runId" => {
+                return Err(format!("invalid {key} in Workshop deep link"))
+            }
+            _ => {}
+        }
+    }
+    if run_id.is_some() {
+        view = "optimizers".into();
+    }
+    Ok(WorkshopDeepLink {
+        instance,
+        view,
+        run_id,
+    })
+}
+
 /// Identity of *this run of the backend*, not of the installation.
 ///
 /// A durable row that says a turn is `running` proves only what was true when
@@ -1399,5 +1594,56 @@ mod tests {
             "expected the ten stdio MCP adapters under {}",
             bin_dir.display()
         );
+    }
+
+    #[test]
+    fn sibling_registry_exposes_only_safe_switcher_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let instance_root = temp.path().join("v08").join("alpha");
+        let app_bundle = instance_root.join("build/Synth Workshop alpha.app");
+        fs::create_dir_all(&instance_root).unwrap();
+        fs::write(
+            instance_root.join("instance.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": "synth.desktop-instance.v1",
+                "name": "alpha",
+                "displayName": "Synth Workshop · alpha",
+                "releaseLine": "v0.8",
+                "bundleId": "com.synth.desktop.v08.dev.alpha",
+                "instanceRoot": instance_root,
+                "appBundle": app_bundle,
+                "runtime": {"status": "running"},
+                "credential": "must-not-cross-boundary"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let listed = registered_instances_from(temp.path()).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "alpha");
+        assert_eq!(listed[0].status, "running");
+        assert_eq!(listed[0].deep_link, "synth-workshop://open?instance=alpha");
+
+        let encoded = serde_json::to_string(&listed).unwrap();
+        assert!(!encoded.contains("credential"));
+    }
+
+    #[test]
+    fn workshop_deep_links_are_bounded_and_route_runs_to_optimizers() {
+        assert_eq!(
+            parse_workshop_deep_link(
+                "synth-workshop://open?instance=alpha&view=visuals&runId=opt_123"
+            )
+            .unwrap(),
+            WorkshopDeepLink {
+                instance: Some("alpha".into()),
+                view: "optimizers".into(),
+                run_id: Some("opt_123".into()),
+            }
+        );
+        assert!(
+            parse_workshop_deep_link("synth-workshop://open?instance=../../canonical").is_err()
+        );
+        assert!(parse_workshop_deep_link("https://example.com").is_err());
     }
 }

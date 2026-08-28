@@ -403,6 +403,88 @@ impl Drop for OptimizerRunOwnershipGuard {
 }
 
 impl OptimizerService {
+    /// Deliver the newest durable projection wake-up for each selected run.
+    /// Missing renderer subscribers become retryable outbox state rather than
+    /// rolling back the already-committed projection.
+    async fn sweep_projection_outbox(
+        &self,
+        only_run_id: Option<String>,
+        event_hint: Option<&AppEvent>,
+    ) -> Result<usize> {
+        let filter = only_run_id.clone();
+        let db = self.db.clone();
+        let pending = db
+            .run(move |conn| super::kernel::outbox::pending_latest(conn, filter.as_deref()))
+            .await?;
+        let mut latest_by_run = BTreeMap::<String, u64>::new();
+        for row in pending {
+            latest_by_run
+                .entry(row.run_id)
+                .and_modify(|revision| *revision = (*revision).max(row.projection_revision))
+                .or_insert(row.projection_revision);
+        }
+        let mut delivered = 0usize;
+        for (run_id, revision) in latest_by_run {
+            let event = event_hint
+                .filter(|event| event.payload["optimizerRunId"].as_str() == Some(run_id.as_str()))
+                .cloned()
+                .unwrap_or_else(|| AppEvent {
+                    schema_version: crate::storage::APP_EVENT_SCHEMA_VERSION.into(),
+                    sequence: 0,
+                    event_id: format!("projection_outbox_{}", Uuid::new_v4().simple()),
+                    session_id: None,
+                    session_sequence: None,
+                    run_id: None,
+                    source: EventSource::System,
+                    kind: "optimizer.run.updated".into(),
+                    payload: json!({
+                        "optimizerRunId": run_id,
+                        "projectionRevision": revision,
+                        "delivery": "outbox_retry",
+                    }),
+                    remote_sequence: None,
+                    command_id: None,
+                    created_at: Utc::now().to_rfc3339(),
+                });
+            let db = self.db.clone();
+            let changed = match self.events_tx.send(event) {
+                Ok(_) => {
+                    let marked_run = run_id.clone();
+                    db.run(move |conn| {
+                        super::kernel::outbox::mark_delivered(conn, &marked_run, revision)
+                    })
+                    .await?
+                }
+                Err(error) => {
+                    let marked_run = run_id.clone();
+                    let message = error.to_string();
+                    db.run(move |conn| {
+                        super::kernel::outbox::mark_failed(conn, &marked_run, revision, &message)
+                    })
+                    .await?;
+                    0
+                }
+            };
+            delivered += changed;
+        }
+        Ok(delivered)
+    }
+
+    pub(super) async fn record_visual_projection_delivery_failure(
+        &self,
+        run_id: &str,
+        error: &anyhow::Error,
+    ) -> Result<()> {
+        let run_id = run_id.to_string();
+        let message = format!("{error:#}");
+        let db = self.db.clone();
+        db.run(move |conn| {
+            super::kernel::outbox::mark_visual_failed(conn, &run_id, &message)?;
+            Ok(())
+        })
+        .await
+    }
+
     /// Publish a durable visual event produced by an internal optimizer worker.
     ///
     /// MCP-driven visual updates return their event to the caller, which then
@@ -412,7 +494,14 @@ impl OptimizerService {
     pub(super) fn publish_visual_event(&self, value: Value) -> Result<()> {
         let event: AppEvent = serde_json::from_value(value)
             .context("optimizer visual update returned an invalid app event")?;
-        let _ = self.events_tx.send(event);
+        // No receiver is a normal offline state: the durable projection outbox
+        // remains pending for the next sweep. If a receiver is present, a send
+        // failure is no longer allowed to disappear into a best-effort `let _`.
+        if self.events_tx.receiver_count() > 0 {
+            self.events_tx
+                .send(event)
+                .map_err(|error| anyhow!("publish optimizer visual event: {error}"))?;
+        }
         Ok(())
     }
 
@@ -659,8 +748,10 @@ impl OptimizerService {
         result["importedFrameCount"] = json!(frames.len());
         result["importedFrameSteps"] =
             json!(frames.iter().map(|frame| frame.step).collect::<Vec<_>>());
-        if let Some(event) = event {
-            let _ = self.events_tx.send(event);
+        if let Some(event) = event.filter(|_| self.events_tx.receiver_count() > 0) {
+            self.events_tx
+                .send(event)
+                .map_err(|error| anyhow!("publish imported optimizer frame event: {error}"))?;
         }
         Ok(result)
     }
@@ -1381,10 +1472,12 @@ impl OptimizerService {
     pub async fn reconcile_stale_local_runs(&self) -> Result<Vec<OptimizerRunRecord>> {
         let db = self.db.clone();
         let instance_id = crate::instance::boot_epoch().to_string();
-        db.run_transaction(move |conn| {
+        let recovered = db.run_transaction(move |conn| {
             reconcile_stale_local_runs_in_tx(conn, &instance_id, Utc::now())
         })
-        .await
+        .await?;
+        self.sweep_projection_outbox(None, None).await?;
+        Ok(recovered)
     }
 
     pub async fn events_after(
@@ -1509,9 +1602,9 @@ impl OptimizerService {
             let run = self.get(optimizer_run_id).await?;
             return Ok((run, None));
         }
+        let delivery_run_id = optimizer_run_id.clone();
         let db = self.db.clone();
         let frame_store = self.frame_store.clone();
-        let events_tx = self.events_tx.clone();
         let result = db
             .run_transaction(move |conn| {
                 let run = load_run(conn, &optimizer_run_id)?;
@@ -1545,9 +1638,8 @@ impl OptimizerService {
                 )
             })
             .await?;
-        if let Some(event) = &result.1 {
-            let _ = events_tx.send(event.clone());
-        }
+        self.sweep_projection_outbox(Some(delivery_run_id), result.1.as_ref())
+            .await?;
         Ok(result)
     }
 
@@ -1561,6 +1653,7 @@ impl OptimizerService {
             let run = self.get(optimizer_run_id).await?;
             return Ok((run, None));
         }
+        let delivery_run_id = optimizer_run_id.clone();
         let db = self.db.clone();
         let frame_store = self.frame_store.clone();
         let result = db
@@ -1569,9 +1662,8 @@ impl OptimizerService {
                 commit_validated_events(conn, &frame_store, run, events, contract)
             })
             .await?;
-        if let Some(event) = &result.1 {
-            let _ = self.events_tx.send(event.clone());
-        }
+        self.sweep_projection_outbox(Some(delivery_run_id), result.1.as_ref())
+            .await?;
         Ok(result)
     }
 

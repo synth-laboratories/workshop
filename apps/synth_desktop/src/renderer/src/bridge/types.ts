@@ -65,6 +65,7 @@ import type {
 	PendingGrantSummary,
 	PluginPermission,
 	PluginStatus,
+	RegisteredInstance,
 	ReportAudience,
 	ReportAudienceState,
 	ReportBlock,
@@ -118,6 +119,7 @@ import type {
 	WorkspaceGrantRequest,
 	WorkspaceRootSummary
 } from "../generated/protocol";
+export type { RegisteredInstance };
 
 export type {
 	ArtifactMutationReceipt,

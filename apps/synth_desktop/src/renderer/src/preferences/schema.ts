@@ -32,6 +32,9 @@ export type LayoutSnapshot = {
 	bottomPanelHeight: number;
 	selectedConversationId: string | null;
 	selectedOutputTab: string | null;
+	optimizers: {
+		selectedRunId: string | null;
+	};
 };
 
 export type ConversationMeta = {
@@ -95,7 +98,8 @@ export const DEFAULT_LAYOUT: LayoutSnapshot = {
 	bottomPanelVisible: false,
 	bottomPanelHeight: 220,
 	selectedConversationId: null,
-	selectedOutputTab: null
+	selectedOutputTab: null,
+	optimizers: { selectedRunId: null }
 };
 
 export const DEFAULT_PREFERENCES: DesktopPreferences = {
@@ -178,6 +182,9 @@ export function normalizeLayoutSnapshot(
 	const maxVisualsList = 960;
 	const minBottom = 120;
 	const maxBottom = Math.max(minBottom, Math.min(480, viewportHeight - 280));
+	const optimizers = source.optimizers && typeof source.optimizers === "object"
+		? source.optimizers as Record<string, unknown>
+		: {};
 	return {
 		sidebarVisible: source.sidebarVisible !== false,
 		sidebarWidth: clampNumber(source.sidebarWidth, minSidebar, maxSidebar, DEFAULT_LAYOUT.sidebarWidth),
@@ -187,7 +194,10 @@ export function normalizeLayoutSnapshot(
 		bottomPanelVisible: source.bottomPanelVisible === true,
 		bottomPanelHeight: clampNumber(source.bottomPanelHeight, minBottom, maxBottom, DEFAULT_LAYOUT.bottomPanelHeight),
 		selectedConversationId: typeof source.selectedConversationId === "string" ? source.selectedConversationId : null,
-		selectedOutputTab: typeof source.selectedOutputTab === "string" ? source.selectedOutputTab : null
+		selectedOutputTab: typeof source.selectedOutputTab === "string" ? source.selectedOutputTab : null,
+		optimizers: {
+			selectedRunId: typeof optimizers.selectedRunId === "string" ? optimizers.selectedRunId : null
+		}
 	};
 }
 
