@@ -280,6 +280,15 @@ pub(crate) enum ApprovalKind {
 }
 
 impl ApprovalKind {
+    pub(crate) fn approval_digest(&self) -> Option<&str> {
+        match self {
+            Self::PaidCompute {
+                preparation_digest, ..
+            } => preparation_digest.as_deref(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn name(&self) -> &'static str {
         match self {
             Self::ShellCommand { .. } => "shell_command",
@@ -712,6 +721,7 @@ struct PendingApproval {
 pub(crate) struct ApprovalBroker {
     pending: Mutex<HashMap<String, Arc<PendingApproval>>>,
     session_grants: Mutex<HashSet<(String, String)>>,
+    settled_exact: Mutex<HashSet<(String, String, String)>>,
     /// Effective policy sealed at session start. A restarted session
     /// overwrites its entry; host authorization reads this instead of
     /// re-reading machine config so the layers cannot diverge mid-session.
@@ -725,6 +735,7 @@ impl ApprovalBroker {
         Self {
             pending: Mutex::new(HashMap::new()),
             session_grants: Mutex::new(HashSet::new()),
+            settled_exact: Mutex::new(HashSet::new()),
             effective_policies: Mutex::new(HashMap::new()),
             persistence,
             restore_started: AtomicBool::new(false),
@@ -860,6 +871,17 @@ impl ApprovalBroker {
             return Err(anyhow!("approval is no longer pending: {approval_id}"));
         }
         let delivery = pending.resolver.resolve(&decision).await?;
+        if let Some(digest) = pending.kind.approval_digest() {
+            let mut settled_exact = self.settled_exact.lock().await;
+            settled_exact.insert((
+                session_id.to_owned(),
+                digest.to_owned(),
+                decision.event_value().to_owned(),
+            ));
+            if matches!(decision, ApprovalDecision::ApproveWithCap { .. }) {
+                settled_exact.insert((session_id.to_owned(), digest.to_owned(), "once".to_owned()));
+            }
+        }
         if matches!(
             decision,
             ApprovalDecision::Approve {
@@ -906,6 +928,39 @@ impl ApprovalBroker {
             )
             .await?;
         Ok(delivery)
+    }
+
+    pub(crate) async fn validate_exact_digest(
+        &self,
+        approval_id: &str,
+        expected_digest: &str,
+    ) -> Result<()> {
+        let pending = self.pending.lock().await;
+        let pending = pending
+            .get(approval_id)
+            .ok_or_else(|| anyhow!("approval is no longer pending: {approval_id}"))?;
+        let actual = pending.kind.approval_digest().ok_or_else(|| {
+            anyhow!("approval is not bound to an immutable proposal digest: {approval_id}")
+        })?;
+        if actual != expected_digest {
+            return Err(anyhow!(
+                "approval digest mismatch for {approval_id}: expected {expected_digest}, current {actual}"
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn was_resolved_exact(
+        &self,
+        session_id: &str,
+        digest: &str,
+        decision: &ApprovalDecision,
+    ) -> bool {
+        self.settled_exact.lock().await.contains(&(
+            session_id.to_owned(),
+            digest.to_owned(),
+            decision.event_value().to_owned(),
+        ))
     }
 
     pub(crate) async fn expire_origin<R: tauri::Runtime>(

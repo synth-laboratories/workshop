@@ -30,6 +30,7 @@ pub const CODE_CONFLICT: &str = "conflict";
 pub const CODE_IO: &str = "io";
 pub const CODE_CANCELLED: &str = "cancelled";
 pub const CODE_DATABASE_LOCKED: &str = "database_locked";
+pub const CODE_APPROVAL_EXPIRED: &str = "approval_expired";
 
 impl AppError {
     pub fn coded(code: &'static str, message: impl Into<String>) -> Self {
@@ -125,6 +126,10 @@ impl From<anyhow::Error> for AppError {
         }
         if error_is::<DatabaseLocked>(&error) {
             return Self::coded(CODE_DATABASE_LOCKED, error.to_string())
+                .with_detail(format!("{error:?}"));
+        }
+        if error_is::<ApprovalExpired>(&error) {
+            return Self::coded(CODE_APPROVAL_EXPIRED, error.to_string())
                 .with_detail(format!("{error:?}"));
         }
         if error_is::<StructuredFailure>(&error) {
@@ -234,6 +239,23 @@ impl fmt::Display for DatabaseLocked {
 }
 
 impl std::error::Error for DatabaseLocked {}
+
+#[derive(Debug)]
+pub struct ApprovalExpired {
+    pub approval_id: String,
+}
+
+impl fmt::Display for ApprovalExpired {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "approval_expired: paid-compute approval {} expired before settlement",
+            self.approval_id
+        )
+    }
+}
+
+impl std::error::Error for ApprovalExpired {}
 
 /// A failure that carries a stable machine code and a remediation across a
 /// loopback IPC boundary.
