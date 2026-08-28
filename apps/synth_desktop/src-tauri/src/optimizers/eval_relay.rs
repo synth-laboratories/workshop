@@ -27,7 +27,7 @@
 
 use super::{events::OptimizerEventDraft, service::OptimizerService};
 use crate::container_stream::{poll_event_list, STREAM_SUBSCRIBED_KIND};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
@@ -244,6 +244,16 @@ pub(crate) struct RelayOutcome {
     /// steps may render byte-identical PNGs and therefore share one CAS blob.
     pub unique_frame_blobs: std::collections::BTreeSet<String>,
     pub frame_bytes: u64,
+    /// Last environment step present in the durable producer journal.
+    pub last_relayed_step: Option<u64>,
+    /// Cancellation closes the evidence lane as partial/aborted, never as a
+    /// producer failure.
+    pub aborted_by_cancellation: bool,
+    pub span_usage_events: u64,
+    pub span_prompt_tokens: u64,
+    pub span_completion_tokens: u64,
+    pub span_cost_usd: Option<f64>,
+    pub span_cost_complete: bool,
     pub degradations: Vec<Degradation>,
 }
 
@@ -262,6 +272,15 @@ impl RelayOutcome {
             "frameObservationsRetained": self.frames_retained,
             "uniqueFrameBlobs": self.unique_frame_blobs.len(),
             "frameBytes": self.frame_bytes,
+            "lastRelayedStep": self.last_relayed_step,
+            "abortedByCancellation": self.aborted_by_cancellation,
+            "observedUsage": {
+                "events": self.span_usage_events,
+                "prompt_tokens": self.span_prompt_tokens,
+                "completion_tokens": self.span_completion_tokens,
+                "cost_usd": if self.span_cost_complete { json!(self.span_cost_usd) } else { Value::Null },
+                "cost_complete": self.span_cost_complete,
+            },
             "degradations": self.degradations.iter().map(Degradation::to_json).collect::<Vec<_>>(),
         })
     }
@@ -333,17 +352,40 @@ where
             // episode when its client goes away. The journal it already wrote
             // is still drained below, so a cancelled trial keeps its evidence.
             drop(rollout);
-            let drained = drain(
-                ctx,
-                &mut cursor,
-                &mut acked,
-                &mut chain_head,
-                &mut journal_v2,
-                &mut outcome,
-            )
-            .await;
-            if let Err(error) = drained {
-                outcome.note("relay_failed", format!("{error:#}"), 0);
+            outcome.aborted_by_cancellation = true;
+            let drain_started = Instant::now();
+            let mut cancellation_idle_drains = 0u32;
+            loop {
+                match drain(
+                    ctx,
+                    &mut cursor,
+                    &mut acked,
+                    &mut chain_head,
+                    &mut journal_v2,
+                    &mut outcome,
+                )
+                .await
+                {
+                    Ok(summary) => {
+                        outcome.journal_closed |= summary.closed;
+                        cancellation_idle_drains = if summary.relayed == 0 {
+                            cancellation_idle_drains.saturating_add(1)
+                        } else {
+                            0
+                        };
+                        if summary.closed
+                            || cancellation_idle_drains >= SETTLED_IDLE_DRAINS
+                            || drain_started.elapsed() >= JOURNAL_DRAIN_GRACE
+                        {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        outcome.note("relay_failed", format!("{error:#}"), 0);
+                        break;
+                    }
+                }
+                tokio::time::sleep(poll_interval).await;
             }
             outcome.note(
                 "cancelled",
@@ -829,6 +871,38 @@ async fn relay_event(
         .to_string();
     let mut payload = event.get("payload").cloned().unwrap_or(json!({}));
 
+    if let Some(step) = payload.get("step").and_then(Value::as_u64) {
+        outcome.last_relayed_step = Some(outcome.last_relayed_step.unwrap_or(0).max(step));
+    }
+
+    let usage_delta = (kind == "span.policy.data")
+        .then(|| payload.get("usage").and_then(policy_usage_delta))
+        .flatten();
+    if let Some(usage) = usage_delta.as_ref() {
+        outcome.span_usage_events = outcome.span_usage_events.saturating_add(1);
+        outcome.span_prompt_tokens = outcome.span_prompt_tokens.saturating_add(
+            usage
+                .get("prompt_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        );
+        outcome.span_completion_tokens = outcome.span_completion_tokens.saturating_add(
+            usage
+                .get("completion_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        );
+        if outcome.span_usage_events == 1 {
+            outcome.span_cost_complete = true;
+        }
+        match usage.get("cost_usd").and_then(Value::as_f64) {
+            Some(cost) if cost.is_finite() && cost >= 0.0 => {
+                outcome.span_cost_usd = Some(outcome.span_cost_usd.unwrap_or(0.0) + cost);
+            }
+            _ => outcome.span_cost_complete = false,
+        }
+    }
+
     if kind == "frame" {
         outcome.frames_declared += 1;
         match retain_frame(ctx, &payload, outcome).await {
@@ -874,8 +948,7 @@ async fn relay_event(
         ("container_event".into(), container_event.clone()),
     ]);
 
-    Ok(
-        OptimizerEventDraft::new("eval.trial.event", EVAL_ALGORITHM_ID)
+    let mut draft = OptimizerEventDraft::new("eval.trial.event", EVAL_ALGORITHM_ID)
             // One relay of one producer sequence. A retried page, a resumed
             // worker, and a restarted Workshop all re-offer the same fact.
             .idempotency_key(format!("eval:event:{}:{sequence}", ctx.rollout_id))
@@ -886,8 +959,45 @@ async fn relay_event(
                 "source": "container_eval",
                 "trial_id": ctx.trial_id,
                 "container_event": container_event,
-            })),
-    )
+            }));
+    if let Some(usage_delta) = usage_delta {
+        draft = draft.usage_delta(usage_delta);
+    }
+    Ok(draft)
+}
+
+fn policy_usage_delta(usage: &Value) -> Option<Map<String, Value>> {
+    let prompt = usage
+        .get("prompt_tokens")
+        .or_else(|| usage.get("promptTokens"))
+        .or_else(|| usage.get("input_tokens"))
+        .or_else(|| usage.get("inputTokens"))
+        .and_then(Value::as_u64);
+    let completion = usage
+        .get("completion_tokens")
+        .or_else(|| usage.get("completionTokens"))
+        .or_else(|| usage.get("output_tokens"))
+        .or_else(|| usage.get("outputTokens"))
+        .and_then(Value::as_u64);
+    let cost = usage
+        .get("cost_usd")
+        .or_else(|| usage.get("costUsd"))
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0);
+    if prompt.is_none() && completion.is_none() && cost.is_none() {
+        return None;
+    }
+    let mut delta = Map::new();
+    if let Some(prompt) = prompt {
+        delta.insert("prompt_tokens".into(), json!(prompt));
+    }
+    if let Some(completion) = completion {
+        delta.insert("completion_tokens".into(), json!(completion));
+    }
+    if let Some(cost) = cost {
+        delta.insert("cost_usd".into(), json!(cost));
+    }
+    Some(delta)
 }
 
 /// Fetch, validate, and store one native frame.
@@ -1153,7 +1263,15 @@ pub(crate) async fn append_degradations(
     if outcome.degradations.is_empty() {
         return Ok(());
     }
+    let (durable_frames, durable_bytes) = service.run_media_totals(run_id, trial_id).await?;
     let dropped: usize = outcome.degradations.iter().map(|item| item.dropped).sum();
+    let mut relay_receipt = outcome.to_json();
+    if let Some(object) = relay_receipt.as_object_mut() {
+        object.insert("framesRetained".into(), json!(durable_frames));
+        object.insert("frameObservationsRetained".into(), json!(durable_frames));
+        object.insert("frameBytes".into(), json!(durable_bytes));
+        object.insert("retentionAuthority".into(), json!("optimizer_run_media"));
+    }
     service
         .append_event_payloads(
             run_id.to_string(),
@@ -1168,12 +1286,12 @@ pub(crate) async fn append_degradations(
                             "message".into(),
                             json!(format!(
                                 "{} of {} native frames retained; {} bound(s) reached",
-                                outcome.frames_retained,
+                                durable_frames,
                                 outcome.frames_declared,
                                 outcome.degradations.len()
                             )),
                         ),
-                        ("relay".into(), outcome.to_json()),
+                        ("relay".into(), relay_receipt),
                     ]))
                     .raw(json!({ "source": "container_eval" })),
             ],

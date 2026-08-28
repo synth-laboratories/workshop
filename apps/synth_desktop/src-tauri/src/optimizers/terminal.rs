@@ -430,6 +430,16 @@ fn populate_canonical_usage(conn: &Connection, run_id: &str, manifest: &mut Valu
         .with_context(|| format!("optimizer run {run_id} disappeared before terminal sealing"))?;
     let usage: OptimizerUsageSummary = serde_json::from_str(&usage_json)
         .with_context(|| format!("decode canonical usage for optimizer run {run_id}"))?;
+    let (committed_prompt, committed_completion, completeness) =
+        usage_evidence(conn, run_id)?;
+    if usage.prompt_tokens < committed_prompt || usage.completion_tokens < committed_completion {
+        anyhow::bail!(
+            "canonical terminal usage for {run_id} is below committed policy spans: \
+             prompt {} < {committed_prompt} or completion {} < {committed_completion}",
+            usage.prompt_tokens,
+            usage.completion_tokens,
+        );
+    }
     let object = manifest
         .as_object_mut()
         .context("optimizer terminal manifest must be an object")?;
@@ -442,6 +452,7 @@ fn populate_canonical_usage(conn: &Connection, run_id: &str, manifest: &mut Valu
     terminal_usage.insert("completionTokens".into(), json!(usage.completion_tokens));
     terminal_usage.insert("rollouts".into(), json!(usage.rollouts));
     terminal_usage.insert("wallTimeMs".into(), json!(usage.wall_time_ms));
+    terminal_usage.insert("completeness".into(), json!(completeness));
     let approval = usage.extra.get("paidComputeApproval").cloned();
     if let Some(approval) = approval.as_ref() {
         validate_paid_compute_approval(approval)?;
@@ -451,6 +462,74 @@ fn populate_canonical_usage(conn: &Connection, run_id: &str, manifest: &mut Valu
         approval.unwrap_or(Value::Null),
     );
     Ok(())
+}
+
+/// Read usage provenance from the same durable event rows that built the run
+/// accumulator. Span usage is already committed incrementally; trial-terminal
+/// events may therefore append only the non-negative reconciliation remainder.
+fn usage_evidence(conn: &Connection, run_id: &str) -> Result<(u64, u64, &'static str)> {
+    let mut statement = conn.prepare(
+        "SELECT payload_json FROM optimizer_events
+         WHERE optimizer_run_id=?1 ORDER BY sequence_number ASC",
+    )?;
+    let rows = statement.query_map(params![run_id], |row| row.get::<_, String>(0))?;
+    let mut committed_prompt = 0u64;
+    let mut committed_completion = 0u64;
+    let mut terminal_markers = Vec::new();
+    for row in rows {
+        let event: OptimizerEventEnvelope = serde_json::from_str(&row?)
+            .with_context(|| format!("decode usage evidence for optimizer run {run_id}"))?;
+        let container_kind = event
+            .delta
+            .get("container_event")
+            .or_else(|| event.delta.get("containerEvent"))
+            .and_then(Value::as_object)
+            .and_then(|container| container.get("kind"))
+            .and_then(Value::as_str);
+        if event.event_type == "eval.trial.event"
+            && container_kind == Some("span.policy.data")
+        {
+            if let Some(delta) = event.usage_delta.as_ref() {
+                committed_prompt = committed_prompt.saturating_add(
+                    delta
+                        .get("prompt_tokens")
+                        .or_else(|| delta.get("promptTokens"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                );
+                committed_completion = committed_completion.saturating_add(
+                    delta
+                        .get("completion_tokens")
+                        .or_else(|| delta.get("completionTokens"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                );
+            }
+        }
+        if event.event_type == "eval.trial.terminal" {
+            if let Some(marker) = event.usage_delta.as_ref().and_then(|delta| {
+                delta
+                    .get("usage_completeness")
+                    .or_else(|| delta.get("usageCompleteness"))
+                    .and_then(Value::as_str)
+            }) {
+                terminal_markers.push(marker.to_string());
+            }
+        }
+    }
+    let completeness = if terminal_markers.iter().any(|value| value == "partial")
+        || terminal_markers.is_empty()
+    {
+        "partial"
+    } else if terminal_markers
+        .iter()
+        .all(|value| value == "reconciled")
+    {
+        "reconciled"
+    } else {
+        "container_reported"
+    };
+    Ok((committed_prompt, committed_completion, completeness))
 }
 
 fn validate_paid_compute_approval(approval: &Value) -> Result<()> {
@@ -687,7 +766,11 @@ mod tests {
     fn manifest_tables(conn: &Connection, include_runs: bool) {
         if include_runs {
             conn.execute_batch(
-                "CREATE TABLE optimizer_runs(id TEXT PRIMARY KEY, usage_json TEXT NOT NULL);",
+                "CREATE TABLE optimizer_runs(id TEXT PRIMARY KEY, usage_json TEXT NOT NULL);
+                 CREATE TABLE optimizer_events(
+                    optimizer_run_id TEXT NOT NULL,
+                    sequence_number INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL);",
             )
             .unwrap();
         }
@@ -727,6 +810,7 @@ mod tests {
         let sealed = seal(&conn, "run_1", &manifest).unwrap();
         assert_eq!(sealed.pointer("/usage/costUsd"), Some(&json!(1.25)));
         assert_eq!(sealed.pointer("/usage/rollouts"), Some(&json!(4)));
+        assert_eq!(sealed.pointer("/usage/completeness"), Some(&json!("partial")));
         assert_eq!(
             sealed.pointer("/paidComputeApproval/approvalId"),
             Some(&json!("approval-1"))
