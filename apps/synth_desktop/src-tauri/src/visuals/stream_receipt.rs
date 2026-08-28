@@ -18,18 +18,27 @@
 //! fold subsumes this bookkeeping; until then this seam is the only server-side
 //! observation there is.
 //!
-//! # Two deliberate divergences from `visuals/runtime/liveStream.ts`
+//! # Agreement with `visuals/runtime/liveStream.ts`, and one divergence
 //!
-//! 1. **Control envelopes keep their sequence numbers here.** The TypeScript
-//!    ingest skips a control envelope before recording its sequence, so a
-//!    producer that sequences its heartbeats manufactures a permanent phantom
-//!    gap. A gap is a claim about the producer's sequence space, and control
-//!    records occupy that space, so they are counted for the gap scan and
-//!    excluded only from the evidence counts.
-//! 2. **`control: true` is honored.** The TS ingest classifies on `kind` alone
-//!    while the projector also honors the flag. Honoring both here can only
-//!    move an envelope out of the non-control count, which is the conservative
-//!    direction for a receipt something else will gate on.
+//! Two rules were written here and in the TypeScript ingest independently, in
+//! the same afternoon, and arrived at the same answer. Both hold on both sides:
+//!
+//! 1. **Control envelopes keep their sequence numbers.** A gap is a claim about
+//!    the producer's sequence space and control records occupy that space, so
+//!    skipping one before recording its sequence manufactures a permanent
+//!    phantom gap for any producer that sequences its heartbeats. They count
+//!    for the gap scan and are excluded only from the evidence counts.
+//! 2. **`control: true` is honored** alongside control kinds, so the ingest and
+//!    the projector cannot disagree about what is evidence.
+//!
+//! The one real divergence: `last_sequence` here is per *declared stream* and
+//! is advanced by control envelopes, where the TypeScript side keeps
+//! `lastSequenceByScope` and advances it only on evidence. Neither is wrong —
+//! they answer different questions — but a reader porting one to the other will
+//! trip on it, and the golden-fixture suite must expect the difference.
+//!
+//! When the fold moves to Rust (item 1), these rules move with it; both sides
+//! must not be edited independently again.
 
 use super::models::canonicalize_bindings;
 use serde::{Deserialize, Serialize};
@@ -1023,4 +1032,902 @@ fn digest_hash(event: &Value) -> u64 {
             .hash(&mut hasher),
     }
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn observed_sequences(values: &[i64]) -> BTreeSet<i64> {
+        values.iter().copied().collect()
+    }
+
+    fn gap(scope: &str, after: i64, before: i64) -> StreamGap {
+        StreamGap {
+            scope: scope.to_string(),
+            after,
+            before,
+        }
+    }
+
+    /// One declared stream and a visual id nothing else in this file uses.
+    ///
+    /// The receipt store is process-global and these tests share it, so each
+    /// test keys its own visual rather than asking production code for a reset
+    /// hook it has no other reason to expose.
+    fn seam(name: &str) -> (String, String, DeclaredStreams) {
+        let visual_id = format!("vis.{name}");
+        let poll_url = format!("https://poll.test/{name}");
+        let declared = DeclaredStreams {
+            streams: vec![DeclaredStream {
+                stream_id: poll_url.clone(),
+                poll_url: poll_url.clone(),
+                sse_url: None,
+            }],
+            missing_transport: Vec::new(),
+        };
+        (visual_id, poll_url, declared)
+    }
+
+    /// Poll the way `visual_stream_poll` polls: the attempt is recorded before
+    /// the request goes out, then the page it answered with.
+    fn deliver(
+        visual_id: &str,
+        declared: &DeclaredStreams,
+        poll_url: &str,
+        body: Value,
+    ) -> PollOutcome {
+        record_poll_attempt(visual_id, 1, declared, poll_url);
+        record_poll_page(visual_id, 1, declared, poll_url, &body)
+    }
+
+    fn page(events: Value) -> Value {
+        json!({ "page": { "events": events } })
+    }
+
+    fn kind_row(card: &StreamReceipt, kind: &str) -> Option<(u64, bool)> {
+        card.envelopes_by_kind
+            .iter()
+            .find(|row| row.kind == kind)
+            .map(|row| (row.count, row.control))
+    }
+
+    // ---------------------------------------------------------------- gaps
+
+    #[test]
+    fn an_unscanned_scope_has_no_gaps() {
+        assert!(scan_gaps("roll_a", None).is_empty());
+        assert!(scan_gaps("roll_a", Some(&observed_sequences(&[]))).is_empty());
+        assert!(scan_gaps("roll_a", Some(&observed_sequences(&[7]))).is_empty());
+    }
+
+    #[test]
+    fn a_contiguous_run_has_no_gaps() {
+        assert!(scan_gaps("roll_a", Some(&observed_sequences(&[1, 2, 3, 4]))).is_empty());
+        // Sequence spaces do not have to start at one.
+        assert!(scan_gaps("roll_a", Some(&observed_sequences(&[9, 10, 11]))).is_empty());
+    }
+
+    #[test]
+    fn one_missing_sequence_is_one_gap_bracketed_by_its_neighbours() {
+        assert_eq!(
+            scan_gaps("roll_a", Some(&observed_sequences(&[1, 2, 4, 5]))),
+            vec![gap("roll_a", 2, 4)]
+        );
+        // A wide hole is still one gap: `after`/`before` bracket it, they do
+        // not enumerate it.
+        assert_eq!(
+            scan_gaps("roll_a", Some(&observed_sequences(&[1, 1000]))),
+            vec![gap("roll_a", 1, 1000)]
+        );
+    }
+
+    #[test]
+    fn every_hole_is_reported_separately_and_in_order() {
+        assert_eq!(
+            scan_gaps("roll_a", Some(&observed_sequences(&[1, 4, 5, 9]))),
+            vec![gap("roll_a", 1, 4), gap("roll_a", 5, 9)]
+        );
+    }
+
+    #[test]
+    fn gap_bounds_are_signed_and_saturate_at_the_edges() {
+        assert_eq!(
+            scan_gaps("roll_a", Some(&observed_sequences(&[-3, -2, 0]))),
+            vec![gap("roll_a", -2, 0)]
+        );
+        assert!(scan_gaps("roll_a", Some(&observed_sequences(&[-1, 0, 1]))).is_empty());
+        // `saturating_add` keeps the far edge from wrapping into a phantom
+        // "no gap" answer.
+        assert_eq!(
+            scan_gaps("roll_a", Some(&observed_sequences(&[i64::MIN, i64::MAX]))),
+            vec![gap("roll_a", i64::MIN, i64::MAX)]
+        );
+        assert!(scan_gaps(
+            "roll_a",
+            Some(&observed_sequences(&[i64::MAX - 1, i64::MAX]))
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn a_gap_names_the_scope_it_was_scanned_for() {
+        let gaps = scan_gaps("craftax:3", Some(&observed_sequences(&[1, 3])));
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].scope, "craftax:3");
+    }
+
+    // ------------------------------------------------------------ sequence
+
+    #[test]
+    fn an_absent_sequence_is_absent_and_never_zero() {
+        // `Number(null)` and `Number("")` are both 0 in JavaScript, which
+        // manufactured a phantom gap before sequence 1 in the TypeScript twin.
+        assert_eq!(numeric_sequence(&json!({"kind": "rollout.step"})), None);
+        assert_eq!(numeric_sequence(&json!({"sequence": Value::Null})), None);
+        assert_eq!(numeric_sequence(&json!({"sequence": ""})), None);
+        assert_eq!(
+            numeric_sequence(&json!({"sequence_number": Value::Null})),
+            None
+        );
+    }
+
+    #[test]
+    fn sequence_number_wins_over_sequence_and_null_falls_through() {
+        assert_eq!(
+            numeric_sequence(&json!({"sequence_number": 4, "sequence": 9})),
+            Some(4)
+        );
+        assert_eq!(
+            numeric_sequence(&json!({"sequence_number": Value::Null, "sequence": 9})),
+            Some(9)
+        );
+        // An empty string is present, not null, so it stops the search the way
+        // `??` stops on a non-nullish value. Pins current behaviour: `sequence`
+        // is not consulted behind an empty `sequence_number`.
+        assert_eq!(
+            numeric_sequence(&json!({"sequence_number": "", "sequence": 9})),
+            None
+        );
+    }
+
+    #[test]
+    fn numeric_strings_are_read_and_opaque_strings_are_not() {
+        assert_eq!(numeric_sequence(&json!({"sequence": "12"})), Some(12));
+        assert_eq!(numeric_sequence(&json!({"sequence": " 7 "})), Some(7));
+        assert_eq!(numeric_sequence(&json!({"sequence": "-4"})), Some(-4));
+        // The multiplexed Craftax fixture sequences with opaque strings. Those
+        // lanes are simply not gap-scannable; coercing them to an ordinal
+        // would invent a sequence space and then report holes in it.
+        assert_eq!(numeric_sequence(&json!({"sequence": "evt_3"})), None);
+        assert_eq!(numeric_sequence(&json!({"sequence": "3a"})), None);
+        // Pins current behaviour: a fractional sequence is not an integer
+        // sequence, in either wire shape. The TypeScript twin keeps `1.5`.
+        assert_eq!(numeric_sequence(&json!({"sequence": "1.5"})), None);
+        assert_eq!(numeric_sequence(&json!({"sequence": 1.5})), None);
+        assert_eq!(numeric_sequence(&json!({"sequence": 3.0})), Some(3));
+    }
+
+    #[test]
+    fn a_non_scalar_sequence_is_not_a_sequence() {
+        assert_eq!(numeric_sequence(&json!({"sequence": true})), None);
+        assert_eq!(numeric_sequence(&json!({"sequence": [1]})), None);
+        assert_eq!(numeric_sequence(&json!({"sequence": {"n": 1}})), None);
+        assert_eq!(numeric_sequence(&json!({"sequence": -9})), Some(-9));
+    }
+
+    // --------------------------------------------------------------- scope
+
+    #[test]
+    fn scope_prefers_the_declared_stream_then_the_rollout_lane() {
+        // Pins current behaviour, matching `envelopeScope`: a declared
+        // `stream_id` outranks `rollout_id`, so a producer that multiplexes
+        // several rollouts under one stream id shares one sequence space.
+        assert_eq!(
+            envelope_scope(&json!({"stream_id": "craftax:0", "rollout_id": "roll_a"})),
+            "craftax:0"
+        );
+        assert_eq!(envelope_scope(&json!({"rollout_id": "roll_a"})), "roll_a");
+        assert_eq!(
+            envelope_scope(&json!({"lane": "lane_a", "run_id": "run_a"})),
+            "lane_a"
+        );
+        assert_eq!(envelope_scope(&json!({"run_id": "run_a"})), "run_a");
+    }
+
+    #[test]
+    fn scope_promotes_identity_carried_in_the_payload() {
+        assert_eq!(
+            envelope_scope(&json!({"payload": {"stream_id": "craftax:1"}})),
+            "craftax:1"
+        );
+        assert_eq!(
+            envelope_scope(&json!({"payload": {"stream.id": "craftax:2"}})),
+            "craftax:2"
+        );
+        assert_eq!(
+            envelope_scope(&json!({"payload": {"rollout_id": "roll_b"}})),
+            "roll_b"
+        );
+        assert_eq!(
+            envelope_scope(&json!({"payload": {"lane": "lane_b"}})),
+            "lane_b"
+        );
+        assert_eq!(
+            envelope_scope(&json!({"payload": {"run_id": "run_b"}})),
+            "run_b"
+        );
+        // A top-level lane still outranks a payload-carried run id.
+        assert_eq!(
+            envelope_scope(&json!({"lane": "lane_c", "payload": {"run_id": "run_c"}})),
+            "lane_c"
+        );
+    }
+
+    #[test]
+    fn an_unidentified_envelope_falls_back_to_the_run_scope() {
+        assert_eq!(envelope_scope(&json!({})), "run");
+        assert_eq!(envelope_scope(&json!({"kind": "rollout.step"})), "run");
+        // Empty strings are absent, not identities.
+        assert_eq!(
+            envelope_scope(&json!({"stream_id": "", "rollout_id": ""})),
+            "run"
+        );
+        // Pins current behaviour: identity fields must be strings. A numeric
+        // `rollout_id` is ignored rather than stringified.
+        assert_eq!(envelope_scope(&json!({"rollout_id": 7})), "run");
+        assert_eq!(
+            envelope_scope(&json!({"rollout_id": 7, "run_id": "run_d"})),
+            "run_d"
+        );
+    }
+
+    // ------------------------------------------------------------ identity
+
+    #[test]
+    fn a_stream_and_a_sequence_name_an_envelope_outright() {
+        assert_eq!(
+            envelope_identity(
+                &json!({"stream_id": "craftax:0", "sequence": 7}),
+                "craftax:0",
+                1
+            ),
+            "craftax:0:7"
+        );
+        // A string sequence is kept verbatim, so a producer that writes "7"
+        // and one that writes 7 name the same record. Pins current behaviour.
+        assert_eq!(
+            envelope_identity(
+                &json!({"stream_id": "craftax:0", "sequence": "7"}),
+                "craftax:0",
+                1
+            ),
+            "craftax:0:7"
+        );
+        assert_eq!(
+            envelope_identity(
+                &json!({"stream_id": "craftax:0", "sequence": "a1"}),
+                "craftax:0",
+                1
+            ),
+            "craftax:0:a1"
+        );
+        // `sequence_number` is preferred here too.
+        assert_eq!(
+            envelope_identity(
+                &json!({"stream_id": "s", "sequence_number": 2, "sequence": 9}),
+                "s",
+                1
+            ),
+            "s:2"
+        );
+    }
+
+    #[test]
+    fn identity_keeps_the_producer_lane_so_a_multiplexed_run_does_not_collapse() {
+        // Sequence and `event_id` are monotonic only within a rollout: ten
+        // lanes legitimately carry ten `event_id: "1"` records, and treating
+        // that id as globally unique drops nine of them.
+        let one = json!({"rollout_id": "roll_a", "event_id": "1"});
+        let two = json!({"rollout_id": "roll_b", "event_id": "1"});
+        assert_eq!(
+            envelope_identity(&one, &envelope_scope(&one), 1),
+            "roll_a:1"
+        );
+        assert_eq!(
+            envelope_identity(&two, &envelope_scope(&two), 2),
+            "roll_b:1"
+        );
+        assert_ne!(
+            envelope_identity(&one, &envelope_scope(&one), 1),
+            envelope_identity(&two, &envelope_scope(&two), 2)
+        );
+    }
+
+    #[test]
+    fn identity_falls_from_event_id_to_sequence_to_kind_and_stamp() {
+        assert_eq!(
+            envelope_identity(&json!({"event_id": "e1", "sequence": 3}), "roll_a", 1),
+            "roll_a:e1",
+            "an event id outranks a sequence once no stream id is declared"
+        );
+        assert_eq!(
+            envelope_identity(&json!({"sequence": 3}), "roll_a", 1),
+            "roll_a:3"
+        );
+        assert_eq!(
+            envelope_identity(&json!({"kind": "tick", "occurred_at": "T0"}), "roll_a", 4),
+            "roll_a:tick:T0"
+        );
+        assert_eq!(
+            envelope_identity(&json!({"type": "tick", "ts": "T1"}), "roll_a", 4),
+            "roll_a:tick:T1",
+            "`type` stands in for `kind`, and `ts` for `occurred_at`"
+        );
+        assert_eq!(
+            envelope_identity(&json!({"kind": "tick"}), "roll_a", 4),
+            "roll_a:tick:4",
+            "with no stamp of its own an envelope is named by its delivery ordinal"
+        );
+        assert_eq!(envelope_identity(&json!({}), "run", 9), "run:event:9");
+    }
+
+    #[test]
+    fn an_empty_sequence_does_not_name_an_envelope() {
+        // A declared stream plus an empty sequence is not an identity; the
+        // scan falls through rather than minting `stream:`.
+        assert_eq!(
+            envelope_identity(
+                &json!({"stream_id": "s", "sequence": "", "event_id": "e1"}),
+                "s",
+                1
+            ),
+            "s:e1"
+        );
+        assert_eq!(
+            envelope_identity(
+                &json!({"stream_id": "s", "sequence": "", "kind": "tick"}),
+                "s",
+                2
+            ),
+            "s:tick:2"
+        );
+        // Pins current behaviour: a numeric `ts` is not a stamp, so the
+        // ordinal is used instead.
+        assert_eq!(
+            envelope_identity(&json!({"kind": "tick", "ts": 1700}), "run", 5),
+            "run:tick:5"
+        );
+    }
+
+    // ------------------------------------------------------- the poll seam
+
+    #[test]
+    fn a_control_envelope_keeps_its_sequence_but_is_not_evidence() {
+        let (visual, url, declared) = seam("control-continuity");
+        let outcome = deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e1", "sequence": 1},
+                {"kind": "heartbeat", "rollout_id": "roll_a", "event_id": "e2", "sequence": 2},
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e3", "sequence": 3},
+            ])),
+        );
+        // The TypeScript ingest once skipped the control record before
+        // recording its sequence, which made every sequenced heartbeat a
+        // permanent phantom gap. A gap is a claim about the producer's
+        // sequence space, and a heartbeat occupies that space.
+        assert!(
+            outcome.new_gaps.is_empty(),
+            "a sequenced heartbeat is not a hole: {:?}",
+            outcome.new_gaps
+        );
+        let card = receipt(&visual, 1, &declared);
+        assert!(card.gaps.is_empty());
+        assert_eq!(card.envelope_count, 3);
+        assert_eq!(
+            card.non_control_envelope_count, 2,
+            "the heartbeat holds a sequence but is not evidence"
+        );
+        assert_eq!(card.recovered, 2);
+        assert_eq!(kind_row(&card, "heartbeat"), Some((1, true)));
+        assert_eq!(kind_row(&card, "rollout.step"), Some((2, false)));
+        assert_eq!(card.streams[0].envelope_count, 3);
+        assert_eq!(card.streams[0].distinct_envelope_count, 3);
+        // Pins current behaviour, and a divergence from the TypeScript fold:
+        // `last_sequence` is the highest sequence delivered on the stream,
+        // control records included, rather than an evidence high-water mark.
+        assert_eq!(card.streams[0].last_sequence, Some(3));
+        assert_eq!(card.state, StreamTransportState::Live);
+        assert!(card.observed);
+        assert!(card.ever_left_declared);
+        assert!(!card.ready, "no subscription notice was delivered");
+    }
+
+    #[test]
+    fn control_true_is_honoured_alongside_the_control_kinds() {
+        let (visual, url, declared) = seam("control-flag");
+        deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"kind": "rollout.step", "control": true, "rollout_id": "roll_a", "event_id": "e1"},
+                {"kind": "ping", "rollout_id": "roll_a", "event_id": "e2"},
+                {"kind": "stream.heartbeat", "rollout_id": "roll_a", "event_id": "e3"},
+                {"kind": "stream.subscribed", "rollout_id": "roll_a", "event_id": "e4"},
+            ])),
+        );
+        let card = receipt(&visual, 1, &declared);
+        assert_eq!(card.envelope_count, 4);
+        assert_eq!(
+            card.non_control_envelope_count, 0,
+            "an ordinary kind flagged `control: true` is still not evidence"
+        );
+        assert_eq!(card.recovered, 0);
+        assert!(
+            card.ready,
+            "a subscription notice is what makes a stream ready"
+        );
+        assert_eq!(kind_row(&card, "rollout.step"), Some((1, true)));
+        assert_eq!(kind_row(&card, "ping"), Some((1, true)));
+        assert_eq!(kind_row(&card, "stream.heartbeat"), Some((1, true)));
+        assert_eq!(kind_row(&card, "stream.subscribed"), Some((1, true)));
+    }
+
+    #[test]
+    fn the_reported_control_flag_for_a_kind_is_last_write_wins() {
+        // Pins current behaviour rather than a specified one: the per-kind
+        // `control` flag is overwritten by each envelope of that kind, so a
+        // kind delivered both ways reports whichever arrived last. The counts
+        // are unaffected — only the label is.
+        let (visual, url, declared) = seam("control-flag-last-write");
+        deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"kind": "rollout.step", "control": true, "rollout_id": "roll_a", "event_id": "e1"},
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e2"},
+            ])),
+        );
+        let card = receipt(&visual, 1, &declared);
+        assert_eq!(kind_row(&card, "rollout.step"), Some((2, false)));
+        assert_eq!(card.envelope_count, 2);
+        assert_eq!(card.non_control_envelope_count, 1);
+    }
+
+    #[test]
+    fn a_missing_sequence_is_one_gap_reported_once() {
+        let (visual, url, declared) = seam("real-gap");
+        let outcome = deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e1", "sequence": 1},
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e2", "sequence": 2},
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e4", "sequence": 4},
+            ])),
+        );
+        assert_eq!(outcome.new_gaps, vec![gap("roll_a", 2, 4)]);
+        let card = receipt(&visual, 1, &declared);
+        assert_eq!(card.gaps, vec![gap("roll_a", 2, 4)]);
+
+        // The same page again: every identity is already known, so nothing is
+        // re-scanned and the caller does not file the diagnostic twice. A
+        // 500 ms poll loop over a permanent hole must not emit forever.
+        let again = deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e1", "sequence": 1},
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e2", "sequence": 2},
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e4", "sequence": 4},
+            ])),
+        );
+        assert!(again.new_gaps.is_empty());
+        let card = receipt(&visual, 1, &declared);
+        assert_eq!(card.gaps, vec![gap("roll_a", 2, 4)]);
+        assert_eq!(card.envelope_count, 6, "duplicates are delivered");
+        assert_eq!(card.recovered, 3, "duplicates are not accepted");
+    }
+
+    #[test]
+    fn a_late_envelope_heals_the_gap_it_fills() {
+        let (visual, url, declared) = seam("gap-healing");
+        let first = deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e1", "sequence": 1},
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e3", "sequence": 3},
+            ])),
+        );
+        assert_eq!(first.new_gaps, vec![gap("roll_a", 1, 3)]);
+        assert_eq!(
+            receipt(&visual, 1, &declared).gaps,
+            vec![gap("roll_a", 1, 3)]
+        );
+
+        let second = deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e2", "sequence": 2},
+            ])),
+        );
+        assert!(second.new_gaps.is_empty());
+        assert!(
+            receipt(&visual, 1, &declared).gaps.is_empty(),
+            "a hole that was filled is no longer a hole"
+        );
+    }
+
+    #[test]
+    fn opaque_string_sequences_produce_no_gaps_and_no_last_sequence() {
+        // The real multiplexed Craftax fixture shape. There is no ordinal
+        // sequence space here to have holes in, and inventing one would report
+        // a defect in a healthy stream.
+        let (visual, url, declared) = seam("opaque-sequences");
+        let outcome = deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"kind": "rollout.step", "stream_id": "craftax:0", "sequence": "a1"},
+                {"kind": "rollout.step", "stream_id": "craftax:0", "sequence": "a3"},
+                {"kind": "rollout.step", "stream_id": "craftax:0", "sequence": "a7"},
+            ])),
+        );
+        assert!(outcome.new_gaps.is_empty());
+        let card = receipt(&visual, 1, &declared);
+        assert!(card.gaps.is_empty());
+        assert_eq!(card.streams[0].last_sequence, None);
+        assert_eq!(card.envelope_count, 3);
+        assert_eq!(
+            card.streams[0].distinct_envelope_count, 3,
+            "an opaque sequence still names the envelope for dedupe"
+        );
+    }
+
+    #[test]
+    fn a_null_or_empty_sequence_reads_as_absent_rather_than_zero() {
+        // `Number(null) === 0` was a live phantom-gap bug in the TypeScript
+        // twin: an unsequenced envelope read as sequence zero and opened a
+        // gap between 0 and the first real sequence.
+        let (visual, url, declared) = seam("null-sequence");
+        let outcome = deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e1", "sequence": null},
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e2", "sequence": ""},
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e3"},
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e4", "sequence": 5},
+            ])),
+        );
+        assert!(
+            outcome.new_gaps.is_empty(),
+            "an unsequenced envelope is not sequence zero: {:?}",
+            outcome.new_gaps
+        );
+        let card = receipt(&visual, 1, &declared);
+        assert!(card.gaps.is_empty());
+        assert_eq!(card.streams[0].last_sequence, Some(5));
+        assert_eq!(card.envelope_count, 4);
+        assert_eq!(card.recovered, 4);
+    }
+
+    #[test]
+    fn a_multiplexed_run_scans_each_lane_separately() {
+        // Lane `roll_a` skips sequence 2 and lane `roll_b` supplies its own
+        // sequence 2. Collapsing the lanes would read as one contiguous run
+        // 1, 2, 3 and report no defect at all.
+        let (visual, url, declared) = seam("multiplexed-lanes");
+        let outcome = deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "1", "sequence": 1},
+                {"kind": "rollout.step", "rollout_id": "roll_b", "event_id": "1", "sequence": 2},
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "2", "sequence": 3},
+            ])),
+        );
+        assert_eq!(outcome.new_gaps, vec![gap("roll_a", 1, 3)]);
+        let card = receipt(&visual, 1, &declared);
+        assert_eq!(card.gaps, vec![gap("roll_a", 1, 3)]);
+        assert_eq!(
+            card.recovered, 3,
+            "two lanes carrying `event_id: 1` are two records, not one"
+        );
+        // Pins current behaviour: `last_sequence` is per declared stream, so a
+        // multiplexed stream reports the maximum across its lanes.
+        assert_eq!(card.streams[0].last_sequence, Some(3));
+    }
+
+    #[test]
+    fn a_shared_stream_id_collapses_lanes_into_one_sequence_space() {
+        // Pins current behaviour rather than a specified one, and it matches
+        // `envelopeScope`: a declared `stream_id` outranks `rollout_id`, so a
+        // producer that multiplexes several rollouts under ONE stream id
+        // shares both a sequence space and an identity namespace. Two lanes at
+        // sequence 1 then name the same envelope and the second is read as a
+        // duplicate. A multiplexed producer has to give each rollout its own
+        // stream id, the way the Craftax fixture does; this test exists so the
+        // cost of not doing so is visible rather than silent.
+        let (visual, url, declared) = seam("shared-stream-id");
+        deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"kind": "rollout.step", "stream_id": "craftax", "rollout_id": "roll_a", "sequence": 1},
+                {"kind": "rollout.step", "stream_id": "craftax", "rollout_id": "roll_b", "sequence": 1},
+            ])),
+        );
+        let card = receipt(&visual, 1, &declared);
+        assert_eq!(card.envelope_count, 2);
+        assert_eq!(
+            card.recovered, 1,
+            "the second lane's sequence 1 is read as a duplicate of the first"
+        );
+        assert_eq!(
+            card.conflicts.len(),
+            1,
+            "their bodies differ, so the collapse is at least reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn one_identity_with_two_bodies_is_a_conflict() {
+        let (visual, url, declared) = seam("conflict");
+        let outcome = deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e1", "payload": {"x": 1}},
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e1", "payload": {"x": 2}},
+            ])),
+        );
+        assert_eq!(
+            outcome.new_conflicts,
+            vec![StreamConflict {
+                identity: "roll_a:e1".to_string(),
+                scope: "roll_a".to_string(),
+                message: "Conflicting duplicate envelope roll_a:e1".to_string(),
+            }]
+        );
+        let card = receipt(&visual, 1, &declared);
+        assert_eq!(card.conflicts.len(), 1);
+        assert_eq!(card.envelope_count, 2);
+        assert_eq!(card.recovered, 1);
+        assert_eq!(card.streams[0].distinct_envelope_count, 1);
+    }
+
+    #[test]
+    fn a_producer_declared_digest_decides_equality() {
+        // Two bodies, one declared digest: the producer says these are the
+        // same record, and the receipt keeps the hash rather than the body.
+        let (visual, url, declared) = seam("digest");
+        let outcome = deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"rollout_id": "roll_a", "event_id": "e1", "digest": "d1", "payload": {"x": 1}},
+                {"rollout_id": "roll_a", "event_id": "e1", "digest": "d1", "payload": {"x": 2}},
+            ])),
+        );
+        assert!(outcome.new_conflicts.is_empty());
+        assert_eq!(receipt(&visual, 1, &declared).recovered, 1);
+    }
+
+    #[test]
+    fn an_envelope_with_no_identity_of_its_own_is_never_deduplicated() {
+        // Pins current behaviour: the last-resort identity is the delivery
+        // ordinal, so two byte-identical unidentified envelopes are two
+        // records. The seam cannot tell a re-delivery from a genuine repeat,
+        // and counting them as one would drop real evidence.
+        let (visual, url, declared) = seam("unidentified");
+        deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"kind": "tick", "rollout_id": "roll_a"},
+                {"kind": "tick", "rollout_id": "roll_a"},
+            ])),
+        );
+        let card = receipt(&visual, 1, &declared);
+        assert_eq!(card.envelope_count, 2);
+        assert_eq!(card.recovered, 2);
+        assert!(card.conflicts.is_empty());
+    }
+
+    #[test]
+    fn a_bare_array_page_is_one_closed_page() {
+        let (visual, url, declared) = seam("bare-array");
+        deliver(
+            &visual,
+            &declared,
+            &url,
+            json!([
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e1", "sequence": 1},
+            ]),
+        );
+        let card = receipt(&visual, 1, &declared);
+        assert_eq!(card.envelope_count, 1);
+        assert!(card.streams[0].closed);
+        assert_eq!(card.closed_stream_count, 1);
+        assert_eq!(card.state, StreamTransportState::Terminal);
+    }
+
+    #[test]
+    fn a_declared_stream_nobody_polled_is_declared_and_unobserved() {
+        let (visual, _url, declared) = seam("never-polled");
+        let card = receipt(&visual, 1, &declared);
+        assert!(
+            !card.observed,
+            "a pane no reviewer rendered was not observed"
+        );
+        assert!(!card.ever_left_declared);
+        assert_eq!(card.state, StreamTransportState::Declared);
+        assert_eq!(card.declared_stream_count, 1);
+        assert_eq!(card.responding_stream_count, 0);
+        assert_eq!(card.envelope_count, 0);
+        assert_eq!(card.first_observed_at, None);
+        assert_eq!(card.schema_version, VISUAL_STREAM_RECEIPT_SCHEMA);
+    }
+
+    #[test]
+    fn tracking_stops_at_its_bound_and_the_receipt_says_so() {
+        let (visual, url, declared) = seam("tracking-bound");
+        assert_eq!(
+            MAX_TRACKED_IDENTITIES, MAX_TRACKED_SEQUENCES,
+            "this test fills both bounds with a single run"
+        );
+        // A contiguous run exactly to the bound. Both the identity map and the
+        // scope's sequence set are now full, but nothing has been dropped, so
+        // the receipt is still complete.
+        let full_run: Vec<Value> = (1..=MAX_TRACKED_SEQUENCES as i64)
+            .map(|sequence| {
+                json!({
+                    "kind": "rollout.step",
+                    "rollout_id": "roll_a",
+                    "event_id": format!("e{sequence}"),
+                    "sequence": sequence,
+                })
+            })
+            .collect();
+        deliver(&visual, &declared, &url, page(Value::Array(full_run)));
+        let card = receipt(&visual, 1, &declared);
+        assert!(
+            !card.tracking_truncated,
+            "the bound itself is still complete"
+        );
+        assert!(card.gaps.is_empty());
+        assert_eq!(card.envelope_count, MAX_TRACKED_SEQUENCES as u64);
+        assert_eq!(
+            card.streams[0].distinct_envelope_count,
+            MAX_TRACKED_SEQUENCES as u64
+        );
+        assert_eq!(
+            card.streams[0].last_sequence,
+            Some(MAX_TRACKED_SEQUENCES as i64)
+        );
+
+        // One real hole, past the bound, delivered twice. Neither the identity
+        // nor the sequence is retained, so the duplicate is not recognised and
+        // the hole is not scanned: gaps and conflicts are now lower bounds and
+        // the distinct count is an upper bound. `trackingTruncated` is the
+        // field that keeps that honest instead of reporting a clean receipt.
+        deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {
+                    "kind": "rollout.step",
+                    "rollout_id": "roll_a",
+                    "event_id": "overflow",
+                    "sequence": MAX_TRACKED_SEQUENCES as i64 + 2,
+                },
+                {
+                    "kind": "rollout.step",
+                    "rollout_id": "roll_a",
+                    "event_id": "overflow",
+                    "sequence": MAX_TRACKED_SEQUENCES as i64 + 2,
+                },
+            ])),
+        );
+        let card = receipt(&visual, 1, &declared);
+        assert!(card.tracking_truncated);
+        assert!(
+            card.gaps.is_empty(),
+            "the hole past the bound is real but unscannable, so it is not claimed"
+        );
+        assert!(card.conflicts.is_empty());
+        assert_eq!(card.envelope_count, MAX_TRACKED_SEQUENCES as u64 + 2);
+        assert_eq!(
+            card.streams[0].distinct_envelope_count,
+            MAX_TRACKED_SEQUENCES as u64 + 2,
+            "past the bound an unrecognised duplicate counts as distinct"
+        );
+        // The high-water mark is read before the bound check, so it still
+        // advances. Pins current behaviour.
+        assert_eq!(
+            card.streams[0].last_sequence,
+            Some(MAX_TRACKED_SEQUENCES as i64 + 2)
+        );
+    }
+
+    #[test]
+    fn a_revision_change_replaces_the_observation() {
+        let (visual, url, declared) = seam("revision-reset");
+        record_poll_attempt(&visual, 1, &declared, &url);
+        record_poll_page(
+            &visual,
+            1,
+            &declared,
+            &url,
+            &page(json!([
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e1", "sequence": 1},
+            ])),
+        );
+        assert_eq!(receipt(&visual, 1, &declared).envelope_count, 1);
+        // A previous revision's evidence must not answer for this one.
+        let next = receipt(&visual, 2, &declared);
+        assert_eq!(next.envelope_count, 0);
+        assert_eq!(next.revision, 2);
+        assert!(!next.observed);
+    }
+
+    #[test]
+    fn a_failed_poll_is_an_error_and_a_recovered_one_is_live() {
+        let (visual, url, declared) = seam("failure-recovery");
+        record_poll_attempt(&visual, 1, &declared, &url);
+        record_poll_failure(
+            &visual,
+            1,
+            &declared,
+            &url,
+            StreamPollFailure {
+                code: "stream.replay.unreachable".to_string(),
+                message: "connection refused".to_string(),
+                status: None,
+                retryable: true,
+                observed_at: "2026-08-28T00:00:00Z".to_string(),
+            },
+        );
+        let card = receipt(&visual, 1, &declared);
+        assert_eq!(card.state, StreamTransportState::Error);
+        assert_eq!(card.streams[0].poll_failures, 1);
+
+        deliver(
+            &visual,
+            &declared,
+            &url,
+            page(json!([
+                {"kind": "rollout.step", "rollout_id": "roll_a", "event_id": "e1", "sequence": 1},
+            ])),
+        );
+        let card = receipt(&visual, 1, &declared);
+        assert_eq!(
+            card.state,
+            StreamTransportState::Live,
+            "a transport that recovered is live, with the failure still counted"
+        );
+        assert_eq!(card.streams[0].poll_failures, 1);
+        assert!(card.streams[0].last_failure.is_some());
+    }
 }

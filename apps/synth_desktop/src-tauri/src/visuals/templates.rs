@@ -129,29 +129,38 @@ pub fn resolve_template(template_id: &str) -> anyhow::Result<TemplateMeta> {
         .ok_or_else(|| anyhow::anyhow!("unknown visual template: {id}"))
 }
 
+/// Every template tier this instance can render, lowest precedence first:
+/// the bundled `families/` recursion, then the `templates`/`templates-internal`
+/// overlays beside it, then the instance-local user root.
+///
+/// Each tier is skipped when its directory is absent, and a missing bundled
+/// `families/` is just another absent tier. It used to return an empty map
+/// instead, which put every later tier behind a directory none of them live
+/// in: a build whose bundled families root had not been staged silently had no
+/// user templates at all — the same dead-registry shape as the doubled
+/// `visuals/visuals/templates` path that once killed the managed tier.
 fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, TemplateMeta>> {
-    let families_root = visuals_root.join("families");
-    if !families_root.exists() {
-        return Ok(BTreeMap::new());
-    }
-    let canonical_root = fs::canonicalize(&families_root)?;
-    let mut directories = Vec::new();
-    discover_template_directories(&families_root, &canonical_root, &mut directories)?;
-    directories.sort();
-
     let mut templates: BTreeMap<String, TemplateMeta> = BTreeMap::new();
-    for directory in directories {
-        let mut meta = load_template_meta(&directory)?;
-        if let Some(existing) = templates.get(&meta.id) {
-            anyhow::bail!(
-                "duplicate visual template id {:?} in {} and {}",
-                meta.id,
-                existing.path.as_deref().unwrap_or("<unknown>"),
-                directory.display()
-            );
+    let families_root = visuals_root.join("families");
+    if families_root.exists() {
+        let canonical_root = fs::canonicalize(&families_root)?;
+        let mut directories = Vec::new();
+        discover_template_directories(&families_root, &canonical_root, &mut directories)?;
+        directories.sort();
+
+        for directory in directories {
+            let mut meta = load_template_meta(&directory)?;
+            if let Some(existing) = templates.get(&meta.id) {
+                anyhow::bail!(
+                    "duplicate visual template id {:?} in {} and {}",
+                    meta.id,
+                    existing.path.as_deref().unwrap_or("<unknown>"),
+                    directory.display()
+                );
+            }
+            meta.path = Some(directory.display().to_string());
+            templates.insert(meta.id.clone(), meta);
         }
-        meta.path = Some(directory.display().to_string());
-        templates.insert(meta.id.clone(), meta);
     }
     for extra_root_name in ["templates", "templates-internal"] {
         let extra_root = visuals_root.join(extra_root_name);
@@ -342,7 +351,7 @@ fn checked_template_file(path: &Path) -> anyhow::Result<Option<u64>> {
 /// `instance::state_root()` is the one rule: the instance data root when a
 /// descriptor or `SYNTH_DESKTOP_DATA_ROOT` names one, `~/.synth-desktop`
 /// otherwise. Resolve from there, never from where the shipped visuals live.
-fn user_templates_root() -> PathBuf {
+pub(super) fn user_templates_root() -> PathBuf {
     crate::instance::state_root().join("visuals").join("templates")
 }
 
@@ -740,8 +749,8 @@ mod tests {
         assert!(error.contains("refuses symlink"));
     }
 
-    /// The user tier is only reached when `families/` exists, so every user
-    /// template test needs a real (possibly empty) bundled root to scan first.
+    /// A staged bundled root that contributes nothing: `families/` exists and
+    /// is empty, so a test sees only the tiers it writes itself.
     fn empty_visuals_root() -> tempfile::TempDir {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir_all(temp.path().join("families")).unwrap();
@@ -795,6 +804,34 @@ mod tests {
         write_user_template("user.scaffold.v1");
         let indexed = build_template_index(temp.path()).unwrap();
         assert!(!indexed.contains_key("user.scaffold.v1"));
+    }
+
+    /// A bundled root with no `families/` directory must not disable the user
+    /// tier. The scan used to return an empty map before ever reaching it, so
+    /// an unstaged or trimmed bundle silently had no user templates.
+    #[test]
+    fn user_templates_are_discovered_without_a_bundled_families_root() {
+        let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-no-families");
+        let temp = tempfile::tempdir().unwrap();
+        assert!(
+            !temp.path().join("families").exists(),
+            "this test only means something with no bundled families root"
+        );
+        let shell_dir = write_user_template("user.orphan.v1");
+        fs::write(
+            shell_dir.join("shell.tsx"),
+            "export default function Shell() { return null; }\n",
+        )
+        .unwrap();
+
+        let indexed = build_template_index(temp.path()).unwrap();
+
+        let shell = indexed
+            .get("user.orphan.v1")
+            .expect("user template indexed with no families root");
+        assert_eq!(shell.source_kind.as_deref(), Some("user"));
+        let expected_shell = shell_dir.join("shell.tsx").display().to_string();
+        assert_eq!(shell.shell_path.as_deref(), Some(expected_shell.as_str()));
     }
 
     #[test]
