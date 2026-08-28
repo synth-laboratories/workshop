@@ -5,6 +5,7 @@ import type { HostedTrainingModel, OptimizerRecipeInfo, OptimizerRunOutputs, Plu
 import { bridges } from "../runtime/desktopBridge";
 import { isLagunaCompatibleAdapter, LOCAL_FT_POLICY } from "../runtime/lagunaPolicies";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
+import { isTerminalRunStatus } from "../runtime/runProgress/types";
 import { TrainingWorkspace } from "./TrainingWorkspace";
 import { TrainingEvaluationCurve } from "./TrainingEvaluationCurve";
 import { RunInspector } from "./optimizers/RunInspector";
@@ -726,7 +727,7 @@ export function OptimizersPage({
 			} catch (reason) {
 				if (live) setError(presentError(reason).message);
 			}
-			if (live && !["completed", "cancelled", "failed", "infrastructure_lost", "cap_reached"].includes(selected.status)) {
+			if (live && !isTerminalRunStatus(selected.status)) {
 				timer = window.setTimeout(() => void reconcile(), 2500);
 			}
 		};
@@ -1485,7 +1486,7 @@ export function OptimizersPage({
 								<button className="secondary-button" type="button" disabled={busy} onClick={() => void refreshSelected()} data-testid="refresh-optimizer-run">Refresh</button>
 								{selected.capabilities?.pause && selected.status === "running" ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void controlSelected("pause")} data-testid="pause-optimizer-run">Pause</button> : null}
 								{selected.capabilities?.resume && selected.status === "paused" ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void controlSelected("resume")} data-testid="resume-optimizer-run">Resume</button> : null}
-								{selected.capabilities?.cancel && !["completed", "failed", "cancelled"].includes(selected.status) ? <button className="secondary-button optimizer-danger-button" type="button" disabled={busy} onClick={() => void controlSelected("cancel")} data-testid="cancel-optimizer-run">Cancel</button> : null}
+								{selected.capabilities?.cancel && !isTerminalRunStatus(selected.status) ? <button className="secondary-button optimizer-danger-button" type="button" disabled={busy} onClick={() => void controlSelected("cancel")} data-testid="cancel-optimizer-run">Cancel</button> : null}
 							</div>
 						</RunInspector>
 					) : (

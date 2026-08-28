@@ -43,6 +43,26 @@ const { projectRunProgress } = await import(
 const { formatWork, progressUnavailableLine, statusLabel } = await import(
 	bundle("src/renderer/src/runtime/runProgress/format.ts", "runProgressEvidenceFormat.mjs")
 );
+const { isTerminalRunStatus } = await import(
+	bundle("src/renderer/src/runtime/runProgress/types.ts", "runProgressEvidenceTypes.mjs")
+);
+
+test("every closed optimizer status disables terminal lifecycle controls", () => {
+	for (const status of [
+		"completed",
+		"failed",
+		"cancelled",
+		"degraded",
+		"failed_evidence",
+		"infrastructure_lost",
+		"cap_reached"
+	]) {
+		assert.equal(isTerminalRunStatus(status), true, status);
+	}
+	for (const status of ["queued", "starting", "running", "paused", "cancelling"]) {
+		assert.equal(isTerminalRunStatus(status), false, status);
+	}
+});
 
 const NOW = Date.UTC(2026, 7, 17, 21, 37, 0);
 const at = (second) => new Date(Date.UTC(2026, 7, 17, 21, 36, second)).toISOString();
