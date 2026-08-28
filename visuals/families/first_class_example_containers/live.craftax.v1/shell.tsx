@@ -279,7 +279,10 @@ export function Shell(props: ShellProps) {
   const momentPosition = moments.length
     ? Math.max(0, moments.findLastIndex((index) => index <= evaluationIndex))
     : -1;
-  const evaluationEvents = evaluationIndex < 0 ? [] : fullProjection.ordered.slice(0, evaluationIndex + 1);
+  const evaluationEvents = useMemo(
+    () => evaluationIndex < 0 ? [] : fullProjection.ordered.slice(0, evaluationIndex + 1),
+    [evaluationIndex, fullProjection.ordered]
+  );
   const viewer = useMemo(() => projectCraftaxViewer(evaluationEvents, chosenLane, laneCutoff), [evaluationEvents, chosenLane, laneCutoff]);
   const { lanes, selectedLane, laneEvents, visibleEvents, visibleIndex, rewardSignals, achievements, traceEvents, semanticTrace, frameEvents, policy } = viewer;
   const laneSummaries = useMemo(() => summarizeLanes(evaluationEvents), [evaluationEvents]);

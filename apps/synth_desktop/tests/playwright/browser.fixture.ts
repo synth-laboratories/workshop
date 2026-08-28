@@ -67,12 +67,21 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
 			await rm(cacheDir, { recursive: true, force: true });
 		}
 	}, { scope: "worker" }],
-	page: async ({ page, rendererOrigin }, use) => {
+	page: async ({ page, rendererOrigin }, use, testInfo) => {
+		const reactUpdateDepthErrors: string[] = [];
+		const recordReactUpdateDepthError = (message: string) => {
+			if (/Maximum update depth exceeded/i.test(message)) reactUpdateDepthErrors.push(message);
+		};
 		page.on("pageerror", (error) => {
-			console.error(`[renderer pageerror] ${error.stack ?? error.message}`);
+			const detail = error.stack ?? error.message;
+			recordReactUpdateDepthError(detail);
+			console.error(`[renderer pageerror] ${detail}`);
 		});
 		page.on("console", (message) => {
-			if (message.type() === "error") console.error(`[renderer console] ${message.text()}`);
+			if (message.type() !== "error") return;
+			const detail = message.text();
+			recordReactUpdateDepthError(detail);
+			console.error(`[renderer console] ${detail}`);
 		});
 		await page.addInitScript(() => {
 			let coreBridge: Record<string, unknown>;
@@ -183,6 +192,12 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
 		await page.goto(rendererOrigin);
 		await page.getByTestId("titlebar").waitFor();
 		await use(page);
+		if (reactUpdateDepthErrors.length > 0) {
+			throw new Error([
+				`React update-depth error in ${testInfo.titlePath.join(" > ")}`,
+				...reactUpdateDepthErrors
+			].join("\n"));
+		}
 	}
 });
 
