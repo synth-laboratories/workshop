@@ -214,17 +214,12 @@ mod tests {
     }
 
     #[test]
-    fn never_auto_authorizes_risky_actions() {
+    fn never_auto_authorizes_non_human_risk_but_hands_off_paid_compute() {
         assert!(auto_decision("never", &install_kind(), 0)
             .unwrap()
             .is_some());
-        assert!(auto_decision("never", &compute(), 0).unwrap().is_some());
-        match auto_decision("never", &compute(), 0).unwrap() {
-            Some(ApprovalDecision::ApproveWithCap { cap }) => {
-                assert_eq!(cap.max_rollouts, Some(240));
-            }
-            other => panic!("expected capped auto-approval, got {other:?}"),
-        }
+        assert!(auto_decision("never", &compute(), 0).unwrap().is_none());
+        assert_eq!(classify(&compute(), 0), PluginRisk::HandOff);
     }
 
     #[test]

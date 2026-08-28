@@ -2093,7 +2093,9 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
     );
     assert!(secrets_skill.contains("tools.mcp__synth_secrets__secrets_manage"));
     assert!(secrets_skill.contains("request_env_import"));
-    assert!(secrets_skill.contains("Codex sandbox cannot deny those reads"));
+    assert!(secrets_skill.contains("workspace_roots_list"));
+    assert!(secrets_skill.contains("source_request"));
+    assert!(secrets_skill.contains("Pass an absolute path"));
     assert!(!secrets_skill.contains("secrets_create"));
     let agents = fs::read_to_string(home.join("AGENTS.md")).unwrap();
     assert!(agents.contains(".env"));
