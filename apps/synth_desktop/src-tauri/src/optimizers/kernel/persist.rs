@@ -370,13 +370,15 @@ fn rebuild_at_terminal_sequence(
     Ok(rebuilt)
 }
 
+/// A sealed run is closed-world: no work item may remain in any nonterminal
+/// lifecycle, `planned` included — the reducer's seal step closes interrupted
+/// and never-dispatched work as `cancelled`, so open work behind a terminal
+/// can only mean the closure invariant was bypassed.
 fn reject_active_terminal_work(run_id: &str, items: &[WorkItem]) -> Result<()> {
-    if let Some(item) = items.iter().find(|item| {
-        matches!(
-            item.lifecycle,
-            WorkItemLifecycle::Queued | WorkItemLifecycle::Starting | WorkItemLifecycle::Running
-        )
-    }) {
+    if let Some(item) = items
+        .iter()
+        .find(|item| item.lifecycle != WorkItemLifecycle::Terminal)
+    {
         anyhow::bail!(
             "optimizer run {run_id} is terminal but work item {} is still {}",
             item.work_item_id,
@@ -572,14 +574,26 @@ mod tests {
         assert!(error.contains("still running"), "{error}");
     }
 
+    // Invariant change (reducer v2): a sealed run is closed-world. The seal
+    // step now closes never-started planned work as `cancelled`, so `planned`
+    // behind a terminal is no longer tolerated — it can only mean closure was
+    // bypassed. This test previously allowed it.
     #[test]
-    fn terminal_projection_allows_settled_and_never_started_work() {
+    fn terminal_projection_allows_only_settled_work() {
         let mut completed = WorkItem::planned("eval:trial:1", WorkItemKind::EvalTrial).unwrap();
         completed
             .seal_terminal(super::super::types::TerminalKind::Completed)
             .unwrap();
-        let skipped = WorkItem::planned("eval:trial:2", WorkItemKind::EvalTrial).unwrap();
+        let mut cancelled = WorkItem::planned("eval:trial:2", WorkItemKind::EvalTrial).unwrap();
+        cancelled
+            .seal_terminal(super::super::types::TerminalKind::Cancelled)
+            .unwrap();
+        reject_active_terminal_work("run-1", &[completed.clone(), cancelled]).unwrap();
 
-        reject_active_terminal_work("run-1", &[completed, skipped]).unwrap();
+        let never_started = WorkItem::planned("eval:trial:3", WorkItemKind::EvalTrial).unwrap();
+        let error = reject_active_terminal_work("run-1", &[completed, never_started])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("still planned"), "{error}");
     }
 }

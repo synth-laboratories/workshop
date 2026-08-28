@@ -52,13 +52,16 @@ impl AlgorithmKind {
         }
     }
 
+    // v2: sealing a terminal closes every open work item as `cancelled` in the
+    // reducer itself, so replaying a terminal event reproduces a closed-world
+    // projection. v1 rows replay through the same reducer and heal on load.
     pub const fn reducer_version(self) -> &'static str {
         match self {
-            Self::Eval => "eval.projection.v1",
-            Self::Gepa => "gepa.projection.v1",
-            Self::GoEx => "go_ex.projection.v1",
-            Self::Sft => "sft.projection.v1",
-            Self::Cispo => "cispo.projection.v1",
+            Self::Eval => "eval.projection.v2",
+            Self::Gepa => "gepa.projection.v2",
+            Self::GoEx => "go_ex.projection.v2",
+            Self::Sft => "sft.projection.v2",
+            Self::Cispo => "cispo.projection.v2",
         }
     }
 

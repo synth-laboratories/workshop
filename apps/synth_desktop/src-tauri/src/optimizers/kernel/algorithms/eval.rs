@@ -8,7 +8,7 @@ use crate::optimizers::kernel::sequences::CommittedEvent;
 use crate::optimizers::kernel::types::{
     EvidenceCompleteness, RunPhase, TerminalKind, WorkItemKind, WorkItemLifecycle,
 };
-use crate::optimizers::kernel::work::{WorkItem, WorkSummary};
+use crate::optimizers::kernel::work::{close_open_items, WorkItem, WorkSummary};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -119,17 +119,36 @@ impl EvalProjection {
                 self.advance_named(event, WorkItemLifecycle::Running)?;
             }
             "eval.trial.terminal" => {
-                let valid = event
+                // A cancelled trial is neither valid nor invalid: it was
+                // interrupted, and `valid` is a claim about work that ran to
+                // its own end. It settles `cancelled`, never `failed`.
+                let cancelled = event
                     .producer
                     .payload
-                    .get("valid")
-                    .and_then(|v| v.as_bool())
-                    .ok_or_else(|| {
-                        KernelError::new(
-                            KernelErrorCode::EventSchemaMismatch,
-                            "eval.trial.terminal is missing typed `valid`",
-                        )
-                    })?;
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    == Some("cancelled")
+                    || event
+                        .producer
+                        .payload
+                        .get("cancelled")
+                        .and_then(|v| v.as_bool())
+                        == Some(true);
+                let valid = if cancelled {
+                    false
+                } else {
+                    event
+                        .producer
+                        .payload
+                        .get("valid")
+                        .and_then(|v| v.as_bool())
+                        .ok_or_else(|| {
+                            KernelError::new(
+                                KernelErrorCode::EventSchemaMismatch,
+                                "eval.trial.terminal is missing typed `valid`",
+                            )
+                        })?
+                };
                 let reward = event
                     .producer
                     .payload
@@ -159,7 +178,9 @@ impl EvalProjection {
                 } else if item.lifecycle == WorkItemLifecycle::Starting {
                     item.transition(WorkItemLifecycle::Running)?;
                 }
-                item.seal_terminal(if valid {
+                item.seal_terminal(if cancelled {
+                    TerminalKind::Cancelled
+                } else if valid {
                     TerminalKind::Completed
                 } else {
                     TerminalKind::Failed
@@ -255,6 +276,11 @@ impl EvalProjection {
         WorkSummary::from_items(&self.work_items, "trials", true)
     }
 
+    /// Terminal seal closes interrupted children as `cancelled`, never failed.
+    pub fn close_open_work(&mut self) -> KernelResult<usize> {
+        close_open_items(&mut self.work_items)
+    }
+
     pub fn evidence_state(&self) -> EvidenceState {
         if self.work_items.is_empty() {
             return EvidenceState::absent();
@@ -314,6 +340,13 @@ impl EvalProjection {
             return Err(KernelError::new(
                 KernelErrorCode::EvidenceMissing,
                 format!("eval cannot complete with {failed} failed trials"),
+            ));
+        }
+        let cancelled = summary.cancelled.unwrap_or(0);
+        if cancelled != 0 {
+            return Err(KernelError::new(
+                KernelErrorCode::EvidenceMissing,
+                format!("eval cannot complete with {cancelled} cancelled trials"),
             ));
         }
         let succeeded = summary.succeeded.unwrap_or(0);

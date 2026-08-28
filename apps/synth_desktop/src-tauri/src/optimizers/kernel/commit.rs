@@ -275,7 +275,6 @@ fn seal_terminal(
             format!("run {} already has a sealed terminal", state.run_id),
         ));
     }
-    let evidence = state.projection.evidence_state();
     let (kind, reason) = if kind == TerminalKind::Completed {
         match state.projection.settle() {
             Ok(_) => (kind, reason),
@@ -291,6 +290,13 @@ fn seal_terminal(
     } else {
         (kind, reason)
     };
+    // Any terminal kind closes the run's open work: interrupted children
+    // settle `cancelled`, never `failed`. Judged after `settle()` so a
+    // `completed` fact over unfinished work still seals as failed evidence,
+    // and before the evidence snapshot so the sealed evidence is closed-world.
+    // Pure over the terminal event, so replay reproduces the closure.
+    state.projection.close_open_work()?;
+    let evidence = state.projection.evidence_state();
     state.terminal = Some(SealedTerminal {
         kind,
         reason,
@@ -489,6 +495,65 @@ mod tests {
         assert_eq!(
             terminal.evidence.completeness,
             crate::optimizers::kernel::types::EvidenceCompleteness::Partial
+        );
+    }
+
+    #[test]
+    fn sealing_closes_every_open_child_as_cancelled_and_replay_reproduces_it() {
+        use crate::optimizers::kernel::types::WorkItemLifecycle;
+        let events = vec![
+            eval_event(1, "optimizer.run.started", json!({})),
+            eval_event(2, "eval.run.planned", json!({"plannedTrials": 5})),
+            eval_event(3, "eval.trial.started", json!({"workItemId": "eval:trial:0"})),
+            eval_event(4, "eval.trial.started", json!({"workItemId": "eval:trial:1"})),
+            eval_event(5, "optimizer.run.cancelled", json!({})),
+        ];
+        let batch = commit(admit_eval(), &DurableProducerLog::default(), &events, "now").unwrap();
+        let terminal = batch.state.terminal.as_ref().expect("terminal must seal");
+        assert_eq!(terminal.kind, TerminalKind::Cancelled);
+        let summary = batch.state.work_summary();
+        assert_eq!(summary.planned, Some(5));
+        assert_eq!(summary.running, Some(0));
+        assert_eq!(summary.queued, Some(0));
+        assert_eq!(summary.failed, Some(0), "interrupted work never fails");
+        assert_eq!(summary.cancelled, Some(5));
+        assert!(batch
+            .state
+            .projection
+            .work_items()
+            .iter()
+            .all(|item| item.lifecycle == WorkItemLifecycle::Terminal));
+
+        // The restart path re-reduces the same durable events one at a time;
+        // closure is a function of the terminal event, so it must reproduce.
+        let mut log = DurableProducerLog::default();
+        let mut restarted = admit_eval();
+        for event in &events {
+            let plan = commit(restarted, &log, std::slice::from_ref(event), "now").unwrap();
+            log.cursors
+                .insert(event.producer_id.clone(), event.producer_sequence);
+            log.entries.insert(
+                (event.producer_id.clone(), event.producer_sequence),
+                (event.idempotency_key.clone(), event.payload_digest.clone()),
+            );
+            log.by_key.insert(
+                event.idempotency_key.clone(),
+                (
+                    event.producer_id.clone(),
+                    event.producer_sequence,
+                    event.payload_digest.clone(),
+                ),
+            );
+            restarted = plan.state;
+        }
+        assert_eq!(restarted.work_summary(), batch.state.work_summary());
+        assert_eq!(
+            restarted.terminal.as_ref().map(|terminal| terminal.kind),
+            Some(TerminalKind::Cancelled)
+        );
+        assert_eq!(
+            restarted.projection.work_items(),
+            batch.state.projection.work_items()
         );
     }
 
