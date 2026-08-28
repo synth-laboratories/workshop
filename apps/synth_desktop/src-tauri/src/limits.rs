@@ -33,11 +33,23 @@ pub const VISUALS_IPC_ROLL_TIMEOUT: Duration = Duration::from_secs(10);
 /// paid rollout will be reported to the MCP caller as a transport failure.
 pub const CONTAINER_POLICY_ROLLOUT_TIMEOUT: Duration = Duration::from_secs(900);
 
+/// Native scope used by the DeepSWE Harbor task's 5400-second agent bound.
+/// Keeping this value in the host makes the approval disclosure, issued
+/// capability, and credential-proxy stream use the same lifetime instead of
+/// allowing post-expiry 401s.
+pub const DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS: u32 = 5_400;
+pub const DEEPSWE_HARBOR_CAPABILITY_TTL: Duration =
+    Duration::from_secs(DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS as u64);
+
 /// Account snapshot HTTP budget.
 pub const ACCOUNT_CLOUD_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// Credential broker upstream (full streamed cloud turn).
-pub const CREDENTIAL_UPSTREAM_TIMEOUT: Duration = Duration::from_secs(900);
+///
+/// DeepSWE's Harbor process may legitimately hold one Luna request for the
+/// full task lifetime, so this must stay aligned with the approved capability
+/// rather than the short default HTTP timeout.
+pub const CREDENTIAL_UPSTREAM_TIMEOUT: Duration = DEEPSWE_HARBOR_CAPABILITY_TTL;
 
 /// Desktop update manifest fetch.
 pub const UPDATE_MANIFEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -102,11 +114,6 @@ pub const EVAL_DRIVER_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// Provider-proxy request body cap. Oversized agent bodies fail closed.
 pub const SECRETS_PROXY_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
-/// Native scope used by the DeepSWE Harbor task's 5400-second agent bound.
-/// Keeping this value in the host makes the approval disclosure and issued
-/// capability use the same lifetime instead of allowing post-expiry 401s.
-pub const DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS: u32 = 5_400;
-
 /// Default lifetime of a run capability issued by the local secrets broker.
 pub const SECRETS_CAPABILITY_TTL: Duration = Duration::from_secs(30 * 60);
 
@@ -116,3 +123,18 @@ pub const IMAGE_PREVIEW_MAX_BYTES: u64 = 20 * 1024 * 1024;
 /// Sealed trace artifact cap for a container import. Above this a trace belongs
 /// in a bundle the user moves deliberately, not in a loopback fetch.
 pub const MAX_IMPORTED_TRACE_BYTES: u64 = 256 * 1024 * 1024;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credential_proxy_covers_deepswe_capability_lifetime() {
+        assert_eq!(CREDENTIAL_UPSTREAM_TIMEOUT, DEEPSWE_HARBOR_CAPABILITY_TTL);
+        assert_eq!(
+            CREDENTIAL_UPSTREAM_TIMEOUT.as_secs(),
+            u64::from(DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS)
+        );
+        assert_eq!(CREDENTIAL_UPSTREAM_TIMEOUT.as_secs(), 5_400);
+    }
+}
