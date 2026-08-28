@@ -4936,6 +4936,23 @@ pub fn run() {
                 bootstrap_core.diagnostics_service().start();
             });
 
+            // The main window normally becomes visible from `on_page_load` so
+            // the transparent macOS titlebar never flashes before the CSS is
+            // ready. A renderer can fail before emitting PageLoadEvent::Finished,
+            // though, which previously left a healthy backend running forever
+            // with no window or Dock-visible UI. Bound that wait and reveal the
+            // native window so the renderer failure is visible and recoverable.
+            let startup_window_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                if let Some(window) = startup_window_handle.get_webview_window("main") {
+                    if !window.is_visible().unwrap_or(false) {
+                        let _ = window.maximize();
+                        let _ = window.show();
+                    }
+                }
+            });
+
             let ipc_core = core.clone();
             let ipc_app = app.handle().clone();
             let ipc_root = crate::storage::app_data_root();

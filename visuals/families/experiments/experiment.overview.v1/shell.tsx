@@ -151,12 +151,40 @@ type ExperimentOverview = {
   limitations?: string[];
 };
 
+type OptimizerEvent = {
+  sequenceNumber?: number;
+  occurredAt?: string;
+  type?: string;
+  delta?: Record<string, unknown>;
+};
+
+type SkillSample = {
+  sequence: number;
+  elapsedMs: number;
+  xp: number;
+  level?: number;
+  xpPerMin?: number;
+  peakXpPerMin?: number;
+};
+
+type LiveFrame = {
+  sequence: number;
+  frameIndex: number;
+  elapsedMs: number;
+  dataUrl: string;
+  sha256?: string;
+  width?: number;
+  height?: number;
+};
+
 export type ShellProps = {
   title?: string;
   lede?: string;
   experiment?: ExperimentOverview;
   data?: ExperimentOverview;
   bindings?: VisualBinding[];
+  events?: OptimizerEvent[];
+  run?: { status?: string };
 };
 
 const MISSING = "—";
@@ -380,6 +408,124 @@ function ProgressPanel({ progress, status }: { progress?: Progress; status?: str
   </section>;
 }
 
+function liveSkillSamples(events: OptimizerEvent[] | undefined): SkillSample[] {
+  if (!Array.isArray(events)) return [];
+  return events.flatMap((event) => {
+    if (event.type !== "eval.trial.event") return [];
+    const container = record(event.delta?.containerEvent ?? event.delta?.container_event);
+    const kind = text(container?.kind ?? container?.event);
+    if (kind !== "game.skill_sample") return [];
+    const payload = record(container?.payload) ?? container;
+    const elapsedMs = finiteNumber(payload?.elapsed_ms ?? payload?.elapsedMs);
+    const xp = finiteNumber(payload?.xp);
+    if (elapsedMs == null || xp == null) return [];
+    return [{
+      sequence: finiteNumber(event.sequenceNumber) ?? 0,
+      elapsedMs,
+      xp,
+      level: finiteNumber(payload?.level),
+      xpPerMin: finiteNumber(payload?.xp_per_min ?? payload?.xpPerMin),
+      peakXpPerMin: finiteNumber(payload?.peak_xp_per_min ?? payload?.peakXpPerMin)
+    }];
+  }).sort((a, b) => a.sequence - b.sequence);
+}
+
+function latestHeartbeatElapsed(events: OptimizerEvent[] | undefined): number | undefined {
+  if (!Array.isArray(events)) return undefined;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type !== "eval.trial.event") continue;
+    const container = record(event.delta?.containerEvent ?? event.delta?.container_event);
+    if (text(container?.kind ?? container?.event) !== "rollout.heartbeat") continue;
+    const payload = record(container?.payload) ?? container;
+    return finiteNumber(payload?.elapsed_ms ?? payload?.elapsedMs);
+  }
+  return undefined;
+}
+
+function latestLiveFrame(events: OptimizerEvent[] | undefined): LiveFrame | undefined {
+  if (!Array.isArray(events)) return undefined;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type !== "eval.trial.event") continue;
+    const container = record(event.delta?.containerEvent ?? event.delta?.container_event);
+    if (!["frame", "game.frame"].includes(text(container?.kind ?? container?.event) ?? "")) continue;
+    const payload = record(container?.payload) ?? container;
+    const dataUrl = text(payload?.data_url ?? payload?.dataUrl);
+    if (!dataUrl?.startsWith("data:image/")) continue;
+    return {
+      sequence: finiteNumber(event.sequenceNumber) ?? 0,
+      frameIndex: finiteNumber(payload?.frame_index ?? payload?.frameIndex) ?? 0,
+      elapsedMs: finiteNumber(payload?.elapsed_ms ?? payload?.elapsedMs) ?? 0,
+      dataUrl,
+      sha256: text(payload?.sha256),
+      width: finiteNumber(payload?.width),
+      height: finiteNumber(payload?.height)
+    };
+  }
+  return undefined;
+}
+
+function durationLabel(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function LiveSkillTrajectory({ samples, status }: { samples: SkillSample[]; status?: string }) {
+  if (!samples.length) return null;
+  const width = 720;
+  const height = 190;
+  const pad = { left: 48, right: 16, top: 16, bottom: 30 };
+  const rates = samples.map((sample) => sample.xpPerMin ?? 0);
+  const maxRate = Math.max(1, ...rates);
+  const maxElapsed = Math.max(1, ...samples.map((sample) => sample.elapsedMs));
+  const x = (elapsed: number) => pad.left + elapsed / maxElapsed * (width - pad.left - pad.right);
+  const y = (rate: number) => height - pad.bottom - rate / maxRate * (height - pad.top - pad.bottom);
+  const points = samples.map((sample) => `${x(sample.elapsedMs)},${y(sample.xpPerMin ?? 0)}`).join(" ");
+  const latest = samples.at(-1)!;
+  const peak = Math.max(...samples.map((sample) => sample.peakXpPerMin ?? sample.xpPerMin ?? 0));
+  const live = !["completed", "failed", "cancelled", "canceled"].includes(status ?? "running");
+  return <section className="sv-section" aria-label="Live RuneBench skill trajectory" data-testid="runebench-live-trajectory">
+    <div className="sv-section-head">
+      <h3>Live Woodcutting trajectory</h3>
+      <span style={{ color: live ? "#c2410c" : "#18794e" }}>{live ? "● following live" : "terminal"} · {samples.length} samples</span>
+    </div>
+    <div className="sv-metrics" style={{ marginBottom: 10 }}>
+      <div className="sv-metric"><span>XP</span><strong>{Math.round(latest.xp).toLocaleString()}</strong></div>
+      <div className="sv-metric"><span>Level</span><strong>{latest.level ?? MISSING}</strong></div>
+      <div className="sv-metric"><span>Current XP/min</span><strong>{latest.xpPerMin == null ? MISSING : Math.round(latest.xpPerMin).toLocaleString()}</strong></div>
+      <div className="sv-metric"><span>Peak XP/min</span><strong>{Math.round(peak).toLocaleString()}</strong></div>
+    </div>
+    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Woodcutting XP per minute over elapsed rollout time" style={{ display: "block", width: "100%", height: "auto", overflow: "visible" }}>
+      {[0, .5, 1].map((fraction) => <g key={fraction}>
+        <line x1={pad.left} x2={width - pad.right} y1={y(maxRate * fraction)} y2={y(maxRate * fraction)} stroke="#e3e7ed" />
+        <text x={pad.left - 7} y={y(maxRate * fraction) + 3} textAnchor="end" fontSize="9" fill="#697386">{Math.round(maxRate * fraction)}</text>
+      </g>)}
+      <polyline points={points} fill="none" stroke="#f05f22" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
+      {samples.map((sample) => <circle key={sample.sequence} cx={x(sample.elapsedMs)} cy={y(sample.xpPerMin ?? 0)} r="3" fill="#f05f22"><title>{`${Math.round(sample.elapsedMs / 1000)}s · ${Math.round(sample.xpPerMin ?? 0)} XP/min · ${sample.xp} XP`}</title></circle>)}
+      <text x={pad.left} y={height - 8} fontSize="9" fill="#697386">0:00</text>
+      <text x={width - pad.right} y={height - 8} textAnchor="end" fontSize="9" fill="#697386">{Math.floor(maxElapsed / 60000)}:{String(Math.floor(maxElapsed / 1000) % 60).padStart(2, "0")}</text>
+      <text x="12" y={pad.top} fontSize="9" fill="#697386">XP/min</text>
+    </svg>
+  </section>;
+}
+
+function LiveGameFrame({ frame, status }: { frame?: LiveFrame; status?: string }) {
+  if (!frame) return null;
+  const live = !["completed", "failed", "cancelled", "canceled"].includes(status ?? "running");
+  return <section className="sv-section" aria-label="Live RuneBench game frame" data-testid="runebench-live-frame">
+    <div className="sv-section-head">
+      <h3>Game client</h3>
+      <span style={{ color: live ? "#c2410c" : "#18794e" }}>{live ? "● live" : "final live frame"} · frame {frame.frameIndex + 1} · {durationLabel(frame.elapsedMs)}</span>
+    </div>
+    <figure style={{ margin: 0, overflow: "hidden", border: "1px solid var(--sv-border)", borderRadius: 8, background: "#111" }}>
+      <img src={frame.dataUrl} alt={`RuneScape game client at ${durationLabel(frame.elapsedMs)}`} width={frame.width ?? 400} height={frame.height ?? 300} style={{ display: "block", width: "100%", height: "auto", imageRendering: "auto" }} />
+      <figcaption title={frame.sha256} style={{ padding: "6px 8px", overflow: "hidden", color: "#cbd2dc", fontFamily: "var(--sv-mono)", fontSize: 8, textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{frame.sha256 ?? "frame digest unavailable"}</figcaption>
+    </figure>
+  </section>;
+}
+
 function Metrics({ metrics }: { metrics: Metric[] }) {
   if (!metrics.length) return null;
   return <section className="sv-section" aria-label="Experiment results"><div className="sv-metrics">{metrics.map((metric, index) => <div className="sv-metric" key={`${metric.label}-${index}`}><span>{metric.label}</span><strong style={{ color: metric.tone === "positive" ? "#18794e" : metric.tone === "negative" ? "#b42318" : undefined }}>{display(metric.value)}</strong>{metric.detail ? <small>{metric.detail}</small> : null}</div>)}</div></section>;
@@ -435,8 +581,17 @@ function Lineage({ nodes }: { nodes: LineageNode[] }) {
 export function Shell(props: ShellProps) {
   const experiment = normalizeOverview(props.experiment ?? props.data);
   if (!experiment) return <VisualChrome title={props.title ?? "Experiment overview"} lede="No experiment projection was provided." testId="visual-experiment-overview"><></></VisualChrome>;
-  const status = experiment.status ?? "planned";
-  const progressSummary = experiment.progress?.completed != null && experiment.progress?.total != null ? `${experiment.progress.completed}/${experiment.progress.total} · ${experiment.progress.phase ?? status}` : status;
+  const status = props.run?.status ?? experiment.status ?? "planned";
+  const heartbeatElapsed = latestHeartbeatElapsed(props.events);
+  const running = !["completed", "failed", "cancelled", "canceled"].includes(status);
+  const progress = experiment.progress ? {
+    ...experiment.progress,
+    phase: status,
+    elapsed: heartbeatElapsed == null ? experiment.progress.elapsed : durationLabel(heartbeatElapsed),
+    active: running ? 1 : 0,
+    stateCounts: running ? { running: 1 } : experiment.progress.stateCounts
+  } : undefined;
+  const progressSummary = progress?.completed != null && progress?.total != null ? `${progress.completed}/${progress.total} · ${progress.phase ?? status}` : status;
   const metrics = [...(experiment.metrics ?? []), ...(experiment.results?.metrics ?? [])];
   const rollouts = experiment.results?.rollouts ?? [];
   const traces = experiment.traces?.items ?? [];
@@ -446,11 +601,15 @@ export function Shell(props: ShellProps) {
   const contextRecords = [{ label: "Task", data: experiment.task }, { label: "Runtime", data: experiment.runtime }, { label: "Provenance", data: experiment.provenance }];
   const hasContext = contextRecords.some((group) => Object.keys(group.data ?? {}).length);
   const hasMethod = Boolean(experiment.lineage?.length || experiment.limitations?.length);
+  const skillSamples = liveSkillSamples(props.events);
+  const liveFrame = latestLiveFrame(props.events);
   return <VisualChrome kicker={`Experiment · ${status}`} title={props.title ?? experiment.title ?? "Experiment overview"} lede={props.lede ?? experiment.question ?? experiment.hypothesis} testId="visual-experiment-overview">
-    <OverviewStrip status={status} arms={experiment.arms ?? []} model={experiment.runtime?.model} progress={experiment.progress} />
+    <OverviewStrip status={status} arms={experiment.arms ?? []} model={experiment.runtime?.model} progress={progress} />
+    <LiveGameFrame frame={liveFrame} status={props.run?.status ?? status} />
+    <LiveSkillTrajectory samples={skillSamples} status={props.run?.status ?? status} />
     {experiment.hypothesis || experiment.hypotheses?.length ? <Hypotheses legacyHypothesis={experiment.hypothesis} hypotheses={experiment.hypotheses ?? []} /> : null}
     {hasResults ? <Disclosure title="Comparison & results" summary={progressSummary} defaultOpen>
-      {experiment.progress ? <ProgressPanel progress={experiment.progress} status={status} /> : null}
+      {progress ? <ProgressPanel progress={progress} status={status} /> : null}
       <Metrics metrics={metrics} />
       <ComparisonTable arms={experiment.arms ?? []} comparison={experiment.comparison} />
       {experiment.arms?.length ? <Arms arms={experiment.arms} /> : null}
