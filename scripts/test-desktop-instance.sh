@@ -85,7 +85,7 @@ rg -q '^OPENROUTER_API_KEY=.openrouter-fixture.$' "$alpha_env"
 awk '
   /if \[\[ "\$COMMAND" == "cua"/{in_cua=1}
   in_cua && /cd "\$INSTANCE_ROOT"/ && !safe_cwd {safe_cwd=NR}
-  in_cua && /exec_isolated_cua_bundle/ && !launch_line {launch_line=NR}
+  in_cua && /^[[:space:]]+exec_isolated_cua_bundle$/ && !launch_line {launch_line=NR}
   END { exit !(safe_cwd && launch_line && safe_cwd < launch_line) }
 ' "$ROOT/scripts/desktop-instance.sh"
 # The helper itself must end in an environment-scrubbed exec of the recorded
@@ -150,9 +150,10 @@ rg -q 'SYNTH_DESKTOP_USE_DEV_SIGNER:-1' "$ROOT/scripts/desktop-instance.sh"
 rg -q -- '--identifier "\$BUNDLE_ID" "\$app_bundle"' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'assert_bundle_identity' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_REBUILD_ADAPTERS:-0' "$ROOT/scripts/desktop-instance.sh"
-rg -q 'SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-}' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_COMPUTER_USE_PARENT_REQUIREMENT=' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'optimizer runtime=immutable installed plugin' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'optimizer runtime=persisted instance-local source' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'verify_packaged_provenance' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'packaging_preflight' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'missing Computer Use helper bundle' "$ROOT/scripts/desktop-instance.sh"
@@ -182,6 +183,40 @@ for required in SYNTH_DESKTOP_INSTANCE SYNTH_DESKTOP_DATA_ROOT SYNTH_DESKTOP_CON
   SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE SYNTH_COMPUTER_USE_PARENT_REQUIREMENT CARGO_TARGET_DIR; do
   [[ ",$build_names," == *",$required,"* ]] || { echo "launch env missing $required" >&2; exit 1; }
 done
+
+# A reviewed local optimizer selection belongs to the isolated instance, not
+# to one transient launcher shell. A later cua-run/stage must reuse the staged
+# copy, while an explicit 0 returns the instance to the immutable runtime.
+optimizer_fixture="$TEST_ROOT/optimizer-fixture"
+mkdir -p "$optimizer_fixture/rust/crates/synth_gepa"
+printf '[project]\nname = "optimizer-fixture"\n' >"$optimizer_fixture/pyproject.toml"
+printf '[package]\nname = "synth_gepa"\nversion = "0.0.0"\n' >"$optimizer_fixture/rust/crates/synth_gepa/Cargo.toml"
+local_stage_out="$(
+  SYNTH_OPTIMIZER_USE_LOCAL_SOURCE=1 \
+  SYNTH_OPTIMIZER_PROJECT_SOURCE="$optimizer_fixture" \
+  SYNTH_GEPA_SECRET_ENV_SOURCE="$TEST_ROOT/missing-secret.env" \
+  "$ROOT/scripts/desktop-instance.sh" stage runtime-pin
+)"
+selection_file="$TEST_ROOT/instances/v08/runtime-pin/runtime/gepa/optimizer-selection"
+[[ "$(<"$selection_file")" == "local-staged-v1" ]]
+persisted_stage_out="$(
+  SYNTH_GEPA_SECRET_ENV_SOURCE="$TEST_ROOT/missing-secret.env" \
+  "$ROOT/scripts/desktop-instance.sh" stage runtime-pin
+)"
+case "$persisted_stage_out" in
+  *"optimizer runtime=persisted instance-local source"*) ;;
+  *) echo "instance did not preserve its local optimizer selection: $persisted_stage_out" >&2; exit 1 ;;
+esac
+immutable_stage_out="$(
+  SYNTH_OPTIMIZER_USE_LOCAL_SOURCE=0 \
+  SYNTH_GEPA_SECRET_ENV_SOURCE="$TEST_ROOT/missing-secret.env" \
+  "$ROOT/scripts/desktop-instance.sh" stage runtime-pin
+)"
+[[ ! -e "$selection_file" ]]
+case "$immutable_stage_out" in
+  *"optimizer runtime=immutable installed plugin"*) ;;
+  *) echo "explicit immutable selection was not honored: $immutable_stage_out" >&2; exit 1 ;;
+esac
 
 # Official releases fail closed unless Developer ID signing, Apple notarization,
 # stapling, Gatekeeper, and immutable provenance all succeed.
