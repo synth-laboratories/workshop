@@ -58,6 +58,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_53,
     MIGRATION_54,
     MIGRATION_55,
+    MIGRATION_56,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -210,6 +211,8 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("experiment_lineage", MIGRATION_44),
     ("experiment_session_cursor", MIGRATION_44),
     ("optimizer_cancellation_requests", MIGRATION_55),
+    ("optimizer_effective_contracts", MIGRATION_56),
+    ("optimizer_run_artifacts", MIGRATION_56),
 ];
 
 fn heal_missing_tables(conn: &Connection) -> Result<()> {
@@ -3007,7 +3010,7 @@ SELECT
     json_object(
         'schemaVersion', 'optimizer_event.v1',
         'eventId', 'migration52:' || campaign.id || ':plan',
-        'eventType', 'eval.run.planned',
+        'type', 'eval.run.planned',
         'sequenceNumber', 1,
         'occurredAt', campaign.created_at,
         'optimizerRunId', campaign.id,
@@ -3050,7 +3053,7 @@ SELECT
     json_object(
         'schemaVersion', 'optimizer_event.v1',
         'eventId', 'migration52:' || campaign.id || ':lifecycle',
-        'eventType', CASE WHEN campaign.status = 'planned'
+        'type', CASE WHEN campaign.status = 'planned'
              THEN 'migration.eval.run.planned' ELSE 'optimizer.run.started' END,
         'sequenceNumber', 2,
         'occurredAt', COALESCE(campaign.started_at, campaign.created_at),
@@ -3092,7 +3095,7 @@ SELECT
     json_object(
         'schemaVersion', 'optimizer_event.v1',
         'eventId', 'migration52:' || rollout.campaign_id || ':rollout:' || rollout.ordinal,
-        'eventType', CASE rollout.status
+        'type', CASE rollout.status
             WHEN 'started' THEN 'eval.trial.started'
             WHEN 'terminal' THEN 'eval.trial.terminal'
             WHEN 'failed' THEN 'eval.trial.terminal'
@@ -3119,7 +3122,13 @@ SELECT
         'delta', json_object(),
         'snapshot', NULL,
         'usageDelta', NULL,
-        'artifactRefs', json_array(),
+        'artifactRefs', CASE
+            WHEN rollout.terminal_json IS NOT NULL THEN json_array(json_object(
+                'kind', 'legacy_eval_terminal',
+                'id', rollout.rollout_id
+            ))
+            ELSE json_array()
+        END,
         'error', NULL,
         'raw', json_object('source', 'migration_52')
     ),
@@ -3146,7 +3155,7 @@ SELECT
     json_object(
         'schemaVersion', 'optimizer_event.v1',
         'eventId', 'migration52:' || campaign.id || ':terminal',
-        'eventType', CASE campaign.status WHEN 'complete' THEN 'optimizer.run.completed'
+        'type', CASE campaign.status WHEN 'complete' THEN 'optimizer.run.completed'
              WHEN 'partial' THEN 'optimizer.run.degraded' ELSE 'optimizer.run.failed' END,
         'sequenceNumber', campaign.expected_rollouts + 3,
         'occurredAt', COALESCE(campaign.settled_at, campaign.started_at, campaign.created_at),
@@ -3164,6 +3173,49 @@ SELECT
     'migration-52', campaign.expected_rollouts + 3, 'migration-52-unavailable',
     campaign.expected_rollouts + 3,
     COALESCE(campaign.settled_at, campaign.started_at, campaign.created_at)
+FROM eval_campaigns campaign
+JOIN optimizer_runs run ON run.id = campaign.id
+WHERE run.source = 'legacy_campaign_migration'
+  AND campaign.status IN ('complete','partial','failed');
+
+-- Migration 52 creates a complete durable kernel history for terminal legacy
+-- campaigns. Seal the matching cursor as well: terminal kernel loads replay
+-- from this write-once boundary and must never infer it from the mutable run
+-- row alone.
+INSERT OR IGNORE INTO optimizer_terminal_manifests(
+    optimizer_run_id, schema_version, algorithm_id, terminal_status,
+    terminal_cursor, sealed_at, payload_json
+)
+SELECT
+    campaign.id,
+    'optimizer_terminal_manifest.v1',
+    'eval',
+    CASE campaign.status WHEN 'complete' THEN 'completed'
+         WHEN 'partial' THEN 'degraded' ELSE 'failed' END,
+    campaign.expected_rollouts + 3,
+    COALESCE(campaign.settled_at, campaign.started_at, campaign.created_at),
+    json_object(
+        'schemaVersion', 'optimizer_terminal_manifest.v1',
+        'optimizerRunId', campaign.id,
+        'algorithmId', 'eval',
+        'terminalStatus', CASE campaign.status WHEN 'complete' THEN 'completed'
+             WHEN 'partial' THEN 'degraded' ELSE 'failed' END,
+        'terminalCursor', campaign.expected_rollouts + 3,
+        'work', json_object(
+            'planned', campaign.expected_rollouts,
+            'succeeded', (
+                SELECT COUNT(*) FROM eval_campaign_rollouts
+                WHERE campaign_id = campaign.id AND status = 'terminal'
+            ),
+            'failed', (
+                SELECT COUNT(*) FROM eval_campaign_rollouts
+                WHERE campaign_id = campaign.id AND status IN ('failed','missing')
+            ),
+            'cancelled', 0,
+            'skipped', 0,
+            'unit', 'trials'
+        )
+    )
 FROM eval_campaigns campaign
 JOIN optimizer_runs run ON run.id = campaign.id
 WHERE run.source = 'legacy_campaign_migration'
@@ -3340,6 +3392,40 @@ CREATE TABLE IF NOT EXISTS optimizer_cancellation_requests (
 
 CREATE INDEX IF NOT EXISTS optimizer_cancellation_requests_run
 ON optimizer_cancellation_requests(run_id, settled_sequence);
+"#;
+
+/// F4: the admitted producer/consumer contract and the artifacts it declares.
+/// Both are run-owned facts: the effective contract is immutable for one run,
+/// while artifact identity is scoped to the event that first declared it.
+const MIGRATION_56: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_effective_contracts (
+    optimizer_run_id TEXT PRIMARY KEY REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    schema_version TEXT NOT NULL,
+    contract_json TEXT NOT NULL,
+    negotiated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS optimizer_run_artifacts (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    artifact_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    work_item_id TEXT,
+    rollout_id TEXT,
+    kind TEXT NOT NULL,
+    locator TEXT NOT NULL,
+    digest TEXT,
+    media_type TEXT,
+    byte_size INTEGER,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    declared_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, artifact_id)
+);
+CREATE INDEX IF NOT EXISTS optimizer_run_artifacts_sequence
+ON optimizer_run_artifacts(optimizer_run_id, sequence, artifact_id);
+CREATE INDEX IF NOT EXISTS optimizer_run_artifacts_work_item
+ON optimizer_run_artifacts(optimizer_run_id, work_item_id, sequence);
+CREATE INDEX IF NOT EXISTS optimizer_run_artifacts_rollout
+ON optimizer_run_artifacts(optimizer_run_id, rollout_id, sequence);
 "#;
 
 #[cfg(test)]

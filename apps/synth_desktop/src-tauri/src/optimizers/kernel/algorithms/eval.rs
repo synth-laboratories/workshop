@@ -60,6 +60,7 @@ pub struct EvalProjection {
     /// Terminal trials carrying an evaluator-produced measurement. This is
     /// separate from terminal work: a process can finish without producing a
     /// score, and that must not make evidence complete.
+    #[serde(default)]
     #[specta(type = specta_typescript::Number)]
     pub evaluator_evidence: u64,
     pub promotion_applicable: bool,

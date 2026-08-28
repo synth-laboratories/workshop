@@ -32,7 +32,7 @@ const EXPERIMENT_SCHEMA: &str = "synth.experiment.overview.v1";
 /// The per-seed drill-down. The overview stays the run-level surface; this is
 /// what a seed row opens, and it is bound to the same run rather than to a
 /// snapshot, so it keeps filling in while the campaign runs.
-const WORKBENCH_TEMPLATE: &str = "craftax.trace_workbench.v1";
+const WORKBENCH_TEMPLATE: &str = "trace.workbench.v1";
 const EVAL_ALGORITHM_ID: &str = "eval";
 const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
@@ -339,6 +339,7 @@ struct ReadyContainer {
     base_url: String,
     protocol: String,
     image_digest: Option<String>,
+    metadata: Value,
 }
 
 pub(super) async fn start(
@@ -471,6 +472,12 @@ async fn start_eval(
     let examples = spec.examples();
     let suffix = Uuid::new_v4().simple().to_string();
     let run_id = format!("opt_eval_{}_{}", spec.family, &suffix[..12]);
+    let effective_contract = service.negotiate_effective_contract(
+        &run_id,
+        &container.id,
+        Some(&spec.family),
+        &container.metadata,
+    )?;
     let summary = json!({
         "recipeId": spec.recipe_id,
         "task": spec.family,
@@ -479,7 +486,8 @@ async fn start_eval(
         "containerId": container.id,
         "containerBaseUrl": container.base_url,
         "containerImageDigest": container.image_digest,
-        "expectedVisual": EXPERIMENT_TEMPLATE,
+        "expectedVisual": effective_contract.primary_visual.template_id.clone(),
+        "effectiveContract": effective_contract,
         "policyRef": { "harness": spec.harness, "config": spec.policy_config },
         "taskPools": { "train": spec.train.len(), "heldout": spec.heldout.len() },
         "concurrency": spec.concurrency,
@@ -797,11 +805,16 @@ async fn mint_workbench_visual(
     run: &OptimizerRunRecord,
     spec: &EvalSpec,
 ) -> Result<String> {
+    let template_id = run
+        .summary
+        .pointer("/effectiveContract/traceVisual/templateId")
+        .and_then(Value::as_str)
+        .unwrap_or(WORKBENCH_TEMPLATE);
     let (visual_id, _event) = service
         .publish_chat_owned_visual(ChatVisualPublication {
             run_id: run.id.clone(),
             session_ref: run.session_ref.clone(),
-            template_id: WORKBENCH_TEMPLATE.into(),
+            template_id: template_id.into(),
             title: format!("{} · trace workstation", spec.title),
             bindings: json!({
                 "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
@@ -829,6 +842,11 @@ async fn mint_experiment_visual(
     spec: &EvalSpec,
     total: usize,
 ) -> Result<String> {
+    let template_id = run
+        .summary
+        .pointer("/effectiveContract/primaryVisual/templateId")
+        .and_then(Value::as_str)
+        .unwrap_or(EXPERIMENT_TEMPLATE);
     let progress = inline_progress_projection(service, &run.id).await?;
     // One publication, not five calls: mint-or-reuse, bind to the run, publish
     // the durable show, select it for the owning chat, and shelve it in that
@@ -837,7 +855,7 @@ async fn mint_experiment_visual(
         .publish_chat_owned_visual(ChatVisualPublication {
             run_id: run.id.clone(),
             session_ref: run.session_ref.clone(),
-            template_id: EXPERIMENT_TEMPLATE.into(),
+            template_id: template_id.into(),
             title: spec.title.clone(),
             // The overview is minted before the workstation exists, so the
             // first projection carries no drill-down target. `persist_progress`
@@ -3532,6 +3550,7 @@ async fn find_ready_container(
                         base_url: base_url.trim_end_matches('/').to_string(),
                         protocol,
                         image_digest: container_image_digest(&metadata),
+                        metadata: metadata.clone(),
                     });
                 }
                 seen.push(format!(

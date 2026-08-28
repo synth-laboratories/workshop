@@ -1,6 +1,7 @@
 //! First-class Optimizer noun: durable local mirror, cursor, relationships, and projection.
 
 pub mod admission;
+mod artifacts;
 mod cispo;
 pub(crate) mod cloud;
 mod container_eval;
@@ -10,6 +11,7 @@ mod eval_candidates;
 mod eval_recipes;
 mod eval_relay;
 pub(crate) mod eval_runtime;
+mod effective_contract;
 mod event_contract;
 mod events;
 pub mod inline_eval;
@@ -58,9 +60,10 @@ pub use frames::{OptimizerFrameContent, OptimizerFrameDelta, OptimizerFrameRef};
 pub use manager::{OptimizerManager, OptimizerSidecarStatus, OptimizerSidecarVersion};
 #[allow(unused_imports)] // Nested Specta type is part of HostedTrainingModelCatalog.
 pub use models::{
-    CheckpointInferRequest, HostedTrainingModel, HostedTrainingModelCatalog,
-    OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerImportLocalRequest, OptimizerQuery,
-    OptimizerRecipeRunRequest, OptimizerReconcileRequest, OptimizerRelationship,
+    CheckpointInferRequest, EffectiveContract, HostedTrainingModel, HostedTrainingModelCatalog,
+    OptimizerArtifactPage, OptimizerArtifactRange, OptimizerCreateRequest, OptimizerEventEnvelope,
+    OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
+    OptimizerReconcileRequest, OptimizerRelationship,
     OptimizerRunOutputArtifact, OptimizerRunOutputCounts, OptimizerRunOutputIdentity,
     OptimizerRunOutputs, OptimizerRunRecord, OptimizerRunStatus, OptimizerStateSlice,
     SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery, SavedLoraDownload,

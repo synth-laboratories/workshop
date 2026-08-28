@@ -187,6 +187,8 @@ impl Commands {
     pub const OPTIMIZERS_CREATE: &'static str = "optimizers_create";
     pub const OPTIMIZERS_REFRESH: &'static str = "optimizers_refresh";
     pub const OPTIMIZERS_EVENTS_AFTER: &'static str = "optimizers_events_after";
+    pub const OPTIMIZERS_ARTIFACTS_LIST: &'static str = "optimizers_artifacts_list";
+    pub const OPTIMIZERS_ARTIFACT_READ_RANGE: &'static str = "optimizers_artifact_read_range";
     pub const OPTIMIZERS_GET_STATE: &'static str = "optimizers_get_state";
     pub const OPTIMIZERS_GET_STATE_BATCH: &'static str = "optimizers_get_state_batch";
     pub const OPTIMIZERS_CANCEL: &'static str = "optimizers_cancel";

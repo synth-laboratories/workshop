@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::error::{KernelError, KernelErrorCode, KernelResult};
 use super::types::{TerminalKind, WorkItemKind, WorkItemLifecycle};
+use crate::optimizers::models::OptimizerRunArtifact;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +16,10 @@ pub struct WorkItem {
     pub terminal: Option<TerminalKind>,
     #[serde(default)]
     pub external_ref: Option<String>,
+    /// Query-time artifact chips. The kernel never derives these from raw
+    /// payloads; the run-view service joins the durable artifact index.
+    #[serde(default)]
+    pub artifact_refs: Vec<OptimizerRunArtifact>,
 }
 
 impl WorkItem {
@@ -32,6 +37,7 @@ impl WorkItem {
             lifecycle: WorkItemLifecycle::Planned,
             terminal: None,
             external_ref: None,
+            artifact_refs: vec![],
         })
     }
 

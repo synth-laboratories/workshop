@@ -1,8 +1,9 @@
 use super::events::{plan_batch, EventVerdict, OptimizerEventDraft, SequenceContract};
 use super::models::{
-    OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerQuery,
-    OptimizerRelationship, OptimizerResourceRef, OptimizerRunRecord, OptimizerRunStatus,
-    OptimizerStateSlice, OptimizerUsageSummary, OPTIMIZER_EVENT_SCHEMA_VERSION,
+    EffectiveContract, OptimizerArtifactPage, OptimizerArtifactRange, OptimizerCapabilities,
+    OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerQuery, OptimizerRelationship,
+    OptimizerResourceRef, OptimizerRunRecord, OptimizerRunStatus, OptimizerStateSlice,
+    OptimizerUsageSummary, EFFECTIVE_CONTRACT_SCHEMA_VERSION, OPTIMIZER_EVENT_SCHEMA_VERSION,
     OPTIMIZER_RUN_SCHEMA_VERSION, OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
 };
 use super::results;
@@ -1101,6 +1102,62 @@ impl OptimizerService {
         db.run(move |conn| load_run(conn, &optimizer_run_id)).await
     }
 
+    pub(super) fn negotiate_effective_contract(
+        &self,
+        optimizer_run_id: &str,
+        container_id: &str,
+        task_family: Option<&str>,
+        metadata: &Value,
+    ) -> Result<EffectiveContract> {
+        let templates = self.visuals.list_templates(None)?;
+        super::effective_contract::negotiate(
+            optimizer_run_id,
+            container_id,
+            task_family,
+            metadata,
+            &templates,
+        )
+    }
+
+    pub async fn artifacts_list(
+        &self,
+        optimizer_run_id: String,
+        after_sequence: u64,
+        limit: Option<i64>,
+    ) -> Result<OptimizerArtifactPage> {
+        let db = self.db.clone();
+        db.run(move |conn| {
+            load_run(conn, &optimizer_run_id)?;
+            super::artifacts::list(
+                conn,
+                &optimizer_run_id,
+                after_sequence,
+                limit.unwrap_or(100),
+            )
+        })
+        .await
+    }
+
+    pub async fn artifact_read_range(
+        &self,
+        optimizer_run_id: String,
+        artifact_id: String,
+        offset: u64,
+        length: u64,
+    ) -> Result<OptimizerArtifactRange> {
+        let db = self.db.clone();
+        db.run(move |conn| {
+            super::artifacts::read_range(
+                conn,
+                &optimizer_run_id,
+                &artifact_id,
+                offset,
+                length,
+            )
+        })
+        .await
+    }
+
     /// Versioned backend projection. Raw events do not determine this view.
     pub async fn run_view_v2(
         &self,
@@ -1110,9 +1167,10 @@ impl OptimizerService {
         db.run_transaction(move |conn| {
             let run = load_run(conn, &optimizer_run_id)?;
             if let Some(state) = super::kernel::persist::load_state(conn, &optimizer_run_id)? {
+                let context = run_view_context(conn, &run)?;
                 return Ok(super::kernel::project_view_with_context(
                     &state,
-                    &super::kernel::view::RunViewContext::from(&run),
+                    &context,
                 ));
             }
 
@@ -1131,9 +1189,10 @@ impl OptimizerService {
                         optimizer_run_id
                     )
                 })?;
+            let context = run_view_context(conn, &run)?;
             Ok(super::kernel::project_view_with_context(
                 &state,
-                &super::kernel::view::RunViewContext::from(&run),
+                &context,
             ))
         })
         .await
@@ -2158,7 +2217,7 @@ impl OptimizerService {
         let existing = run
             .visual_refs
             .iter()
-            .find(|r| r.kind == "visual")
+            .find(|r| r.kind == "visual" && r.role.as_deref() == Some("primary"))
             .map(|r| r.id.clone());
         // Public SFT and local eval are controlled outside the optional
         // Optimizers plugin, and their visuals are bundled with Workshop.
@@ -2169,7 +2228,16 @@ impl OptimizerService {
         // run's visual consults the plugin, because template ids were never the
         // plugin's to grant. Keep it that way — reintroducing a capability
         // lookup here re-couples eval and SFT to plugin installation.
-        let template_id = negotiate_visual_template(&run.algorithm_id);
+        let template_id = run
+            .summary
+            .pointer("/effectiveContract/primaryVisual/templateId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| negotiate_visual_template(&run.algorithm_id));
+        // A persisted contract may only name a template still registered in
+        // this instance. Managed-template removal is an explicit empty-state
+        // failure, not an invitation to silently select another family.
+        self.visuals.get_template(&template_id)?;
         let template_digest = self.manager.status().await.digest;
         let visual = if let Some(visual_id) = existing {
             self.visuals.get(visual_id).await?
@@ -2240,7 +2308,7 @@ impl OptimizerService {
                 schema_version: crate::storage::APP_EVENT_SCHEMA_VERSION.into(),
                 sequence: 0,
                 event_id: Uuid::new_v4().to_string(),
-                session_id: presentation_session_ref,
+                session_id: presentation_session_ref.clone(),
                 session_sequence: None,
                 run_id: None,
                 source: EventSource::System,
@@ -2254,6 +2322,39 @@ impl OptimizerService {
                 command_id: None,
                 created_at: Utc::now().to_rfc3339(),
             }));
+        if let Some(trace_template) = run
+            .summary
+            .pointer("/effectiveContract/traceVisual/templateId")
+            .and_then(Value::as_str)
+            .filter(|template| *template != template_id)
+        {
+            let trace_template = trace_template.to_string();
+            self.visuals.get_template(&trace_template)?;
+            let _ = self
+                .publish_chat_owned_visual(ChatVisualPublication {
+                    run_id: run.id.clone(),
+                    session_ref: presentation_session_ref.clone(),
+                    template_id: trace_template,
+                    title: format!("{} · trace", algorithm_label(&run.algorithm_id)),
+                    bindings: json!({
+                        "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+                        "inputs": [{
+                            "input": "optimizer_run",
+                            "kind": "optimizer_run",
+                            "source": run.id,
+                            "schema": OPTIMIZER_RUN_SCHEMA_VERSION
+                        }]
+                    }),
+                    metadata: json!({
+                        "optimizerRunId": run.id,
+                        "effectiveContract": EFFECTIVE_CONTRACT_SCHEMA_VERSION,
+                        "emptyState": "waiting_for_declared_trace_events"
+                    }),
+                    status: crate::visuals::VisualStatus::Live,
+                    role: "trace".into(),
+                })
+                .await?;
+        }
         Ok((self.get(run.id).await?, event))
     }
 
@@ -3606,6 +3707,16 @@ fn load_run(conn: &Connection, optimizer_run_id: &str) -> Result<OptimizerRunRec
     Ok(serde_json::from_str(&payload)?)
 }
 
+fn run_view_context(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+) -> Result<super::kernel::view::RunViewContext> {
+    let mut context = super::kernel::view::RunViewContext::from(run);
+    context.artifacts = super::artifacts::list_all(conn, &run.id)?;
+    context.effective_contract = super::effective_contract::load(conn, &run.id)?;
+    Ok(context)
+}
+
 fn upsert_run(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
     let status = OptimizerRunStatus::parse(&run.status).ok_or_else(|| {
         anyhow!(
@@ -3673,6 +3784,18 @@ fn upsert_run(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
             Utc::now().to_rfc3339(),
         ],
     )?;
+    if let Some(contract) = run.summary.get("effectiveContract") {
+        let contract: EffectiveContract = serde_json::from_value(contract.clone())
+            .context("decode run effectiveContract")?;
+        if contract.optimizer_run_id != run.id {
+            bail!(
+                "effective contract belongs to {}, refusing to persist it on {}",
+                contract.optimizer_run_id,
+                run.id
+            );
+        }
+        super::effective_contract::upsert(conn, &contract)?;
+    }
     Ok(())
 }
 
@@ -3705,6 +3828,10 @@ fn commit_validated_events(
         }
         super::frames::persist_event_frame(conn, frame_store, event)?;
         insert_event(conn, event)?;
+        // Artifact declarations are indexed in the event transaction. A
+        // conflicting identity therefore rolls back both the index and the
+        // event that attempted to redefine it.
+        super::artifacts::persist_event_artifacts(conn, std::slice::from_ref(event))?;
         // Fold the event's error into the run record as it commits, so a
         // terminal batch seals `error_json` and the manifest's error in the
         // same transaction — they can no longer diverge by one event.
@@ -6925,6 +7052,193 @@ pub(in crate::optimizers) mod tests {
         );
         let (advanced, _) = svc.append_events(run.id, vec![local]).await.unwrap();
         assert_eq!(advanced.cursor_seq, 2);
+    }
+
+    #[tokio::test]
+    async fn declared_artifacts_are_transactional_streamable_and_joined_to_trial_rows() {
+        let (svc, dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_artifacts", "session_eval_artifacts").await;
+        let artifact_path = dir.path().join("trial-result.json");
+        let video_path = dir.path().join("trial-video.mp4");
+        std::fs::write(&artifact_path, br#"{"score":1}"#).unwrap();
+        std::fs::write(&video_path, [0_u8, 1, 2, 3]).unwrap();
+        let planned = evt(
+            "eval.run.planned",
+            1,
+            "eval",
+            &run.id,
+            "2026-08-27T00:00:00Z",
+            json!({"plannedTrials": 1}),
+            None,
+            None,
+        );
+        let mut terminal = evt(
+            "eval.trial.terminal",
+            2,
+            "eval",
+            &run.id,
+            "2026-08-27T00:00:01Z",
+            json!({"valid": true, "reward": 1.0}),
+            Some(item("trial", "eval:trial:0", "completed", json!({}))),
+            None,
+        );
+        terminal.artifact_refs = vec![
+            json!({
+                "artifactId": "trial-result",
+                "kind": "evaluator_result",
+                "path": artifact_path,
+                "mediaType": "application/json",
+                "rolloutId": "rollout-1"
+            }),
+            json!({
+                "artifactId": "trial-video",
+                "kind": "rollout_video",
+                "path": video_path,
+                "mediaType": "video/mp4",
+                "rolloutId": "rollout-1"
+            }),
+        ];
+        svc.append_events(run.id.clone(), vec![planned, terminal])
+            .await
+            .unwrap();
+
+        let page = svc
+            .artifacts_list(run.id.clone(), 0, Some(1))
+            .await
+            .unwrap();
+        assert_eq!(
+            page.artifacts.len(),
+            2,
+            "a page must not split artifacts declared by the same event sequence"
+        );
+        assert_eq!(
+            page.artifacts[0].work_item_id.as_deref(),
+            Some("eval:trial:0")
+        );
+        assert_eq!(
+            page.artifacts[0].media_type.as_deref(),
+            Some("application/json")
+        );
+        assert_eq!(page.artifacts[1].media_type.as_deref(), Some("video/mp4"));
+
+        let range = svc
+            .artifact_read_range(run.id.clone(), "trial-result".into(), 0, 4)
+            .await
+            .unwrap();
+        assert_eq!(range.byte_length, 4);
+        assert!(!range.eof);
+        assert_eq!(range.data_base64, "eyJzYw==");
+
+        let mut conflicting = evt(
+            "optimizer.recipe.diagnostic",
+            3,
+            "eval",
+            &run.id,
+            "2026-08-27T00:00:02Z",
+            json!({"message": "conflicting artifact declaration"}),
+            None,
+            None,
+        );
+        conflicting.artifact_refs = vec![json!({
+            "artifactId": "trial-result",
+            "kind": "evaluator_result",
+            "path": dir.path().join("different-result.json"),
+            "mediaType": "application/json"
+        })];
+        let error = svc
+            .append_events(run.id.clone(), vec![conflicting])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("was redeclared"), "{error}");
+        assert_eq!(svc.get(run.id.clone()).await.unwrap().cursor_seq, 2);
+        assert_eq!(
+            svc.events_after(run.id.clone(), 0, None)
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "artifact conflict must roll the event append back"
+        );
+        assert_eq!(
+            svc.artifacts_list(run.id.clone(), 0, None)
+                .await
+                .unwrap()
+                .artifacts
+                .len(),
+            2
+        );
+
+        let view = serde_json::to_value(svc.run_view_v2(run.id).await.unwrap()).unwrap();
+        assert_eq!(view["header"]["artifacts"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            view["projection"]["workItems"][0]["artifactRefs"][0]["artifactId"],
+            "trial-result"
+        );
+    }
+
+    #[tokio::test]
+    async fn effective_contract_is_persisted_and_returned_by_run_view() {
+        let (svc, _dir, _) = service().await;
+        let run_id = "opt_eval_effective_contract";
+        let contract = svc
+            .negotiate_effective_contract(
+                run_id,
+                "container-example",
+                Some("unregistered-example-family"),
+                &json!({
+                    "liveEval": {
+                        "family": "unregistered-example-family",
+                        "artifactMediaTypes": ["application/json", "text/html"]
+                    }
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            contract.primary_visual.template_id.as_deref(),
+            Some("experiment.overview.v1")
+        );
+        assert_eq!(
+            contract.trace_visual.template_id.as_deref(),
+            Some("trace.workbench.v1")
+        );
+        assert_eq!(contract.artifact_media_types, vec!["application/json"]);
+        let (run, _) = svc
+            .create(OptimizerCreateRequest {
+                algorithm_id: "eval".into(),
+                algorithm_version: Some("1".into()),
+                objective: Some("effective contract".into()),
+                source: Some("local".into()),
+                project_ref: None,
+                session_ref: Some("session_effective_contract".into()),
+                id: Some(run_id.into()),
+                execution_bindings: None,
+                input_refs: None,
+                capabilities: Some(OptimizerCapabilities::for_algorithm("eval")),
+                summary: Some(json!({"effectiveContract": contract})),
+                open_visual: Some(false),
+                seed_fixture: None,
+                cloud_config: None,
+                local_path: None,
+            })
+            .await
+            .unwrap();
+        let view = serde_json::to_value(svc.run_view_v2(run.id).await.unwrap()).unwrap();
+        assert_eq!(
+            view["header"]["effectiveContract"]["containerId"],
+            "container-example"
+        );
+        svc.database()
+            .with_conn(|conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM optimizer_effective_contracts WHERE optimizer_run_id=?1",
+                    [run_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 1);
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[tokio::test]
