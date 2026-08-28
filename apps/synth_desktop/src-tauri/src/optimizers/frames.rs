@@ -73,8 +73,10 @@ fn container_event(event: &OptimizerEventEnvelope, raw: bool) -> Option<&Map<Str
     } else {
         event
             .delta
-            .get("containerEvent")
-            .or_else(|| event.delta.get("container_event"))?
+            .get("container_event")
+            // COMPAT_CONTAINER_EVENT_CAMEL_CASE_THROUGH: remove after the
+            // release following 2026-08, in lockstep with Optimizers.
+            .or_else(|| event.delta.get("containerEvent"))?
             .as_object()
     }
 }
@@ -92,10 +94,11 @@ fn mutable_container_event(
         }?;
         value.as_object_mut()
     } else {
-        let value = if event.delta.contains_key("containerEvent") {
-            event.delta.get_mut("containerEvent")
-        } else {
+        let value = if event.delta.contains_key("container_event") {
             event.delta.get_mut("container_event")
+        } else {
+            // COMPAT_CONTAINER_EVENT_CAMEL_CASE_THROUGH: legacy read only.
+            event.delta.get_mut("containerEvent")
         }?;
         value.as_object_mut()
     }

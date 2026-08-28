@@ -1,0 +1,312 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synth.dev/contracts/optimizer-event-v1/schema.json",
+  "title": "optimizer_event.v1",
+  "description": "Event envelope and vocabulary for the optimizer event namespace, owned by the optimizers repo. Two producer envelopes exist: the canonical per-run optimizer_event.v1 spool written by the Rust EventStream (rust/crates/synth_optimizer_platform/src/observability.rs, struct OptimizerEvent), and the Python eval worker envelope (src/synth_optimizers/eval/runner.py, EventEmitter.emit) whose events Workshop appends into this namespace. Consumers (Workshop) must validate appended events against this schema; Workshop owns sequencing and the durable journal only, never this vocabulary. The declared event-type vocabulary lives in contracts/event_vocabulary.json and is mirrored in $defs/declared_event_types; an event type absent there has no producer in this repo.",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/optimizer_event"
+    },
+    {
+      "$ref": "#/$defs/eval_worker_event"
+    }
+  ],
+  "$defs": {
+    "event_type": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)*$",
+      "description": "Dot-separated lowercase event type. Strict consumers additionally check membership in declared_event_types; the envelope keeps this a pattern so a vocabulary addition is a schema bump, not a wire break."
+    },
+    "declared_event_types": {
+      "description": "Mirror of contracts/event_vocabulary.json (all feeds). Generated; a parity test fails if the two drift.",
+      "enum": [
+        "candidate.accepted",
+        "candidate.deferred",
+        "candidate.duplicate_skipped",
+        "candidate.evaluated",
+        "candidate.full_train_evaluated",
+        "candidate.leakage_detected",
+        "candidate.minibatch_evaluated",
+        "candidate.registered",
+        "candidate.rejected",
+        "candidate.scored",
+        "container.contract.verified",
+        "container.program.loaded",
+        "container.task_info.loaded",
+        "container.task_info.missing",
+        "eval.candidate.eliminated",
+        "eval.candidate.scored",
+        "eval.run.paused",
+        "eval.run.planned",
+        "eval.run.resumed",
+        "eval.run.terminal",
+        "eval.seed_ledger.sealed",
+        "eval.selection.completed",
+        "eval.trial.event",
+        "eval.trial.evidence_incomplete",
+        "eval.trial.queued",
+        "eval.trial.started",
+        "eval.trial.terminal",
+        "frontier.snapshot",
+        "frontier.updated",
+        "generation.started",
+        "gepa.run.cancelled",
+        "gepa.run.failed",
+        "gepa.run.finished",
+        "gepa.run.started",
+        "gepa.stop",
+        "heldout.blocked",
+        "heldout.completed",
+        "heldout.partial",
+        "heldout.skipped",
+        "heldout.started",
+        "objective_set.declared",
+        "optimizer.candidate_evaluation.allocated",
+        "optimizer.candidate_evaluation.attempt.failed",
+        "optimizer.child_rollout.attached",
+        "optimizer.evaluation.coverage.updated",
+        "optimizer.evaluation_result.received",
+        "optimizer.limit.estimate_updated",
+        "optimizer.rollout_queue.updated",
+        "optimizer.state.transitioned",
+        "parent_minibatch_reference.completed",
+        "pipeline.speculative_release.enqueued",
+        "pipeline.speculative_tail.discarded",
+        "pipeline.stage_workers.adjusted",
+        "pipeline.stale_item.discarded",
+        "pipeline.stale_item.patched",
+        "pipeline.stale_item.reviewed",
+        "proposer.completed",
+        "proposer.delta",
+        "proposer.started",
+        "rollout.attempt.failed",
+        "rollout.chunk.finished",
+        "rollout.chunk.started",
+        "rollout.circuit_breaker.tripped",
+        "rollout.concurrency.adjusted",
+        "rollout.failure_rate.updated",
+        "rollout.outcome.duplicate_ignored",
+        "rollout.stale_skipped",
+        "run.status_changed",
+        "run.terminal",
+        "runtime.job.completed",
+        "runtime.throughput.warning",
+        "score_chart.written",
+        "storage.snapshot.recorded",
+        "taskset.tasks.loaded",
+        "usage.tick",
+        "workspace.persisted"
+      ]
+    },
+    "container_event_carrier": {
+      "type": "object",
+      "description": "An event carrying a verbatim container stream event. snake_case container_event is canonical (matches the Python emitter at src/synth_optimizers/eval/runner.py). COMPAT: camelCase alias accepted for one release only; snake_case container_event is canonical. Remove the alias in the release after 2026-08.",
+      "properties": {
+        "container_event": {
+          "type": "object"
+        },
+        "containerEvent": {
+          "type": "object",
+          "deprecated": true,
+          "$comment": "COMPAT: camelCase alias accepted for one release only; snake_case container_event is canonical. Remove the alias in the release after 2026-08."
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "container_event"
+          ]
+        },
+        {
+          "required": [
+            "containerEvent"
+          ]
+        }
+      ]
+    },
+    "optimizer_item": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": [
+            "run",
+            "cursor",
+            "candidate",
+            "frontier_cell",
+            "rollout",
+            "model_call",
+            "log"
+          ]
+        },
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "raw": true
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "optimizer_event": {
+      "type": "object",
+      "description": "Canonical per-run spool envelope (events.optimizer.jsonl), serialized from struct OptimizerEvent in observability.rs.",
+      "properties": {
+        "schema_version": {
+          "const": "optimizer_event.v1"
+        },
+        "type": {
+          "$ref": "#/$defs/event_type"
+        },
+        "sequence_number": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Absent when unknown; never defaulted to 0."
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "algorithm_id": {
+          "enum": [
+            "gepa",
+            "go-ex",
+            "eval"
+          ]
+        },
+        "algorithm": {
+          "enum": [
+            "gepa",
+            "go-ex",
+            "eval"
+          ],
+          "deprecated": true,
+          "$comment": "Read-side alias of algorithm_id (serde alias); producers write algorithm_id."
+        },
+        "slot": {
+          "type": "string",
+          "default": "optimizer_run"
+        },
+        "created_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "item": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/optimizer_item"
+            }
+          ]
+        },
+        "delta": {
+          "type": "object"
+        },
+        "error": true,
+        "raw": true
+      },
+      "required": [
+        "schema_version",
+        "type",
+        "run_id",
+        "created_at"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "algorithm_id"
+          ]
+        },
+        {
+          "required": [
+            "algorithm"
+          ]
+        }
+      ],
+      "if": {
+        "properties": {
+          "type": {
+            "const": "eval.trial.event"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "delta": {
+            "$ref": "#/$defs/container_event_carrier"
+          }
+        }
+      }
+    },
+    "eval_worker_event": {
+      "type": "object",
+      "description": "Python eval worker envelope (eval.worker-event.v1), written by EventEmitter.emit in src/synth_optimizers/eval/runner.py. Workshop appends these into the optimizer event namespace verbatim.",
+      "properties": {
+        "schema_version": {
+          "const": "eval.worker-event.v1"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "event": {
+          "$ref": "#/$defs/event_type"
+        },
+        "occurred_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "schema_version",
+        "seq",
+        "event",
+        "occurred_at",
+        "run_id"
+      ],
+      "if": {
+        "properties": {
+          "event": {
+            "const": "eval.trial.event"
+          }
+        },
+        "required": [
+          "event"
+        ]
+      },
+      "then": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/container_event_carrier"
+          }
+        ],
+        "properties": {
+          "trial_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "trial_id"
+        ]
+      }
+    }
+  }
+}

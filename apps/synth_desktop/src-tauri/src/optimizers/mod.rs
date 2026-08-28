@@ -10,6 +10,7 @@ mod eval_candidates;
 mod eval_recipes;
 mod eval_relay;
 pub(crate) mod eval_runtime;
+mod event_contract;
 mod events;
 pub mod inline_eval;
 pub(crate) use events::strip_frame_bodies_for_ipc;

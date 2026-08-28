@@ -43,10 +43,12 @@ fn mutable_container_event(
         }?;
         value.as_object_mut()
     } else {
-        let value = if event.delta.contains_key("containerEvent") {
-            event.delta.get_mut("containerEvent")
-        } else {
+        let value = if event.delta.contains_key("container_event") {
             event.delta.get_mut("container_event")
+        } else {
+            // COMPAT_CONTAINER_EVENT_CAMEL_CASE_THROUGH: legacy read only;
+            // remove after the release following 2026-08.
+            event.delta.get_mut("containerEvent")
         }?;
         value.as_object_mut()
     }
