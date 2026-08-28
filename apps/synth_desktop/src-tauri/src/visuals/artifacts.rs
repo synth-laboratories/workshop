@@ -13,6 +13,13 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 const BUNDLE_SCHEMA: &str = "synth.artifact-bundle.v1";
+/// Envelope for the projections a seal carries. A reader that does not know
+/// this string renders the fallback rather than guessing at the views.
+const VISUAL_PROJECTION_SCHEMA: &str = "synth.visual-projection.v1";
+/// The code that produced a live-eval view, named rather than assumed. Part IV:
+/// a seal records which fold and which projection schema made it, because the
+/// fold may not exist on the machine that opens the seal.
+const LIVE_FOLD_ID: &str = "stream_fold::project_live_eval";
 const COMPILER_NAME: &str = "workshop";
 const WORKSHOP_UPLOAD_SCHEMA: &str = "synth.workshop-artifact-upload.v1";
 const FROZEN_RUNTIME: &str = concat!(
@@ -146,7 +153,14 @@ impl VisualRegistry {
             .bindings
             .clone()
             .unwrap_or_else(|| visual.bindings.clone());
-        let frozen_bindings = freeze_bindings(bindings)?;
+        let (frozen_bindings, live_views) = freeze_bindings(
+            bindings,
+            &SealEvidence {
+                visual_id: &visual.id,
+                revision,
+                content: &self.content,
+            },
+        )?;
         let annotations = self
             .annotations(visual_id.clone())
             .await?
@@ -159,9 +173,10 @@ impl VisualRegistry {
             .bindings_digest
             .clone()
             .unwrap_or_else(|| hex_sha256(&canonical_json(&frozen_bindings).unwrap_or_default()));
+        let template_source = embedded_template_source(&source.template_id)?;
         let artifact_id = format!("visual:{}", visual.id);
         let builder_run_id = format!("seal:{}:{}", visual.id, revision);
-        let source_identity = json!({
+        let mut source_identity = json!({
             "visual_id": visual.id,
             "revision": revision,
             "content_digest": source.content_digest,
@@ -170,8 +185,14 @@ impl VisualRegistry {
             "source_run_id": visual.run_id,
             "builder_run_id": builder_run_id,
         });
+        // The identity document is the receipt, and the receipt is what a
+        // verifier reads. A seal over instance-local code has to say which code
+        // in the place identity is claimed, not only carry it in the payload.
+        if let Some(embedded) = &template_source {
+            source_identity["template_source_digest"] = embedded["digest_sha256"].clone();
+        }
         let limitations = declared_limitations(&frozen_bindings);
-        let data = json!({
+        let mut data = json!({
             "schema_version": BUNDLE_SCHEMA,
             "artifact_id": artifact_id,
             "source": source_identity,
@@ -184,6 +205,36 @@ impl VisualRegistry {
             "claims": [],
             "limitations": limitations,
         });
+        // Absent, not null, for a bundled template: a key that is always
+        // present would change `data_digest` for every seal this build has ever
+        // written, and a bundled family is already pinned by `compiler_version`.
+        // Only the tier that is *not* pinned by anything gains a field.
+        if let Some(embedded) = template_source {
+            data["template_source"] = embedded;
+        }
+        // Item 3: the seal carries the projection, not a promise that whoever
+        // opens it will still have the fold that produced one. A viewer that
+        // re-derives a view from raw bindings is a second implementation of a
+        // projection — and one that stops existing the moment the plugin or
+        // the user template that owned it is uninstalled. Absent, not empty,
+        // when there is nothing to name: an always-present key would
+        // re-digest every seal this build has ever written.
+        let mut views = live_views;
+        views.extend(locate_sealed_projections(&data["bindings"]));
+        if !views.is_empty() {
+            let sealed_template_id = data["template_id"].clone();
+            let projection = json!({
+                "schema_version": VISUAL_PROJECTION_SCHEMA,
+                "produced_by": {
+                    "compiler": COMPILER_NAME,
+                    "compiler_version": env!("CARGO_PKG_VERSION"),
+                    "fold": LIVE_FOLD_ID,
+                    "template_id": sealed_template_id,
+                },
+                "views": views,
+            });
+            data["projection"] = projection;
+        }
         scan_forbidden(&data, "$")?;
         let data_bytes = canonical_json(&data)?;
         let runtime_digest = hex_sha256(FROZEN_RUNTIME.as_bytes());
@@ -780,43 +831,364 @@ fn validate_annotation_request(request: &VisualAnnotationCreate) -> Result<()> {
     Ok(())
 }
 
-fn freeze_bindings(mut value: Value) -> Result<Value> {
-    fn walk(value: &mut Value) -> Result<()> {
+/// The `shell.tsx` of a `source_kind: "user"` template, embedded whole.
+///
+/// **Why the source and not a CAS reference.** A seal exists so an artifact can
+/// be re-derived somewhere else; a visual sealed against a user template
+/// references code that exists on exactly one machine, and `receipt_digest`,
+/// `runtime_digest`, `index_digest` and `data_digest` pin none of it. Putting
+/// the shell in the CAS and referencing its digest would not fix that, because
+/// the CAS is instance-local and `share_seal` uploads exactly three members —
+/// `data.json`, `index.html`, `receipt.json`. A CAS-addressed shell would travel
+/// as a digest pointing at a blob only the authoring machine holds: the same
+/// failure, now with a hash in front of it. This is the plugin-uninstall
+/// convergence in part IV — *store the output, not a reference to something that
+/// may not exist later.*
+///
+/// A fourth bundle member was the other option and is worse for two reasons.
+/// `validate_hosted_bundle` refuses a receipt that does not declare exactly two
+/// members, and the backend prepare/finalize protocol is written against that
+/// member list, so a third file is a wire change on both sides. And `index.html`
+/// already embeds `FROZEN_RUNTIME` by `include_str!` rather than referencing it,
+/// for exactly this reason — the runtime that renders the bundle travels inside
+/// the bundle. A user template's shell is the same class of thing: code the
+/// artifact cannot be read without.
+///
+/// The cost is size, and it is bounded: the pane caps sourced TSX at 256 KiB and
+/// `templates.rs` caps any file in this tier at 1.5 MB, against a 64 MiB viewer
+/// limit that inline evidence already spends more of.
+///
+/// Managed `renderer.html` packages have the same defect and are deliberately
+/// *not* handled here. Their text would land inside the sealed page, where
+/// `refuse_network_html` scans for `@import`, `src="http` and friends — legal in
+/// a CSP-sandboxed iframe, forbidden in the sealed inspector page. Embedding one
+/// would turn a currently-sealable managed visual into a failed seal. That
+/// conflict wants a decision about what a managed seal means, not a drive-by.
+///
+/// A template id the registry cannot resolve embeds nothing, because from here a
+/// deleted user template and a bundled family absent from an unstaged checkout
+/// are the same `Err`. Closing that would mean recording the tier on the
+/// revision at create time.
+fn embedded_template_source(template_id: &str) -> Result<Option<Value>> {
+    let Ok(meta) = super::templates::resolve_template(template_id) else {
+        return Ok(None);
+    };
+    if meta.source_kind.as_deref() != Some(super::user_templates::USER_SOURCE_KIND) {
+        return Ok(None);
+    }
+    let text = super::user_templates::shell_source(template_id).with_context(|| {
+        format!("sealing against user visual template {template_id} requires its shell.tsx")
+    })?;
+    // No `path` field: it names the author's home directory and says nothing a
+    // reader elsewhere can use. `logical_path` is the name inside the template
+    // package, which is what a re-derivation needs.
+    Ok(Some(json!({
+        "template_id": meta.id,
+        "source_kind": meta.source_kind,
+        "version": meta.version,
+        "logical_path": "shell.tsx",
+        "digest_sha256": hex_sha256(text.as_bytes()),
+        "size_bytes": text.len(),
+        "text": text,
+    })))
+}
+
+/// Where a seal looks for the evidence behind a `live_sse` binding.
+///
+/// Held together rather than passed as four arguments because the ladder in
+/// [`resolve_live_evidence`] consults all of it, in order, for every live
+/// binding a visual declares.
+struct SealEvidence<'a> {
+    visual_id: &'a str,
+    revision: i64,
+    content: &'a crate::storage::ContentStore,
+}
+
+/// Replayable evidence for one live binding, and where the seal found it.
+struct ResolvedEvidence {
+    /// The evidence bodies. Empty for the opaque descriptor snapshot below,
+    /// which is not an envelope log and cannot be projected.
+    envelopes: Vec<Value>,
+    /// The verbatim value to freeze into the binding's `data`.
+    data: Value,
+    /// `descriptor` (an inline `snapshot`), `spool` (a CAS digest named on the
+    /// binding) or `host_observation` (what Desktop polled). Recorded on the
+    /// binding so a verifier reads how the evidence was obtained rather than
+    /// inferring it.
+    origin: &'static str,
+    spool_digest: Option<String>,
+    truncated: bool,
+}
+
+/// The identity a declared live stream is recorded and resolved under.
+///
+/// The same rule `stream_receipt::declared_streams` applies — declared
+/// `source`, falling back to the poll URL — so the evidence the host recorded
+/// while polling and the evidence the seal asks for are the same key by
+/// construction, not by two functions agreeing.
+fn binding_stream_id(object: &Map<String, Value>) -> Option<String> {
+    for key in ["source", "poll_url", "pollUrl"] {
+        if let Some(value) = object
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+/// Find replayable evidence for one `live_sse` binding, or say what is missing.
+///
+/// The ladder is ordered so that the rung requiring nothing of a caller is the
+/// one that normally answers. A required key nothing produces is how this path
+/// came to be dead code; a host observation nobody has to remember to attach
+/// cannot fail the same way.
+fn resolve_live_evidence(
+    object: &mut Map<String, Value>,
+    evidence: &SealEvidence<'_>,
+) -> Result<ResolvedEvidence> {
+    let input = super::descriptor_input_name(&Value::Object(object.clone()))
+        .unwrap_or_else(|_| super::LIVE_EVAL_INPUT.to_string());
+    let stream_id = binding_stream_id(object);
+
+    // 1. An inline snapshot on the descriptor. Kept because a caller that
+    //    genuinely holds the evidence should not be refused, and because a
+    //    snapshot may be any shape a template renders — it is frozen verbatim
+    //    and, not being an envelope log, yields no projection.
+    if let Some(snapshot) = object.remove("snapshot") {
+        let envelopes = snapshot_envelopes(&snapshot);
+        return Ok(ResolvedEvidence {
+            data: snapshot,
+            envelopes,
+            origin: "descriptor",
+            spool_digest: None,
+            truncated: false,
+        });
+    }
+
+    // 2. A CAS spool named on the descriptor. `storage/live_spool.rs` persists
+    //    raw envelopes for exactly this after-the-fact replay, and a digest
+    //    survives the engine, the process and the machine.
+    let declared_digest = ["spool_digest", "spoolDigest"]
+        .iter()
+        .find_map(|key| object.get(*key).and_then(Value::as_str))
+        .map(str::to_string);
+    if let Some(digest) = declared_digest {
+        let spool = crate::storage::load_live_spool(evidence.content, &digest)
+            .with_context(|| format!("sealing live input \"{input}\" from spool {digest}"))?;
+        return Ok(ResolvedEvidence {
+            data: json!({ "events": spool.envelopes.clone() }),
+            envelopes: spool.envelopes,
+            origin: "spool",
+            spool_digest: Some(spool.digest),
+            truncated: false,
+        });
+    }
+
+    // 3. What this host actually polled. Nothing had to be attached for this
+    //    to be here, which is the point.
+    if let Some(stream_id) = stream_id.as_deref() {
+        if let Some(observed) = super::live_eval::observed_stream_evidence(
+            evidence.visual_id,
+            evidence.revision,
+            stream_id,
+        ) {
+            let spool = crate::storage::persist_live_envelopes(
+                evidence.content,
+                Some(stream_id),
+                None,
+                observed.events.clone(),
+            )
+            .with_context(|| format!("spooling observed evidence for live input \"{input}\""))?;
+            return Ok(ResolvedEvidence {
+                data: json!({ "events": spool.envelopes.clone() }),
+                envelopes: spool.envelopes,
+                origin: "host_observation",
+                spool_digest: Some(spool.digest),
+                truncated: observed.truncated,
+            });
+        }
+    }
+
+    // Naming the stream and the three ways to supply it, because "live SSE
+    // binding has no frozen snapshot" named a key no caller could write and
+    // sent every reader looking for a producer that did not exist.
+    bail!(
+        "live input \"{input}\" declares stream {} but the seal found no replayable evidence for it: \
+         this host recorded no envelopes for visual {} revision {}, the binding names no \
+         spool_digest, and it carries no inline snapshot. Open the visual in Desktop so the \
+         declared stream is polled, or bind a {} digest before sealing.",
+        stream_id.as_deref().unwrap_or("<none declared>"),
+        evidence.visual_id,
+        evidence.revision,
+        crate::storage::LIVE_SPOOL_SCHEMA,
+    )
+}
+
+/// The envelope log inside a descriptor snapshot, if it is one.
+///
+/// A snapshot may be any shape a template renders. Only the two shapes that
+/// *are* an ordered envelope log are projected; anything else is frozen
+/// verbatim and carries no projection, which is honest rather than a guess.
+fn snapshot_envelopes(snapshot: &Value) -> Vec<Value> {
+    if let Some(rows) = snapshot.as_array() {
+        return rows.clone();
+    }
+    snapshot
+        .get("events")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Freeze a visual's bindings into evidence, and collect the projections a
+/// sealed viewer renders.
+///
+/// Returns the frozen bindings and one view per live stream. The views are the
+/// point: a sealed bundle that stores raw bindings and a runtime that re-folds
+/// them stores a *promise* that the fold will still exist and still agree.
+/// Storing the fold's output instead is what makes a seal survive the plugin,
+/// the template and the build that produced it.
+fn freeze_bindings(mut value: Value, evidence: &SealEvidence<'_>) -> Result<(Value, Vec<Value>)> {
+    fn walk(value: &mut Value, evidence: &SealEvidence<'_>, views: &mut Vec<Value>) -> Result<()> {
         match value {
             Value::Object(object) => {
+                let mut froze_evidence = false;
                 if object.get("kind").and_then(Value::as_str) == Some("live_sse") {
-                    let snapshot = object
-                        .remove("snapshot")
-                        .ok_or_else(|| anyhow!("live SSE binding has no frozen snapshot"))?;
+                    froze_evidence = true;
+                    let stream_id = binding_stream_id(object);
+                    let input = super::descriptor_input_name(&Value::Object(object.clone())).ok();
+                    let resolved = resolve_live_evidence(object, evidence)?;
                     object.insert("kind".into(), Value::String("inline".into()));
-                    object.insert("data".into(), snapshot);
+                    object.insert("data".into(), resolved.data);
                     object.remove("source");
                     object.remove("poll_url");
                     object.remove("pollUrl");
+                    object.remove("spool_digest");
+                    object.remove("spoolDigest");
+                    // Absent, not null, for the descriptor snapshot path: a
+                    // key that is always present would re-digest every seal
+                    // that already worked, and a verbatim snapshot has no
+                    // provenance to report beyond having been supplied.
+                    if resolved.origin != "descriptor" {
+                        let mut provenance = Map::new();
+                        provenance.insert("origin".into(), json!(resolved.origin));
+                        // The stream's *digest*, never its URL. A sealed
+                        // bundle that names a loopback engine points at a
+                        // machine the reader does not have and leaks the
+                        // topology of one they do; the digest still tells a
+                        // verifier holding the bindings that this evidence
+                        // came from that stream and not another.
+                        provenance.insert(
+                            "stream_digest".into(),
+                            stream_id
+                                .as_deref()
+                                .map(|id| json!(hex_sha256(id.as_bytes())))
+                                .unwrap_or(Value::Null),
+                        );
+                        provenance.insert("envelope_count".into(), json!(resolved.envelopes.len()));
+                        provenance.insert("truncated".into(), json!(resolved.truncated));
+                        if let Some(digest) = &resolved.spool_digest {
+                            provenance.insert("spool_digest".into(), json!(digest));
+                            provenance.insert(
+                                "spool_schema".into(),
+                                json!(crate::storage::LIVE_SPOOL_SCHEMA),
+                            );
+                        }
+                        object.insert("evidence".into(), Value::Object(provenance));
+                    }
+                    if !resolved.envelopes.is_empty() {
+                        let mut view = Map::new();
+                        if let Some(input) = input {
+                            view.insert("input".into(), json!(input));
+                        }
+                        let projection = super::live_eval::seal_projection(&resolved.envelopes)?;
+                        view.insert(
+                            "schema_version".into(),
+                            projection
+                                .get("schema_version")
+                                .cloned()
+                                .unwrap_or(Value::Null),
+                        );
+                        view.insert("data".into(), projection);
+                        views.push(Value::Object(view));
+                    }
                 }
-                for child in object.values_mut() {
-                    walk(child)?;
+                // Frozen evidence is producer data, not a binding tree. An
+                // envelope whose payload happens to describe a `live_sse`
+                // binding — an eval streaming a visual's own configuration —
+                // would otherwise be "frozen" a second time and fail the seal.
+                for (key, child) in object.iter_mut() {
+                    if froze_evidence && key.as_str() == "data" {
+                        continue;
+                    }
+                    walk(child, evidence, views)?;
                 }
             }
             Value::Array(items) => {
                 for child in items {
-                    walk(child)?;
+                    walk(child, evidence, views)?;
                 }
             }
             _ => {}
         }
         Ok(())
     }
-    walk(&mut value)?;
+    let mut views = Vec::new();
+    walk(&mut value, evidence, &mut views)?;
     if value.get("inputs").is_some() || value.get("slots").is_some() {
         if let Some(object) = value.as_object_mut() {
             object.entry("schemaVersion").or_insert_with(|| {
                 json!(super::VISUAL_BINDINGS_SCHEMA_VERSION)
             });
         }
-        return Ok(super::canonicalize_bindings(&value)?.value);
+        return Ok((super::canonicalize_bindings(&value)?.value, views));
     }
-    Ok(value)
+    Ok((value, views))
+}
+
+/// Projection documents a template's own resolver already placed in the
+/// bindings, named by JSON Pointer rather than copied.
+///
+/// The trace inspector's projection is computed upstream and rides inside the
+/// bindings today. The runtime used to *find* it by scanning every binding for
+/// a known `schema_version` — a locator in the viewer, which is the thing item
+/// 3 removes. Naming its location at seal time moves that knowledge into the
+/// sealed document, where it is pinned, and costs a pointer rather than a
+/// second copy of a projection that can run to megabytes.
+fn locate_sealed_projections(bindings: &Value) -> Vec<Value> {
+    fn escape(key: &str) -> String {
+        key.replace('~', "~0").replace('/', "~1")
+    }
+    fn walk(value: &Value, pointer: &str, out: &mut Vec<Value>) {
+        match value {
+            Value::Object(object) => {
+                if let Some(schema) = object.get("schema_version").and_then(Value::as_str) {
+                    if schema.starts_with("synth.trace-projection.") {
+                        out.push(json!({
+                            "schema_version": schema,
+                            "ref": format!("/bindings{pointer}"),
+                        }));
+                        return;
+                    }
+                }
+                for (key, child) in object {
+                    walk(child, &format!("{pointer}/{}", escape(key)), out);
+                }
+            }
+            Value::Array(items) => {
+                for (index, child) in items.iter().enumerate() {
+                    walk(child, &format!("{pointer}/{index}"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(bindings, "", &mut out);
+    out
 }
 
 fn evidence_refs(visual: &super::VisualRecord) -> Vec<Value> {
@@ -835,7 +1207,19 @@ fn declared_limitations(value: &Value) -> Vec<String> {
         match value {
             Value::Null => out.push(format!("{path} is missing")),
             Value::Object(object) => {
+                // A limitation is a binding the seal could not fill. Nulls
+                // inside frozen live evidence are the *producer's* nulls —
+                // an unset reward on envelope 4,912 — and walking a hundred
+                // thousand envelopes to report each one would bury the
+                // handful of limitations that mean something. Only the
+                // provenance-carrying descriptors this seal writes are
+                // skipped, so no binding shape that existed before is.
+                let frozen_evidence = object.contains_key("evidence")
+                    && object.get("kind").and_then(Value::as_str) == Some("inline");
                 for (key, child) in object {
+                    if frozen_evidence && key.as_str() == "data" {
+                        continue;
+                    }
                     walk(child, &format!("{path}.{key}"), out);
                 }
             }
@@ -1055,14 +1439,271 @@ mod tests {
     use crate::visuals::{VisualCreateRequest, VisualStatus, VisualUpdateRequest};
     use tempfile::tempdir;
 
+    /// A `ContentStore` and a visual id nothing else in the process shares.
+    fn evidence_fixture(name: &str) -> (tempfile::TempDir, ContentStore, String) {
+        let dir = tempdir().unwrap();
+        let store = ContentStore::new(dir.path());
+        let visual_id = format!("vis_{name}");
+        super::super::live_eval::forget_live_evidence(&visual_id);
+        (dir, store, visual_id)
+    }
+
+    /// A stream whose last envelope is the verifier that carries the reward.
+    fn envelopes(stream: &str, count: i64) -> Vec<Value> {
+        (1..=count)
+            .map(|sequence| {
+                let last = sequence == count;
+                let kind = if last { "verifier" } else { "observation" };
+                let payload = if last {
+                    json!({"reward.txt": 1.0, "usage": {"prompt_tokens": 12, "completion_tokens": 4}})
+                } else {
+                    json!({"text": "inspect"})
+                };
+                json!({
+                    "kind": kind,
+                    "stream_id": stream,
+                    "event_id": format!("e{sequence}"),
+                    "sequence": sequence,
+                    "payload": payload,
+                })
+            })
+            .collect()
+    }
+
+    /// A snapshot a caller genuinely holds is still frozen verbatim, and still
+    /// gains nothing: this is the one live shape that ever sealed, and its
+    /// bytes must not move.
     #[test]
-    fn live_binding_requires_snapshot_and_removes_stream_urls() {
-        let frozen = freeze_bindings(json!({"slots":[{"input":"stream","kind":"live_sse","source":"http://127.0.0.1/events","snapshot":{"reward":null}}]})).unwrap();
+    fn a_descriptor_snapshot_freezes_verbatim_and_gains_no_field() {
+        let (_dir, content, visual_id) = evidence_fixture("descriptor_snapshot");
+        let (frozen, views) = freeze_bindings(
+            json!({"slots":[{"input":"stream","kind":"live_sse","source":"http://127.0.0.1/events","snapshot":{"reward":null}}]}),
+            &SealEvidence { visual_id: &visual_id, revision: 1, content: &content },
+        )
+        .unwrap();
         assert_eq!(frozen["inputs"][0]["kind"], "inline");
         assert!(frozen.get("slots").is_none());
         assert!(frozen["inputs"][0].get("source").is_none());
         assert!(frozen["inputs"][0]["data"]["reward"].is_null());
-        assert!(freeze_bindings(json!({"kind":"live_sse","source":"x"})).is_err());
+        // No provenance block and no view: an opaque snapshot is not an
+        // envelope log, and an always-present key would re-digest every seal
+        // of this shape that already exists.
+        assert!(frozen["inputs"][0].get("evidence").is_none());
+        assert!(views.is_empty());
+    }
+
+    /// The defect: sealing a live-eval visual required a `snapshot` key that
+    /// no production code and no MCP schema could write, so Harbor, Craftax
+    /// and every eval stream failed to seal outright. The host now keeps the
+    /// evidence it polled, and the seal reads it — nothing has to be attached,
+    /// so nothing can be forgotten.
+    #[test]
+    fn a_live_binding_seals_from_host_observed_evidence() {
+        let (_dir, content, visual_id) = evidence_fixture("host_observed");
+        let source = "http://127.0.0.1:8098/declared/stream_r1";
+        super::super::live_eval::record_live_evidence(&visual_id, 3, source, &envelopes("s1", 4));
+        // A replayed page must not double-count: the fold decides, not the
+        // caller.
+        super::super::live_eval::record_live_evidence(&visual_id, 3, source, &envelopes("s1", 4));
+
+        let (frozen, views) = freeze_bindings(
+            json!({"inputs":[{"input":"stream","kind":"live_sse","schema":"synth.trace-stream-event.v1","source":source,"poll_url":"http://127.0.0.1:8098/declared/stream_r1"}]}),
+            &SealEvidence { visual_id: &visual_id, revision: 3, content: &content },
+        )
+        .unwrap();
+
+        let slot = &frozen["inputs"][0];
+        assert_eq!(slot["kind"], "inline");
+        assert!(slot.get("source").is_none());
+        assert!(slot.get("poll_url").is_none());
+        assert_eq!(slot["data"]["events"].as_array().map(Vec::len), Some(4));
+        assert_eq!(slot["evidence"]["origin"], "host_observation");
+        // The stream is named by digest: a sealed bundle never carries the
+        // loopback URL it was polled from.
+        assert_eq!(
+            slot["evidence"]["stream_digest"],
+            hex_sha256(source.as_bytes())
+        );
+        assert!(!serde_json::to_string(&frozen).unwrap().contains(source));
+        assert_eq!(slot["evidence"]["envelope_count"], 4);
+        assert_eq!(slot["evidence"]["truncated"], false);
+        assert_eq!(
+            slot["evidence"]["spool_schema"],
+            crate::storage::LIVE_SPOOL_SCHEMA
+        );
+        // The evidence is in the CAS, not only in this process: the seal is
+        // replayable after the engine, the process and the machine are gone.
+        let digest = slot["evidence"]["spool_digest"].as_str().unwrap();
+        let spool = crate::storage::load_live_spool(&content, digest).unwrap();
+        assert_eq!(spool.envelopes.len(), 4);
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0]["input"], "stream");
+        assert_eq!(
+            views[0]["schema_version"],
+            super::super::live_eval::LIVE_EVAL_PROJECTION_SCHEMA
+        );
+        let projection = &views[0]["data"];
+        assert_eq!(projection["event_count"], 4);
+        assert_eq!(projection["reward"], 1.0);
+        assert_eq!(projection["has_reward_txt"], true);
+        assert_eq!(projection["usage"]["prompt_tokens"], 12.0);
+        // The envelope bodies are frozen once, in the binding. A sealed bundle
+        // that carried every envelope twice would be twice the upload for a
+        // projection whose derived values are all that the viewer renders.
+        assert!(projection.get("events").is_none());
+    }
+
+    /// The durable rung: a digest already in the CAS. `live_spool.rs` persists
+    /// raw envelopes for exactly this after-the-fact replay.
+    #[test]
+    fn a_live_binding_seals_from_a_declared_spool_digest() {
+        let (_dir, content, visual_id) = evidence_fixture("spool_digest");
+        let spool =
+            crate::storage::persist_live_envelopes(&content, Some("s1"), None, envelopes("s1", 3))
+                .unwrap();
+        let (frozen, views) = freeze_bindings(
+            json!({"inputs":[{"input":"stream","kind":"live_sse","source":"http://127.0.0.1/declared/s1","spool_digest":spool.digest.clone()}]}),
+            &SealEvidence { visual_id: &visual_id, revision: 1, content: &content },
+        )
+        .unwrap();
+        let slot = &frozen["inputs"][0];
+        assert_eq!(slot["kind"], "inline");
+        assert!(slot.get("spool_digest").is_none());
+        assert_eq!(slot["evidence"]["origin"], "spool");
+        assert_eq!(slot["evidence"]["spool_digest"], spool.digest);
+        assert_eq!(slot["data"]["events"].as_array().map(Vec::len), Some(3));
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0]["data"]["event_count"], 3);
+    }
+
+    /// A seal either contains replayable evidence or refuses with a reason
+    /// naming what is missing and how to get it. The message it replaced —
+    /// "live SSE binding has no frozen snapshot" — named a key no caller could
+    /// write and pointed at no producer.
+    #[test]
+    fn a_live_binding_without_evidence_names_the_stream_and_the_remedy() {
+        let (_dir, content, visual_id) = evidence_fixture("no_evidence");
+        let error = freeze_bindings(
+            json!({"inputs":[{"input":"stream","kind":"live_sse","source":"http://127.0.0.1/declared/s9"}]}),
+            &SealEvidence { visual_id: &visual_id, revision: 2, content: &content },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("http://127.0.0.1/declared/s9"), "{error}");
+        assert!(error.contains(&visual_id), "{error}");
+        assert!(error.contains("revision 2"), "{error}");
+        assert!(error.contains("spool_digest"), "{error}");
+        assert!(error.contains(crate::storage::LIVE_SPOOL_SCHEMA), "{error}");
+        assert!(error.contains("Open the visual"), "{error}");
+    }
+
+    /// Evidence recorded against another revision does not answer for this
+    /// one, and a stream nobody polled is not silently borrowed from a stream
+    /// somebody did.
+    #[test]
+    fn observed_evidence_is_keyed_to_the_revision_and_the_stream() {
+        let (_dir, content, visual_id) = evidence_fixture("revision_scope");
+        super::super::live_eval::record_live_evidence(
+            &visual_id,
+            1,
+            "http://127.0.0.1/declared/a",
+            &envelopes("s1", 2),
+        );
+        let bindings = json!({"inputs":[{"input":"stream","kind":"live_sse","source":"http://127.0.0.1/declared/a"}]});
+        assert!(freeze_bindings(
+            bindings.clone(),
+            &SealEvidence {
+                visual_id: &visual_id,
+                revision: 2,
+                content: &content
+            }
+        )
+        .is_err());
+        let other = json!({"inputs":[{"input":"stream","kind":"live_sse","source":"http://127.0.0.1/declared/b"}]});
+        assert!(freeze_bindings(
+            other,
+            &SealEvidence {
+                visual_id: &visual_id,
+                revision: 1,
+                content: &content
+            }
+        )
+        .is_err());
+        assert!(freeze_bindings(
+            bindings,
+            &SealEvidence {
+                visual_id: &visual_id,
+                revision: 1,
+                content: &content
+            }
+        )
+        .is_ok());
+    }
+
+    /// A projection the template's resolver already placed in the bindings is
+    /// named by pointer, not copied: the viewer stops scanning for it, and the
+    /// bundle does not grow a second copy of a projection that can run to
+    /// megabytes.
+    #[test]
+    fn a_resident_projection_is_named_by_pointer_not_copied() {
+        let views = locate_sealed_projections(&json!({
+            "inputs": [{
+                "input": "trace",
+                "kind": "inline",
+                "data": {"schema_version": "synth.trace-projection.rollout-inspector.v1", "visual": {}}
+            }]
+        }));
+        assert_eq!(views.len(), 1);
+        assert_eq!(
+            views[0]["schema_version"],
+            "synth.trace-projection.rollout-inspector.v1"
+        );
+        assert_eq!(views[0]["ref"], "/bindings/inputs/0/data");
+        assert!(views[0].get("data").is_none());
+        // Nothing to find is not a projection.
+        assert!(locate_sealed_projections(
+            &json!({"inputs":[{"input":"a","kind":"inline","data":{"count":1}}]})
+        )
+        .is_empty());
+    }
+
+    /// Item 3's ratchet. The viewer renders sealed views and locates nothing:
+    /// if `extractProjection` ever comes back into the frozen runtime, the
+    /// projection has a second implementation again.
+    #[test]
+    fn the_frozen_runtime_renders_sealed_views_and_locates_nothing() {
+        let runtime = include_str!("frozen_runtime.js");
+        assert!(runtime.contains("data.projection"));
+        assert!(
+            !runtime.contains("extractProjection"),
+            "the sealed viewer must not locate a projection by scanning bindings"
+        );
+        assert!(
+            runtime.contains("views"),
+            "the sealed viewer renders the views the seal named"
+        );
+        // And the whole runtime is still offline-only.
+        refuse_network_html(&format!("<script>{FROZEN_RUNTIME}</script>")).unwrap();
+    }
+
+    /// Frozen live evidence is not a list of unfilled bindings. Walking every
+    /// producer null in a hundred thousand envelopes would bury the handful of
+    /// limitations that mean something.
+    #[test]
+    fn limitations_do_not_walk_frozen_live_evidence() {
+        let frozen = json!({
+            "inputs": [
+                {"input": "stream", "kind": "inline", "evidence": {"origin": "host_observation"},
+                 "data": {"events": [{"payload": {"reward": null}}]}},
+                {"input": "spec", "kind": "inline", "data": {"reward": null}}
+            ]
+        });
+        let limitations = declared_limitations(&frozen);
+        assert_eq!(
+            limitations,
+            vec!["bindings.inputs[1].data.reward is missing"]
+        );
     }
 
     #[test]
@@ -1077,6 +1718,266 @@ mod tests {
     fn redaction_and_network_policy_fail_closed() {
         assert!(scan_forbidden(&json!({"api_key":"nope"}), "$").is_err());
         assert!(refuse_network_html("<script>fetch('/x')</script>").is_err());
+    }
+
+    /// A seal over a user template must carry the code, not a pointer to it.
+    ///
+    /// Deleting the template after sealing is the whole test: the sealed bundle
+    /// still contains the shell it was drawn against, so the artifact can be
+    /// re-derived on a machine that never had the template — which is the
+    /// premise the visuals system rests on and the one a one-machine reference
+    /// would have quietly broken.
+    #[tokio::test]
+    async fn a_seal_over_a_user_template_embeds_its_shell_source() {
+        let _isolated = crate::instance::IsolatedDataRoot::new("visual-seal-user-template");
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let registry = VisualRegistry::new(
+            storage.database().clone(),
+            EventJournal::new(storage.database().clone()),
+            ContentStore::new(storage.content_root()),
+        );
+        let shell = "export default function Shell() { return null; }\n";
+        let root = crate::instance::state_root()
+            .join("visuals")
+            .join("templates")
+            .join("user.sealed.v1");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("template.json"),
+            r#"{"schemaVersion":"synth.visual-template.v1","id":"user.sealed.v1","version":"1.2.3"}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("shell.tsx"), shell).unwrap();
+
+        let (created, _) = registry
+            .create(VisualCreateRequest {
+                template_id: "user.sealed.v1".into(),
+                title: Some("Sealed user template".into()),
+                bindings: Some(json!({"payload": {"count": 2}})),
+                id: Some("vis_seal_user_template".into()),
+                status: Some(VisualStatus::Saved),
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: Some("test".into()),
+                source_model: None,
+                content: None,
+                metadata: Some(json!({"qualityGate":{"ready":true,"revision":1}})),
+            })
+            .await
+            .unwrap();
+        let (sealed, _) = registry.seal(created.id.clone(), 1).await.unwrap();
+
+        // The template is gone; the seal is not.
+        std::fs::remove_dir_all(&root).unwrap();
+        let bundle = registry
+            .get_seal(sealed.receipt_digest.clone())
+            .await
+            .unwrap();
+        let embedded = &bundle.data["template_source"];
+        assert_eq!(embedded["template_id"], "user.sealed.v1");
+        assert_eq!(embedded["source_kind"], "user");
+        assert_eq!(embedded["version"], "1.2.3");
+        assert_eq!(embedded["logical_path"], "shell.tsx");
+        assert_eq!(embedded["text"], shell);
+        assert_eq!(embedded["digest_sha256"], hex_sha256(shell.as_bytes()));
+        // The receipt is the identity document, so the pin has to be visible
+        // there and not only in the payload it happens to travel with.
+        assert_eq!(
+            bundle.receipt["source"]["template_source_digest"],
+            embedded["digest_sha256"]
+        );
+        // And the shell reaches an offline reader, not just the database.
+        assert!(bundle.index_html.contains("export default function Shell"));
+        // Round-tripping the hosted form still validates: embedding rides
+        // inside data.json rather than adding a fourth bundle member, which
+        // `validate_hosted_bundle` would have refused.
+        validate_hosted_bundle(
+            bundle.index_html.as_bytes().to_vec(),
+            canonical_json(&bundle.data).unwrap(),
+            canonical_json(&bundle.receipt).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// A bundled family is pinned by `compiler_version`, so its seal keeps the
+    /// exact bytes it had before this field existed. An always-present key
+    /// would have re-digested every seal in the product for nothing.
+    #[tokio::test]
+    async fn a_bundled_template_seal_gains_no_field() {
+        let _isolated = crate::instance::IsolatedDataRoot::new("visual-seal-bundled");
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let registry = VisualRegistry::new(
+            storage.database().clone(),
+            EventJournal::new(storage.database().clone()),
+            ContentStore::new(storage.content_root()),
+        );
+        let Some(template) = registry
+            .list_templates(None)
+            .unwrap()
+            .into_iter()
+            .find(|row| {
+                !crate::visuals::requires_canonical_source(&row.id) && row.source_kind.is_none()
+            })
+        else {
+            return;
+        };
+        let (created, _) = registry
+            .create(VisualCreateRequest {
+                template_id: template.id,
+                title: Some("Bundled".into()),
+                bindings: Some(json!({"payload": {"count": 1}})),
+                id: Some("vis_seal_bundled".into()),
+                status: Some(VisualStatus::Saved),
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: Some("test".into()),
+                source_model: None,
+                content: None,
+                metadata: Some(json!({"qualityGate":{"ready":true,"revision":1}})),
+            })
+            .await
+            .unwrap();
+        let (sealed, _) = registry.seal(created.id.clone(), 1).await.unwrap();
+        let bundle = registry.get_seal(sealed.receipt_digest).await.unwrap();
+        assert!(bundle.data.get("template_source").is_none());
+        assert!(bundle.receipt["source"]
+            .get("template_source_digest")
+            .is_none());
+        // And gains no `projection` either. An artifact with no live stream
+        // and no resident projection has nothing new to say, so its
+        // `data_digest` is the bytes it had before item 3 existed.
+        assert!(bundle.data.get("projection").is_none());
+    }
+
+    /// End to end: a visual bound to a live eval stream seals, and the sealed
+    /// bundle opens offline with a projection in it. This is the path that was
+    /// dead — `freeze_bindings` demanded a `snapshot` key no producer wrote and
+    /// the MCP bind schema could not express, so Harbor, Craftax and every eval
+    /// stream failed here with a message about a key that did not exist.
+    #[tokio::test]
+    async fn a_live_eval_visual_seals_from_what_the_host_polled() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let registry = VisualRegistry::new(
+            storage.database().clone(),
+            EventJournal::new(storage.database().clone()),
+            ContentStore::new(storage.content_root()),
+        );
+        let Some(template) = registry
+            .list_templates(None)
+            .unwrap()
+            .into_iter()
+            .find(|row| !crate::visuals::requires_canonical_source(&row.id))
+        else {
+            return;
+        };
+        let visual_id = "vis_seal_live_eval";
+        let source = "http://127.0.0.1:8098/declared/stream_live_eval";
+        super::super::live_eval::forget_live_evidence(visual_id);
+        let (created, _) = registry
+            .create(VisualCreateRequest {
+                template_id: template.id,
+                title: Some("Live eval".into()),
+                bindings: Some(json!({
+                    "schemaVersion": "synth.visual-bindings.v1",
+                    "inputs": [{
+                        "input": "stream",
+                        "kind": "live_sse",
+                        "schema": "synth.trace-stream-event.v1",
+                        "source": source,
+                        "poll_url": source
+                    }]
+                })),
+                id: Some(visual_id.into()),
+                status: Some(VisualStatus::Saved),
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: Some("test".into()),
+                source_model: None,
+                content: None,
+                metadata: Some(json!({"qualityGate":{"ready":true,"revision":1}})),
+            })
+            .await
+            .unwrap();
+
+        // Before the host has seen anything, the refusal says what is missing
+        // rather than naming a key nobody can write.
+        let refusal = registry
+            .seal(created.id.clone(), 1)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("no replayable evidence"), "{refusal}");
+
+        // The poll seam records what it delivered; nothing had to be attached.
+        super::super::live_eval::record_live_evidence(
+            visual_id,
+            1,
+            source,
+            &[
+                json!({"kind":"stream.subscribed","stream_id":"s1","sequence":0}),
+                json!({"kind":"observation","stream_id":"s1","sequence":1,"payload":{"text":"inspect"}}),
+                json!({"kind":"frame","stream_id":"s1","sequence":2,"payload":{"format":"png","url":"/rollouts/r1/frames/2.png"}}),
+                json!({"kind":"verifier","stream_id":"s1","sequence":3,"payload":{"reward.txt":1.0}}),
+            ],
+        );
+
+        let (sealed, _) = registry.seal(created.id.clone(), 1).await.unwrap();
+        let bundle = registry
+            .get_seal(sealed.receipt_digest.clone())
+            .await
+            .unwrap();
+
+        let slot = &bundle.data["bindings"]["inputs"][0];
+        assert_eq!(slot["kind"], "inline");
+        assert!(slot.get("source").is_none());
+        // Control envelopes are not evidence; the other three are.
+        assert_eq!(slot["data"]["events"].as_array().map(Vec::len), Some(3));
+        assert_eq!(slot["evidence"]["origin"], "host_observation");
+
+        let view = &bundle.data["projection"]["views"][0];
+        assert_eq!(
+            view["schema_version"],
+            super::super::live_eval::LIVE_EVAL_PROJECTION_SCHEMA
+        );
+        assert_eq!(view["data"]["reward"], 1.0);
+        assert_eq!(view["data"]["has_live_frames"], true);
+        assert_eq!(view["data"]["event_count"], 3);
+        assert_eq!(
+            bundle.data["projection"]["produced_by"]["fold"],
+            LIVE_FOLD_ID
+        );
+
+        // The bundle opens offline, carries no stream URL, and validates as a
+        // hosted artifact — the whole point of sealing one.
+        assert!(!bundle.index_html.contains(source));
+        assert!(!bundle.index_html.contains("EventSource"));
+        validate_hosted_bundle(
+            bundle.index_html.as_bytes().to_vec(),
+            canonical_json(&bundle.data).unwrap(),
+            canonical_json(&bundle.receipt).unwrap(),
+        )
+        .unwrap();
+
+        // Sealing twice is the same artifact: the evidence prefix is the
+        // process's, but the seal over it is deterministic.
+        let (again, _) = registry.seal(created.id, 1).await.unwrap();
+        assert_eq!(again.receipt_digest, sealed.receipt_digest);
+        super::super::live_eval::forget_live_evidence(visual_id);
     }
 
     #[tokio::test]
@@ -1154,6 +2055,10 @@ mod tests {
         assert_eq!(sealed_slot["input"], "payload");
         assert_eq!(sealed_slot["kind"], "inline");
         assert!(sealed_slot["data"]["reward"].is_null());
+        // An opaque descriptor snapshot is not an envelope log, so this seal
+        // names no view and keeps the exact bytes it had before item 3.
+        assert!(sealed_slot.get("evidence").is_none());
+        assert!(bundle.data.get("projection").is_none());
         assert_eq!(bundle.data["overlays"][0]["id"], annotation.id);
         assert!(!bundle.index_html.contains("private-stream"));
         assert!(!bundle.index_html.contains("EventSource"));

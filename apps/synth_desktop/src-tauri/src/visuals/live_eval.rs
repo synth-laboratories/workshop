@@ -1,7 +1,33 @@
 //! W0 live-eval bind contract: input `stream` only; never guess Craftax/Harbor URLs.
+//!
+//! # Sealing a live stream
+//!
+//! A seal over a live-eval visual has to contain the evidence, not a URL that
+//! will stop answering. That evidence has to come from somewhere the *host*
+//! holds, because the alternative — a `snapshot` key a caller is expected to
+//! remember to attach — is the shape that left sealing dead: `freeze_bindings`
+//! required the key, nothing wrote it, and the MCP bind schema could not
+//! express it, so every Harbor and Craftax visual failed to seal with a
+//! message about a snapshot no caller had ever heard of.
+//!
+//! So the host keeps the evidence itself. [`record_live_evidence`] is called
+//! from the one seam every polled envelope already passes through, folds each
+//! page with the canonical [`crate::stream_fold::LiveFold`], and retains the
+//! accepted evidence bodies per `(visual, revision, stream)`. At seal time
+//! [`observed_stream_evidence`] hands that prefix back, the seal writes it to
+//! the CAS as a `synth.live-eval-spool.v2` blob and freezes it into the
+//! binding. Nothing has to be remembered by a caller, so nothing can be
+//! forgotten by one.
+//!
+//! The store is process-global and in-memory, deliberately: it is an
+//! observation of a running process, and a restart must not let it claim
+//! evidence this process never saw. The durable copy is the CAS blob the seal
+//! writes, which is why the seal writes one.
 
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 pub const LIVE_EVAL_INPUT: &str = "stream";
 pub const LIVE_EVAL_SLOT: &str = LIVE_EVAL_INPUT;
@@ -398,6 +424,182 @@ pub fn live_eval_bind_metadata(
     Ok(bind)
 }
 
+// ===========================================================================
+// Host-observed live evidence: what makes a live-eval seal possible.
+// ===========================================================================
+
+/// The projection schema a sealed live-eval view carries.
+pub const LIVE_EVAL_PROJECTION_SCHEMA: &str = "synth.live-eval-projection.v1";
+
+/// Evidence bodies retained per stream before the fold reports lower bounds.
+///
+/// A live stream has an unbounded lifetime and frame envelopes are not small,
+/// so retention is bounded and says when it stopped being complete. A seal
+/// over a truncated prefix is still a seal over real, replayable evidence —
+/// it just says so, rather than presenting a prefix as the whole run.
+const MAX_RETAINED_EVIDENCE: usize = 20_000;
+
+/// Bytes of evidence retained per stream.
+///
+/// A sealed bundle carries its evidence twice — once in `data.json` and once
+/// inlined into `index.html` — against a 64 MiB hosted-viewer limit, and a
+/// Craftax frame envelope is not small. A prefix that seals is worth more than
+/// a whole run that cannot be shared, so retention stops here and says so.
+const MAX_RETAINED_BYTES: usize = 8 * 1024 * 1024;
+
+/// The evidence prefix the host holds for one declared stream.
+#[derive(Clone, Debug)]
+pub struct ObservedEvidence {
+    /// Distinct non-control envelopes, in arrival order.
+    pub events: Vec<Value>,
+    /// Retention hit [`MAX_RETAINED_EVIDENCE`] or [`MAX_RETAINED_BYTES`]; the
+    /// prefix is a lower bound on the run, not the run.
+    pub truncated: bool,
+}
+
+#[derive(Debug)]
+struct StreamEvidence {
+    /// Identity, dedupe and the control predicate, from the one fold. This
+    /// module decides nothing about what an envelope is.
+    fold: crate::stream_fold::LiveFold,
+    events: Vec<Value>,
+    bytes: usize,
+    truncated: bool,
+}
+
+#[derive(Debug)]
+struct VisualEvidence {
+    revision: i64,
+    streams: BTreeMap<String, StreamEvidence>,
+}
+
+static LIVE_EVIDENCE: OnceLock<Mutex<BTreeMap<String, VisualEvidence>>> = OnceLock::new();
+
+/// Take the store lock, recovering the map if some other caller panicked while
+/// holding it — the same policy the stream receipt's store next door uses, for
+/// the same reason: refusing to record evidence because of an unrelated panic
+/// would turn the store into a second failure report about itself.
+fn evidence_store() -> MutexGuard<'static, BTreeMap<String, VisualEvidence>> {
+    LIVE_EVIDENCE
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Record the envelopes one poll of one declared stream delivered.
+///
+/// `stream_id` is the renderer's stream identity — the declared `source`,
+/// falling back to the poll URL — which is exactly what
+/// `stream_receipt::declared_streams` computes and what the seal resolves from
+/// the same binding. The two agree by construction rather than by convention.
+///
+/// Duplicates, replays and control envelopes are the fold's business and are
+/// dropped here; only accepted evidence is retained.
+pub fn record_live_evidence(visual_id: &str, revision: i64, stream_id: &str, envelopes: &[Value]) {
+    if envelopes.is_empty() {
+        return;
+    }
+    let mut store = evidence_store();
+    let visual = store
+        .entry(visual_id.to_string())
+        .or_insert_with(|| VisualEvidence {
+            revision,
+            streams: BTreeMap::new(),
+        });
+    if visual.revision != revision {
+        // A revision replaces the evidence set. Carrying the previous
+        // revision's envelopes forward would let them answer for this one.
+        *visual = VisualEvidence {
+            revision,
+            streams: BTreeMap::new(),
+        };
+    }
+    let stream = visual
+        .streams
+        .entry(stream_id.to_string())
+        .or_insert_with(|| StreamEvidence {
+            fold: crate::stream_fold::LiveFold::default(),
+            events: Vec::new(),
+            bytes: 0,
+            truncated: false,
+        });
+    let batch = stream.fold.accept_batch(envelopes.iter());
+    for (step, envelope) in batch.steps.iter().zip(envelopes.iter()) {
+        if step.verdict != crate::stream_fold::FoldVerdict::Evidence {
+            continue;
+        }
+        let size = serde_json::to_string(envelope)
+            .map(|text| text.len())
+            .unwrap_or(0);
+        if stream.events.len() >= MAX_RETAINED_EVIDENCE
+            || stream.bytes.saturating_add(size) > MAX_RETAINED_BYTES
+        {
+            stream.truncated = true;
+            break;
+        }
+        stream.bytes += size;
+        stream.events.push(envelope.clone());
+    }
+}
+
+/// The evidence prefix the host observed for one declared stream, if any.
+///
+/// `None` means this process has recorded no evidence for that stream at that
+/// revision — which is the difference between "the stream carried nothing" and
+/// "nobody ever opened this visual", and the seal's refusal says which.
+pub fn observed_stream_evidence(
+    visual_id: &str,
+    revision: i64,
+    stream_id: &str,
+) -> Option<ObservedEvidence> {
+    let store = evidence_store();
+    let visual = store.get(visual_id)?;
+    if visual.revision != revision {
+        return None;
+    }
+    let stream = visual.streams.get(stream_id)?;
+    if stream.events.is_empty() {
+        return None;
+    }
+    Some(ObservedEvidence {
+        events: stream.events.clone(),
+        truncated: stream.truncated,
+    })
+}
+
+/// Drop everything recorded for a visual.
+///
+/// `cfg(test)` on purpose: the only caller today is a test that must not
+/// inherit another test's stream, and shipping an uncalled public hook is how
+/// this module's own defect started. The production caller this wants is
+/// `VisualRegistry::delete`; gate it out again when that exists.
+#[cfg(test)]
+pub fn forget_live_evidence(visual_id: &str) {
+    evidence_store().remove(visual_id);
+}
+
+/// The sealed projection over one stream's evidence.
+///
+/// The derived values only: `events` is dropped and replaced by
+/// `event_count`, because the evidence itself is already frozen into the
+/// binding beside this and a sealed bundle that carries every envelope twice
+/// is twice the upload for nothing. The frozen runtime renders these literal
+/// values and folds nothing.
+pub fn seal_projection(events: &[Value]) -> Result<Value> {
+    let projection = crate::stream_fold::project_live_eval(events, None)?;
+    let mut value = serde_json::to_value(&projection)?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("live eval projection must serialize to an object"))?;
+    let count = object
+        .remove("events")
+        .and_then(|events| events.as_array().map(Vec::len))
+        .unwrap_or(0);
+    object.insert("event_count".into(), json!(count));
+    object.insert("schema_version".into(), json!(LIVE_EVAL_PROJECTION_SCHEMA));
+    Ok(value)
+}
+
 fn stream_path(source: &str) -> String {
     let without_query = source.split(['?', '#']).next().unwrap_or(source);
     if let Some(rest) = without_query.split("://").nth(1) {
@@ -607,5 +809,84 @@ mod tests {
             &json!({"world_id": "craftax_default"})
         )
         .is_err());
+    }
+
+    /// Duplicates are the fold's business, not the caller's. The renderer
+    /// polls every 500 ms and a producer replays its page on reconnect; a
+    /// store that counted those twice would seal a trajectory that never
+    /// happened.
+    #[test]
+    fn observed_evidence_dedupes_and_drops_control() {
+        let visual = "vis_live_evidence_dedupe";
+        forget_live_evidence(visual);
+        let page = vec![
+            json!({"kind": "stream.subscribed", "stream_id": "s1", "sequence": 0}),
+            json!({"kind": "observation", "stream_id": "s1", "sequence": 1}),
+            json!({"kind": "observation", "stream_id": "s1", "sequence": 2}),
+        ];
+        record_live_evidence(visual, 1, "stream_a", &page);
+        record_live_evidence(visual, 1, "stream_a", &page);
+        let observed = observed_stream_evidence(visual, 1, "stream_a").unwrap();
+        assert_eq!(observed.events.len(), 2, "control is not evidence");
+        assert!(!observed.truncated);
+        // A stream nobody polled is not borrowed from one somebody did, and a
+        // previous revision does not answer for this one.
+        assert!(observed_stream_evidence(visual, 1, "stream_b").is_none());
+        assert!(observed_stream_evidence(visual, 2, "stream_a").is_none());
+        record_live_evidence(visual, 2, "stream_a", &page);
+        assert_eq!(
+            observed_stream_evidence(visual, 2, "stream_a")
+                .unwrap()
+                .events
+                .len(),
+            2
+        );
+        assert!(observed_stream_evidence(visual, 1, "stream_a").is_none());
+        forget_live_evidence(visual);
+    }
+
+    /// A multiplexed run keeps every lane. Ten rollouts each restart at
+    /// sequence 1 and each carry `event_id: "1"`; identity that ignores the
+    /// lane persists one of them and leaves the count looking valid.
+    #[test]
+    fn observed_evidence_keeps_every_lane_of_a_multiplexed_run() {
+        let visual = "vis_live_evidence_lanes";
+        forget_live_evidence(visual);
+        let page: Vec<Value> = (0..10)
+            .map(|seed| {
+                json!({
+                    "kind": "observation",
+                    "event_id": "1",
+                    "sequence": 1,
+                    "rollout_id": format!("seed-{seed}"),
+                })
+            })
+            .collect();
+        record_live_evidence(visual, 1, "stream_a", &page);
+        assert_eq!(
+            observed_stream_evidence(visual, 1, "stream_a")
+                .unwrap()
+                .events
+                .len(),
+            10
+        );
+        forget_live_evidence(visual);
+    }
+
+    /// The sealed projection carries the derived values and a count, never a
+    /// second copy of the evidence frozen beside it in the binding.
+    #[test]
+    fn seal_projection_reports_values_not_a_second_copy_of_the_evidence() {
+        let projection = seal_projection(&[
+            json!({"kind": "frame", "stream_id": "s1", "sequence": 1, "payload": {"format": "png"}}),
+            json!({"kind": "verifier", "stream_id": "s1", "sequence": 2, "payload": {"reward.txt": 0.5}}),
+        ])
+        .unwrap();
+        assert_eq!(projection["schema_version"], LIVE_EVAL_PROJECTION_SCHEMA);
+        assert_eq!(projection["event_count"], 2);
+        assert_eq!(projection["has_live_frames"], true);
+        assert_eq!(projection["has_reward_txt"], true);
+        assert_eq!(projection["reward"], 0.5);
+        assert!(projection.get("events").is_none());
     }
 }
