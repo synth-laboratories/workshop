@@ -1,154 +1,91 @@
 # Workshop
 
-> **Visibility note:** This repository is currently **private**. It is intended to become **public**.
+Workshop is a local-first macOS workbench for coding agents, evaluations,
+optimization runs, containers, and inspectable research artifacts. The v0.8
+release is built with Tauri 2, Rust, React, and TypeScript.
 
-Synth Desktop / Local Agent Workbench — a local-first agent research and development workbench where agents can run locally (Laguna XS 2.1) or in Synth Cloud (Intern sync/async), and where every run produces inspectable, replayable, quantitative, version-linked artifacts.
+## Download or build
 
-## Branching (single release trunk)
-
-| Branch | Role |
-| --- | --- |
-| **`main`** | **Release source of truth.** Friends ZIPs, notarized builds, and published Desktop artifacts cut only from a clean `origin/main` tip (or an annotated tag on that tip). |
-| **`dev`** | Day-to-day integration branch. Open feature PRs against `dev`. After every release merge into `main`, **fast-forward `dev` to `main`** so the two tips match again. |
-
-Do not land feature work directly on `main`. Do not leave `dev` lagging behind a released `main` tip — that recreates parallel histories. If `dev` has unique commits that are not on `main`, land them via PR into the synced tip or retire them; do not treat a divergent `dev` as a second release trunk.
-
-**No artifacts from dirty trees.** `desktop:build`, `desktop:install`, `desktop:install:release`, and `desktop:verify` refuse a dirty worktree. Named `desktop:dev` instances may run dirty (revision is tagged `-dirty`); those are not release artifacts. Alignment checklist: [`HANDOFF_DEV_MAIN.md`](./HANDOFF_DEV_MAIN.md).
-
-## Status — v0 ready for review
-
-| Surface | Path | Role |
-| --- | --- | --- |
-| **Real app** | [`apps/synth_desktop`](./apps/synth_desktop) | Tauri 2 + Rust CoreRuntime |
-| **Visuals infra** | [`visuals/`](./visuals) | 9 genre templates, registry, MCP tools, TSX save |
-| **Mock (UX pin-down)** | [`apps/mock`](./apps/mock) | Fixture-only; do not confuse with product |
-| Runtime | `apps/synth_desktop/src-tauri` | Rust-owned sessions / runs / events / inventory / visuals |
-| Agent runtime | `codex app-server` | Local/configured-provider coding-agent sessions |
-| Inference | `services/laguna-daemon` | Responses-compatible Laguna → MLX boundary |
-
-### Local Laguna XS 2.1
+- Download the prebuilt v0.8 release from
+  [synthlabs.ai/download](https://synthlabs.ai/download).
+- Build the unsigned app from source with the commands below. The build does
+  not require private Synth repositories or macOS Keychain credentials.
 
 ```bash
-npm run laguna:setup    # once: mlx venv + NVFP4 weights (~21.6 GB)
-npm run laguna:serve    # :7333 OpenAI-compatible daemon
-source ~/.synth-desktop/laguna/env.sh
-npm run dev --workspace @synth/synth-desktop
+git clone https://github.com/synth-laboratories/workshop.git
+cd workshop
+./scripts/bootstrap.sh
+./scripts/doctor.sh
+./scripts/build.sh
 ```
 
-Desktop probes `http://127.0.0.1:7333` automatically. Details: [`services/laguna-daemon/README.md`](./services/laguna-daemon/README.md).
+The app bundle is written under
+`apps/synth_desktop/src-tauri/target/release/bundle/macos/`. macOS may require
+you to approve or ad-hoc sign a locally built app before opening it. Official
+downloads are signed and notarized separately from this source build.
 
-### Desktop development and acceptance
+## Requirements
 
-Use the repository-owned lifecycle commands instead of opening a build-tree
-`.app` manually:
+- macOS 14 or newer on Apple Silicon
+- Xcode Command Line Tools
+- Node.js 22 or newer with npm
+- Rust 1.85 or newer with Cargo
+- Python 3.11 or newer
+- `jq`, `git`, and `curl`
+
+`bootstrap.sh` installs repository dependencies. It does not install system
+packages, alter shell profiles, or read credentials. `doctor.sh` reports every
+missing prerequisite and checks that generated protocol bindings are present.
+
+## Development
 
 ```bash
-npm run desktop:dev      # primary hot-reload loop; isolated instance "codex"
-npm run desktop:codex:status
-npm run desktop:codex:stop
-npm run desktop:check   # parallel typecheck + cargo check; normal checkpoint
-npm run desktop:build   # parallel typecheck + Tauri release build; no tests
-npm run cache:rust:stats # inspect Rust compiler-cache effectiveness
-npm run desktop:verify   # full Rust + renderer acceptance battery; release/CI gate
-npm run desktop:install  # standard build → atomic local /Applications install → launch
-npm run desktop:install:release # full release gate → install → launch
-npm run desktop:restart  # restart the installed canonical app
-npm run desktop:status   # verify the one allowed process and install path
-npm run desktop:stop
+npm run dev:desktop
+npm run typecheck
+npm run build:graph
+cargo check --manifest-path apps/synth_desktop/src-tauri/Cargo.toml
 ```
 
-Named instances are the normal edit/test loop and never stop another instance.
-Their exact source revision, executable, PID, data root, and manifest are shown
-under Settings → Runtime → Desktop identity. The canonical lifecycle is
-reserved for release acceptance.
-
-Use the test batteries according to the scope of the change:
-
-| Battery | Command | Run it when |
-| --- | --- | --- |
-| Focused | The relevant `npm`, Playwright, or Cargo test directly | During iteration and after a localized UI/runtime change. |
-| Check | `npm run desktop:check` | Before handoff or when renderer/native contracts changed; parallel TypeScript and Rust compile checks. |
-| Build | `npm run desktop:build` | Produce a local release bundle. It overlaps typechecking with the real Tauri build and runs no tests. |
-| Full release | `npm run desktop:verify` | Before merging a release PR, cutting a release, or after broad runtime/integration changes. |
-
-`desktop:install` runs the standard build (with no separate `cargo check` or test
-battery), then signs and verifies the staged bundle, backs up the previous
-install under `~/.synth-desktop/backups/app-builds`, and launches only
-`/Applications/Synth Desktop.app`. Use `desktop:install:release` when the full
-release battery must pass before installation. Acceptance testing and Computer Use must
-target that full path. `desktop:stop` targets only that exact installed path (or
-the canonical Cargo debug executable); it does not stop named instances or
-arbitrary copied apps. Do not launch
-`apps/synth_desktop/src-tauri/target/*/bundle/macos/Synth Desktop.app`; the
-lifecycle commands never use a generic process-name match. Use the Runtime
-identity receipt or the named instance manifest for CUA rather than relying on
-whichever generic Synth window is focused.
-
-Build acceleration is layered: Turborepo owns the npm-workspace task graph and
-caches deterministic renderer tasks; Cargo remains authoritative for Rust;
-`sccache` is detected automatically and caches eligible `rustc` invocations
-under `~/.cache/synth-workshop/sccache`. The final macOS bundle, signing,
-backup, and installation remain uncached and explicit.
-
-
-### Dogfood gates (verified)
-
-- Local Laguna XS 2.1 agent path through Codex app-server and the Responses-compatible MLX sidecar
-- Configured Responses-compatible model APIs through Codex app-server
-- Inventory: local + cloud containers, Trace V5 ingest, 9 visual templates, save-as-TSX
-- Live Harbor/eval visual simulation
-- Intern sync demo mailbox
-- Accessibility surface testids + semantic eval hook
-- Intern endpoint profiles (`prod`, `staging`, `local`) via `~/.synth-desktop/config.toml`
-
-The runtime selects the production Intern endpoint by default. For local
-dogfood, set `SYNTH_INTERN_DEMO=1`; the checked-in [`config.toml.example`](./config.toml.example)
-shows the profile and endpoint shape.
-
-## Product framing
-
-> Synth Desktop is a local-first agent research and development workbench where agents can run locally or in Synth Cloud, and where every run produces inspectable, replayable, quantitative, version-linked artifacts.
-
-Core loop: **observe → understand → modify → evaluate → fine-tune → deploy**
-
-## Release tiers
-
-Workshop builds compile one maturity envelope — `core ⊂ stable ⊂ beta ⊂ alpha ⊂ dev`
-— declared in [`contracts/release-tiers-v1.toml`](./contracts/release-tiers-v1.toml).
-A tier build contains every feature at or below its tier and is structurally
-unable to expose the rest (cargo `tier-*` features on the host, Vite defines in
-the renderer). Packaging defaults to `stable`; pre-release builds show their
-tier in the titlebar and in Settings → Build, and each tier reads only its own
-update channel (`/releases/<tier>/latest.json`).
-
-- **stable** — the supported public product (the default build; the `/download` channel)
-- **beta** — externally testable; packaging, recovery, and evals are hard gates
-- **alpha** — internal/design-partner builds; core journeys must pass
-- **dev** — full development surface (`scripts/desktop-instance.sh` builds this)
-- **core** — durability classification whose checks are required everywhere
+Workshop builds one cumulative feature envelope:
+`core ⊂ stable ⊂ beta ⊂ alpha ⊂ dev`. Stable is the default.
 
 ```bash
-scripts/build-tier.sh beta          # one tier-aligned app
-scripts/build-tier.sh all --debug   # all four channel apps, side by side
-scripts/release-gate.sh stable      # run that tier's required gates → receipt
+scripts/build-tier.sh stable
+scripts/build-tier.sh beta
 ```
 
-See [`docs/RELEASE_TIERS.md`](./docs/RELEASE_TIERS.md) for the full model
-(enforcement classes, verification dispositions, promotion flow).
+The feature contract is
+[`contracts/release-tiers-v1.toml`](contracts/release-tiers-v1.toml), with the
+runtime model documented in [`docs/RELEASE_TIERS.md`](docs/RELEASE_TIERS.md).
 
-## Docs
+## Building with a coding agent
 
-- [`WORKSHOP_QUALITY_STYLE_GUIDE.md`](./WORKSHOP_QUALITY_STYLE_GUIDE.md) — unified visual, interaction, runtime-honesty, accessibility, and test quality bar
-- [`workshop_style.md`](./workshop_style.md) — provisional categorical triage: unacceptable, fix-before-review, and expected-fail debt
-- [`HANDOFF_RUST_CORE_VISUALS_AND_INTERN.md`](./HANDOFF_RUST_CORE_VISUALS_AND_INTERN.md) — current Rust core / visuals / Intern SDK handoff
-- [`testing.md`](./testing.md) — Playwright, Bombadil, Rust, and runtime coverage map
-- [`docs/top_containers.md`](./docs/top_containers.md) — filepaths for Banking77, HealthBench, Craftax, Harbor, and dig.bench test containers
-- [`HANDOFF.md`](./HANDOFF.md) — full product + architecture
-- [`synth_desktop_research_eng.md`](./synth_desktop_research_eng.md) — Trace V5 / visuals / containers
-- [`apps/synth_desktop/README.md`](./apps/synth_desktop/README.md) — runbook
-- [`visuals/README.md`](./visuals/README.md) — template + MCP agent flow
-- [`handoff-package/`](./handoff-package/) — eng reuse bundle
+Any coding agent that can run shell commands can build Workshop. Give it this
+repository and ask it to run `doctor.sh`, `bootstrap.sh` if dependencies are
+absent, and then `build.sh`. The same instructions work with Codex, Claude
+Code, Cursor, or another agent. See [`AGENTS.md`](AGENTS.md) for repository
+boundaries and generated files.
 
-## License / ownership
+Provider credentials are optional for compiling Workshop. When exercising
+provider-backed features, use a project-local `.env` and Workshop's ephemeral
+secrets proxy; do not import credentials into Keychain.
 
-Owned by [synth-laboratories](https://github.com/synth-laboratories). Public release planned; treat contents as pre-release until then.
+## Architecture
+
+- `apps/synth_desktop/` — Tauri desktop application and renderer
+- `packages/` — shared TypeScript protocol packages
+- `visuals/` — inspectable visualization families and runtime
+- `services/laguna-daemon/` — optional local inference boundary
+- `contracts/` — versioned runtime and release-tier contracts
+
+Start with [`architecture.md`](architecture.md) for the system boundaries.
+
+## Security and contributions
+
+Read [`SECURITY.md`](SECURITY.md) before reporting a vulnerability and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) before proposing a change. This repository
+contains product and build source; the private release verification corpus is
+maintained separately.
+
+Copyright Synth Laboratories. The OSS license for the v0.8 publication must be
+selected and added before the repository's visibility is changed to public.
