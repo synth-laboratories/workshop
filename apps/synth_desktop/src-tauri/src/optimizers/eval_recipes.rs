@@ -552,7 +552,7 @@ fn policy_from_eval_recipe(
     recipe: &Value,
     candidate_count: u64,
 ) -> Result<crate::secrets::SecretsUsePolicy> {
-    let models = recipe
+    let mut models = recipe
         .get("models")
         .and_then(Value::as_array)
         .map(|models| {
@@ -573,6 +573,13 @@ fn policy_from_eval_recipe(
             "secrets_proxy_denied",
             "paid eval recipe is missing a model allowlist",
         ));
+    }
+    for model in models.clone() {
+        if let Some(unqualified) = model.strip_prefix("openai/") {
+            if !models.iter().any(|candidate| candidate == unqualified) {
+                models.push(unqualified.to_string());
+            }
+        }
     }
     let (max_usd, max_trials) =
         paid_compute_bounds_for_candidate_count(recipe, candidate_count.max(1))?;

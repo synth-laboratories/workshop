@@ -1635,6 +1635,9 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
     ];
     if !spec.model.is_empty() {
         policy.models = vec![spec.model.clone()];
+        if let Some(model) = spec.model.strip_prefix("openai/") {
+            policy.models.push(model.to_string());
+        }
     }
     policy.max_cost_usd = spec.cost_ceiling_usd;
     let trials = spec.examples().len() as u64;
