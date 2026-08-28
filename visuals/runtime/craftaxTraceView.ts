@@ -749,7 +749,17 @@ export function craftaxTrialsFromRun(
     const type = event?.type ?? event?.eventType;
     const delta = (event?.delta ?? {}) as Any;
     const item = (event?.item ?? {}) as Any;
-    const trialId = text(delta.trial_id ?? event?.raw?.trial_id ?? item.id);
+    const record = (item.raw ?? item) as Any;
+    const workItemId = text(
+      delta.workItemId ?? delta.work_item_id ?? item.workItemId ?? item.work_item_id
+    );
+    const legacyItemId = text(item.id);
+    const trialId = text(
+      delta.trial_id ?? delta.trialId
+        ?? event?.raw?.trial_id ?? event?.raw?.trialId
+        ?? item.trial_id ?? item.trialId
+        ?? record.trial_id ?? record.trialId
+    ) ?? (legacyItemId !== workItemId ? legacyItemId : null);
     if (!trialId) continue;
     const row = claim(trialId);
     row.seed ??= num(delta.seed ?? item.seed ?? item.raw?.seed);
@@ -760,7 +770,7 @@ export function craftaxTrialsFromRun(
     }
     if (type === "eval.trial.event") row.started = true;
     if (type === "eval.trial.terminal") {
-      row.record = (item.raw ?? item) as Any;
+      row.record = record;
       row.rolloutId ??= text(row.record?.rolloutId);
       row.failed = item.valid === false || text(row.record?.error) !== null;
     }

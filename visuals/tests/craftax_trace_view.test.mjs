@@ -7,6 +7,7 @@ import {
   containerEventsFromOptimizerEvents,
   containerEventsFromSealedTrace,
   craftaxTraceFromOptimizerEvents,
+  craftaxTrialsFromRun,
   foldCraftaxTrace,
   localMapRows,
   reconcileCraftaxTrace
@@ -262,6 +263,82 @@ test("relayed optimizer envelopes are read by trial and deduplicated by sequence
     rows.map((row) => `${row.sequence}:${row.kind}`),
     ["1:observation", "2:span.policy.opened"]
   );
+});
+
+test("current eval terminal work-item ids reconcile into five rollout trials and fifty calls", () => {
+  const seeds = [780005, 780006, 780007, 780008, 780009];
+  let hostSequence = 0;
+  const events = seeds.flatMap((seed, index) => {
+    const trialId = `trial:craftax:${seed}`;
+    const rolloutId = `roll_craftax_train_${seed}_fixture`;
+    let producerSequence = 0;
+    const policyEvents = Array.from({ length: 10 }, (_, call) => [
+      {
+        type: "eval.trial.event",
+        sequenceNumber: ++hostSequence,
+        delta: {
+          trial_id: trialId,
+          container_event: {
+            rollout_id: rolloutId,
+            sequence: ++producerSequence,
+            kind: "span.policy.opened",
+            payload: { call }
+          }
+        }
+      },
+      {
+        type: "eval.trial.event",
+        sequenceNumber: ++hostSequence,
+        delta: {
+          trial_id: trialId,
+          container_event: {
+            rollout_id: rolloutId,
+            sequence: ++producerSequence,
+            kind: "span.policy.data",
+            payload: {
+              assistant: { reasoning_content: `reasoning ${call}` },
+              usage: { prompt_tokens: 100, completion_tokens: 10 }
+            }
+          }
+        }
+      }
+    ]).flat();
+    return [
+      {
+        type: "eval.trial.queued",
+        sequenceNumber: ++hostSequence,
+        delta: { trial_id: trialId, seed, workItemId: `eval:trial:${index}` }
+      },
+      {
+        type: "eval.trial.started",
+        sequenceNumber: ++hostSequence,
+        delta: { trial_id: trialId, rollout_id: rolloutId, seed, workItemId: `eval:trial:${index}` }
+      },
+      ...policyEvents,
+      {
+        type: "eval.trial.terminal",
+        sequenceNumber: ++hostSequence,
+        item: {
+          kind: "trial",
+          id: `eval:trial:${index}`,
+          workItemId: `eval:trial:${index}`,
+          trialId,
+          rolloutId,
+          seed,
+          valid: true,
+          raw: { trialId, rolloutId, seed, status: "completed", error: null }
+        }
+      }
+    ];
+  });
+
+  const trials = craftaxTrialsFromRun({ summary: { task: "craftax" } }, events);
+  assert.equal(trials.length, 5);
+  assert.deepEqual(trials.map((trial) => trial.seed), seeds);
+  assert.deepEqual(trials.map((trial) => trial.state), Array(5).fill("done"));
+  assert.deepEqual(trials.map((trial) => trial.trialId), seeds.map((seed) => `trial:craftax:${seed}`));
+  assert.equal(trials.reduce((calls, trial) => calls + (trial.view.run.usage.calls ?? 0), 0), 50);
+  assert.ok(trials.every((trial) => !trial.trialId.startsWith("eval:trial:")));
 });
 
 test("a sealed Trace V5 document folds through the same rules as the live relay", () => {
