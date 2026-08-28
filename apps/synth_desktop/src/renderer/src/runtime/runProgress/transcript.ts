@@ -9,7 +9,7 @@
 
 import type { LocalActivityLine, LocalChat } from "../../types/landing";
 import type { RunKind, RunProgressTranscriptItem } from "./types";
-import { isRunKind } from "./types";
+import { isRunKind, isTerminalRunStatus, normalizeRunStatus } from "./types";
 
 /**
  * Items for one message's activity, ordered by first appearance and
@@ -66,4 +66,46 @@ export function runProgressItemsByMessage(
 		if (items.length > 0) byMessage[key] = items;
 	}
 	return byMessage;
+}
+
+
+/**
+ * Activity lines whose run has since stopped, and what it stopped as.
+ *
+ * A tool line is a record of what was true when the call returned. It is never
+ * rewritten, because it was not wrong — but a conversation that polled a run
+ * four times keeps four sentences saying "running" long after the run was
+ * cancelled, and a reader scrolling back has no way to tell which of them still
+ * holds. The v9 rollout was cancelled and the transcript went on describing an
+ * active rollout and live credentials.
+ *
+ * The run record is the authority, so supersession is derived from it at render
+ * time rather than baked into the line: a run that settles while the transcript
+ * is open marks its lines without the journal being rewritten.
+ *
+ * A status this build does not recognise is not terminal — see
+ * {@link isTerminalRunStatus}. Marking an unreadable status as finished is the
+ * same failure in the other direction.
+ */
+export function supersededRunActivity(
+	lines: readonly LocalActivityLine[],
+	runs: readonly { id: string; status: string }[]
+): Map<string, string> {
+	const terminal = new Map<string, string>();
+	for (const run of runs) {
+		if (isTerminalRunStatus(run.status)) terminal.set(run.id, normalizeRunStatus(run.status));
+	}
+	const superseded = new Map<string, string>();
+	if (terminal.size === 0) return superseded;
+	for (const line of lines) {
+		const status = line.optimizerRunId ? terminal.get(line.optimizerRunId) : undefined;
+		if (status) superseded.set(line.id, status);
+	}
+	return superseded;
+}
+
+/** Every activity line in a chat, in transcript order. */
+export function chatActivityLines(chat: LocalChat): LocalActivityLine[] {
+	const activity = chat.activityByMessageId ?? {};
+	return Object.values(activity).flat();
 }

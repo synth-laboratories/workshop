@@ -11,7 +11,7 @@ import {
 	type ToolActivityMode
 } from "../preferences";
 import { contextCompactionTokenSummary } from "../runtime/sessionView";
-import { runProgressItemsByMessage } from "../runtime/runProgress/transcript";
+import { chatActivityLines, runProgressItemsByMessage, supersededRunActivity } from "../runtime/runProgress/transcript";
 import { bridges } from "../runtime/desktopBridge";
 import { useTurnPerformanceLabels } from "../hooks/useTurnPerformanceLabels";
 import { outputContainerIds as chatOutputContainerIds, primaryVisualId, useChatOutputs } from "../hooks/useChatOutputs";
@@ -177,7 +177,8 @@ function ActivityLine({
 	onApprove,
 	onAlwaysAllow,
 	onReject,
-	live: _live = false
+	live: _live = false,
+	supersededByRunStatus
 }: {
 	line: LocalActivityLine;
 	visualOpen?: boolean;
@@ -188,6 +189,12 @@ function ActivityLine({
 	onAlwaysAllow?: (approvalId: string) => void;
 	onReject?: (approvalId: string) => void;
 	live?: boolean;
+	/**
+	 * Terminal state the run this line reports on has since reached. The line
+	 * still says what it said; this says the run has moved on, so a reader
+	 * scrolling back is not left with "running" as the last word.
+	 */
+	supersededByRunStatus?: string;
 }) {
 	const [open, setOpen] = useState(false);
 	const isVisualCue = Boolean(onToggleVisual) || line.kind === "visual";
@@ -339,13 +346,21 @@ function ActivityLine({
 
 	if (line.toolStatus) {
 		return (
-			<div className="local-activity tool-activity mcp-activity" data-testid={`activity-${line.id}`}>
+			<div
+				className={`local-activity tool-activity mcp-activity${supersededByRunStatus ? " superseded" : ""}`}
+				data-testid={`activity-${line.id}`}
+			>
 				{runningIndicator}
 				<span className="tool-activity-icon" aria-hidden>◆</span>
 				<span className="tool-activity-body">
 					<code className="mcp-activity-name">{line.label}</code>
 					{line.detail ? <span className="tool-activity-detail">{line.detail}</span> : null}
 					<span className={`tool-status tool-status-${line.toolStatus}`}>{line.toolStatus === "running" ? "Running" : line.toolStatus === "completed" ? "Completed" : line.toolStatus === "cancelled" ? "Cancelled" : "Failed"}</span>
+					{supersededByRunStatus ? (
+						<span className="tool-superseded" data-testid={`activity-superseded-${line.id}`}>
+							Superseded — run {supersededByRunStatus}
+						</span>
+					) : null}
 				</span>
 				{duration}
 				{onToggleVisual ? (
@@ -828,6 +843,15 @@ export function ChatTranscript({
 	// from activity rather than stored, so a reopened conversation reconstructs
 	// the same placement from its durable events.
 	const runProgressByMessage = useMemo(() => runProgressItemsByMessage(chat), [chat]);
+	// Tool lines are never rewritten — they recorded what was true when the call
+	// returned. What changes is whether the run they describe is still going, so
+	// this is derived from the live run records at render time. A run that
+	// settles while the transcript is open marks its own history without the
+	// journal being touched.
+	const supersededRunStatusByLineId = useMemo(
+		() => supersededRunActivity(chatActivityLines(chat), outputs.runs),
+		[chat, outputs.runs]
+	);
 	const finalAssistantMessageId = useMemo(() => {
 		for (let index = chat.messages.length - 1; index >= 0; index -= 1) {
 			if (chat.messages[index]?.role === "assistant") return chat.messages[index]!.id;
@@ -943,6 +967,7 @@ export function ChatTranscript({
 	};
 
 	const renderActivityLine = (line: LocalActivityLine, messageArtifacts: ArtifactRef[] = [], primaryOpen = false, live = false) => {
+		const superseded = supersededRunStatusByLineId.get(line.id);
 		const primaryArtifact = messageArtifacts[0];
 		const linkedArtifact = line.artifactId
 			? artifacts.find((artifact) => artifact.id === line.artifactId)
@@ -960,6 +985,7 @@ export function ChatTranscript({
 				onAlwaysAllow={onAlwaysAllow}
 				onReject={onReject}
 				live={live && line.kind === "thought"}
+				supersededByRunStatus={superseded}
 			/>
 		);
 	};

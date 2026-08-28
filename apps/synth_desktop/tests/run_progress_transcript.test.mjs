@@ -33,7 +33,7 @@ function bundle(relative, outName) {
 	return pathToFileURL(outfile).href;
 }
 
-const { runProgressItemsByMessage, runProgressItemsForLines } = await import(
+const { chatActivityLines, runProgressItemsByMessage, runProgressItemsForLines, supersededRunActivity } = await import(
 	bundle("src/renderer/src/runtime/runProgress/transcript.ts", "runProgressTranscript.mjs")
 );
 const { eventsToLocalActivity } = await import(
@@ -192,4 +192,69 @@ test("several concurrent runs in one turn each get their own card", () => {
 	]);
 	assert.deepEqual(items.map((item) => item.runId), ["run-a", "run-b", "run-c"]);
 	assert.deepEqual(items.map((item) => item.runKind), ["gepa", "eval", "sft"]);
+});
+
+
+/**
+ * A tool line records what was true when the call returned; it is never
+ * rewritten. What has to change is whether the reader can still tell that it
+ * holds. The v9 rollout was cancelled and the transcript went on describing an
+ * active rollout, four polls deep.
+ */
+test("every line reporting on a run is marked once that run has stopped", () => {
+	const lines = [
+		{ id: "activity-3", optimizerRunId: "run-a", toolStatus: "completed" },
+		{ id: "activity-5", optimizerRunId: "run-a", toolStatus: "completed" },
+		{ id: "activity-7", optimizerRunId: "run-b", toolStatus: "completed" },
+		{ id: "activity-9", toolStatus: "completed" }
+	];
+	const superseded = supersededRunActivity(lines, [
+		{ id: "run-a", status: "cancelled" },
+		{ id: "run-b", status: "running" }
+	]);
+	assert.equal(superseded.get("activity-3"), "cancelled");
+	assert.equal(superseded.get("activity-5"), "cancelled");
+	assert.equal(superseded.has("activity-7"), false, "a live run supersedes nothing");
+	assert.equal(superseded.has("activity-9"), false, "a line bound to no run is untouched");
+});
+
+test("a completed or failed run marks its lines the same way a cancelled one does", () => {
+	const lines = [{ id: "activity-1", optimizerRunId: "run-a" }];
+	for (const [status, expected] of [["completed", "completed"], ["failed", "failed"]]) {
+		const superseded = supersededRunActivity(lines, [{ id: "run-a", status }]);
+		assert.equal(superseded.get("activity-1"), expected);
+	}
+});
+
+/**
+ * The mirror of the run card's own rule: a word this build cannot read is not
+ * the durable record saying "finished". Marking it as stopped would retire a
+ * live run's history out from under the reader.
+ */
+test("an unrecognised run status supersedes nothing", () => {
+	const superseded = supersededRunActivity(
+		[{ id: "activity-1", optimizerRunId: "run-a" }],
+		[{ id: "run-a", status: "reticulating" }]
+	);
+	assert.equal(superseded.size, 0);
+});
+
+test("no runs at all is cheap and marks nothing", () => {
+	assert.equal(supersededRunActivity([{ id: "activity-1", optimizerRunId: "run-a" }], []).size, 0);
+});
+
+test("chat activity lines are collected across every message", () => {
+	const chat = {
+		id: "sess-1",
+		title: "t",
+		messages: ASSISTANT,
+		activityByMessageId: {
+			"assistant-1": [{ id: "activity-1", optimizerRunId: "run-a" }],
+			__active__: [{ id: "activity-2", optimizerRunId: "run-a" }]
+		}
+	};
+	const lines = chatActivityLines(chat);
+	assert.deepEqual(lines.map((line) => line.id).sort(), ["activity-1", "activity-2"]);
+	const superseded = supersededRunActivity(lines, [{ id: "run-a", status: "cancelled" }]);
+	assert.equal(superseded.size, 2);
 });
