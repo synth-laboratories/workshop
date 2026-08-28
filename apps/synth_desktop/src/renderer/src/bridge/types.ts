@@ -414,6 +414,7 @@ export type SynthConfigBridge = {
 	updateDesktopPermissions(request: {
 		approvalPolicy: DesktopPermissionSettings["approvalPolicy"];
 		sandboxMode: DesktopPermissionSettings["sandboxMode"];
+		paidCompute?: DesktopPermissionSettings["paidCompute"];
 	}): Promise<DesktopPermissionSettings>;
 };
 

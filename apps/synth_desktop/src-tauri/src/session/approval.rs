@@ -681,6 +681,9 @@ pub(crate) struct ApprovalBroker {
     effective_policies: Mutex<HashMap<String, super::approval_policy::EffectiveApprovalProfile>>,
     persistence: SessionPersistence,
     restore_started: AtomicBool,
+    /// Serializes conversation-budget reserve/release so concurrent host
+    /// authorizations cannot oversubscribe even before SQLite queues them.
+    paid_compute_lock: Mutex<()>,
 }
 
 impl ApprovalBroker {
@@ -692,6 +695,7 @@ impl ApprovalBroker {
             effective_policies: Mutex::new(HashMap::new()),
             persistence,
             restore_started: AtomicBool::new(false),
+            paid_compute_lock: Mutex::new(()),
         }
     }
 
@@ -712,6 +716,15 @@ impl ApprovalBroker {
                 profile.receipt_payload(session_id),
             )
             .await?;
+        if let Some(database) = self.persistence.database() {
+            let session = session_id.to_owned();
+            let policy = profile.paid_compute.clone();
+            database
+                .run_transaction(move |conn| {
+                    super::paid_compute_budget::seed_conversation_budget(conn, &session, &policy)
+                })
+                .await?;
+        }
         self.effective_policies
             .lock()
             .await
@@ -785,12 +798,45 @@ impl ApprovalBroker {
     ) -> Result<String> {
         kind.validate_decision(decision)?;
         let approval_id = format!("approval-auto-{}", uuid::Uuid::new_v4().simple());
-        let mut payload = kind.safe_payload(&approval_id);
+        self.write_auto_grant(
+            app,
+            session_id,
+            &approval_id,
+            kind,
+            decision,
+            policy,
+            None,
+        )
+        .await?;
+        Ok(approval_id)
+    }
+
+    async fn write_auto_grant<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+        approval_id: &str,
+        kind: &ApprovalKind,
+        decision: &ApprovalDecision,
+        policy: &str,
+        extra: Option<Value>,
+    ) -> Result<()> {
+        kind.validate_decision(decision)?;
+        let mut payload = kind.safe_payload(approval_id);
         payload["decision"] = json!(decision.event_value());
         payload["policyAuto"] = json!(true);
         payload["approvalPolicy"] = json!(policy);
         if let ApprovalDecision::ApproveWithCap { cap } = decision {
             payload["cap"] = serde_json::to_value(cap)?;
+        }
+        if let Some(extra) = extra {
+            if let (Some(object), Some(extra_object)) =
+                (payload.as_object_mut(), extra.as_object())
+            {
+                for (key, value) in extra_object {
+                    object.insert(key.clone(), value.clone());
+                }
+            }
         }
         self.persistence
             .append_boundary_event(
@@ -801,7 +847,7 @@ impl ApprovalBroker {
                 payload,
             )
             .await?;
-        Ok(approval_id)
+        Ok(())
     }
 
     pub(crate) async fn resolve<R: tauri::Runtime>(
@@ -1195,6 +1241,14 @@ impl ApprovalBroker {
             return Ok((approval_id, decision));
         }
         if let Some(session_id) = session_id {
+            if let Some(outcome) = self
+                .try_auto_authorize_paid_compute(app, session_id, &kind)
+                .await?
+            {
+                return Ok(outcome);
+            }
+        }
+        if let Some(session_id) = session_id {
             let (resolver, receiver) = HostDecisionResolver::pair();
             let approval_id = self
                 .request(
@@ -1226,6 +1280,80 @@ impl ApprovalBroker {
         Err(anyhow!(
             "this mutation requires an agent session for approval"
         ))
+    }
+
+    /// Conversation-scoped paid-compute auto-approval. Ineligible requests
+    /// return `None` so the native modal stays in charge. Accounting lives on
+    /// the broker (and SQLite), never in the synchronous policy table.
+    pub(crate) async fn try_auto_authorize_paid_compute<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+        kind: &ApprovalKind,
+    ) -> Result<Option<(String, ApprovalDecision)>> {
+        let ApprovalKind::PaidCompute {
+            requested_cap,
+            preparation_digest,
+            ..
+        } = kind
+        else {
+            return Ok(None);
+        };
+        let Some(ceiling) = requested_cap.max_cost_usd_micros.filter(|value| *value > 0) else {
+            return Ok(None);
+        };
+        let Some(provider) = paid_compute_provider(kind) else {
+            return Ok(None);
+        };
+        let Some(database) = self.persistence.database() else {
+            return Ok(None);
+        };
+        let _lock = self.paid_compute_lock.lock().await;
+        let approval_id = format!("approval-auto-{}", uuid::Uuid::new_v4().simple());
+        let session = session_id.to_owned();
+        let digest = preparation_digest.clone();
+        let reserved_id = approval_id.clone();
+        let grant = database
+            .run_transaction(move |conn| {
+                if !super::paid_compute_budget::budget_allows_provider(conn, &session, &provider)? {
+                    return Ok(None);
+                }
+                super::paid_compute_budget::try_reserve(
+                    conn,
+                    &session,
+                    &reserved_id,
+                    digest.as_deref(),
+                    ceiling,
+                )
+            })
+            .await?;
+        let Some(grant) = grant else {
+            return Ok(None);
+        };
+        let decision = ApprovalDecision::ApproveWithCap {
+            cap: requested_cap.clone(),
+        };
+        if let Err(error) = self
+            .write_auto_grant(
+                app,
+                session_id,
+                &approval_id,
+                kind,
+                &decision,
+                super::paid_compute_budget::CONVERSATION_POLICY,
+                Some(grant.receipt_fields()),
+            )
+            .await
+        {
+            let release_id = approval_id.clone();
+            let _ = database
+                .run_transaction(move |conn| {
+                    super::paid_compute_budget::release_reservation(conn, &release_id)
+                })
+                .await;
+            return Err(error);
+        }
+        Ok(Some((approval_id, decision)))
     }
 
     pub(crate) async fn is_pending(&self, approval_id: &str) -> bool {
@@ -1300,6 +1428,31 @@ impl ApprovalBroker {
     pub(crate) async fn pending_len(&self) -> usize {
         self.pending.lock().await.len()
     }
+}
+
+fn paid_compute_provider(kind: &ApprovalKind) -> Option<String> {
+    let ApprovalKind::PaidCompute {
+        parameters,
+        credential_names,
+        ..
+    } = kind
+    else {
+        return None;
+    };
+    let raw = parameters
+        .pointer("/model/provider")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            parameters
+                .pointer("/credentialRoute/provider")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            credential_names
+                .first()
+                .and_then(|name| name.split(':').next())
+        })?;
+    crate::synth_config::normalize_provider(raw).ok()
 }
 
 fn remembered_key(kind: &ApprovalKind) -> Option<String> {
@@ -1923,5 +2076,254 @@ mod tests {
             .await
             .unwrap_err();
         assert!(missing.to_string().contains("no longer pending"));
+    }
+
+    fn openrouter_paid(max_cost_usd_micros: Option<u64>) -> ApprovalKind {
+        ApprovalKind::PaidCompute {
+            operation: "optimizer.evaluation.inline.start".into(),
+            parameters: json!({
+                "model": { "provider": "openrouter", "modelId": "gpt-5.6-luna" },
+                "credentialRoute": { "kind": "workshop_proxy", "provider": "openrouter" },
+                "executionSpecDigest": "sha256:spec",
+            }),
+            estimated_cost_usd_micros: None,
+            requested_cap: PaidComputeCap {
+                max_cost_usd_micros,
+                max_rollouts: Some(8),
+            },
+            requesting_agent: "agent:test".into(),
+            recipe_id: None,
+            dataset: None,
+            proposer_model: Some("gpt-5.6-luna".into()),
+            evaluator_model: None,
+            timeout_seconds: None,
+            credential_names: vec!["openrouter:workshop_secrets_proxy".into()],
+            preparation_digest: Some("sha256:spec".into()),
+        }
+    }
+
+    fn enabled_paid_compute() -> crate::synth_config::PaidComputeAutoApprovalSettings {
+        crate::synth_config::PaidComputeAutoApprovalSettings {
+            enabled: true,
+            max_request_usd: "0.10".into(),
+            max_conversation_usd: "0.25".into(),
+            providers: vec!["openrouter".into()],
+        }
+    }
+
+    async fn sealed_broker(
+        paid: crate::synth_config::PaidComputeAutoApprovalSettings,
+    ) -> (
+        crate::synth_config::test_machine_permissions::Guard,
+        tempfile::TempDir,
+        std::sync::Arc<CoreRuntime>,
+        ApprovalBroker,
+        tauri::App<tauri::test::MockRuntime>,
+    ) {
+        let machine = crate::synth_config::test_machine_permissions::install_with_paid_compute(
+            "on-request",
+            "workspace-write",
+            paid,
+        );
+        let temp = tempdir().unwrap();
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let broker = ApprovalBroker::new(SessionPersistence::from_core(Some(core.clone())));
+        let app = tauri::test::mock_app();
+        let profile = crate::session::approval_policy::resolve_effective(None, None).unwrap();
+        broker
+            .record_policy_effective(app.handle(), "sess-a", profile)
+            .await
+            .unwrap();
+        (machine, temp, core, broker, app)
+    }
+
+    #[tokio::test]
+    async fn default_configuration_keeps_paid_compute_on_the_modal() {
+        let (_guard, _temp, _core, broker, app) =
+            sealed_broker(crate::synth_config::PaidComputeAutoApprovalSettings::disabled()).await;
+        let outcome = broker
+            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openrouter_paid(Some(60_000)))
+            .await
+            .unwrap();
+        assert!(outcome.is_none());
+    }
+
+    #[tokio::test]
+    async fn eligible_paid_compute_auto_approves_the_requested_cap() {
+        let (_guard, _temp, core, broker, app) = sealed_broker(enabled_paid_compute()).await;
+        let (approval_id, decision) = broker
+            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openrouter_paid(Some(60_000)))
+            .await
+            .unwrap()
+            .expect("eligible request auto-approves");
+        assert!(approval_id.starts_with("approval-auto-"));
+        match decision {
+            ApprovalDecision::ApproveWithCap { cap } => {
+                assert_eq!(cap.max_cost_usd_micros, Some(60_000));
+            }
+            other => panic!("expected capped approval, got {other:?}"),
+        }
+        let events = core
+            .journal()
+            .session_events_after("sess-a".into(), 0, 100)
+            .await
+            .unwrap();
+        let granted = events
+            .iter()
+            .find(|event| event.kind == "approval.granted")
+            .expect("auto-approval writes a granted receipt");
+        assert_eq!(granted.payload["policyAuto"], true);
+        assert_eq!(
+            granted.payload["approvalPolicy"],
+            "conversation_paid_compute_budget"
+        );
+        assert_eq!(granted.payload["reservedUsdMicros"], 60_000);
+        assert_eq!(granted.payload["remainingUsdMicros"], 190_000);
+        assert_eq!(granted.payload["conversationCapUsdMicros"], 250_000);
+        assert_eq!(granted.payload["cap"]["maxCostUsdMicros"], 60_000);
+        assert_eq!(granted.payload["kind"], "paid_compute");
+        assert!(granted.payload.get("approvalId").and_then(Value::as_str).is_some());
+    }
+
+    #[tokio::test]
+    async fn over_request_missing_ceiling_and_unlisted_provider_open_the_modal() {
+        let (_guard, _temp, _core, broker, app) = sealed_broker(enabled_paid_compute()).await;
+        assert!(broker
+            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openrouter_paid(Some(200_000)))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(broker
+            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openrouter_paid(None))
+            .await
+            .unwrap()
+            .is_none());
+        let mut openai = openrouter_paid(Some(60_000));
+        if let ApprovalKind::PaidCompute {
+            parameters,
+            credential_names,
+            ..
+        } = &mut openai
+        {
+            *parameters = json!({
+                "model": { "provider": "openai", "modelId": "gpt-5.6-luna" },
+                "credentialRoute": { "kind": "workshop_proxy", "provider": "openai" },
+            });
+            *credential_names = vec!["openai:workshop_secrets_proxy".into()];
+        }
+        assert!(broker
+            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openai)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn conversation_remainder_blocks_a_second_request() {
+        let (_guard, _temp, _core, broker, app) = sealed_broker(enabled_paid_compute()).await;
+        broker
+            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openrouter_paid(Some(60_000)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(broker
+            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openrouter_paid(Some(200_000)))
+            .await
+            .unwrap()
+            .is_none());
+        broker
+            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openrouter_paid(Some(100_000)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(broker
+            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openrouter_paid(Some(100_000)))
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_reserves_cannot_oversubscribe_the_conversation() {
+        let (_guard, _temp, core, broker, app) = sealed_broker(enabled_paid_compute()).await;
+        let broker = Arc::new(broker);
+        broker
+            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openrouter_paid(Some(60_000)))
+            .await
+            .unwrap()
+            .unwrap();
+        let handle = app.handle().clone();
+        let left = {
+            let broker = broker.clone();
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                broker
+                    .try_auto_authorize_paid_compute(&handle, "sess-a", &openrouter_paid(Some(100_000)))
+                    .await
+            })
+        };
+        let right = {
+            let broker = broker.clone();
+            tokio::spawn(async move {
+                broker
+                    .try_auto_authorize_paid_compute(&handle, "sess-a", &openrouter_paid(Some(100_000)))
+                    .await
+            })
+        };
+        let left = left.await.unwrap().unwrap();
+        let right = right.await.unwrap().unwrap();
+        assert_eq!(left.is_some() as u8 + right.is_some() as u8, 1);
+        let reserved: i64 = core
+            .storage()
+            .database()
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COALESCE(SUM(reserved_usd_micros), 0) FROM paid_compute_reservations
+                     WHERE session_id='sess-a' AND status='reserved'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(reserved, 160_000);
+    }
+
+    #[tokio::test]
+    async fn forked_conversations_receive_independent_allowances() {
+        let (_guard, _temp, _core, broker, app) = sealed_broker(enabled_paid_compute()).await;
+        let profile = crate::session::approval_policy::resolve_effective(None, None).unwrap();
+        broker
+            .record_policy_effective(app.handle(), "sess-b", profile)
+            .await
+            .unwrap();
+        broker
+            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openrouter_paid(Some(60_000)))
+            .await
+            .unwrap()
+            .unwrap();
+        let child = broker
+            .try_auto_authorize_paid_compute(app.handle(), "sess-b", &openrouter_paid(Some(100_000)))
+            .await
+            .unwrap();
+        assert!(child.is_some());
+    }
+
+    #[tokio::test]
+    async fn credential_approvals_are_not_auto_authorized_by_the_budget() {
+        let (_guard, _temp, _core, broker, app) = sealed_broker(enabled_paid_compute()).await;
+        let credential = ApprovalKind::CredentialAccess {
+            consent: CredentialConsent::IssueLease,
+            provider: "openrouter".into(),
+            purpose: "bounded optimizer recipe".into(),
+            locator_id: None,
+            display_path: None,
+            variable: None,
+            switch_from_display: None,
+        };
+        assert!(broker
+            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &credential)
+            .await
+            .unwrap()
+            .is_none());
     }
 }
