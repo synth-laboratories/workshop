@@ -503,7 +503,7 @@ export function foldCraftaxTrace(
       case "agent.message": {
         current = emptyStep(steps.length + 1, event.sequence);
         current.title = `Agent message ${steps.length + 1}`;
-        current.status = "complete";
+        current.status = "completed";
         current.content.message = text(payload.text);
         current.frames.push(...pendingFrames);
         pendingFrames = [];
@@ -515,7 +515,7 @@ export function foldCraftaxTrace(
       case "agent.action": {
         current = emptyStep(steps.length + 1, event.sequence);
         current.title = `Agent action ${steps.length + 1}`;
-        current.status = text(payload.status) === "running" ? "running" : "complete";
+        current.status = text(payload.status) === "running" ? "running" : "completed";
         current.frames.push(...pendingFrames);
         pendingFrames = [];
         const turn = num(payload.frame_index ?? payload.frameIndex);

@@ -507,7 +507,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						}}
 						openContainerId={openContainer?.id ?? null}
 						onOpenContainer={(id) => void toggleContainer(id)}
-						onApprove={(approvalId, decision) => void controlActive("approve", { approvalId, decision })}
+						onApprove={(approvalId, decision, approvalDigest) => void controlActive("approve", { approvalId, decision, approvalDigest })}
 						onAlwaysAllow={(approvalId) =>
 							void controlActive("approve", { approvalId, decision: "always" })
 						}

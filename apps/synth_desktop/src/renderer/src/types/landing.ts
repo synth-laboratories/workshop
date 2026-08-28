@@ -283,6 +283,9 @@ export type LocalActivityLine = {
 		estimatedCostUsdMicros?: number;
 		requestedCap?: { maxCostUsdMicros?: number; maxRollouts?: number };
 		requestingAgent?: string;
+		approvalDigest?: string;
+		requestedAt?: string;
+		expiresAt?: string;
 		provider?: string;
 		purpose?: string;
 		consent?: "remember_locator" | "register_source" | "issue_lease";

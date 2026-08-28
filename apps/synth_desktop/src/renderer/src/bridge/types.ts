@@ -119,6 +119,7 @@ import type {
 	ProjectSourceInspection,
 	ProjectSourceRequest,
 	ProjectSourceRow,
+	ReleaseTierReport,
 	WorkspaceAccessMode,
 	WorkspaceAccessSettings,
 	WorkspaceAttachment,
@@ -160,6 +161,7 @@ export type {
 	PendingGrantSummary,
 	PluginPermission,
 	PluginStatus,
+	ReleaseTierReport,
 	ReportAudience,
 	ReportAudienceState,
 	ReportBlock,
@@ -495,7 +497,7 @@ export type CodexBridge = {
 	listThreadItems?(sessionId: string, threadId: string, cursor?: string, limit?: number): Promise<unknown>;
 	/** Mid-turn user input via Codex `turn/steer`. Optional on browser fixtures without a native runtime. */
 	steerTurn?(sessionId: string, text: string): Promise<void>;
-	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject" | "remember-locator" | "register-source"): Promise<void>;
+	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject" | "remember-locator" | "register-source", approvalDigest?: string): Promise<void>;
 	close(sessionId: string): Promise<void>;
 	onEvent(listener: (event: CodexEvent) => void): () => void;
 };
@@ -1273,12 +1275,6 @@ export type ReleaseTierFeature = {
 	present: boolean;
 	enabled: boolean;
 	runtimeFlag: string | null;
-};
-
-export type ReleaseTierReport = {
-	tier: ReleaseTier;
-	contractVersion: string;
-	features: ReleaseTierFeature[];
 };
 
 export type ReleaseTierBridge = {

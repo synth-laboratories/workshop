@@ -1666,7 +1666,10 @@ export function eventsToLocalActivity(
 				requestedCap: payload.requestedCap && typeof payload.requestedCap === "object" && !Array.isArray(payload.requestedCap)
 					? payload.requestedCap as { maxCostUsdMicros?: number; maxRollouts?: number }
 					: undefined,
-				requestingAgent: typeof payload.requestingAgent === "string" ? payload.requestingAgent : undefined
+				requestingAgent: typeof payload.requestingAgent === "string" ? payload.requestingAgent : undefined,
+				approvalDigest: typeof payload.approvalDigest === "string" ? payload.approvalDigest : undefined,
+				requestedAt: typeof payload.requestedAt === "string" ? payload.requestedAt : undefined,
+				expiresAt: typeof payload.expiresAt === "string" ? payload.expiresAt : undefined
 			} : event.eventKind === "approval.requested" && approvalKind === "credential_access" ? {
 				provider: typeof payload.provider === "string" ? payload.provider : undefined,
 				purpose: typeof payload.purpose === "string" ? payload.purpose : undefined,

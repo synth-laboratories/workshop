@@ -72,6 +72,10 @@ pub const CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES: u32 = 4;
 /// independently enforces the request-start cadence.
 pub const CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(370);
 
+/// A paid-compute approval is consent for the exact proposal currently shown,
+/// not an indefinitely reusable prompt left open in a restored transcript.
+pub const PAID_COMPUTE_APPROVAL_TTL: Duration = Duration::from_secs(120);
+
 /// Desktop update manifest fetch.
 pub const UPDATE_MANIFEST_TIMEOUT: Duration = Duration::from_secs(5);
 

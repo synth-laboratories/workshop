@@ -4,9 +4,11 @@
 //! delivery (Codex JSON-RPC today, local oneshots later) lives behind
 //! [`ApprovalResolver`].
 
+use crate::limits::PAID_COMPUTE_APPROVAL_TTL;
 use crate::session::SessionPersistence;
 use crate::storage::EventSource;
 use anyhow::{anyhow, Result};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -733,7 +735,16 @@ impl ApprovalBroker {
         resolver: Arc<dyn ApprovalResolver>,
     ) -> Result<String> {
         let approval_id = format!("approval-{}", uuid::Uuid::new_v4().simple());
-        let payload = kind.safe_payload(&approval_id);
+        let mut payload = kind.safe_payload(&approval_id);
+        if let Some(digest) = kind.approval_digest() {
+            let requested_at = Utc::now();
+            let expires_at = requested_at
+                + chrono::Duration::from_std(PAID_COMPUTE_APPROVAL_TTL)
+                    .expect("paid-compute approval TTL fits chrono duration");
+            payload["approvalDigest"] = json!(digest);
+            payload["requestedAt"] = json!(requested_at.to_rfc3339());
+            payload["expiresAt"] = json!(expires_at.to_rfc3339());
+        }
         let source = kind.source();
         self.pending.lock().await.insert(
             approval_id.clone(),

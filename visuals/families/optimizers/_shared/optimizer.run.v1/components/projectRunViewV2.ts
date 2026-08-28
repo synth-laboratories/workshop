@@ -369,7 +369,9 @@ function cispoProjection(base: ProjectedState, view: OptimizerRunViewV2Like, run
     rewardVariance: null,
     advantageMean: numberOrNull(projection.meanAdvantage),
     advantageStd: null,
-    optimizerSteps: typeof view.header.usage.steps === "number" ? view.header.usage.steps : 0,
+    optimizerSteps: typeof view.header.usage.steps === "number" ? view.header.usage.steps : null,
+    metricSteps: 0,
+    aggregatesReported: false,
     warmStartArtifactId: typeof projection.warmStartId === "string" ? projection.warmStartId : null,
     checkpointIds: strings(projection.checkpoints),
     noLearningSignal: projection.noLearningSignal === true

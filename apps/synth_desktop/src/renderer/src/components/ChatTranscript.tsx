@@ -29,7 +29,7 @@ type Props = {
 	onOpenContainer?: (id: string | null) => void;
 	onOpenReport?: (id: string) => void;
 	onOpenRun?: (run: OptimizerRunRecord) => void;
-	onApprove?: (approvalId: string, decision?: "remember-locator" | "register-source") => void;
+	onApprove?: (approvalId: string, decision?: "remember-locator" | "register-source", approvalDigest?: string) => void;
 	onAlwaysAllow?: (approvalId: string) => void;
 	onReject?: (approvalId: string) => void;
 	running?: boolean;
@@ -433,10 +433,11 @@ function ActivityLine({
 
 function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 	line: LocalActivityLine;
-	onApprove?: (approvalId: string) => void;
+	onApprove?: (approvalId: string, decision?: "remember-locator" | "register-source", approvalDigest?: string) => void;
 	onReject?: (approvalId: string) => void;
 }) {
 	const payload = line.approvalPayload;
+	const approvalDigest = payload?.approvalDigest;
 	const cap = payload?.requestedCap;
 	const estimated = payload?.estimatedCostUsdMicros;
 	const inline = payload?.operation === "optimizer.evaluation.inline.start" ? payload.parameters : undefined;
@@ -467,7 +468,7 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
 	}, [line.approvalId, onReject]);
-	return <div className="paid-compute-modal-backdrop" data-testid="paid-compute-approval-modal">
+	return <div className="paid-compute-modal-backdrop" data-testid="paid-compute-approval-modal" data-approval-digest={approvalDigest} data-expires-at={payload?.expiresAt}>
 		<section className="paid-compute-modal" role="dialog" aria-modal="true" aria-labelledby="paid-compute-title">
 			<div className="approval-card-kicker">Paid compute</div>
 			<h2 id="paid-compute-title">{inline && rolloutLimit != null ? `Run ${rolloutLimit.toLocaleString()} evaluation rollouts?` : "Approve this bounded run?"}</h2>
@@ -502,8 +503,8 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 				</dl>
 			</details> : null}
 			<div className="paid-compute-modal-actions">
-				<button type="button" className="approval-reject" onClick={() => onReject?.(line.approvalId!)}>Reject</button>
-				<button ref={approveRef} type="button" className="approval-approve" onClick={() => onApprove?.(line.approvalId!)}>Approve</button>
+				<button type="button" className="approval-reject" data-testid="paid-compute-reject" onClick={() => onReject?.(line.approvalId!)}>Reject</button>
+				<button ref={approveRef} type="button" className="approval-approve" data-testid="paid-compute-approve" onClick={() => onApprove?.(line.approvalId!, undefined, approvalDigest)}>Approve</button>
 			</div>
 		</section>
 	</div>;

@@ -948,6 +948,14 @@ export function Shell(props: ShellProps) {
   // No snapshot and no live binding: exactly the historical empty state.
   if (!snapshot && !live) return <VisualChrome title={props.title ?? "Experiment overview"} lede="No experiment projection was provided." testId="visual-experiment-overview"><></></VisualChrome>;
   const experiment: ExperimentOverview = snapshot ?? {};
+  try {
+    assertExperimentProjection(experiment);
+  } catch (error) {
+    if (error instanceof ExperimentProjectionError) {
+      return <ProjectionFailure error={error} title={props.title} />;
+    }
+    throw error;
+  }
   const status = live?.status ?? props.run?.status ?? experiment.status ?? "planned";
   const heartbeatElapsed = latestHeartbeatElapsed(props.events);
   const running = !["completed", "failed", "cancelled", "canceled"].includes(status);
