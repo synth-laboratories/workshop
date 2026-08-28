@@ -400,6 +400,7 @@ fn load_current_evidence(
     base: &EvidenceState,
 ) -> Result<Option<EvidenceState>> {
     let mut evidence = base.clone();
+    dedupe_equivalent_evidence_refs(&mut evidence.refs);
     let mut amended = false;
     let mut statement = conn.prepare(
         "SELECT evidence_json
@@ -465,6 +466,19 @@ fn evidence_refs_are_equivalent(existing: &EvidenceRef, candidate: &EvidenceRef)
         && is_trace_kind(&candidate.kind)
         && existing.digest.is_some()
         && existing.digest == candidate.digest
+}
+
+fn dedupe_equivalent_evidence_refs(refs: &mut Vec<EvidenceRef>) {
+    let mut deduped = Vec::with_capacity(refs.len());
+    for reference in std::mem::take(refs) {
+        if !deduped
+            .iter()
+            .any(|existing| evidence_refs_are_equivalent(existing, &reference))
+        {
+            deduped.push(reference);
+        }
+    }
+    *refs = deduped;
 }
 
 pub fn insert_draft(conn: &Connection, draft: &RunDraft) -> Result<()> {
@@ -593,6 +607,9 @@ mod tests {
             ..canonical.clone()
         };
         assert!(evidence_refs_are_equivalent(&canonical, &legacy));
+        let mut historical_projection = vec![canonical.clone(), legacy.clone()];
+        dedupe_equivalent_evidence_refs(&mut historical_projection);
+        assert_eq!(historical_projection, vec![canonical.clone()]);
 
         let changed_digest = EvidenceRef {
             digest: Some("sha256:different".into()),
