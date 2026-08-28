@@ -354,7 +354,11 @@ pub async fn spawn(
         })
         .await;
         if let Err(error) = result {
-            crate::platform::logging::report("visuals_ipc", "eprintln", format!("synth-desktop: visuals IPC stopped: {error:#}"));
+            crate::platform::logging::report(
+                "visuals_ipc",
+                "eprintln",
+                format!("synth-desktop: visuals IPC stopped: {error:#}"),
+            );
         }
     });
     Ok(connection)
@@ -4639,7 +4643,11 @@ pub(crate) async fn dispatch_container_restart(
         .await
         .map_err(|error| {
             let _ = core.storage().database().transaction(|conn| {
-                if let Some(open) = crate::platform::failure::repository::FailureRepository::open_for_container(conn, id)? {
+                if let Some(open) =
+                    crate::platform::failure::repository::FailureRepository::open_for_container(
+                        conn, id,
+                    )?
+                {
                     crate::platform::failure::FailureAuthority::transition(
                         conn,
                         open.failure_id.as_str(),
@@ -4673,7 +4681,9 @@ pub(crate) async fn dispatch_container_restart(
     )
     .await?;
     let _ = core.storage().database().transaction(|conn| {
-        if let Some(open) = crate::platform::failure::repository::FailureRepository::open_for_container(conn, id)? {
+        if let Some(open) =
+            crate::platform::failure::repository::FailureRepository::open_for_container(conn, id)?
+        {
             let plan = crate::platform::failure::RecoveryPlan::restart_container(
                 open.failure_id.clone(),
                 id.to_owned(),

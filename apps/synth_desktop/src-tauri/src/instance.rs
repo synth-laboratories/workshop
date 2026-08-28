@@ -378,10 +378,14 @@ pub fn assert_boot_identity() -> Result<Identity, IdentityRefusal> {
             Ok(identity)
         }
         Err(refusal) => {
-            crate::platform::logging::report("instance", "eprintln", format!(
-                "synth-desktop: identity_refused code={} {refusal}",
-                refusal.code()
-            ));
+            crate::platform::logging::report(
+                "instance",
+                "eprintln",
+                format!(
+                    "synth-desktop: identity_refused code={} {refusal}",
+                    refusal.code()
+                ),
+            );
             show_refusal_dialog("Synth Workshop cannot start", &refusal.to_string());
             Err(refusal)
         }
@@ -902,7 +906,11 @@ pub fn install_boot_identity_and_lock() {
     match acquire_instance_lock() {
         Ok(lock) => hold_instance_lock(lock),
         Err(error) => {
-            crate::platform::logging::report("instance", "eprintln", format!("synth-desktop: {error}"));
+            crate::platform::logging::report(
+                "instance",
+                "eprintln",
+                format!("synth-desktop: {error}"),
+            );
             let identifier = bundle_id().unwrap_or_else(|| "com.synth.desktop".into());
             let _ = focus_existing_instance(&identifier);
             std::process::exit(EXIT_INSTANCE_LOCKED);

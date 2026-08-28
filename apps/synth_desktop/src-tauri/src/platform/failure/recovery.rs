@@ -33,9 +33,16 @@ impl IdempotencyKey {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryAction {
-    RestartContainer { container_id: String, declaration_id: String },
-    ResumeSession { session_id: String },
-    ReconnectStream { visual_id: String },
+    RestartContainer {
+        container_id: String,
+        declaration_id: String,
+    },
+    ResumeSession {
+        session_id: String,
+    },
+    ReconnectStream {
+        visual_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -64,7 +71,11 @@ pub struct RecoveryPlan {
 }
 
 impl RecoveryPlan {
-    pub fn restart_container(failure_id: FailureId, container_id: String, declaration_id: String) -> Self {
+    pub fn restart_container(
+        failure_id: FailureId,
+        container_id: String,
+        declaration_id: String,
+    ) -> Self {
         let idempotency_key = IdempotencyKey::for_restart(&container_id, failure_id.as_str());
         Self {
             recovery_id: RecoveryId::generate(),
@@ -111,7 +122,10 @@ pub fn insert_plan(conn: &rusqlite::Connection, plan: &RecoveryPlan) -> anyhow::
     Ok(())
 }
 
-pub fn insert_receipt(conn: &rusqlite::Connection, receipt: &RecoveryReceipt) -> anyhow::Result<()> {
+pub fn insert_receipt(
+    conn: &rusqlite::Connection,
+    receipt: &RecoveryReceipt,
+) -> anyhow::Result<()> {
     conn.execute(
         "INSERT INTO recovery_receipts(
             recovery_id, failure_id, status, approval_id, detail_json, completed_at

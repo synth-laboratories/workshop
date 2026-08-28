@@ -594,7 +594,11 @@ impl RunProgress {
             errors.push(format!(
                 "This run is {}, but {nonterminal} {} still queued or running.",
                 self.state.as_str(),
-                if nonterminal == 1 { "rollout is" } else { "rollouts are" }
+                if nonterminal == 1 {
+                    "rollout is"
+                } else {
+                    "rollouts are"
+                }
             ));
         }
         let counted = self.rollouts.len();
@@ -1006,7 +1010,9 @@ mod tests {
         progress.state = RunState::Failed;
         let errors = progress.reconciliation_errors();
         assert!(
-            errors.iter().any(|error| error.contains("still queued or running")),
+            errors
+                .iter()
+                .any(|error| error.contains("still queued or running")),
             "{errors:?}"
         );
     }

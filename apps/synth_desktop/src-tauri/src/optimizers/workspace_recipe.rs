@@ -609,9 +609,12 @@ pub fn load_container_specs_from_root(source_root: &Path) -> Result<Vec<Containe
 }
 
 pub fn load_container_specs_from_manifest(manifest_path: &Path) -> Result<Vec<ContainerSpec>> {
-    let source_root = manifest_path
-        .parent()
-        .ok_or_else(|| anyhow!("container manifest {} has no parent", manifest_path.display()))?;
+    let source_root = manifest_path.parent().ok_or_else(|| {
+        anyhow!(
+            "container manifest {} has no parent",
+            manifest_path.display()
+        )
+    })?;
     let text = fs::read_to_string(manifest_path).map_err(|cause| {
         LaunchDeclarationError::ManifestUnreadable {
             manifest_path: manifest_path.to_path_buf(),
@@ -1767,13 +1770,14 @@ include = ["{include}"]
         let source = dir.path().join("nanohorizon");
         fs::create_dir_all(&session).unwrap();
         write_container_manifest(&source, "scripts/up_craftax_container.sh");
-        let spec = find_container_spec_in_roots(
-            &[session.clone(), source.clone()],
-            "nanohorizon-craftax",
-        )
-        .unwrap();
+        let spec =
+            find_container_spec_in_roots(&[session.clone(), source.clone()], "nanohorizon-craftax")
+                .unwrap();
         assert_eq!(spec.origin.source_root, source.canonicalize().unwrap());
-        assert!(spec.origin.manifest_path.starts_with(&spec.origin.source_root));
+        assert!(spec
+            .origin
+            .manifest_path
+            .starts_with(&spec.origin.source_root));
         assert!(spec.cwd.starts_with(&spec.origin.source_root));
         assert!(spec.cwd.starts_with(&source.canonicalize().unwrap()));
         assert!(!spec.cwd.starts_with(&session));
@@ -1821,11 +1825,9 @@ include = ["{include}"]
             source_revision: Some("fixture-revision".into()),
             source_digest: None,
         };
-        let actual = launch_source_manifest_digest(
-            &origin,
-            &["scripts/up_craftax_container.sh".into()],
-        )
-        .unwrap();
+        let actual =
+            launch_source_manifest_digest(&origin, &["scripts/up_craftax_container.sh".into()])
+                .unwrap();
         fs::write(
             source.join(CONTAINERS_FILE),
             format!(
@@ -1896,10 +1898,7 @@ include = ["scripts/missing.sh"]
         assert_eq!(failure.code, "launch_source_path_not_found");
         assert_eq!(failure.details["declared_path"], "scripts/missing.sh");
         let resolved = failure.details["resolved_path"].as_str().unwrap();
-        assert!(
-            resolved.ends_with("scripts/missing.sh"),
-            "{resolved}"
-        );
+        assert!(resolved.ends_with("scripts/missing.sh"), "{resolved}");
         let json = failure.to_json();
         assert_eq!(json["code"], "launch_source_path_not_found");
         assert_eq!(json["declared_path"], "scripts/missing.sh");
@@ -1918,11 +1917,9 @@ include = ["scripts/missing.sh"]
             source_revision: Some("fixture-revision".into()),
             source_digest: None,
         };
-        let actual = launch_source_manifest_digest(
-            &origin,
-            &["scripts/up_craftax_container.sh".into()],
-        )
-        .unwrap();
+        let actual =
+            launch_source_manifest_digest(&origin, &["scripts/up_craftax_container.sh".into()])
+                .unwrap();
         fs::write(
             source.join(CONTAINERS_FILE),
             format!(

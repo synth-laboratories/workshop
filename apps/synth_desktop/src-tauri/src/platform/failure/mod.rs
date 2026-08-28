@@ -91,8 +91,7 @@ impl FailureRuntime {
     }
 
     pub fn get(&self, failure_id: &str) -> Result<Option<FailureView>> {
-        self.db
-            .with_conn(|conn| query::get_view(conn, failure_id))
+        self.db.with_conn(|conn| query::get_view(conn, failure_id))
     }
 
     pub fn query(&self, query: FailureQuery) -> Result<FailureQueryResult> {

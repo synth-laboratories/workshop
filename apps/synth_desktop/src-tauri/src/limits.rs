@@ -102,6 +102,11 @@ pub const EVAL_DRIVER_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// Provider-proxy request body cap. Oversized agent bodies fail closed.
 pub const SECRETS_PROXY_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
+/// Native scope used by the DeepSWE Harbor task's 5400-second agent bound.
+/// Keeping this value in the host makes the approval disclosure and issued
+/// capability use the same lifetime instead of allowing post-expiry 401s.
+pub const DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS: u32 = 5_400;
+
 /// Default lifetime of a run capability issued by the local secrets broker.
 pub const SECRETS_CAPABILITY_TTL: Duration = Duration::from_secs(30 * 60);
 

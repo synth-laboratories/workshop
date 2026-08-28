@@ -1828,6 +1828,7 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
         policy.models = vec![spec.model.clone()];
     }
     policy.max_cost_usd = spec.cost_ceiling_usd;
+    policy.lifetime_seconds = crate::limits::DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS as u64;
     let trials = spec.examples().len() as u64;
     let calls_per_trial = spec.maximum_model_calls_per_rollout.max(1) as u64;
     let total_calls = trials.saturating_mul(calls_per_trial).max(1);
@@ -4889,9 +4890,9 @@ max_total_rollouts = 4
         assert_eq!(traces["items"].as_array().unwrap().len(), 0);
         let errors = data["reconciliationErrors"].as_array().unwrap();
         assert!(
-            errors.iter().any(|error| error
-                .as_str()
-                .is_some_and(|text| text.contains("queued"))),
+            errors
+                .iter()
+                .any(|error| error.as_str().is_some_and(|text| text.contains("queued"))),
             "{errors:?}"
         );
         assert!(

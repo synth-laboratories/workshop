@@ -206,7 +206,10 @@ fn admission_failure_marks_unstarted_children_not_started() {
             Ok(rows)
         })
         .unwrap();
-    assert_eq!(states, vec![(0, "not_started".into()), (1, "running".into())]);
+    assert_eq!(
+        states,
+        vec![(0, "not_started".into()), (1, "running".into())]
+    );
     let terminal: String = storage
         .database()
         .with_conn(|conn| {

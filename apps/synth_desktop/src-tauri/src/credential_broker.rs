@@ -177,7 +177,11 @@ impl CredentialBroker {
             if let Err(error) = served {
                 // Nothing can await this task, so the failure is reported here
                 // rather than swallowed. Cloud sessions fail closed after it.
-                crate::platform::logging::report("credential_broker", "eprintln", format!("synth-desktop: credential proxy stopped serving: {error:#}"));
+                crate::platform::logging::report(
+                    "credential_broker",
+                    "eprintln",
+                    format!("synth-desktop: credential proxy stopped serving: {error:#}"),
+                );
             }
         });
         Ok(broker)

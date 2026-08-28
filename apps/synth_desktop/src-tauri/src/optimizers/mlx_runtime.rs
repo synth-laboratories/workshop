@@ -84,7 +84,11 @@ pub struct MlxRuntimeService;
 impl MlxRuntimeService {
     pub fn new() -> Self {
         if let Err(error) = reconcile_process_lease() {
-            crate::platform::logging::report("optimizers", "eprintln", format!("synth-desktop: failed to reconcile MLX runtime lease: {error:#}"));
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!("synth-desktop: failed to reconcile MLX runtime lease: {error:#}"),
+            );
         }
         Self
     }
