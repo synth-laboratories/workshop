@@ -99,10 +99,38 @@ export function pluginPresentation(status?: PluginStatus | null): PluginPresenta
 		};
 	}
 
-	if (phase === "degraded" || phase === "stopped") {
+	if (phase === "degraded") {
 		return {
 			label: "Needs attention", tone: "warning", isUsable: false, isTransitional: false, activeRuns,
 			a11yLabel: `Needs attention: ${label.toLowerCase()}`, detail: status.detail ?? null
+		};
+	}
+
+	// `stopped` with no active runs is the normal resting state of an on-demand
+	// sidecar (launching work calls `ensure_ready` natively), not a fault.
+	// "Needs attention" is reserved for `degraded` and `error`. A stopped
+	// service that still holds runs, though, is worth a warning: work is live
+	// with nothing supervising it.
+	if (phase === "stopped") {
+		if (activeRuns > 0) {
+			return {
+				label: `Stopped · ${activeRuns} running`,
+				tone: "warning",
+				isUsable: false,
+				isTransitional: false,
+				activeRuns,
+				a11yLabel: `Stopped, ${activeRuns} run${activeRuns === 1 ? "" : "s"} still active`,
+				detail: status.detail ?? null
+			};
+		}
+		return {
+			label: "Idle — starts on demand",
+			tone: "neutral",
+			isUsable: true,
+			isTransitional: false,
+			activeRuns,
+			a11yLabel: "Idle: stopped, starts on demand",
+			detail: status.detail ?? null
 		};
 	}
 
