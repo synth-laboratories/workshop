@@ -4509,6 +4509,105 @@ fn event_id_exists(conn: &Connection, run_id: &str, event_id: &str) -> Result<bo
     .map_err(Into::into)
 }
 
+fn event_carrier(event: &OptimizerEventEnvelope) -> Option<&Map<String, Value>> {
+    event
+        .delta
+        .get("container_event")
+        .or_else(|| event.delta.get("containerEvent"))
+        .or_else(|| event.raw.get("container_event"))
+        .or_else(|| event.raw.get("containerEvent"))
+        .and_then(Value::as_object)
+}
+
+fn event_string(value: &Value, snake: &str, camel: &str) -> Option<String> {
+    value
+        .get(snake)
+        .or_else(|| value.get(camel))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// Shredded query fields for the host event log. The serialized envelope
+/// remains the replay authority; these columns are indexes/witnesses derived
+/// at the same append boundary, never a second event representation.
+fn shredded_event_fields(
+    event: &OptimizerEventEnvelope,
+) -> (
+    Option<String>,
+    String,
+    Option<i64>,
+    Option<String>,
+    String,
+    Option<String>,
+) {
+    let carrier = event_carrier(event);
+    let carrier_payload = carrier
+        .and_then(|value| value.get("payload"))
+        .and_then(Value::as_object);
+    let rollout_id = carrier
+        .and_then(|value| {
+            value
+                .get("rollout_id")
+                .or_else(|| value.get("rolloutId"))
+        })
+        .and_then(Value::as_str)
+        .or_else(|| {
+            event
+                .raw
+                .get("rollout_id")
+                .or_else(|| event.raw.get("rolloutId"))
+                .and_then(Value::as_str)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string);
+    let kind = carrier
+        .and_then(|value| value.get("kind"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&event.event_type)
+        .to_string();
+    let step = carrier_payload
+        .and_then(|value| value.get("step"))
+        .or_else(|| carrier.and_then(|value| value.get("step")))
+        .or_else(|| event.raw.get("step"))
+        .and_then(Value::as_i64);
+    let span_id = carrier_payload
+        .and_then(|value| {
+            value
+                .get("span_id")
+                .or_else(|| value.get("spanId"))
+        })
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| event_string(&event.raw, "span_id", "spanId"));
+    let producer_occurred_at = carrier
+        .and_then(|value| {
+            value
+                .get("occurred_at")
+                .or_else(|| value.get("occurredAt"))
+        })
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&event.occurred_at)
+        .to_string();
+    let producer_digest = carrier
+        .and_then(|value| value.get("digest"))
+        .or_else(|| event.raw.get("digest"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string);
+    (
+        rollout_id,
+        kind,
+        step,
+        span_id,
+        producer_occurred_at,
+        producer_digest,
+    )
+}
+
 fn upsert_cursor(conn: &Connection, run_id: &str, cursor_seq: u64, updated_at: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO optimizer_event_cursors(optimizer_run_id, cursor_seq, updated_at)
@@ -4530,6 +4629,9 @@ fn upsert_cursor(conn: &Connection, run_id: &str, cursor_seq: u64, updated_at: &
 /// on to report success.
 fn insert_event(conn: &Connection, event: &OptimizerEventEnvelope) -> Result<()> {
     let payload = serde_json::to_string(event)?;
+    let (rollout_id, kind, step, span_id, producer_occurred_at, producer_digest) =
+        shredded_event_fields(event);
+    let ingested_at = Utc::now().to_rfc3339();
     let event_id = event
         .event_id
         .clone()
@@ -4537,8 +4639,10 @@ fn insert_event(conn: &Connection, event: &OptimizerEventEnvelope) -> Result<()>
     conn.execute(
         "INSERT INTO optimizer_events(
             event_id, optimizer_run_id, sequence_number, event_type,
-            algorithm_id, occurred_at, payload_json
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            algorithm_id, occurred_at, payload_json, rollout_id, kind, step,
+            span_id, producer_occurred_at, ingested_at, ingest_witness,
+            producer_digest, payload_cas_digest
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'host_clock',?14,NULL)",
         params![
             event_id,
             event.optimizer_run_id,
@@ -4546,7 +4650,14 @@ fn insert_event(conn: &Connection, event: &OptimizerEventEnvelope) -> Result<()>
             event.event_type,
             event.algorithm_id,
             event.occurred_at,
-            payload
+            payload,
+            rollout_id,
+            kind,
+            step,
+            span_id,
+            producer_occurred_at,
+            ingested_at,
+            producer_digest,
         ],
     )
     .with_context(|| {
@@ -7375,6 +7486,91 @@ pub(in crate::optimizers) mod tests {
         let event = rx.try_recv().expect("optimizer.run.updated on the bus");
         assert_eq!(event.kind, "optimizer.run.updated");
         assert_eq!(event.payload["optimizerRunId"], run.id);
+    }
+
+    #[tokio::test]
+    async fn event_append_shreds_container_fields_and_witnesses_the_host_clock() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "eval",
+                    "id": "eval_shredded_append",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let event = evt(
+            "eval.trial.event",
+            1,
+            "eval",
+            &run.id,
+            "2026-08-27T00:00:01Z",
+            json!({
+                "container_event": {
+                    "rollout_id": "rollout-780005",
+                    "kind": "frame",
+                    "occurred_at": "2026-08-27T00:00:00.500Z",
+                    "digest": "sha256:producer",
+                    "payload": {"step": 42, "span_id": "span-42"}
+                }
+            }),
+            None,
+            None,
+        );
+        svc.database()
+            .with_conn(|conn| {
+                insert_event(conn, &event)?;
+                let fields: (
+                    String,
+                    String,
+                    i64,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<String>,
+                    Option<String>,
+                ) = conn.query_row(
+                    "SELECT rollout_id, kind, step, span_id, producer_occurred_at,
+                            ingested_at, ingest_witness, producer_digest, payload_cas_digest
+                     FROM optimizer_events WHERE event_id=?1",
+                    [event.event_id.as_deref().unwrap()],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                            row.get(8)?,
+                        ))
+                    },
+                )?;
+                assert_eq!(fields.0, "rollout-780005");
+                assert_eq!(fields.1, "frame");
+                assert_eq!(fields.2, 42);
+                assert_eq!(fields.3, "span-42");
+                assert_eq!(fields.4, "2026-08-27T00:00:00.500Z");
+                assert_ne!(fields.5, event.occurred_at);
+                assert_eq!(fields.6, "host_clock");
+                assert_eq!(fields.7.as_deref(), Some("sha256:producer"));
+                assert_eq!(fields.8, None, "replay payload remains inline for now");
+                let by_rollout: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM optimizer_events
+                     WHERE rollout_id=?1 AND step BETWEEN ?2 AND ?3",
+                    rusqlite::params!["rollout-780005", 40, 44],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(by_rollout, 1);
+                Ok(())
+            })
+            .unwrap();
     }
 
     /// Regression for the A3 Banking77 runs: the sidecar registers candidates
