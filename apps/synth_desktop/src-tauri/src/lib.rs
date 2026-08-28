@@ -5175,7 +5175,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 match visuals_ipc::spawn(ipc_core, ipc_app, ipc_root).await {
                     Ok(connection) => {
-                        crate::platform::logging::report("lib", "eprintln", format!(
+                        crate::platform::logging::report_info("visuals_ipc", "runtime_ready", format!(
                             "Visuals IPC listening at {} (token written to {})",
                             connection.url, connection.path
                         ));
@@ -5204,7 +5204,7 @@ pub fn run() {
                     .await
                     {
                         Ok(connection) => {
-                            crate::platform::logging::report("lib", "eprintln", format!(
+                            crate::platform::logging::report_info("eval_driver", "runtime_ready", format!(
                                 "Eval driver ({}) listening at {} (descriptor {})",
                                 eval_driver::PROTOCOL_VERSION,
                                 connection.url,
