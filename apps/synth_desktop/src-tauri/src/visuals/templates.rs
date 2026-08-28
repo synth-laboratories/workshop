@@ -49,6 +49,9 @@ pub struct TemplateMeta {
     pub description: Option<String>,
     #[serde(default)]
     pub path: Option<String>,
+    /// TSX entry point. Bundled families resolve it through Vite's static
+    /// graph; a `source_kind: "user"` template is compiled in the pane from
+    /// this file through `compileSourcedModule`.
     #[serde(default)]
     pub shell_path: Option<String>,
     /// `renderer.html` packages are imported into the instance-local managed
@@ -172,34 +175,153 @@ fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, 
             templates.insert(meta.id.clone(), meta);
         }
     }
-    let managed_root = user_templates_root();
-    if managed_root.exists() {
-        let mut entries: Vec<_> = fs::read_dir(&managed_root)?
-            .filter_map(|entry| entry.ok())
-            .collect();
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            let path = entry.path();
-            if !path.is_dir()
-                || !path.join("template.json").is_file()
-                || !path.join("renderer.html").is_file()
-            {
-                continue;
-            }
-            let mut meta = load_template_meta(&path)?;
-            if templates.contains_key(&meta.id) {
-                anyhow::bail!(
-                    "managed visual template id collides with bundled template: {}",
-                    meta.id
-                );
-            }
-            meta.path = Some(path.display().to_string());
-            meta.renderer_path = Some(path.join("renderer.html").display().to_string());
-            meta.source_kind = Some("managed".into());
-            templates.insert(meta.id.clone(), meta);
+    scan_user_template_root(&user_templates_root(), &mut templates)?;
+    Ok(templates)
+}
+
+/// One directory under the user template root is exactly one of two shapes.
+///
+/// The two are not interchangeable: they are rendered by different machinery
+/// and therefore carry different capability models. Which files are present
+/// decides which one a directory is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UserTemplateShape {
+    /// `template.json` + `renderer.html`. A reviewed, networkless HTML package
+    /// rendered in a sandboxed iframe under a CSP, immutable after import.
+    Managed,
+    /// `template.json` + `shell.tsx`. Agent- or human-authored TSX compiled in
+    /// the pane through `compileSourcedModule`, so it inherits the whole
+    /// sourced capability model: allowlisted imports, no `fetch` /
+    /// `EventSource` / `WebSocket` / `eval` / `window` / `import.meta`.
+    User,
+}
+
+impl UserTemplateShape {
+    fn source_kind(self) -> &'static str {
+        match self {
+            Self::Managed => "managed",
+            Self::User => "user",
         }
     }
-    Ok(templates)
+}
+
+/// Instance-local templates a user or agent wrote, in either shape.
+///
+/// **Rust does structural validation only** — manifest schema version, id
+/// equals directory, regular files, no symlinks, size cap. It deliberately does
+/// not parse or lint `shell.tsx`. The import allowlist and forbidden-token scan
+/// live in `visuals/runtime/sourcedValidate.ts` and run in the pane, which
+/// fails closed and renders `sourcedInvalidShell` with an exact message. A
+/// second copy of that rule here would be a second implementation to drift, and
+/// removing exactly that class of duplicate is the point of this work.
+fn scan_user_template_root(
+    root: &Path,
+    templates: &mut BTreeMap<String, TemplateMeta>,
+) -> anyhow::Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    let mut entries: Vec<_> = fs::read_dir(root)?
+        .filter_map(|entry| entry.ok())
+        .collect();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        // This root is agent-writable, so the scan refuses symlinks the way the
+        // families recursion and `import_managed_template` always have, rather
+        // than following one out of the instance state root.
+        if entry.file_type()?.is_symlink() {
+            anyhow::bail!(
+                "user visual template registry refuses symlink: {}",
+                path.display()
+            );
+        }
+        if !path.is_dir() {
+            continue;
+        }
+        if checked_template_file(&path.join("template.json"))?.is_none() {
+            continue;
+        }
+        let renderer = path.join("renderer.html");
+        let shell = path.join("shell.tsx");
+        let has_renderer = checked_template_file(&renderer)?.is_some();
+        let has_shell = checked_template_file(&shell)?.is_some();
+        let shape = match (has_renderer, has_shell) {
+            // Ambiguous, so fail closed rather than pick. The two shapes render
+            // through different machinery under different capability models;
+            // silently preferring one would mean the file the author edits is
+            // not the file that runs, and would let whoever can write only the
+            // other file flip which model applies to an existing template.
+            (true, true) => anyhow::bail!(
+                "user visual template declares both renderer.html and shell.tsx: {}",
+                path.display()
+            ),
+            (true, false) => UserTemplateShape::Managed,
+            (false, true) => UserTemplateShape::User,
+            // A manifest with neither source is a scaffold, not a template yet.
+            // Skipped as it always has been, never an error.
+            (false, false) => continue,
+        };
+        let mut meta = load_template_meta(&path)?;
+        if templates.contains_key(&meta.id) {
+            anyhow::bail!(
+                "managed visual template id collides with bundled template: {}",
+                meta.id
+            );
+        }
+        meta.path = Some(path.display().to_string());
+        match shape {
+            UserTemplateShape::Managed => {
+                meta.renderer_path = Some(renderer.display().to_string());
+                meta.shell_path = None;
+            }
+            UserTemplateShape::User => {
+                meta.shell_path = Some(shell.display().to_string());
+                meta.renderer_path = None;
+            }
+        }
+        meta.source_kind = Some(shape.source_kind().into());
+        templates.insert(meta.id.clone(), meta);
+    }
+    Ok(())
+}
+
+/// Structural check for one file in a user template directory: absent is
+/// `Ok(None)`, a usable regular file is `Ok(Some(len))`, and anything else is a
+/// named error rather than a silent skip.
+///
+/// `MANAGED_TEMPLATE_MAX_BYTES` gated only `import_managed_template` before, so
+/// a hand-edited or agent-written file entered the registry uncapped. It is
+/// applied here too, to the manifest and to whichever source the directory
+/// declares. The pane keeps its own, stricter 256 KiB cap on sourced TSX; this
+/// one is the structural backstop, not a replacement for it.
+fn checked_template_file(path: &Path) -> anyhow::Result<Option<u64>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("reading {}", path.display()));
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "user visual template registry refuses symlink: {}",
+            path.display()
+        );
+    }
+    if !metadata.is_file() {
+        anyhow::bail!(
+            "user visual template entry must be a regular file: {}",
+            path.display()
+        );
+    }
+    if metadata.len() > MANAGED_TEMPLATE_MAX_BYTES {
+        anyhow::bail!(
+            "user visual template file exceeds {MANAGED_TEMPLATE_MAX_BYTES} bytes: {}",
+            path.display()
+        );
+    }
+    Ok(Some(metadata.len()))
 }
 
 /// User-authored visual templates for this instance, beside `config.toml` and
@@ -616,5 +738,120 @@ mod tests {
         symlink(outside.path(), temp.path().join("families/escaped")).unwrap();
         let error = build_template_index(temp.path()).unwrap_err().to_string();
         assert!(error.contains("refuses symlink"));
+    }
+
+    /// The user tier is only reached when `families/` exists, so every user
+    /// template test needs a real (possibly empty) bundled root to scan first.
+    fn empty_visuals_root() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("families")).unwrap();
+        temp
+    }
+
+    fn write_user_template(id: &str) -> PathBuf {
+        let path = user_templates_root().join(id);
+        write_template(&path, id);
+        path
+    }
+
+    #[test]
+    fn user_shell_templates_are_discovered_and_tagged() {
+        let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-template");
+        let temp = empty_visuals_root();
+        let shell_dir = write_user_template("user.shell.v1");
+        fs::write(
+            shell_dir.join("shell.tsx"),
+            "export default function Shell() { return null; }\n",
+        )
+        .unwrap();
+        let managed_dir = write_user_template("user.managed.v1");
+        fs::write(managed_dir.join("renderer.html"), "<main></main>").unwrap();
+
+        let indexed = build_template_index(temp.path()).unwrap();
+
+        let shell = indexed.get("user.shell.v1").expect("user template indexed");
+        assert_eq!(shell.source_kind.as_deref(), Some("user"));
+        let expected_shell = shell_dir.join("shell.tsx").display().to_string();
+        assert_eq!(shell.shell_path.as_deref(), Some(expected_shell.as_str()));
+        assert!(shell.renderer_path.is_none());
+
+        // The HTML shape keeps the tag and the field it always had.
+        let managed = indexed
+            .get("user.managed.v1")
+            .expect("managed template indexed");
+        assert_eq!(managed.source_kind.as_deref(), Some("managed"));
+        let expected_renderer = managed_dir.join("renderer.html").display().to_string();
+        assert_eq!(
+            managed.renderer_path.as_deref(),
+            Some(expected_renderer.as_str())
+        );
+        assert!(managed.shell_path.is_none());
+    }
+
+    #[test]
+    fn user_template_manifest_without_a_source_is_skipped() {
+        let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-scaffold");
+        let temp = empty_visuals_root();
+        write_user_template("user.scaffold.v1");
+        let indexed = build_template_index(temp.path()).unwrap();
+        assert!(!indexed.contains_key("user.scaffold.v1"));
+    }
+
+    #[test]
+    fn user_template_id_colliding_with_bundled_family_fails() {
+        let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-collision");
+        let temp = tempfile::tempdir().unwrap();
+        write_template(
+            &temp.path().join("families/analysis/example.v1"),
+            "example.v1",
+        );
+        let user_dir = write_user_template("example.v1");
+        fs::write(user_dir.join("shell.tsx"), "export default () => null;\n").unwrap();
+        let error = build_template_index(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("collides with bundled template"));
+        assert!(error.contains("example.v1"));
+    }
+
+    #[test]
+    fn user_template_declaring_both_shapes_fails_closed() {
+        let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-ambiguous");
+        let temp = empty_visuals_root();
+        let path = write_user_template("user.ambiguous.v1");
+        fs::write(path.join("shell.tsx"), "export default () => null;\n").unwrap();
+        fs::write(path.join("renderer.html"), "<main></main>").unwrap();
+        let error = build_template_index(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("both renderer.html and shell.tsx"));
+        assert!(error.contains("user.ambiguous.v1"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_user_shell_fails_closed() {
+        use std::os::unix::fs::symlink;
+        let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-symlink");
+        let temp = empty_visuals_root();
+        let outside = tempfile::tempdir().unwrap();
+        let planted = outside.path().join("shell.tsx");
+        fs::write(&planted, "export default () => null;\n").unwrap();
+        let path = write_user_template("user.linked.v1");
+        symlink(&planted, path.join("shell.tsx")).unwrap();
+        let error = build_template_index(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("refuses symlink"));
+        assert!(error.contains("shell.tsx"));
+    }
+
+    #[test]
+    fn oversized_user_shell_fails_closed() {
+        let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-oversized");
+        let temp = empty_visuals_root();
+        let path = write_user_template("user.oversized.v1");
+        fs::write(
+            path.join("shell.tsx"),
+            vec![b'/'; (MANAGED_TEMPLATE_MAX_BYTES + 1) as usize],
+        )
+        .unwrap();
+        let error = build_template_index(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("exceeds"));
+        assert!(error.contains("shell.tsx"));
     }
 }
