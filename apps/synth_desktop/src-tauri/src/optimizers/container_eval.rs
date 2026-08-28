@@ -5861,13 +5861,62 @@ mod tests {
                                 })),
                             }
                         }
-                        ("POST", "/reward") => JsonHttpResponse::ok(json!({
-                            "status": "absent",
-                            "reward": null,
-                            "reason": "fixture evaluator produced no measurement",
-                            "rollout_id": request.body["rollout_id"],
-                            "evaluation_plan_ref": request.body["evaluation_plan_ref"],
-                        })),
+                        // Terminal scoring is a real container operation, so an
+                        // `absent` GET is followed by an explicit POST to the
+                        // named evaluation plan. A fixture that 404s here turns
+                        // a missing measurement into a reward-endpoint failure
+                        // and hides the honest typed reason.
+                        ("POST", "/reward") => {
+                            if request.body.get("mode") != Some(&json!("terminal"))
+                                || request.body.get("rescore") != Some(&json!(false))
+                                || request.body.get("evaluation_plan_ref").and_then(Value::as_str).is_none()
+                            {
+                                return JsonHttpResponse::error(
+                                    StatusCode::UNPROCESSABLE_ENTITY,
+                                    "terminal reward request omitted its authority binding",
+                                );
+                            }
+                            let Some(rollout_id) = request
+                                .body
+                                .get("rollout_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                            else {
+                                return JsonHttpResponse::error(
+                                    StatusCode::UNPROCESSABLE_ENTITY,
+                                    "terminal reward request omitted its rollout",
+                                );
+                            };
+                            let seed = rollout_id
+                                .split('_')
+                                .rev()
+                                .nth(1)
+                                .and_then(|value| value.parse::<i64>().ok())
+                                .unwrap_or(0);
+                            let pool = if rollout_id.contains("heldout") {
+                                "heldout".into()
+                            } else {
+                                "train".into()
+                            };
+                            match opts.rewards.get(&(pool, seed)).copied() {
+                                Some(reward) => JsonHttpResponse::ok(json!({
+                                    "status": "scored",
+                                    "reward": reward,
+                                    "rollout_id": rollout_id,
+                                    "evaluation_plan_ref": request.body["evaluation_plan_ref"],
+                                })),
+                                // The plan ran and produced nothing. That is a
+                                // measurement the recipe required and did not
+                                // get, not a broken endpoint.
+                                None => JsonHttpResponse::ok(json!({
+                                    "status": "absent",
+                                    "reward": null,
+                                    "reason": "fixture evaluation plan produced no measurement",
+                                    "rollout_id": rollout_id,
+                                    "evaluation_plan_ref": request.body["evaluation_plan_ref"],
+                                })),
+                            }
+                         }
                         ("GET", path) if path.starts_with("/rollouts/") => {
                             JsonHttpResponse::ok(json!({
                                 "status": "completed",
@@ -6233,7 +6282,11 @@ max_total_rollouts = 4
         assert_eq!(manifest["work"]["succeeded"], json!(0));
         assert_eq!(manifest["work"]["failed"], json!(10));
         let error = finished.error.unwrap_or(Value::Null).to_string();
-        assert!(error.contains("evaluator_measurement_missing"), "{error}");
+        assert!(
+            error.contains("evaluator_measurement_missing"),
+            "{error}\nRECORDS={}",
+            finished.summary["records"]
+        );
         assert!(error.contains("no evaluator measurement"), "{error}");
 
         let events = svc
