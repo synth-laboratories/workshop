@@ -916,6 +916,7 @@ export type CodexApprovalDecisionRequest = {
 	sessionId: string,
 	approvalId: string,
 	decision: string,
+	approvalDigest?: string | null,
 };
 
 export type CodexSessionInfo = {

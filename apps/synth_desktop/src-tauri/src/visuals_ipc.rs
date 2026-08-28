@@ -3053,7 +3053,20 @@ pub(crate) async fn dispatch_optimizer(
                 open_visual,
             )
             .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            .map_err(|error| {
+                if error.code == crate::error::CODE_APPROVAL_EXPIRED {
+                    anyhow::Error::new(
+                        crate::error::StructuredFailure::new(
+                            crate::error::CODE_APPROVAL_EXPIRED,
+                            error.message,
+                            "Re-open the current digest-bound approval sheet and approve it before its displayed deadline.",
+                        )
+                        .retryable(true),
+                    )
+                } else {
+                    anyhow::anyhow!(error.to_string())
+                }
+            })?;
             Ok(json!({
                 "run": run,
                 "sourceKind": "inline",

@@ -388,6 +388,11 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
                 .and_then(Value::as_str)
                 .context("approval resolution requires decision")?
                 .to_string();
+            let approval_digest = body
+                .get("approvalDigest")
+                .or_else(|| body.get("approval_digest"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             deps.codex
                 .resolve_approval(
                     deps.app.clone(),
@@ -395,6 +400,7 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
                         session_id: session_id.clone(),
                         approval_id: approval_id.clone(),
                         decision,
+                        approval_digest,
                     },
                 )
                 .await?;

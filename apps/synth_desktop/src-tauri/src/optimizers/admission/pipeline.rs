@@ -998,9 +998,19 @@ impl ApprovedExecutionSpec {
     /// inputs still match that moment.
     pub fn reverify(
         &self,
+        current_source_revision: &SourceRevision,
         current_declaration_digest: &DeclarationDigest,
         current_policy_revision: &PolicyRevision,
     ) -> Result<(), ExecutionDriftError> {
+        if current_source_revision != &self.spec.recipe.container.source_revision {
+            return Err(ExecutionDriftError::new(
+                DriftCode::ContainerSourceChanged,
+                json!({
+                    "approvedSourceRevision": self.spec.recipe.container.source_revision.as_str(),
+                    "currentSourceRevision": current_source_revision.as_str(),
+                }),
+            ));
+        }
         if current_declaration_digest != &self.spec.recipe.container.declaration_digest {
             return Err(ExecutionDriftError::new(
                 DriftCode::ContainerDeclarationChanged,
@@ -1051,6 +1061,7 @@ impl ApprovedExecutionSpec {
 #[serde(rename_all = "snake_case")]
 pub enum DriftCode {
     ApprovedSpecDigestMismatch,
+    ContainerSourceChanged,
     ContainerDeclarationChanged,
     PolicyRevisionChanged,
     ApprovalBoundsExceeded,
@@ -1060,6 +1071,7 @@ impl DriftCode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ApprovedSpecDigestMismatch => "approved_spec_digest_mismatch",
+            Self::ContainerSourceChanged => "container_source_changed",
             Self::ContainerDeclarationChanged => "container_declaration_changed",
             Self::PolicyRevisionChanged => "policy_revision_changed",
             Self::ApprovalBoundsExceeded => "approval_bounds_exceeded",

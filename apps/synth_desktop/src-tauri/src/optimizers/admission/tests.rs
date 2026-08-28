@@ -809,9 +809,19 @@ fn drift_detected_at_dispatch_demands_a_new_approval_rather_than_a_patch() {
         .approve(binding_for(&admissible))
         .unwrap();
 
+    let source_error = approved
+        .reverify(
+            &SourceRevision::new("harbor-runtime-v2").unwrap(),
+            &approved.recipe().container.declaration_digest,
+            &approved.recipe().policy.revision,
+        )
+        .unwrap_err();
+    assert_eq!(source_error.code, DriftCode::ContainerSourceChanged);
+
     // The declaration moved between approval and dispatch.
     let error = approved
         .reverify(
+            &approved.recipe().container.source_revision,
             &DeclarationDigest::new("sha256:declaration-v2").unwrap(),
             &approved.recipe().policy.revision,
         )
@@ -826,6 +836,7 @@ fn drift_detected_at_dispatch_demands_a_new_approval_rather_than_a_patch() {
     // Unchanged inputs re-verify cleanly.
     approved
         .reverify(
+            &approved.recipe().container.source_revision.clone(),
             &approved.recipe().container.declaration_digest.clone(),
             &approved.recipe().policy.revision.clone(),
         )

@@ -71,6 +71,10 @@ test("finished tool calls show duration only after fifteen seconds", () => {
 test("paid-compute approval is a cap-scoped modal, not a transcript card", () => {
 	const transcript = read("components/ChatTranscript.tsx");
 	assert.match(transcript, /data-testid="paid-compute-approval-modal"/);
+	assert.match(transcript, /data-testid="paid-compute-approve"/);
+	assert.match(transcript, /data-testid="paid-compute-reject"/);
+	assert.match(transcript, /data-approval-digest=\{approvalDigest\}/);
+	assert.match(transcript, /data-expires-at=\{payload\?\.expiresAt\}/);
 	assert.match(transcript, /role="dialog" aria-modal="true"/);
 	assert.match(transcript, />Approve</);
 	assert.match(transcript, /Predicted spend/);

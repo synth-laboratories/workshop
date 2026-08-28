@@ -284,6 +284,8 @@ pub struct CodexApprovalDecisionRequest {
     pub session_id: String,
     pub approval_id: String,
     pub decision: String,
+    #[serde(default)]
+    pub approval_digest: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, specta::Type)]

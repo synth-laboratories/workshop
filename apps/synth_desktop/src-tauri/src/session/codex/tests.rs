@@ -358,6 +358,7 @@ async fn shell_approval_resolves_through_the_broker_and_drains_pending_state() {
                 session_id: request.session_id.clone(),
                 approval_id: approval_id.clone(),
                 decision: "once".into(),
+                approval_digest: None,
             },
         )
         .await
@@ -1948,6 +1949,7 @@ async fn app_server_approval_is_journaled_and_resumes_after_one_approval() {
                 session_id: request.session_id.clone(),
                 approval_id,
                 decision: "once".into(),
+                approval_digest: None,
             },
         )
         .await

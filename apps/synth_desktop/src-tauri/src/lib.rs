@@ -5245,6 +5245,22 @@ async fn codex_approval_resolve(
     request: CodexApprovalDecisionRequest,
 ) -> Result<(), AppError> {
     if approvals.is_pending(&request.approval_id).await {
+        let digest_bound = approvals
+            .pending_kind(&request.approval_id)
+            .await
+            .and_then(|kind| kind.approval_digest().map(str::to_owned));
+        if request.decision != "reject" && digest_bound.is_some() && request.approval_digest.is_none()
+        {
+            return Err(AppError::invalid_argument(
+                "paid-compute approval requires the active proposal digest",
+            ));
+        }
+        if let Some(digest) = request.approval_digest.as_deref() {
+            approvals
+                .validate_exact_digest(&request.approval_id, digest)
+                .await
+                .map_err(AppError::from)?;
+        }
         let decision = approvals
             .decision_from_shell(&request.approval_id, &request.decision)
             .await
@@ -5254,6 +5270,18 @@ async fn codex_approval_resolve(
             .await
             .map_err(AppError::from)?;
         return Ok(());
+    }
+    if let Some(digest) = request.approval_digest.as_deref() {
+        let decision = crate::session::approval::ApprovalDecision::from_shell_wire(
+            &request.decision,
+        )
+        .map_err(AppError::from)?;
+        if approvals
+            .was_resolved_exact(&request.session_id, digest, &decision)
+            .await
+        {
+            return Ok(());
+        }
     }
     match state.resolve_approval(app, request).await {
         Ok(()) => Ok(()),
