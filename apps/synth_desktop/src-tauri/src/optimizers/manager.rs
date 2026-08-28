@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use std::{
     cell::Cell,
     collections::HashMap,
-    env, fs,
+    env, ffi::OsString, fs,
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,
@@ -57,6 +57,11 @@ const API_KEY_FILE: &str = "api_key";
 const PAYLOAD_FILE: &str = "payload.json";
 const MANIFEST_FILE: &str = "manifest.json";
 const WHEELHOUSE_MANIFEST_FILE: &str = "wheelhouse-manifest.json";
+const EMBEDDED_DISTRIBUTION_MANIFEST_FILE: &str = "manifest.json";
+const EMBEDDED_DISTRIBUTION_SCHEMA: &str = "synth.optimizer-runtime-distribution.v1";
+const OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "686f41c413b9368e0dee5bcefa91bc89a2631084";
+const OPTIMIZER_DISTRIBUTION_LOCK_SHA256: &str =
+    "b2c0d9b7c9920ea2cc3d51619709f247b00e3f5919bf15538a6f9d41022e43dd";
 const RUNTIME_LEASE_FILE: &str = "runtime-lease.json";
 #[cfg(test)]
 const TEST_REAL_CHILD_SENTINEL: &str = ".test-real-child";
@@ -152,6 +157,21 @@ struct WheelArtifact {
 struct WheelhouseManifest {
     schema_version: String,
     artifacts: Vec<WheelArtifact>,
+}
+
+/// The release asset carried inside the Workshop bundle. The installer still
+/// writes its own, instance-specific wheelhouse manifest after resolving the
+/// wheel's public dependencies; this manifest only establishes that the
+/// primary, release-pinned Synth wheel came from this signed application.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct EmbeddedOptimizerDistribution {
+    schema_version: String,
+    package: String,
+    version: String,
+    source_revision: String,
+    lock_sha256: String,
+    artifact: WheelArtifact,
 }
 
 impl Default for OptimizerSidecarInstallSpec {
@@ -696,6 +716,25 @@ impl OptimizerManager {
             Some(spec.version.clone())
         );
         let _ = previous_selected;
+        // An install is not finished until what it installed can be used.
+        // Eval consumes this same distribution but keeps its own manifest and
+        // digest, and it used to be provisioned lazily by the first caller who
+        // happened to need it -- so the first workflow attempt after an install
+        // reported the runtime as missing, and only the second one worked.
+        //
+        // Eval is a sub-capability of this package, not the package: a sidecar
+        // that provisions GEPA correctly is still a good install, so a fault
+        // here is reported rather than raised.
+        match super::eval_runtime::provision_and_verify(&selected) {
+            Ok(manifest) => eprintln!(
+                "synth-desktop: provisioned eval runtime {} ({})",
+                manifest.version, manifest.digest
+            ),
+            Err(fault) => eprintln!(
+                "synth-desktop: optimizer {} installed without a usable eval runtime: {fault}",
+                spec.version
+            ),
+        }
         Ok(selected)
     }
 
@@ -2608,9 +2647,7 @@ fn materialize_uv_runtime(
         bail!("failed to create optimizer runtime venv");
     }
     let python = runtime.join("bin/python");
-    let package_source = env::var_os("SYNTH_OPTIMIZER_WHEEL_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("synth-optimizers=={}", spec.version)));
+    let package_source = optimizer_package_source(env::var_os("SYNTH_OPTIMIZER_WHEEL_FILE"), spec)?;
     if package_source.is_absolute() && !package_source.is_file() {
         bail!(
             "optimizer wheel override does not exist: {}",
@@ -2671,6 +2708,75 @@ fn materialize_uv_runtime(
     }
     write_relocatable_optimizer_launcher(&runtime)?;
     Ok(artifacts)
+}
+
+/// An isolated CUA launch deliberately forwards a small allowlist of optional
+/// inputs. Shells represent an omitted optional value as `NAME=""`, so an
+/// empty override must mean the same thing as no override. Passing it through
+/// to `pip download` succeeds without a requirement and leaves an empty
+/// wheelhouse, which makes the product's Install action fail later with a
+/// misleading integrity error.
+fn optimizer_wheel_override(override_path: Option<OsString>) -> Option<PathBuf> {
+    override_path
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn optimizer_package_source(
+    override_path: Option<OsString>,
+    spec: &OptimizerSidecarInstallSpec,
+) -> Result<PathBuf> {
+    if let Some(path) = optimizer_wheel_override(override_path) {
+        return Ok(path);
+    }
+    embedded_optimizer_wheel(spec)
+}
+
+fn embedded_optimizer_wheel(spec: &OptimizerSidecarInstallSpec) -> Result<PathBuf> {
+    let executable = std::env::current_exe().context("resolve Workshop executable")?;
+    let root = executable
+        .parent()
+        .and_then(Path::parent)
+        .map(|contents| contents.join("Resources/runtimes/optimizers"))
+        .ok_or_else(|| anyhow!("resolve Workshop Resources directory"))?;
+    read_embedded_optimizer_wheel(&root, spec)
+}
+
+fn read_embedded_optimizer_wheel(
+    root: &Path,
+    spec: &OptimizerSidecarInstallSpec,
+) -> Result<PathBuf> {
+    let distribution: EmbeddedOptimizerDistribution = serde_json::from_slice(
+        &fs::read(root.join(EMBEDDED_DISTRIBUTION_MANIFEST_FILE))
+            .context("read embedded Optimizers distribution manifest")?,
+    )
+    .context("decode embedded Optimizers distribution manifest")?;
+    if distribution.schema_version != EMBEDDED_DISTRIBUTION_SCHEMA
+        || distribution.package != "synth-optimizers"
+        || distribution.version != spec.version
+        || distribution.source_revision != OPTIMIZER_DISTRIBUTION_SOURCE_REVISION
+        || distribution.lock_sha256 != OPTIMIZER_DISTRIBUTION_LOCK_SHA256
+    {
+        bail!("embedded Optimizers distribution does not match the release pin");
+    }
+    let artifact = distribution.artifact;
+    if artifact.file_name.contains('/') || artifact.file_name.contains('\\') {
+        bail!("embedded Optimizers distribution has an unsafe wheel name");
+    }
+    let expected_prefix = format!("synth_optimizers-{}-", spec.version);
+    if !artifact.file_name.starts_with(&expected_prefix) {
+        bail!(
+            "embedded Optimizers distribution omitted synth-optimizers=={}",
+            spec.version
+        );
+    }
+    let wheel = root.join("wheels").join(&artifact.file_name);
+    let bytes = fs::read(&wheel)
+        .with_context(|| format!("read embedded Optimizers wheel {}", artifact.file_name))?;
+    if bytes.len() as u64 != artifact.size_bytes || sha256_hex(&bytes) != artifact.sha256 {
+        bail!("embedded Optimizers wheel failed digest verification");
+    }
+    Ok(wheel)
 }
 
 #[cfg(unix)]
@@ -3214,6 +3320,60 @@ mod tests {
                 .and_then(|(_, value)| value),
             Some(expected_pythonpath.as_os_str())
         );
+    }
+
+    #[test]
+    fn blank_optimizer_wheel_override_is_not_a_package_source() {
+        assert_eq!(optimizer_wheel_override(Some(OsString::new())), None);
+    }
+
+    #[test]
+    fn optimizer_wheel_override_preserves_a_real_wheel_path() {
+        let path = PathBuf::from("/tmp/synth_optimizers-0.2.19.whl");
+        assert_eq!(
+            optimizer_wheel_override(Some(path.clone().into_os_string())),
+            Some(path)
+        );
+    }
+
+    #[test]
+    fn embedded_optimizer_wheel_requires_the_release_manifest_and_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let wheels = dir.path().join("wheels");
+        fs::create_dir_all(&wheels).unwrap();
+        let file_name = format!("synth_optimizers-{OFFICIAL_SIDECAR_VERSION}-test.whl");
+        let bytes = b"verified bundled wheel";
+        let wheel = wheels.join(&file_name);
+        fs::write(&wheel, bytes).unwrap();
+        let distribution = EmbeddedOptimizerDistribution {
+            schema_version: EMBEDDED_DISTRIBUTION_SCHEMA.into(),
+            package: "synth-optimizers".into(),
+            version: OFFICIAL_SIDECAR_VERSION.into(),
+            source_revision: OPTIMIZER_DISTRIBUTION_SOURCE_REVISION.into(),
+            lock_sha256: OPTIMIZER_DISTRIBUTION_LOCK_SHA256.into(),
+            artifact: WheelArtifact {
+                file_name,
+                sha256: sha256_hex(bytes),
+                size_bytes: bytes.len() as u64,
+            },
+        };
+        fs::write(
+            dir.path().join(EMBEDDED_DISTRIBUTION_MANIFEST_FILE),
+            serde_json::to_vec(&distribution).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_embedded_optimizer_wheel(dir.path(), &catalog_spec(OFFICIAL_SIDECAR_VERSION))
+                .unwrap(),
+            wheel
+        );
+
+        fs::write(&wheel, b"tampered bundled wheel").unwrap();
+        let error =
+            read_embedded_optimizer_wheel(dir.path(), &catalog_spec(OFFICIAL_SIDECAR_VERSION))
+                .unwrap_err();
+        assert!(error.to_string().contains("digest"));
     }
 
     #[tokio::test]

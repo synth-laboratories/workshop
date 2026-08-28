@@ -29,6 +29,7 @@ import type {
 	SkillsBridge,
 	SynthAccountBridge,
 	SynthConfigBridge,
+	ProjectSourcesBridge,
 	TariffsBridge,
 	TerminalBridge,
 	UpdatesBridge,
@@ -71,6 +72,7 @@ declare global {
 		synthContext?: ContextBridge;
 		synthConfig?: SynthConfigBridge;
 		synthWorkspaceScope?: WorkspaceScopeBridge;
+		synthProjectSources?: ProjectSourcesBridge;
 		synthAccount?: SynthAccountBridge;
 		synthCodex?: CodexBridge;
 		synthCodexOauth?: CodexOauthBridge;

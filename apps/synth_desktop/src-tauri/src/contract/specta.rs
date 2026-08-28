@@ -391,6 +391,13 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::adapters::tauri::logs_query,
             crate::adapters::tauri::failure_export_bundle,
             crate::adapters::tauri::observability_status,
+            crate::project_sources_get,
+            crate::project_sources_refresh,
+            crate::project_source_add,
+            crate::project_source_remove,
+            crate::project_source_requests_list,
+            crate::project_source_approve,
+            crate::project_source_deny,
         ])
 }
 
@@ -552,6 +559,10 @@ mod tests {
         // Read-only on purpose — there is no write, no delete, and no
         // arbitrary-path read, because a viewer that could also write would
         // need the approval machinery the agent's own tools already own.
+        // → +7 (phase-A project sources): persistent, inspectable roots
+        // Workshop may discover executable declarations in — get/refresh,
+        // human-only add/remove, and the pending agent-request inbox with its
+        // picker-confirmed approve and its deny.
         assert_eq!(
             exported, 295,
             "generated bindings must contain the complete desktop command set"

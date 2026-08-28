@@ -42,6 +42,9 @@ or filesystem search to discover this tool.
 | `show` | `{ "visual_id": string, "session_id"?: string }` |
 | `fork` | `{ "visual_id": string, "title"?: string }` |
 | `archive` | `{ "visual_id": string }` |
+| `experiment_create` | `{ "request_id": string, "title": string, "task"?: string, "model"?: string }` — creates or reopens the current task's durable experiment record; `request_id` is the idempotency key. |
+| `experiment_attach_evidence` | `{ "experiment_id": string, "evidence_id": string, "kind": "trace" \| "visual" \| "artifact" \| "container", "label": string, ... }` — attaches a durable evidence reference; a container evidence item requires `container_id`. |
+| `experiment_finalize` | `{ "experiment_id": string, "status": "completed" \| "partial" \| "failed", "result": object, "assessment"?: object }` — record measured results honestly; use `null` for missing values. |
 | `authoring_context` | `{ "visual_id": string }` |
 | `capture_review` | `{ "visual_id": string, "viewport": {"width": number, "height": number} }` — returns an attached PNG plus `screenshot_path` |
 | `review` | `{ "visual_id": string, "revision": number, "viewport": {"width": number, "height": number}, "checks": object, "findings": string[], "screenshot_path"?: string }` (`screenshot_path` is required for systems visuals) |
@@ -52,6 +55,8 @@ For example, list templates with
 Do not invent separate callable names such as
 `mcp__synth_visuals__visual_create`; legacy MCP names remain compatible for
 other clients but are intentionally not advertised to Codex.
+Use the same `visual_manage` facade for experiment lifecycle operations; do
+not call a separate `experiment_create` tool.
 
 ## Workflow
 

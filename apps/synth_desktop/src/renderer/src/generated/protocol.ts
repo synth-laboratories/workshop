@@ -63,11 +63,10 @@ export const commands = {
 	optimizersRecipesList: () => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("optimizers_recipes_list")),
 	optimizersRecipeStart: (request: OptimizerRecipeRunRequest) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_recipe_start", { request })),
 	/**
-	 *  Freeze policy files from the session's workspace into one immutable
-	 *  candidate set. Its id is the only policy input `optimizers_recipe_start`
-	 *  accepts for an `eval.*` recipe.
+	 *  Freeze inline policy source into one immutable candidate set. Its id is the
+	 *  only policy input `optimizers_recipe_start` accepts for an `eval.*` recipe.
 	 */
-	optimizersStageEvalCandidates: (request: EvalStageCandidatesRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("optimizers_stage_eval_candidates", { request })),
+	optimizersStageEvalCandidates: (request: EvalStageCandidatesRequest_Deserialize) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("optimizers_stage_eval_candidates", { request })),
 	optimizersList: (query: {
 	status: string | null,
 	algorithmId: string | null,
@@ -591,6 +590,47 @@ export const commands = {
 	logsQuery: (request: LogQuery) => typedError<LogQueryResult, AppError_Serialize>(__TAURI_INVOKE("logs_query", { request })),
 	failureExportBundle: (failureId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("failure_export_bundle", { failureId })),
 	observabilityStatus: () => __TAURI_INVOKE<ObservabilityStatus>("observability_status"),
+	projectSourcesGet: () => typedError<ProjectSourceCatalog, AppError_Serialize>(__TAURI_INVOKE("project_sources_get")),
+	projectSourcesRefresh: () => typedError<ProjectSourceCatalog, AppError_Serialize>(__TAURI_INVOKE("project_sources_refresh")),
+	/**
+	 *  Add a project source the operator chose in Settings.
+	 *
+	 *  Runs the same validation as an approved agent request: canonicalize, refuse
+	 *  a root too broad to be one project, and require at least one declaration
+	 *  that parses. Settings is the only place a deliberately broad root such as a
+	 *  whole checkout directory can be added, and it is added by a person.
+	 */
+	projectSourceAdd: (containers: boolean, recipes: boolean) => typedError<{
+	configPath: string,
+	sources: ProjectSourceRow[],
+	/**
+	 *  Roots in effect that are *not* persisted -- environment overrides,
+	 *  remembered provenance, the development fallback. Shown so the user can
+	 *  see why discovery behaves as it does without reading the launcher.
+	 */
+	implicitRoots: ProjectSourceRow[],
+} | null, AppError_Serialize>(__TAURI_INVOKE("project_source_add", { containers, recipes })),
+	projectSourceRemove: (path: string) => typedError<ProjectSourceCatalog, AppError_Serialize>(__TAURI_INVOKE("project_source_remove", { path })),
+	projectSourceRequestsList: (sessionId: string | null) => typedError<ProjectSourceRequest[], AppError_Serialize>(__TAURI_INVOKE("project_source_requests_list", { sessionId })),
+	/**
+	 *  Approve one pending project-source request.
+	 *
+	 *  The picker selection is passed to the backend separately from the path the
+	 *  agent requested, and admission happens only if the two canonicalize to the
+	 *  same directory. Choosing the parent folder in the dialog does not widen the
+	 *  grant; it fails.
+	 */
+	projectSourceApprove: (requestId: string) => typedError<{
+	request: ProjectSourceRequest,
+	source: ProjectSourceRow,
+	catalog: ProjectSourceCatalog,
+	/**
+	 *  Present only when the request asked to attach the folder to its
+	 *  conversation and that attachment succeeded.
+	 */
+	scope: ConversationWorkspaceScope | null,
+} | null, AppError_Serialize>(__TAURI_INVOKE("project_source_approve", { requestId })),
+	projectSourceDeny: (requestId: string) => typedError<ProjectSourceRequest, AppError_Serialize>(__TAURI_INVOKE("project_source_deny", { requestId })),
 };
 
 /* Types */
@@ -1348,16 +1388,34 @@ export type EvalAggregate = {
 	evidenceRefCount: number,
 };
 
-/**
- *  One staged policy. `path` is relative to the session's workspace: absolute
- *  paths and parent traversal are refused rather than sanitized.
- */
-export type EvalCandidateSource = {
+/**  One policy whose source is supplied directly to the host as bounded data. */
+export type EvalCandidateSource = EvalCandidateSource_Serialize | EvalCandidateSource_Deserialize;
+
+/**  One policy whose source is supplied directly to the host as bounded data. */
+export type EvalCandidateSource_Deserialize = {
 	label: string,
-	path: string,
+	content: string,
 	entrypoint?: string | null,
 	kind?: string | null,
 	baseline?: boolean | null,
+	/**  Retained only to turn old clients into an actionable migration error. */
+	path?: string | null,
+} & {
+	fileName?: string | null,
+} | {
+	file_name?: string | null,
+};
+
+/**  One policy whose source is supplied directly to the host as bounded data. */
+export type EvalCandidateSource_Serialize = {
+	label: string,
+	content: string,
+	fileName: string | null,
+	entrypoint: string | null,
+	kind: string | null,
+	baseline: boolean | null,
+	/**  Retained only to turn old clients into an actionable migration error. */
+	path: string | null,
 };
 
 export type EvalProjection = {
@@ -1401,9 +1459,19 @@ export type EvalRunView = {
 
 export type EvalSelection = "promotion_not_applicable" | "inconclusive";
 
-export type EvalStageCandidatesRequest = {
-	sessionRef: string,
-	candidates: EvalCandidateSource[],
+export type EvalStageCandidatesRequest = EvalStageCandidatesRequest_Serialize | EvalStageCandidatesRequest_Deserialize;
+
+export type EvalStageCandidatesRequest_Deserialize = {
+	candidates: EvalCandidateSource_Deserialize[],
+} & {
+	/**  Retained only to turn old clients into an actionable migration error. */
+	sessionRef?: string | null,
+};
+
+export type EvalStageCandidatesRequest_Serialize = {
+	candidates: EvalCandidateSource_Serialize[],
+	/**  Retained only to turn old clients into an actionable migration error. */
+	sessionRef: string | null,
 };
 
 export type EventSource = "local" | "remote" | "intern" | "codex" | "system" | "mlx" | "visual" | "report";
@@ -2758,6 +2826,63 @@ export type PluginStatus = {
 	detail?: string | null,
 };
 
+export type ProjectSourceApproval = {
+	request: ProjectSourceRequest,
+	source: ProjectSourceRow,
+	catalog: ProjectSourceCatalog,
+	/**
+	 *  Present only when the request asked to attach the folder to its
+	 *  conversation and that attachment succeeded.
+	 */
+	scope: ConversationWorkspaceScope | null,
+};
+
+export type ProjectSourceCatalog = {
+	configPath: string,
+	sources: ProjectSourceRow[],
+	/**
+	 *  Roots in effect that are *not* persisted -- environment overrides,
+	 *  remembered provenance, the development fallback. Shown so the user can
+	 *  see why discovery behaves as it does without reading the launcher.
+	 */
+	implicitRoots: ProjectSourceRow[],
+};
+
+/**  What Workshop found beneath one root, without running anything. */
+export type ProjectSourceInspection = {
+	path: string,
+	/**  `valid`, `invalid`, or `missing`. */
+	status: string,
+	code: string | null,
+	message: string | null,
+	containers: string[],
+	recipes: string[],
+};
+
+export type ProjectSourceRequest = {
+	id: string,
+	sessionId: string | null,
+	requestedPath: string,
+	canonicalPath: string,
+	reason: string,
+	containers: boolean,
+	recipes: boolean,
+	attachToConversation: boolean,
+	status: string,
+	createdAt: string,
+	resolvedAt: string | null,
+};
+
+/**  One persisted project source plus its current validation state. */
+export type ProjectSourceRow = {
+	path: string,
+	containers: boolean,
+	recipes: boolean,
+	origin: RootOrigin,
+	inspection: ProjectSourceInspection,
+	lastScannedAt: string | null,
+};
+
 export type ProviderUsePolicy = {
 	operations: string[],
 	models: string[],
@@ -3164,6 +3289,12 @@ export type RolloutEvidenceEntry = {
  *  rollout was open, partially sealed, aborted, or never produced evidence.
  */
 export type RolloutEvidenceState = "open" | "sealed_complete" | "sealed_partial" | "aborted" | "missing";
+
+/**
+ *  Where an effective root came from. Reported in diagnostics so "no sources"
+ *  can be told apart from "sources configured, none of them valid".
+ */
+export type RootOrigin = "configured" | "environment" | "remembered" | "development_fallback";
 
 /**  Execution health, stored beside lifecycle rather than as a status. */
 export type RunCondition = "healthy" | "environment_unreachable" | "waiting_for_producer" | "producer_sequence_blocked";

@@ -114,6 +114,11 @@ import type {
 	VisualUpload,
 	WhisperModelHit,
 	WhisperRuntimeStatus,
+	ProjectSourceApproval,
+	ProjectSourceCatalog,
+	ProjectSourceInspection,
+	ProjectSourceRequest,
+	ProjectSourceRow,
 	WorkspaceAccessMode,
 	WorkspaceAccessSettings,
 	WorkspaceAttachment,
@@ -201,6 +206,11 @@ export type {
 	VisualUpload,
 	WhisperModelHit,
 	WhisperRuntimeStatus,
+	ProjectSourceApproval,
+	ProjectSourceCatalog,
+	ProjectSourceInspection,
+	ProjectSourceRequest,
+	ProjectSourceRow,
 	WorkspaceAccessMode,
 	WorkspaceAccessSettings,
 	WorkspaceAttachment,
@@ -1065,6 +1075,25 @@ export type WorkspaceScopeBridge = {
 	listGrants(sessionId: string): Promise<WorkspaceGrantRequest[]>;
 	approveRequest(requestId: string): Promise<ConversationWorkspaceScope | null>;
 	denyRequest(requestId: string): Promise<WorkspaceGrantRequest>;
+};
+
+/**
+ * Project sources: folders Workshop may discover executable declarations in.
+ *
+ * Deliberately separate from `WorkspaceScopeBridge`. A workspace attachment
+ * grants file access to one conversation; a project source additionally lets
+ * declared container commands from that folder be started. `approve` opens the
+ * native picker and admits only if the selection matches the requested folder,
+ * so no method here can widen a grant on its own.
+ */
+export type ProjectSourcesBridge = {
+	get(): Promise<ProjectSourceCatalog>;
+	refresh(): Promise<ProjectSourceCatalog>;
+	add(containers: boolean, recipes: boolean): Promise<ProjectSourceCatalog | null>;
+	remove(path: string): Promise<ProjectSourceCatalog>;
+	listRequests(sessionId: string | null): Promise<ProjectSourceRequest[]>;
+	approveRequest(requestId: string): Promise<ProjectSourceApproval | null>;
+	denyRequest(requestId: string): Promise<ProjectSourceRequest>;
 };
 
 export type SemanticEvalApi = {

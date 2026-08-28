@@ -66,6 +66,7 @@ import {
 import { chatInferencePhase } from "../runtime/chatWarmingState";
 import { approvalModeFromConfig, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "../runtime/nativeCodex";
 import { LOCAL_BASE_POLICY } from "../runtime/lagunaPolicies";
+import { restartContinuationPrompt } from "../runtime/restartRecovery";
 import type { LagunaPolicy } from "../bridge/types";
 import {
 	loadModelKnobValues,

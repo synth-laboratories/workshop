@@ -48,6 +48,7 @@ mod optimizers;
 mod platform;
 mod plugins;
 pub mod presentation;
+mod project_sources;
 pub mod recovery;
 pub mod release_tier;
 mod reports;
@@ -135,6 +136,7 @@ use visuals::{
     VisualCreateRequest, VisualQuery, VisualRecord, VisualRendition, VisualRevision, VisualSeal,
     VisualSealBundle, VisualUpdateRequest, VisualUpload,
 };
+use project_sources::{ProjectSourceApproval, ProjectSourceCatalog, ProjectSourceRequest};
 use workspace_scope::WorkspaceGrantRequest;
 use workspace_scope::{ConversationWorkspaceScope, WorkspaceAccessMode};
 
@@ -944,9 +946,8 @@ async fn optimizers_recipes_list(
         .collect())
 }
 
-/// Freeze policy files from the session's workspace into one immutable
-/// candidate set. Its id is the only policy input `optimizers_recipe_start`
-/// accepts for an `eval.*` recipe.
+/// Freeze inline policy source into one immutable candidate set. Its id is the
+/// only policy input `optimizers_recipe_start` accepts for an `eval.*` recipe.
 #[tauri::command]
 #[specta::specta]
 async fn optimizers_stage_eval_candidates(
@@ -1015,9 +1016,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .unwrap_or_else(|| "Workshop operator".into());
     let algorithm_id = recipe.get("algorithmId").and_then(Value::as_str);
     let is_local_eval = algorithm_id == Some("eval");
-    let is_container_baseline_eval = is_local_eval
-        && recipe.get("source").and_then(Value::as_str) == Some("workspace")
-        && recipe.get("semantics").and_then(Value::as_str) == Some("baseline_eval");
+    let is_container_baseline_eval = is_local_eval && is_source_declared_baseline_eval(&recipe);
     // Hosted SFT is owned by the public synth-optimizers control plane and
     // does not use the optional local Optimizers sidecar. Requiring that
     // sidecar made an otherwise configured public SFT recipe unreachable.
@@ -1455,6 +1454,14 @@ fn optimizer_recipe_credentials_from_catalog(recipe: &Value, recipe_id: &str) ->
     })
 }
 
+fn is_source_declared_baseline_eval(recipe: &Value) -> bool {
+    recipe.get("semantics").and_then(Value::as_str) == Some("baseline_eval")
+        && matches!(
+            recipe.get("source").and_then(Value::as_str),
+            Some("workspace" | "catalog")
+        )
+}
+
 #[cfg(test)]
 mod optimizer_recipe_credential_tests {
     use super::*;
@@ -1469,6 +1476,26 @@ mod optimizer_recipe_credential_tests {
             optimizer_recipe_credentials_from_catalog(&recipe, "gepa.openrouter.smoke.v1"),
             vec!["OPENROUTER_API_KEY"]
         );
+    }
+
+    #[test]
+    fn catalog_baseline_eval_is_source_declared_without_candidates() {
+        let recipe = serde_json::json!({
+            "algorithmId": "eval",
+            "source": "catalog",
+            "semantics": "baseline_eval"
+        });
+        assert!(is_source_declared_baseline_eval(&recipe));
+    }
+
+    #[test]
+    fn shipped_baseline_label_does_not_gain_source_authority() {
+        let recipe = serde_json::json!({
+            "algorithmId": "eval",
+            "source": "shipped",
+            "semantics": "baseline_eval"
+        });
+        assert!(!is_source_declared_baseline_eval(&recipe));
     }
 }
 
@@ -4741,6 +4768,130 @@ async fn workspace_scope_approve_request(
         .await
         .map_err(AppError::from)?;
     Ok(Some(scope))
+}
+
+/// Open the native folder picker and return the chosen path.
+///
+/// Shared by every project-source command so admission always originates from
+/// a selection the person at the keyboard made in a native dialog, never from
+/// a path the renderer or an agent supplied.
+async fn pick_project_folder(app: &tauri::AppHandle, title: &str) -> Result<Option<String>, AppError> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title(title)
+        .pick_folder(move |path| {
+            let _ = sender.send(path.map(|value| value.to_string()));
+        });
+    receiver.await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn project_sources_get(
+    core: State<'_, Arc<CoreRuntime>>,
+) -> Result<ProjectSourceCatalog, AppError> {
+    project_sources::catalog(core.storage().database()).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn project_sources_refresh(
+    core: State<'_, Arc<CoreRuntime>>,
+) -> Result<ProjectSourceCatalog, AppError> {
+    project_sources::refresh(core.storage().database())
+        .await
+        .map_err(AppError::from)?;
+    project_sources::catalog(core.storage().database()).map_err(AppError::from)
+}
+
+/// Add a project source the operator chose in Settings.
+///
+/// Runs the same validation as an approved agent request: canonicalize, refuse
+/// a root too broad to be one project, and require at least one declaration
+/// that parses. Settings is the only place a deliberately broad root such as a
+/// whole checkout directory can be added, and it is added by a person.
+#[tauri::command]
+#[specta::specta]
+async fn project_source_add(
+    app: tauri::AppHandle,
+    core: State<'_, Arc<CoreRuntime>>,
+    containers: bool,
+    recipes: bool,
+) -> Result<Option<ProjectSourceCatalog>, AppError> {
+    let Some(path) = pick_project_folder(&app, "Choose a project source folder").await? else {
+        return Ok(None);
+    };
+    project_sources::add_from_picker(core.storage().database(), &path, containers, recipes)
+        .await
+        .map(Some)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn project_source_remove(
+    core: State<'_, Arc<CoreRuntime>>,
+    path: String,
+) -> Result<ProjectSourceCatalog, AppError> {
+    project_sources::remove(core.storage().database(), &path)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn project_source_requests_list(
+    core: State<'_, Arc<CoreRuntime>>,
+    session_id: Option<String>,
+) -> Result<Vec<ProjectSourceRequest>, AppError> {
+    project_sources::list_requests(core.storage().database(), session_id.as_deref())
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn project_source_deny(
+    core: State<'_, Arc<CoreRuntime>>,
+    request_id: String,
+) -> Result<ProjectSourceRequest, AppError> {
+    project_sources::deny(core.storage().database(), &request_id)
+        .await
+        .map_err(AppError::from)
+}
+
+/// Approve one pending project-source request.
+///
+/// The picker selection is passed to the backend separately from the path the
+/// agent requested, and admission happens only if the two canonicalize to the
+/// same directory. Choosing the parent folder in the dialog does not widen the
+/// grant; it fails.
+#[tauri::command]
+#[specta::specta]
+async fn project_source_approve(
+    app: tauri::AppHandle,
+    core: State<'_, Arc<CoreRuntime>>,
+    codex: State<'_, Arc<CodexManager>>,
+    request_id: String,
+) -> Result<Option<ProjectSourceApproval>, AppError> {
+    let Some(path) =
+        pick_project_folder(&app, "Confirm the exact requested project folder").await?
+    else {
+        return Ok(None);
+    };
+    let approval = project_sources::approve(core.storage().database(), &request_id, &path)
+        .await
+        .map_err(AppError::from)?;
+    // Only an approval that also attached the folder changed the conversation's
+    // scope; fencing otherwise would interrupt a running turn for nothing.
+    if let Some(scope) = approval.scope.as_ref() {
+        codex
+            .fence_attachment(&scope.session_id)
+            .await
+            .map_err(AppError::from)?;
+    }
+    Ok(Some(approval))
 }
 
 /// Fills in the provider secrets and Laguna base URL that only the Rust side

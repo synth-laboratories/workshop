@@ -58,20 +58,21 @@ no winner, and saying "completed" alone misrepresents it.
 
 ## Stage before you start
 
-`start_workflow` takes a `candidate_set_id`, never a path or inline code. Create or
-identify the policy files in the session workspace first, then freeze them:
+`start_workflow` takes a `candidate_set_id`, never a path or inline code. Stage
+the bounded policy source as data first; Workshop writes it into its own
+immutable candidate store. It never resolves a session workspace or any source
+path while staging:
 
 ```json
 {"operation":"stage_eval_candidates","arguments":{
   "candidates":[
-    {"label":"baseline","path":"policies/baseline","entrypoint":"heuristic_baseline:choose_actions","kind":"python-code.craftax-choose-actions.v1","baseline":true},
-    {"label":"memory-v2","path":"policies/memory_v2","entrypoint":"heuristic_baseline:choose_actions","kind":"python-code.craftax-choose-actions.v1"}
+    {"label":"baseline","content":"def choose_actions(*args):\\n    return []\\n","file_name":"policy.py","entrypoint":"policy:choose_actions","kind":"python-code.craftax-choose-actions.v1","baseline":true},
+    {"label":"memory-v2","content":"def choose_actions(*args):\\n    return []\\n","file_name":"policy.py","entrypoint":"policy:choose_actions","kind":"python-code.craftax-choose-actions.v1"}
   ]}}
 ```
 
-Paths are **workspace-relative**; absolute paths and `..` are refused. The
-host fills in the calling session, so omit `session_ref` rather than inventing
-one. Mark
+Each candidate is limited to 1 MiB and `file_name` must be a simple file name.
+Paths and `session_ref` are not accepted. Mark
 exactly one baseline — a recipe whose `decision_mode` is `promote` cannot compute
 a paired lift without one, and will return `inconclusive`.
 
@@ -102,10 +103,10 @@ loop, a fixture, or a similarly named recipe as a replacement.
 | `eval.gamebench.craftax-code-policy.confirm.v1` | `python-code.craftax-choose-actions.v1` | promotes |
 | `eval.gamebench.llm-policy.confirm.v1` | `llm-policy.v1` | promotes |
 
-Workspace baseline evals (`algorithm = "eval"` in `workshop.recipe.toml`) are
+Source-declared baseline evals (`algorithm = "eval"` in `workshop.recipe.toml`) are
 fixed measurement recipes, not candidate comparisons. They appear in
-`list_recipes` only after the session workspace declares them. Start the
-workspace `recipe_id` directly with `open_visual: true`; do not invent or stage
+`list_recipes` only after a configured desktop source root declares them. Start the
+catalog `recipe_id` directly with `open_visual: true`; do not invent or stage
 a candidate set. Pass `container_id` from `container_ensure` whenever more than
 one healthy pool advertises that family — omitting it then fails closed rather
 than substituting whichever probe happened last. They must complete every owed
@@ -114,16 +115,16 @@ credential, keep policy and grader usage separate.
 
 ```json
 {"operation":"start_workflow","arguments":{
-  "recipe_id":"<workspace recipe id>",
+  "recipe_id":"<catalog recipe id>",
   "container_id":"ctr_from_container_ensure",
   "open_visual":true}}
 ```
 
 ### LLM candidates
 
-For an `llm-policy.v1` recipe the candidate is **data, not code**: a directory
-containing `policy.toml`, staged with `kind: "llm-policy.v1"` and
-`entrypoint: "policy.toml"`.
+For an `llm-policy.v1` recipe the candidate is **data, not code**: pass the
+`policy.toml` content with `file_name: "policy.toml"`,
+`kind: "llm-policy.v1"`, and `entrypoint: "policy.toml"`.
 
 ```toml
 model = "gpt-5.6-luna"   # must be in the recipe's published `models` allowlist

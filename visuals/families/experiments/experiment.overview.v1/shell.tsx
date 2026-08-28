@@ -230,6 +230,53 @@ export type ShellProps = {
 
 const MISSING = "—";
 
+enum ExperimentProjectionErrorCode {
+  ModelMissing = "experiment_model_missing",
+  ProgressMissing = "experiment_progress_missing",
+  ProgressOutOfRange = "experiment_progress_out_of_range",
+  TerminalPhaseMismatch = "experiment_terminal_phase_mismatch",
+  TerminalRolloutsMissing = "experiment_terminal_rollouts_missing"
+}
+
+class ExperimentProjectionError extends Error {
+  constructor(readonly code: ExperimentProjectionErrorCode, message: string) {
+    super(message);
+    this.name = "ExperimentProjectionError";
+  }
+}
+
+function assertExperimentProjection(experiment: ExperimentOverview): void {
+  // The shared template also renders descriptive, non-executable experiments.
+  // A runtime harness marks the strict executable-evaluation contract.
+  if (!text(experiment.runtime?.harness)) return;
+  const status = experiment.status;
+  const terminal = status === "completed" || status === "failed" || status === "cancelled";
+  if (!text(experiment.runtime?.model)) {
+    throw new ExperimentProjectionError(ExperimentProjectionErrorCode.ModelMissing, "Runtime model is required for an evaluation projection.");
+  }
+  if (!experiment.progress || experiment.progress.completed == null || experiment.progress.total == null) {
+    throw new ExperimentProjectionError(ExperimentProjectionErrorCode.ProgressMissing, "Evaluation progress requires completed and total counts.");
+  }
+  if (experiment.progress.total <= 0 || experiment.progress.completed < 0 || experiment.progress.completed > experiment.progress.total) {
+    throw new ExperimentProjectionError(ExperimentProjectionErrorCode.ProgressOutOfRange, "Evaluation progress counts are outside the declared plan.");
+  }
+  if (terminal && experiment.progress.phase !== status) {
+    throw new ExperimentProjectionError(ExperimentProjectionErrorCode.TerminalPhaseMismatch, `Terminal status ${status} cannot use phase ${experiment.progress.phase ?? "missing"}.`);
+  }
+  if (terminal && (experiment.results?.rollouts?.length ?? 0) !== experiment.progress.total) {
+    throw new ExperimentProjectionError(ExperimentProjectionErrorCode.TerminalRolloutsMissing, "A terminal evaluation must include one rollout result per planned trial.");
+  }
+}
+
+function ProjectionFailure({ error, title }: { error: ExperimentProjectionError; title?: string }) {
+  return <VisualChrome title={title ?? "Invalid experiment projection"} lede="The producer emitted an inconsistent evaluation record." testId="visual-experiment-overview-error">
+    <section className="sv-section" role="alert" style={{ borderColor: "#b42318", background: "#fff5f5" }}>
+      <strong style={{ color: "#b42318" }}>{error.code}</strong>
+      <p style={{ marginBottom: 0 }}>{error.message}</p>
+    </section>
+  </VisualChrome>;
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>

@@ -6,6 +6,9 @@ export const LOCAL_BASE_POLICY = "poolside/Laguna-XS-2.1-NVFP4-mlx";
 export const LOCAL_FT_POLICY = "synth/Laguna-XS-2.1-ft";
 
 export function policyLabel(policy: LagunaPolicy): string {
+	// The policy id is the value sent to Laguna. Render it instead of a
+	// generic role ("Base model") or an optional catalog title so the picker
+	// always tells the user exactly which base/LoRA policy a turn will use.
 	return policy.modelId;
 }
 

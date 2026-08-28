@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { LagunaPolicy } from "../bridge/types";
-import { policyLabel, policySpeed } from "../runtime/lagunaPolicies";
+import { LOCAL_BASE_POLICY, policyLabel, policySpeed } from "../runtime/lagunaPolicies";
 
 type Props = {
 	adapters: LagunaPolicy[];
@@ -20,7 +20,7 @@ export function LagunaAdapterPicker({
 	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
 	const selected = adapters.find((adapter) => adapter.modelId === selectedId);
-	const label = selected ? policyLabel(selected) : "Base model";
+	const label = selected ? policyLabel(selected) : LOCAL_BASE_POLICY;
 
 	useEffect(() => {
 		if (!open) return;

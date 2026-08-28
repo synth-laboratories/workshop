@@ -105,8 +105,40 @@ fn parse_status_code(head: &str) -> Option<u16> {
         .ok()
 }
 
+const CONTAINER_OPERATIONS: &[(&str, &str)] = &[
+    ("list", "container_list"),
+    ("discover", "container_discover"),
+    ("request_project_source", "project_source_request"),
+    ("ensure", "container_ensure"),
+    ("get", "container_get"),
+    ("probe", "container_probe"),
+    ("prepare_rollout", "container_prepare_rollout"),
+    ("start_prepared_rollout", "container_start_prepared_rollout"),
+    ("get_rollout", "container_get_rollout"),
+    ("poll_rollout", "container_poll_rollout"),
+    ("create_campaign", "campaign_create"),
+    ("campaign_status", "campaign_status"),
+    ("campaign_result", "campaign_result"),
+    ("run_rollouts", "container_run_rollouts"),
+];
+
+fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
+    CONTAINER_OPERATIONS
+        .iter()
+        .find_map(|(candidate, tool)| (*candidate == operation).then_some(*tool))
+        .ok_or_else(|| {
+            let supported = CONTAINER_OPERATIONS
+                .iter()
+                .map(|(candidate, _)| *candidate)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("unknown container operation {operation}; supported operations: {supported}")
+        })
+}
+
 fn tools() -> Value {
-    json!({"tools":[
+    let mut catalog = json!({"tools":[
+        {"name":"container_manage","description":"Synth container registry and rollout workflows. Use operation discover to find desktop-catalogued sources independent of chat workspaces; then ensure, probe, and get a live service. Do not scan ports, use a shell, or invent a source. Use create_campaign and the prepared-rollout operations only for declared live evaluation workflows.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Container registry or rollout operation."},"arguments":{"type":"object","description":"Operation arguments.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
         {"name":"container_list","description":"List registered local containers with cached readiness, task family, and the typed live-eval capability projection (operations, advertised policy_refs, capability source, observation time)","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
         {"name":"container_ensure","description":"Start or attach the container spec declared in workshop.containers.toml. Relative launch paths resolve against that declaring repository, not the chat or instance workspace. Waits until /health succeeds and returns the registered handle. Does not scan ports. v1 is a supervised child process, not Docker.","inputSchema":{"type":"object","properties":{"spec_id":{"type":"string","description":"id from workshop.containers.toml"},"session_ref":{"type":"string","description":"Optional. Defaults to the calling session."}},"required":["spec_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}},
         {"name":"container_get","description":"Get a container including cached health, hydrated /info metadata, and metadata.capabilities: the typed live-eval capability state. Health proves liveness only; read capabilities.operations before planning a prepared-rollout workflow.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
@@ -119,7 +151,19 @@ fn tools() -> Value {
         ,{"name":"container_get_rollout","description":"Restore authoritative rollout lifecycle state after a timeout or reconnect without starting work.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"}},"required":["container_id","rollout_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
         ,{"name":"container_poll_rollout","description":"Resume the exact declared poll stream after a sequence cursor. Returns events plus authoritative high_water and closed cursor state; it never re-executes the rollout.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"stream":{"type":"object"},"after":{"type":"integer","minimum":0}},"required":["container_id","rollout_id","stream"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
         ,{"name":"container_run_rollouts","description":"Scripted engine-acceptance only: 1-10 bounded rollouts with an explicit action list. Not a ReAct or model evaluation. Live policy evals use container_prepare_rollout then container_start_prepared_rollout with policy_ref.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":10},"seeds":{"type":"array","items":{"type":"integer"},"maxItems":10},"actions":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64}},"required":["container_id","count","actions"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":true}}
-    ]})
+    ]});
+    if let Some(facade) = catalog["tools"]
+        .as_array_mut()
+        .and_then(|items| items.iter_mut().find(|tool| tool["name"] == "container_manage"))
+    {
+        facade["inputSchema"]["properties"]["operation"]["enum"] = Value::Array(
+            CONTAINER_OPERATIONS
+                .iter()
+                .map(|(operation, _)| Value::String((*operation).into()))
+                .collect(),
+        );
+    }
+    catalog
 }
 
 fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
@@ -129,32 +173,63 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             .ok_or_else(|| "container_id required".to_string())
     };
     match name {
+        "container_manage" => {
+            let operation = args
+                .get("operation")
+                .and_then(Value::as_str)
+                .ok_or("operation required")?;
+            let arguments = args
+                .get("arguments")
+                .filter(|value| value.is_object())
+                .ok_or("arguments must be an object")?;
+            call_tool(managed_tool_name(operation)?, arguments)
+        }
         "container_list" => request("GET", "/v1/containers", None),
+        "container_discover" => request(
+            "POST",
+            "/v1/container-sources/discover",
+            Some(json!({"query": args.get("query")})),
+        ),
+        "project_source_request" => {
+            let path = args
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "path required".to_string())?;
+            let reason = args
+                .get("reason")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "reason required".to_string())?;
+            // Only this process knows which chat is asking, and the approval
+            // card names the conversation. An agent cannot nominate another.
+            let session_id = env::var("SYNTH_SESSION_ID")
+                .ok()
+                .filter(|value| !value.trim().is_empty());
+            request(
+                "POST",
+                "/v1/project-sources/request",
+                Some(json!({
+                    "path": path,
+                    "reason": reason,
+                    "capabilities": args.get("capabilities"),
+                    "attachToConversation": args.get("attachToConversation"),
+                    "sessionId": session_id,
+                })),
+            )
+        }
         "container_ensure" => {
+            let source_id = args
+                .get("source_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "source_id required; call container_discover first".to_string())?;
             let spec_id = args
                 .get("spec_id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "spec_id required".to_string())?;
-            let mut payload = json!({ "specId": spec_id });
-            if let Some(session) = args
-                .get("session_ref")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-                .or_else(|| {
-                    std::env::var("SYNTH_SESSION_ID")
-                        .ok()
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty())
-                })
-            {
-                payload
-                    .as_object_mut()
-                    .expect("object")
-                    .insert("sessionRef".into(), json!(session));
-            }
-            request("POST", "/v1/containers/ensure", Some(payload))
+            request(
+                "POST",
+                "/v1/containers/ensure",
+                Some(json!({ "sourceId": source_id, "specId": spec_id })),
+            )
         }
         "container_register" => {
             let base_url = args
@@ -457,5 +532,74 @@ mod tests {
             assert_eq!(tool["annotations"]["readOnlyHint"], true);
             assert_eq!(tool["annotations"]["idempotentHint"], true);
         }
+    }
+
+    /// Admission and execution stay distinct tools.
+    ///
+    /// The request tool must read as a request: it grants nothing, and the
+    /// agent has to come back through discovery afterwards to learn the
+    /// source_id. Folding this into `container_ensure` would make one call
+    /// both ask for permission and use it.
+    #[test]
+    fn requesting_a_project_source_is_its_own_non_granting_tool() {
+        let catalog = tools();
+        let tool = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "project_source_request")
+            .expect("an agent must be able to ask for a project source");
+        let description = tool["description"].as_str().unwrap();
+        assert!(description.contains("grants nothing"), "{description}");
+        assert!(description.contains("native picker"), "{description}");
+        assert!(description.contains("container_discover"), "{description}");
+        let required = tool["inputSchema"]["required"].as_array().unwrap();
+        assert!(required.iter().any(|value| value == "path"));
+        assert!(required.iter().any(|value| value == "reason"));
+        assert_eq!(tool["annotations"]["destructiveHint"], false);
+        assert_eq!(
+            managed_tool_name("request_project_source").unwrap(),
+            "project_source_request"
+        );
+
+        // Discovery must name the recovery path, not just return nothing.
+        let discover = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "container_discover")
+            .unwrap();
+        let discover = discover["description"].as_str().unwrap();
+        assert!(discover.contains("no_project_sources"), "{discover}");
+        assert!(discover.contains("project_sources_invalid"), "{discover}");
+    }
+
+    #[test]
+    fn compact_facade_routes_catalogued_container_operations() {
+        assert_eq!(managed_tool_name("discover").unwrap(), "container_discover");
+        assert_eq!(managed_tool_name("ensure").unwrap(), "container_ensure");
+        assert_eq!(managed_tool_name("probe").unwrap(), "container_probe");
+        assert!(managed_tool_name("scan_ports").is_err());
+
+        let catalog = tools();
+        let facade = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "container_manage")
+            .expect("Codex must receive the compact container facade");
+        let operations = facade["inputSchema"]["properties"]["operation"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            operations,
+            CONTAINER_OPERATIONS
+                .iter()
+                .map(|(operation, _)| *operation)
+                .collect::<Vec<_>>()
+        );
     }
 }

@@ -1,4 +1,4 @@
 interface:
   display_name: "Use Synth Containers"
   short_description: "Run real policies against registered containers"
-  default_prompt: "Use $use-synth-containers to inspect the registered engine, locate its authoritative LLM policy harness, run a bounded real rollout, and visualize only the emitted evidence."
+  default_prompt: "Use $use-synth-containers. The registered source revision is observational, not a required launch pin. For an unreachable container, derive a fresh identity from the current approved checkout. Dirty source is permitted when launch-relevant contents are canonically digested and disclosed. Bind the post-launch verified identity into the new inline specification."

@@ -55,7 +55,7 @@ export type MainView =
 	| { kind: "chat"; chatId: string }
 	| { kind: "sync"; sessionId: string }
 	| { kind: "async"; sessionId: string }
-	| { kind: "settings"; section?: "general" | "models" | "inference" | "context" | "voice" | "account" | "secrets" | "about" }
+	| { kind: "settings"; section?: "general" | "models" | "inference" | "context" | "voice" | "workspace" | "account" | "secrets" | "about" }
 	| { kind: "connectors" }
 	| { kind: "inventory" }
 	| { kind: "visuals" }

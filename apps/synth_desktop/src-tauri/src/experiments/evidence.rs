@@ -60,7 +60,7 @@ pub fn attach_evidence(
     request: ExperimentEvidenceAttachRequest,
 ) -> Result<ExperimentGroup> {
     anyhow::ensure!(
-        ["trace", "visual", "artifact"].contains(&request.kind.as_str()),
+        ["trace", "visual", "artifact", "container"].contains(&request.kind.as_str()),
         "unsupported experiment evidence kind {}",
         request.kind
     );
@@ -81,6 +81,10 @@ pub fn attach_evidence(
         "artifact" => anyhow::ensure!(
             request.artifact_uri.is_some(),
             "artifact evidence requires artifactUri"
+        ),
+        "container" => anyhow::ensure!(
+            request.container_id.is_some(),
+            "container evidence requires containerId"
         ),
         _ => unreachable!(),
     }

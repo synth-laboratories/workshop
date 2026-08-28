@@ -676,6 +676,24 @@ fn instance_data_root() -> Option<PathBuf> {
     }
 }
 
+/// One process-wide lock for tests that repoint this process's instance root
+/// or other environment this module reads.
+///
+/// `cargo test` runs test functions on threads that share one `std::env`, so a
+/// helper that sets `SYNTH_DESKTOP_DATA_ROOT` for "its" test is really setting
+/// it for whatever else is running at that instant. Several modules had their
+/// own helper and at most a module-local lock, which is no lock at all against
+/// the others: a test could read another test's instance root mid-assertion.
+/// Every such helper takes this one.
+#[cfg(test)]
+pub(crate) fn environment_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // A poisoned lock means an earlier test panicked while holding it. The
+    // environment is still ours to take; cascading the panic just hides the
+    // original failure behind a dozen unrelated ones.
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Product-owned durable data. Named instances always resolve to their private
 /// root; the unset path preserves the canonical installed-app location.
 pub fn data_root() -> PathBuf {

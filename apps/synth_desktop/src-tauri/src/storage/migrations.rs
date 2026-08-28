@@ -61,6 +61,9 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_56,
     MIGRATION_57,
     MIGRATION_58,
+    MIGRATION_59,
+    MIGRATION_60,
+    MIGRATION_61,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -216,6 +219,9 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("optimizer_effective_contracts", MIGRATION_56),
     ("optimizer_run_artifacts", MIGRATION_56),
     ("optimizer_projection_outbox", PROJECTION_OUTBOX_CREATE_ONLY),
+    ("container_sources", MIGRATION_59),
+    ("optimizer_recipe_sources", MIGRATION_60),
+    ("project_source_requests", MIGRATION_61),
 ];
 
 const PROJECTION_OUTBOX_CREATE_ONLY: &str = r#"
@@ -3545,6 +3551,66 @@ CREATE INDEX IF NOT EXISTS optimizer_events_rollout_step
 ON optimizer_events(rollout_id, step, sequence_number);
 CREATE INDEX IF NOT EXISTS optimizer_events_ingested
 ON optimizer_events(optimizer_run_id, ingested_at, sequence_number);
+"#;
+
+/// Durable source identity for the desktop-level container catalog. A source
+/// path may move or disappear after discovery; ensures always refresh it from
+/// configured roots before executing, while this record preserves provenance
+/// for registrations and evidence.
+const MIGRATION_59: &str = r#"
+CREATE TABLE IF NOT EXISTS container_sources (
+    id TEXT PRIMARY KEY,
+    canonical_path TEXT NOT NULL UNIQUE,
+    manifest_path TEXT NOT NULL,
+    manifest_hash TEXT NOT NULL,
+    git_revision TEXT,
+    discovered_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS container_sources_updated_at ON container_sources(updated_at DESC);
+"#;
+
+/// Durable provenance for the desktop-level optimizer recipe catalog. Recipe
+/// sources are configured independently of chat/session workspaces and are
+/// re-read before every run, so this record is evidence rather than authority
+/// to execute a stale local declaration.
+const MIGRATION_60: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_recipe_sources (
+    canonical_path TEXT PRIMARY KEY,
+    source_hash TEXT NOT NULL,
+    discovered_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS optimizer_recipe_sources_updated_at ON optimizer_recipe_sources(updated_at DESC);
+"#;
+
+/// Pending agent requests to admit a folder as a project source.
+///
+/// Deliberately its own table rather than a flag on `workspace_grant_requests`:
+/// a workspace attachment lets a conversation read and write files, while a
+/// project source additionally lets Workshop discover and later execute the
+/// container commands declared beneath it. Folding the two together would make
+/// one approval silently answer both questions.
+///
+/// A row here is a *request*. It carries no authority: admission happens only
+/// when `config.toml` records the canonical path after the user re-confirms it
+/// in the native picker.
+const MIGRATION_61: &str = r#"
+CREATE TABLE IF NOT EXISTS project_source_requests (
+    id TEXT PRIMARY KEY,
+    session_id TEXT,
+    requested_path TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    containers INTEGER NOT NULL,
+    recipes INTEGER NOT NULL,
+    attach_to_conversation INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','approved','denied','expired')),
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS project_source_requests_status ON project_source_requests(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS project_source_requests_session ON project_source_requests(session_id, created_at DESC);
 "#;
 
 #[cfg(test)]

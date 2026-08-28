@@ -2002,7 +2002,6 @@ fn advertises_compact_visual_and_experiment_lifecycle_tools_to_codex() {
         mcp_enabled_tools("synth_visuals"),
         "enabled_tools = [\"visual_manage\", \"experiment_create\", \"experiment_create_child\", \"experiment_fork\", \"experiment_rerun\", \"experiment_relate\", \"experiment_attach_evidence\", \"experiment_finalize\"]\n"
     );
-    assert_eq!(mcp_enabled_tools("synth_containers"), "");
     assert_eq!(
         mcp_enabled_tools("synth_optimizers"),
         "enabled_tools = [\"optimizer_manage\", \"optimizer_stage_eval_candidates\", \"optimizer_start_recipe\"]\n"

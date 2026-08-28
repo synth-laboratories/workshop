@@ -267,6 +267,18 @@ mod tests {
         );
         assert_eq!(managed_tool_name("fork").unwrap(), "visual_fork");
         assert_eq!(managed_tool_name("archive").unwrap(), "visual_archive");
+        assert_eq!(
+            managed_tool_name("experiment_create").unwrap(),
+            "experiment_create"
+        );
+        assert_eq!(
+            managed_tool_name("experiment_attach_evidence").unwrap(),
+            "experiment_attach_evidence"
+        );
+        assert_eq!(
+            managed_tool_name("experiment_finalize").unwrap(),
+            "experiment_finalize"
+        );
         assert!(managed_tool_name("delete_everything").is_err());
         assert!(
             managed_tool_name("list_components").is_err(),
@@ -434,6 +446,13 @@ const VISUAL_OPERATIONS: &[(&str, &str)] = &[
     ("get_seal", "visual_get_seal"),
     ("fork", "visual_fork"),
     ("archive", "visual_archive"),
+    // Experiment records are a lifecycle concern of the same durable visual
+    // evidence surface. Codex receives only this facade, so map the lifecycle
+    // actions here instead of advertising aliases the local provider may not
+    // register in its compact MCP catalog.
+    ("experiment_create", "experiment_create"),
+    ("experiment_attach_evidence", "experiment_attach_evidence"),
+    ("experiment_finalize", "experiment_finalize"),
 ];
 
 fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
@@ -453,7 +472,7 @@ fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
 fn tools() -> Value {
     let mut result = json!({
         "tools": [
-            {"name":"visual_manage","description":"Synth visuals. Use author-synth-diagrams; do not call MCP resources. Create/show, review PNGs wide and compact, revise defects, then mark_ready. Mermaid source goes in arguments.content. Data charts: use visual_chart.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual operation."},"arguments":{"type":"object","description":"Operation arguments. capture_review returns a PNG and screenshot_path; review and mark_ready use the current revision.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+            {"name":"visual_manage","description":"Synth visuals and durable experiment records. Use author-synth-diagrams for visuals; do not call MCP resources. Create/show, review PNGs wide and compact, revise defects, then mark_ready. Create an experiment with operation experiment_create; attach durable evidence with experiment_attach_evidence; finalize with experiment_finalize. Mermaid source goes in arguments.content. Data charts: use visual_chart.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual or experiment lifecycle operation."},"arguments":{"type":"object","description":"Operation arguments. capture_review returns a PNG and screenshot_path; review and mark_ready use the current revision.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_import_template","description":"Import one networkless template.json + renderer.html package into this Desktop instance's managed visual registry","inputSchema":{"type":"object","properties":{"source_path":{"type":"string","description":"Absolute package directory containing template.json and renderer.html"}},"required":["source_path"],"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
@@ -473,7 +492,7 @@ fn tools() -> Value {
               "source":{"type":"string","description":"Trace digest, fixture path under visuals/, CAS digest, query snapshot id, or optimizer run id"},
               "data":{"description":"Required when kind is inline"},
               "bindings":{"type":"object","description":"A full synth.visual-bindings.v1 envelope, instead of input/kind/source"},"viewport":{"type":"object","properties":{"width":{"type":"integer","minimum":320,"maximum":2400}},"additionalProperties":false,"description":"Capture width; the height follows the chart so nothing is scaled down"},"capture":{"type":"boolean","description":"Default true; false returns the revision and findings without a PNG"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["spec"],"additionalProperties":false}},
-            {"name":"experiment_attach_evidence","description":"Attach a durable trace, visual/plot, or artifact reference to an experiment. References are local-first and may be materialized just in time when opened. Replaying the same evidence_id is idempotent.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"},"node_id":{"type":"string","description":"Optional experiment node; defaults to the latest result node"},"evidence_id":{"type":"string","description":"Stable caller-chosen idempotency key"},"kind":{"type":"string","enum":["trace","visual","artifact"]},"label":{"type":"string"},"digest":{"type":"string"},"container_id":{"type":"string"},"rollout_id":{"type":"string"},"trace_id":{"type":"string"},"visual_id":{"type":"string"},"artifact_uri":{"type":"string"},"metadata":{"type":"object"}},"required":["experiment_id","evidence_id","kind","label"],"additionalProperties":false}},
+            {"name":"experiment_attach_evidence","description":"Attach a durable trace, visual/plot, artifact, or admitted-container reference to an experiment. `kind: container` requires container_id; `artifact` requires artifact_uri. References are local-first and may be materialized just in time when opened. Replaying the same evidence_id is idempotent.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"},"node_id":{"type":"string","description":"Optional experiment node; defaults to the latest result node"},"evidence_id":{"type":"string","description":"Stable caller-chosen idempotency key"},"kind":{"type":"string","enum":["trace","visual","artifact","container"]},"label":{"type":"string"},"digest":{"type":"string"},"container_id":{"type":"string"},"rollout_id":{"type":"string"},"trace_id":{"type":"string"},"visual_id":{"type":"string"},"artifact_uri":{"type":"string"},"metadata":{"type":"object"}},"required":["experiment_id","evidence_id","kind","label"],"additionalProperties":false}},
             {"name":"experiment_create","description":"Create or reopen the current task's durable experiment record. request_id is the stable idempotency key.","inputSchema":{"type":"object","properties":{"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"}},"required":["request_id","title"],"additionalProperties":false}},
             {"name":"experiment_create_child","description":"Create a child experiment linked to a parent. relation is follow_up (default), forked_from, or rerun_of. request_id is the stable idempotency key. Subsequent runs in this chat attach to the child.","inputSchema":{"type":"object","properties":{"parent_experiment_id":{"type":"string"},"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"},"relation":{"type":"string","enum":["follow_up","forked_from","rerun_of"]}},"required":["parent_experiment_id","request_id","title"],"additionalProperties":false}},
             {"name":"experiment_fork","description":"Fork a parent experiment (create_child with relation=forked_from). request_id is the stable idempotency key.","inputSchema":{"type":"object","properties":{"parent_experiment_id":{"type":"string"},"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"}},"required":["parent_experiment_id","request_id","title"],"additionalProperties":false}},

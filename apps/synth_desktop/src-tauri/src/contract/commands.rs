@@ -60,6 +60,13 @@ impl Commands {
     pub const WORKSPACE_SCOPE_GRANTS_LIST: &'static str = "workspace_scope_grants_list";
     pub const WORKSPACE_SCOPE_APPROVE_REQUEST: &'static str = "workspace_scope_approve_request";
     pub const WORKSPACE_SCOPE_DENY_REQUEST: &'static str = "workspace_scope_deny_request";
+    pub const PROJECT_SOURCES_GET: &'static str = "project_sources_get";
+    pub const PROJECT_SOURCES_REFRESH: &'static str = "project_sources_refresh";
+    pub const PROJECT_SOURCE_ADD: &'static str = "project_source_add";
+    pub const PROJECT_SOURCE_REMOVE: &'static str = "project_source_remove";
+    pub const PROJECT_SOURCE_REQUESTS_LIST: &'static str = "project_source_requests_list";
+    pub const PROJECT_SOURCE_APPROVE: &'static str = "project_source_approve";
+    pub const PROJECT_SOURCE_DENY: &'static str = "project_source_deny";
     pub const LAGUNA_GET_STATUS: &'static str = "laguna_get_status";
     pub const LAGUNA_RELOAD: &'static str = "laguna_reload";
     pub const LAGUNA_REGISTER_POLICY: &'static str = "laguna_register_policy";

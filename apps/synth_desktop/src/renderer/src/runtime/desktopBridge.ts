@@ -651,6 +651,25 @@ window.synthWorkspaceScope ??= isTauri
 		approveRequest: async () => { throw new Error("Folder approval requires Synth Desktop"); },
 		denyRequest: async () => { throw new Error("Folder approval requires Synth Desktop"); }
 	};
+window.synthProjectSources ??= isTauri
+	? {
+		get: () => fromGenerated(spectaCommands.projectSourcesGet()),
+		refresh: () => fromGenerated(spectaCommands.projectSourcesRefresh()),
+		add: (containers, recipes) => fromGenerated(spectaCommands.projectSourceAdd(containers, recipes)),
+		remove: (path) => fromGenerated(spectaCommands.projectSourceRemove(path)),
+		listRequests: (sessionId) => fromGenerated(spectaCommands.projectSourceRequestsList(sessionId)),
+		approveRequest: (requestId) => fromGenerated(spectaCommands.projectSourceApprove(requestId)),
+		denyRequest: (requestId) => fromGenerated(spectaCommands.projectSourceDeny(requestId))
+	}
+	: {
+		get: async () => ({ configPath: "", sources: [], implicitRoots: [] }),
+		refresh: async () => ({ configPath: "", sources: [], implicitRoots: [] }),
+		add: async () => { throw new Error("Project sources require Synth Desktop"); },
+		remove: async () => { throw new Error("Project sources require Synth Desktop"); },
+		listRequests: async () => [],
+		approveRequest: async () => { throw new Error("Project source approval requires Synth Desktop"); },
+		denyRequest: async () => { throw new Error("Project source approval requires Synth Desktop"); }
+	};
 	window.synthTerminal ??= isTauri
 		? {
 			available: true,
@@ -1134,6 +1153,9 @@ export const bridges = {
 	},
 	get workspaceScope() {
 		return window.synthWorkspaceScope;
+	},
+	get projectSources() {
+		return window.synthProjectSources;
 	},
 	get account() {
 		return window.synthAccount;

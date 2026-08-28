@@ -9,6 +9,55 @@ EXPECTED_SOURCE_REVISION="6b4595f9bf1a65efe895d1f145ad9f5e4913d971"
 EXPECTED_LOCK_SHA256="7f14b704ba9a6c30e6ced5cc88fc2ba6a58a936a9531cfaf168cbb664f83c420"
 UV="${SYNTH_OPTIMIZER_UV_PATH:-}"
 
+verify_existing_wheelhouse() {
+  python3 - "$TARGET" "$VERSION" "$EXPECTED_SOURCE_REVISION" "$EXPECTED_LOCK_SHA256" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+version, revision, lock_sha256 = sys.argv[2:]
+try:
+    manifest = json.loads((root / "manifest.json").read_text())
+    if manifest.get("schemaVersion") != "synth.mlx-runtime-wheelhouse.v1":
+        raise ValueError("unexpected manifest schema")
+    if manifest.get("package") != "synth-mlx-rl" or manifest.get("version") != version:
+        raise ValueError("unexpected package or version")
+    if manifest.get("sourceRevision") != revision or manifest.get("lockSha256") != lock_sha256:
+        raise ValueError("runtime pin does not match this release")
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise ValueError("manifest has no artifacts")
+    for artifact in artifacts:
+        name = artifact.get("fileName")
+        expected_hash = artifact.get("sha256")
+        expected_size = artifact.get("sizeBytes")
+        if not isinstance(name, str) or pathlib.Path(name).name != name:
+            raise ValueError("invalid artifact name")
+        if not isinstance(expected_hash, str) or not isinstance(expected_size, int):
+            raise ValueError("invalid artifact metadata")
+        path = root / "wheels" / name
+        if not path.is_file() or path.stat().st_size != expected_size:
+            raise ValueError(f"missing or resized artifact: {name}")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != expected_hash:
+            raise ValueError(f"artifact hash mismatch: {name}")
+except (OSError, ValueError, json.JSONDecodeError, TypeError, AttributeError) as error:
+    print(f"[mlx-runtime] existing wheelhouse is not reusable: {error}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
+# The release pin is carried by the wheelhouse manifest and every wheel hash.
+# Reuse a verified copy before asking for a mutable source checkout, so named
+# CUA instances remain reproducible even while a developer has unrelated MLX
+# work in progress elsewhere.
+if verify_existing_wheelhouse; then
+  echo "[mlx-runtime] reusing verified offline wheelhouse at $TARGET"
+  exit 0
+fi
+
 if [[ ! -f "$PROJECT/pyproject.toml" ]] || ! rg -q '^name = "synth-mlx-rl"$' "$PROJECT/pyproject.toml"; then
   echo "[mlx-runtime] synth-mlx-rl source is unavailable at $PROJECT" >&2
   echo "[mlx-runtime] set SYNTH_MLX_RL_PROJECT_ROOT to the release checkout" >&2

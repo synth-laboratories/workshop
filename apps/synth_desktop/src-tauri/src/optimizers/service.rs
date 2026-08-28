@@ -877,7 +877,7 @@ impl OptimizerService {
         &self,
         request: super::eval_candidates::EvalStageCandidatesRequest,
     ) -> Result<Value> {
-        super::eval_candidates::stage(&self.db, request).await
+        super::eval_candidates::stage(request).await
     }
 
     pub async fn prepare_recipe(
