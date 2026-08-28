@@ -477,8 +477,6 @@ fn index_user_template(
 ///
 /// The log line is the surface for the case `resolve_template` cannot cover:
 /// nobody asks a broken template for its id when they do not know it broke.
-/// `report` is a no-op until the log runtime is installed, so this is silent in
-/// tests and in bootstrap, where the emergency NDJSON sink already covers.
 fn record_skip(
     skipped: &mut Vec<SkippedUserTemplate>,
     path: &Path,
@@ -486,10 +484,9 @@ fn record_skip(
     error: anyhow::Error,
 ) {
     let reason = format!("{error:#}");
-    crate::platform::logging::report(
-        "visuals::templates",
-        "user_template_skipped",
-        format!("skipped user visual template {}: {reason}", path.display()),
+    eprintln!(
+        "synth-desktop: skipped user visual template {}: {reason}",
+        path.display()
     );
     skipped.push(SkippedUserTemplate { id, reason });
 }
@@ -901,6 +898,10 @@ mod tests {
 
     #[test]
     fn recursively_indexes_templates_by_manifest_id() {
+        // `build_template_index` also overlays the process-global user tier.
+        // Hold the shared data-root guard so concurrent user-template tests
+        // cannot leak their fixtures into this bundled-index assertion.
+        let _isolated = crate::instance::IsolatedDataRoot::new("visual-index-recursive");
         let temp = tempfile::tempdir().unwrap();
         write_template(
             &temp.path().join("families/analysis/example.v1"),
