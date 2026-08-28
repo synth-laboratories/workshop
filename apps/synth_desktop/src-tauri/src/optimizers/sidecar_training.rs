@@ -14,7 +14,7 @@ use super::models::{
     SavedLoraCheckpoint, TrainingJobStatus,
 };
 use super::sft_client::SftOptimizerClient;
-use super::training_adapter::TerminalMapping;
+use super::training_adapter::{training_metric_delta, TerminalMapping};
 use super::OptimizerService;
 use crate::error::error_is;
 use crate::ipc::{JsonHttpRequest, JsonHttpResponse};
@@ -943,14 +943,10 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
             .delta(Map::from_iter([("status".into(), json!("running"))])),
         "job.resumed" => OptimizerEventDraft::new("optimizer.run.resumed", algorithm)
             .delta(Map::from_iter([("status".into(), json!("running"))])),
-        "training.metric" => {
-            OptimizerEventDraft::new("sft.training.metrics", algorithm).delta(Map::from_iter([
-                ("step".into(), payload["step"].clone()),
-                ("train_loss".into(), payload["loss"].clone()),
-                ("learning_rate".into(), payload["learning_rate"].clone()),
-                ("throughput".into(), payload["tokens_per_second"].clone()),
-            ]))
-        }
+        // One widening point for both mapping paths; see
+        // `training_adapter::TRAINING_METRIC_FIELDS`.
+        "training.metric" => OptimizerEventDraft::new("sft.training.metrics", algorithm)
+            .delta(training_metric_delta(payload)),
         "checkpoint.created" => OptimizerEventDraft::new("sft.checkpoint.ready", algorithm)
             .item(json!({
                 "id": payload["checkpoint_id"],
@@ -2202,6 +2198,57 @@ mod tests {
                 mapped_event_draft(kind, "sft", &payload).event_type,
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn sidecar_and_hosted_metric_arms_forward_the_same_fields() {
+        // The two mapping paths are symmetric arm for arm. Pin it: a field that
+        // survives one placement must survive the other, or a CISPO panel would
+        // be honest on MLX and blank on the hosted lane.
+        let payload = json!({
+            "step": 7,
+            "epoch": 1,
+            "loss": 0.4,
+            "learning_rate": 0.00005,
+            "tokens_per_second": 64.0,
+            "group_size": 16,
+            "reward_variance": 0.12,
+            "advantage_mean": 0.08,
+            "advantage_std": 0.31,
+            "optimizer_step": 7
+        });
+        let delta = mapped_event_draft("training.metric", "cispo", &payload).delta;
+        assert_eq!(delta, training_metric_delta(&payload));
+        assert_eq!(delta["group_size"], json!(16));
+        assert_eq!(delta["reward_variance"], json!(0.12));
+        assert_eq!(delta["advantage_mean"], json!(0.08));
+        assert_eq!(delta["advantage_std"], json!(0.31));
+        assert_eq!(delta["optimizer_step"], json!(7));
+    }
+
+    #[test]
+    fn real_mlx_metric_payload_leaves_the_cispo_aggregates_absent() {
+        // The payload the MLX wheel actually emits today. Nothing in it reports
+        // the aggregates, so nothing in the delta may claim them.
+        let delta = mapped_event_draft(
+            "training.metric",
+            "cispo",
+            &json!({"step":2,"epoch":1,"loss":0.42,"learning_rate":0.00005,"tokens":128.0,"step_seconds":2.0,"tokens_per_second":64.0,"memory_bytes":1048576}),
+        )
+        .delta;
+        assert_eq!(delta["step"], json!(2));
+        assert_eq!(delta["epoch"], json!(1));
+        assert_eq!(delta["train_loss"], json!(0.42));
+        assert_eq!(delta["throughput"], json!(64.0));
+        for absent in [
+            "group_size",
+            "reward_variance",
+            "advantage_mean",
+            "advantage_std",
+            "optimizer_step",
+        ] {
+            assert!(delta.get(absent).is_none(), "{absent} must stay absent");
         }
     }
 

@@ -531,6 +531,17 @@ export type SftComparisonPair = {
   trained: SftSeedResult | null;
 };
 
+/**
+ * CISPO identity, as far as the run's own events report it.
+ *
+ * Clip bounds, checkpoint lineage, warm start and the no-signal stop come from
+ * events every placement emits today. The four group aggregates come from
+ * `optimizer_step` / `group_size` / `reward_variance` / `advantage_*` on the
+ * training-metric event, which no runtime in this repository reports yet — they
+ * are forwarded end to end and stay `null` until one does. `aggregatesReported`
+ * exists so the renderer can say "not reported by this runtime" once, instead of
+ * drawing four em dashes that look like four failed measurements.
+ */
 export type CispoState = {
   objective: string;
   clipLow: number | null;
@@ -539,7 +550,16 @@ export type CispoState = {
   rewardVariance: number | null;
   advantageMean: number | null;
   advantageStd: number | null;
-  optimizerSteps: number;
+  /**
+   * The runtime's own `optimizer_step` counter, high-water mark. `null` means
+   * the runtime never reported one — not zero, and not one. The count of metric
+   * events observed is `metricSteps`, a different and weaker claim.
+   */
+  optimizerSteps: number | null;
+  /** Training-metric events that carried a step. A count over zero rows is 0. */
+  metricSteps: number;
+  /** Whether the runtime reported any of the four group aggregates above. */
+  aggregatesReported: boolean;
   warmStartArtifactId: string | null;
   checkpointIds: string[];
   noLearningSignal: boolean;
@@ -898,7 +918,7 @@ export function projectAtCursor(
   let cispoRewardVariance: number | null = null;
   let cispoAdvantageMean: number | null = null;
   let cispoAdvantageStd: number | null = null;
-  let cispoOptimizerSteps = 0;
+  let cispoOptimizerStep: number | null = null;
   let cispoWarmStartArtifactId: string | null =
     typeof run.summary?.warmStartArtifactId === "string" ? run.summary.warmStartArtifactId
       : typeof run.summary?.trainingArtifactId === "string" ? run.summary.trainingArtifactId
@@ -2357,8 +2377,15 @@ export function projectAtCursor(
       if (rewardVariance != null) cispoRewardVariance = rewardVariance;
       if (advantageMean != null) cispoAdvantageMean = advantageMean;
       if (advantageStd != null) cispoAdvantageStd = advantageStd;
-      if (optimizerStep != null) cispoOptimizerSteps = Math.max(cispoOptimizerSteps, optimizerStep);
-      else if (step != null && run.algorithmId === "cispo") cispoOptimizerSteps = Math.max(cispoOptimizerSteps, 1);
+      // Only a reported `optimizer_step` counts as an optimizer step. The
+      // number of metric events is a different fact, carried as `metricSteps`;
+      // the fallback that used to stand in for it pinned every live CISPO run
+      // at exactly one step, which was neither measured nor true.
+      if (optimizerStep != null) {
+        cispoOptimizerStep = cispoOptimizerStep == null
+          ? optimizerStep
+          : Math.max(cispoOptimizerStep, optimizerStep);
+      }
     }
     if (event.type === "cispo.clip.identity") {
       const clip = (event.delta?.clip && typeof event.delta.clip === "object" && !Array.isArray(event.delta.clip)
@@ -2896,7 +2923,12 @@ export function projectAtCursor(
         rewardVariance: cispoRewardVariance,
         advantageMean: cispoAdvantageMean,
         advantageStd: cispoAdvantageStd,
-        optimizerSteps: cispoOptimizerSteps > 0 ? cispoOptimizerSteps : points.length,
+        optimizerSteps: cispoOptimizerStep,
+        metricSteps: points.length,
+        aggregatesReported: cispoGroupSize != null
+          || cispoRewardVariance != null
+          || cispoAdvantageMean != null
+          || cispoAdvantageStd != null,
         warmStartArtifactId: warmStart,
         checkpointIds: checkpoints.map((ckpt) => String(ckpt.id ?? "")).filter(Boolean),
         noLearningSignal: cispoNoLearningSignal
