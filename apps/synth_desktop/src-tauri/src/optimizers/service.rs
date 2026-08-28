@@ -1709,7 +1709,21 @@ impl OptimizerService {
             cancel
                 .send(Some(request.clone()))
                 .map_err(|_| anyhow!("local optimizer recipe is no longer running"))?;
-            return self.command(id, "cancel", "cancelled").await;
+            return match self.command(id.clone(), "cancel", "cancelled").await {
+                Ok(settled) => Ok(settled),
+                Err(error) => {
+                    // The worker observes the typed signal and can seal the
+                    // run `cancelled` before this row-lane command runs. A
+                    // cancel that has already settled as cancelled is
+                    // idempotent success, not a refusal.
+                    let run = self.get(id).await?;
+                    if run.status == "cancelled" {
+                        Ok((run, None))
+                    } else {
+                        Err(error)
+                    }
+                }
+            };
         }
         if let Ok(run) = self.get(id.clone()).await {
             if run.source == "cloud" {

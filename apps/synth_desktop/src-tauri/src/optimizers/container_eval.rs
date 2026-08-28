@@ -1398,7 +1398,7 @@ async fn run_eval_worker(
                     Ok((index, _example, Ok(record))) => (index, record),
                     Ok((index, example, Err(error))) => (
                         index,
-                        cancelled_record(example, spec, &policy_pin, &request, format!("{error:#}")),
+                        settled_child_error_record(example, spec, &policy_pin, error),
                     ),
                     Err(error) => {
                         return Err(error)
@@ -1469,9 +1469,12 @@ async fn run_eval_worker(
         };
         let (index, record) = match joined {
             Ok((index, _example, Ok(record))) => (index, record),
+            // The loop can be parked in join_next when the cancel arrives, so
+            // an interrupted child can surface here before the loop-top check
+            // runs. The downcast keeps its settlement `cancelled`.
             Ok((index, example, Err(error))) => (
                 index,
-                failed_record(example, spec, &policy_pin, format!("{error:#}")),
+                settled_child_error_record(example, spec, &policy_pin, error),
             ),
             Err(error) => {
                 return Err(error).context("inline rollout task could not be joined");
@@ -2169,6 +2172,26 @@ fn failed_record(
         "policyRef": policy_pin,
         "worldRef": spec.world_ref,
     })
+}
+
+/// Settle one child's error into its trial record: a typed cancellation
+/// becomes a cancelled record carrying its request; anything else failed.
+fn settled_child_error_record(
+    example: EvalExample,
+    spec: &EvalSpec,
+    policy_pin: &Value,
+    error: anyhow::Error,
+) -> Value {
+    match error.downcast_ref::<super::kernel::CancelledError>() {
+        Some(cancelled) => cancelled_record(
+            example,
+            spec,
+            policy_pin,
+            &cancelled.request,
+            format!("{error:#}"),
+        ),
+        None => failed_record(example, spec, policy_pin, format!("{error:#}")),
+    }
 }
 
 /// A trial that was interrupted, with the request that interrupted it. Not a
@@ -3561,6 +3584,9 @@ mod tests {
         /// False models the pinned Containers dev build (ac43172), which emits
         /// no `metadata.model_roles` at all.
         advertises_model_roles: bool,
+        /// Rollouts block until the client goes away: the shape of a long
+        /// in-flight trial, used to hold work open across a cancellation.
+        stall_rollouts: bool,
     }
 
     async fn spawn_eval_mock(
@@ -3581,6 +3607,7 @@ mod tests {
             policy_credential_present: true,
             grader_credential_present: true,
             advertises_model_roles: true,
+            stall_rollouts: false,
         })
         .await
     }
@@ -3694,6 +3721,12 @@ mod tests {
                                 );
                             }
                             starts.fetch_add(1, Ordering::SeqCst);
+                            if opts.stall_rollouts {
+                                // Hold the blocking rollout open. Cancellation
+                                // drops the client request, which is how a real
+                                // container observes the episode ending.
+                                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                            }
                             let rollout_id = request
                                 .body
                                 .get("rollout_id")
@@ -4020,6 +4053,173 @@ max_total_rollouts = 4
         task.abort();
     }
 
+    /// A cancel while trials are in flight settles every dispatched trial
+    /// with an explicit `cancelled` terminal — never `failed` — and seals the
+    /// run `cancelled` with a closed-world manifest, through the real
+    /// dispatch, relay, reducer, and persistence paths. A step toward
+    /// acceptance criterion 16; the drain runs against a mock container whose
+    /// blocking rollouts stall until the client disconnects, not the fixture
+    /// Craftax journal.
+    #[tokio::test]
+    async fn cancelling_in_flight_trials_settles_each_as_cancelled() {
+        let (svc, _dir, _) = service().await;
+        let session = "sess_cancel_inflight";
+        let rewards = (0..10).map(|seed| (("train".into(), seed), 1.0)).collect();
+        let (base, task, starts) = spawn_eval_mock_opts(MockEvalOptions {
+            family: "banking77",
+            rewards,
+            policy_status: 200,
+            policy_config_id: "banking77_gpt_4_1_nano".into(),
+            fail_seeds: BTreeSet::new(),
+            extra_cost_usd: None,
+            policy_credential_present: true,
+            grader_credential_present: true,
+            advertises_model_roles: true,
+            stall_rollouts: true,
+        })
+        .await;
+        insert_container(&svc, "banking77", &base, "ready").await;
+        declare_eval_recipes(&svc, session).await;
+        let (run, _) = svc
+            .start_recipe(OptimizerRecipeRunRequest {
+                recipe_id: CLASSIFY_EVAL.into(),
+                session_ref: Some(session.into()),
+                open_visual: Some(false),
+                base_model: None,
+                dataset_shard: None,
+                candidate_set_id: None,
+                container_id: None,
+                training_artifact_id: None,
+                plan_override: None,
+                search: None,
+            })
+            .await
+            .unwrap();
+
+        for _ in 0..400 {
+            if starts.load(Ordering::SeqCst) >= 5 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            starts.load(Ordering::SeqCst) >= 5,
+            "five trials must be in flight before the cancel"
+        );
+
+        let request = crate::optimizers::kernel::CancellationRequest::new(
+            crate::optimizers::kernel::CancellationCause::UserRequested,
+            "user:test",
+            format!("run:{}", run.id),
+        );
+        let request_id = request.request_id.clone();
+        svc.cancel(run.id.clone(), request).await.unwrap();
+
+        let finished = wait_terminal(&svc, &run.id).await;
+        assert_eq!(finished.status, "cancelled");
+        let manifest = wait_manifest(&svc, &run.id).await;
+        assert_eq!(manifest["terminal"]["kind"], json!("cancelled"));
+        assert_eq!(
+            manifest["terminal"]["reason"],
+            json!("operator_cancelled"),
+            "a user-requested cancel settles as an operator decision"
+        );
+        // Closed world: nothing survives the seal as running or queued, and
+        // interrupted work is cancelled, not failed.
+        assert_eq!(manifest["work"]["planned"], json!(10));
+        assert_eq!(manifest["work"]["running"], json!(0));
+        assert_eq!(manifest["work"]["queued"], json!(0));
+        assert_eq!(manifest["work"]["succeeded"], json!(0));
+        assert_eq!(manifest["work"]["failed"], json!(0));
+        assert_eq!(manifest["work"]["cancelled"], json!(10));
+
+        let dispatched = starts.load(Ordering::SeqCst);
+        let events = svc
+            .events_after(run.id.clone(), 0, Some(500))
+            .await
+            .unwrap();
+        let cancelled_trials = events
+            .iter()
+            .filter(|event| {
+                event.event_type == "eval.trial.terminal"
+                    && event
+                        .item
+                        .as_ref()
+                        .and_then(|item| item.get("status"))
+                        .and_then(Value::as_str)
+                        == Some("cancelled")
+            })
+            .count();
+        // Every spawned worker settles with its own explicit cancelled
+        // terminal (a trial still in prepare when the cancel lands is also
+        // interrupted work); at minimum that covers the five rollouts that
+        // were in flight at the container.
+        assert!(
+            cancelled_trials >= dispatched && dispatched >= 5,
+            "expected explicit cancelled terminals ({cancelled_trials}) to cover the \
+             {dispatched} in-flight rollouts"
+        );
+        let failed_trials = events
+            .iter()
+            .filter(|event| {
+                event.event_type == "eval.trial.terminal"
+                    && event
+                        .item
+                        .as_ref()
+                        .and_then(|item| item.get("status"))
+                        .and_then(Value::as_str)
+                        == Some("failed")
+            })
+            .count();
+        assert_eq!(failed_trials, 0, "interrupted trials never settle failed");
+        let terminal_event = events
+            .iter()
+            .find(|event| event.event_type == "optimizer.run.cancelled")
+            .expect("the durable log carries the cancelled terminal fact");
+        assert_eq!(
+            terminal_event
+                .delta
+                .get("cancellation")
+                .and_then(|cancellation| cancellation.get("requestId"))
+                .and_then(Value::as_str),
+            Some(request_id.as_str()),
+            "the terminal event carries the typed request"
+        );
+        assert_eq!(
+            terminal_event
+                .delta
+                .get("cancellation")
+                .and_then(|cancellation| cancellation.get("requestedBy"))
+                .and_then(Value::as_str),
+            Some("user:test")
+        );
+
+        // The sealed run must load back through terminal replay: closure is a
+        // pure function of the terminal event, so the rebuilt projection is
+        // closed-world too.
+        let run_id = run.id.clone();
+        let state = svc
+            .database()
+            .clone()
+            .run(move |conn| {
+                crate::optimizers::kernel::persist::load_state(conn, &run_id)?
+                    .ok_or_else(|| anyhow::anyhow!("cancelled run lost its kernel projection"))
+            })
+            .await
+            .unwrap();
+        assert!(state
+            .projection
+            .work_items()
+            .iter()
+            .all(|item| item.lifecycle
+                == crate::optimizers::kernel::WorkItemLifecycle::Terminal));
+        assert_eq!(
+            state.terminal.as_ref().map(|terminal| terminal.kind),
+            Some(crate::optimizers::kernel::TerminalKind::Cancelled)
+        );
+        task.abort();
+    }
+
     /// A fast campaign can finish before admission finishes patching the run.
     /// Writing that pre-start snapshot back must not erase the evidence the
     /// worker produced in between.
@@ -4303,6 +4503,7 @@ max_total_rollouts = 4
             policy_credential_present: false,
             grader_credential_present: true,
             advertises_model_roles: true,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -4338,6 +4539,7 @@ max_total_rollouts = 4
             policy_credential_present: true,
             grader_credential_present: true,
             advertises_model_roles: false,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -4379,6 +4581,7 @@ max_total_rollouts = 4
             policy_credential_present: true,
             grader_credential_present: true,
             advertises_model_roles: false,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -4406,6 +4609,7 @@ max_total_rollouts = 4
             policy_credential_present: true,
             grader_credential_present: false,
             advertises_model_roles: true,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -4761,6 +4965,7 @@ max_total_rollouts = 4
             policy_credential_present: true,
             grader_credential_present: true,
             advertises_model_roles: true,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -4787,6 +4992,7 @@ max_total_rollouts = 4
             policy_credential_present: true,
             grader_credential_present: true,
             advertises_model_roles: true,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -4814,6 +5020,7 @@ max_total_rollouts = 4
             policy_credential_present: true,
             grader_credential_present: true,
             advertises_model_roles: true,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -4847,6 +5054,7 @@ max_total_rollouts = 4
             policy_credential_present: true,
             grader_credential_present: true,
             advertises_model_roles: true,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
