@@ -155,6 +155,19 @@ fn binding_for(admissible: &AdmissibleExecutionSpec) -> ApprovalBinding {
     }
 }
 
+/// The NanoHorizon acceptance specification, admitted and approved.
+///
+/// Shared with the executor's tests so a run under test carries the same
+/// immutable specification the acceptance request produces, rather than a
+/// hand-built stand-in that could drift from what admission actually seals.
+pub(crate) fn nanohorizon_approved_specification() -> ApprovedExecutionSpec {
+    let admissible = admit(&request(), &context()).expect("NanoHorizon must be admissible inline");
+    let binding = binding_for(&admissible);
+    admissible
+        .approve(binding)
+        .expect("the receipt describes exactly this specification")
+}
+
 // ---------------------------------------------------------------------------
 // The acceptance test
 // ---------------------------------------------------------------------------
