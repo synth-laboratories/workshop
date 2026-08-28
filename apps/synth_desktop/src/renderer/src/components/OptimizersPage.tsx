@@ -1,4 +1,3 @@
-// @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { OptimizerAlgorithmInfo, OptimizerRunRecord } from "@synth/runtime-protocol";
@@ -6,7 +5,6 @@ import type { HostedTrainingModel, OptimizerRecipeInfo, OptimizerRunOutputs, Plu
 import { bridges } from "../runtime/desktopBridge";
 import { isLagunaCompatibleAdapter, LOCAL_FT_POLICY } from "../runtime/lagunaPolicies";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
-import { publicError } from "../runtime/publicError";
 import { TrainingWorkspace } from "./TrainingWorkspace";
 import { TrainingEvaluationCurve } from "./TrainingEvaluationCurve";
 import { RunInspector } from "./optimizers/RunInspector";
@@ -77,6 +75,19 @@ function formatBytes(value: number | null | undefined): string {
 	if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`;
 	if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`;
 	return `${(value / 1024 ** 3).toFixed(1)} GB`;
+}
+
+/** The generated catalog types `algorithms` as `unknown`; read it defensively. */
+type HostedAlgorithmSupport = { status?: string; block_reason?: string };
+
+function hostedAlgorithmSupport(
+	model: HostedTrainingModel | undefined,
+	algorithm: string
+): HostedAlgorithmSupport | undefined {
+	const algorithms = model?.algorithms;
+	if (!algorithms || typeof algorithms !== "object") return undefined;
+	const entry = (algorithms as Record<string, unknown>)[algorithm];
+	return entry && typeof entry === "object" ? entry as HostedAlgorithmSupport : undefined;
 }
 
 type EvalScorecard = {
@@ -364,7 +375,7 @@ export function OptimizersPage({
 			setHostedTrainingModels(catalog.models);
 			setHostedModelCatalogRevision(catalog.catalogRevision);
 			if (!catalog.models.some((model) => model.modelId === trainingModel)) {
-				const preferred = catalog.models.find((model) => model.algorithms[trainingAlgorithm]?.status !== "blocked");
+				const preferred = catalog.models.find((model) => hostedAlgorithmSupport(model, trainingAlgorithm)?.status !== "blocked");
 				if (preferred) setTrainingModel(preferred.modelId);
 			}
 		}).catch((reason) => {
@@ -414,7 +425,7 @@ export function OptimizersPage({
 		}).then((page) => {
 			if (!live) return;
 			setHostedSftWarmStarts(page.items.filter((checkpoint) =>
-				Boolean(checkpoint.lineage.providerCheckpointReference ?? checkpoint.providerCheckpointReference)
+				Boolean(checkpoint.lineage?.providerCheckpointReference ?? checkpoint.providerCheckpointReference)
 			));
 		}).catch((reason) => {
 			if (live) setError(presentError(reason).message);
@@ -537,7 +548,7 @@ export function OptimizersPage({
 
 	const openCheckpointRun = async (checkpoint: SavedLoraCheckpoint) => {
 		if (!bridges.optimizers) return;
-		const runId = checkpoint.lineage.runId ?? checkpoint.runId;
+		const runId = checkpoint.lineage?.runId ?? checkpoint.runId;
 		if (!runId) return;
 		try {
 			if (!runs.some((run) => run.id === runId)) {
@@ -668,7 +679,7 @@ export function OptimizersPage({
 	const reviewTrainingLaunch = async () => {
 		const guide = OPTIMIZER_GUIDES.find((item) => item.id === trainingAlgorithm);
 		if (!guide) return;
-		const warmStartReference = selectedWarmStart?.lineage.providerCheckpointReference
+		const warmStartReference = selectedWarmStart?.lineage?.providerCheckpointReference
 			?? selectedWarmStart?.providerCheckpointReference;
 		if (trainingAlgorithm === "cispo" && (!selectedWarmStart || !warmStartReference)) {
 			setError("Select a ready Tinker SFT training-state checkpoint before launching hosted CISPO.");
@@ -679,7 +690,7 @@ export function OptimizersPage({
 			return;
 		}
 		const warmStartLines = selectedWarmStart && warmStartReference
-			? `\n- SFT checkpoint id: ${selectedWarmStart.checkpointId}\n- SFT provider state: ${warmStartReference}\n- producing SFT run: ${selectedWarmStart.lineage.runId ?? selectedWarmStart.runId ?? "unknown"}\n- SFT base model: ${selectedWarmStart.baseModel}`
+			? `\n- SFT checkpoint id: ${selectedWarmStart.checkpointId}\n- SFT provider state: ${warmStartReference}\n- producing SFT run: ${selectedWarmStart.lineage?.runId ?? selectedWarmStart.runId ?? "unknown"}\n- SFT base model: ${selectedWarmStart.baseModel}`
 			: "";
 		await startAgent({
 			...guide,
@@ -704,7 +715,7 @@ export function OptimizersPage({
 			name: action === "evaluate" ? "Evaluate checkpoint" : action === "resume" ? "Resume checkpoint" : "Compare and report",
 			description: `${actionPrompt} Run ${selected.id}, checkpoint ${checkpointId}.`,
 			flow: action === "resume" ? ["Preflight", "Resume", "Follow"] : ["Evaluate", "Compare", "Report"],
-			prompt: `${actionPrompt}\n\nRun: ${selected.id}\nAlgorithm: ${selected.algorithmId}\nCheckpoint: ${checkpointId}\nTask: ${String(selected.summary?.taskId ?? "from the sealed run config")}\nDo not substitute another checkpoint. Verify ready/evaluation/resume eligibility from canonical backend evidence before acting.`
+			prompt: `${actionPrompt}\n\nRun: ${selected.id}\nAlgorithm: ${selected.algorithmId}\nCheckpoint: ${checkpointId}\nTask: ${String(objectValue(selected.summary).taskId ?? "from the sealed run config")}\nDo not substitute another checkpoint. Verify ready/evaluation/resume eligibility from canonical backend evidence before acting.`
 		});
 	};
 
@@ -720,7 +731,7 @@ export function OptimizersPage({
 			});
 			setSelectedId(run.id);
 			await refresh();
-			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
+			const visualId = run.visualRefs?.find((ref) => ref.kind === "visual")?.id;
 			if (visualId) onOpenVisual(visualId);
 		} catch (reason) {
 			setError(presentError(reason).message);
@@ -734,7 +745,7 @@ export function OptimizersPage({
 		setBusy(true);
 		try {
 			const run = await bridges.optimizers.openVisual(selected.id);
-			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
+			const visualId = run.visualRefs?.find((ref) => ref.kind === "visual")?.id;
 			if (visualId) onOpenVisual(visualId);
 			await refresh();
 		} catch (reason) {
@@ -759,7 +770,7 @@ export function OptimizersPage({
 			});
 			setSelectedId(run.id);
 			await refresh();
-			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
+			const visualId = run.visualRefs?.find((ref) => ref.kind === "visual")?.id;
 			if (visualId) onOpenVisual(visualId);
 		} catch (reason) {
 			setError(presentError(reason).message);
@@ -799,8 +810,8 @@ export function OptimizersPage({
 	};
 
 	const selectedExecution = selected
-		? selected.executionBindings.length > 0
-			? selected.executionBindings.map((binding) => binding.label ?? binding.kind).join(" · ")
+		? (selected.executionBindings ?? []).length > 0
+			? (selected.executionBindings ?? []).map((binding) => binding.label ?? binding.kind).join(" · ")
 			: selected.source === "hosted"
 				? "Hosted service"
 				: selected.source === "cloud"
@@ -811,7 +822,7 @@ export function OptimizersPage({
 	const selectedTrainingCheckpoints = trainingProjection?.checkpoints.map(checkpointValue) ?? [];
 	const selectedTrainingEvaluations = trainingProjection?.evaluations ?? [];
 	const selectedHostedModel = hostedTrainingModels.find((model) => model.modelId === trainingModel);
-	const selectedHostedSupport = selectedHostedModel?.algorithms[trainingAlgorithm];
+	const selectedHostedSupport = hostedAlgorithmSupport(selectedHostedModel, trainingAlgorithm);
 	const selectedWarmStart = hostedSftWarmStarts.find((checkpoint) => checkpoint.checkpointId === trainingWarmStartCheckpointId);
 	const hostedCispoAdmitted = hostedCispoRecipe?.availability === "available";
 	const localCispoAvailable = localCispoRecipe?.availability === "available";
@@ -994,7 +1005,7 @@ export function OptimizersPage({
 				</div>
 				{hostedCispoAdmitted ? <><div className="optimizer-training-form">
 					<label><span>Algorithm</span><select value={trainingAlgorithm} disabled><option value="cispo">CISPO · slime reference</option></select></label>
-					<label><span>Model</span><select value={trainingModel} onChange={(event) => setTrainingModel(event.target.value)}>{hostedTrainingModels.map((model) => { const support = model.algorithms[trainingAlgorithm]; return <option key={model.modelId} value={model.modelId} disabled={support?.status === "blocked"}>{model.label} · {support?.status ?? "not validated"}</option>; })}</select></label>
+					<label><span>Model</span><select value={trainingModel} onChange={(event) => setTrainingModel(event.target.value)}>{hostedTrainingModels.map((model) => { const support = hostedAlgorithmSupport(model, trainingAlgorithm); return <option key={model.modelId} value={model.modelId} disabled={support?.status === "blocked"}>{model.label} · {support?.status ?? "not validated"}</option>; })}</select></label>
 					{trainingAlgorithm === "cispo" ? <label><span>SFT warm start</span><select aria-label="SFT warm-start checkpoint" value={trainingWarmStartCheckpointId} onChange={(event) => setTrainingWarmStartCheckpointId(event.target.value)} data-testid="hosted-cispo-warm-start"><option value="">Select a retained SFT training state…</option>{hostedSftWarmStarts.map((checkpoint) => <option key={checkpoint.checkpointId} value={checkpoint.checkpointId}>{checkpoint.name} · {checkpoint.baseModel} · step {checkpoint.step ?? "—"}</option>)}</select></label> : null}
 					<label><span>Task</span><input value={trainingTask} onChange={(event) => setTrainingTask(event.target.value)} /></label>
 					<label><span>Local Container URL</span><input value={trainingContainerUrl} onChange={(event) => setTrainingContainerUrl(event.target.value)} /></label>
@@ -1056,9 +1067,9 @@ export function OptimizersPage({
 							<p>{checkpoint.baseModel}</p>
 							<label className="optimizer-search"><span>Notes</span><input aria-label="Checkpoint notes" defaultValue={checkpoint.description} key={`${checkpoint.checkpointId}-notes-${checkpoint.updatedAt ?? ""}`} onBlur={(event) => { const description = event.target.value; if (description !== checkpoint.description) void patchSavedLora(checkpoint, { description }); }} /></label>
 							<label className="optimizer-search"><span>Tags</span><input aria-label="Checkpoint tags" defaultValue={checkpoint.tags.join(", ")} placeholder="comma-separated tags" key={`${checkpoint.checkpointId}-tags-${checkpoint.tags.join(",")}`} onBlur={(event) => { const tags = event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean); if (tags.join(",") !== checkpoint.tags.join(",")) void patchSavedLora(checkpoint, { tags }); }} /></label>
-							<dl><dt>Placement</dt><dd>{checkpoint.placement === "this_mac" ? "This Mac" : "Hosted"}</dd><dt>Base</dt><dd>{checkpoint.baseModel}</dd><dt>Algorithm</dt><dd>{checkpoint.lineage.optimizerAlgorithm ?? checkpoint.optimizerAlgorithm ?? "Imported"}</dd><dt>Run</dt><dd>{checkpoint.lineage.runId ?? checkpoint.runId ?? "—"}</dd><dt>Attempt</dt><dd>{checkpoint.lineage.attemptId ?? checkpoint.attemptId ?? "—"}</dd><dt>Source</dt><dd>{checkpoint.lineage.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? "—"}</dd><dt>Provider</dt><dd>{checkpoint.provider} · {checkpoint.checkpointKind}</dd><dt>Rank / step</dt><dd>{checkpoint.loraRank ?? "—"} / {checkpoint.step ?? "—"}</dd><dt>Storage</dt><dd>{checkpoint.storage.backend} · {formatBytes(checkpoint.storage.sizeBytes)}</dd><dt>Saved</dt><dd>{checkpoint.updatedAt ? formatWhen(checkpoint.updatedAt) : "—"}</dd></dl>
+							<dl><dt>Placement</dt><dd>{checkpoint.placement === "this_mac" ? "This Mac" : "Hosted"}</dd><dt>Base</dt><dd>{checkpoint.baseModel}</dd><dt>Algorithm</dt><dd>{checkpoint.lineage?.optimizerAlgorithm ?? checkpoint.optimizerAlgorithm ?? "Imported"}</dd><dt>Run</dt><dd>{checkpoint.lineage?.runId ?? checkpoint.runId ?? "—"}</dd><dt>Attempt</dt><dd>{checkpoint.lineage?.attemptId ?? checkpoint.attemptId ?? "—"}</dd><dt>Source</dt><dd>{checkpoint.lineage?.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? "—"}</dd><dt>Provider</dt><dd>{checkpoint.provider} · {checkpoint.checkpointKind}</dd><dt>Rank / step</dt><dd>{checkpoint.loraRank ?? "—"} / {checkpoint.step ?? "—"}</dd><dt>Storage</dt><dd>{checkpoint.storage.backend} · {formatBytes(checkpoint.storage.sizeBytes)}</dd><dt>Saved</dt><dd>{checkpoint.updatedAt ? formatWhen(checkpoint.updatedAt) : "—"}</dd></dl>
 							{checkpoint.tags.length > 0 ? <div className="optimizer-checkpoint-tags">{checkpoint.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
-							<div className="optimizer-checkpoint-actions">{hostedCispoAdmitted && hostedSftWarmStarts.some((candidate) => candidate.checkpointId === checkpoint.checkpointId) ? <button className="primary-button" type="button" onClick={() => { setTrainingAlgorithm("cispo"); setTrainingTask("banking77"); setTrainingModel(checkpoint.baseModel); setTrainingWarmStartCheckpointId(checkpoint.checkpointId); document.querySelector<HTMLElement>("[data-testid='optimizer-training-launch']")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} data-testid={`use-for-cispo-${checkpoint.checkpointId}`}>Use for hosted CISPO</button> : null}{checkpoint.lineage.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}{checkpoint.inferenceChatCompletions ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "chat_completions")}>{inferringId === `${checkpoint.checkpointId}:chat_completions` ? "Sampling…" : "Chat Completions"}</button> : null}{checkpoint.inferenceResponses ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "responses")}>{inferringId === `${checkpoint.checkpointId}:responses` ? "Sampling…" : "Responses"}</button> : null}{isLagunaCompatibleAdapter(checkpoint) ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void useInComposer(checkpoint)} data-testid={`use-in-composer-${checkpoint.checkpointId}`}>Use in Composer</button> : null}{checkpoint.placement === "this_mac" ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void publishSavedLora(checkpoint)}>Publish</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
+							<div className="optimizer-checkpoint-actions">{hostedCispoAdmitted && hostedSftWarmStarts.some((candidate) => candidate.checkpointId === checkpoint.checkpointId) ? <button className="primary-button" type="button" onClick={() => { setTrainingTask("banking77"); setTrainingModel(checkpoint.baseModel); setTrainingWarmStartCheckpointId(checkpoint.checkpointId); document.querySelector<HTMLElement>("[data-testid='optimizer-training-launch']")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} data-testid={`use-for-cispo-${checkpoint.checkpointId}`}>Use for hosted CISPO</button> : null}{checkpoint.lineage?.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}{checkpoint.inferenceChatCompletions ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "chat_completions")}>{inferringId === `${checkpoint.checkpointId}:chat_completions` ? "Sampling…" : "Chat Completions"}</button> : null}{checkpoint.inferenceResponses ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "responses")}>{inferringId === `${checkpoint.checkpointId}:responses` ? "Sampling…" : "Responses"}</button> : null}{isLagunaCompatibleAdapter(checkpoint) ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void useInComposer(checkpoint)} data-testid={`use-in-composer-${checkpoint.checkpointId}`}>Use in Composer</button> : null}{checkpoint.placement === "this_mac" ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void publishSavedLora(checkpoint)}>Publish</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
 						</article>
 					))}
 					{savedLoras.length === 0 && !savedLoraBusy ? <div className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>◇</span><strong>No checkpoints match</strong><p>Local MLX adapters appear when a This Mac recipe emits them, or when you import an mlx-lora.v1 folder. Hosted SFT/CISPO LoRAs appear after object-storage verification.</p></div> : null}
@@ -1193,7 +1204,7 @@ export function OptimizersPage({
 									onClick={() => setSelectedId(run.id)}
 								>
 									<span className="optimizer-run-main"><span className="optimizer-algorithm">{algorithmLabel(run.algorithmId)}</span><strong>{runTitle(run)}</strong><small>{formatWhen(run.finishedAt ?? run.startedAt ?? run.createdAt)}</small></span>
-									<span className="optimizer-run-meta"><span className={statusChipClass(run.status)}>{statusText(run.status)}</span><small>{run.source} · {run.usage.costUsd == null ? "—" : `$${run.usage.costUsd.toFixed(2)}`}</small></span>
+									<span className="optimizer-run-meta"><span className={statusChipClass(run.status)}>{statusText(run.status)}</span><small>{run.source} · {run.usage?.costUsd == null ? "—" : `$${run.usage.costUsd.toFixed(2)}`}</small></span>
 								</button>
 							</li>
 						))}
@@ -1251,7 +1262,7 @@ export function OptimizersPage({
 									{selectedRunOutputs?.result ? <details open className="optimizer-run-files"><summary>Final result</summary><dl>{Object.entries(selectedRunOutputs.result).slice(0, 8).map(([name, value]) => <Fragment key={name}><dt>{name.replaceAll("_", " ")}</dt><dd>{typeof value === "object" ? JSON.stringify(value) : String(value)}</dd></Fragment>)}</dl></details> : <p>The final result will appear here when the run seals it.</p>}
 									{selectedRunOutputs?.artifacts.map((artifact) => <article key={artifact.artifactId} className="optimizer-run-output"><strong>{artifact.artifactName}</strong><small>{artifact.contentType ?? "artifact"} · {formatBytes(artifact.sizeBytes)} · {artifact.storageBackend}</small><code>{artifact.sha256 ?? artifact.uri}</code></article>)}
 									{["sft", "cispo", "ppo"].includes(selected.algorithmId) ? <p>{selectedCheckpointCounts.inference} inference LoRA · {selectedCheckpointCounts.training} resumable training state</p> : null}
-									{selectedRunCheckpoints.map((checkpoint) => <article key={checkpoint.checkpointId} className="optimizer-run-output"><strong>{checkpoint.name}</strong><small>{checkpoint.checkpointKind} · step {checkpoint.step ?? "—"} · {checkpoint.storage.backend}</small><code>{checkpoint.lineage.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? checkpoint.checkpointId}</code><div className="optimizer-checkpoint-actions"><button type="button" className="secondary-button" onClick={() => showCheckpointInCatalog(checkpoint)}>View in catalog</button><button type="button" className="secondary-button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button></div></article>)}
+									{selectedRunCheckpoints.map((checkpoint) => <article key={checkpoint.checkpointId} className="optimizer-run-output"><strong>{checkpoint.name}</strong><small>{checkpoint.checkpointKind} · step {checkpoint.step ?? "—"} · {checkpoint.storage.backend}</small><code>{checkpoint.lineage?.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? checkpoint.checkpointId}</code><div className="optimizer-checkpoint-actions"><button type="button" className="secondary-button" onClick={() => showCheckpointInCatalog(checkpoint)}>View in catalog</button><button type="button" className="secondary-button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button></div></article>)}
 									{selectedRunOutputs && selectedRunOutputs.counts.artifacts === 0 && selectedRunCheckpoints.length === 0 ? <p>No persisted outputs have been published yet. Results and checkpoints appear automatically as the run reaches publication boundaries.</p> : null}
 								</section>
 							) : null}
@@ -1294,9 +1305,9 @@ export function OptimizersPage({
 							<div className="optimizer-inspector-actions">
 								<button className="primary-button" type="button" disabled={busy} onClick={() => void openSelectedVisual()} data-testid="open-optimizer-visual">Open visual</button>
 								<button className="secondary-button" type="button" disabled={busy} onClick={() => void refreshSelected()} data-testid="refresh-optimizer-run">Refresh</button>
-								{selected.capabilities.pause && selected.status === "running" ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void controlSelected("pause")} data-testid="pause-optimizer-run">Pause</button> : null}
-								{selected.capabilities.resume && selected.status === "paused" ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void controlSelected("resume")} data-testid="resume-optimizer-run">Resume</button> : null}
-								{selected.capabilities.cancel && !["completed", "failed", "cancelled"].includes(selected.status) ? <button className="secondary-button optimizer-danger-button" type="button" disabled={busy} onClick={() => void controlSelected("cancel")} data-testid="cancel-optimizer-run">Cancel</button> : null}
+								{selected.capabilities?.pause && selected.status === "running" ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void controlSelected("pause")} data-testid="pause-optimizer-run">Pause</button> : null}
+								{selected.capabilities?.resume && selected.status === "paused" ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void controlSelected("resume")} data-testid="resume-optimizer-run">Resume</button> : null}
+								{selected.capabilities?.cancel && !["completed", "failed", "cancelled"].includes(selected.status) ? <button className="secondary-button optimizer-danger-button" type="button" disabled={busy} onClick={() => void controlSelected("cancel")} data-testid="cancel-optimizer-run">Cancel</button> : null}
 							</div>
 						</RunInspector>
 					) : (
