@@ -443,15 +443,26 @@ pass.
 
 ### Exact sources under test
 
-- Workshop: `codex/finish-inline-eval-refactor` at `c4d2ce97eb60`
-- Containers: `codex/nanohorizon-e2e-ready` at
-  `efe95a0ea76bf9fac60d7da333cde192e12ab637`
-- NanoHorizon: `codex/nanohorizon-e2e-ready` at
-  `eee43119eb7c0cb4879fa68ab686452bc8101221`
+- Workshop product code: `codex/finish-inline-eval-refactor` at
+  `112719b235da` (readiness tooling and this log follow it on the same branch)
+- Containers: `codex/nanohorizon-e2e-preflight-fixes` at
+  `04e0a94aa3336fee6dfbaab4942dc1352ab86584`
+- NanoHorizon: `codex/nanohorizon-e2e-preflight-fixes` at
+  `574ace4b5161c6c3f03d737160375f2e4b4dd56a`
+- Evals: `codex/craftax-live-context-evals-20260828` at
+  `4726e2bd332b853731dd3b05f49c33935c5c3c0f`
+- GameBench: `codex/craftax-live-context-gamebench-20260828` at
+  `3d35f379a6d3f951720bfcc04d0f05518d9b8034`
 - NanoHorizon source manifest:
-  `sha256:0df2f16d751980246882273e55a73ec4588444f21268836136ce10ec92afe9fd`
+  `sha256:6481652f3b3fc67af1303e6c8900965e6504e682ce67afbfca386a970db643e9`
 - Credential route: existing file-backed ChatGPT authentication plus the
   Workshop secrets proxy. Keychain remained prohibited and unused.
+
+The exact external refs are re-anchored as clean, detached worktrees under
+`/Users/joshuapurtell/GitHub`: `containers-nanohorizon-e2e-final`,
+`nanohorizon-e2e-final`, `evals-craftax-live-context`, and
+`gamebench-craftax-live-context`. The acceptance run must use those roots, not
+the dirty primary checkouts or a temporary agent worktree.
 
 Containers now resolves the immutable Docker image ID at launch and binds that
 identity, with the exact producer source revision, through `/info` and sealed
@@ -461,17 +472,31 @@ exact 40-character Containers revision.
 
 ### Verification completed without Docker or provider calls
 
-- Workshop Rust library: 1,417 passed, 14 ignored, 0 failed.
-- Workshop browser suite, eight workers: 268 passed, 2 skipped. The permanent
-  console gate observed no React maximum-update-depth error.
-- Workshop visual suite: 224 passed.
-- Workshop accessibility suite: 540 passed.
+- Workshop Rust library: 1,426 passed, 14 ignored, 0 failed before the final
+  approval-retention regression was added; its two focused terminal tests also
+  pass, and the full suite is rerun by the final readiness gate.
+- Workshop desktop Node suite: 543 passed, 0 failed.
+- Workshop visual suite: 236 passed, 0 failed.
 - Desktop instance script, TypeScript typecheck, CSS lint, and production
   frontend build: passed.
-- Containers non-Docker suite: 409 passed, 8 skipped.
-- Containers provenance, journal, conformance, metadata, and GEPA contracts:
-  56 passed.
-- NanoHorizon sampler and lifecycle contracts: 15 passed.
+- Containers non-Docker suite: 407 passed, 16 skipped.
+- NanoHorizon source/CLI preflight: 2 passed.
+- Evals isolated Craftax catalog contract: 8 passed.
+- GameBench Craftax live context: 9 Rust and 3 Python tests passed.
+
+Acceptance criterion 7 is now directly covered: the exact paid approval receipt
+and its cost/rollout caps survive run creation, settlement, reload, immutable
+admission storage, and the sealed terminal manifest. The capability-revocation
+amendment is queryable after the terminal cursor with the exact capability ID.
+Criterion 8 is covered by the file-backed OAuth launcher contract and the
+same-thread crash recovery test; J's authenticated account state already
+survived the prior packaged rebuild.
+
+Run `scripts/preflight-nanohorizon-e2e.sh` immediately before requesting live
+authorization. It verifies Workshop cleanliness, all four external commits,
+the source manifest, the three-repo Docker build closure, file-backed ChatGPT
+auth availability, and the Docker CLI without reading credentials, touching
+Keychain, starting Docker, or calling a provider.
 
 The final Craftax recurrence was a replay-driven passive selection effect: 200
 rapid 500-envelope pages could cause 200 selected-call state updates. Commit
