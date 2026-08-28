@@ -5,8 +5,10 @@ import { publicError } from "../runtime/publicError";
 
 type PairState =
 	| { kind: "idle" }
-	| { kind: "pairing"; verificationUri: string }
+	| { kind: "pairing"; verificationUri: string; userCode: string | null }
 	| { kind: "error"; message: string };
+
+const DEFAULT_POLL_INTERVAL_S = 4;
 
 function announceAccountChange(next: SynthBackendSettings) {
 	window.dispatchEvent(new CustomEvent("synth:account-changed", {
@@ -38,37 +40,50 @@ export function AccountSignIn() {
 
 	const stopPolling = () => {
 		if (pollTimer.current !== null) {
-			window.clearInterval(pollTimer.current);
+			window.clearTimeout(pollTimer.current);
 			pollTimer.current = null;
 		}
 	};
 	useEffect(() => stopPolling, []);
 
+	// The host paces polling: each pending result names the next delay
+	// (RFC 8628 interval / slow_down), so a rate-limited service slows the
+	// loop instead of erroring it.
+	const schedulePoll = (delayS: number) => {
+		stopPolling();
+		pollTimer.current = window.setTimeout(() => {
+			void bridges.account?.pollSignIn().then((result) => {
+				if (result.status === "active") {
+					stopPolling();
+					setPair({ kind: "idle" });
+					setStatus("Signed in · runtime reconnected");
+					void bridges.config?.get().then((next) => {
+						setSettings(next);
+						announceAccountChange(next);
+					});
+				} else if (result.status === "expired") {
+					stopPolling();
+					setPair({ kind: "error", message: result.reason });
+				} else {
+					schedulePoll(result.retryInS ?? DEFAULT_POLL_INTERVAL_S);
+				}
+			}).catch((error) => {
+				stopPolling();
+				setPair({ kind: "error", message: publicError(error) });
+			});
+		}, delayS * 1000);
+	};
+
 	const beginSignIn = async () => {
 		if (!bridges.account) return;
 		try {
 			const begin = await bridges.account.beginSignIn();
-			setPair({ kind: "pairing", verificationUri: begin.verificationUri });
-			stopPolling();
-			pollTimer.current = window.setInterval(() => {
-				void bridges.account?.pollSignIn().then((result) => {
-					if (result.status === "active") {
-						stopPolling();
-						setPair({ kind: "idle" });
-						setStatus("Signed in · runtime reconnected");
-						void bridges.config?.get().then((next) => {
-							setSettings(next);
-							announceAccountChange(next);
-						});
-					} else if (result.status === "expired") {
-						stopPolling();
-						setPair({ kind: "error", message: result.reason });
-					}
-				}).catch((error) => {
-					stopPolling();
-					setPair({ kind: "error", message: publicError(error) });
-				});
-			}, 4000);
+			setPair({
+				kind: "pairing",
+				verificationUri: begin.verificationUri,
+				userCode: begin.userCode ?? null
+			});
+			schedulePoll(begin.intervalS ?? DEFAULT_POLL_INTERVAL_S);
 		} catch (error) {
 			setPair({ kind: "error", message: publicError(error) });
 		}
@@ -99,6 +114,12 @@ export function AccountSignIn() {
 					<span role="status" className="finetune-meta" data-testid="sign-in-status">
 						Finish sign-in in your browser — this page updates automatically.
 					</span>
+					{pair.userCode ? (
+						<span className="finetune-meta backend-signin-code" data-testid="sign-in-user-code">
+							Approve only if the browser shows pairing code{" "}
+							<strong>{pair.userCode}</strong>.
+						</span>
+					) : null}
 					<div className="backend-signin-actions">
 						<button type="button" className="settings-secondary-btn" onClick={() => void beginSignIn()}>Reopen browser</button>
 						<button type="button" className="settings-secondary-btn" data-testid="sign-in-cancel" onClick={cancelSignIn}>Cancel</button>

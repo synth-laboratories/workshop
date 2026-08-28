@@ -10,7 +10,9 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 		window.synthAccount = {
 			beginSignIn: async () => ({
 				verificationUri: "https://www.usesynth.ai/signin?redirect_to=x",
-				expiresAtEpochS: Math.floor(Date.now() / 1000) + 600
+				userCode: "ABCD-2345",
+				expiresAtEpochS: Math.floor(Date.now() / 1000) + 600,
+				intervalS: 1
 			}),
 			pollSignIn: async () => {
 				polls += 1;
@@ -18,7 +20,7 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 					paired = true;
 					return { status: "active" as const };
 				}
-				return { status: "pending" as const };
+				return { status: "pending" as const, retryInS: 1 };
 			},
 			cancelSignIn: async () => undefined,
 			signOut: async () => {
@@ -78,8 +80,11 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 
 	await signIn.getByTestId("sign-in-begin").click();
 	await expect(signIn.getByTestId("sign-in-status")).toContainText("Finish sign-in in your browser");
+	// The pairing code from the host is shown so the user can match it
+	// against the browser approval page before clicking Approve.
+	await expect(signIn.getByTestId("sign-in-user-code")).toContainText("ABCD-2345");
 
-	// Two 4s poll ticks flip the stub to paired.
+	// Two host-paced poll ticks (1s each from the stub) flip the stub to paired.
 	await expect(page.getByTestId("backend-settings")).toContainText("Authenticated", { timeout: 15_000 });
 	await expect(signIn.getByTestId("sign-in-status")).toContainText("Connected to Synth");
 	await page.getByRole("button", { name: /Back/ }).click();

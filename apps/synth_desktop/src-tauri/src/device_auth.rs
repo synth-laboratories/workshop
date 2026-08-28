@@ -15,13 +15,20 @@ use serde::{Deserialize, Serialize};
 
 const INIT_PATH: &str = "/api/auth/device/init";
 const TOKEN_PATH: &str = "/api/auth/device/token";
+const REVOKE_PATH: &str = "/api/auth/device/revoke";
 const PROD_WORKSHOP_URL: &str = "https://www.usesynth.ai";
 const LOCAL_WORKSHOP_URL: &str = "http://localhost:3000";
+/// Poll cadence when the server predates the RFC 8628 `interval` field.
+const DEFAULT_POLL_INTERVAL_S: u64 = 4;
+/// Ceiling for server-directed backoff so a slow-down can never look like a hang.
+const MAX_POLL_INTERVAL_S: u64 = 30;
 
 #[derive(Clone)]
 struct PendingPair {
     device_code: String,
     verification_uri: String,
+    user_code: Option<String>,
+    interval_s: u64,
     expires_at_epoch_s: u64,
 }
 
@@ -29,15 +36,23 @@ struct PendingPair {
 #[serde(rename_all = "camelCase")]
 pub struct SignInBegin {
     pub verification_uri: String,
+    /// Human-comparable pairing code; the browser approval page shows the
+    /// same code so the user can confirm the request came from this desktop.
+    pub user_code: Option<String>,
     #[specta(type = specta_typescript::Number)]
     pub expires_at_epoch_s: u64,
+    #[specta(type = specta_typescript::Number)]
+    pub interval_s: u64,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, specta::Type)]
-#[serde(rename_all = "camelCase", tag = "status")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "status")]
 pub enum SignInPoll {
-    /// Browser approval not observed yet; keep polling.
-    Pending,
+    /// Browser approval not observed yet; poll again after `retry_in_s`.
+    Pending {
+        #[specta(type = specta_typescript::Number)]
+        retry_in_s: u64,
+    },
     /// Key received, stored, and runtime reloaded.
     Active,
     /// Code expired or consumed; a fresh begin is required.
@@ -48,6 +63,12 @@ pub enum SignInPoll {
 struct InitResponse {
     device_code: String,
     verification_uri: String,
+    #[serde(default)]
+    verification_uri_complete: Option<String>,
+    #[serde(default)]
+    user_code: Option<String>,
+    #[serde(default)]
+    interval: Option<u64>,
     expires_in: u64,
 }
 
@@ -110,7 +131,9 @@ impl DeviceAuthManager {
             if pending.expires_at_epoch_s > now_epoch_s() + 10 {
                 return Ok(SignInBegin {
                     verification_uri: pending.verification_uri,
+                    user_code: pending.user_code,
                     expires_at_epoch_s: pending.expires_at_epoch_s,
+                    interval_s: pending.interval_s,
                 });
             }
         }
@@ -133,22 +156,35 @@ impl DeviceAuthManager {
             ));
         }
         let init: InitResponse = response.json().await.context("parse pairing start")?;
-        let verification_uri = if init.verification_uri.starts_with("http") {
-            init.verification_uri
+        let raw_uri = init
+            .verification_uri_complete
+            .unwrap_or(init.verification_uri);
+        let verification_uri = if raw_uri.starts_with("http") {
+            raw_uri
         } else {
-            format!("{origin}{}", init.verification_uri)
+            format!("{origin}{raw_uri}")
         };
+        // This URL is handed to the system browser; never open one that
+        // points anywhere but the origin the pairing started against.
+        ensure_same_origin(origin, &verification_uri)?;
         let pending = PendingPair {
             device_code: init.device_code,
             verification_uri: verification_uri.clone(),
+            user_code: init.user_code.clone(),
+            interval_s: init
+                .interval
+                .unwrap_or(DEFAULT_POLL_INTERVAL_S)
+                .clamp(1, MAX_POLL_INTERVAL_S),
             expires_at_epoch_s: now_epoch_s() + init.expires_in,
         };
-        let expires_at_epoch_s = pending.expires_at_epoch_s;
-        *self.pending.lock().unwrap() = Some(pending);
-        Ok(SignInBegin {
+        let begin = SignInBegin {
             verification_uri,
-            expires_at_epoch_s,
-        })
+            user_code: pending.user_code.clone(),
+            expires_at_epoch_s: pending.expires_at_epoch_s,
+            interval_s: pending.interval_s,
+        };
+        *self.pending.lock().unwrap() = Some(pending);
+        Ok(begin)
     }
 
     /// One poll step. On success the key is handed to `store`; the caller owns
@@ -183,7 +219,22 @@ impl DeviceAuthManager {
                 *self.pending.lock().unwrap() = None;
                 Ok(SignInPoll::Active)
             }
-            428 => Ok(SignInPoll::Pending),
+            428 => Ok(SignInPoll::Pending {
+                retry_in_s: pending.interval_s,
+            }),
+            // Rate-limited is a pacing signal, not a failure: honor the
+            // server's Retry-After (RFC 8628 slow_down), capped so the UI
+            // never looks stalled.
+            429 => {
+                let retry_in_s = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.trim().parse::<u64>().ok())
+                    .unwrap_or(pending.interval_s * 2)
+                    .clamp(pending.interval_s, MAX_POLL_INTERVAL_S);
+                Ok(SignInPoll::Pending { retry_in_s })
+            }
             404 | 410 => {
                 *self.pending.lock().unwrap() = None;
                 Ok(SignInPoll::Expired {
@@ -200,9 +251,46 @@ impl DeviceAuthManager {
         }
     }
 
+    /// Server-side revocation of a desktop-managed key at sign-out. The key
+    /// itself is the authority; the caller treats failure as best-effort —
+    /// local deletion must never be blocked on reaching the service.
+    pub async fn revoke_key(&self, origin: &str, api_key: &str) -> Result<()> {
+        let response = self
+            .http
+            .post(format!("{origin}{REVOKE_PATH}"))
+            .bearer_auth(api_key)
+            .send()
+            .await
+            .context("reach the Workshop sign-in service")?;
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "sign-in service refused key revocation ({})",
+                response.status()
+            ));
+        }
+        Ok(())
+    }
+
     pub fn cancel(&self) {
         *self.pending.lock().unwrap() = None;
     }
+}
+
+/// The verification URL is opened in the system browser on the host's
+/// authority; a compromised or misconfigured service must not be able to
+/// point it at another site.
+fn ensure_same_origin(origin: &str, uri: &str) -> Result<()> {
+    let origin = reqwest::Url::parse(origin).context("parse Workshop origin")?;
+    let target = reqwest::Url::parse(uri).context("parse verification link")?;
+    if target.scheme() != origin.scheme()
+        || target.host_str() != origin.host_str()
+        || target.port_or_known_default() != origin.port_or_known_default()
+    {
+        return Err(anyhow!(
+            "sign-in service returned a verification link outside {origin}; refusing to open it"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -266,7 +354,12 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(first, SignInPoll::Pending);
+        assert_eq!(
+            first,
+            SignInPoll::Pending {
+                retry_in_s: DEFAULT_POLL_INTERVAL_S
+            }
+        );
         let s2 = stored.clone();
         let second = manager
             .poll(&origin, move |k| {
@@ -284,6 +377,60 @@ mod tests {
             manager.poll(&origin, |_| Ok(())).await.unwrap(),
             SignInPoll::Expired { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn begin_surfaces_user_code_and_interval() {
+        let init_body = r#"{"device_code":"abc123","verification_uri":"/signin?x=1","verification_uri_complete":"/signin?x=1","user_code":"ABCD-2345","interval":5,"expires_in":600}"#;
+        let (origin, handle) = spawn_fake_workshop(vec![(200, init_body.into())]);
+        let manager = DeviceAuthManager::new();
+        let begin = manager.begin(&origin).await.unwrap();
+        assert_eq!(begin.user_code.as_deref(), Some("ABCD-2345"));
+        assert_eq!(begin.interval_s, 5);
+        handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn rate_limited_poll_is_pending_with_backoff_not_an_error() {
+        let init_body = r#"{"device_code":"abc123","verification_uri":"/signin","expires_in":600}"#;
+        let (origin, handle) = spawn_fake_workshop(vec![
+            (200, init_body.into()),
+            (429, r#"{"error":"Too many requests"}"#.into()),
+        ]);
+        let manager = DeviceAuthManager::new();
+        manager.begin(&origin).await.unwrap();
+        let result = manager.poll(&origin, |_| Ok(())).await.unwrap();
+        assert_eq!(
+            result,
+            SignInPoll::Pending {
+                retry_in_s: DEFAULT_POLL_INTERVAL_S * 2
+            }
+        );
+        handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn begin_refuses_a_verification_link_on_another_origin() {
+        let init_body = r#"{"device_code":"abc123","verification_uri":"https://evil.example.com/signin","expires_in":600}"#;
+        let (origin, handle) = spawn_fake_workshop(vec![(200, init_body.into())]);
+        let manager = DeviceAuthManager::new();
+        let error = manager.begin(&origin).await.unwrap_err();
+        assert!(error.to_string().contains("refusing to open"));
+        handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn revoke_key_sends_bearer_and_accepts_success() {
+        let (origin, handle) =
+            spawn_fake_workshop(vec![(200, r#"{"success":true}"#.into())]);
+        let manager = DeviceAuthManager::new();
+        manager
+            .revoke_key(&origin, "sk_synth_user_deadbeef")
+            .await
+            .unwrap();
+        let seen = handle.join().unwrap();
+        assert!(seen[0].contains("/api/auth/device/revoke"));
+        assert!(seen[0].contains("Bearer sk_synth_user_deadbeef"));
     }
 
     #[tokio::test]

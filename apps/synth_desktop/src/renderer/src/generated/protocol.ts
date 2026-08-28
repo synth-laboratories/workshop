@@ -2753,12 +2753,18 @@ export type SecretsProxyStatus = {
 
 export type SignInBegin = {
 	verificationUri: string,
+	/**
+	 *  Human-comparable pairing code; the browser approval page shows the
+	 *  same code so the user can confirm the request came from this desktop.
+	 */
+	userCode: string | null,
 	expiresAtEpochS: number,
+	intervalS: number,
 };
 
 export type SignInPoll =
-/**  Browser approval not observed yet; keep polling. */
-{ status: "pending" } |
+/**  Browser approval not observed yet; poll again after `retry_in_s`. */
+{ status: "pending"; retryInS: number } |
 /**  Key received, stored, and runtime reloaded. */
 { status: "active" } |
 /**  Code expired or consumed; a fresh begin is required. */

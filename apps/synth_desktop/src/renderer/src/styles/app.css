@@ -8796,6 +8796,8 @@ html.visual-expanded .sidebar {
 .backend-api-key-form input:focus { outline: 2px solid rgba(64, 112, 244, .18); border-color: #7895df; }
 .backend-api-key-form small { color: var(--color-text-faint); font-size: 10.5px; }
 .backend-signin-note { grid-column: 1 / -1; }
+.backend-signin-code { grid-column: 1 / -1; }
+.backend-signin-code strong { font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; }
 
 @media (max-width: 760px) {
 	.backend-signin { grid-template-columns: 1fr; }
