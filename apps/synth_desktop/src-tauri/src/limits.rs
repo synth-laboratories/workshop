@@ -54,10 +54,10 @@ pub const CREDENTIAL_UPSTREAM_TIMEOUT: Duration = DEEPSWE_HARBOR_CAPABILITY_TTL;
 /// Minimum interval between provider request starts for one capability. Luna
 /// carries the growing Codex transcript on every tool turn, so token-per-minute
 /// pressure becomes the binding limit well before request-per-minute pressure.
-/// Two request starts per minute keeps a long DeepSWE transcript below the
-/// observed provider window while remaining comfortably inside the 5400-second
-/// task budget.
-pub const CREDENTIAL_UPSTREAM_MIN_INTERVAL: Duration = Duration::from_secs(30);
+/// The OpenRouter SWE route admitted useful completions 351--367 seconds apart
+/// in the observed DeepSWE trace. A 370-second floor avoids burning capability
+/// reservations on attempts that the provider cannot yet admit.
+pub const CREDENTIAL_UPSTREAM_MIN_INTERVAL: Duration = Duration::from_secs(370);
 
 /// Number of additional upstream attempts the proxy makes for a 429 response.
 /// The logical capability call is reserved once and remains one call across
@@ -66,7 +66,7 @@ pub const CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES: u32 = 4;
 
 /// Deterministic floor for rate-limit retry backoff. The per-capability pacer
 /// independently enforces the request-start cadence.
-pub const CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(30);
+pub const CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(370);
 
 /// Desktop update manifest fetch.
 pub const UPDATE_MANIFEST_TIMEOUT: Duration = Duration::from_secs(5);
