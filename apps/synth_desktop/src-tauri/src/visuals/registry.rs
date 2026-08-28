@@ -1752,7 +1752,12 @@ fn validate_svg_bytes(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-const CHART_DEFAULT_PROJECTION: &str = "rollout-inspector";
+/// The consumer projection a `trace_v5` binding means when it names none.
+///
+/// Visible to the seal as well as the renderer: `artifacts.rs` has to derive
+/// the same projection a render would, and a second literal would let a seal
+/// and a chart quietly disagree about which document a binding points at.
+pub(super) const CHART_DEFAULT_PROJECTION: &str = "rollout-inspector";
 
 /// What a chart sees when it binds an optimizer run: the record — whose
 /// `summary.records` is the per-trial ledger — beside the typed result.
