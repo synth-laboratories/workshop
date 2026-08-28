@@ -3,7 +3,7 @@ import type { LagunaStatus } from "../bridge";
 import { publicError } from "../runtime/publicError";
 
 function compactModelName(value: string): string {
-	return value.split("/").at(-1)?.replace(/-mlx$/i, "") ?? value;
+	return value;
 }
 
 function formatMemory(bytes: number | null): string {

@@ -155,12 +155,7 @@ function isNumber(value: number | null | undefined): value is number {
 
 export function compactModelName(model: string | null): string {
 	if (!model) return "Local model";
-	const leaf = model.split("/").at(-1) ?? model;
-	return leaf
-		.replace(/-mlx$/i, "")
-		.replace(/-(nvfp4|fp8|int4|q4|4bit|8bit)$/i, "")
-		.replace(/-/g, " ")
-		.trim();
+	return model;
 }
 
 export function formatBytes(bytes: number | null): string {

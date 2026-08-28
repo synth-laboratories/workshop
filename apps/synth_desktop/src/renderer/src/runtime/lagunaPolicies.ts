@@ -6,8 +6,7 @@ export const LOCAL_BASE_POLICY = "poolside/Laguna-XS-2.1-NVFP4-mlx";
 export const LOCAL_FT_POLICY = "synth/Laguna-XS-2.1-ft";
 
 export function policyLabel(policy: LagunaPolicy): string {
-	if (policy.isBase) return "Base model";
-	return policy.title ?? policy.modelId.split("/").pop() ?? policy.modelId;
+	return policy.modelId;
 }
 
 /**

@@ -205,7 +205,7 @@ test("a pinned finetune is identified as a LoRA model while idle", () => {
 		monitor: monitor({ snapshot: snapshot() }),
 		selectedModel: "synth/Laguna-XS-2.1-ft"
 	});
-	assert.match(html, /Inference.*Laguna XS 2\.1 ft/);
+	assert.match(html, /Inference.*synth\/Laguna-XS-2\.1-ft/);
 	assert.match(html, /data-testid="inference-policy-kind"/);
 	assert.match(html, /data-finetuned="yes"/);
 	assert.match(html, /Fine-tuned model · LoRA attached/);
@@ -328,7 +328,7 @@ test("recent requests distinguish ok, failed and cancelled outcomes", () => {
 	});
 	assert.match(html, /data-status="failed"/);
 	assert.match(html, /data-status="cancelled"/);
-	assert.match(html, /Laguna XS 2\.1/);
+	assert.match(html, /poolside\/Laguna-XS-2\.1-NVFP4-mlx/);
 	assert.match(html, /2\.10 s/);
 });
 
@@ -488,7 +488,7 @@ test("formatters answer Unavailable instead of inventing values", () => {
 	assert.equal(formatQueue(null, 8), "Unavailable");
 	assert.equal(formatQueue(2, null), "2");
 	assert.equal(formatQueue(0, 8), "0/8");
-	assert.equal(compactModelName("poolside/Laguna-XS-2.1-NVFP4-mlx"), "Laguna XS 2.1");
+	assert.equal(compactModelName("poolside/Laguna-XS-2.1-NVFP4-mlx"), "poolside/Laguna-XS-2.1-NVFP4-mlx");
 	assert.equal(compactModelName(null), "Local model");
 });
 
