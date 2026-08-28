@@ -1236,14 +1236,8 @@ fn validate_launch(
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .map(|value| value.trim().to_string());
+    let mut attested_revision = launch.source.tracked_revision.clone();
     if let Some(current_revision) = git_revision {
-        if current_revision != launch.source.tracked_revision {
-            return Err(LaunchDeclarationError::CheckoutRevisionMismatch {
-                declared: launch.source.tracked_revision.clone(),
-                actual: current_revision,
-            }
-            .into_anyhow());
-        }
         let mut status = std::process::Command::new("git");
         status
             .arg("-C")
@@ -1257,12 +1251,67 @@ fn validate_launch(
             dirty.status.success(),
             "launch_source_mismatch: git status failed"
         );
-        if !dirty.stdout.is_empty() {
+        let included_sources_are_dirty = !dirty.stdout.is_empty();
+        if included_sources_are_dirty {
+            if current_revision != launch.source.tracked_revision {
+                return Err(LaunchDeclarationError::CheckoutRevisionMismatch {
+                    declared: launch.source.tracked_revision.clone(),
+                    actual: current_revision,
+                }
+                .into_anyhow());
+            }
             anyhow::ensure!(
                 launch.source.dirty_digest.is_some(),
                 "launch_source_mismatch: declared launch inputs are dirty but no dirty_digest was provided"
             );
+        } else if current_revision != launch.source.tracked_revision {
+            // A manifest cannot name the commit that contains itself. Permit a
+            // clean declaration to name an older tracked base only when that
+            // base is in the current history and every admitted input is
+            // byte-equivalent across the intervening commits. The current HEAD
+            // is the revision Workshop attests downstream.
+            let ancestor = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&origin.source_root)
+                .args([
+                    "merge-base",
+                    "--is-ancestor",
+                    launch.source.tracked_revision.as_str(),
+                    current_revision.as_str(),
+                ])
+                .status()
+                .context("launch_source_mismatch: validate declared launch base revision")?;
+            if !ancestor.success() {
+                return Err(LaunchDeclarationError::CheckoutRevisionMismatch {
+                    declared: launch.source.tracked_revision.clone(),
+                    actual: current_revision,
+                }
+                .into_anyhow());
+            }
+            let mut unchanged = std::process::Command::new("git");
+            unchanged
+                .arg("-C")
+                .arg(&origin.source_root)
+                .args([
+                    "diff",
+                    "--quiet",
+                    launch.source.tracked_revision.as_str(),
+                    current_revision.as_str(),
+                    "--",
+                ])
+                .args(&includes);
+            let unchanged = unchanged
+                .status()
+                .context("launch_source_mismatch: compare declared launch inputs to HEAD")?;
+            if !unchanged.success() {
+                return Err(LaunchDeclarationError::CheckoutRevisionMismatch {
+                    declared: launch.source.tracked_revision.clone(),
+                    actual: current_revision,
+                }
+                .into_anyhow());
+            }
         }
+        attested_revision = current_revision;
     }
     Ok(ContainerLaunchDeclarationV1 {
         working_directory: resolve_repository_path(origin, &launch.working_directory)
@@ -1276,7 +1325,7 @@ fn validate_launch(
         health_target: launch.health_target,
         declared_environment: launch.declared_environment,
         environment: launch.environment,
-        tracked_revision: launch.source.tracked_revision,
+        tracked_revision: attested_revision,
         dirty_digest: launch
             .source
             .dirty_digest
@@ -1758,6 +1807,188 @@ include = ["{include}"]
         .unwrap();
         fs::create_dir_all(root.join("src/challenge")).unwrap();
         fs::write(root.join("src/challenge/policy.py"), "print('policy')").unwrap();
+    }
+
+    fn git(root: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    fn init_git_source(root: &Path) -> String {
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::write(
+            root.join("scripts/up_craftax_container.sh"),
+            "#!/bin/sh\necho base\n",
+        )
+        .unwrap();
+        git(root, &["init"]);
+        git(
+            root,
+            &["config", "user.email", "workshop-test@example.invalid"],
+        );
+        git(root, &["config", "user.name", "Workshop Test"]);
+        git(root, &["add", "scripts/up_craftax_container.sh"]);
+        git(root, &["commit", "-m", "add launch source"]);
+        git(root, &["rev-parse", "HEAD"])
+    }
+
+    fn write_revisioned_container_manifest(
+        root: &Path,
+        tracked_revision: &str,
+        dirty_digest: Option<&str>,
+    ) {
+        let dirty_digest = dirty_digest
+            .map(|value| format!("dirty_digest = \"{value}\"\n"))
+            .unwrap_or_default();
+        fs::write(
+            root.join(CONTAINERS_FILE),
+            format!(
+                r#"
+[[container]]
+id = "nanohorizon-craftax"
+url = "http://127.0.0.1:18091"
+locality = "container"
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "."
+command = ["scripts/up_craftax_container.sh"]
+readiness_timeout_seconds = 30
+shutdown_grace_seconds = 5
+expected_port = 18091
+image_ref = "craftax-gamebench-rust"
+health_target = "craftax_nanohorizon"
+[container.launch.source]
+revision_policy = "exact-or-dirty-digest"
+tracked_revision = "{tracked_revision}"
+{dirty_digest}include = ["scripts/up_craftax_container.sh"]
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn committed_manifest_accepts_unchanged_ancestor_and_attests_current_head() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("nanohorizon");
+        let base = init_git_source(&source);
+        write_revisioned_container_manifest(&source, &base, None);
+        git(&source, &["add", CONTAINERS_FILE]);
+        git(&source, &["commit", "-m", "declare launch source"]);
+        let head = git(&source, &["rev-parse", "HEAD"]);
+        assert_ne!(base, head);
+
+        let spec = find_container_spec(&source, "nanohorizon-craftax").unwrap();
+        assert_eq!(spec.launch.tracked_revision, head);
+        assert_eq!(spec.source_revision.as_deref(), Some(head.as_str()));
+        assert_eq!(spec.origin.source_revision.as_deref(), Some(head.as_str()));
+        assert_eq!(spec.manifest_digest, None);
+    }
+
+    #[test]
+    fn clean_manifest_rejects_a_tracked_revision_outside_current_history() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("nanohorizon");
+        let base = init_git_source(&source);
+        git(&source, &["checkout", "-b", "declared-side"]);
+        fs::write(source.join("side.txt"), "side\n").unwrap();
+        git(&source, &["add", "side.txt"]);
+        git(&source, &["commit", "-m", "divergent declaration base"]);
+        let divergent = git(&source, &["rev-parse", "HEAD"]);
+        git(&source, &["checkout", "-b", "current-side", &base]);
+        write_revisioned_container_manifest(&source, &divergent, None);
+        git(&source, &["add", CONTAINERS_FILE]);
+        git(&source, &["commit", "-m", "declare divergent source"]);
+
+        let error = find_container_spec(&source, "nanohorizon-craftax")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("launch_checkout_revision_mismatch"),
+            "{error}"
+        );
+        assert!(error.contains(&divergent), "{error}");
+    }
+
+    #[test]
+    fn clean_manifest_rejects_an_include_changed_since_the_tracked_base() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("nanohorizon");
+        let base = init_git_source(&source);
+        fs::write(
+            source.join("scripts/up_craftax_container.sh"),
+            "#!/bin/sh\necho changed\n",
+        )
+        .unwrap();
+        write_revisioned_container_manifest(&source, &base, None);
+        git(
+            &source,
+            &["add", CONTAINERS_FILE, "scripts/up_craftax_container.sh"],
+        );
+        git(&source, &["commit", "-m", "change admitted launch source"]);
+
+        let error = find_container_spec(&source, "nanohorizon-craftax")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("launch_checkout_revision_mismatch"),
+            "{error}"
+        );
+        assert!(error.contains(&base), "{error}");
+    }
+
+    #[test]
+    fn dirty_git_source_requires_and_validates_the_exact_included_digest() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("nanohorizon");
+        let base = init_git_source(&source);
+        write_revisioned_container_manifest(&source, &base, None);
+        git(&source, &["add", CONTAINERS_FILE]);
+        git(&source, &["commit", "-m", "declare launch source"]);
+        let head = git(&source, &["rev-parse", "HEAD"]);
+        write_revisioned_container_manifest(&source, &head, None);
+        fs::write(
+            source.join("scripts/up_craftax_container.sh"),
+            "#!/bin/sh\necho dirty\n",
+        )
+        .unwrap();
+
+        let error = find_container_spec(&source, "nanohorizon-craftax")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("dirty but no dirty_digest"), "{error}");
+
+        let origin = ContainerDeclarationOrigin {
+            manifest_path: source.join(CONTAINERS_FILE),
+            source_root: source.clone(),
+            declaration_id: "nanohorizon-craftax".into(),
+            source_revision: None,
+            source_digest: None,
+        };
+        let digest =
+            launch_source_manifest_digest(&origin, &["scripts/up_craftax_container.sh".into()])
+                .unwrap();
+        write_revisioned_container_manifest(&source, &head, Some(&digest));
+        let spec = find_container_spec(&source, "nanohorizon-craftax").unwrap();
+        assert_eq!(spec.source_revision.as_deref(), Some(head.as_str()));
+        assert_eq!(spec.manifest_digest.as_deref(), Some(digest.as_str()));
+
+        write_revisioned_container_manifest(&source, &head, Some("sha256:deadbeef"));
+        let error = find_container_spec(&source, "nanohorizon-craftax")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("launch_source_digest_mismatch"), "{error}");
     }
 
     #[test]
