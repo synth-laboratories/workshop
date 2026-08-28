@@ -1497,12 +1497,7 @@ async fn run_policy_rollout(
         .and_then(Value::as_str)
         .unwrap_or("medium")
         .to_string();
-    let timeout_s = body
-        .get("timeoutS")
-        .or_else(|| body.get("timeout_per_rollout_s"))
-        .and_then(Value::as_u64)
-        .unwrap_or(600)
-        .clamp(30, 3600);
+    let timeout_s = policy_rollout_timeout_seconds(&body);
     let telemetry = body.get("telemetry").cloned().unwrap_or(json!({
         "enabled": true,
         "transport": "sse",
@@ -1827,6 +1822,14 @@ async fn run_policy_rollout(
             "calls": calls,
         }
     }))
+}
+
+fn policy_rollout_timeout_seconds(body: &Value) -> u64 {
+    body.get("timeoutS")
+        .or_else(|| body.get("timeout_per_rollout_s"))
+        .and_then(Value::as_u64)
+        .unwrap_or(crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT.as_secs())
+        .clamp(30, 3600)
 }
 
 fn is_aggregate_projection(body: &Value) -> Result<bool> {
@@ -2694,6 +2697,18 @@ mod tests {
         .unwrap();
         assert_eq!(pin["harness"], "react");
         assert_eq!(pin["config"], "caller_config");
+    }
+
+    #[test]
+    fn policy_rollout_timeout_defaults_to_long_running_container_budget() {
+        assert_eq!(
+            policy_rollout_timeout_seconds(&json!({})),
+            crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT.as_secs()
+        );
+        assert_eq!(
+            policy_rollout_timeout_seconds(&json!({"timeoutS": 90})),
+            90
+        );
     }
 
     #[test]

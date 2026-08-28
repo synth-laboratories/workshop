@@ -37,7 +37,7 @@ const WORKBENCH_TEMPLATE: &str = "trace.workbench.v1";
 const EVAL_ALGORITHM_ID: &str = "eval";
 const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
-const DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT: Duration = crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT;
 
 /// A failure of the evidence lane — durable events, projections, the terminal
 /// manifest, or the chat-owned visual — as opposed to a failure of the compute.
@@ -167,11 +167,34 @@ impl EvalSpec {
     }
 
     fn blocking_http_timeout(&self) -> Duration {
-        let Some(per_call) = self.policy.get("timeout_seconds").and_then(Value::as_f64) else {
-            return DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT;
-        };
-        let calls = self.maximum_model_calls_per_rollout.max(1) as f64;
-        Duration::from_secs_f64((per_call * calls + 60.0).clamp(60.0, 86_400.0))
+        let per_call_timeout = self
+            .policy
+            .get("timeout_seconds")
+            .and_then(Value::as_f64)
+            .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
+        let configured = per_call_timeout
+            .map(|per_call| {
+                let calls = self.maximum_model_calls_per_rollout.max(1) as f64;
+                Duration::from_secs_f64((per_call * calls + 60.0).clamp(60.0, 86_400.0))
+            })
+            .unwrap_or(DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT);
+        // Inline capabilities are the authoritative time bound on provider
+        // work. Waiting less than their lifetime converts a still-authorized
+        // producer retry sequence into a host transport failure. One final
+        // request may already be in flight when authority expires, so retain
+        // its declared timeout plus terminal-settlement grace. This grants no
+        // additional calls or spend.
+        let capability_bound = self.admitted_use_policy.as_ref().map(|policy| {
+            let terminal_grace = per_call_timeout.unwrap_or(60.0).ceil() as u64;
+            Duration::from_secs(
+                policy
+                    .lifetime_seconds
+                    .saturating_add(terminal_grace)
+                    .saturating_add(60)
+                    .min(86_400),
+            )
+        });
+        capability_bound.map_or(configured, |bound| configured.max(bound))
     }
 
     fn from_workspace(recipe: &WorkspaceRecipe, workspace: &std::path::Path) -> Result<Self> {
@@ -6927,6 +6950,31 @@ max_total_rollouts = 4
         assert_eq!(body["config"]["base_url"], proxy);
         assert!(body.pointer("/config/api_key_env").is_none());
         assert!(body.pointer("/config/api_key").is_none());
+    }
+
+    #[test]
+    fn inline_rollout_wait_covers_the_authorized_capability_lifetime() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.policy.insert("timeout_seconds".into(), json!(180.0));
+        spec.maximum_model_calls_per_rollout = 10;
+        spec.admitted_use_policy = Some(crate::secrets::SecretsUsePolicy {
+            lifetime_seconds: 3_600,
+            ..crate::secrets::SecretsUsePolicy::default()
+        });
+
+        assert_eq!(spec.blocking_http_timeout(), Duration::from_secs(3_840));
+    }
+
+    #[test]
+    fn rollout_wait_without_declared_call_timeout_uses_long_running_default() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.policy.remove("timeout_seconds");
+        spec.admitted_use_policy = None;
+
+        assert_eq!(
+            spec.blocking_http_timeout(),
+            DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT
+        );
     }
 
     #[test]

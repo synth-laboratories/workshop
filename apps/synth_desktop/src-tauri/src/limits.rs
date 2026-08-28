@@ -31,7 +31,11 @@ pub const VISUALS_IPC_ROLL_TIMEOUT: Duration = Duration::from_secs(10);
 /// subscribed visual continues to receive partial trace and frame events.
 /// This must not reuse the short dataset/engine hop timeout or a successful
 /// paid rollout will be reported to the MCP caller as a transport failure.
-pub const CONTAINER_POLICY_ROLLOUT_TIMEOUT: Duration = Duration::from_secs(900);
+// NanoHorizon may retry a transient provider limit up to 17 times with a
+// declared bounded backoff. Keep the host request alive through the run
+// capability's one-hour authority window; call and spend ceilings still fail
+// closed independently.
+pub const CONTAINER_POLICY_ROLLOUT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// Account snapshot HTTP budget.
 pub const ACCOUNT_CLOUD_TIMEOUT: Duration = Duration::from_secs(12);
