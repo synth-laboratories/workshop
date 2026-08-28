@@ -300,7 +300,11 @@ export function Shell(props: ShellProps) {
   const totalTokens = completeSum(turns.calls.map((call) => finite(call.usage.total_tokens)));
   const totalLatencyMs = completeSum(turns.calls.map((call) => call.latencyMs));
   const totalCostUsd = completeSum(turns.calls.map((call) => call.costUsd));
-  const selectedCall = turns.calls.find((call) => call.id === selectedCallId) ?? turns.calls.find((call) => call.id === reconcileCallSelection(turns.calls, selectedCallId, transcriptMode === "focus"));
+  // Keep the fallback render-derived. Persisting it in an effect adds a passive
+  // state update for every replay page even when the selected call did not
+  // change; an explicit click is the only reason to pin a call in state.
+  const selectedCall = turns.calls.find((call) => call.id === selectedCallId)
+    ?? turns.calls.find((call) => call.id === reconcileCallSelection(turns.calls, selectedCallId, transcriptMode === "focus"));
   const renderedCalls = turns.calls.length <= TRANSCRIPT_CALL_WINDOW ? turns.calls : (() => {
     const recent = turns.calls.slice(-TRANSCRIPT_CALL_WINDOW);
     return selectedCall && !recent.some((call) => call.id === selectedCall.id) ? [selectedCall, ...recent.slice(1)] : recent;
@@ -376,10 +380,6 @@ export function Shell(props: ShellProps) {
   useEffect(() => {
     setSelectedTraceId(null);
   }, [traceMode, selectedLane]);
-
-  useEffect(() => {
-    setSelectedCallId((current) => reconcileCallSelection(turns.calls, current, transcriptMode === "focus"));
-  }, [turns.calls, transcriptMode, props.visualMetadata?.qualityGate?.revision]);
 
   useEffect(() => {
     if (!framePlaying || !frameEvents.length) return;

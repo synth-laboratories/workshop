@@ -289,6 +289,13 @@ test("live Craftax resolves persisted fixture references from packaged template 
   assert.equal(fixture.events.filter((event) => event.kind === "eval.run.terminal").length, 10);
 });
 
+test("live Craftax keeps replay-driven call fallback out of passive state effects", () => {
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
+  assert.match(shell, /const selectedCall = turns\.calls\.find/);
+  assert.match(shell, /reconcileCallSelection\(turns\.calls, selectedCallId, transcriptMode === "focus"\)/);
+  assert.doesNotMatch(shell, /setSelectedCallId\(\(current\) => reconcileCallSelection/);
+});
+
 test("multiplexed rollout-local event ids never collapse across lanes", () => {
   const state = ingestLiveEnvelopes([
     { kind: "observation", event_id: "1", sequence: 1, rollout_id: "seed-0", lane: "seed-0", payload: { step: 0 } },
