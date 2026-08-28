@@ -38,9 +38,16 @@ pub fn project_sft_result(
     let usage = usage_from(run, events);
     json!({
         "schemaVersion": "optimizer_result.v1",
+        // `resultType` names the *shape* of this body — the SFT-shaped result
+        // contract — and CISPO is projected through it deliberately: the two
+        // share a dataset, a step-metric stream and a checkpoint ladder.
+        // `algorithmId` names the run that produced it, and those are not the
+        // same claim. Hardcoding both made a CISPO run report itself as an SFT
+        // run to every reader of this envelope, so the algorithm comes from the
+        // run and only the shape stays constant.
         "resultType": "sft",
         "optimizerRunId": run.id,
-        "algorithmId": "sft",
+        "algorithmId": run.algorithm_id,
         "status": run.status,
         "finalCursor": run.cursor_seq,
         "dataset": dataset,

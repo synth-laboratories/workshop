@@ -147,6 +147,28 @@ pub fn list_templates(genre: Option<&str>) -> anyhow::Result<Vec<TemplateMeta>> 
     Ok(out)
 }
 
+/// The user-tier directories this instance had to leave out of the catalog.
+///
+/// `list_templates` answers "what can I render", and a skipped template is by
+/// definition not in that answer. `resolve_template` explains one skip, but
+/// only to a caller who already holds the id — and the author whose template
+/// just vanished from the catalog is precisely the caller who does not. Without
+/// a listing the skip is recorded and unreadable: three audiences were promised
+/// the reason and one of them had no way to ask.
+///
+/// This is that surface, and nothing more: one entry per directory that claimed
+/// to be a template and was not a usable one, carrying the refusal that
+/// produced it. Bundled and staged tiers never appear here — they still fail
+/// the whole index loudly, so there is no such thing as a silently skipped
+/// shipped template to list.
+///
+/// Not yet reachable outside this module: `mod templates` is private, so a
+/// caller needs `list_skipped_templates` added to the `pub use templates::{…}`
+/// list in `visuals/mod.rs`. Drop the `allow(dead_code)` below with it.
+pub fn list_skipped_templates() -> anyhow::Result<Vec<SkippedUserTemplate>> {
+    Ok(build_template_index(&visuals_root())?.skipped)
+}
+
 pub fn resolve_template(template_id: &str) -> anyhow::Result<TemplateMeta> {
     let id = template_id.trim();
     if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
@@ -188,21 +210,26 @@ struct TemplateIndex {
 /// one, kept beside the index instead of thrown away.
 ///
 /// A silently skipped template is its own failure mode — nothing renders and
-/// there is nothing to read — so every skip lands in three places with three
+/// there is nothing to read — so every skip lands in four places with four
 /// different audiences: the operational log at the moment of the skip (the
 /// operator, who never asked for this template by name), this list (the index
-/// itself), and the `resolve_template` error for the id (the author, through
-/// the authoring tools they are already holding).
-#[derive(Clone, Debug)]
-struct SkippedUserTemplate {
+/// itself), the `resolve_template` error for the id (the author, through the
+/// authoring tools they are already holding), and `list_skipped_templates`
+/// (anyone who has to find the id before they can ask about it).
+///
+/// Serializable because that last audience reaches it over IPC, where the
+/// catalog listing it is missing from already travels as `TemplateMeta`.
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedUserTemplate {
     /// The id the directory claims by its name. A user template's manifest id
     /// must equal its directory name, so the name is the id to look up even
     /// when the manifest is the broken thing — which is the case that most
     /// needs an answer. `None` only for a non-UTF-8 directory name.
-    id: Option<String>,
+    pub id: Option<String>,
     /// Why it was skipped, verbatim from the refusal that produced it. The
     /// directory is `<user template root>/<id>`, so this does not repeat it.
-    reason: String,
+    pub reason: String,
 }
 
 /// Every template tier this instance can render, lowest precedence first:
@@ -1177,6 +1204,55 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(absent.contains("unknown visual template"), "{absent}");
+    }
+
+    /// The reason also has to reach someone who does *not* already know the id.
+    /// A template that vanished from the catalog is exactly the case where the
+    /// id is the missing piece: `list_templates` no longer names it and
+    /// `resolve_template` cannot be asked about a name nobody has.
+    #[test]
+    fn skipped_user_templates_are_listable_without_knowing_the_id() {
+        let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-skip-list");
+        let good = write_user_template("user.listed.good.v1");
+        fs::write(good.join("shell.tsx"), "export default () => null;\n").unwrap();
+        let broken = user_templates_root().join("user.listed.broken.v1");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(
+            broken.join("template.json"),
+            r#"{"schemaVersion":"synth.visual-template.v1","id":"user.listed.broken.v1"}"#,
+        )
+        .unwrap();
+        fs::write(broken.join("shell.tsx"), "export default () => null;\n").unwrap();
+
+        // The catalog is unchanged: the good one lists, the broken one does not.
+        let listed = list_templates(None).unwrap();
+        assert!(listed
+            .iter()
+            .any(|template| template.id == "user.listed.good.v1"));
+        assert!(
+            !listed
+                .iter()
+                .any(|template| template.id == "user.listed.broken.v1"),
+            "a skipped template must not re-enter the catalog"
+        );
+
+        // And the skip is now listable on its own, with its reason.
+        let skipped = list_skipped_templates().unwrap();
+        let entry = skipped
+            .iter()
+            .find(|entry| entry.id.as_deref() == Some("user.listed.broken.v1"))
+            .expect("skipped template is listed");
+        assert!(
+            entry.reason.contains("requires a semantic version"),
+            "{}",
+            entry.reason
+        );
+        assert!(
+            !skipped
+                .iter()
+                .any(|entry| entry.id.as_deref() == Some("user.listed.good.v1")),
+            "an indexed template is not a skip"
+        );
     }
 
     /// The bundled tier keeps the opposite policy. A malformed shipped template
