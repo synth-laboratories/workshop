@@ -15,7 +15,7 @@ trap cleanup EXIT
 export SYNTH_DESKTOP_INSTANCES_ROOT="$TEST_ROOT/instances"
 mkdir -p "$TEST_ROOT/home/.codex" "$TEST_ROOT/home/.synth-desktop"
 printf '{"tokens":{"access_token":"fixture"}}\n' >"$TEST_ROOT/home/.codex/auth.json"
-printf 'SYNTH_API_KEY=synth-fixture\nOPENROUTER_API_KEY=openrouter-fixture\nKEEP=yes\n' >"$TEST_ROOT/test-credentials.env"
+printf 'SYNTH_API_KEY=synth-fixture\nOPENROUTER_API_KEY=openrouter-fixture\nOPENAI_API_KEY=openai-fixture\nKEEP=yes\n' >"$TEST_ROOT/test-credentials.env"
 export SYNTH_DESKTOP_TEST_CREDENTIALS_FILE="$TEST_ROOT/test-credentials.env"
 export SYNTH_DESKTOP_DEV_OAUTH_FILE="$TEST_ROOT/home/.codex/auth.json"
 export SYNTH_DESKTOP_SHARED_ROOT="$TEST_ROOT/home/.synth-desktop/shared"
@@ -71,14 +71,16 @@ alpha_env="$TEST_ROOT/instances/v08/alpha/data/.env"
 [[ "$(stat -f '%Lp' "$alpha_env")" == "600" ]]
 rg -q '^SYNTH_API_KEY=' "$alpha_env"
 rg -q '^OPENROUTER_API_KEY=' "$alpha_env"
+rg -q '^OPENAI_API_KEY=' "$alpha_env"
 
 # Credential refresh updates only the allowlist and preserves instance-local
 # non-secret values.
-printf 'SYNTH_API_KEY=stale\nOPENROUTER_API_KEY=stale\nLOCAL_ONLY=yes\n' >"$alpha_env"
+printf 'SYNTH_API_KEY=stale\nOPENROUTER_API_KEY=stale\nOPENAI_API_KEY=stale\nLOCAL_ONLY=yes\n' >"$alpha_env"
 $ROOT/scripts/desktop-instance.sh print alpha >/dev/null
 rg -q '^LOCAL_ONLY=yes$' "$alpha_env"
 rg -q '^SYNTH_API_KEY=.synth-fixture.$' "$alpha_env"
 rg -q '^OPENROUTER_API_KEY=.openrouter-fixture.$' "$alpha_env"
+rg -q '^OPENAI_API_KEY=.openai-fixture.$' "$alpha_env"
 
 # Packaged apps must run exclusively from their isolated instance. A cwd or
 # runtime fallback under ~/Documents causes macOS Files & Folders prompts.
@@ -157,7 +159,7 @@ rg -Fq -- '--arg identity "${host_authority:-adhoc}"' "$ROOT/scripts/desktop-ins
 rg -q 'SYNTH_DESKTOP_REBUILD_ADAPTERS:-0' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'cargo:rerun-if-changed=' "$ROOT/apps/synth_desktop/src-tauri/build.rs"
 rg -q 'symbolic-ref.*HEAD' "$ROOT/apps/synth_desktop/src-tauri/build.rs"
-rg -q 'SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-}' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_COMPUTER_USE_PARENT_REQUIREMENT=' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'optimizer runtime=immutable installed plugin' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'optimizer runtime=persisted instance-local source' "$ROOT/scripts/desktop-instance.sh"
