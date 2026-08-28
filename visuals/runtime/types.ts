@@ -149,14 +149,24 @@ export type VisualTemplateMeta = {
 /**
  * Where a template came from. `internal` templates are staged from ~/.synth
  * into templates-internal/ at build time and never ship in a public release.
+ * `user` templates are not in the bundle at all: they are read at runtime from
+ * `<state root>/visuals/templates/<id>/`, so they arrive after the module
+ * graph is fixed and never carry a static shell importer.
  */
-export type VisualTemplateDistribution = "public" | "internal";
+export type VisualTemplateDistribution = "public" | "internal" | "user";
 
 export type VisualTemplate = VisualTemplateMeta & {
   /** Absolute or package-relative directory containing template.json. */
   root: string;
   /** Derived from the template root, not self-declared. */
   distribution?: VisualTemplateDistribution;
+  /**
+   * Set to `"user"` for a template read from the instance state root at
+   * runtime. Its shell is `shell.tsx` on disk, compiled in the pane under the
+   * sourced capability model, not a module in the bundle. Readers branch on
+   * this rather than on a template id.
+   */
+  sourceKind?: "user";
 };
 
 export type VisualInstanceStatus = "draft" | "bound" | "saved" | "open";

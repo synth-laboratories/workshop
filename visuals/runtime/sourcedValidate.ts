@@ -70,9 +70,20 @@ function collectFrom(source: string, regex: RegExp, group: number, skipType = fa
   return found;
 }
 
-export function validateSourcedSource(source: string): SourcedValidateResult {
+/**
+ * `templateId` names the template in the message, because more than one
+ * template now compiles here: `sourced.visual.v1` and every user-authored
+ * template under the instance state root. A user editing
+ * `<id>/shell.tsx` must be told about `<id>`, not about a family they never
+ * chose. The host says it the same way (`"{} requires content"` in
+ * `visuals/registry.rs`).
+ */
+export function validateSourcedSource(
+  source: string,
+  templateId: string = SOURCED_TEMPLATE_ID
+): SourcedValidateResult {
   if (typeof source !== "string" || source.trim().length === 0) {
-    return { ok: false, error: "sourced.visual.v1 requires content" };
+    return { ok: false, error: `${templateId} requires content` };
   }
   if (new TextEncoder().encode(source).length > SOURCED_MAX_SOURCE_BYTES) {
     return { ok: false, error: "Sourced module exceeds 256KiB" };

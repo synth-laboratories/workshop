@@ -8,6 +8,7 @@ import type { CodexEvent, ComposerImageAttachment, DesktopInstanceDiagnostics, H
 import type { CoreDiagnostics } from "@synth/runtime-protocol";
 import type { ContainerDeployment, TraceV5Record, UsageLedgerEntry, UsageWindow } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
+import { setRuntimeTemplateLoader } from "@synth/visuals";
 import { BROWSER_MODEL_CATALOG } from "./modelCatalog";
 
 // The packaged WebKit view is always served from the `tauri:` protocol.  The
@@ -780,6 +781,7 @@ window.synthWorkspaceScope ??= isTauri
 		window.synthVisuals ??= {
 			listTemplates: (genre) => fromGenerated(spectaCommands.visualsTemplatesList(genre ?? null)),
 			getTemplate: (templateId) => fromGenerated(spectaCommands.visualsTemplatesGet(templateId)),
+			templateShellSource: (templateId) => fromGenerated(spectaCommands.visualsTemplateShellSource(templateId)),
 			list: (query) => fromGenerated(spectaCommands.visualsList(wire(query ?? null))),
 			get: (visualId) => fromGenerated(spectaCommands.visualsGet(visualId)),
 			reportObservation: (observation) => fromGenerated(spectaCommands.visualsObservationReport(wire(observation))),
@@ -995,6 +997,13 @@ window.synthWorkspaceScope ??= isTauri
 			}
 		};
 	}
+	// The visual template catalog is `bundled union runtime`, and the runtime half
+	// only exists on the host: `import.meta.glob` fixed the bundled half when this
+	// renderer was built, so a template the user wrote afterwards is invisible to
+	// it. Hand the registry the host list; it keeps only `sourceKind === "user"`
+	// rows and refuses any that would shadow a bundled id. Read through `bridges`
+	// at call time so the loader survives a host installed after this line.
+	setRuntimeTemplateLoader(async () => (await bridges.visuals?.listTemplates?.()) ?? []);
 }
 
 

@@ -151,6 +151,7 @@ export const COMMANDS = {
 	CONTEXT_COOKBOOKS_UNINSTALL: "context_cookbooks_uninstall",
 	VISUALS_TEMPLATES_LIST: "visuals_templates_list",
 	VISUALS_TEMPLATES_GET: "visuals_templates_get",
+	VISUALS_TEMPLATE_SHELL_SOURCE: "visuals_template_shell_source",
 	VISUALS_LIST: "visuals_list",
 	VISUALS_GET: "visuals_get",
 	VISUALS_OBSERVATION_REPORT: "visuals_observation_report",

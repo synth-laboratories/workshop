@@ -193,6 +193,7 @@ export const commands = {
 	optimizerSidecarUninstall: (version: string) => typedError<OptimizerSidecarStatus, AppError_Serialize>(__TAURI_INVOKE("optimizer_sidecar_uninstall", { version })),
 	visualsTemplatesList: (genre: string | null) => typedError<TemplateMeta[], AppError_Serialize>(__TAURI_INVOKE("visuals_templates_list", { genre })),
 	visualsTemplatesGet: (templateId: string) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_templates_get", { templateId })),
+	visualsTemplateShellSource: (templateId: string) => typedError<string, AppError_Serialize>(__TAURI_INVOKE("visuals_template_shell_source", { templateId })),
 	visualsList: (query: {
 	status: string | null,
 	sessionId: string | null,
@@ -2809,6 +2810,11 @@ export type TemplateMeta = {
 	version?: string | null,
 	description?: string | null,
 	path?: string | null,
+	/**
+	 *  TSX entry point. Bundled families resolve it through Vite's static
+	 *  graph; a `source_kind: "user"` template is compiled in the pane from
+	 *  this file through `compileSourcedModule`.
+	 */
 	shellPath?: string | null,
 	/**
 	 *  `renderer.html` packages are imported into the instance-local managed

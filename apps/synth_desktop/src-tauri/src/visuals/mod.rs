@@ -15,6 +15,7 @@ pub mod sourced;
 pub mod stream_receipt;
 pub mod systems;
 mod templates;
+mod user_templates;
 
 /// The repository's `visuals/` root, so tests can load the same fixtures the
 /// binding resolver reads.

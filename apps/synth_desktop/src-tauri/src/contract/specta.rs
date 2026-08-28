@@ -176,6 +176,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::optimizers::manager::optimizer_sidecar_uninstall,
             crate::visuals_templates_list,
             crate::visuals_templates_get,
+            crate::visuals_template_shell_source,
             crate::visuals_list,
             crate::visuals_get,
             crate::visuals_observation_report,
@@ -491,8 +492,12 @@ mod tests {
         // native one-time replacement, bound to the declaring repository.
         // 270 → 276: failure ledger query/get/timeline, logs query, redacted
         // bundle export, and observability mode status.
+        // 276 → 277: `visuals_template_shell_source`, which reads one
+        // user-authored template's `shell.tsx` for the pane to compile. Read
+        // only, refuses any template whose source kind is not `user`, and
+        // refuses a path outside the user template root.
         assert_eq!(
-            exported, 276,
+            exported, 277,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

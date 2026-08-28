@@ -2700,6 +2700,18 @@ fn visuals_templates_get(
 
 #[tauri::command]
 #[specta::specta]
+fn visuals_template_shell_source(
+    state: State<'_, Arc<CoreRuntime>>,
+    template_id: String,
+) -> Result<String, AppError> {
+    state
+        .visuals()
+        .template_shell_source(&template_id)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn visuals_list(
     state: State<'_, Arc<CoreRuntime>>,
     query: Option<VisualQuery>,

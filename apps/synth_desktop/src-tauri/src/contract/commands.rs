@@ -127,6 +127,7 @@ impl Commands {
     pub const CONTEXT_COOKBOOKS_UNINSTALL: &'static str = "context_cookbooks_uninstall";
     pub const VISUALS_TEMPLATES_LIST: &'static str = "visuals_templates_list";
     pub const VISUALS_TEMPLATES_GET: &'static str = "visuals_templates_get";
+    pub const VISUALS_TEMPLATE_SHELL_SOURCE: &'static str = "visuals_template_shell_source";
     pub const VISUALS_LIST: &'static str = "visuals_list";
     pub const VISUALS_GET: &'static str = "visuals_get";
     pub const VISUALS_OBSERVATION_REPORT: &'static str = "visuals_observation_report";
