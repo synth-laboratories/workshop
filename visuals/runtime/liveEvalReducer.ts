@@ -48,7 +48,9 @@ export function projectLiveEval(
 ): LiveEvalProjection {
   const rows: LiveEnvelope[] = [];
   for (const event of events) {
-    if (isControlEnvelope(event) || event.control === true) continue;
+    // `isControlEnvelope` is the one control predicate; it honours the explicit
+    // `control: true` flag, so the projector and the ingest fold agree.
+    if (isControlEnvelope(event)) continue;
     const seq = envelopeSequence(event);
     if (cutoffSequence != null && seq != null && seq > cutoffSequence) continue;
     rows.push(event);

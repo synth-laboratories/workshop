@@ -113,7 +113,19 @@ export function assertDeclaredStreamSource(
   return null;
 }
 
+/**
+ * The single definition of "control" for the whole live-eval pipeline: the
+ * ingest fold, the projector (`liveEvalReducer.projectLiveEval`) and the
+ * optimizer compose path all decide control-ness here and nowhere else.
+ *
+ * An explicit `control: true` flag counts, not just a known control kind. The
+ * projector already honoured the flag while the fold checked kind only, so an
+ * envelope flagged `control: true` under an ordinary kind was evidence to one
+ * and not the other — it became a row in `LiveIngestState.events` that the
+ * projection then silently dropped.
+ */
 export function isControlEnvelope(event: LiveEnvelope): boolean {
+  if (event.control === true) return true;
   const kind = String(event.kind ?? event.type ?? "");
   return (
     kind === "stream.subscribed" ||
@@ -242,21 +254,34 @@ export function ingestLiveEnvelopeBatch(
     }
     ids.add(id);
     digests.set(id, digest);
-    if (isControlEnvelope(event)) {
+    const control = isControlEnvelope(event);
+    if (control) {
       ready ||= String(event.kind ?? event.type ?? "") === "stream.subscribed";
-      continue;
+    } else {
+      // Only non-control envelopes are evidence: they alone become rows, and
+      // they alone advance the per-scope evidence high-water mark.
+      events.push(normalizeEnvelopeIdentity(event));
     }
-    events.push(normalizeEnvelopeIdentity(event));
     const scope = envelopeScope(event);
     const rawSequence = event.sequence_number ?? event.sequence;
-    const sequence = typeof rawSequence === "number" ? rawSequence : Number(rawSequence);
+    // `Number(null)` is 0 and `Number("")` is 0; an absent sequence must read as
+    // absent, not as sequence zero, or it manufactures a gap before sequence 1.
+    const sequence = typeof rawSequence === "number"
+      ? rawSequence
+      : rawSequence != null && String(rawSequence).length > 0
+        ? Number(rawSequence)
+        : Number.NaN;
     if (!Number.isFinite(sequence)) continue;
     if (!clonedSequenceScopes.has(scope)) {
       receivedSequencesByScope.set(scope, new Set(receivedSequencesByScope.get(scope) ?? []));
       clonedSequenceScopes.add(scope);
     }
+    // A control envelope that carries a sequence consumed a number in the
+    // producer's stream. Recording it keeps the scope's numbering contiguous;
+    // omitting it made every sequenced heartbeat a permanent phantom gap.
     receivedSequencesByScope.get(scope)!.add(sequence);
     touchedSequenceScopes.add(scope);
+    if (control) continue;
     lastSequenceByScope.set(scope, Math.max(lastSequenceByScope.get(scope) ?? sequence, sequence));
   }
 
