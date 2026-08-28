@@ -1260,7 +1260,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(live.contains("terminal"));
+        assert!(live.contains("only after its run finishes"), "{live}");
 
         let partial = require_primary_optimizer_seal_evidence(
             "vis-primary",

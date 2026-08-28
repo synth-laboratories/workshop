@@ -6421,6 +6421,179 @@ max_total_rollouts = 4
         task.abort();
     }
 
+    /// Build a settled inline evaluation whose terminal visual predates the
+    /// authoritative provider receipt: the projection was last published while
+    /// the run was still live and cost was unknown, and the receipt landed
+    /// afterwards. This is the state a run reopened under a newer Workshop
+    /// build is in.
+    async fn settled_inline_eval_with_a_stale_cost_projection(
+        svc: &OptimizerService,
+        run_id: &str,
+        cost_usd: f64,
+    ) -> (OptimizerRunRecord, EvalSpec, String) {
+        let approved = super::super::admission::tests::nanohorizon_approved_specification();
+        let spec = EvalSpec::from_execution_spec(
+            approved.spec(),
+            "craftax".into(),
+            "world:craftax@eval".into(),
+        )
+        .unwrap();
+        let seeds = spec.train.clone();
+        let (run, _) = svc
+            .create_admitted_eval(
+                serde_json::from_value(json!({
+                    "algorithmId": EVAL_ALGORITHM_ID,
+                    "id": run_id,
+                    "openVisual": false,
+                    "summary": {
+                        "recipeSourceKind": "inline",
+                        "task": spec.family,
+                        "costCeilingUsd": spec.cost_ceiling_usd,
+                        "records": [],
+                    },
+                }))
+                .unwrap(),
+                approved,
+                seeds.len(),
+            )
+            .await
+            .unwrap();
+        append_status(svc, &run.id, "optimizer.run.started", "running")
+            .await
+            .unwrap();
+        append_eval_plan(svc, &run.id, &spec, &spec.examples())
+            .await
+            .unwrap();
+
+        // Minted while the run is live: the cost lane has no receipt yet.
+        let run = svc.get(run.id.clone()).await.unwrap();
+        let visual_id = mint_experiment_visual(svc, &run, &spec, seeds.len())
+            .await
+            .unwrap();
+        let records = seeds
+            .iter()
+            .map(|seed| {
+                json!({
+                    "seed": seed,
+                    "pool": "train",
+                    "worldRef": spec.world_ref,
+                    "rolloutId": format!("roll_{seed}"),
+                    "trialId": format!("trial_{seed}"),
+                    "status": "completed",
+                    "reward": 1.0,
+                    "sealedTrace": {"traces": [{
+                        "traceId": format!("trace_{seed}"),
+                        "digest": format!("sha256:{}", "a".repeat(64)),
+                    }]},
+                })
+            })
+            .collect::<Vec<_>>();
+        for (index, record) in records.iter().enumerate() {
+            append_eval_terminal(svc, &run.id, &spec, index as u32, record)
+                .await
+                .unwrap();
+        }
+        let summary_records = records.clone();
+        let owned_visual_id = visual_id.clone();
+        svc.patch_run(run.id.clone(), move |run| {
+            let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+            summary.insert("visualId".into(), json!(owned_visual_id));
+            summary.insert("records".into(), json!(summary_records));
+            run.summary = Value::Object(summary);
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        // The receipt is the cost authority and lands before settlement, but
+        // nothing republishes the visual it postdates.
+        append_provider_usage_receipt(
+            svc,
+            &run.id,
+            provider_usage_receipt(&run.id, 37, 116_385, 6_217, Some(cost_usd), 'c'),
+        )
+        .await
+        .unwrap();
+        append_terminal(svc, &run.id, "completed", String::new())
+            .await
+            .unwrap();
+        (svc.get(run.id).await.unwrap(), spec, visual_id)
+    }
+
+    /// Reopening a settled inline evaluation republishes a terminal visual that
+    /// predates the authoritative provider receipt — exactly once. The receipt
+    /// is the cost authority, the sealed terminal manifest is immutable, and a
+    /// second open must not touch the visual again.
+    #[tokio::test]
+    async fn reopening_a_terminal_inline_eval_refreshes_a_stale_cost_projection_exactly_once() {
+        let (svc, _dir, _) = service().await;
+        let cost_usd = 0.018659;
+        let (run, _spec, visual_id) = settled_inline_eval_with_a_stale_cost_projection(
+            &svc,
+            "opt_eval_craftax_stale_projection",
+            cost_usd,
+        )
+        .await;
+        assert_eq!(run.status, "completed");
+        assert_eq!(run.usage.cost_usd, Some(cost_usd));
+
+        let authoritative = format!("${cost_usd:.6} / $2.45");
+        let stale = svc.visuals().get(visual_id.clone()).await.unwrap();
+        assert_eq!(
+            stale.bindings.pointer("/inputs/0/data/progress/cost"),
+            Some(&json!("awaiting telemetry / $2.45")),
+            "the fixture must start from a projection that predates the receipt"
+        );
+        let sealed_manifest = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .expect("a settled run seals a terminal manifest");
+
+        assert!(
+            refresh_terminal_visual_projection_if_stale(&svc, &run)
+                .await
+                .unwrap(),
+            "reopening a run whose visual predates the receipt republishes it"
+        );
+
+        let refreshed = svc.visuals().get(visual_id.clone()).await.unwrap();
+        assert_eq!(
+            refreshed.bindings.pointer("/inputs/0/data/progress/cost"),
+            Some(&json!(authoritative)),
+            "the republished projection shows the provider receipt, not the live estimate"
+        );
+        assert_eq!(refreshed.status, VisualStatus::Saved);
+        assert_eq!(
+            refreshed.bindings.pointer("/inputs/0/data/status"),
+            Some(&json!("completed"))
+        );
+
+        // Immutable evidence is not a projection: republishing must not rewrite
+        // the sealed terminal manifest or the run's Trace V5 evidence refs.
+        let reopened = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(
+            svc.terminal_manifest(run.id.clone()).await.unwrap(),
+            Some(sealed_manifest),
+            "the sealed terminal manifest is immutable across a reopen"
+        );
+        assert_eq!(reopened.output_refs, run.output_refs);
+        assert_eq!(reopened.summary, run.summary);
+
+        assert!(
+            !refresh_terminal_visual_projection_if_stale(&svc, &reopened)
+                .await
+                .unwrap(),
+            "a second open finds the projection current and does nothing"
+        );
+        let unchanged = svc.visuals().get(visual_id).await.unwrap();
+        assert_eq!(
+            unchanged.current_revision, refreshed.current_revision,
+            "the no-op open must not bump the visual revision"
+        );
+        assert_eq!(unchanged.bindings, refreshed.bindings);
+    }
+
     /// `get_result` for an eval is typed, and is answerable without a candidate.
     #[tokio::test]
     async fn a_finished_eval_returns_a_typed_eval_result() {

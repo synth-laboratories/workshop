@@ -30,7 +30,7 @@ pub mod spec;
 pub mod state;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use canonical::{digest_bytes, digest_of, CanonicalError, CanonicalJson};
 pub use error::{AdmissionError, AdmissionErrorCode, AdmissionSubject};
