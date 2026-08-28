@@ -45,6 +45,43 @@ pub struct ContainerDeployment {
     pub updated_at: String,
 }
 
+/// Fields bound to the approved workspace declaration, rather than observed
+/// from a live container. Catalog registration and probing refresh runtime
+/// facts, but must not detach the durable record from the source revision that
+/// admission is authorized to read.
+const DURABLE_CONTAINER_DECLARATION_KEYS: &[&str] = &[
+    "workspaceSpecId",
+    "sourcePath",
+    "declarationOrigin",
+    "launchDeclaration",
+    "policySourcePath",
+    "gitRevision",
+    "manifestHash",
+];
+
+fn merge_container_hydration_metadata(previous: Option<&Value>, mut observed: Value) -> Value {
+    let Some(previous) = previous.and_then(Value::as_object) else {
+        return observed;
+    };
+    let Some(observed) = observed.as_object_mut() else {
+        return Value::Object(previous.clone());
+    };
+    let has_workspace_declaration = previous
+        .get("workspaceSpecId")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+        && (previous.get("declarationOrigin").is_some() || previous.get("sourcePath").is_some());
+    if !has_workspace_declaration {
+        return Value::Object(observed.clone());
+    }
+    for key in DURABLE_CONTAINER_DECLARATION_KEYS {
+        if let Some(value) = previous.get(*key) {
+            observed.insert((*key).to_string(), value.clone());
+        }
+    }
+    Value::Object(observed.clone())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceRecord {
@@ -368,15 +405,21 @@ impl DataStore {
         self.db.clone().run_transaction(move |conn| {
             let now = Utc::now().to_rfc3339();
             let base_url = request.base_url.trim_end_matches('/').to_string();
-            let existing_id: Option<String> = conn.query_row(
-                "SELECT id FROM containers WHERE base_url = ?1 LIMIT 1",
+            let existing: Option<(String, String)> = conn.query_row(
+                "SELECT id, metadata_json FROM containers WHERE base_url = ?1 LIMIT 1",
                 params![&base_url],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             ).optional()?;
-            let id = existing_id.unwrap_or_else(|| format!("ctr_{}", Uuid::new_v4().simple()));
+            let previous_metadata = existing
+                .as_ref()
+                .and_then(|(_, raw)| serde_json::from_str::<Value>(raw).ok());
+            let id = existing
+                .map(|(id, _)| id)
+                .unwrap_or_else(|| format!("ctr_{}", Uuid::new_v4().simple()));
             let name = request.name.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| "Attached container".into());
             let location = request.location.unwrap_or_else(|| "local".into());
             let health_json = serde_json::to_string(&health)?;
+            let metadata = merge_container_hydration_metadata(previous_metadata.as_ref(), metadata);
             let metadata_json = serde_json::to_string(&metadata)?;
             conn.execute(
                 "INSERT INTO containers(id,name,location,status,base_url,task_family,health_json,metadata_json,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) ON CONFLICT(id) DO UPDATE SET name=excluded.name,location=excluded.location,status=excluded.status,base_url=excluded.base_url,task_family=excluded.task_family,health_json=excluded.health_json,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at",
@@ -404,6 +447,10 @@ impl DataStore {
         self.db.clone().run_transaction(move |conn| {
             let previous = load_container(conn, &id).ok();
             let now = Utc::now().to_rfc3339();
+            let metadata = merge_container_hydration_metadata(
+                previous.as_ref().map(|container| &container.metadata),
+                metadata,
+            );
             let changed = conn.execute(
                 "UPDATE containers SET status=?1,health_json=?2,metadata_json=?3,task_family=COALESCE(?4,task_family),updated_at=?5 WHERE id=?6",
                 params![&status, serde_json::to_string(&health)?, serde_json::to_string(&metadata)?, &task_family, &now, &id],

@@ -480,6 +480,9 @@ pub fn approved_rollouts(value: u32) -> Result<RolloutCount> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::{ContainerRegisterRequest, DataStore};
+    use crate::storage::{ContentStore, Storage};
+    use tempfile::tempdir;
 
     #[test]
     fn inline_provider_scope_uses_the_routed_chat_operation() {
@@ -489,5 +492,124 @@ mod tests {
         );
         assert_eq!(scope.operations, ["chat.completions.create"]);
         assert_ne!(scope.operations, ["provider.request"]);
+    }
+
+    #[tokio::test]
+    async fn catalog_probe_preserves_workspace_origin_for_policy_material_resolution() {
+        let dir = tempdir().unwrap();
+        let source_root = dir.path().join("workspace");
+        std::fs::create_dir_all(source_root.join("policies")).unwrap();
+        std::fs::write(
+            source_root.join("workshop.containers.toml"),
+            "version = 1\n",
+        )
+        .unwrap();
+        let policy_source = "def policy(observation):\n    return 0\n";
+        std::fs::write(source_root.join("policies/nanohorizon.py"), policy_source).unwrap();
+
+        let storage = Storage::open(dir.path().join("core")).unwrap();
+        let data = DataStore::new(
+            storage.database().clone(),
+            ContentStore::new(storage.content_root()),
+        );
+        let register = || ContainerRegisterRequest {
+            name: Some("NanoHorizon".into()),
+            base_url: "http://127.0.0.1:9010".into(),
+            location: Some("local".into()),
+            task_family: Some("craftax".into()),
+            metadata: None,
+        };
+        let declaration_origin = json!({
+            "manifestPath": source_root.join("workshop.containers.toml"),
+            "sourceRoot": source_root,
+            "declarationId": "nanohorizon-craftax",
+            "sourceRevision": "approved-revision",
+            "sourceDigest": "sha256:dirty-approved-source"
+        });
+        let (registered, _) = data
+            .upsert_container(
+                register(),
+                "ready".into(),
+                json!({"ok": true}),
+                json!({
+                    "workspaceSpecId": "nanohorizon-craftax",
+                    "sourcePath": source_root,
+                    "declarationOrigin": declaration_origin,
+                    "launchDeclaration": {"sourceRevision": "approved-revision"},
+                    "policySourcePath": "policies/nanohorizon.py",
+                    "gitRevision": "approved-revision",
+                    "manifestHash": "sha256:approved-manifest",
+                    "source": "workspace",
+                    "capabilities": {"revision": "stale-live-revision"},
+                    "info": {"imageDigest": "sha256:stale-image"}
+                }),
+                Some("craftax".into()),
+            )
+            .await
+            .unwrap();
+
+        // A catalog refresh is the destructive path that previously replaced
+        // metadata wholesale before the subsequent probe could clone it.
+        let (catalogued, _) = data
+            .upsert_container(
+                register(),
+                "ready".into(),
+                json!({"ok": true}),
+                json!({
+                    "source": "container_catalog",
+                    "capabilities": {"revision": "live-revision-1"},
+                    "info": {
+                        "imageDigest": "sha256:live-image-1",
+                        "producerSourceRevision": "producer@1"
+                    }
+                }),
+                Some("craftax".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(catalogued.id, registered.id);
+
+        let (probed, _) = data
+            .update_container_hydration(
+                registered.id,
+                "ready".into(),
+                json!({"ok": true}),
+                json!({
+                    "source": "container_catalog",
+                    "capabilities": {"revision": "live-revision-2"},
+                    "info": {
+                        "imageDigest": "sha256:live-image-2",
+                        "producerSourceRevision": "producer@2"
+                    }
+                }),
+                Some("craftax".into()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(probed.metadata["source"], "container_catalog");
+        assert_eq!(
+            probed.metadata["capabilities"]["revision"],
+            "live-revision-2"
+        );
+        assert_eq!(
+            probed.metadata["info"]["imageDigest"],
+            "sha256:live-image-2"
+        );
+        assert_eq!(probed.metadata["gitRevision"], "approved-revision");
+        assert_eq!(probed.metadata["declarationOrigin"], declaration_origin);
+
+        let (resolved_source, material) = read_policy_source(
+            &probed.metadata,
+            probed.metadata["gitRevision"].as_str().unwrap(),
+            probed.metadata["policySourcePath"].as_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resolved_source, policy_source);
+        assert_eq!(material.tracked_revision, "approved-revision");
+        assert_eq!(
+            material.content_digest,
+            admission::digest_bytes(policy_source.as_bytes())
+        );
     }
 }
