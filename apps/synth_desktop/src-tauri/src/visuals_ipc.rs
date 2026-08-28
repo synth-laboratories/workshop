@@ -526,7 +526,11 @@ pub async fn spawn(
         })
         .await;
         if let Err(error) = result {
-            crate::platform::logging::report("visuals_ipc", "eprintln", format!("synth-desktop: visuals IPC stopped: {error:#}"));
+            crate::platform::logging::report(
+                "visuals_ipc",
+                "eprintln",
+                format!("synth-desktop: visuals IPC stopped: {error:#}"),
+            );
         }
     });
     Ok(connection)
@@ -844,6 +848,9 @@ async fn dispatch_request(
     if path.starts_with("/v1/traces") {
         return dispatch_traces(method, path, json_body, core).await;
     }
+    if path.starts_with("/v1/documents") {
+        return crate::documents::ipc::dispatch_documents(method, path, json_body, core).await;
+    }
     if path.starts_with("/v1/diagnostics") {
         return dispatch_diagnostics(method, path, json_body, core).await;
     }
@@ -852,6 +859,9 @@ async fn dispatch_request(
     }
     if method == "POST" && path.starts_with("/v1/containers/") && path.ends_with("/restart") {
         return dispatch_container_restart(path, json_body, core, app).await;
+    }
+    if method == "POST" && path == "/v1/visuals/templates/import" {
+        return dispatch_template_import(json_body, core, app).await;
     }
     dispatch(method, path, json_body, core).await
 }
@@ -2519,13 +2529,13 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let genre = body.get("genre").and_then(Value::as_str);
             Ok(json!({"templates": registry.list_templates(genre)?}))
         }
+        // Importing a template writes renderer code the app compiles at every
+        // launch, so it settles a `visual_template_persist` approval first —
+        // which needs an `AppHandle` this signature does not have.
+        // `dispatch_request` routes it to `dispatch_template_import` before it
+        // can reach here; anything that still lands here has no person to ask.
         ("POST", "/v1/visuals/templates/import") => {
-            let source_path = body
-                .get("sourcePath")
-                .or_else(|| body.get("source_path"))
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("source_path is required"))?;
-            Ok(json!({"template": registry.import_template(source_path)?}))
+            anyhow::bail!("template import requires the app-bound approval route")
         }
         ("GET", path) if path.starts_with("/v1/visuals/templates/") => {
             let id = path.trim_start_matches("/v1/visuals/templates/");
@@ -4801,6 +4811,42 @@ async fn dispatch_computer_use(
     }
 }
 
+/// Import one managed template package, once a person has allowed it.
+///
+/// The app-bound half of `POST /v1/visuals/templates/import`. This route has
+/// been reachable from the agent seam since the managed registry shipped and
+/// wrote a `renderer.html` into the instance state root with no confirmation of
+/// any kind; the write now goes through
+/// [`crate::visuals::registry::VisualRegistry::import_template_approved`], which
+/// describes the package to a person before any byte lands. `sessionRef` is
+/// required for the same reason the container restart route requires it: the
+/// card is raised on a conversation, and there is nowhere to draw one without.
+pub(crate) async fn dispatch_template_import(
+    body: Value,
+    core: &CoreRuntime,
+    app: &AppHandle,
+) -> Result<Value> {
+    let source_path = body
+        .get("sourcePath")
+        .or_else(|| body.get("source_path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("source_path is required"))?;
+    let session = body
+        .get("sessionRef")
+        .or_else(|| body.get("session_ref"))
+        .or_else(|| body.get("sessionId"))
+        .or_else(|| body.get("session_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
+    let template = core
+        .visuals()
+        .import_template_approved(app, Some(session), source_path)
+        .await?;
+    Ok(json!({ "template": template }))
+}
+
 pub(crate) async fn dispatch_container_restart(
     path: &str,
     body: Value,
@@ -4847,7 +4893,11 @@ pub(crate) async fn dispatch_container_restart(
         .await
         .map_err(|error| {
             let _ = core.storage().database().transaction(|conn| {
-                if let Some(open) = crate::platform::failure::repository::FailureRepository::open_for_container(conn, id)? {
+                if let Some(open) =
+                    crate::platform::failure::repository::FailureRepository::open_for_container(
+                        conn, id,
+                    )?
+                {
                     crate::platform::failure::FailureAuthority::transition(
                         conn,
                         open.failure_id.as_str(),
@@ -4881,7 +4931,9 @@ pub(crate) async fn dispatch_container_restart(
     )
     .await?;
     let _ = core.storage().database().transaction(|conn| {
-        if let Some(open) = crate::platform::failure::repository::FailureRepository::open_for_container(conn, id)? {
+        if let Some(open) =
+            crate::platform::failure::repository::FailureRepository::open_for_container(conn, id)?
+        {
             let plan = crate::platform::failure::RecoveryPlan::restart_container(
                 open.failure_id.clone(),
                 id.to_owned(),

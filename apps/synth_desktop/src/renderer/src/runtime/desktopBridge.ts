@@ -782,10 +782,10 @@ window.synthWorkspaceScope ??= isTauri
 			listTemplates: (genre) => fromGenerated(spectaCommands.visualsTemplatesList(genre ?? null)),
 			getTemplate: (templateId) => fromGenerated(spectaCommands.visualsTemplatesGet(templateId)),
 			templateShellSource: (templateId) => fromGenerated(spectaCommands.visualsTemplateShellSource(templateId)),
-			saveTemplate: (templateId, manifest, source) =>
-				fromGenerated(spectaCommands.visualsTemplateSave(templateId, manifest, source)),
-			createTemplate: (templateId, fromTemplateId, title) =>
-				fromGenerated(spectaCommands.visualsTemplateCreate(templateId, fromTemplateId, title ?? null)),
+			saveTemplate: (sessionId, templateId, manifest, source) =>
+				fromGenerated(spectaCommands.visualsTemplateSave(sessionId, templateId, manifest, source)),
+			createTemplate: (sessionId, templateId, fromTemplateId, title) =>
+				fromGenerated(spectaCommands.visualsTemplateCreate(sessionId, templateId, fromTemplateId, title ?? null)),
 			validateTemplate: (templateId) => fromGenerated(spectaCommands.visualsTemplateValidate(templateId)),
 			onTemplatesChanged(listener) {
 				let disposed = false;

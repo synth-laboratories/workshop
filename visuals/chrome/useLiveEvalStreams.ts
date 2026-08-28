@@ -107,13 +107,17 @@ export function useLiveEvalStreams(
       setEvents(ingest.current.events as LiveEvalEvent[]);
       setReady(ingest.current.ready);
       setRecovered((value) => value + Math.max(0, ingest.current.events.length - before));
-      if (ingest.current.conflicts.length) {
-        setError(ingest.current.conflicts.at(-1) ?? "Conflicting replay envelope");
-      } else if (ingest.current.gaps.length) {
-        setError(`Evidence gap after sequence ${ingest.current.gaps.at(-1)?.after}`);
-      } else {
-        setError(null);
-      }
+      // Conflicts are the one defect a renderer can act on: two bodies for one
+      // identity means the pane is showing one of them and cannot say which.
+      // Sequence gaps are not reported here — the host observes them at the
+      // poll seam and emits `STREAM_REPLAY_GAP` with the visual, the revision
+      // and both bracketing sequences, which is evidence rather than a
+      // sentence, and the readiness gate reads that. See `stream_fold.rs`.
+      setError(
+        ingest.current.conflicts.length
+          ? ingest.current.conflicts.at(-1) ?? "Conflicting replay envelope"
+          : null
+      );
     };
 
     const pollOne = async (stream: (typeof streams)[number]) => {

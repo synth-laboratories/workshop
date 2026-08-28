@@ -186,10 +186,7 @@ pub fn writable_roots(scope: &ConversationWorkspaceScope) -> Vec<String> {
 
 /// Conversation workspace plus every attached folder. Nested declaring
 /// repositories under these roots keep their own `workshop.containers.toml`.
-pub fn approved_search_roots(
-    db: &Database,
-    session_id: &str,
-) -> Result<Vec<PathBuf>> {
+pub fn approved_search_roots(db: &Database, session_id: &str) -> Result<Vec<PathBuf>> {
     let id = session_id.to_string();
     let scope = db.with_conn(move |conn| {
         if load(conn, &id)?.is_none() {

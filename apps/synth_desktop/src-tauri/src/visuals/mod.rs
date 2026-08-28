@@ -54,9 +54,13 @@ pub use models::{
 };
 pub use registry::VisualRegistry;
 pub use renditions::{VisualAsset, VisualRendition};
+/// `import_managed_template` is deliberately absent. It writes renderer code
+/// into the instance state root, which is now an approved act, and
+/// `VisualRegistry::import_template_approved` is the only door. Re-exporting it
+/// here would leave a second one open beside the lock.
 pub use templates::{
-    import_managed_template, list_templates, resolve_template, TemplateMeta,
-    TemplateObservationContract, TemplateReadinessContract,
+    list_templates, resolve_template, TemplateMeta, TemplateObservationContract,
+    TemplateReadinessContract,
 };
 /// The user tier's writer, its verdict type, and its watcher. `templates.rs`
 /// still owns what a user template *is*; these are the three things that

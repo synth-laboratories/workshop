@@ -57,7 +57,17 @@ test("ten rollout-local poll authorities ingest without a duplicate-envelope con
 	// `event_id: "1"`. Treating that as global identity is what collapsed ten
 	// lanes into one.
 	assert.deepEqual(ingested.conflicts, []);
-	assert.deepEqual(ingested.gaps, []);
+	// Ten lanes, ten independent sequence spaces, each with its own evidence
+	// high-water mark. That this capture has no holes in any of them is
+	// asserted where the gap scan lives — `stream_fold.rs`, over this same
+	// capture, through `fixtures/live_fold_golden.json`.
+	assert.equal(ingested.lastSequenceByScope.size, ROLLOUT_IDS.length);
+	// The producer declares a per-rollout `stream_id`, which outranks the lane
+	// as the scope: one scope per lane either way, named by the stream.
+	assert.deepEqual(
+		[...ingested.lastSequenceByScope.keys()].sort(),
+		ROLLOUT_IDS.map((id) => `stream:${id}`).sort()
+	);
 	assert.equal(ingested.ready, true, "stream.subscribed arrived on every lane");
 	assert.equal(ingested.events.length, capture.events.length - ROLLOUT_IDS.length);
 });

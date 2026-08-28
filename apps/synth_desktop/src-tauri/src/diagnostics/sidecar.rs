@@ -549,11 +549,19 @@ pub(crate) fn command_owns_data_dir(command: &str, data_dir: &Path) -> bool {
 #[cfg(unix)]
 async fn terminate_process_group(pid: u32) {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
-        crate::platform::logging::report("diagnostics", "eprintln", format!("refusing to terminate diagnostics sidecar with invalid pid {pid}"));
+        crate::platform::logging::report(
+            "diagnostics",
+            "eprintln",
+            format!("refusing to terminate diagnostics sidecar with invalid pid {pid}"),
+        );
         return;
     };
     if pid <= 1 {
-        crate::platform::logging::report("diagnostics", "eprintln", format!("refusing to terminate diagnostics sidecar with unsafe pid {pid}"));
+        crate::platform::logging::report(
+            "diagnostics",
+            "eprintln",
+            format!("refusing to terminate diagnostics sidecar with unsafe pid {pid}"),
+        );
         return;
     }
     let isolated_group = unsafe {

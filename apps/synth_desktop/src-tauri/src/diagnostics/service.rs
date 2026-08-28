@@ -15,6 +15,8 @@ use super::query::{self, DiagnosticQuery};
 use super::sidecar::{SidecarConfig, SidecarState, VictoriaLogsSidecar};
 use super::store::{group_by_code, DiagnosticRecord, DiagnosticStore};
 use super::victorialogs::VictoriaLogsClient;
+use crate::platform::failure::{FailureKind, TelemetryFailure};
+use crate::platform::operations::{OperationContext, OperationKind, OperationPhase};
 use crate::storage::{Database, EventJournal};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -22,8 +24,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use crate::platform::failure::{FailureKind, TelemetryFailure};
-use crate::platform::operations::{OperationContext, OperationKind, OperationPhase};
 
 /// Longest a queued diagnostic waits before being written even if the batch
 /// never fills. Short enough that a failure is queryable while the user is

@@ -35,7 +35,7 @@ test("forbidden live-eval slots live and jobs fail closed", () => {
   assert.equal(assertLiveEvalSlot("acceptance", "live.intern_acceptance.v1"), null);
 });
 
-test("batch ingest preserves lane-local identity, gaps, controls, and duplicate truth", () => {
+test("batch ingest preserves lane-local identity, controls, and duplicate truth", () => {
   const initial = ingestLiveEnvelopeBatch(undefinedState(), [
     { kind: "stream.subscribed", control: true },
     { lane: "a", sequence: 1, kind: "observation", payload: { text: "a1" } },
@@ -44,29 +44,23 @@ test("batch ingest preserves lane-local identity, gaps, controls, and duplicate 
   ]);
   assert.equal(initial.ready, true);
   assert.equal(initial.events.length, 3);
-  assert.deepEqual(initial.gaps, [{ scope: "a", after: 1, before: 3 }]);
 
   const healed = ingestLiveEnvelopeBatch(initial, [
     { lane: "a", sequence: 2, kind: "observation", payload: { text: "a2" } },
     { lane: "b", sequence: 1, kind: "observation", payload: { text: "b1" } },
   ]);
   assert.equal(healed.events.length, 4, "exact duplicate is dropped");
-  assert.deepEqual(healed.gaps, []);
   assert.equal(healed.lastSequenceByScope.get("a"), 3);
 });
 
-test("numeric string sequences preserve lane-local gaps and recovery", () => {
-  const initial = ingestLiveEnvelopeBatch(undefinedState(), [
+test("numeric string sequences reach the same high-water mark as numbers", () => {
+  const state = ingestLiveEnvelopeBatch(undefinedState(), [
     { lane: "a", sequence: "1", kind: "observation" },
     { lane: "b", sequence: "1", kind: "observation" },
     { lane: "a", sequence: "3", kind: "observation" },
   ]);
-  assert.deepEqual(initial.gaps, [{ scope: "a", after: 1, before: 3 }]);
-  const healed = ingestLiveEnvelopeBatch(initial, [
-    { lane: "a", sequence: "2", kind: "observation" },
-  ]);
-  assert.deepEqual(healed.gaps, []);
-  assert.equal(healed.lastSequenceByScope.get("a"), 3);
+  assert.equal(state.lastSequenceByScope.get("a"), 3);
+  assert.equal(state.lastSequenceByScope.get("b"), 1);
 });
 
 test("replay pages normalize every producer shape and never invent a cursor", async () => {
@@ -332,7 +326,12 @@ test("A15 exact reconnect duplicates collapse but conflicting duplicates fail cl
   assert.match(conflict.conflicts[0], /Conflicting duplicate envelope r1:7/);
 });
 
-test("A11/A15 sequence gaps remain explicit per rollout and controls do not create gaps", () => {
+test("A11/A15 evidence high-water marks stay lane-local", () => {
+  // The gap scan these two cases were written for now has one home, in
+  // `stream_fold.rs` (`a_multiplexed_run_scans_each_lane_separately`,
+  // `a_late_envelope_heals_the_gap_it_fills`). What survives here is what the
+  // mirror still decides: each lane counts its own evidence, and an
+  // out-of-order backfill duplicates none of it.
   const state = ingestLiveEnvelopes([
     { kind: "stream.subscribed", event_id: "sub", rollout_id: "r1", control: true, payload: { ready: true } },
     { kind: "observation", event_id: "1", sequence: 1, rollout_id: "r1", payload: {} },
@@ -340,70 +339,57 @@ test("A11/A15 sequence gaps remain explicit per rollout and controls do not crea
     { kind: "observation", event_id: "4", sequence: 4, rollout_id: "r1", payload: {} },
     { kind: "observation", event_id: "2", sequence: 2, rollout_id: "r2", payload: {} },
   ]);
-  assert.deepEqual(state.gaps, [{ scope: "r1", after: 1, before: 4 }]);
   assert.equal(state.lastSequenceByScope.get("r1"), 4);
   assert.equal(state.lastSequenceByScope.get("r2"), 2);
-});
 
-test("A11 out-of-order backfill closes a temporary gap without duplicating evidence", () => {
-  const state = ingestLiveEnvelopes([
+  const backfilled = ingestLiveEnvelopes([
     { kind: "observation", event_id: "1", sequence: 1, rollout_id: "r1", payload: {} },
     { kind: "action", event_id: "4", sequence: 4, rollout_id: "r1", payload: {} },
     { kind: "policy", event_id: "2", sequence: 2, rollout_id: "r1", payload: {} },
     { kind: "reward", event_id: "3", sequence: 3, rollout_id: "r1", payload: {} },
   ]);
-  assert.equal(state.events.length, 4);
-  assert.deepEqual(state.gaps, []);
-  assert.equal(state.lastSequenceByScope.get("r1"), 4);
+  assert.equal(backfilled.events.length, 4);
+  assert.equal(backfilled.lastSequenceByScope.get("r1"), 4);
 });
 
-test("a sequenced control envelope holds the numbering contiguous instead of forging a gap", () => {
+test("a sequenced control envelope is not evidence, and never a row", () => {
   // A producer that numbers its heartbeats out of the same counter as its
-  // evidence leaves 1, 2, 3 on the wire with 2 spent on a heartbeat. Skipping
-  // the heartbeat before recording its sequence made that a permanent gap.
+  // evidence leaves 1, 2, 3 on the wire with 2 spent on a heartbeat. That the
+  // heartbeat still holds sequence 2 — so the run has no hole — is asserted
+  // where the gap scan lives: `stream_fold.rs`,
+  // `a_sequenced_heartbeat_is_not_evidence_and_not_a_hole`. What the mirror
+  // owes is narrower and is asserted here: the heartbeat becomes no row, and
+  // it does not advance the evidence high-water mark.
   const sequencedHeartbeat = ingestLiveEnvelopes([
     { kind: "observation", sequence: 1, rollout_id: "r1", payload: {} },
     { kind: "heartbeat", sequence: 2, rollout_id: "r1", payload: {} },
     { kind: "observation", sequence: 3, rollout_id: "r1", payload: {} },
   ]);
-  assert.deepEqual(sequencedHeartbeat.gaps, []);
-  assert.equal(sequencedHeartbeat.events.length, 2, "the heartbeat is still not evidence");
+  assert.equal(sequencedHeartbeat.events.length, 2, "the heartbeat is not evidence");
   assert.deepEqual(sequencedHeartbeat.events.map((event) => event.kind), ["observation", "observation"]);
   assert.equal(sequencedHeartbeat.lastSequenceByScope.get("r1"), 3);
 
-  // The same across batches: the heartbeat that closes the hole arrives late.
-  const pending = ingestLiveEnvelopes([
-    { kind: "observation", sequence: 1, rollout_id: "r2", payload: {} },
-    { kind: "observation", sequence: 3, rollout_id: "r2", payload: {} },
+  // A stream whose last records are all control has not advanced its evidence,
+  // and the high-water mark must not say it has.
+  const quiet = ingestLiveEnvelopes([
+    { kind: "observation", sequence: 1, rollout_id: "r4", payload: {} },
+    { kind: "heartbeat", sequence: 2, rollout_id: "r4", payload: {} },
+    { kind: "stream.heartbeat", sequence: 3, rollout_id: "r4", payload: {} },
   ]);
-  assert.deepEqual(pending.gaps, [{ scope: "r2", after: 1, before: 3 }]);
-  const healed = ingestLiveEnvelopeBatch(pending, [
-    { kind: "stream.heartbeat", sequence: 2, rollout_id: "r2", payload: {} },
-  ]);
-  assert.deepEqual(healed.gaps, []);
-  assert.equal(healed.events.length, 2);
+  assert.equal(quiet.lastSequenceByScope.get("r4"), 1);
+  assert.equal(quiet.events.length, 1);
 });
 
-test("a genuinely missing sequence still reports a gap, control envelopes or not", () => {
-  const missing = ingestLiveEnvelopes([
-    { kind: "stream.subscribed", event_id: "sub", rollout_id: "r1", control: true, payload: { ready: true } },
-    { kind: "observation", sequence: 1, rollout_id: "r1", payload: {} },
-    { kind: "heartbeat", sequence: 2, rollout_id: "r1", payload: {} },
-    // sequence 3 never arrives.
-    { kind: "observation", sequence: 4, rollout_id: "r1", payload: {} },
-  ]);
-  assert.deepEqual(missing.gaps, [{ scope: "r1", after: 2, before: 4 }]);
-  assert.equal(missing.ready, true);
-  assert.equal(missing.events.length, 2);
-
-  // An unsequenced control envelope never contributes a sequence at all, so it
-  // cannot invent sequence 0 in front of the first real envelope.
+test("an unsequenced control envelope never contributes a sequence at all", () => {
   const unsequenced = ingestLiveEnvelopes([
+    { kind: "stream.subscribed", event_id: "sub", rollout_id: "r3", control: true, payload: { ready: true } },
     { kind: "heartbeat", event_id: "hb", rollout_id: "r3", payload: {} },
     { kind: "observation", sequence: 1, rollout_id: "r3", payload: {} },
     { kind: "observation", sequence: 2, rollout_id: "r3", payload: {} },
   ]);
-  assert.deepEqual(unsequenced.gaps, []);
+  assert.equal(unsequenced.ready, true);
+  assert.equal(unsequenced.events.length, 2);
+  assert.equal(unsequenced.lastSequenceByScope.get("r3"), 2);
 });
 
 test("control: true under an ordinary kind is control to the fold and the projector alike", async () => {
@@ -418,9 +404,9 @@ test("control: true under an ordinary kind is control to the fold and the projec
   assert.equal(isControlEnvelope(flagged), true);
 
   const state = ingestLiveEnvelopes(rows);
-  // Not a row, not counted as evidence — but its sequence still closes 1→3.
+  // Not a row, not counted as evidence. That its sequence still closes 1→3 is
+  // asserted where the gap scan lives (`stream_fold.rs`).
   assert.equal(state.events.length, 2);
-  assert.deepEqual(state.gaps, []);
 
   // The projector reaches the same verdict from the raw batch, so the fold and
   // the projection never disagree about what counts as evidence.

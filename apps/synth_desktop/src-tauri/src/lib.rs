@@ -28,6 +28,7 @@ mod credential_broker;
 pub mod data;
 mod device_auth;
 pub mod diagnostics;
+pub mod documents;
 mod domain;
 mod domains;
 pub mod error;
@@ -54,6 +55,11 @@ mod secrets;
 mod services;
 mod session;
 mod skills;
+/// The one fold: envelope identity, dedupe, conflict, gap scan, projection,
+/// and the cursor arithmetic every ordered-journal reader in this crate used
+/// to write for itself. See its module header for the rules and the
+/// golden-fixture suite that pins the TypeScript mirror to it.
+pub mod stream_fold;
 pub mod storage;
 mod synth_config;
 mod composition;
@@ -2717,39 +2723,56 @@ fn visuals_template_shell_source(
 /// drop every key the host does not happen to know about.
 ///
 /// **This writes code the app compiles at every launch**, which is a different
-/// act from rendering in the pane. Today the only caller is this window, so the
-/// person's own action is the confirmation. The seam that lets an agent reach
-/// it — an HTTP route in `visuals_ipc.rs`, which does not exist — must land
-/// together with item 29's `ApprovalKind` variant; `PersistConsent` in
-/// `visuals/user_templates.rs` is where that decision has to be made.
+/// act from rendering in the pane, so it is gated: the write is described to a
+/// person as a `visual_template_persist` approval and only happens if they
+/// allow it. That is why this is `async` and why it takes both the app handle
+/// (the broker lives in its state) and the `session_id` the card is raised on —
+/// the synchronous `save_template` on the registry now always refuses, because
+/// a synchronous entry point cannot wait for a human.
 #[tauri::command]
 #[specta::specta]
-fn visuals_template_save(
+async fn visuals_template_save(
+    app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
     template_id: String,
     manifest: String,
     source: String,
 ) -> Result<TemplateMeta, AppError> {
     state
         .visuals()
-        .save_template(&template_id, &manifest, &source)
+        .save_template_approved(&app, Some(&session_id), &template_id, &manifest, &source)
+        .await
         .map_err(AppError::from)
 }
 
 /// Scaffold a new user template by forking an existing one under a new id.
 ///
 /// Fork rather than shadow, so a shipped id keeps meaning exactly one thing.
+///
+/// Gated the same way [`visuals_template_save`] is: a fork also leaves code the
+/// app compiles at every launch, so it settles a `visual_template_persist`
+/// approval on `session_id` before writing anything.
 #[tauri::command]
 #[specta::specta]
-fn visuals_template_create(
+async fn visuals_template_create(
+    app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
     template_id: String,
     from_template_id: String,
     title: Option<String>,
 ) -> Result<TemplateMeta, AppError> {
     state
         .visuals()
-        .create_template(&template_id, &from_template_id, title.as_deref())
+        .create_template_approved(
+            &app,
+            Some(&session_id),
+            &template_id,
+            &from_template_id,
+            title.as_deref(),
+        )
+        .await
         .map_err(AppError::from)
 }
 

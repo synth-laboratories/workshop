@@ -24,7 +24,12 @@ pub fn failures_query(
     state
         .observability()
         .failures()
-        .ok_or_else(|| AppError::coded("sqlite_unavailable_at_bootstrap", "failure ledger is in emergency file mode"))?
+        .ok_or_else(|| {
+            AppError::coded(
+                "sqlite_unavailable_at_bootstrap",
+                "failure ledger is in emergency file mode",
+            )
+        })?
         .query(request)
         .map_err(AppError::from)
 }
@@ -38,7 +43,12 @@ pub fn failures_get(
     state
         .observability()
         .failures()
-        .ok_or_else(|| AppError::coded("sqlite_unavailable_at_bootstrap", "failure ledger is in emergency file mode"))?
+        .ok_or_else(|| {
+            AppError::coded(
+                "sqlite_unavailable_at_bootstrap",
+                "failure ledger is in emergency file mode",
+            )
+        })?
         .get(&failure_id)
         .map_err(AppError::from)
 }
@@ -52,7 +62,12 @@ pub fn failures_timeline(
     state
         .observability()
         .failures()
-        .ok_or_else(|| AppError::coded("sqlite_unavailable_at_bootstrap", "failure ledger is in emergency file mode"))?
+        .ok_or_else(|| {
+            AppError::coded(
+                "sqlite_unavailable_at_bootstrap",
+                "failure ledger is in emergency file mode",
+            )
+        })?
         .timeline(&failure_id)
         .map(|events| crate::contract::specta::OpaqueJson(serde_json::json!(events)))
         .map_err(AppError::from)
@@ -64,7 +79,11 @@ pub fn logs_query(
     state: State<'_, Arc<CoreRuntime>>,
     request: LogQuery,
 ) -> Result<LogQueryResult, AppError> {
-    state.observability().logs.query(request).map_err(AppError::from)
+    state
+        .observability()
+        .logs
+        .query(request)
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -76,7 +95,12 @@ pub fn failure_export_bundle(
     state
         .observability()
         .failures()
-        .ok_or_else(|| AppError::coded("sqlite_unavailable_at_bootstrap", "failure ledger is in emergency file mode"))?
+        .ok_or_else(|| {
+            AppError::coded(
+                "sqlite_unavailable_at_bootstrap",
+                "failure ledger is in emergency file mode",
+            )
+        })?
         .export_bundle(&failure_id)
         .map(crate::contract::specta::OpaqueJson)
         .map_err(AppError::from)
@@ -98,6 +122,9 @@ pub fn observability_status(state: State<'_, Arc<CoreRuntime>>) -> Observability
             crate::platform::logging::ObservabilityMode::Durable => "durable".into(),
             crate::platform::logging::ObservabilityMode::EmergencyFile => "emergency_file".into(),
         },
-        emergency: matches!(mode, crate::platform::logging::ObservabilityMode::EmergencyFile),
+        emergency: matches!(
+            mode,
+            crate::platform::logging::ObservabilityMode::EmergencyFile
+        ),
     }
 }

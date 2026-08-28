@@ -154,7 +154,11 @@ pub fn insert_operation(
             record.operation_id.as_str(),
             record.kind.as_str(),
             record.phase.as_str(),
-            record.context.parent_operation_id.as_ref().map(|id| id.as_str().to_owned()),
+            record
+                .context
+                .parent_operation_id
+                .as_ref()
+                .map(|id| id.as_str().to_owned()),
             record.context.session_id,
             record.context.turn_id,
             record.context.tool_call_id,
