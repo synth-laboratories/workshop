@@ -82,6 +82,8 @@ export const commands = {
 	optimizersCreate: (request: OptimizerCreateRequest) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_create", { request })),
 	optimizersRefresh: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_refresh", { optimizerRunId })),
 	optimizersEventsAfter: (optimizerRunId: string, afterSeq: number | null, limit: number | null) => typedError<OptimizerEventEnvelope[], AppError_Serialize>(__TAURI_INVOKE("optimizers_events_after", { optimizerRunId, afterSeq, limit })),
+	optimizersArtifactsList: (optimizerRunId: string, afterSequence: number | null, limit: number | null) => typedError<OptimizerArtifactPage, AppError_Serialize>(__TAURI_INVOKE("optimizers_artifacts_list", { optimizerRunId, afterSequence, limit })),
+	optimizersArtifactReadRange: (optimizerRunId: string, artifactId: string, offset: number, length: number) => typedError<OptimizerArtifactRange, AppError_Serialize>(__TAURI_INVOKE("optimizers_artifact_read_range", { optimizerRunId, artifactId, offset, length })),
 	optimizersFramesLatest: (optimizerRunId: string, afterFrameSequence: number | null) => typedError<OptimizerFrameDelta, AppError_Serialize>(__TAURI_INVOKE("optimizers_frames_latest", { optimizerRunId, afterFrameSequence })),
 	optimizersFramesList: (optimizerRunId: string, seed: number, beforeFrameSequence: number | null, limit: number | null) => typedError<OptimizerFrameRef[], AppError_Serialize>(__TAURI_INVOKE("optimizers_frames_list", { optimizerRunId, seed, beforeFrameSequence, limit })),
 	optimizersFrameContent: (optimizerRunId: string, seed: number, frameSequence: number) => typedError<OptimizerFrameContent, AppError_Serialize>(__TAURI_INVOKE("optimizers_frame_content", { optimizerRunId, seed, frameSequence })),
@@ -1124,6 +1126,37 @@ export type DiagnosticReportRequest = {
 	details?: unknown,
 };
 
+/**
+ *  Persisted result of `producer declaration ∧ Workshop policy ∧ consumer
+ *  needs`. The inputs remain present so a refusal or later audit can explain
+ *  the result without reconstructing mutable container metadata.
+ */
+export type EffectiveContract = {
+	schemaVersion: string,
+	optimizerRunId: string,
+	containerId: string,
+	family?: string | null,
+	primaryVisual: EffectiveVisualAttachment,
+	traceVisual: EffectiveVisualAttachment,
+	artifactMediaTypes: string[],
+	declared: unknown,
+	consumerNeeds: unknown,
+	negotiatedAt: string,
+};
+
+export type EffectiveVisualAttachment = {
+	role: string,
+	state: EffectiveVisualState,
+	templateId?: string | null,
+	reason: string,
+};
+
+/**
+ *  Why a visual attachment exists (or honestly does not). Template ids are
+ *  resolved from the registered template table, never inferred in a renderer.
+ */
+export type EffectiveVisualState = "declared" | "family_matched" | "fallback" | "empty";
+
 export type EntityCount = {
 	found: number,
 	imported: number,
@@ -1163,10 +1196,15 @@ export type EvalProjection = {
 	 *  separate from terminal work: a process can finish without producing a
 	 *  score, and that must not make evidence complete.
 	 */
-	evaluatorEvidence: number,
+	evaluatorEvidence?: number,
 	promotionApplicable: boolean,
 	traces: number,
 	evidenceRefs?: EvidenceRef[],
+	/**
+	 *  Per-rollout evidence truth. Added with a default so persisted v1/v2
+	 *  projections replay forward instead of becoming unreadable.
+	 */
+	evidenceLedger?: RolloutEvidenceEntry[],
 };
 
 export type EvalResult = {
@@ -1994,6 +2032,26 @@ export type ObservabilityStatus = {
 	emergency: boolean,
 };
 
+export type OptimizerArtifactPage = {
+	schemaVersion: string,
+	optimizerRunId: string,
+	afterSequence: number,
+	artifacts: OptimizerRunArtifact[],
+	nextSequence: number,
+};
+
+export type OptimizerArtifactRange = {
+	schemaVersion: string,
+	optimizerRunId: string,
+	artifactId: string,
+	mediaType: string,
+	offset: number,
+	byteLength: number,
+	totalBytes: number,
+	eof: boolean,
+	dataBase64: string,
+};
+
 export type OptimizerCapabilities = {
 	cancel?: boolean,
 	pause?: boolean,
@@ -2173,6 +2231,27 @@ export type OptimizerResourceRef = {
 	metadata?: unknown,
 };
 
+/**
+ *  One durable artifact declaration from an optimizer event. `locator` is an
+ *  opaque producer locator on list surfaces; byte reads are separately granted
+ *  and bounded by the host.
+ */
+export type OptimizerRunArtifact = {
+	schemaVersion: string,
+	optimizerRunId: string,
+	artifactId: string,
+	sequence: number,
+	workItemId?: string | null,
+	rolloutId?: string | null,
+	kind: string,
+	locator: string,
+	digest?: string | null,
+	mediaType?: string | null,
+	byteSize?: number,
+	metadata: unknown,
+	declaredAt: string,
+};
+
 export type OptimizerRunHeader = {
 	schemaVersion: string,
 	runId: string,
@@ -2188,6 +2267,8 @@ export type OptimizerRunHeader = {
 	inputRefs: OptimizerResourceRef[],
 	outputRefs: OptimizerResourceRef[],
 	visualRefs: OptimizerResourceRef[],
+	artifacts: OptimizerRunArtifact[],
+	effectiveContract?: EffectiveContract | null,
 	usage: UsageCompleteness,
 	work: WorkSummary,
 	evidence: EvidenceState,
@@ -2811,6 +2892,25 @@ export type RollbackMetadata = {
 	deleteOrder: string[],
 };
 
+export type RolloutEvidenceEntry = {
+	workItemId: string,
+	rolloutId?: string | null,
+	trialId?: string | null,
+	state: RolloutEvidenceState,
+	lastObservedStep?: number | null,
+	cancellationRequestId?: string | null,
+	refs?: EvidenceRef[],
+};
+
+/**
+ *  Durable evidence state for one admitted rollout/work item.
+ *
+ *  This is deliberately separate from the run-level `kernel::evidence::EvidenceState`:
+ *  the run receipt is a fold of this ledger, while these entries retain which
+ *  rollout was open, partially sealed, aborted, or never produced evidence.
+ */
+export type RolloutEvidenceState = "open" | "sealed_complete" | "sealed_partial" | "aborted" | "missing";
+
 /**  Execution health, stored beside lifecycle rather than as a status. */
 export type RunCondition = "healthy" | "environment_unreachable" | "waiting_for_producer" | "producer_sequence_blocked";
 
@@ -3114,8 +3214,15 @@ export type TemplateMeta = {
 	id: string,
 	title?: string,
 	genre?: string | null,
+	/**
+	 *  Optional container/eval family this live template is registered to
+	 *  represent. Tags remain descriptive/search metadata and are not an
+	 *  ownership claim when this field is present on another template.
+	 */
+	family?: string | null,
 	version?: string | null,
 	description?: string | null,
+	tags?: string[],
 	path?: string | null,
 	shellPath?: string | null,
 	/**
@@ -3556,6 +3663,11 @@ export type WorkItem = {
 	lifecycle: WorkItemLifecycle,
 	terminal?: TerminalKind | null,
 	externalRef?: string | null,
+	/**
+	 *  Query-time artifact chips. The kernel never derives these from raw
+	 *  payloads; the run-view service joins the durable artifact index.
+	 */
+	artifactRefs?: OptimizerRunArtifact[],
 };
 
 export type WorkItemKind = "eval_trial" | "container_rollout" | "proposer_job" | "candidate_evaluation" | "training_step" | "checkpoint_evaluation" | "heldout_evaluation";

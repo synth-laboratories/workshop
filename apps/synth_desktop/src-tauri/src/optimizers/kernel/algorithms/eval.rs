@@ -10,6 +10,40 @@ use crate::optimizers::kernel::types::{
 };
 use crate::optimizers::kernel::work::{close_open_items, WorkItem, WorkSummary};
 
+/// Durable evidence state for one admitted rollout/work item.
+///
+/// This is deliberately separate from the run-level `kernel::evidence::EvidenceState`:
+/// the run receipt is a fold of this ledger, while these entries retain which
+/// rollout was open, partially sealed, aborted, or never produced evidence.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum RolloutEvidenceState {
+    Open,
+    SealedComplete,
+    SealedPartial,
+    Aborted,
+    #[default]
+    Missing,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RolloutEvidenceEntry {
+    pub work_item_id: String,
+    #[serde(default)]
+    pub rollout_id: Option<String>,
+    #[serde(default)]
+    pub trial_id: Option<String>,
+    pub state: RolloutEvidenceState,
+    #[serde(default)]
+    #[specta(type = Option<specta_typescript::Number>)]
+    pub last_observed_step: Option<u64>,
+    #[serde(default)]
+    pub cancellation_request_id: Option<String>,
+    #[serde(default)]
+    pub refs: Vec<EvidenceRef>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EvalProjection {
@@ -26,6 +60,7 @@ pub struct EvalProjection {
     /// Terminal trials carrying an evaluator-produced measurement. This is
     /// separate from terminal work: a process can finish without producing a
     /// score, and that must not make evidence complete.
+    #[serde(default)]
     #[specta(type = specta_typescript::Number)]
     pub evaluator_evidence: u64,
     pub promotion_applicable: bool,
@@ -33,6 +68,10 @@ pub struct EvalProjection {
     pub traces: usize,
     #[serde(default)]
     pub evidence_refs: Vec<EvidenceRef>,
+    /// Per-rollout evidence truth. Added with a default so persisted v1/v2
+    /// projections replay forward instead of becoming unreadable.
+    #[serde(default)]
+    pub evidence_ledger: Vec<RolloutEvidenceEntry>,
 }
 
 impl EvalProjection {
@@ -61,6 +100,14 @@ impl EvalProjection {
         self.seeds = seeds;
         self.scenarios = scenarios;
         self.work_items = items;
+        self.evidence_ledger = self
+            .work_items
+            .iter()
+            .map(|item| RolloutEvidenceEntry {
+                work_item_id: item.work_item_id.clone(),
+                ..RolloutEvidenceEntry::default()
+            })
+            .collect();
         self.promotion_applicable = self.candidates.len() > 1;
         Ok(())
     }
@@ -79,7 +126,8 @@ impl EvalProjection {
                     }
                     for id in work_item_ids {
                         self.work_items
-                            .push(WorkItem::planned(id, WorkItemKind::EvalTrial)?);
+                            .push(WorkItem::planned(id.clone(), WorkItemKind::EvalTrial)?);
+                        self.ensure_evidence_entry(&id);
                     }
                     self.promotion_applicable = false;
                     apply_usage(&mut self.usage, event);
@@ -97,10 +145,10 @@ impl EvalProjection {
                     self.seeds = seeds;
                     self.scenarios = scenarios;
                     for index in 0..planned {
-                        self.work_items.push(WorkItem::planned(
-                            format!("eval:trial:{index}"),
-                            WorkItemKind::EvalTrial,
-                        )?);
+                        let id = format!("eval:trial:{index}");
+                        self.work_items
+                            .push(WorkItem::planned(id.clone(), WorkItemKind::EvalTrial)?);
+                        self.ensure_evidence_entry(&id);
                     }
                     self.promotion_applicable = self.candidates.len() > 1;
                 } else if candidates.is_empty() || seeds.is_empty() || scenarios.is_empty() {
@@ -117,6 +165,15 @@ impl EvalProjection {
             }
             "eval.trial.started" | "optimizer.work.started" => {
                 self.advance_named(event, WorkItemLifecycle::Running)?;
+                if let Some(id) = work_id(event) {
+                    let entry = self.ensure_evidence_entry(&id);
+                    entry.state = RolloutEvidenceState::Open;
+                    entry.rollout_id = string_field(&event.producer.payload, "rolloutId", "rollout_id");
+                    entry.trial_id = string_field(&event.producer.payload, "trialId", "trial_id");
+                }
+            }
+            "eval.trial.event" => {
+                self.observe_trial_evidence(&event.producer.payload);
             }
             "eval.trial.terminal" => {
                 // A cancelled trial is neither valid nor invalid: it was
@@ -155,8 +212,8 @@ impl EvalProjection {
                     .get("reward")
                     .and_then(|v| v.as_f64());
                 let id = work_id(event);
-                let item = if let Some(id) = id {
-                    self.named_work_item(&id)?
+                let work_item_id = if let Some(id) = id {
+                    id
                 } else {
                     self.work_items
                         .iter_mut()
@@ -167,7 +224,10 @@ impl EvalProjection {
                                 "eval.trial.terminal arrived with no work item identity and no planned trial left",
                             )
                         })?
+                        .work_item_id
+                        .clone()
                 };
+                let item = self.named_work_item(&work_item_id)?;
                 if item.lifecycle == WorkItemLifecycle::Planned {
                     item.transition(WorkItemLifecycle::Queued)?;
                     item.transition(WorkItemLifecycle::Starting)?;
@@ -195,7 +255,8 @@ impl EvalProjection {
                 if evaluator_measurement(&event.producer.payload) {
                     self.evaluator_evidence += 1;
                 }
-                for reference in evidence_refs(&event.producer.payload) {
+                let terminal_refs = evidence_refs(&event.producer.payload);
+                for reference in &terminal_refs {
                     if reference.kind.contains("trace") {
                         self.traces += 1;
                     }
@@ -204,9 +265,39 @@ impl EvalProjection {
                         .iter()
                         .any(|present| present.kind == reference.kind && present.id == reference.id)
                     {
-                        self.evidence_refs.push(reference);
+                        self.evidence_refs.push(reference.clone());
                     }
                 }
+                let entry = self.ensure_evidence_entry(&work_item_id);
+                entry.rollout_id = string_field(
+                    &event.producer.payload,
+                    "rolloutId",
+                    "rollout_id",
+                )
+                .or_else(|| entry.rollout_id.clone());
+                entry.trial_id = string_field(&event.producer.payload, "trialId", "trial_id")
+                    .or_else(|| entry.trial_id.clone());
+                entry.last_observed_step = event
+                    .producer
+                    .payload
+                    .get("lastObservedStep")
+                    .or_else(|| event.producer.payload.get("steps"))
+                    .and_then(|value| value.as_u64())
+                    .or(entry.last_observed_step);
+                entry.cancellation_request_id = event
+                    .producer
+                    .payload
+                    .pointer("/cancellation/requestId")
+                    .or_else(|| {
+                        event
+                            .producer
+                            .payload
+                            .pointer("/cancellationReceipt/requestId")
+                    })
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string);
+                entry.refs = terminal_refs;
+                entry.state = rollout_evidence_state(&event.producer.payload, cancelled, valid);
             }
             _ => {}
         }
@@ -253,7 +344,15 @@ impl EvalProjection {
                     .strip_prefix("eval:trial:")
                     .is_some_and(|suffix| suffix.parse::<u64>().is_ok())
         }) {
+            let reserved_id = self.work_items[index].work_item_id.clone();
             self.work_items[index].work_item_id = id.to_string();
+            if let Some(entry) = self
+                .evidence_ledger
+                .iter_mut()
+                .find(|entry| entry.work_item_id == reserved_id)
+            {
+                entry.work_item_id = id.to_string();
+            }
             return Ok(&mut self.work_items[index]);
         }
         if self.work_items.is_empty() {
@@ -272,13 +371,63 @@ impl EvalProjection {
         ))
     }
 
+    fn ensure_evidence_entry(&mut self, work_item_id: &str) -> &mut RolloutEvidenceEntry {
+        if let Some(index) = self
+            .evidence_ledger
+            .iter()
+            .position(|entry| entry.work_item_id == work_item_id)
+        {
+            return &mut self.evidence_ledger[index];
+        }
+        self.evidence_ledger.push(RolloutEvidenceEntry {
+            work_item_id: work_item_id.to_string(),
+            ..RolloutEvidenceEntry::default()
+        });
+        self.evidence_ledger
+            .last_mut()
+            .expect("evidence entry was just appended")
+    }
+
+    fn observe_trial_evidence(&mut self, payload: &serde_json::Value) {
+        let rollout_id = payload
+            .pointer("/container_event/rollout_id")
+            .or_else(|| payload.pointer("/containerEvent/rolloutId"))
+            .and_then(|value| value.as_str());
+        let trial_id = string_field(payload, "trialId", "trial_id");
+        let entry = self.evidence_ledger.iter_mut().find(|entry| {
+            rollout_id.is_some_and(|id| entry.rollout_id.as_deref() == Some(id))
+                || trial_id
+                    .as_deref()
+                    .is_some_and(|id| entry.trial_id.as_deref() == Some(id))
+        });
+        let Some(entry) = entry else {
+            return;
+        };
+        if entry.state == RolloutEvidenceState::Missing {
+            entry.state = RolloutEvidenceState::Open;
+        }
+        let step = payload
+            .pointer("/container_event/payload/step")
+            .or_else(|| payload.pointer("/containerEvent/payload/step"))
+            .and_then(|value| value.as_u64());
+        if let Some(step) = step {
+            entry.last_observed_step = Some(entry.last_observed_step.unwrap_or(0).max(step));
+        }
+    }
+
     pub fn work_summary(&self) -> WorkSummary {
         WorkSummary::from_items(&self.work_items, "trials", true)
     }
 
     /// Terminal seal closes interrupted children as `cancelled`, never failed.
     pub fn close_open_work(&mut self) -> KernelResult<usize> {
-        close_open_items(&mut self.work_items)
+        let closed = close_open_items(&mut self.work_items)?;
+        for entry in &mut self.evidence_ledger {
+            if entry.state == RolloutEvidenceState::Open {
+                entry.state = RolloutEvidenceState::Aborted;
+            }
+        }
+        Ok(closed)
     }
 
     pub fn evidence_state(&self) -> EvidenceState {
@@ -290,13 +439,31 @@ impl EvalProjection {
             .iter()
             .filter(|item| item.lifecycle == WorkItemLifecycle::Terminal)
             .count();
-        let complete_measurements = self.evaluator_evidence as usize == self.work_items.len();
-        let completeness = if terminal == self.work_items.len()
-            && complete_measurements
-            && !self.evidence_refs.is_empty()
+        let sealed_complete = self
+            .evidence_ledger
+            .iter()
+            .filter(|entry| entry.state == RolloutEvidenceState::SealedComplete)
+            .count();
+        let sealed_partial = self
+            .evidence_ledger
+            .iter()
+            .filter(|entry| entry.state == RolloutEvidenceState::SealedPartial)
+            .count();
+        let aborted = self
+            .evidence_ledger
+            .iter()
+            .filter(|entry| entry.state == RolloutEvidenceState::Aborted)
+            .count();
+        let missing = self
+            .evidence_ledger
+            .iter()
+            .filter(|entry| entry.state == RolloutEvidenceState::Missing)
+            .count();
+        let completeness = if !self.evidence_ledger.is_empty()
+            && sealed_complete == self.evidence_ledger.len()
         {
             EvidenceCompleteness::Complete
-        } else if terminal > 0 || self.evaluator_evidence > 0 || !self.evidence_refs.is_empty() {
+        } else if terminal > 0 || sealed_complete > 0 || sealed_partial > 0 || aborted > 0 {
             EvidenceCompleteness::Partial
         } else {
             EvidenceCompleteness::Absent
@@ -305,11 +472,8 @@ impl EvalProjection {
             completeness,
             reason: (completeness != EvidenceCompleteness::Complete).then(|| {
                 format!(
-                    "{terminal}/{} trials terminal, {}/{} evaluator measurements, {} evidence refs",
+                    "{terminal}/{} trials terminal; evidence ledger: {sealed_complete} complete, {sealed_partial} partial, {aborted} aborted, {missing} missing",
                     self.work_items.len(),
-                    self.evaluator_evidence,
-                    self.work_items.len(),
-                    self.evidence_refs.len()
                 )
             }),
             refs: self.evidence_refs.clone(),
@@ -494,6 +658,43 @@ fn evidence_refs(payload: &serde_json::Value) -> Vec<EvidenceRef> {
         .collect()
 }
 
+fn string_field(value: &serde_json::Value, camel: &str, snake: &str) -> Option<String> {
+    value
+        .get(camel)
+        .or_else(|| value.get(snake))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn rollout_evidence_state(
+    payload: &serde_json::Value,
+    cancelled: bool,
+    valid: bool,
+) -> RolloutEvidenceState {
+    let explicit = payload
+        .get("evidenceState")
+        .or_else(|| payload.get("evidence_state"))
+        .and_then(serde_json::Value::as_str);
+    match explicit {
+        Some("open") => RolloutEvidenceState::Open,
+        Some("sealed_complete") => RolloutEvidenceState::SealedComplete,
+        Some("sealed_partial") => RolloutEvidenceState::SealedPartial,
+        Some("aborted") => RolloutEvidenceState::Aborted,
+        Some("missing") => RolloutEvidenceState::Missing,
+        _ if cancelled
+            && (payload.get("lastObservedStep").is_some()
+                || payload.get("partialSeal").is_some()) =>
+        {
+            RolloutEvidenceState::SealedPartial
+        }
+        _ if cancelled => RolloutEvidenceState::Aborted,
+        _ if valid && !evidence_refs(payload).is_empty() => RolloutEvidenceState::SealedComplete,
+        _ if !evidence_refs(payload).is_empty() => RolloutEvidenceState::SealedPartial,
+        _ => RolloutEvidenceState::Missing,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,5 +834,81 @@ mod tests {
         let error = projection.settle().unwrap_err();
         assert_eq!(error.code, KernelErrorCode::EvidenceMissing);
         assert!(error.message.contains("evaluator measurement"));
+    }
+
+    #[test]
+    fn cancellation_seals_partial_rollout_evidence_and_leaves_undispatched_work_missing() {
+        let mut projection = EvalProjection::default();
+        projection
+            .apply(&committed(
+                "eval.run.planned",
+                json!({"plannedTrials": 2}),
+                1,
+            ))
+            .unwrap();
+        projection
+            .apply(&committed(
+                "eval.trial.started",
+                json!({
+                    "workItemId": "eval:trial:0",
+                    "trialId": "trial:0",
+                    "rolloutId": "rollout:0"
+                }),
+                2,
+            ))
+            .unwrap();
+        projection
+            .apply(&committed(
+                "eval.trial.event",
+                json!({
+                    "trial_id": "trial:0",
+                    "container_event": {"kind": "frame", "payload": {"step": 4}}
+                }),
+                3,
+            ))
+            .unwrap();
+        projection
+            .apply(&committed(
+                "eval.trial.terminal",
+                json!({
+                    "workItemId": "eval:trial:0",
+                    "trialId": "trial:0",
+                    "rolloutId": "rollout:0",
+                    "status": "cancelled",
+                    "cancelled": true,
+                    "lastObservedStep": 4,
+                    "evidenceState": "sealed_partial",
+                    "cancellationReceipt": {"requestId": "cancel:1"},
+                    "artifactRefs": [{"kind": "trace_v5_partial", "id": "trace:0"}]
+                }),
+                4,
+            ))
+            .unwrap();
+        projection.close_open_work().unwrap();
+
+        assert_eq!(projection.evidence_ledger.len(), 2);
+        assert_eq!(
+            projection.evidence_ledger[0].state,
+            RolloutEvidenceState::SealedPartial
+        );
+        assert_eq!(
+            projection.evidence_ledger[0].rollout_id.as_deref(),
+            Some("rollout:0")
+        );
+        assert_eq!(projection.evidence_ledger[0].last_observed_step, Some(4));
+        assert_eq!(
+            projection.evidence_ledger[0]
+                .cancellation_request_id
+                .as_deref(),
+            Some("cancel:1")
+        );
+        assert_eq!(
+            projection.evidence_ledger[1].state,
+            RolloutEvidenceState::Missing
+        );
+        assert_eq!(
+            projection.evidence_state().completeness,
+            EvidenceCompleteness::Partial
+        );
     }
 }

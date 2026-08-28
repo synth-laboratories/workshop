@@ -3,6 +3,7 @@
   "id": "live.craftax.v1",
   "title": "Craftax live eval",
   "genre": "live",
+  "family": "craftax",
   "version": "1.0.0",
   "description": "Immersive Craftax gameplay, dual-time replay, reward/achievement plots, environment state, ReAct policy spans, activity, and Trace V5 inspection.",
   "accent": "#FF5C00",
