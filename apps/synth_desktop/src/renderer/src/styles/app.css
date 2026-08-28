@@ -7888,6 +7888,8 @@ html.visual-expanded .sidebar {
 .optimizer-search:focus-within { border-color: #c1b6e5; box-shadow: 0 0 0 3px rgba(113, 98, 173, .09); }
 .optimizer-search input { width: 100%; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent; font-size: 12.5px; }
 .optimizer-toolbar select { height: 34px; max-width: 170px; padding: 0 28px 0 10px; border: 1px solid var(--color-border); border-radius: 8px; background-color: #fff; color: var(--color-text-muted); font-size: 12px; }
+.optimizer-date-filter { display: inline-flex; align-items: center; gap: 5px; color: var(--color-text-faint); font-size:var(--fs-micro); font-weight: var(--fw-semi); }
+.optimizer-date-filter input { height: 34px; padding: 0 8px; border: 1px solid var(--color-border); border-radius:var(--radius-sm); background: var(--color-card); color: var(--color-text-muted); font-size:var(--fs-meta); }
 .optimizer-actions button,
 .optimizer-inspector-actions button,
 .optimizer-empty button { min-height: 34px; padding: 0 12px; border-radius: 8px; font-size: 12px; font-weight: 650; white-space: nowrap; }

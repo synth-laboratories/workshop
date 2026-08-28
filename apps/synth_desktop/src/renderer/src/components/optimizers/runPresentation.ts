@@ -90,6 +90,55 @@ export function workFractionLabel(counts: SealedWorkCounts): string {
 	return head;
 }
 
+export type RunFacets = {
+	recipeId: string | null;
+	containerId: string | null;
+	model: string | null;
+};
+
+function objectish(value: unknown): Record<string, unknown> | null {
+	return value && typeof value === "object" && !Array.isArray(value)
+		? value as Record<string, unknown>
+		: null;
+}
+
+function stringOr(value: unknown): string | null {
+	return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * The recipe/container/model facets a run record actually carries, for
+ * client-side filtering. Sources, in order: the worker-written summary
+ * (`recipeId`/`containerId`/`model`, plus `localMlx.requestedBaseModel`),
+ * `inputRefs` of kind `recipe`/`container`/`model`, and container execution
+ * bindings. A run whose producer recorded none of these has that facet null —
+ * it cannot match a specific filter, and pretending otherwise would be a
+ * fabricated match.
+ */
+export function runFacets(run: OptimizerRunRecord): RunFacets {
+	const summary = objectish(run.summary);
+	const refs = run.inputRefs ?? [];
+	const refOf = (kind: string) => refs.find((ref) => ref.kind === kind)?.id ?? null;
+	const localMlx = objectish(summary?.localMlx);
+	return {
+		recipeId: stringOr(summary?.recipeId) ?? refOf("recipe"),
+		containerId: stringOr(summary?.containerId)
+			?? refOf("container")
+			?? (run.executionBindings ?? []).find((binding) => binding.kind === "container_http")?.id
+			?? null,
+		model: stringOr(summary?.model)
+			?? stringOr(localMlx?.requestedBaseModel)
+			?? refOf("model")
+	};
+}
+
+/** The instant a run settled, or its best-known activity time before that. */
+export function runWhenMs(run: OptimizerRunRecord): number {
+	const stamp = run.finishedAt ?? run.startedAt ?? run.createdAt;
+	const parsed = Date.parse(stamp);
+	return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export function runTitle(run: OptimizerRunRecord): string {
 	const objective = run.objective ?? run.id;
 	const importedPath = objective.startsWith("imported from ")

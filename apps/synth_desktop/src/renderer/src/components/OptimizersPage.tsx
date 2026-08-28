@@ -8,7 +8,7 @@ import { findPluginStatus, pluginPresentation, type PluginPresentation } from ".
 import { TrainingWorkspace } from "./TrainingWorkspace";
 import { TrainingEvaluationCurve } from "./TrainingEvaluationCurve";
 import { RunInspector } from "./optimizers/RunInspector";
-import { algorithmLabel, formatWhen, runTitle, sealedWorkCounts, statusChipClass, statusText, truncateMiddle, workFractionLabel } from "./optimizers/runPresentation";
+import { algorithmLabel, formatWhen, runFacets, runTitle, runWhenMs, sealedWorkCounts, statusChipClass, statusText, truncateMiddle, workFractionLabel } from "./optimizers/runPresentation";
 
 type OptimizerGuide = {
 	id: "gepa" | "go-ex" | "sft" | "cispo" | "ppo" | "eval";
@@ -269,6 +269,14 @@ export function OptimizersPage({
 	const [status, setStatus] = useState("all");
 	const [algorithm, setAlgorithm] = useState("all");
 	const [source, setSource] = useState("all");
+	// Client-side facets over the loaded records; the list command has no
+	// recipe/container/model/date parameters, and the facets live in fields
+	// the payload already carries (summary, inputRefs, executionBindings).
+	const [recipeFilter, setRecipeFilter] = useState("all");
+	const [containerFilter, setContainerFilter] = useState("all");
+	const [modelFilter, setModelFilter] = useState("all");
+	const [dateFrom, setDateFrom] = useState("");
+	const [dateTo, setDateTo] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const [errorDetails, setErrorDetails] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
@@ -600,6 +608,48 @@ export function OptimizersPage({
 		() => runs.find((run) => run.id === selectedId) ?? null,
 		[runs, selectedId]
 	);
+
+	const facetsById = useMemo(
+		() => new Map(runs.map((run) => [run.id, runFacets(run)] as const)),
+		[runs]
+	);
+	const facetOptions = useMemo(() => {
+		const recipes = new Set<string>();
+		const containers = new Set<string>();
+		const models = new Set<string>();
+		for (const facets of facetsById.values()) {
+			if (facets.recipeId) recipes.add(facets.recipeId);
+			if (facets.containerId) containers.add(facets.containerId);
+			if (facets.model) models.add(facets.model);
+		}
+		const sorted = (values: Set<string>) => [...values].sort((a, b) => a.localeCompare(b));
+		return { recipes: sorted(recipes), containers: sorted(containers), models: sorted(models) };
+	}, [facetsById]);
+	const clientFiltersActive = recipeFilter !== "all" || containerFilter !== "all"
+		|| modelFilter !== "all" || dateFrom !== "" || dateTo !== "";
+	const clearClientFilters = () => {
+		setRecipeFilter("all");
+		setContainerFilter("all");
+		setModelFilter("all");
+		setDateFrom("");
+		setDateTo("");
+	};
+	const visibleRuns = useMemo(() => {
+		if (!clientFiltersActive) return runs;
+		// Local midnight bounds: the inputs are dates, not instants.
+		const fromMs = dateFrom ? new Date(`${dateFrom}T00:00:00`).getTime() : null;
+		const toMs = dateTo ? new Date(`${dateTo}T23:59:59.999`).getTime() : null;
+		return runs.filter((run) => {
+			const facets = facetsById.get(run.id) ?? { recipeId: null, containerId: null, model: null };
+			if (recipeFilter !== "all" && facets.recipeId !== recipeFilter) return false;
+			if (containerFilter !== "all" && facets.containerId !== containerFilter) return false;
+			if (modelFilter !== "all" && facets.model !== modelFilter) return false;
+			const when = runWhenMs(run);
+			if (fromMs != null && when < fromMs) return false;
+			if (toMs != null && when > toMs) return false;
+			return true;
+		});
+	}, [clientFiltersActive, containerFilter, dateFrom, dateTo, facetsById, modelFilter, recipeFilter, runs]);
 
 	useEffect(() => {
 		if (!selected || selected.source !== "cloud" || !bridges.optimizers) {
@@ -1246,14 +1296,31 @@ export function OptimizersPage({
 					<select aria-label="Source filter" value={source} onChange={(e) => setSource(e.target.value)}>
 						<option value="all">All sources</option><option value="local">Local</option><option value="hosted">Hosted</option><option value="cloud">Cloud</option>
 					</select>
+					<select aria-label="Recipe filter" value={recipeFilter} onChange={(e) => setRecipeFilter(e.target.value)} data-testid="optimizer-filter-recipe">
+						<option value="all">All recipes</option>
+						{facetOptions.recipes.map((id) => <option key={id} value={id}>{id}</option>)}
+					</select>
+					<select aria-label="Container filter" value={containerFilter} onChange={(e) => setContainerFilter(e.target.value)} data-testid="optimizer-filter-container">
+						<option value="all">All containers</option>
+						{facetOptions.containers.map((id) => <option key={id} value={id}>{id}</option>)}
+					</select>
+					<select aria-label="Model filter" value={modelFilter} onChange={(e) => setModelFilter(e.target.value)} data-testid="optimizer-filter-model">
+						<option value="all">All models</option>
+						{facetOptions.models.map((id) => <option key={id} value={id}>{id}</option>)}
+					</select>
+					<label className="optimizer-date-filter"><span>From</span><input type="date" aria-label="Runs from date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} data-testid="optimizer-filter-date-from" /></label>
+					<label className="optimizer-date-filter"><span>To</span><input type="date" aria-label="Runs to date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} data-testid="optimizer-filter-date-to" /></label>
+					{clientFiltersActive ? (
+						<button className="secondary-button" type="button" onClick={clearClientFilters} data-testid="optimizer-clear-filters">Clear</button>
+					) : null}
 				</div>
 			</div>
 
 			<div className="optimizer-workbench">
 				<section className="optimizer-runs" aria-label="Optimizer runs">
-					<div className="optimizer-section-head"><div><span className="optimizer-eyebrow">Runs</span><strong>{runs.length} total</strong></div></div>
+					<div className="optimizer-section-head"><div><span className="optimizer-eyebrow">Runs</span><strong data-testid="optimizer-run-count">{clientFiltersActive ? `${visibleRuns.length} of ${runs.length}` : `${runs.length} total`}</strong></div></div>
 					<ul className="inventory-list optimizer-list">
-						{runs.map((run) => {
+						{visibleRuns.map((run) => {
 							// The mini-fraction comes from the sealed terminal manifest the
 							// list payload already carries. Live runs report their counts
 							// through the event log, not the list record, so they show the
@@ -1299,6 +1366,17 @@ export function OptimizersPage({
 								<strong>No optimizer runs yet</strong>
 								<p>Plan one on the Launch tab, import an existing run, or sync cloud history.</p>
 								<button className="secondary-button" type="button" onClick={() => setTab("launch")} data-testid="optimizer-runs-empty-launch">Open Launch</button>
+							</li>
+						) : visibleRuns.length === 0 ? (
+							<li className="optimizer-empty" data-testid="optimizer-runs-filtered-empty">
+								<span className="optimizer-empty-icon" aria-hidden>⌕</span>
+								<strong>No runs match these filters</strong>
+								<p>
+									{runs.length} loaded run{runs.length === 1 ? "" : "s"} were filtered out.
+									Recipe, container, and model are read from each run record; a run whose
+									producer never recorded that fact cannot match its filter.
+								</p>
+								<button className="secondary-button" type="button" onClick={clearClientFilters} data-testid="optimizer-runs-clear-filters">Clear filters</button>
 							</li>
 						) : null}
 					</ul>
