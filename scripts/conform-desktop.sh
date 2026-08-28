@@ -132,7 +132,18 @@ data_root_env_outside="$(count_rg_prod 'env::var(_os)?\("SYNTH_DESKTOP_DATA_ROOT
 # sorts, SQL columns and prose all stay out, which is why this counts real
 # folds instead of every mention of the word.
 sequence_fold_pattern='(if|while)\s*\(?\s*[a-z_.]*sequence(_number)?\s*(<=|>=|!=|==|>|<)\s*[*&]?[a-z_.]*(cursor|last_sequence|lastSequence)|\bseen[A-Za-z_]*(\.current)?\.(has|add|contains|insert|get|set)\([^)]*[sS]equence'
-sequence_fold_outside="$(count_rg_prod "$sequence_fold_pattern" src-tauri/src src/renderer/src --glob '!**/visuals/**' --glob '!**/runProgress/**' --glob '!**/optimizerEventCursor.ts' --glob '!**/generated/**' --glob '!**/*tests*.rs' --glob '!**/tests.rs' --glob '!**/tests/**')"
+sequence_fold_outside="$(count_rg_prod "$sequence_fold_pattern" src-tauri/src src/renderer/src --glob '!visuals/runtime/**' --glob '!visuals/chrome/**' --glob '!visuals/tests/**' --glob '!**/runProgress/**' --glob '!**/optimizerEventCursor.ts' --glob '!**/generated/**' --glob '!**/*tests*.rs' --glob '!**/tests.rs' --glob '!**/tests/**')"
+
+# Boundary: a sequence gap is a claim about a producer's sequence space, and
+# exactly one implementation may make it. The idiom check above (sequence_fold_
+# outside) matches the two shapes that existed when it was written; it misses a
+# fold written in a new idiom, which is how src-tauri/src/visuals/stream_receipt.rs
+# arrived without moving the count. This one matches the concept instead: the
+# construction of a gap record. `visuals/runtime/` is today's canonical home and
+# is excluded; when the fold moves to Rust (item 1) the exclusion moves with it
+# and the TypeScript side must go to zero.
+sequence_gap_pattern='(StreamGap|SequenceGap)\s*\{|gaps\.push\(\{\s*scope'
+sequence_gap_outside="$(count_rg_prod "$sequence_gap_pattern" src-tauri/src src/renderer/src "$ROOT/visuals" --glob '!**/visuals/runtime/**' --glob '!**/tests/**' --glob '!**/*tests*.rs' --glob '!**/tests.rs')"
 
 # Boundary: schema DDL lives in storage/migrations.rs, which is the only file
 # allowed to say what a table looks like. A DDL const anywhere else is a second
@@ -174,6 +185,7 @@ cat <<EOF
 [conform] invoke_string              ${invoke_string}    # W2 → 0   rg invoke(" (excl. generated/)
 [conform] data_root_env_outside      ${data_root_env_outside}    # 31 → 0   rg env::var(_os)("SYNTH_DESKTOP_DATA_ROOT") (excl. instance_paths.rs, instance.rs)
 [conform] sequence_fold_outside      ${sequence_fold_outside}    # 31 → 0   rg sequence-vs-cursor / seen-set dedupe (excl. visuals/, runProgress/, optimizerEventCursor.ts)
+[conform] sequence_gap_outside       ${sequence_gap_outside}    # 31 → 0   rg gap-record construction (excl. visuals/runtime = today's canonical fold)
 [conform] create_table_outside       ${create_table_outside}    # 31 → 0   rg CREATE TABLE (excl. storage/migrations.rs)
 [conform] import_meta_glob           ${import_meta_glob}    # 31 → 0   rg import.meta.glob( renderer + visuals/
 [conform] template_root_join         ${template_root_join}    # 31 → 0   rg .join("visuals") | "visuals/templates" (excl. visuals/templates.rs)
