@@ -122,10 +122,17 @@ fn usage_value(run: &OptimizerRunRecord) -> Value {
         .unwrap_or(Value::Null);
     json!({
         "costUsd": run.usage.cost_usd,
+        "calls": run.usage.calls,
         "promptTokens": run.usage.prompt_tokens,
         "completionTokens": run.usage.completion_tokens,
         "rollouts": run.usage.rollouts,
         "wallTimeMs": run.usage.wall_time_ms,
+        "providerReceipt": run
+            .usage
+            .extra
+            .get("providerUsageReceipt")
+            .cloned()
+            .unwrap_or(Value::Null),
         // Policy and grader/scorer telemetry are different money and different
         // tokens. Collapsing them into one total is how a grader-heavy recipe
         // starts reading as a cheap policy.
@@ -448,10 +455,19 @@ fn populate_canonical_usage(conn: &Connection, run_id: &str, manifest: &mut Valu
         .and_then(Value::as_object_mut)
         .context("optimizer terminal manifest is missing typed usage")?;
     terminal_usage.insert("costUsd".into(), json!(usage.cost_usd));
+    terminal_usage.insert("calls".into(), json!(usage.calls));
     terminal_usage.insert("promptTokens".into(), json!(usage.prompt_tokens));
     terminal_usage.insert("completionTokens".into(), json!(usage.completion_tokens));
     terminal_usage.insert("rollouts".into(), json!(usage.rollouts));
     terminal_usage.insert("wallTimeMs".into(), json!(usage.wall_time_ms));
+    terminal_usage.insert(
+        "providerReceipt".into(),
+        usage
+            .extra
+            .get("providerUsageReceipt")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
     terminal_usage.insert("completeness".into(), json!(completeness));
     let approval = usage.extra.get("paidComputeApproval").cloned();
     if let Some(approval) = approval.as_ref() {
@@ -476,6 +492,7 @@ fn usage_evidence(conn: &Connection, run_id: &str) -> Result<(u64, u64, &'static
     let mut committed_prompt = 0u64;
     let mut committed_completion = 0u64;
     let mut terminal_markers = Vec::new();
+    let mut provider_reconciled = false;
     for row in rows {
         let event: OptimizerEventEnvelope = serde_json::from_str(&row?)
             .with_context(|| format!("decode usage evidence for optimizer run {run_id}"))?;
@@ -516,8 +533,11 @@ fn usage_evidence(conn: &Connection, run_id: &str) -> Result<(u64, u64, &'static
                 terminal_markers.push(marker.to_string());
             }
         }
+        provider_reconciled |= event.event_type == "optimizer.usage.reconciled";
     }
-    let completeness = if terminal_markers.iter().any(|value| value == "partial")
+    let completeness = if provider_reconciled {
+        "reconciled"
+    } else if terminal_markers.iter().any(|value| value == "partial")
         || terminal_markers.is_empty()
     {
         "partial"

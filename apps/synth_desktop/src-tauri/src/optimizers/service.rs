@@ -3957,8 +3957,11 @@ fn commit_validated_events(
         ..OptimizerUsageSummary::default()
     };
     for event in &history {
-        if let Some(delta) = &event.usage_delta {
+        if event.event_type == "optimizer.usage.reconciled" {
+            apply_authoritative_provider_usage(&mut canonical_usage, event)?;
+        } else if let Some(delta) = &event.usage_delta {
             apply_reported_cost(&mut canonical_usage, delta);
+            canonical_usage.calls += delta.get("calls").and_then(Value::as_u64).unwrap_or(0);
             canonical_usage.prompt_tokens += delta
                 .get("prompt_tokens")
                 .or_else(|| delta.get("promptTokens"))
@@ -4889,6 +4892,75 @@ fn apply_reported_cost(usage: &mut OptimizerUsageSummary, delta: &Map<String, Va
     };
 }
 
+/// `optimizer.usage.reconciled` is a snapshot from Workshop's durable
+/// capability ledger, not another provider-call delta. Replacing only the
+/// provider-measured fields prevents double-counting container policy spans;
+/// rollout and wall-time accounting remain owned by the eval events.
+fn apply_authoritative_provider_usage(
+    usage: &mut OptimizerUsageSummary,
+    event: &OptimizerEventEnvelope,
+) -> Result<()> {
+    let receipt = event
+        .item
+        .as_ref()
+        .and_then(Value::as_object)
+        .context("optimizer.usage.reconciled is missing its typed receipt item")?;
+    let schema = receipt
+        .get("schemaVersion")
+        .and_then(Value::as_str)
+        .context("optimizer.usage.reconciled is missing schemaVersion")?;
+    if schema != "workshop.provider-usage-receipt.v1" {
+        bail!("unsupported provider usage receipt schema `{schema}`");
+    }
+    let calls = receipt
+        .get("calls")
+        .and_then(Value::as_u64)
+        .context("optimizer.usage.reconciled is missing calls")?;
+    let prompt_tokens = receipt
+        .get("promptTokens")
+        .and_then(Value::as_u64)
+        .context("optimizer.usage.reconciled is missing promptTokens")?;
+    let completion_tokens = receipt
+        .get("completionTokens")
+        .and_then(Value::as_u64)
+        .context("optimizer.usage.reconciled is missing completionTokens")?;
+    let raw_cost = receipt
+        .get("costUsd")
+        .context("optimizer.usage.reconciled is missing costUsd")?;
+    let cost_usd = if raw_cost.is_null() {
+        None
+    } else {
+        Some(
+            raw_cost
+                .as_f64()
+                .filter(|cost| cost.is_finite() && *cost >= 0.0)
+                .context("optimizer.usage.reconciled costUsd must be null or non-negative")?,
+        )
+    };
+    if receipt
+        .get("receiptDigest")
+        .and_then(Value::as_str)
+        .filter(|digest| digest.starts_with("sha256:") && digest.len() == 71)
+        .is_none()
+    {
+        bail!("optimizer.usage.reconciled is missing a canonical receiptDigest");
+    }
+
+    usage.calls = calls;
+    usage.prompt_tokens = prompt_tokens;
+    usage.completion_tokens = completion_tokens;
+    usage.cost_usd = cost_usd;
+    usage.extra.insert(
+        "costTelemetryComplete".into(),
+        Value::Bool(cost_usd.is_some()),
+    );
+    usage.extra.insert(
+        "providerUsageReceipt".into(),
+        Value::Object(receipt.clone()),
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 fn optimizer_terminal_status(event_type: &str) -> Option<&'static str> {
     match event_type {
@@ -5048,8 +5120,13 @@ fn project_from_events(
         for artifact in &event.artifact_refs {
             artifacts.push(artifact.clone());
         }
-        if let Some(usage_delta) = &event.usage_delta {
+        if event.event_type == "optimizer.usage.reconciled" {
+            apply_authoritative_provider_usage(&mut usage, event)?;
+        } else if let Some(usage_delta) = &event.usage_delta {
             apply_reported_cost(&mut usage, usage_delta);
+            if let Some(v) = usage_delta.get("calls").and_then(Value::as_u64) {
+                usage.calls += v;
+            }
             if let Some(v) = usage_delta.get("prompt_tokens").and_then(Value::as_u64) {
                 usage.prompt_tokens += v;
             }

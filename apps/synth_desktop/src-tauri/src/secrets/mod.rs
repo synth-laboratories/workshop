@@ -35,7 +35,7 @@ use importer::{AfterImportAction, ImportPreview, PendingImport};
 use proxy::{ProviderProxy, ProxyState, WorkloadEnv};
 use vault::SecretSummary;
 
-pub(crate) use capability::ProviderUsageReceipt;
+pub(crate) use capability::{ProviderUsageCapability, ProviderUsageReceipt};
 pub use capability::ProviderUsePolicy as SecretsUsePolicy;
 #[allow(unused_imports)]
 pub use lease::{

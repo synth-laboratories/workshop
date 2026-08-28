@@ -104,6 +104,9 @@ pub struct UsageCompleteness {
     pub cost_usd: Option<f64>,
     #[serde(default)]
     #[specta(type = specta_typescript::Number)]
+    pub calls: Option<u64>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
     pub prompt_tokens: Option<u64>,
     #[serde(default)]
     #[specta(type = specta_typescript::Number)]

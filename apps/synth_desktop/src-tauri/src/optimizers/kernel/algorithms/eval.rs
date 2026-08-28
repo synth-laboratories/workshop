@@ -615,6 +615,15 @@ fn i64_list(value: &serde_json::Value, key: &str) -> Vec<i64> {
 
 fn apply_usage(usage: &mut UsageCompleteness, event: &CommittedEvent) {
     let payload = &event.producer.payload;
+    if event.producer.event_type == "optimizer.usage.reconciled" {
+        usage.cost_usd = payload.get("costUsd").and_then(|value| value.as_f64());
+        usage.calls = payload.get("calls").and_then(|value| value.as_u64());
+        usage.prompt_tokens = payload.get("promptTokens").and_then(|value| value.as_u64());
+        usage.completion_tokens = payload
+            .get("completionTokens")
+            .and_then(|value| value.as_u64());
+        return;
+    }
     usage.add_reported(
         payload.get("costUsd").and_then(|v| v.as_f64()),
         payload.get("promptTokens").and_then(|v| v.as_u64()),

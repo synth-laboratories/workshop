@@ -1458,6 +1458,11 @@ async fn run_eval_worker(
                 .await?;
                 records.push(record);
             }
+            evidence(
+                "provider_usage_reconciliation",
+                append_provider_usage_reconciliation(&service, &run_id),
+            )
+            .await?;
             return Err(super::kernel::CancelledError { request }.into());
         }
         while tasks.len() < permits && halt.is_none() {
@@ -1559,6 +1564,15 @@ async fn run_eval_worker(
         records.push(record);
     }
 
+    // Every child has settled and no provider call can still debit this run's
+    // capabilities. Reconcile the durable proxy receipt before the final
+    // mutable projection and before the terminal manifest freezes usage.
+    evidence(
+        "provider_usage_reconciliation",
+        append_provider_usage_reconciliation(&service, &run_id),
+    )
+    .await?;
+
     let failed = records
         .iter()
         .filter(|row| !is_successful_eval_record(row))
@@ -1625,6 +1639,116 @@ async fn run_eval_worker(
         append_terminal(&service, &run_id, status, detail),
     )
     .await?;
+    Ok(())
+}
+
+async fn append_provider_usage_reconciliation(
+    service: &OptimizerService,
+    run_id: &str,
+) -> Result<()> {
+    let Some(secrets) = crate::secrets::live() else {
+        return Ok(());
+    };
+    let Some(receipt) = secrets.provider_usage_receipt(run_id)? else {
+        return Ok(());
+    };
+    append_provider_usage_receipt(service, run_id, receipt).await
+}
+
+async fn append_provider_usage_receipt(
+    service: &OptimizerService,
+    run_id: &str,
+    receipt: crate::secrets::ProviderUsageReceipt,
+) -> Result<()> {
+    if receipt.run_id != run_id {
+        bail!(
+            "provider_usage_reconciliation_conflict: receipt run {} does not match {run_id}",
+            receipt.run_id,
+        );
+    }
+    if let Some(existing) = service
+        .events_after(run_id.to_string(), 0, Some(5_000))
+        .await?
+        .into_iter()
+        .find(|event| event.event_type == "optimizer.usage.reconciled")
+    {
+        let existing_digest = existing
+            .item
+            .as_ref()
+            .and_then(|item| item.get("receiptDigest"))
+            .and_then(Value::as_str);
+        if existing_digest == Some(receipt.digest.as_str()) {
+            return Ok(());
+        }
+        bail!(
+            "provider_usage_reconciliation_conflict: run {run_id} already has receipt {existing_digest:?}, refusing {}",
+            receipt.digest,
+        );
+    }
+    let current = service.get(run_id.to_string()).await?.usage;
+    if current.calls > receipt.calls
+        || current.prompt_tokens > receipt.input_tokens
+        || current.completion_tokens > receipt.output_tokens
+    {
+        bail!(
+            "provider_usage_reconciliation_conflict: receipt totals for {run_id} are below committed provider usage (calls {} < {}, prompt {} < {}, completion {} < {})",
+            receipt.calls,
+            current.calls,
+            receipt.input_tokens,
+            current.prompt_tokens,
+            receipt.output_tokens,
+            current.completion_tokens,
+        );
+    }
+    if let (Some(receipt_cost), Some(committed_cost)) = (receipt.cost_usd, current.cost_usd) {
+        if receipt_cost + f64::EPSILON < committed_cost {
+            bail!(
+                "provider_usage_reconciliation_conflict: receipt cost ${receipt_cost:.6} is below committed cost ${committed_cost:.6}"
+            );
+        }
+    }
+
+    let cost_delta = match (receipt.cost_usd, current.cost_usd) {
+        (Some(receipt_cost), Some(committed_cost)) => json!(receipt_cost - committed_cost),
+        (Some(receipt_cost), None) => json!(receipt_cost),
+        (None, _) => Value::Null,
+    };
+    let item = json!({
+        "schemaVersion": receipt.schema_version,
+        "receiptDigest": receipt.digest,
+        "authority": "workshop.secrets_proxy",
+        "calls": receipt.calls,
+        "promptTokens": receipt.input_tokens,
+        "completionTokens": receipt.output_tokens,
+        "costUsd": receipt.cost_usd,
+        "capabilities": receipt.capabilities,
+    });
+    let usage_delta = Map::from_iter([
+        ("calls".into(), json!(receipt.calls.saturating_sub(current.calls))),
+        (
+            "prompt_tokens".into(),
+            json!(receipt.input_tokens - current.prompt_tokens),
+        ),
+        (
+            "completion_tokens".into(),
+            json!(receipt.output_tokens - current.completion_tokens),
+        ),
+        ("cost_usd".into(), cost_delta),
+        ("usage_completeness".into(), json!("reconciled")),
+    ]);
+    service
+        .append_event_payloads(
+            run_id.to_string(),
+            vec![OptimizerEventDraft::new("optimizer.usage.reconciled", EVAL_ALGORITHM_ID)
+                .idempotency_key("eval:usage:provider:reconciled")
+                .item(item.clone())
+                .usage_delta(usage_delta)
+                .raw(json!({
+                    "source": "workshop_secrets_proxy",
+                    "receiptDigest": item["receiptDigest"],
+                }))],
+        )
+        .await?;
     Ok(())
 }
 
@@ -3858,6 +3982,164 @@ mod tests {
             "status": "failed",
             "reward": 1.0,
         })));
+    }
+
+    fn provider_usage_receipt(
+        run_id: &str,
+        calls: u64,
+        prompt_tokens: u64,
+        completion_tokens: u64,
+        cost_usd: Option<f64>,
+        digest_byte: char,
+    ) -> crate::secrets::ProviderUsageReceipt {
+        crate::secrets::ProviderUsageReceipt {
+            schema_version: "workshop.provider-usage-receipt.v1".into(),
+            run_id: run_id.into(),
+            capabilities: vec![crate::secrets::ProviderUsageCapability {
+                capability_id: format!("cap_{run_id}"),
+                provider: "openai".into(),
+                status: "active".into(),
+            }],
+            calls,
+            input_tokens: prompt_tokens,
+            output_tokens: completion_tokens,
+            cost_usd,
+            digest: format!("sha256:{}", digest_byte.to_string().repeat(64)),
+        }
+    }
+
+    async fn empty_eval_run(service: &OptimizerService, run_id: &str) -> OptimizerRunRecord {
+        service
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "eval",
+                    "id": run_id,
+                    "openVisual": false,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap()
+            .0
+    }
+
+    #[tokio::test]
+    async fn known_provider_usage_is_authoritative_idempotent_and_pre_terminal() {
+        let (svc, _dir, _) = service().await;
+        let run = empty_eval_run(&svc, "opt_eval_provider_usage_known").await;
+        append_status(&svc, &run.id, "optimizer.run.started", "running")
+            .await
+            .unwrap();
+        let receipt = provider_usage_receipt(&run.id, 3, 90, 12, Some(0.012345), 'a');
+        append_provider_usage_receipt(&svc, &run.id, receipt.clone())
+            .await
+            .unwrap();
+        append_provider_usage_receipt(&svc, &run.id, receipt)
+            .await
+            .unwrap();
+
+        let projected = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(projected.usage.calls, 3);
+        assert_eq!(projected.usage.prompt_tokens, 90);
+        assert_eq!(projected.usage.completion_tokens, 12);
+        assert_eq!(projected.usage.cost_usd, Some(0.012345));
+        let view = serde_json::to_value(svc.run_view_v2(run.id.clone()).await.unwrap()).unwrap();
+        assert_eq!(view["header"]["usage"]["calls"], json!(3));
+        assert_eq!(view["header"]["usage"]["promptTokens"], json!(90));
+        assert_eq!(view["header"]["usage"]["completionTokens"], json!(12));
+        assert_eq!(view["header"]["usage"]["costUsd"], json!(0.012345));
+
+        append_terminal(&svc, &run.id, "failed", "fixture settlement".into())
+            .await
+            .unwrap();
+        let events = svc.events_after(run.id.clone(), 0, Some(100)).await.unwrap();
+        let reconciliations = events
+            .iter()
+            .filter(|event| event.event_type == "optimizer.usage.reconciled")
+            .collect::<Vec<_>>();
+        assert_eq!(reconciliations.len(), 1, "receipt replay is idempotent");
+        let reconciliation = reconciliations[0];
+        let terminal = events
+            .iter()
+            .find(|event| event.event_type == "optimizer.run.failed")
+            .expect("failed terminal event");
+        assert!(reconciliation.sequence_number < terminal.sequence_number);
+        assert_eq!(reconciliation.item.as_ref().unwrap()["calls"], json!(3));
+        assert_eq!(
+            reconciliation.item.as_ref().unwrap()["receiptDigest"],
+            json!(format!("sha256:{}", "a".repeat(64)))
+        );
+        assert_eq!(reconciliation.usage_delta.as_ref().unwrap()["calls"], json!(3));
+        assert!(reconciliation
+            .raw
+            .get("requestId")
+            .is_none(), "the aggregate receipt must not fabricate request identity");
+
+        let manifest = svc
+            .terminal_manifest(run.id)
+            .await
+            .unwrap()
+            .expect("failed run seals a manifest");
+        assert_eq!(manifest["usage"]["calls"], json!(3));
+        assert_eq!(manifest["usage"]["promptTokens"], json!(90));
+        assert_eq!(manifest["usage"]["completionTokens"], json!(12));
+        assert_eq!(manifest["usage"]["costUsd"], json!(0.012345));
+        assert_eq!(manifest["usage"]["completeness"], json!("reconciled"));
+        assert_eq!(
+            manifest["usage"]["providerReceipt"]["receiptDigest"],
+            json!(format!("sha256:{}", "a".repeat(64)))
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_provider_cost_stays_null_while_tokens_and_calls_reconcile() {
+        let (svc, _dir, _) = service().await;
+        let run = empty_eval_run(&svc, "opt_eval_provider_usage_unknown").await;
+        append_status(&svc, &run.id, "optimizer.run.started", "running")
+            .await
+            .unwrap();
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![OptimizerEventDraft::new("optimizer.usage", EVAL_ALGORITHM_ID)
+                .usage_delta(Map::from_iter([
+                    ("cost_usd".into(), json!(0.001)),
+                    ("prompt_tokens".into(), json!(10)),
+                    ("completion_tokens".into(), json!(2)),
+                ]))],
+        )
+        .await
+        .unwrap();
+        append_provider_usage_receipt(
+            &svc,
+            &run.id,
+            provider_usage_receipt(&run.id, 2, 40, 7, None, 'b'),
+        )
+        .await
+        .unwrap();
+
+        let projected = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(projected.usage.calls, 2);
+        assert_eq!(projected.usage.prompt_tokens, 40);
+        assert_eq!(projected.usage.completion_tokens, 7);
+        assert_eq!(projected.usage.cost_usd, None);
+        let view = serde_json::to_value(svc.run_view_v2(run.id.clone()).await.unwrap()).unwrap();
+        assert_eq!(view["header"]["usage"]["calls"], json!(2));
+        assert_eq!(view["header"]["usage"]["promptTokens"], json!(40));
+        assert_eq!(view["header"]["usage"]["completionTokens"], json!(7));
+        assert_eq!(view["header"]["usage"]["costUsd"], Value::Null);
+
+        append_terminal(&svc, &run.id, "failed", "fixture settlement".into())
+            .await
+            .unwrap();
+        let manifest = svc
+            .terminal_manifest(run.id)
+            .await
+            .unwrap()
+            .expect("failed run seals a manifest");
+        assert_eq!(manifest["usage"]["calls"], json!(2));
+        assert_eq!(manifest["usage"]["promptTokens"], json!(40));
+        assert_eq!(manifest["usage"]["completionTokens"], json!(7));
+        assert_eq!(manifest["usage"]["costUsd"], Value::Null);
     }
 
     #[derive(Clone)]

@@ -2442,6 +2442,7 @@ export type OptimizerUsageSummary = {
 	 *  never reports cost is unknown, not free — missing is never 0.
 	 */
 	costUsd?: number | null,
+	calls?: number,
 	promptTokens?: number,
 	completionTokens?: number,
 	rollouts?: number,
@@ -3390,6 +3391,7 @@ export type UsageBreakdown = {
 /**  Usage that was never reported stays unavailable. Zero is a measured zero. */
 export type UsageCompleteness = {
 	costUsd?: number | null,
+	calls?: number,
 	promptTokens?: number,
 	completionTokens?: number,
 	steps?: number,

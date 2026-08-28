@@ -37,8 +37,16 @@ fn envelope_payload(envelope: &OptimizerEventEnvelope) -> serde_json::Value {
         map.extend(snapshot.clone());
     }
     map.extend(envelope.delta.clone());
-    if let Some(usage) = &envelope.usage_delta {
+    // Reconciliation items carry authoritative totals. Its usage_delta is
+    // intentionally only the remainder for additive legacy consumers and
+    // must not overwrite those totals in the kernel payload.
+    if let Some(usage) = envelope
+        .usage_delta
+        .as_ref()
+        .filter(|_| envelope.event_type != "optimizer.usage.reconciled")
+    {
         copy_usage_field(&mut map, usage, "costUsd", &["costUsd", "cost_usd"]);
+        copy_usage_field(&mut map, usage, "calls", &["calls"]);
         copy_usage_field(
             &mut map,
             usage,
