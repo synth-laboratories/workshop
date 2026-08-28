@@ -95,6 +95,7 @@ isolated_exec="$(sed -n '/^exec_isolated_cua_bundle()/,/^}/p' "$ROOT/scripts/des
 grep -q 'exec env -i' <<<"$isolated_exec"
 grep -q 'PWD="\$INSTANCE_ROOT"' <<<"$isolated_exec"
 grep -q 'SYNTH_OPTIMIZER_PROJECT_ROOT="\$optimizer_project_root"' <<<"$isolated_exec"
+grep -q 'CONTAINERS_ROOT="\$containers_root"' <<<"$isolated_exec"
 grep -q '"\$CUA_EXE"' <<<"$isolated_exec"
 rg -q 'if \(\$0 == exe \|\| \$0 == cua_exe\)' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_DEV_OAUTH_FILE' "$ROOT/scripts/desktop-instance.sh"

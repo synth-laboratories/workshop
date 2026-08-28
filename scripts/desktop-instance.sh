@@ -869,6 +869,10 @@ exec_isolated_cua_bundle() {
   local optimizer_project_root="${SYNTH_OPTIMIZER_PROJECT_ROOT:-}"
   local optimizer_wheel_file="${SYNTH_OPTIMIZER_WHEEL_FILE:-}"
   local mlx_rl_url="${SYNTH_MLX_RL_URL:-}"
+  # Workspace-owned container launchers may pin a clean Containers checkout.
+  # Carry only the path selector across packaged isolation; provider secrets
+  # remain instance-owned and are never inherited from the calling shell.
+  local containers_root="${CONTAINERS_ROOT:-}"
   local home_dir="${HOME:?HOME must be set to launch a CUA bundle}"
   local user_name="${USER:-$(id -un)}"
   local logname="${LOGNAME:-$user_name}"
@@ -901,6 +905,7 @@ exec_isolated_cua_bundle() {
     SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_project_root" \
     SYNTH_OPTIMIZER_WHEEL_FILE="$optimizer_wheel_file" \
     SYNTH_MLX_RL_URL="$mlx_rl_url" \
+    CONTAINERS_ROOT="$containers_root" \
     "$CUA_EXE"
 }
 
