@@ -10,6 +10,14 @@ export type VisualEvidenceFailure = {
 	detail: string;
 };
 
+export type VisualEvidenceGap = {
+	seed?: number;
+	rolloutId?: string;
+	trialId?: string;
+	code: string;
+	detail: string;
+};
+
 export type VisualRunLifecycle = {
 	status: string;
 	terminal: boolean;
@@ -23,6 +31,7 @@ export type VisualRunLifecycle = {
 		missing: number;
 		sealedTraces: number;
 		failures: VisualEvidenceFailure[];
+		gaps: VisualEvidenceGap[];
 	};
 	usage: {
 		calls?: number;
@@ -69,6 +78,28 @@ function isRejectedEvidence(row: Record<string, unknown>, detail: string): boole
 	return explicit === "rejected"
 		|| /digest mismatch|integrity validation|evidence rejected|unusable evidence/i.test(detail)
 		|| /rejected|integrity|unusable/.test(reason);
+}
+
+function outcomeGap(
+	item: Record<string, unknown>,
+	outcomeValue: unknown
+): VisualEvidenceGap | undefined {
+	const outcome = record(outcomeValue);
+	if (text(outcome.status)?.toLowerCase() !== "failed") return undefined;
+	const reason = text(outcome.reason);
+	const detail = text(outcome.detail);
+	if (!reason && !detail) return undefined;
+	const detailCode = detail?.match(/^([a-z][a-z0-9_]+):/i)?.[1];
+	const seed = finite(item.seed);
+	const rolloutId = text(item.rolloutId);
+	const trialId = text(item.trialId);
+	return {
+		...(seed != null ? { seed } : {}),
+		...(rolloutId ? { rolloutId } : {}),
+		...(trialId ? { trialId } : {}),
+		code: detailCode ?? reason ?? "required_fact_missing",
+		detail: detail ?? reason ?? "A required evaluation fact was not reported."
+	};
 }
 
 /**
@@ -122,6 +153,20 @@ export function projectVisualRunLifecycle(
 			detail
 		}];
 	});
+	const gaps = rows(summary.records).flatMap((item): VisualEvidenceGap[] => {
+		const detail = text(item.error)
+			?? text(record(item.evidenceOutcome).detail)
+			?? text(record(item.evaluatorOutcome).detail)
+			?? "";
+		if (isRejectedEvidence(item, detail)) return [];
+		const projected = [
+			outcomeGap(item, item.evaluatorOutcome),
+			outcomeGap(item, item.evidenceOutcome)
+		].filter((gap): gap is VisualEvidenceGap => Boolean(gap));
+		return projected.filter((gap, index) =>
+			projected.findIndex((candidate) => candidate.code === gap.code) === index
+		);
+	});
 	const ledger = rows(manifest.evidenceLedger);
 	const ledgerCounts = ledger.reduce<{ valid: number; missing: number }>((counts, item) => {
 		const state = text(item.state)?.toLowerCase();
@@ -167,7 +212,7 @@ export function projectVisualRunLifecycle(
 			failed: finite(work.failed),
 			succeeded: finite(work.succeeded)
 		},
-		evidence: { state: evidenceState, valid, rejected, missing, sealedTraces, failures },
+		evidence: { state: evidenceState, valid, rejected, missing, sealedTraces, failures, gaps },
 		usage: {
 			calls: finite(receipt.calls) ?? finite(manifestUsage.calls) ?? finite(runUsage.calls),
 			costUsd,

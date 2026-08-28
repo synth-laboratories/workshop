@@ -304,6 +304,9 @@ test("live Craftax declares optimizer lifecycle authority and makes failure seni
   const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
   assert.match(shell, /const visualLive = !lifecycleTerminal && state === "live"/);
   assert.match(shell, /Trace evidence was rejected, not missing/);
+  assert.match(shell, /Trace replay retained; evaluation result incomplete/);
+  assert.match(shell, /evaluation failure does not reject them/);
+  assert.match(shell, /Run cost/);
   assert.match(shell, /run marker/);
   assert.match(shell, /Seal unavailable/);
 });

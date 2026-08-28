@@ -1669,7 +1669,9 @@ test("approval modes configure new native sessions and pending requests resolve 
 			startTurn: async (sessionId: string) => ({ sessionId, threadId: "thread-approval", turnId: "turn-approval" }),
 			interrupt: async () => undefined,
 			resolveApproval: async (sessionId: string, approvalId: string, decision: string) => {
+				if (approvalId === "approval-paid-already") throw new Error(`approval is no longer pending: ${approvalId}`);
 				decisions.push({ sessionId, approvalId, decision });
+				if (approvalId === "approval-paid-1") return;
 				listener?.({ sessionId, method: decision === "reject" ? "approval.rejected" : "approval.granted", params: { approvalId, decision } });
 			},
 			close: async () => undefined,
@@ -1770,6 +1772,25 @@ test("approval modes configure new native sessions and pending requests resolve 
 		{ sessionId, approvalId: "approval-paid-1", decision: "once" },
 		{ sessionId, approvalId: "approval-credential-1", decision: "once" }
 	]);
+
+	await page.evaluate((id) => {
+		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
+			sessionId: id,
+			method: "approval.requested",
+			params: {
+				approvalId: "approval-paid-already",
+				kind: "paid_compute",
+				operation: "optimizer.evaluation.inline.start",
+				requestedCap: { maxCostUsdMicros: 2450000, maxRollouts: 5 },
+				parameters: { rolloutCount: 5 },
+				alwaysSupported: false
+			}
+		});
+	}, sessionId);
+	await expect(modal).toBeVisible();
+	await modal.getByRole("button", { name: "Approve", exact: true }).click();
+	await expect(modal).toBeHidden();
+	await expect(page.getByText(/approval is no longer pending/i)).toHaveCount(0);
 });
 
 test("paid compute Reject writes a durable decision and restart expiry closes the modal", async ({ page }) => {

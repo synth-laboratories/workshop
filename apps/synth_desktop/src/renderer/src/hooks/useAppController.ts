@@ -25,6 +25,7 @@ import {
 	dispatchRuntimeEvent,
 	dispatchTurnAccepted,
 	evictSessionEvents,
+	getEventsBySession,
 	mergeInternSessions,
 	mergeSessionReplay,
 	patchSessionMetadata,
@@ -156,6 +157,10 @@ type TranscriptHydrationEntry = {
 
 type TranscriptHistoryState = Pick<TranscriptHydrationEntry, "state" | "hasMore" | "error">;
 
+function approvalAlreadySettled(reason: unknown): boolean {
+	return /approval is no longer pending|approval (?:was )?already (?:resolved|settled)/i.test(publicError(reason));
+}
+
 export function useAppController() {
 	const isDesktop = window.location.protocol === "tauri:" || "__TAURI_INTERNALS__" in window;
 	const nativeCodex = bridges.codex;
@@ -273,6 +278,7 @@ export function useAppController() {
 	const sendToSessionRef = useRef<(sessionId: string, text: string, options?: { messageId?: string }) => Promise<boolean>>(async () => false);
 	const queueDrainStatusesRef = useRef(new Map<string, Session["status"]>());
 	const queueDrainingRef = useRef(new Set<string>());
+	const settlingApprovalIdsRef = useRef(new Set<string>());
 	eventsBySessionRef.current = eventsBySession;
 	const allocateNativeSequence = useCallback((sessionId: string) => {
 		const rendered = eventsBySessionRef.current[sessionId]?.at(-1)?.sequence ?? 0;
@@ -1901,13 +1907,48 @@ export function useAppController() {
 					else if (kind === "approve" || kind === "reject") {
 						const approvalId = typeof payload.approvalId === "string" ? payload.approvalId : null;
 						if (!approvalId) throw new Error("Approval id is missing");
+						if (settlingApprovalIdsRef.current.has(approvalId)) return;
 						const requestedDecision = payload.decision;
 						const decision = kind === "reject"
 							? "reject"
 							: requestedDecision === "always" || requestedDecision === "remember-locator" || requestedDecision === "register-source"
 								? requestedDecision
 								: "once";
-						await nativeCodex.resolveApproval(activeSessionId, approvalId, decision);
+						const publishSettlement = () => {
+							const alreadyProjected = (getEventsBySession()[activeSessionId] ?? []).some((event) =>
+								(event.eventKind === "approval.granted"
+									|| event.eventKind === "approval.rejected"
+									|| event.eventKind === "approval.expired")
+								&& event.payload?.approvalId === approvalId
+							);
+							if (alreadyProjected) return;
+							const sequence = allocateNativeSequence(activeSessionId);
+							dispatchRuntimeEvent({
+								schemaVersion: "synth.desktop-runtime-event.v1",
+								sessionId: activeSessionId,
+								sequence,
+								eventKind: kind === "reject" ? "approval.rejected" : "approval.granted",
+								payload: { approvalId, decision },
+								createdAt: new Date().toISOString(),
+								source: "local"
+							}, { updateStatus: false });
+						};
+						settlingApprovalIdsRef.current.add(approvalId);
+						try {
+							await nativeCodex.resolveApproval(activeSessionId, approvalId, decision);
+							// The durable native settlement event is authoritative, but the RPC
+							// reply is also a settlement receipt. Publish a local equivalent so a
+							// dropped/reordered event cannot leave a live approval modal behind.
+							publishSettlement();
+						} catch (reason) {
+							// A second resolver (or the same RPC whose event won the race) may
+							// settle first. That is successful/idempotent from the UI's point of
+							// view, not a reason to resurrect the already-settled prompt.
+							if (approvalAlreadySettled(reason)) publishSettlement();
+							else throw reason;
+						} finally {
+							settlingApprovalIdsRef.current.delete(approvalId);
+						}
 					}
 					else throw new Error(`${kind} is not supported for a Codex session`);
 					if (kind === "close" || kind === "cancel" || kind === "pause") {
@@ -1949,7 +1990,7 @@ export function useAppController() {
 				setBusy(false);
 			}
 		},
-		[activeSessionId, nativeCodex, nativeIntern, refreshSessions, sessions, showToast]
+		[activeSessionId, allocateNativeSequence, nativeCodex, nativeIntern, refreshSessions, sessions, showToast]
 	);
 
 	const onSelectTarget = useCallback((id: string) => {
