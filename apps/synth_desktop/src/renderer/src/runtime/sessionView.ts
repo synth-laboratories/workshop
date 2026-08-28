@@ -1559,6 +1559,7 @@ export function eventsToLocalActivity(
 					: approvalKind === "container_lifecycle" ? "Container replacement"
 					: approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
 						: approvalKind === "computer_use" ? "App control"
+							: approvalKind === "visual_template_persist" ? "Visual template"
 							: approvalKind === "project_source" ? "Project source"
 								: "Permission";
 		let label: string | undefined;
@@ -1571,7 +1572,9 @@ export function eventsToLocalActivity(
 							: approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
 								: approvalKind === "computer_use"
 									? (payload.hazard === true ? "Confirm this action" : "Allow app control")
-									: "Approval requested";
+									: approvalKind === "visual_template_persist"
+										? "Persist visual template code"
+										: "Approval requested";
 				break;
 			case "approval.granted":
 				label = `${approvalSubject} granted`;
@@ -1633,8 +1636,13 @@ export function eventsToLocalActivity(
 					Array.isArray(payload.credentialNames) ? `credentials ${payload.credentialNames.join(", ")}` : null
 				].filter((value): value is string => Boolean(value)).join(" · ")
 				: undefined;
+		// `visual_template_persist` composes its whole sentence host-side
+		// (`ApprovalKind::visual_template_detail`), which names the id, the tier,
+		// the byte count, the origin and whether it replaces reviewed code.
+		// Re-deriving that here would be a second copy of the question.
 		const safeKind = payload.kind === "shell_command" || payload.kind === "file_change" || payload.kind === "permission"
-			|| payload.kind === "plugin_lifecycle" || payload.kind === "paid_compute";
+			|| payload.kind === "plugin_lifecycle" || payload.kind === "paid_compute"
+			|| payload.kind === "visual_template_persist";
 		const detail = typedDetail
 			?? computerUseDetail
 			?? pluginDetail
@@ -1649,7 +1657,7 @@ export function eventsToLocalActivity(
 			approvalId: event.eventKind === "approval.requested"
 				? approvalKey(event) ?? `approval-${event.sequence}`
 				: undefined,
-			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "container_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "computer_use"
+			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "container_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "computer_use" || approvalKind === "visual_template_persist"
 				? approvalKind : "permission",
 			approvalPayload: event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? {
 				operation: typeof payload.operation === "string" ? payload.operation : undefined,

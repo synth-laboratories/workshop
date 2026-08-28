@@ -29,9 +29,7 @@ pub struct FailureQueryResult {
 
 impl FailureQuery {
     pub fn execute(&self, conn: &rusqlite::Connection) -> anyhow::Result<FailureQueryResult> {
-        let mut sql = String::from(
-            "SELECT failure_id FROM failure_occurrences WHERE 1=1",
-        );
+        let mut sql = String::from("SELECT failure_id FROM failure_occurrences WHERE 1=1");
         let mut params: Vec<String> = Vec::new();
         if let Some(code) = &self.code {
             sql.push_str(" AND code = ?");
@@ -97,7 +95,10 @@ impl FailureQuery {
     }
 }
 
-pub fn get_view(conn: &rusqlite::Connection, failure_id: &str) -> anyhow::Result<Option<FailureView>> {
+pub fn get_view(
+    conn: &rusqlite::Connection,
+    failure_id: &str,
+) -> anyhow::Result<Option<FailureView>> {
     Ok(FailureRepository::load(conn, failure_id)?.map(|row| FailureView::from_occurrence(&row)))
 }
 

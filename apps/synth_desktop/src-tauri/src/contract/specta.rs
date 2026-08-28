@@ -336,6 +336,9 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::context::context_cookbooks_set_enabled,
             crate::context::context_cookbooks_uninstall,
             crate::workspace_choose_directory,
+            crate::documents::commands::workspace_read_file,
+            crate::documents::commands::workspace_list_dir,
+            crate::documents::commands::document_show,
             crate::codex_session_start,
             crate::codex_turn_start,
             crate::codex_turn_send,
@@ -540,8 +543,17 @@ mod tests {
         // roots, bindings, locators, external remember, register, and forget
         // commands; durable optimizer artifact list and bounded range read;
         // safe sibling instance registry projection.
+        // → 295 (user-visual-templates lane): the workspace document pane —
+        // `workspace_read_file`, `workspace_list_dir`, and `document_show`,
+        // the right panel's second presentation provider. All three take
+        // `session_id` because the scope that authorizes the read belongs to
+        // the conversation, not the window: a path outside every session root
+        // is refused with `document_outside_workspace` rather than described.
+        // Read-only on purpose — there is no write, no delete, and no
+        // arbitrary-path read, because a viewer that could also write would
+        // need the approval machinery the agent's own tools already own.
         assert_eq!(
-            exported, 292,
+            exported, 295,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

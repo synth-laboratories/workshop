@@ -139,6 +139,16 @@ async function resolveBinding(
         schema: binding.schema ?? "synth.live_eval.v1"
       };
     }
+    case "workspace_file": {
+      // A declared read grant, not a payload. The document pane calls
+      // `workspace_read_file`, which re-resolves the path against the
+      // conversation's session roots on every read; resolving it here would
+      // hand the renderer bytes nothing re-checked, and the renderer has no
+      // filesystem to read them with in the first place.
+      throw new Error(
+        "workspace_file inputs are read by the host pane, not by bindTemplateSlots"
+      );
+    }
     default: {
       const _exhaustive: never = binding.kind;
       throw new Error(`Unknown binding kind: ${_exhaustive}`);
@@ -147,6 +157,23 @@ async function resolveBinding(
 }
 
 function describeError(err: unknown): string {
+  // Two different things arrive here and they need different treatment.
+  //
+  // A host loader rejects with a *failure envelope* — an object with a code and
+  // a remediation — and `presentRuntimeErrorMessage` is what turns that into a
+  // sentence without ever showing raw transport prose. But `resolveBinding`
+  // throws plain `Error`s carrying sentences this module authored itself ("No
+  // local CAS loader for input \"payload\"", "requires a sealed trace digest",
+  // the guessed-URL refusal). `presentRuntimeError` classifies an object with
+  // no `code` and no `schemaVersion` as `failure_contract_invalid` and replaces
+  // its text with the fallback, which is right for an unrecognized wire
+  // envelope and wrong for those: it turned every one of them into the single
+  // string "Binding resolution failed (failure_contract_invalid)", so the pane
+  // said a binding failed and never said which or why.
+  //
+  // So: an `Error` keeps the message it was given; everything else still goes
+  // through the envelope projection.
+  if (err instanceof Error && err.message.trim()) return err.message.trim();
   return presentRuntimeErrorMessage(err, "Binding resolution failed");
 }
 
@@ -256,7 +283,8 @@ const BINDING_KINDS: readonly string[] = [
   "live_sse",
   "fixture",
   "optimizer_run",
-  "query_snapshot"
+  "query_snapshot",
+  "workspace_file"
 ];
 
 export type VisualBindingsStatus = "canonical" | "upgraded" | "rejected";

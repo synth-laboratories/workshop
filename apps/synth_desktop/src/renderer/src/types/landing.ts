@@ -276,7 +276,7 @@ export type LocalActivityLine = {
 	/** Correlates a pending approval with its durable grant/rejection event. */
 	approvalId?: string;
 	// Mirrors `ApprovalKind::as_str` in src-tauri/src/session/approval.rs.
-	approvalKind?: "shell_command" | "paid_compute" | "sidecar_lifecycle" | "container_lifecycle" | "credential_access" | "plugin_lifecycle" | "computer_use" | "permission";
+	approvalKind?: "shell_command" | "paid_compute" | "sidecar_lifecycle" | "container_lifecycle" | "credential_access" | "plugin_lifecycle" | "computer_use" | "visual_template_persist" | "permission";
 	approvalPayload?: {
 		operation?: string;
 		parameters?: Record<string, unknown>;

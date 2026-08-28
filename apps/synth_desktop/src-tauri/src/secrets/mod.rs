@@ -94,7 +94,11 @@ pub fn redact_live(text: &str) -> String {
 pub fn revoke_run_best_effort(run_id: &str) {
     if let Some(secrets) = live() {
         if let Err(error) = secrets.revoke_run(run_id) {
-            crate::platform::logging::report("secrets", "eprintln", format!("synth-desktop: revoke secrets for {run_id}: {error:#}"));
+            crate::platform::logging::report(
+                "secrets",
+                "eprintln",
+                format!("synth-desktop: revoke secrets for {run_id}: {error:#}"),
+            );
         }
     }
 }

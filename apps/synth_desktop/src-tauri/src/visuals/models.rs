@@ -286,6 +286,11 @@ pub const VISUAL_BINDING_KINDS: &[&str] = &[
     "fixture",
     "optimizer_run",
     "query_snapshot",
+    // The document pane's grant: the one workspace path a visual declares. It
+    // is resolved by the host on every read through the conversation's session
+    // roots, never by `bindTemplateSlots`, which is why the TypeScript arm
+    // throws rather than fetching.
+    "workspace_file",
 ];
 
 /// How an authored bindings value reached the canonical envelope.

@@ -25,13 +25,17 @@ function jsonKeys(payload, acc = new Set()) {
   return acc;
 }
 
-function projectLiveEval(events, cutoffSequence) {
+function projectLiveEval(events, cutoff) {
   const rows = [];
+  const taken = new Map();
   for (const event of events) {
     if (isControl(event)) continue;
-    const seq = event.sequence_number ?? event.sequence;
-    const n = typeof seq === "number" ? seq : typeof seq === "string" && seq !== "" ? Number(seq) : null;
-    if (cutoffSequence != null && n != null && Number.isFinite(n) && n > cutoffSequence) continue;
+    if (cutoff) {
+      const stream = event.stream_id ?? event.payload?.stream_id ?? event.rollout_id ?? event.lane ?? event.run_id ?? "run";
+      const already = taken.get(stream) ?? 0;
+      if (already >= (cutoff[stream] ?? 0)) continue;
+      taken.set(stream, already + 1);
+    }
     rows.push(event);
   }
   const kinds = rows.map((event) => String(event.kind ?? event.type ?? ""));
@@ -127,13 +131,17 @@ test("C7-W01 forbidden slots live/jobs fail", () => {
   assert.equal(assertLiveEvalSlot("stream"), null);
 });
 
-test("cutoff sequence hides later events", () => {
+test("a cutoff cursor vector hides later events", () => {
+  // The cutoff is a prefix length per stream, not a sequence: the real
+  // multiplexed capture sequences with opaque strings, so a numeric cutoff
+  // cannot address its events at all. See `stream_fold::CursorVector`.
   const all = projectLiveEval(craftax);
-  const cut = projectLiveEval(craftax, 4);
+  const cut = projectLiveEval(craftax, { "seed:0": 4 });
+  assert.equal(cut.events.length, 4);
+  assert.deepEqual(cut.kinds, all.kinds.slice(0, 4));
   assert.ok(all.kinds.includes("frame"));
-  assert.ok(!cut.kinds.includes("frame"));
-  assert.ok(cut.kinds.includes("action"));
   assert.ok(!cut.kinds.includes("status"));
+  assert.deepEqual(projectLiveEval(craftax, {}).events, [], "an unnamed stream is excluded");
 });
 
 test("guessed URL /events fails assertDeclaredStreamSource", () => {

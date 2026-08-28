@@ -463,6 +463,7 @@ fn tools() -> Value {
             {"name":"visual_update","description":"Revise visual bindings, title, trusted-template configuration, or Mermaid/systems/chart content","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"bindings":{"type":"object","description":"Canonical synth.visual-bindings.v1 envelope: {\"schemaVersion\":\"synth.visual-bindings.v1\",\"inputs\":[{\"input\":...,\"kind\":...,\"source\":...}]}. slot still binds on stored envelopes; new writers emit input/inputs. A slot-keyed map such as {\"stream\":[...]} is legacy, is upgraded with a warning, and will be refused in a later release. Prefer visual_bind_data_source.","properties":{"schemaVersion":{"type":"string","const":"synth.visual-bindings.v1"},"inputs":{"type":"array","items":{"type":"object","properties":{"input":{"type":"string"},"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"data":{}},"required":["kind"]}}},"required":["schemaVersion"]},"status":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_bind_data_source","description":"Bind one input on a visual. This is the only supported way to write bindings: it emits the canonical synth.visual-bindings.v1 envelope. Inline inputs require data; other kinds require source. compose.visual.v1 stream is eval SSE; optimizer_run is optimizer_event.v1 (GEPA/SFT/CISPO). Use mode=append with bindings[] to put several sources on one input. slot still binds; new writers use input.","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"input":{"type":"string","description":"Bind-point name, e.g. spec, stream, optimizer_run"},"slot":{"type":"string","description":"Read-only alias of input on stored envelopes; still binds."},"mode":{"type":"string","enum":["replace","append"],"description":"replace (default) drops existing bindings on this input; append adds to them"},"kind":{"type":"string","enum":["trace_v5","local_cas","live_sse","fixture","inline","run_ref","optimizer_run","query_snapshot"]},"source":{"type":"string"},"data":{"description":"Required when kind is inline"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"},"schema":{"type":"string"},"bindings":{"type":"array","description":"Several descriptors for one input. Each is {kind, source, data?, poll_url?, path?, schema?}; the named input is authoritative.","items":{"type":"object","properties":{"kind":{"type":"string"},"source":{"type":"string"},"data":{},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"}},"required":["kind"],"additionalProperties":false}}},"required":["instance_id"],"additionalProperties":false}},
             {"name":"visual_show","description":"Open a visual in the Desktop right pane","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"session_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"document_show","description":"Open one workspace file in the Desktop right pane. The path is resolved against this conversation's workspace roots; a path outside them is refused, and a file that cannot be typeset (missing, binary, a directory) comes back with the named reason. Read-only: there is no write or delete counterpart.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path, or a path relative to a workspace root, of the file to open"}},"required":["path"],"additionalProperties":false}},
             {"name":"visual_open_in_pane","description":"Alias of visual_show","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"}},"required":["instance_id"],"additionalProperties":false}},
             {"name":"visual_fork","description":"Fork a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_chart","description":"Author or revise an ad-hoc data chart and get the rendered PNG back in one call. Pass a synth.visual.chart-spec.v1 object as spec; omit visual_id to create, pass it to revise. Panels: metrics, series (line/stepped/area with optional band), bars (grouped/stacked, vertical/horizontal), scatter (optional Pareto frontier), histogram, heatmap, table, note. Panels either carry literal values or derive them from bound evidence with a from block — bind a trace digest, fixture, CAS blob, or query snapshot with input/kind/source and the host reads it, so charting a trace does not mean pasting its numbers. Every value channel accepts null for an unmeasured point, which renders as a gap or a hatched cell — never as zero. Renders deterministically without opening the Desktop window.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string","description":"Revise this chart instead of creating one"},"title":{"type":"string"},"spec":{"type":"object","description":"synth.visual.chart-spec.v1: {version:1, title?, subtitle?, theme?:light|dark, width?:480-2000, panels:[...]}. A panel carries literal values OR a from block: {from:{source:{slot,path?,projection?,transform:[...]}, ...channel mapping}}. Transforms: filter, sort, limit, select, unwind, unpivot, derive, groupAggregate, bin."},
@@ -724,10 +725,17 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .get("source_path")
                 .and_then(Value::as_str)
                 .ok_or("source_path required")?;
+            // Importing a package writes renderer code the app compiles at
+            // every launch, so the host raises a `visual_template_persist`
+            // card before any byte lands — and a card is raised on a
+            // conversation. The identity is the server's bound session, never
+            // an agent-supplied one, for the same reason `visual_create`
+            // refuses to take ownership as an argument.
+            let session_id = require_session_identity(&session_env, "import a template")?;
             request(
                 "POST",
                 "/v1/visuals/templates/import",
-                Some(json!({"sourcePath": source_path})),
+                Some(json!({"sourcePath": source_path, "sessionRef": session_id})),
             )
         }
         "visual_list" => request("GET", "/v1/visuals", Some(args.clone())),
@@ -871,6 +879,26 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 "sessionId": args.get("session_id").cloned().or_else(|| session_env.map(Value::String))
             });
             request("POST", &format!("/v1/visuals/{id}/show"), Some(body))
+        }
+        // The document rail's whole agent surface. It names a path; the host
+        // re-resolves it against this conversation's workspace scope and opens
+        // the pane through the same durable `visual.show` event a visual takes.
+        // No read tool beside it: an agent that wants bytes has its own file
+        // tools, and this one is about what the *reader* sees.
+        "document_show" => {
+            let path = args
+                .get("path")
+                .or_else(|| args.get("document_path"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or("path required")?;
+            let session_id = require_session_identity(&session_env, "open a document")?;
+            request(
+                "POST",
+                "/v1/documents/show",
+                Some(json!({"path": path, "sessionRef": session_id})),
+            )
         }
         "visual_render" => {
             let id = args

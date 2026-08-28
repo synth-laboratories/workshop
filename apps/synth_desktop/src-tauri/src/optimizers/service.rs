@@ -8,6 +8,7 @@ use super::models::{
 };
 use super::results;
 use super::terminal;
+use super::training_adapter::is_step_metrics_event;
 use crate::storage::{
     append_event, AppEvent, ContentStore, Database, EventAppend, EventJournal, EventSource,
 };
@@ -5348,7 +5349,10 @@ fn project_from_events(
                     }
                 }
             }
-            "sft.step.metrics" | "sft.training.metrics" => {
+            // Every name `training_adapter::step_metrics_event` can produce,
+            // plus every spelling already persisted. Asking the shared rule
+            // keeps this reader from starving when a producer is widened.
+            kind if is_step_metrics_event(kind) => {
                 if let Some(obj) = curves.as_object_mut() {
                     push_curve(obj, "steps", event.delta.get("step"));
                     push_curve(obj, "epochs", event.delta.get("epoch"));
@@ -5393,6 +5397,10 @@ fn project_from_events(
                     .unwrap_or_else(|| Value::Object(event.delta.clone()));
             }
             "sft.checkpoint_eval.completed"
+            // `sft.heldout_evaluation.completed` is what both mapping paths
+            // actually emit; `sft.heldout_eval.completed` is the replay
+            // recipes' older spelling, kept for persisted rows.
+            | "sft.heldout_evaluation.completed"
             | "sft.heldout_eval.completed"
             | "sft.checkpoint_evaluation.completed"
             | "sft.checkpoint_evaluation.allocated"
@@ -5634,7 +5642,11 @@ fn project_from_events(
             ));
             slices.push(mk("go-ex.agents", "go-ex.agents.v1", goex_agents));
         }
-        "sft" => {
+        // CISPO shares the supervised slice family: `negotiate_visual_template`
+        // already routes it to `optimizer.sft.live.v1`, which reads exactly
+        // these ids. Gating them on `"sft"` alone dropped the curves an
+        // on-policy run had just produced.
+        "sft" | "cispo" => {
             slices.push(mk("sft.training_curves", "sft.training_curves.v1", curves));
             slices.push(mk(
                 "sft.checkpoints",
@@ -8919,5 +8931,119 @@ pub(in crate::optimizers) mod tests {
             .unwrap();
         assert!(receipt.0.is_some());
         assert_eq!(receipt.1, Some(terminal_cursor as i64));
+    }
+
+    /// A bare training run record — enough for `project_from_events`.
+    fn training_run(id: &str, algorithm_id: &str) -> OptimizerRunRecord {
+        OptimizerRunRecord {
+            schema_version: OPTIMIZER_RUN_SCHEMA_VERSION.into(),
+            id: id.into(),
+            algorithm_id: algorithm_id.into(),
+            algorithm_version: None,
+            status: "running".into(),
+            source: "local".into(),
+            objective: None,
+            project_ref: None,
+            session_ref: None,
+            created_at: "2026-08-28T00:00:00Z".into(),
+            started_at: None,
+            finished_at: None,
+            cursor_seq: 0,
+            capabilities: OptimizerCapabilities::for_algorithm(algorithm_id),
+            execution_bindings: vec![],
+            input_refs: vec![],
+            output_refs: vec![],
+            visual_refs: vec![],
+            summary: json!({}),
+            usage: OptimizerUsageSummary::default(),
+            error: None,
+        }
+    }
+
+    fn slice_data(slices: &[OptimizerStateSlice], slice_id: &str) -> Value {
+        slices
+            .iter()
+            .find(|slice| slice.slice_id == slice_id)
+            .unwrap_or_else(|| panic!("run projected no `{slice_id}` slice"))
+            .data
+            .clone()
+    }
+
+    fn step_metrics(
+        run_id: &str,
+        algorithm: &str,
+        event_type: &str,
+        seq: u64,
+        step: u64,
+        loss: f64,
+    ) -> OptimizerEventEnvelope {
+        evt(
+            event_type,
+            seq,
+            algorithm,
+            run_id,
+            "2026-08-28T00:00:01Z",
+            json!({"step": step, "epoch": 1, "train_loss": loss, "learning_rate": 0.0001}),
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn cispo_step_metrics_reach_the_curve_builder_on_both_placements() {
+        // Both producers take the name from `training_adapter::step_metrics_event`,
+        // so the hosted/adapter arm and the sidecar/MLX arm emit the identical
+        // event for a CISPO step. This fixture is therefore both paths at once —
+        // pinned by `training_adapter::hosted_arm_takes_its_metric_name_from_the_shared_rule`
+        // and `sidecar_training::sidecar_arm_takes_its_metric_name_from_the_shared_rule`.
+        let name = crate::optimizers::training_adapter::step_metrics_event("cispo");
+        assert_eq!(name, "training.metrics");
+        let run = training_run("opt_cispo_curves", "cispo");
+        let events = vec![
+            step_metrics("opt_cispo_curves", "cispo", name, 1, 1, 0.9),
+            step_metrics("opt_cispo_curves", "cispo", name, 2, 2, 0.4),
+        ];
+        let slices = project_from_events(&run, &events, None).unwrap();
+        let curves = slice_data(&slices, "sft.training_curves");
+        assert_eq!(curves["steps"], json!([1, 2]));
+        assert_eq!(curves["trainLoss"], json!([0.9, 0.4]));
+        assert_eq!(curves["learningRate"], json!([0.0001, 0.0001]));
+    }
+
+    #[test]
+    fn every_persisted_step_metrics_spelling_still_builds_curves() {
+        // Persisted rows keep the name they were written with forever. An SFT
+        // run recorded before the adapter existed must still project.
+        let run = training_run("opt_sft_curves", "sft");
+        let events = vec![
+            step_metrics("opt_sft_curves", "sft", "sft.step.metrics", 1, 1, 1.5),
+            step_metrics("opt_sft_curves", "sft", "sft.training.metrics", 2, 2, 1.2),
+            step_metrics("opt_sft_curves", "sft", "training.metrics", 3, 3, 1.0),
+        ];
+        let slices = project_from_events(&run, &events, None).unwrap();
+        let curves = slice_data(&slices, "sft.training_curves");
+        assert_eq!(curves["steps"], json!([1, 2, 3]));
+        assert_eq!(curves["trainLoss"], json!([1.5, 1.2, 1.0]));
+    }
+
+    #[test]
+    fn mapped_heldout_evaluations_reach_the_checkpoint_evaluation_slice() {
+        // `sft.heldout_evaluation.completed` is what both mapping paths emit;
+        // the reader used to match only the replay recipes' `heldout_eval`.
+        let run = training_run("opt_cispo_heldout", "cispo");
+        let events = vec![evt(
+            "sft.heldout_evaluation.completed",
+            1,
+            "cispo",
+            "opt_cispo_heldout",
+            "2026-08-28T00:00:02Z",
+            json!({"phase": "trained", "mean_reward": 0.75}),
+            None,
+            None,
+        )];
+        let slices = project_from_events(&run, &events, None).unwrap();
+        let evaluations = slice_data(&slices, "sft.checkpoint_evaluations");
+        assert_eq!(evaluations["evaluations"].as_array().unwrap().len(), 1);
+        assert_eq!(evaluations["evaluations"][0]["delta"]["mean_reward"], 0.75);
     }
 }

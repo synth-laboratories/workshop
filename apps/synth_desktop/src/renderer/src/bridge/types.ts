@@ -567,15 +567,21 @@ export type VisualsBridge = {
 	 * and rebuilds the registry over the bytes it wrote, rolling back anything
 	 * the registry refuses.
 	 *
-	 * This writes code the app compiles at every launch, not a pane render.
-	 * Call it from a place where the person asked for it.
+	 * This writes code the app compiles at every launch, not a pane render, so
+	 * the host raises a `visual_template_persist` approval before writing and
+	 * rejects if the person declines. `sessionId` is the conversation the card
+	 * is raised on: there is no window-ambient session here, because the grant
+	 * belongs to the conversation that asked for the write.
 	 */
-	saveTemplate(templateId: string, manifest: string, source: string): Promise<VisualTemplateMeta>;
+	saveTemplate(sessionId: string, templateId: string, manifest: string, source: string): Promise<VisualTemplateMeta>;
 	/**
 	 * Scaffold a new user template by forking an existing one under a new id.
 	 * Fork, never shadow: a shipped id keeps meaning exactly one thing.
+	 *
+	 * Approval-gated on `sessionId` exactly as `saveTemplate` is: a fork also
+	 * leaves code behind that the app compiles at every launch.
 	 */
-	createTemplate(templateId: string, fromTemplateId: string, title?: string | null): Promise<VisualTemplateMeta>;
+	createTemplate(sessionId: string, templateId: string, fromTemplateId: string, title?: string | null): Promise<VisualTemplateMeta>;
 	/**
 	 * Structural verdict on one user template directory. Never rejects for a
 	 * template that is merely unfinished. The import allowlist is not checked

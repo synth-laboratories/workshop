@@ -16,6 +16,7 @@ use serde_json::{json, Map, Value};
 
 use super::events::OptimizerEventDraft;
 use super::training::{TrainingEvent, TRAINING_EVENT_SCHEMA_VERSION};
+use crate::stream_fold::SequenceStep;
 
 pub const TRAINING_TERMINAL_MAPPED: &str = "training.terminal.mapped";
 pub const TRAINING_JOB_COMPLETED: &str = "training.job.completed";
@@ -80,8 +81,9 @@ impl TerminalMapping {
     }
 }
 
-/// Ingest a page of provider events. Replays (`sequence <= cursor`) are
-/// skipped; a hole (`sequence > cursor + 1`) is a hard error.
+/// Ingest a page of provider events. Replays are skipped; a hole is a hard
+/// error. The three answers come from [`crate::stream_fold::sequence_step`],
+/// which is the only place in this crate that does cursor arithmetic.
 pub fn ingest_ordered_events(
     cursor: u64,
     events: impl IntoIterator<Item = Value>,
@@ -94,11 +96,12 @@ pub fn ingest_ordered_events(
         if sequence == 0 {
             bail!("training event sequence must be >= 1");
         }
-        if sequence <= cursor {
-            continue;
-        }
-        if sequence != cursor + 1 {
-            bail!("training event sequence gap after {cursor}: {sequence}");
+        match crate::stream_fold::sequence_step(cursor, sequence) {
+            SequenceStep::Duplicate | SequenceStep::Replay => continue,
+            SequenceStep::Gap { .. } => {
+                bail!("training event sequence gap after {cursor}: {sequence}")
+            }
+            SequenceStep::Next => {}
         }
         accepted.push(event);
         cursor = sequence;
@@ -297,6 +300,58 @@ fn training_vocabulary(kind: &str) -> &'static str {
     }
 }
 
+/// The supervised step-metrics vocabulary. Every SFT row already persisted
+/// carries this name, so it can never be retired.
+pub(super) const SFT_STEP_METRICS: &str = "sft.training.metrics";
+/// The on-policy step-metrics vocabulary.
+pub(super) const TRAINING_STEP_METRICS: &str = "training.metrics";
+/// The replay recipes' spelling (`sft_recipes`, and the seeded service
+/// fixtures). Rows in a database keep the name they were written with
+/// forever, so readers keep accepting it.
+pub(super) const LEGACY_STEP_METRICS: &str = "sft.step.metrics";
+
+/// The algorithms Workshop recognizes as on-policy learners.
+const ON_POLICY_ALGORITHMS: &[&str] = &["cispo"];
+
+/// The one rule that names a step-metrics event, for every producer.
+///
+/// The learner that produced an event decides which projection it belongs to;
+/// an algorithm Workshop does not recognize keeps the supervised vocabulary
+/// rather than being relabelled as on-policy. A name is a claim about what the
+/// numbers mean, and Workshop does not make that claim about a learner it
+/// cannot identify.
+///
+/// Both mapping paths call this — `mapped_event_draft` below and
+/// `sidecar_training::mapped_event_draft` — so neither spells a name of its
+/// own and the hosted and sidecar arms of one algorithm cannot drift apart.
+/// Before it existed, the hosted arm named a CISPO step `training.metrics`
+/// while the sidecar arm named the same fact `sft.training.metrics`.
+pub(super) fn step_metrics_event(algorithm: &str) -> &'static str {
+    if ON_POLICY_ALGORITHMS.contains(&algorithm) {
+        TRAINING_STEP_METRICS
+    } else {
+        SFT_STEP_METRICS
+    }
+}
+
+/// Every name a step-metrics fact can carry in the durable log: the whole
+/// range of [`step_metrics_event`], plus every spelling already sitting in a
+/// database. A persisted row keeps its original name forever, so this set only
+/// ever grows.
+pub(super) const STEP_METRICS_EVENT_TYPES: &[&str] =
+    &[SFT_STEP_METRICS, TRAINING_STEP_METRICS, LEGACY_STEP_METRICS];
+
+/// Does this durable event carry training step metrics?
+///
+/// Every reader asks this instead of listing names itself. A reader-side
+/// allowlist kept in sync by hand with a producer-side namer is how a CISPO
+/// run came to feed neither `service::project_from_events` nor
+/// `sft_result::metrics_from` — silently, because `projectEvents.ts` did list
+/// all three names and so the UI looked fine.
+pub(super) fn is_step_metrics_event(event_type: &str) -> bool {
+    STEP_METRICS_EVENT_TYPES.contains(&event_type)
+}
+
 /// Every field a training runtime may report on a `training.metric` fact.
 ///
 /// Left is the persisted delta key the projection reads; right is every wire
@@ -379,12 +434,8 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
         "job.cancelled" => OptimizerEventDraft::new(TRAINING_JOB_CANCELLED, algorithm)
             .delta(Map::from_iter([("status".into(), json!("cancelled"))])),
         "training.metric" | "metric" => {
-            let event_type = if algorithm == "cispo" {
-                "training.metrics"
-            } else {
-                "sft.training.metrics"
-            };
-            OptimizerEventDraft::new(event_type, algorithm).delta(training_metric_delta(payload))
+            OptimizerEventDraft::new(step_metrics_event(algorithm), algorithm)
+                .delta(training_metric_delta(payload))
         }
         "checkpoint.created" | "checkpoint.ready" => {
             OptimizerEventDraft::new("sft.checkpoint.ready", algorithm)
@@ -689,5 +740,61 @@ mod tests {
             error.contains("unsupported training event schema"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn one_rule_names_a_step_metrics_event() {
+        // Recognized on-policy learner: the on-policy vocabulary.
+        assert_eq!(step_metrics_event("cispo"), TRAINING_STEP_METRICS);
+        // Supervised learner: the supervised vocabulary.
+        assert_eq!(step_metrics_event("sft"), SFT_STEP_METRICS);
+        // An algorithm Workshop does not recognize keeps the supervised
+        // vocabulary rather than being relabelled as on-policy.
+        for unrecognized in ["ppo", "slime", "gepa", "go-ex", ""] {
+            assert_eq!(
+                step_metrics_event(unrecognized),
+                SFT_STEP_METRICS,
+                "{unrecognized} must not be relabelled as on-policy"
+            );
+        }
+    }
+
+    #[test]
+    fn every_name_a_producer_can_emit_is_a_name_every_reader_accepts() {
+        // The reader-side set is closed over the namer's whole range, so
+        // widening `ON_POLICY_ALGORITHMS` can never starve a reader again.
+        for algorithm in ["cispo", "sft", "ppo", "gepa", "unknown"] {
+            assert!(
+                is_step_metrics_event(step_metrics_event(algorithm)),
+                "{algorithm} names a metric no reader would match"
+            );
+        }
+        // Persisted rows keep their original name forever.
+        assert!(is_step_metrics_event(LEGACY_STEP_METRICS));
+        assert!(is_step_metrics_event("sft.training.metrics"));
+        assert!(is_step_metrics_event("training.metrics"));
+        assert!(is_step_metrics_event("sft.step.metrics"));
+        // And the set stays closed: nothing else is step metrics.
+        assert!(!is_step_metrics_event("training.metric"));
+        assert!(!is_step_metrics_event("sft.checkpoint.ready"));
+        assert!(!is_step_metrics_event("training.evaluation.completed"));
+    }
+
+    #[test]
+    fn hosted_arm_takes_its_metric_name_from_the_shared_rule() {
+        for (algorithm, expected) in [
+            ("cispo", "training.metrics"),
+            ("sft", "sft.training.metrics"),
+            ("ppo", "sft.training.metrics"),
+        ] {
+            let adapted = adapt_source_fact(
+                algorithm,
+                &native_event(5, "training.metric", json!({"step": 3, "loss": 0.5})),
+            )
+            .unwrap();
+            assert_eq!(adapted.draft.event_type, expected);
+            assert_eq!(adapted.draft.event_type, step_metrics_event(algorithm));
+            assert!(is_step_metrics_event(&adapted.draft.event_type));
+        }
     }
 }

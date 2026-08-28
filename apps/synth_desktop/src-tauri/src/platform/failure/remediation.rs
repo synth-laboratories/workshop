@@ -96,11 +96,14 @@ impl FailureRemediation {
                 container_id: None,
                 session_id: None,
                 resume_token: None,
-                settings_route: Some(match route {
-                    SettingsRoute::Secrets => "secrets",
-                    SettingsRoute::Containers => "connectors",
-                    SettingsRoute::Models => "models",
-                }.into()),
+                settings_route: Some(
+                    match route {
+                        SettingsRoute::Secrets => "secrets",
+                        SettingsRoute::Containers => "connectors",
+                        SettingsRoute::Models => "models",
+                    }
+                    .into(),
+                ),
                 resource_ref: None,
             },
             Self::OpenResource(resource) => FailureRemediationView {
@@ -110,13 +113,16 @@ impl FailureRemediation {
                 session_id: None,
                 resume_token: None,
                 settings_route: None,
-                resource_ref: Some(match resource {
-                    ResourceRef::Containers => "containers",
-                    ResourceRef::Evaluations => "evaluations",
-                    ResourceRef::Visuals => "visuals",
-                    ResourceRef::Sessions => "sessions",
-                    ResourceRef::Approvals => "approvals",
-                }.into()),
+                resource_ref: Some(
+                    match resource {
+                        ResourceRef::Containers => "containers",
+                        ResourceRef::Evaluations => "evaluations",
+                        ResourceRef::Visuals => "visuals",
+                        ResourceRef::Sessions => "sessions",
+                        ResourceRef::Approvals => "approvals",
+                    }
+                    .into(),
+                ),
             },
             Self::OpenDiagnostics => FailureRemediationView {
                 kind: "open_diagnostics".into(),

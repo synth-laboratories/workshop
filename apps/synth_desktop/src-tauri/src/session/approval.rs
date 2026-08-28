@@ -403,6 +403,16 @@ impl ApprovalKind {
                     scope: ApprovalScope::Once,
                 },
             ) => Ok(()),
+            // Once only, and the remembered scopes were already refused above.
+            // "Let this agent write templates for the rest of the session" is a
+            // standing grant to persist arbitrary renderer code; approving one
+            // named id with one named digest is the whole decision.
+            (
+                Self::VisualTemplatePersist { .. },
+                ApprovalDecision::Approve {
+                    scope: ApprovalScope::Once,
+                },
+            ) => Ok(()),
             (Self::PaidCompute { .. }, ApprovalDecision::ApproveWithCap { cap })
                 if cap.is_bounded() =>
             {
@@ -577,6 +587,45 @@ impl ApprovalKind {
                 "displayPath": display_path,
                 "variable": variable,
                 "switchFromDisplay": switch_from_display,
+                "alwaysSupported": false,
+            }),
+            Self::VisualTemplatePersist {
+                template_id,
+                source_kind,
+                action,
+                byte_size,
+                overwrites,
+                forked_from,
+                destination,
+                source_digest,
+            } => json!({
+                "approvalId": approval_id,
+                "kind": self.name(),
+                "templateId": template_id,
+                "sourceKind": source_kind,
+                "action": action,
+                "byteSizeBytes": byte_size,
+                "overwrites": overwrites,
+                "forkedFrom": forked_from,
+                "destination": destination,
+                "sourceDigest": source_digest,
+                // A renderer that predates this variant falls through
+                // `sessionView.ts`'s typed branches to `payload.path`, and
+                // drops `payload.detail` because its `safeKind` list does not
+                // name this kind. So `path` is what a person actually sees
+                // today — the directory about to be written, which is at least
+                // the truth — and `detail` is the sentence the typed branch
+                // should show once it exists. Both are written now so that
+                // adding the branch is a renderer-only change.
+                "detail": Self::visual_template_detail(
+                    action,
+                    template_id,
+                    source_kind,
+                    *byte_size,
+                    *overwrites,
+                    forked_from.as_deref(),
+                ),
+                "path": destination,
                 "alwaysSupported": false,
             }),
             Self::VisualTemplatePersist {

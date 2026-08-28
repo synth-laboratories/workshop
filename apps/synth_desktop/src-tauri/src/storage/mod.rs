@@ -23,7 +23,7 @@ pub use event_journal::{EventAppend, EventJournal};
 pub use generation_speed::{GenerationSpeedRepository, GenerationSpeedRow};
 pub use live_spool::{
     envelopes_from_event_log, load_live_spool, persist_live_envelopes, replay_frame_from_envelope,
-    LiveSpool, LIVE_SPOOL_SCHEMA,
+    LiveSpool, LIVE_SPOOL_SCHEMA, LIVE_SPOOL_SCHEMA_V1,
 };
 pub use model_performance::{
     MeasurementKind, ModelPerformanceRepository, ModelPerformanceSummary,

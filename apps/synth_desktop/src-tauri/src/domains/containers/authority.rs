@@ -76,7 +76,10 @@ pub fn clear_current(conn: &Connection, container_id: &str) -> Result<()> {
 }
 
 pub fn registry_observation(status: &str, health: &serde_json::Value) -> HealthObservation {
-    let http_status = health.get("status").and_then(|v| v.as_u64()).map(|v| v as u16);
+    let http_status = health
+        .get("status")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u16);
     let summary = health
         .get("error")
         .and_then(|v| v.as_str())

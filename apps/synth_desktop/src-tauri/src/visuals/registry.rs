@@ -117,12 +117,16 @@ impl VisualRegistry {
         if !form.is_upgrade() {
             return;
         }
-        crate::platform::logging::report("visuals", "eprintln", format!(
-            "synth-desktop: upgraded {} visual bindings for {visual_id} rev {revision} \
+        crate::platform::logging::report(
+            "visuals",
+            "eprintln",
+            format!(
+                "synth-desktop: upgraded {} visual bindings for {visual_id} rev {revision} \
              (template {template_id}, slots {upgraded_slots:?}); writers must send {}",
-            form.as_str(),
-            super::models::VISUAL_BINDINGS_SCHEMA_VERSION
-        ));
+                form.as_str(),
+                super::models::VISUAL_BINDINGS_SCHEMA_VERSION
+            ),
+        );
         let Some(service) = self.diagnostics.get() else {
             return;
         };

@@ -245,6 +245,9 @@ impl Commands {
     pub const DESKTOP_PERMISSIONS_GET: &'static str = "desktop_permissions_get";
     pub const DESKTOP_PERMISSIONS_UPDATE: &'static str = "desktop_permissions_update";
     pub const WORKSPACE_CHOOSE_DIRECTORY: &'static str = "workspace_choose_directory";
+    pub const WORKSPACE_READ_FILE: &'static str = "workspace_read_file";
+    pub const WORKSPACE_LIST_DIR: &'static str = "workspace_list_dir";
+    pub const DOCUMENT_SHOW: &'static str = "document_show";
     pub const LAGUNA_MODELS_SET_DIRECTORY: &'static str = "laguna_models_set_directory";
     pub const LAGUNA_MODELS_CLEAR_DIRECTORY: &'static str = "laguna_models_clear_directory";
     pub const LAGUNA_MODEL_DELETE: &'static str = "laguna_model_delete";

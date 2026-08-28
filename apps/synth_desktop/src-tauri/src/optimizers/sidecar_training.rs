@@ -14,7 +14,7 @@ use super::models::{
     SavedLoraCheckpoint, TrainingJobStatus,
 };
 use super::sft_client::SftOptimizerClient;
-use super::training_adapter::{training_metric_delta, TerminalMapping};
+use super::training_adapter::{step_metrics_event, training_metric_delta, TerminalMapping};
 use super::OptimizerService;
 use crate::error::error_is;
 use crate::ipc::{JsonHttpRequest, JsonHttpResponse};
@@ -739,7 +739,7 @@ async fn watch_job(
             .and_then(|event| event.get("sequence"))
             .and_then(Value::as_u64)
         {
-            if sequence != cursor + 1 {
+            if !crate::stream_fold::is_next_sequence(cursor, sequence) {
                 if gap_errors < 3 {
                     gap_errors += 1;
                     sleep(Duration::from_millis(100)).await;
@@ -754,7 +754,10 @@ async fn watch_job(
                 .get("sequence")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| anyhow!("training event omitted sequence"))?;
-            if sequence != cursor + 1 {
+            // A replay is a gap here too: this loop appends into a durable
+            // journal, so anything but the next record means the producer and
+            // this cursor disagree about history.
+            if !crate::stream_fold::is_next_sequence(cursor, sequence) {
                 bail!("training event sequence gap after {cursor}: {sequence}");
             }
             append_mapped_event(&service, &run_id, &algorithm, &event, sequence).await?;
@@ -961,8 +964,10 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
         "job.resumed" => OptimizerEventDraft::new("optimizer.run.resumed", algorithm)
             .delta(Map::from_iter([("status".into(), json!("running"))])),
         // One widening point for both mapping paths; see
-        // `training_adapter::TRAINING_METRIC_FIELDS`.
-        "training.metric" => OptimizerEventDraft::new("sft.training.metrics", algorithm)
+        // `training_adapter::TRAINING_METRIC_FIELDS` for the fields and
+        // `training_adapter::step_metrics_event` for the name. This arm spells
+        // neither itself, so the sidecar and hosted arms cannot drift apart.
+        "training.metric" => OptimizerEventDraft::new(step_metrics_event(algorithm), algorithm)
             .delta(training_metric_delta(payload)),
         "checkpoint.created" => OptimizerEventDraft::new("sft.checkpoint.ready", algorithm)
             .item(json!({
@@ -1493,9 +1498,8 @@ async fn drive_mlx_job(
                 .unwrap_or_default()
             {
                 let sequence = event.get("sequence").and_then(Value::as_u64).unwrap_or(0);
-                if sequence > cursor {
+                if crate::stream_fold::accept_if_ahead(&mut cursor, sequence) {
                     job.events.push(event);
-                    cursor = sequence;
                 }
             }
         }
@@ -1525,9 +1529,8 @@ async fn drive_mlx_job(
                         .unwrap_or_default()
                     {
                         let sequence = event.get("sequence").and_then(Value::as_u64).unwrap_or(0);
-                        if sequence > cursor {
+                        if crate::stream_fold::accept_if_ahead(&mut cursor, sequence) {
                             job.events.push(event);
-                            cursor = sequence;
                         }
                     }
                 }
@@ -1653,13 +1656,12 @@ async fn drive_hosted_sft_job(
                     .or_else(|| event.get("sequence"))
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
-                if sequence > cursor {
+                if crate::stream_fold::accept_if_ahead(&mut cursor, sequence) {
                     job.events.push(json!({
                         "sequence": sequence,
                         "type": event.get("type").cloned().unwrap_or_else(|| json!("hosted.event")),
                         "payload": event,
                     }));
-                    cursor = sequence;
                 }
             }
         }
@@ -2424,5 +2426,26 @@ mod tests {
             Some("yo")
         );
         assert_eq!(sse_text_delta("chat_completions", "data: [DONE]"), None);
+    }
+
+    #[test]
+    fn sidecar_arm_takes_its_metric_name_from_the_shared_rule() {
+        // The sidecar arm used to hardcode `sft.training.metrics` for every
+        // algorithm while the hosted arm named a CISPO step `training.metrics`.
+        // One rule now decides both, so a CISPO run carries the same name on
+        // either placement and reaches the same readers.
+        let payload = json!({"step": 3, "loss": 0.5});
+        for (algorithm, expected) in [
+            ("cispo", "training.metrics"),
+            ("sft", "sft.training.metrics"),
+            ("ppo", "sft.training.metrics"),
+        ] {
+            let draft = mapped_event_draft("training.metric", algorithm, &payload);
+            assert_eq!(draft.event_type, expected);
+            assert_eq!(draft.event_type, step_metrics_event(algorithm));
+            assert!(crate::optimizers::training_adapter::is_step_metrics_event(
+                &draft.event_type
+            ));
+        }
     }
 }

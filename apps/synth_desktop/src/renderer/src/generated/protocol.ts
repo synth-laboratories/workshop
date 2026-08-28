@@ -210,19 +210,24 @@ export const commands = {
 	 *  drop every key the host does not happen to know about.
 	 *
 	 *  **This writes code the app compiles at every launch**, which is a different
-	 *  act from rendering in the pane. Today the only caller is this window, so the
-	 *  person's own action is the confirmation. The seam that lets an agent reach
-	 *  it — an HTTP route in `visuals_ipc.rs`, which does not exist — must land
-	 *  together with item 29's `ApprovalKind` variant; `PersistConsent` in
-	 *  `visuals/user_templates.rs` is where that decision has to be made.
+	 *  act from rendering in the pane, so it is gated: the write is described to a
+	 *  person as a `visual_template_persist` approval and only happens if they
+	 *  allow it. That is why this is `async` and why it takes both the app handle
+	 *  (the broker lives in its state) and the `session_id` the card is raised on —
+	 *  the synchronous `save_template` on the registry now always refuses, because
+	 *  a synchronous entry point cannot wait for a human.
 	 */
-	visualsTemplateSave: (templateId: string, manifest: string, source: string) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_template_save", { templateId, manifest, source })),
+	visualsTemplateSave: (sessionId: string, templateId: string, manifest: string, source: string) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_template_save", { sessionId, templateId, manifest, source })),
 	/**
 	 *  Scaffold a new user template by forking an existing one under a new id.
 	 *
 	 *  Fork rather than shadow, so a shipped id keeps meaning exactly one thing.
+	 *
+	 *  Gated the same way [`visuals_template_save`] is: a fork also leaves code the
+	 *  app compiles at every launch, so it settles a `visual_template_persist`
+	 *  approval on `session_id` before writing anything.
 	 */
-	visualsTemplateCreate: (templateId: string, fromTemplateId: string, title: string | null) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_template_create", { templateId, fromTemplateId, title })),
+	visualsTemplateCreate: (sessionId: string, templateId: string, fromTemplateId: string, title: string | null) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_template_create", { sessionId, templateId, fromTemplateId, title })),
 	/**
 	 *  Structural verdict on one user template directory.
 	 *
@@ -467,6 +472,30 @@ export const commands = {
 	contextCookbooksSetEnabled: (workspace: string, enabled: boolean) => typedError<ContextSnapshot, AppError_Serialize>(__TAURI_INVOKE("context_cookbooks_set_enabled", { workspace, enabled })),
 	contextCookbooksUninstall: (workspace: string) => typedError<ContextSnapshot, AppError_Serialize>(__TAURI_INVOKE("context_cookbooks_uninstall", { workspace })),
 	workspaceChooseDirectory: () => typedError<string | null, AppError_Serialize>(__TAURI_INVOKE("workspace_choose_directory")),
+	/**
+	 *  Read one workspace document for display.
+	 *
+	 *  Refuses with `document_outside_workspace` for a path outside every session
+	 *  root, and with `document_unavailable` plus the named reason for a path that
+	 *  is in scope but cannot be typeset. Neither is an empty string.
+	 */
+	workspaceReadFile: (sessionId: string, path: string) => typedError<WorkspaceDocument, AppError_Serialize>(__TAURI_INVOKE("workspace_read_file", { sessionId, path })),
+	/**
+	 *  List one workspace directory — the breadcrumb's and the file picker's data.
+	 *
+	 *  Rows that cannot be opened are listed with the reason rather than filtered
+	 *  out, so a folder of binaries reads as a folder of binaries and not as empty.
+	 */
+	workspaceListDir: (sessionId: string, path: string) => typedError<WorkspaceDirectory, AppError_Serialize>(__TAURI_INVOKE("workspace_list_dir", { sessionId, path })),
+	/**
+	 *  Open one workspace document in the right panel.
+	 *
+	 *  The same rail a visual takes: resolve or create the deterministic pane
+	 *  record, emit the durable `visual.show` event, and let the panel's existing
+	 *  listener open it. The renderer does not open the pane itself, so a document
+	 *  the agent shows and a document the reader clicks arrive by one path.
+	 */
+	documentShow: (sessionId: string, path: string) => typedError<DocumentShown, AppError_Serialize>(__TAURI_INVOKE("document_show", { sessionId, path })),
 	codexSessionStart: (request: CodexSessionStartRequest) => typedError<CodexSessionInfo, AppError_Serialize>(__TAURI_INVOKE("codex_session_start", { request })),
 	codexTurnStart: (request: CodexTurnStartRequest) => typedError<CodexSessionInfo, AppError_Serialize>(__TAURI_INVOKE("codex_turn_start", { request })),
 	/**
@@ -749,6 +778,12 @@ export type BeginResult = {
 };
 
 export type BillingAction = "upgrade" | "manage";
+
+export type Breadcrumb = {
+	label: string,
+	path: string,
+	isDirectory: boolean,
+};
 
 export type BrowserRuntimeStatus = {
 	phase: string,
@@ -1185,6 +1220,46 @@ export type DiagnosticReportRequest = {
 	optimizerRunId?: string | null,
 	traceId?: string | null,
 	details?: unknown,
+};
+
+/**  One directory row. Rows that cannot be opened are listed with the reason. */
+export type DirectoryEntry = {
+	name: string,
+	path: string,
+	kind: DocumentKind,
+	language: string,
+	byteSize: number,
+	modifiedAt: string | null,
+	/**  Whether opening this row lands on a document. */
+	openable: boolean,
+	/**
+	 *  Why it does not, when it does not. Never `None` while `openable` is
+	 *  false: a row the user cannot act on still owes them a sentence.
+	 */
+	reason: string | null,
+};
+
+/**  What kind of surface a path is, as far as the pane is concerned. */
+export type DocumentKind =
+/**  Typeset by default, with a View source toggle. */
+"markdown" |
+/**  Syntax highlighted, with a language badge. */
+"code" |
+/**  Monospaced, unhighlighted. */
+"plain_text" |
+/**  A folder. Presentable as a listing, never as a document. */
+"directory";
+
+/**
+ *  What the pane receives when a document is opened: the durable pane record
+ *  and the first read, in one round trip.
+ *
+ *  Two calls would let the pane render a viewer whose document then refuses,
+ *  and the reader would watch an empty pane appear before the reason arrived.
+ */
+export type DocumentShown = {
+	visual: VisualRecord,
+	document: WorkspaceDocument,
 };
 
 /**
@@ -4253,6 +4328,42 @@ export type WorkspaceAttachment = {
 	access: WorkspaceAccessMode,
 	source: AttachmentSource,
 	createdAt: string,
+};
+
+export type WorkspaceDirectory = {
+	schemaVersion: string,
+	path: string,
+	root: string,
+	relativePath: string,
+	entries: DirectoryEntry[],
+	truncated: boolean,
+	breadcrumbs: Breadcrumb[],
+};
+
+/**  One read document, as the pane receives it. */
+export type WorkspaceDocument = {
+	schemaVersion: string,
+	path: string,
+	root: string,
+	relativePath: string,
+	name: string,
+	kind: DocumentKind,
+	language: string,
+	text: string,
+	/**  Size of the file on disk, not of `text`. */
+	byteSize: number,
+	/**
+	 *  True when `text` is a prefix. The pane says which prefix rather than
+	 *  pretending the file ended.
+	 */
+	truncated: boolean,
+	/**
+	 *  sha256 of the returned bytes. When `truncated`, it names the prefix that
+	 *  was rendered — not the file — which is the only claim it can honestly make.
+	 */
+	contentDigest: string,
+	modifiedAt: string | null,
+	breadcrumbs: Breadcrumb[],
 };
 
 export type WorkspaceGrantRequest = {

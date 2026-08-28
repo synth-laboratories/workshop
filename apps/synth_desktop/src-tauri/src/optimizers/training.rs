@@ -1,5 +1,6 @@
 //! Canonical hosted-training event model consumed from Synth Cloud.
 
+use crate::stream_fold::SequenceStep;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -124,17 +125,23 @@ impl TrainingProjection {
     /// durable cursor and remain forward-compatible.
     pub fn apply(&mut self, event: &TrainingEvent) -> Result<(), String> {
         event.validate()?;
-        if event.sequence == self.last_sequence {
-            if self.last_event_id.as_deref() != Some(event.event_id.as_str()) {
-                return Err("training event sequence collision".into());
+        match crate::stream_fold::sequence_step(self.last_sequence, event.sequence) {
+            // The cursor already stands here. An honest retransmission carries
+            // the same event id; a different one is two records claiming one
+            // place in the journal.
+            SequenceStep::Duplicate => {
+                if self.last_event_id.as_deref() != Some(event.event_id.as_str()) {
+                    return Err("training event sequence collision".into());
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
-        if event.sequence < self.last_sequence {
-            return Ok(());
-        }
-        if self.last_sequence > 0 && event.sequence != self.last_sequence + 1 {
-            return Err("training event sequence gap".into());
+            SequenceStep::Replay => return Ok(()),
+            // A fresh projection has no history to have a hole in, so its
+            // first event may start anywhere the producer began numbering.
+            SequenceStep::Gap { .. } if self.last_sequence > 0 => {
+                return Err("training event sequence gap".into())
+            }
+            SequenceStep::Gap { .. } | SequenceStep::Next => {}
         }
         if let Some(attempt_id) = self.attempt_id.as_deref() {
             if attempt_id != event.attempt_id {

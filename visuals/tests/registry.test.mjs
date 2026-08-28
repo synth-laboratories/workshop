@@ -29,6 +29,15 @@ function discoverTemplates(directory = familiesDir, found = new Map()) {
   return found;
 }
 
+/**
+ * Templates the host renders itself, so they ship a manifest and no `shell.tsx`.
+ * `diagram.*` and `analysis.chart.v1` were already exempt below; the document
+ * viewer joins them for the same reason — its pane reads bytes through a scoped
+ * host command rather than through a bound payload, so there is no shell for it
+ * to be.
+ */
+const HOST_RENDERED_IDS = ["document.viewer.v1"];
+
 const EXPECTED_IDS = [
   "analysis.chart.v1",
   "analysis.visual.v1",
@@ -41,6 +50,7 @@ const EXPECTED_IDS = [
   "diagram.mermaid.v1",
   "diagram.systems.dynamic.v1",
   "diagram.systems.v1",
+  "document.viewer.v1",
   "experiment.overview.v1",
   "live.container_rollouts.v1",
   "live.craftax.v1",
@@ -76,7 +86,7 @@ test("visuals package exposes the registered templates", () => {
     const { meta, path } = templates.get(id);
     assert.equal(meta.id, id);
     assert.equal(meta.schemaVersion, "synth.visual-template.v1");
-    if (!id.startsWith("diagram.") && meta.rendererKind !== "chart") {
+    if (!id.startsWith("diagram.") && meta.rendererKind !== "chart" && !HOST_RENDERED_IDS.includes(id)) {
       assert.ok(existsSync(join(path, "shell.tsx")));
     }
     if (id === "live.harbor_eval.v1" || id === "live.container_rollouts.v1") {

@@ -3,24 +3,34 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 
 use crate::optimizers::admission::error::AdmissionError;
-use crate::platform::failure::{
-    AdmissionFailure, FailureKind, OperationalFailure,
-};
+use crate::platform::failure::{AdmissionFailure, FailureKind, OperationalFailure};
 use crate::platform::operations::{OperationContext, OperationKind, OperationPhase};
 
 pub fn from_admission(error: &AdmissionError) -> AdmissionFailure {
     use crate::optimizers::admission::error::AdmissionErrorCode::*;
     match error.code {
         CatalogRecipeNotFound => AdmissionFailure::CatalogRecipeNotFound {
-            recipe_id: error.context["recipeId"].as_str().unwrap_or("unknown").into(),
+            recipe_id: error.context["recipeId"]
+                .as_str()
+                .unwrap_or("unknown")
+                .into(),
             searched: error.context["recipesSearched"].as_u64().unwrap_or(0) as usize,
         },
         EvaluatorNotDeclared => AdmissionFailure::EvaluatorNotDeclared {
-            container_id: error.context["containerId"].as_str().unwrap_or("unknown").into(),
+            container_id: error.context["containerId"]
+                .as_str()
+                .unwrap_or("unknown")
+                .into(),
         },
         ScoringContractInvalid => AdmissionFailure::ScoringContractInvalid {
-            container_id: error.context["containerId"].as_str().unwrap_or("unknown").into(),
-            detail: error.context["detail"].as_str().unwrap_or(&error.message).into(),
+            container_id: error.context["containerId"]
+                .as_str()
+                .unwrap_or("unknown")
+                .into(),
+            detail: error.context["detail"]
+                .as_str()
+                .unwrap_or(&error.message)
+                .into(),
         },
         PolicyNotFound => AdmissionFailure::PolicyNotFound {
             namespace: error.context["namespace"].as_str().unwrap_or("").into(),
@@ -33,7 +43,10 @@ pub fn from_admission(error: &AdmissionError) -> AdmissionFailure {
         PolicyConfigurationInvalid => AdmissionFailure::PolicyConfigurationInvalid {
             namespace: error.context["namespace"].as_str().unwrap_or("").into(),
             name: error.context["name"].as_str().unwrap_or("").into(),
-            detail: error.context["detail"].as_str().unwrap_or(&error.message).into(),
+            detail: error.context["detail"]
+                .as_str()
+                .unwrap_or(&error.message)
+                .into(),
         },
         ModelUnsupported => AdmissionFailure::ModelUnsupported {
             provider: error.context["providerId"].as_str().unwrap_or("").into(),
@@ -51,7 +64,10 @@ pub fn from_admission(error: &AdmissionError) -> AdmissionFailure {
         CostCeilingRequired => AdmissionFailure::CostCeilingRequired,
         CredentialRouteUnavailable => AdmissionFailure::CredentialRouteUnavailable {
             provider: error.context["providerId"].as_str().unwrap_or("").into(),
-            detail: error.context["detail"].as_str().unwrap_or(&error.message).into(),
+            detail: error.context["detail"]
+                .as_str()
+                .unwrap_or(&error.message)
+                .into(),
         },
         OutputContractUnsupported => AdmissionFailure::OutputContractUnsupported {
             container_id: error.context["containerId"].as_str().unwrap_or("").into(),
@@ -66,10 +82,16 @@ pub fn from_admission(error: &AdmissionError) -> AdmissionFailure {
                 .unwrap_or_default(),
         },
         ExecutionSpecInvalid => AdmissionFailure::ExecutionSpecInvalid {
-            detail: error.context["detail"].as_str().unwrap_or(&error.message).into(),
+            detail: error.context["detail"]
+                .as_str()
+                .unwrap_or(&error.message)
+                .into(),
         },
         ExecutionSpecDigestMismatch => AdmissionFailure::ExecutionSpecDigestMismatch {
-            expected: error.context["expectedDigest"].as_str().unwrap_or("").into(),
+            expected: error.context["expectedDigest"]
+                .as_str()
+                .unwrap_or("")
+                .into(),
             actual: error.context["actualDigest"].as_str().unwrap_or("").into(),
         },
         ContainerNotFound => {
@@ -97,14 +119,14 @@ pub fn from_admission(error: &AdmissionError) -> AdmissionFailure {
 pub fn kind_from_admission(error: &AdmissionError) -> FailureKind {
     use crate::optimizers::admission::error::AdmissionErrorCode::*;
     match error.code {
-        ContainerNotFound => FailureKind::Container(
-            crate::platform::failure::ContainerFailure::NotFound {
+        ContainerNotFound => {
+            FailureKind::Container(crate::platform::failure::ContainerFailure::NotFound {
                 requested: error.context["requested"]
                     .as_str()
                     .unwrap_or("unknown")
                     .into(),
-            },
-        ),
+            })
+        }
         ContainerSelectionAmbiguous => FailureKind::Container(
             crate::platform::failure::ContainerFailure::SelectionAmbiguous {
                 candidates: error.context["candidates"]
@@ -118,8 +140,8 @@ pub fn kind_from_admission(error: &AdmissionError) -> FailureKind {
                     .unwrap_or_default(),
             },
         ),
-        ContainerUnhealthy => FailureKind::Container(
-            crate::platform::failure::ContainerFailure::Unhealthy {
+        ContainerUnhealthy => {
+            FailureKind::Container(crate::platform::failure::ContainerFailure::Unhealthy {
                 container_id: error.context["containerId"]
                     .as_str()
                     .unwrap_or("unknown")
@@ -129,12 +151,10 @@ pub fn kind_from_admission(error: &AdmissionError) -> FailureKind {
                     status: crate::platform::failure::HealthStatus::Unhealthy,
                     observed_at: Utc::now(),
                     http_status: None,
-                    summary: error.context["observedHealth"]
-                        .as_str()
-                        .map(str::to_owned),
+                    summary: error.context["observedHealth"].as_str().map(str::to_owned),
                 },
-            },
-        ),
+            })
+        }
         ContainerProtocolUnsupported => FailureKind::Container(
             crate::platform::failure::ContainerFailure::ProtocolUnsupported {
                 container_id: error.context["containerId"]

@@ -33,6 +33,7 @@ import { subscribeToRun } from "../runtime/runProgress/subscription";
 import { progressAgreement, projectRunProgress, splitSnapshotEvents } from "../runtime/runProgress/project";
 import type { ProgressAgreement } from "../runtime/runProgress/project";
 import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
+import { DocumentPane, isDocumentArtifact } from "../documents/DocumentPane";
 import { MermaidVisual } from "./MermaidVisual";
 import { SystemsMapVisual } from "./SystemsMapVisual";
 import { ChartVisual } from "./ChartVisual";
@@ -1489,6 +1490,21 @@ class VisualErrorBoundary extends Component<
 /** Shared host used by chat cards, the right pane, and the Visuals library. */
 export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const bindingsKey = bindingAuthorityKey(artifact.bindings);
+	// First, because a document pane is host-rendered end to end: its bytes
+	// arrive through a scoped host command rather than a bound payload, so
+	// none of the template resolution below applies to it.
+	if (isDocumentArtifact(artifact)) {
+		return (
+			<VisualErrorBoundary
+				key={`${artifact.id}:document`}
+				visualId={artifact.visualId ?? artifact.id}
+				visualRevision={typeof artifact.revision === "number" ? artifact.revision : null}
+				templateId={artifact.templateId ?? null}
+			>
+				<DocumentPane artifact={artifact} />
+			</VisualErrorBoundary>
+		);
+	}
 	const isSystemsDynamic =
 		artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
 	if (isSystemsDynamic) {

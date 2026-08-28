@@ -933,7 +933,13 @@ fn policy_source_bytes_do_not_fork_the_canonical_digest() {
         "in-memory policy bytes must not change the approved digest"
     );
     assert_eq!(
-        with.spec().recipe.policy.material.as_ref().unwrap().content_digest,
+        with.spec()
+            .recipe
+            .policy
+            .material
+            .as_ref()
+            .unwrap()
+            .content_digest,
         digest_bytes(bytes.as_bytes())
     );
 }
@@ -950,7 +956,12 @@ fn approved_limits_remain_non_null_through_admission() {
         .approve(binding_for(&admissible))
         .unwrap();
     assert_eq!(
-        approved.recipe().resource_limits.maximum_model_calls_per_rollout.0.get(),
+        approved
+            .recipe()
+            .resource_limits
+            .maximum_model_calls_per_rollout
+            .0
+            .get(),
         10
     );
     assert_eq!(approved.digest(), admissible.digest());

@@ -13,7 +13,8 @@ export type VisualBindingKind =
   | "live_sse"
   | "fixture"
   | "optimizer_run"
-  | "query_snapshot";
+  | "query_snapshot"
+  | "workspace_file";
 
 /**
  * Bind-point name: canonical `input`; `slot` still binds on stored envelopes.
@@ -74,6 +75,9 @@ export type VisualBinding = {
    * - optimizer_run → cloud/local optimizer_run_id
    * - query_snapshot → immutable trace query snapshot id
    * - run_ref → run identity resolved by the host
+   * - workspace_file → canonical path of one workspace document. Read by the
+   *   host pane through `workspace_read_file`, which re-resolves it against
+   *   the conversation's session roots; never fetched by the binder.
    */
   source?: string;
   /** Declared sibling poll endpoint for a normalized live stream. Never inferred. */
