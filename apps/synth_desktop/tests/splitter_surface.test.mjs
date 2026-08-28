@@ -9,7 +9,7 @@ const read = (path) => readFileSync(join(root, path), "utf8");
 
 test("shared pane separator exposes bounded keyboard and pointer behavior", () => {
 	const handle = read("components/PaneResizeHandle.tsx");
-	for (const contract of ["ResizeObserver", "aria-valuemin", "aria-valuemax", "aria-valuenow", "ArrowLeft", "ArrowRight", "event.shiftKey", "onPointerCancel", "onLostPointerCapture", "window.addEventListener(\"blur\"", "releasePointerCapture", "onDoubleClick"]) {
+	for (const contract of ["ResizeObserver", "aria-valuemin", "aria-valuemax", "aria-valuenow", "ArrowLeft", "ArrowRight", "event.shiftKey", "onPointerCancel", "onLostPointerCapture", "window.addEventListener(\"blur\"", "releasePointerCapture", "settleAfterLayout", "onDoubleClick"]) {
 		assert.ok(handle.includes(contract), contract);
 	}
 	assert.match(handle, /parent\.getBoundingClientRect\(\)/);

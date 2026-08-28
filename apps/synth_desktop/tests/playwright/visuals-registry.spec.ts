@@ -599,10 +599,24 @@ test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears w
 	// require the pointer gesture to grow the pane without assuming how many
 	// synthetic steps painted.
 	expect(dragged).toBeGreaterThan(before);
+	const grownBox = await splitter.boundingBox();
+	if (!grownBox) throw new Error("Visuals splitter geometry unavailable after growing the list");
+	await page.mouse.move(grownBox.x + grownBox.width / 2, grownBox.y + 80);
+	await page.mouse.down();
+	await page.mouse.move(grownBox.x - 112, grownBox.y + 80, { steps: 4 });
+	await page.mouse.up();
+	await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+	const draggedLeft = Number(await splitter.getAttribute("aria-valuenow"));
+	expect(draggedLeft).toBeLessThan(dragged);
+	await page.waitForTimeout(100);
+	await expect(splitter).toHaveAttribute("aria-valuenow", String(draggedLeft));
+	await page.reload();
+	await page.getByTestId("open-visuals").click();
+	await expect(page.getByTestId("visuals-resize-handle")).toHaveAttribute("aria-valuenow", String(draggedLeft));
 	await splitter.focus();
 	await page.keyboard.press("Shift+ArrowLeft");
 	const minimum = Number(await splitter.getAttribute("aria-valuemin"));
-	const expectedKeyboard = Math.max(minimum, dragged - 64);
+	const expectedKeyboard = Math.max(minimum, draggedLeft - 64);
 	await expect(splitter).toHaveAttribute("aria-valuenow", String(expectedKeyboard));
 	const keyboard = Number(await splitter.getAttribute("aria-valuenow"));
 	await page.reload();
