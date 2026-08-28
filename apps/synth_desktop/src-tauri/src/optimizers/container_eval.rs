@@ -3670,6 +3670,13 @@ fn rollout_reported_facts(record: &Value) -> RolloutReportedFacts {
         .get("steps")
         .and_then(Value::as_u64)
         .map(|value| json!(value));
+    let steps_source = if record.get("stepsSource").and_then(Value::as_str)
+        == Some("retained_event_log")
+    {
+        ReportedFactSource::RetainedEventLog
+    } else {
+        ReportedFactSource::ContainerRuntime
+    };
     let achievements = record
         .get("checkpointAchievements")
         .filter(|value| value.is_array())
@@ -3692,7 +3699,7 @@ fn rollout_reported_facts(record: &Value) -> RolloutReportedFacts {
         ),
         steps: reported_fact(
             steps,
-            ReportedFactSource::ContainerRuntime,
+            steps_source,
             ReportedFactUnavailableReason::StepsNotReported,
         ),
         tokens: reported_fact(
@@ -4023,6 +4030,7 @@ async fn run_one_example(
             )),
         ),
     };
+    let (terminal_steps, terminal_steps_source) = terminal_step_count(&state, &relay, &rollout_id)?;
     let reward_value = reward.get("reward").cloned().unwrap_or(Value::Null);
     let metrics = reward
         .get("metrics")
@@ -4103,12 +4111,8 @@ async fn run_one_example(
         "evaluatorOutcome": evaluator_outcome,
         "metrics": measurement["metrics"],
         "usage": usage,
-        "steps": state
-            .get("steps")
-            .or_else(|| state.get("step_count"))
-            .or_else(|| state.get("stepCount"))
-            .cloned()
-            .unwrap_or(Value::Null),
+        "steps": terminal_steps,
+        "stepsSource": terminal_steps_source,
         "policyRef": ctx.policy_pin,
         "worldRef": spec.world_ref,
         "trace": state.get("trace").cloned().unwrap_or(Value::Null),
@@ -4342,7 +4346,7 @@ async fn fetch_reward(
     client: &reqwest::Client,
     base: &str,
     rollout_id: &str,
-    _plan_ref: &str,
+    plan_ref: &str,
 ) -> Result<Value> {
     let response = client
         .get(format!("{base}/rollouts/{rollout_id}/reward"))
@@ -4351,10 +4355,38 @@ async fn fetch_reward(
         .with_context(|| format!("GET reward for rollout `{rollout_id}`"))?
         .error_for_status()
         .with_context(|| format!("reward endpoint failed for rollout `{rollout_id}`"))?;
-    let body = response
+    let mut body = response
         .json::<Value>()
         .await
         .with_context(|| format!("decode reward for rollout `{rollout_id}`"))?;
+    // GET observes an already-materialized evaluator receipt. Terminal
+    // scoring is an explicit, idempotent producer operation; NanoHorizon can
+    // close its trusted episode journal before that receipt exists. Ask the
+    // named evaluation plan to score the closed rollout instead of borrowing
+    // policy.session.closed.reward, which is not evaluator authority.
+    if body.get("status").and_then(Value::as_str) == Some("absent") {
+        body = client
+            .post(format!("{base}/reward"))
+            .json(&json!({
+                "rollout_id": rollout_id,
+                "mode": "terminal",
+                "rescore": false,
+                "evaluation_plan_ref": plan_ref,
+            }))
+            .send()
+            .await
+            .with_context(|| format!("POST terminal reward for rollout `{rollout_id}`"))?
+            .error_for_status()
+            .with_context(|| format!("terminal reward evaluation failed for rollout `{rollout_id}`"))?
+            .json::<Value>()
+            .await
+            .with_context(|| format!("decode terminal reward for rollout `{rollout_id}`"))?;
+    }
+    validate_reward_record(&body, rollout_id)?;
+    Ok(body)
+}
+
+fn validate_reward_record(body: &Value, rollout_id: &str) -> Result<()> {
     let status = body
         .get("status")
         .and_then(Value::as_str)
@@ -4376,7 +4408,32 @@ async fn fetch_reward(
         }
         other => bail!("reward for rollout `{rollout_id}` reported unknown status `{other}`"),
     }
-    Ok(body)
+    Ok(())
+}
+
+fn terminal_step_count(
+    state: &Value,
+    relay: &eval_relay::RelayOutcome,
+    rollout_id: &str,
+) -> Result<(Value, &'static str)> {
+    let state_steps = state
+        .get("steps")
+        .or_else(|| state.get("step_count"))
+        .or_else(|| state.get("stepCount"))
+        .and_then(Value::as_u64);
+    let retained_steps = relay.verified_terminal_steps();
+    if let (Some(state_steps), Some(retained_steps)) = (state_steps, retained_steps) {
+        if state_steps != retained_steps {
+            bail!(
+                "terminal_step_count_conflict: rollout `{rollout_id}` reported {state_steps} steps in its terminal response but {retained_steps} in its verified retained lifecycle"
+            );
+        }
+    }
+    match (state_steps, retained_steps) {
+        (Some(steps), _) => Ok((json!(steps), "container_runtime")),
+        (None, Some(steps)) => Ok((json!(steps), "retained_event_log")),
+        (None, None) => Ok((Value::Null, "container_runtime")),
+    }
 }
 
 async fn find_ready_container(
@@ -6993,6 +7050,9 @@ max_total_rollouts = 4
         skip_sequence: Option<u64>,
         /// Hold the blocking POST open this long after the journal closes.
         trailing_hold_ms: u64,
+        /// GET observes no evaluator receipt until Workshop explicitly asks
+        /// the producer to materialize terminal scoring with POST /reward.
+        reward_materializes_on_post: bool,
     }
 
     /// The producer envelope shape, exactly as `RolloutEventLog` writes it.
@@ -7411,10 +7471,28 @@ max_total_rollouts = 4
                                 "trace": {"url": format!("/rollouts/{rollout_id}/trace"), "closed": true},
                             }))
                         }
-                        ("GET", path) if path.ends_with("/reward") => JsonHttpResponse::ok(json!({
-                            "status": "scored",
-                            "reward": CRAFTAX_TOTAL_REWARD,
-                        })),
+                        ("GET", path) if path.ends_with("/reward") => JsonHttpResponse::ok(if opts.reward_materializes_on_post {
+                            json!({"status": "absent", "reward": null})
+                        } else {
+                            json!({"status": "scored", "reward": CRAFTAX_TOTAL_REWARD})
+                        }),
+                        ("POST", "/reward") if opts.reward_materializes_on_post => {
+                            if request.body.get("mode") != Some(&json!("terminal"))
+                                || request.body.get("rescore") != Some(&json!(false))
+                                || request.body.get("rollout_id").and_then(Value::as_str).is_none()
+                                || request.body.get("evaluation_plan_ref").and_then(Value::as_str).is_none()
+                            {
+                                return JsonHttpResponse::error(
+                                    StatusCode::UNPROCESSABLE_ENTITY,
+                                    "terminal reward request omitted its authority binding",
+                                );
+                            }
+                            JsonHttpResponse::ok(json!({
+                                "status": "scored",
+                                "reward": CRAFTAX_TOTAL_REWARD,
+                                "evaluation_plan_ref": request.body["evaluation_plan_ref"],
+                            }))
+                        }
                         // No self-contained bundle: this container seals a lite
                         // trace only, and the record must say so rather than
                         // claiming an inspectable replay.
@@ -7644,6 +7722,11 @@ max_total_rollouts = 1
         let run = svc.get(run_id.clone()).await.unwrap();
         let record = run.summary.pointer("/records/0").cloned().unwrap();
         assert_eq!(record["reward"], json!(CRAFTAX_TOTAL_REWARD));
+        assert_eq!(
+            record["steps"],
+            Value::Null,
+            "an unverified legacy journal must not become terminal step authority"
+        );
         assert_eq!(record["relay"]["framesDeclared"], json!(CRAFTAX_FRAMES));
         assert_eq!(record["relay"]["framesRetained"], json!(CRAFTAX_FRAMES));
         assert_eq!(record["relay"]["journalClosed"], json!(true));
@@ -7711,6 +7794,35 @@ max_total_rollouts = 1
             mock.acks.lock().unwrap().get(rollout_id).copied(),
             Some(high_water),
             "producer never observed Workshop's durable high-water ack"
+        );
+        mock.task.abort();
+    }
+
+    #[tokio::test]
+    async fn verified_terminal_lifecycle_supplies_steps_and_scoring_stays_evaluator_owned() {
+        let (svc, run_id, mock) = run_craftax(
+            CraftaxMockOptions {
+                journal_v2: true,
+                reward_materializes_on_post: true,
+                ..CraftaxMockOptions::default()
+            },
+            "",
+        )
+        .await;
+        let run = svc.get(run_id).await.unwrap();
+        let record = run.summary.pointer("/records/0").unwrap();
+        assert_eq!(record["status"], json!("completed"), "{record}");
+        assert_eq!(record["steps"], json!(CRAFTAX_APPLIED_ACTIONS));
+        assert_eq!(record["stepsSource"], json!("retained_event_log"));
+        assert_eq!(
+            record["reportedFacts"]["steps"]["source"],
+            json!("retained_event_log")
+        );
+        assert_eq!(record["reward"], json!(CRAFTAX_TOTAL_REWARD));
+        assert_eq!(record["rewardStatus"], json!("scored"));
+        assert_eq!(
+            record["relay"]["terminalEnvironmentSteps"],
+            json!(CRAFTAX_APPLIED_ACTIONS)
         );
         mock.task.abort();
     }

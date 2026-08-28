@@ -251,6 +251,10 @@ pub(crate) struct RelayOutcome {
     pub frame_bytes: u64,
     /// Last environment step present in the durable producer journal.
     pub last_relayed_step: Option<u64>,
+    /// Terminal environment-step count declared by the producer lifecycle.
+    /// This is usable by consumers only through [`Self::verified_terminal_steps`],
+    /// after the v2 chain, closure, and durable acknowledgement all agree.
+    terminal_steps: Option<u64>,
     /// Cancellation closes the evidence lane as partial/aborted, never as a
     /// producer failure.
     pub aborted_by_cancellation: bool,
@@ -263,6 +267,14 @@ pub(crate) struct RelayOutcome {
 }
 
 impl RelayOutcome {
+    pub(crate) fn verified_terminal_steps(&self) -> Option<u64> {
+        (self.journal_closed
+            && self.journal_chain_head.is_some()
+            && self.journal_acked >= self.high_water)
+            .then_some(self.terminal_steps)
+            .flatten()
+    }
+
     pub(crate) fn to_json(&self) -> Value {
         json!({
             "relayedEvents": self.relayed_events,
@@ -278,6 +290,7 @@ impl RelayOutcome {
             "uniqueFrameBlobs": self.unique_frame_blobs.len(),
             "frameBytes": self.frame_bytes,
             "lastRelayedStep": self.last_relayed_step,
+            "terminalEnvironmentSteps": self.verified_terminal_steps(),
             "abortedByCancellation": self.aborted_by_cancellation,
             "observedUsage": {
                 "events": self.span_usage_events,
@@ -955,6 +968,8 @@ async fn relay_event(
         .to_string();
     let mut payload = event.get("payload").cloned().unwrap_or(json!({}));
 
+    note_terminal_steps(&kind, &payload, outcome)?;
+
     if let Some(step) = payload.get("step").and_then(Value::as_u64) {
         outcome.last_relayed_step = Some(outcome.last_relayed_step.unwrap_or(0).max(step));
     }
@@ -1048,6 +1063,36 @@ async fn relay_event(
         draft = draft.usage_delta(usage_delta);
     }
     Ok(draft)
+}
+
+/// Retain an explicit producer lifecycle fact, never a frame-derived guess.
+/// Multiple terminal markers are expected; disagreement between them is a
+/// semantic integrity failure even when each individual envelope hashes.
+fn note_terminal_steps(kind: &str, payload: &Value, outcome: &mut RelayOutcome) -> Result<()> {
+    if !matches!(kind, "env.episode.closed" | "status") {
+        return Ok(());
+    }
+    let terminal = matches!(
+        payload.get("status").and_then(Value::as_str),
+        Some("completed" | "failed" | "cancelled" | "truncated")
+    );
+    if !terminal {
+        return Ok(());
+    }
+    let Some(steps) = payload.get("steps").and_then(Value::as_u64) else {
+        return Ok(());
+    };
+    if let Some(previous) = outcome.terminal_steps {
+        if previous != steps {
+            return Err(anyhow::Error::new(RelayIntegrityError {
+                detail: format!(
+                    "terminal environment-step contradiction: retained lifecycle declared both {previous} and {steps} steps"
+                ),
+            }));
+        }
+    }
+    outcome.terminal_steps = Some(steps);
+    Ok(())
 }
 
 fn policy_usage_delta(usage: &Value) -> Option<Map<String, Value>> {
@@ -1574,6 +1619,44 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("contradicts")
+        );
+    }
+
+    #[test]
+    fn terminal_steps_require_verified_closed_and_acked_lifecycle_evidence() {
+        let mut outcome = RelayOutcome::default();
+        note_terminal_steps(
+            "env.episode.closed",
+            &json!({"status": "completed", "steps": 71}),
+            &mut outcome,
+        )
+        .unwrap();
+        assert_eq!(outcome.verified_terminal_steps(), None);
+        outcome.journal_closed = true;
+        outcome.high_water = 9;
+        outcome.journal_acked = 9;
+        outcome.journal_chain_head = Some("a".repeat(64));
+        assert_eq!(outcome.verified_terminal_steps(), Some(71));
+    }
+
+    #[test]
+    fn contradictory_terminal_step_facts_fail_closed() {
+        let mut outcome = RelayOutcome::default();
+        note_terminal_steps(
+            "env.episode.closed",
+            &json!({"status": "completed", "steps": 71}),
+            &mut outcome,
+        )
+        .unwrap();
+        let error = note_terminal_steps(
+            "status",
+            &json!({"status": "completed", "steps": 70}),
+            &mut outcome,
+        )
+        .unwrap_err();
+        assert!(
+            error.downcast_ref::<RelayIntegrityError>().is_some(),
+            "{error:#}"
         );
     }
 }
