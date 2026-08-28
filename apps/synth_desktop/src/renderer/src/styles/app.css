@@ -4556,6 +4556,63 @@ html.visual-expanded .titlebar {
 	padding: 0;
 }
 
+/* The side pane must remain usable even when a WebKit container query is
+   delayed or resolves against the visual's intrinsic width. Expanded visuals
+   keep their wide layout; the embedded pane always uses the compact stack. */
+.visual-pane:not(.visual-pane-expanded) .visual-pane-head {
+	align-items: stretch;
+	flex-direction: column;
+	gap: 6px;
+	padding: 8px 10px;
+}
+
+.visual-pane:not(.visual-pane-expanded) .visual-pane-head-text,
+.visual-pane:not(.visual-pane-expanded) .visual-pane-head-actions {
+	width: 100%;
+}
+
+.visual-pane:not(.visual-pane-expanded) .visual-pane-title,
+.visual-pane:not(.visual-pane-expanded) .visual-pane-identity {
+	overflow-wrap: anywhere;
+	text-overflow: clip;
+	white-space: normal;
+}
+
+.visual-pane:not(.visual-pane-expanded) .visual-pane-head-actions {
+	flex-wrap: wrap;
+}
+
+.visual-pane:not(.visual-pane-expanded) .trace-workbench-layout {
+	--tw-main-columns: minmax(0, 1fr);
+	--tw-main-height: auto;
+	gap: var(--sv-sp-3) !important;
+}
+
+.visual-pane:not(.visual-pane-expanded) .trace-workbench-call-column {
+	--tw-call-rows: minmax(180px, 42vh) auto;
+}
+
+.visual-pane:not(.visual-pane-expanded) .trace-workbench-aggregate {
+	position: static !important;
+}
+
+.visual-pane:not(.visual-pane-expanded) .trace-workbench-usage,
+.visual-pane:not(.visual-pane-expanded) .trace-workbench-distributions,
+.visual-pane:not(.visual-pane-expanded) .trace-workbench-achievement {
+	--tw-usage-columns: minmax(0, 1fr);
+	--tw-distribution-columns: minmax(0, 1fr);
+	--tw-achievement-columns: minmax(0, 1fr);
+}
+
+.visual-pane:not(.visual-pane-expanded) .cv-overview-grid,
+.visual-pane:not(.visual-pane-expanded) .cv-run-distributions,
+.visual-pane:not(.visual-pane-expanded) .cv-workspace,
+.visual-pane:not(.visual-pane-expanded) .cv-plots,
+.visual-pane:not(.visual-pane-expanded) .cv-trace-grid,
+.visual-pane:not(.visual-pane-expanded) .cv-transcript-grid {
+	grid-template-columns: minmax(0, 1fr);
+}
+
 /* Expanded visual takes the whole workbench; every sibling pane yields. */
 .inventory-workbench.with-visual:has(.visual-pane-expanded) > :not(.visual-pane) {
 	display: none;

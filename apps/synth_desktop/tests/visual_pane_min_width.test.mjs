@@ -29,6 +29,9 @@ test("the visual pane keeps the 320px certification floor", () => {
     css,
     /\.visual-pane-body\s*\{[^}]*container-type:\s*inline-size;[^}]*container-name:\s*visual-pane;/s
   );
+  assert.match(css, /\.visual-pane:not\(\.visual-pane-expanded\) \.visual-pane-head\s*\{[^}]*flex-direction:\s*column/s);
+  assert.match(css, /\.visual-pane:not\(\.visual-pane-expanded\) \.trace-workbench-layout\s*\{[^}]*--tw-main-columns:\s*minmax\(0,\s*1fr\)/s);
+  assert.match(css, /\.visual-pane:not\(\.visual-pane-expanded\) \.cv-overview-grid[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
 });
 
 test("narrow windows cap the visual pane at min(40vw, persisted) then overlay via compact-workbench", () => {
