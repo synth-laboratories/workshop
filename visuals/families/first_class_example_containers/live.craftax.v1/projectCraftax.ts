@@ -533,7 +533,7 @@ export function projectCraftaxViewer(
   chosenLane?: string | null,
   cutoffIndex?: number | null
 ): CraftaxViewerProjection {
-  const ordered = events
+  const decorated = events
     .map(normalizedCraftaxEvent)
     // Sorting calls its comparator O(n log n) times. Decorate once so large
     // retained traces do not repeatedly parse ISO timestamps and rediscover
@@ -544,14 +544,23 @@ export function projectCraftaxViewer(
       time: eventTime(event),
       lane: craftaxEventLane(event),
       sequence: craftaxEventSequence(event, arrival)
-    }))
-    .sort((left, right) =>
-      left.time - right.time ||
-      left.lane.localeCompare(right.lane) ||
-      left.sequence - right.sequence ||
-      left.arrival - right.arrival
-    )
-    .map(({ event }) => event);
+    }));
+  const compare = (left: (typeof decorated)[number], right: (typeof decorated)[number]) =>
+    left.time - right.time ||
+    left.lane.localeCompare(right.lane) ||
+    left.sequence - right.sequence ||
+    left.arrival - right.arrival;
+  // Durable replay pages are normally already canonical. Verify that in one
+  // linear pass and avoid an unnecessary n log n sort; producers that deliver
+  // out of order still take the same stable comparator path.
+  let canonical = true;
+  for (let index = 1; index < decorated.length; index += 1) {
+    if (compare(decorated[index - 1], decorated[index]) > 0) {
+      canonical = false;
+      break;
+    }
+  }
+  const ordered = (canonical ? decorated : decorated.sort(compare)).map(({ event }) => event);
   return projectOrderedCraftaxViewer(ordered, chosenLane, cutoffIndex);
 }
 
