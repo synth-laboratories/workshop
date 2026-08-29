@@ -85,7 +85,9 @@ export function isAuthoredEvidence(line: LocalActivityLine): boolean {
 	if (line.containerId) return true;
 	const label = (line.label ?? "").toLowerCase();
 	return label.includes("synth_containers")
-		|| /(^|[._])container_/.test(label);
+		|| /(^|[._])container_/.test(label)
+		|| label.includes("synth_visuals")
+		|| /(^|[._])visual_/.test(label);
 }
 
 function summarizeGroup(lines: LocalActivityLine[]): { label: string; summary: string; status: ActivityStatus; toolCount: number } {

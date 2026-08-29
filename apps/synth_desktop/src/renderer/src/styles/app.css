@@ -2031,6 +2031,7 @@ html.visual-expanded .titlebar {
 }
 
 .composer {
+	position: relative;
 	width: 100%;
 	max-width: 720px;
 	container-type: inline-size;
@@ -2258,7 +2259,7 @@ html.visual-expanded .titlebar {
 }
 
 .composer-model-wrap {
-	position: relative;
+	position: static;
 	min-width: 0;
 }
 
@@ -2321,7 +2322,7 @@ html.visual-expanded .titlebar {
 .composer-model-menu {
 	position: absolute;
 	right: 0;
-	bottom: calc(100% + 8px);
+	bottom: calc(100% + 10px);
 	z-index: 80;
 	width: min(320px, 82vw);
 	max-height: min(380px, 55vh);
@@ -7284,7 +7285,9 @@ html.visual-expanded .titlebar {
 	display: grid;
 	/* Reserve a genuinely usable preview column (360px plus its inset) when
 	   clamping a persisted list width against this content box. */
-	grid-template-columns: minmax(280px, min(var(--visuals-list-width, 560px), calc(100% - 379px))) 7px minmax(0, 1fr);
+	/* The grid item spends 12px of its track on the divider gutter below, so
+	   reserve 292px to keep 280px of genuinely usable card width. */
+	grid-template-columns: minmax(292px, min(var(--visuals-list-width, 560px), calc(100% - 379px))) 7px minmax(0, 1fr);
 	gap: 0;
 	min-height: 420px;
 	min-width: 0;
@@ -8121,6 +8124,7 @@ html.visual-expanded .sidebar {
 
 .optimizer-toolbar {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: 8px;
 	margin-bottom: 14px;
@@ -8132,11 +8136,11 @@ html.visual-expanded .sidebar {
 
 .optimizer-filters,
 .optimizer-actions { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.optimizer-filters { flex: 1; }
+.optimizer-filters { flex: 1 1 100%; flex-wrap: wrap; }
 .optimizer-search { display: flex; align-items: center; gap: 7px; min-width: 170px; flex: 1; height: 34px; padding: 0 10px; border: 1px solid var(--color-border); border-radius: 8px; background: #fff; color: var(--color-text-faint); }
 .optimizer-search:focus-within { border-color: #c1b6e5; box-shadow: 0 0 0 3px rgba(113, 98, 173, .09); }
 .optimizer-search input { width: 100%; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent; font-size: 12.5px; }
-.optimizer-toolbar select { height: 34px; max-width: 170px; padding: 0 28px 0 10px; border: 1px solid var(--color-border); border-radius: 8px; background-color: #fff; color: var(--color-text-muted); font-size: 12px; }
+.optimizer-toolbar select { flex: 1 1 120px; height: 34px; max-width: 170px; padding: 0 28px 0 10px; border: 1px solid var(--color-border); border-radius:var(--radius-sm); background-color: var(--color-card); color: var(--color-text-muted); font-size:var(--fs-meta); }
 .optimizer-date-filter { display: inline-flex; align-items: center; gap: 5px; color: var(--color-text-faint); font-size:var(--fs-micro); font-weight: var(--fw-semi); }
 .optimizer-date-filter input { height: 34px; padding: 0 8px; border: 1px solid var(--color-border); border-radius:var(--radius-sm); background: var(--color-card); color: var(--color-text-muted); font-size:var(--fs-meta); }
 .optimizer-actions button,
