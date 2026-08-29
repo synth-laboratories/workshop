@@ -21,8 +21,9 @@ cd workshop
 
 The app bundle is written to
 `work/tier-builds/stable/Synth Workshop.app`. macOS may require
-you to approve or ad-hoc sign a locally built app before opening it. Official
-downloads are signed and notarized separately from this source build.
+you to approve or ad-hoc sign a locally built app before opening it. The
+download page records the exact signing and notarization status for every
+prebuilt release; the v0.8.0 ZIP and DMG are ad-hoc signed and unnotarized.
 
 ## Requirements
 
