@@ -2503,6 +2503,7 @@ operations = { "rollouts.prepare" = false }
     /// to avoid racing another thread's config path.
     #[test]
     fn resolve_uses_only_checked_in_gateway_routing() {
+        let _environment = crate::instance::environment_lock();
         let root = env::temp_dir().join(format!("synth-resolve-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         env::remove_var("SYNTH_INTERN_PROFILE");

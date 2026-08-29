@@ -6018,7 +6018,8 @@ mod tests {
     }
 
     async fn wait_terminal(service: &OptimizerService, run_id: &str) -> OptimizerRunRecord {
-        for _ in 0..200 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
             let run = service.get(run_id.to_string()).await.unwrap();
             if matches!(
                 run.status.as_str(),
@@ -6026,22 +6027,27 @@ mod tests {
             ) {
                 return run;
             }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("run {run_id} did not reach a terminal record");
+            }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        panic!("run {run_id} did not reach a terminal record");
     }
 
     /// Wait for the sealed manifest, which is the settlement the UI reads.
     /// A terminal `status` without one is exactly the half-settled state this
     /// lane exists to remove.
     async fn wait_manifest(service: &OptimizerService, run_id: &str) -> Value {
-        for _ in 0..200 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
             if let Some(manifest) = service.terminal_manifest(run_id.to_string()).await.unwrap() {
                 return manifest;
             }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("run {run_id} never sealed a terminal manifest");
+            }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        panic!("run {run_id} never sealed a terminal manifest");
     }
 
     async fn declare_eval_recipes(svc: &OptimizerService, session: &str) {

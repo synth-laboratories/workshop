@@ -1200,8 +1200,7 @@ pub fn focus_existing_instance(identifier: &str) -> io::Result<()> {
 /// `--test-threads=8`.
 #[cfg(test)]
 pub fn lock_data_root_for_test() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    environment_lock()
 }
 
 /// Private data root for one test. Restored on drop so a panic cannot leave
