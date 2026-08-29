@@ -24,4 +24,5 @@ work/bombadil-src/
 .env.*
 .turbo/
 work/
+runtime-distributions/
 apps/synth_desktop/src-tauri/generated-resources/
