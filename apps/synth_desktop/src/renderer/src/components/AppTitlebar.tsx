@@ -125,6 +125,7 @@ export function AppTitlebar({
 								aria-label="Chat tab actions"
 								aria-haspopup="menu"
 								aria-expanded={menuOpen}
+								aria-controls="chat-tab-actions-menu"
 								title="Copy chat details"
 								onPointerDown={(event) => event.stopPropagation()}
 								onClick={(event) => {
@@ -135,7 +136,7 @@ export function AppTitlebar({
 								<IconEllipsis />
 							</button>
 							{menuOpen ? (
-								<div className="tab-menu-popover" role="menu" aria-label="Copy chat details">
+								<div id="chat-tab-actions-menu" className="tab-menu-popover" role="menu" aria-label="Copy chat details">
 									<div className="tab-menu-heading">Copy</div>
 									{copyItems.map((item) => (
 										<button
