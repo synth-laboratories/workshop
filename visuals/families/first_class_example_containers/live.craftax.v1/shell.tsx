@@ -17,6 +17,7 @@ import {
   craftaxReplayAvailability,
   mergeCraftaxOptimizerJournalEvents,
   projectCraftaxViewer,
+  projectOrderedCraftaxViewer,
   scopeCraftaxEvents,
   environmentStepCount,
   replayMomentIndexes,
@@ -491,7 +492,9 @@ export function Shell(props: ShellProps) {
   );
   const lifecycleTerminal = props.runLifecycle?.terminal === true;
   const lifecycleFailed = props.runLifecycle?.failed === true;
-  const viewer = useMemo(() => projectCraftaxViewer(evaluationEvents, chosenLane, laneCutoff), [evaluationEvents, chosenLane, laneCutoff]);
+  // `evaluationEvents` is a prefix of `fullProjection.ordered`; sorting it a
+  // second time doubles the largest main-thread task on long retained traces.
+  const viewer = useMemo(() => projectOrderedCraftaxViewer(evaluationEvents, chosenLane, laneCutoff), [evaluationEvents, chosenLane, laneCutoff]);
   const { lanes, selectedLane, laneEvents, visibleEvents, visibleIndex, rewardSignals, achievements, traceEvents, semanticTrace, frameEvents, policy } = viewer;
   const laneSummaries = useMemo(() => summarizeLanes(evaluationEvents), [evaluationEvents]);
   const terminalRollouts = lifecycleTerminal && props.runLifecycle?.rollouts?.length

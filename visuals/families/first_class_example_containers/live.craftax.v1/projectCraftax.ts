@@ -535,14 +535,32 @@ export function projectCraftaxViewer(
 ): CraftaxViewerProjection {
   const ordered = events
     .map(normalizedCraftaxEvent)
-    .map((event, arrival) => ({ event, arrival }))
+    // Sorting calls its comparator O(n log n) times. Decorate once so large
+    // retained traces do not repeatedly parse ISO timestamps and rediscover
+    // lane/sequence identity on the browser's main thread.
+    .map((event, arrival) => ({
+      event,
+      arrival,
+      time: eventTime(event),
+      lane: craftaxEventLane(event),
+      sequence: craftaxEventSequence(event, arrival)
+    }))
     .sort((left, right) =>
-      eventTime(left.event) - eventTime(right.event) ||
-      craftaxEventLane(left.event).localeCompare(craftaxEventLane(right.event)) ||
-      craftaxEventSequence(left.event, left.arrival) - craftaxEventSequence(right.event, right.arrival) ||
+      left.time - right.time ||
+      left.lane.localeCompare(right.lane) ||
+      left.sequence - right.sequence ||
       left.arrival - right.arrival
     )
     .map(({ event }) => event);
+  return projectOrderedCraftaxViewer(ordered, chosenLane, cutoffIndex);
+}
+
+/** Project a sequence already normalized into the viewer's canonical order. */
+export function projectOrderedCraftaxViewer(
+  ordered: LiveEvalEvent[],
+  chosenLane?: string | null,
+  cutoffIndex?: number | null
+): CraftaxViewerProjection {
   const observedLanes = [...new Set(ordered.map(craftaxEventLane))];
   // Optimizer journals include run-level lifecycle envelopes on a synthetic
   // `eval` lane. It is useful durable evidence, but it is not a rollout and

@@ -35,7 +35,13 @@ export function useLiveEvalStream(options: {
   const { replay, fixtureEvents, replayMs = 800, visualId, revision } = options;
   const declared = (replay?.streams.length ?? 0) > 0;
   const live = useLiveEvalStreams(declared ? replay! : NO_STREAMS, { visualId, revision });
-  const fixture = useFixtureReplay(declared ? undefined : fixtureEvents, replayMs);
+  // Binding resolution may reconstruct an equivalent inline array while its
+  // visual revision is unchanged. Array identity is therefore not fixture
+  // identity; using it as an effect dependency recursively resets playback.
+  const fixtureKey = declared || !fixtureEvents
+    ? ""
+    : `${visualId ?? "preview"}:${revision ?? "draft"}:${JSON.stringify(fixtureEvents)}`;
+  const fixture = useFixtureReplay(declared ? undefined : fixtureEvents, replayMs, fixtureKey);
   return declared ? live : fixture;
 }
 
@@ -49,7 +55,8 @@ export function useLiveEvalStream(options: {
  */
 function useFixtureReplay(
   fixtureEvents: LiveEvalEvent[] | undefined,
-  replayMs: number
+  replayMs: number,
+  fixtureKey: string
 ): LiveEvalStreamsView {
   const [events, setEvents] = useState<LiveEvalEvent[]>([]);
   const [state, setState] = useState<TransportState>("idle");
@@ -65,18 +72,24 @@ function useFixtureReplay(
       return;
     }
     setState("live");
+    const frameMs = 16;
+    const rowsPerTick = Math.max(1, Math.ceil(frameMs / Math.max(1, replayMs)));
     const timer = window.setInterval(() => {
       if (index.current >= fixtureEvents.length) {
         window.clearInterval(timer);
         setState("terminal");
         return;
       }
-      const next = fixtureEvents[index.current++] as LiveEnvelope;
-      ingest.current = ingestLiveEnvelopeBatch(ingest.current, [next]);
+      const end = Math.min(fixtureEvents.length, index.current + rowsPerTick);
+      const next = fixtureEvents.slice(index.current, end) as LiveEnvelope[];
+      index.current = end;
+      ingest.current = ingestLiveEnvelopeBatch(ingest.current, next);
       setEvents(ingest.current.events as LiveEvalEvent[]);
-    }, replayMs);
+    }, Math.max(frameMs, replayMs));
     return () => window.clearInterval(timer);
-  }, [fixtureEvents, replayMs]);
+  // `fixtureKey` is the immutable content/revision identity. See caller.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fixtureKey, replayMs]);
 
   return {
     events,

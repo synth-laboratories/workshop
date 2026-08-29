@@ -139,21 +139,21 @@ export function PaneResizeHandle({
 			const parent = target.parentElement;
 			if (!parent) return;
 			const bounds = parent.getBoundingClientRect();
-			onChange(clampPaneWidth(clientX - bounds.left, minPrimary, max));
+			onChangeRef.current(clampPaneWidth(clientX - bounds.left, minPrimary, max));
 			return;
 		}
 		if (direction === "sidebar") {
 			const appRow = target.parentElement?.parentElement;
 			if (!appRow) return;
 			const bounds = appRow.getBoundingClientRect();
-			onChange(clampPaneWidth(clientX - bounds.left, minSecondary, max));
+			onChangeRef.current(clampPaneWidth(clientX - bounds.left, minSecondary, max));
 			return;
 		}
 		const parent = target.parentElement;
 		if (!parent) return;
 		const bounds = parent.getBoundingClientRect();
-		onChange(clampPaneWidth(bounds.right - clientX, minSecondary, max));
-	}, [direction, measureMaximum, minPrimary, minSecondary, onChange]);
+		onChangeRef.current(clampPaneWidth(bounds.right - clientX, minSecondary, max));
+	}, [direction, measureMaximum, minPrimary, minSecondary]);
 
 	const release = useCallback(() => {
 		const target = handleRef.current;
@@ -225,7 +225,7 @@ export function PaneResizeHandle({
 		});
 		if (next == null) return;
 		event.preventDefault();
-		onChange(next);
+		onChangeRef.current(next);
 	};
 
 	const reported = realizedPaneWidth(value, minimum, maximum, realized);

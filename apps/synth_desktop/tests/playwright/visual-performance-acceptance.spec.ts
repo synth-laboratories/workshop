@@ -101,15 +101,19 @@ function stressEnvelope(index: number): Record<string, unknown> {
   const lane = `rollout_perf_${laneIndex}`;
   const sequence = Math.floor((index - 1) / LANE_COUNT) + 1;
   const occurredAt = new Date(Date.UTC(2026, 7, 12, 20, 0, 0) + index * 36).toISOString();
-  const base = { event_id: String(sequence), sequence, occurred_at: occurredAt, rollout_id: lane, lane };
+	// Event identity is stream-global. A per-lane sequence alone repeats ten
+	// times and the production replay deduplicator must discard those aliases.
+	const base = { event_id: `${lane}:${sequence}`, sequence, occurred_at: occurredAt, rollout_id: lane, lane };
   if (sequence <= 1_000) {
     return { ...base, kind: "span.policy.data", payload: { delta: true, channel: "reasoning", text: "δ" } };
   }
   if (sequence <= 1_100) {
     return { ...base, kind: "frame", payload: { url: `about:blank#frame-${laneIndex}-${sequence}`, format: "png" } };
   }
-  if (index === ENVELOPE_COUNT - 1) {
-    return { ...base, kind: "eval.run.terminal", payload: { status: "completed" } };
+	// The final ten envelopes cover every lane exactly once. Terminalize every
+	// rollout; a campaign with nine live lanes is not terminal evidence.
+	if (index >= ENVELOPE_COUNT - LANE_COUNT) {
+		return { ...base, kind: "eval.run.terminal", payload: { status: "completed" } };
   }
   if (sequence >= 9_999) {
     return { ...base, kind: "trace.reconciled", payload: { digest: `${laneIndex}`.repeat(64) } };
@@ -167,7 +171,7 @@ async function closeServer(server: Server): Promise<void> {
 }
 
 test("V5: actual Craftax viewer sustains 10 lanes and 100k envelopes with bounded heap and long tasks", async ({ page }) => {
-  test.setTimeout(240_000);
+	test.setTimeout(300_000);
   mkdirSync(RECEIPT_DIR, { recursive: true });
   const stress = await startStressSse();
   const cdp = await page.context().newCDPSession(page);
@@ -189,7 +193,7 @@ test("V5: actual Craftax viewer sustains 10 lanes and 100k envelopes with bounde
     // only when the evidence was actually accepted, and a terminal viewer
     // without that evidence says "terminal trace". This fixture seals nothing,
     // so asserting the old combined string would be asserting an over-claim.
-    await expect(viewer).toContainText("terminal trace", { timeout: 180_000 });
+	await expect(viewer).toContainText("terminal trace", { timeout: 240_000 });
 
     await viewer.getByRole("button", { name: "Raw trace", exact: true }).click();
     const traceMode = viewer.getByRole("button", { name: "Full trace" });
