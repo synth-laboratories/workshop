@@ -238,16 +238,12 @@ preflight pins right before a run. Do it after acceptance.
 
 ## Open defects
 
-- **`optimizer-banking77.spec.ts:262`** — `optimizer-run-unavailable` does not
-  render when the optimizer binding fails to load, so the honesty surface is
-  absent. The expected copy `"run is offline"` is also stale (gone since
-  `99e91a5c`), but the element not rendering at all is the real question.
-- **`visual-responsive-gate.spec.ts:242`** — React "Maximum update depth
-  exceeded" in the Craftax semantic viewer under repeated viewport resize. Not
-  obviously Craftax-specific: no `ResizeObserver` in the visual; the app-level
-  one is `Composer.tsx:932`.
-- Both fail at `c71cefe2`, which predates the newest shared-branch commits, so
-  they are pre-existing rather than fallout from this work.
+- **`optimizer-banking77.spec.ts:262`** — still fails on re-check (2026-08-28).
+  `optimizer-run-unavailable` does not render when `synthOptimizers.get` throws
+  `"run is offline"`. Honesty surface absent. Do not weaken the gate.
+- **`visual-responsive-gate.spec.ts:242`** — **passed** on the same re-check
+  (Craftax semantic viewer, folds deltas / hierarchy / breakpoints). Previously
+  listed as a max-update-depth failure; that did not reproduce here.
 - `npm run lint:css` from the prior handoff does not exist; the script is
   `lint:app-css` in the desktop workspace.
 - The GameBench craftax `containers/react` tests hard-pin synth-containers

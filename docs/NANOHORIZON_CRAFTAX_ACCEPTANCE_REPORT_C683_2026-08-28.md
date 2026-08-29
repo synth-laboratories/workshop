@@ -127,12 +127,43 @@ remains. That is the success path for a fully used lease.
 | sourceRoot + sourceRevision agree with image | yes |
 | No Keychain | yes |
 
-Not re-verified in this pass (unchanged open defects, still pre-existing):
+## Re-check (2026-08-28, after restart)
 
-- `optimizer-banking77.spec.ts:262`
-- `visual-responsive-gate.spec.ts:242`
-- chain-fold golden fixture still absent
-- reopen-after-restart cost projection (not exercised here)
+Restarted instance `j` (pid `79173` → `4108`). Same compiled binary
+`364d2978b1fb`, same executable digest `sha256:14c7ebc3…`. New ports
+`:65132` (eval driver) / `:65131` (visuals IPC). `GET /v1/health` and
+`GET /v1/preflight` agree (`buildRevision` / `sourceRevision`
+`364d2978b1fb`). `paidCompute` still `{requiresBoundedCap: true}` only.
+
+Then `GET` run `opt_eval_craftax_b130a1d92a02`, `GET` primary visual
+`vis_14bcb337cdf54e87b2a9be98d109359a`, and `POST …/open_visual` twice.
+
+| Check | Result |
+| --- | --- |
+| Authoritative cost | `$0.016544` / 50 calls before, after boot, after both opens |
+| Visual cost pointer `/inputs/0/data/progress/cost` | `$0.016544 / $2.45` |
+| Visual revision | stayed `14` (projection refresh was a no-op; cost already current) |
+| Trace V5 ids + digests | identical to the sealed set above |
+| Evaluator result refs + ledger | identical; 5/5 `sealed_complete` |
+| Provider receipt digest | `sha256:39af573b6abf9cee0bb8811416438772e7ce1323d4e39845ee554db61ddb07a7` |
+| Second `open_visual` | no revision bump, no extra refs beyond first open |
+
+First `open_visual` attached a presentation visual
+`vis_9a528e2746d444af93d0f90a7335c093` (`role: trace`) and emitted
+`visual.show`. That is a show-path attachment, not a rewrite of the
+terminal manifest, traces, or cost. The second open did not add another.
+
+Unit test `reopening_a_terminal_inline_eval_refreshes_a_stale_cost_projection_exactly_once`
+(with `--features eval-driver`): **pass**.
+
+Playwright, exact line gates, no weakening:
+
+| Spec | Result |
+| --- | --- |
+| `visual-responsive-gate.spec.ts:242` Craftax semantic viewer | **pass** |
+| `optimizer-banking77.spec.ts:262` unresolved live binding | **fail** — `optimizer-run-unavailable` never appears after `synthOptimizers.get` throws `"run is offline"`; still no GEPA demo candidates assertion reached |
+
+Still not claimed: chain-fold golden fixture.
 
 ## What had to change to admit this closure
 
