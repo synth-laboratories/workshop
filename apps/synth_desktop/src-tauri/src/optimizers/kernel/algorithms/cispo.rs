@@ -78,6 +78,7 @@ impl CispoProjection {
                 if let Some(id) = payload
                     .get("checkpointId")
                     .or_else(|| payload.get("checkpoint_id"))
+                    .or_else(|| payload.get("id"))
                     .and_then(|v| v.as_str())
                 {
                     self.checkpoints.push(id.to_string());
@@ -218,5 +219,23 @@ mod tests {
         let result = projection.settle().unwrap();
         assert!(result.no_learning_signal);
         assert_eq!(result.mean_advantage, Some(0.0));
+    }
+
+    #[test]
+    fn sidecar_checkpoint_item_id_settles() {
+        let mut projection = CispoProjection::default();
+        projection
+            .apply(&committed(
+                "sft.checkpoint.ready",
+                json!({"id": "cispo_mlx_job:step-1", "path": "/tmp/adapter", "sha256": "abc"}),
+                1,
+            ))
+            .unwrap();
+        let result = projection.settle().unwrap();
+        assert_eq!(
+            result.policy_checkpoint_id.as_deref(),
+            Some("cispo_mlx_job:step-1")
+        );
+        assert!(!result.no_learning_signal);
     }
 }

@@ -64,6 +64,14 @@ impl SftProjection {
                         )
                     })?;
                 self.checkpoints.push(id.to_string());
+                self.selected_checkpoint_id = Some(id.to_string());
+                if self.produced_adapter.is_none() {
+                    self.produced_adapter = payload
+                        .get("sha256")
+                        .or_else(|| payload.get("path"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                }
             }
             "sft.checkpoint.selected" | "sft.checkpoint.promoted" => {
                 self.selected_checkpoint_id = payload

@@ -47,6 +47,11 @@ const LORA_RANK: u64 = 8;
 const LORA_ALPHA: f64 = 16.0;
 const MAX_SEQ_LENGTH: u64 = super::mlx_runtime::LOCAL_TRAINING_MAX_SEQ_LENGTH;
 const MAX_PAGE_ERRORS: u32 = 20;
+// mlx-rl 0.6.0 serves HTTP on the same process that runs GPU work, so
+// /v1/jobs/{id}/events can reset during a CISPO update (~45s). Retry across
+// that window instead of failing a job that is still making progress.
+const MAX_MLX_POLL_ERRORS: u32 = 150;
+const MLX_POLL_RETRY_MS: u64 = 500;
 
 #[derive(Clone, Default)]
 pub struct TrainingRuntime {
@@ -481,6 +486,17 @@ pub fn merge_training_capabilities(mut upstream: Value) -> Value {
     upstream
 }
 
+pub fn advertised_algorithms(capabilities: &Value) -> Vec<&str> {
+    capabilities
+        .get("optimization_algorithms")
+        .or_else(|| capabilities.get("algorithms"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
+}
+
 pub fn advertised_placement(capabilities: &Value, placement: &str) -> bool {
     capabilities
         .get("placements")
@@ -620,13 +636,7 @@ pub async fn require_training_ready(
     super::recipes::require_plugin_ready(service.manager()).await?;
     let capabilities = service.manager().advertised_capabilities();
     let algorithm = algorithm_for_placement(placement);
-    let algorithms = capabilities
-        .get("algorithms")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect::<Vec<_>>();
+    let algorithms = advertised_algorithms(&capabilities);
     if !algorithms
         .iter()
         .any(|item| *item == algorithm || *item == algorithm.split('.').next().unwrap_or(algorithm))
@@ -668,6 +678,25 @@ pub async fn create_and_watch(
         }))
         .await?;
     let (run, event) = service.create(create).await?;
+    if algorithm_for_placement(placement) == "sft" {
+        if let Some(digest) = run
+            .input_refs
+            .iter()
+            .find(|item| item.role.as_deref() == Some("train"))
+            .and_then(|item| item.digest.clone())
+        {
+            let mut delta = Map::new();
+            delta.insert("dataset_digest".into(), json!(digest));
+            service
+                .append_event_payloads(
+                    run_id.clone(),
+                    vec![OptimizerEventDraft::new("sft.dataset.validated", "sft")
+                        .delta(delta)
+                        .idempotency_key("local-sft:dataset-validated")],
+                )
+                .await?;
+        }
+    }
     spawn_watch_worker(service, client, run_id, 0).await;
     Ok((run, event))
 }
@@ -980,12 +1009,31 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
                 "kind": "mlx-lora.v1",
                 "raw": payload
             }))
+            .delta(Map::from_iter([
+                ("checkpointId".into(), payload["checkpoint_id"].clone()),
+                ("checkpoint_id".into(), payload["checkpoint_id"].clone()),
+            ]))
             .artifact_refs(vec![json!({
                 "kind": "checkpoint",
                 "id": payload["checkpoint_id"],
                 "uri": payload["path"],
                 "digest": payload["sha256"]
             })]),
+        "training.warm_start_loaded" => OptimizerEventDraft::new("cispo.warm_start.bound", algorithm)
+            .delta(Map::from_iter([
+                (
+                    "checkpointId".into(),
+                    payload
+                        .get("checkpoint_id")
+                        .or_else(|| payload.get("path"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "path".into(),
+                    payload.get("path").cloned().unwrap_or(Value::Null),
+                ),
+            ])),
         kind if kind.ends_with("evaluation.completed") || kind.ends_with("eval.completed") => {
             let detail = payload.get("delta").unwrap_or(payload);
             let phase = evaluation_phase(kind, detail);
@@ -1384,6 +1432,22 @@ pub fn tunneled_evaluation_plan(
     })
 }
 
+async fn mlx_get_with_retry(client: &MlxLoopback, path: &str) -> Result<Value> {
+    let mut errors = 0u32;
+    loop {
+        match client.get(path).await {
+            Ok(value) => return Ok(value),
+            Err(_error) if errors < MAX_MLX_POLL_ERRORS => {
+                errors += 1;
+                sleep(Duration::from_millis(MLX_POLL_RETRY_MS)).await;
+            }
+            Err(error) => {
+                return Err(error.context(format!("MLX GET {path} stayed unavailable")));
+            }
+        }
+    }
+}
+
 fn validate_tunneled_evaluation_plan(config: &Value) -> Result<()> {
     let plan = config
         .get("evaluation")
@@ -1481,9 +1545,11 @@ async fn drive_mlx_job(
                 cancel_sent = true;
             }
         }
-        let page = client
-            .get(&format!("/v1/jobs/{job_id}/events?after={cursor}"))
-            .await?;
+        let page = mlx_get_with_retry(
+            &client,
+            &format!("/v1/jobs/{job_id}/events?after={cursor}"),
+        )
+        .await?;
         {
             let mut jobs = runtime.jobs.lock().await;
             let job = jobs
@@ -1503,7 +1569,7 @@ async fn drive_mlx_job(
                 }
             }
         }
-        let remote = client.get(&format!("/v1/jobs/{job_id}")).await?;
+        let remote = mlx_get_with_retry(&client, &format!("/v1/jobs/{job_id}")).await?;
         match remote
             .get("status")
             .and_then(Value::as_str)
@@ -1514,9 +1580,11 @@ async fn drive_mlx_job(
                 // final evaluation and terminal lifecycle facts. The preceding
                 // page can still be one poll behind that durable record, so
                 // drain once more before advertising completion to Workshop.
-                let final_page = client
-                    .get(&format!("/v1/jobs/{job_id}/events?after={cursor}"))
-                    .await?;
+                let final_page = mlx_get_with_retry(
+                    &client,
+                    &format!("/v1/jobs/{job_id}/events?after={cursor}"),
+                )
+                .await?;
                 {
                     let mut jobs = runtime.jobs.lock().await;
                     let job = jobs
@@ -2128,6 +2196,24 @@ pub fn optional_jsonl(var: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn training_ready_reads_projected_optimization_algorithms() {
+        let projected = json!({
+            "optimization_algorithms": ["gepa", "sft", "cispo"],
+            "placements": [PLACEMENT_TRAINING_SFT_LOCAL, PLACEMENT_TRAINING_CISPO_LOCAL]
+        });
+        assert!(advertised_algorithms(&projected).contains(&"sft"));
+        assert!(advertised_algorithms(&projected).contains(&"cispo"));
+        require_placement(&projected, PLACEMENT_TRAINING_SFT_LOCAL).unwrap();
+
+        let raw_handshake = json!({
+            "algorithms": ["sft"],
+            "placements": [PLACEMENT_TRAINING_SFT_LOCAL]
+        });
+        assert_eq!(advertised_algorithms(&raw_handshake), vec!["sft"]);
+        assert!(advertised_algorithms(&json!({})).is_empty());
+    }
 
     #[test]
     fn capability_merge_keeps_gepa_first_and_adds_training() {
