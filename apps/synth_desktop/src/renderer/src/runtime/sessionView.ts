@@ -915,6 +915,10 @@ function compactDuration(start: string | undefined, end: string): string {
 	if (!start) return "a moment";
 	const milliseconds = Math.max(0, Date.parse(end) - Date.parse(start));
 	if (!Number.isFinite(milliseconds) || milliseconds < 1_000) return "a moment";
+	// Replayed provider journals can carry a stale run.started boundary from a
+	// prior day. Presenting that restore gap as active work is misleading; keep
+	// the outcome while declining false precision for implausibly long spans.
+	if (milliseconds >= 3 * 60 * 60 * 1_000) return "a while";
 	const seconds = Math.round(milliseconds / 1_000);
 	if (seconds < 60) return `${seconds}s`;
 	const minutes = Math.floor(seconds / 60);

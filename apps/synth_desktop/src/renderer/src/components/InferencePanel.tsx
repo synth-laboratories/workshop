@@ -717,7 +717,9 @@ export function InferencePanel({
 					{snapshot.resident ? (
 						<>
 							RESIDENT <span aria-hidden>·</span>{" "}
-							<Metric label="Resident memory" value={formatBytes(snapshot.residentBytes)} />
+							{snapshot.residentBytes == null
+								? <span aria-label="Resident memory was not reported">memory not reported</span>
+								: <Metric label="Resident memory" value={formatBytes(snapshot.residentBytes)} />}
 						</>
 					) : (
 						<>UNLOADED on {authority}</>

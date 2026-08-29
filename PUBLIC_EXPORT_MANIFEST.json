@@ -3085,10 +3085,10 @@
       "sha256": "ecfa2fead0ba54044d31f6aa0cafc03664d4c8712b52e0d34f4cae3693a012cc"
     },
     {
-      "bytes": 6769,
+      "bytes": 6842,
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/components/AppTitlebar.tsx",
-      "sha256": "dfe5ed213913c5c971a2de45dd1487cfd4817bf1f8317855938c85055ee28795"
+      "sha256": "9683c20b1007c73e3a29e321363ebbe98585b6bb8de8030d87a5cf51533d487f"
     },
     {
       "bytes": 10137,
@@ -3241,10 +3241,10 @@
       "sha256": "12bfae79331003bf18607a5f50ce8381558cd4b7b9b32a4398a53a09a3f4bbf8"
     },
     {
-      "bytes": 29727,
+      "bytes": 29859,
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/components/InferencePanel.tsx",
-      "sha256": "3223823aa55ad173548aba3ca0af643d51fe2beda96236528ff192e9fa8f90bc"
+      "sha256": "9e6e4c49c3ca669667eb2d750a978a9fe7bcd8f2ad866ed32c799d85e8ac44e2"
     },
     {
       "bytes": 17546,
@@ -3811,10 +3811,10 @@
       "sha256": "15e1ec07d81cc3a4ada5a8a339eb435039ea0cd2fbd54370385a16057cd3563b"
     },
     {
-      "bytes": 8771,
+      "bytes": 8843,
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/preferences/activityPresentation.ts",
-      "sha256": "8500fd522d6e762ea221762031db2098e9c12d7477c40c5dafe2b8263abfe2ad"
+      "sha256": "47995b99a7c0d7968e0f75597949eaad9877af6bb493694478c5487f6736c2ef"
     },
     {
       "bytes": 1354,
@@ -4141,10 +4141,10 @@
       "sha256": "4b7e12a6496187e9a657b495b25fd3625a301d78afebcccd94e16711a569abff"
     },
     {
-      "bytes": 90143,
+      "bytes": 90434,
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/runtime/sessionView.ts",
-      "sha256": "1d7554aaa190e821501a050aa7cefaa89d5adf36a54bcae94546d92a1150b527"
+      "sha256": "f956d259d3843df9607f960bbaf090d33f0518f6fa5bedb5a0ff400c9a4762ee"
     },
     {
       "bytes": 166,
@@ -4237,10 +4237,10 @@
       "sha256": "b97bc591fffb8a9d354a39125ed955238190831b3935e2113cb9162c596f99fe"
     },
     {
-      "bytes": 309440,
+      "bytes": 309695,
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/styles/app.css",
-      "sha256": "75fe5b8811b9c9d8a5c3c84f9100eb69be27096e29664a4ae471e6c080131795"
+      "sha256": "568445216a7049be3f9c30e3df44b0675898ebb877fa51cdd284af5fd597aaa0"
     },
     {
       "bytes": 1855,
@@ -6136,7 +6136,7 @@
   "policySha256": "bb81853f818fd8871847c2c34d3904ab22f3a8e2c71850fdc5aad12f645e8cba",
   "schema": "workshop.public-export-manifest.v1",
   "source": {
-    "commit": "8cf5a582ffdaaf28645fb5d4355f3146a2c29a54",
-    "tree": "c51793c413def9e2bdbffff4239ded06e428f84e"
+    "commit": "8145c0c430779f5d622b0dd0b47f4bec900a08ae",
+    "tree": "2d12056de1fa2bb28786b8f07a79f2d97981dde2"
   }
 }
