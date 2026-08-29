@@ -18,6 +18,44 @@ use std::num::NonZeroU32;
 use std::process::Command;
 
 const INLINE_PROVIDER_OPERATION: &str = "chat.completions.create";
+const RESPONSES_CREATE: &str = "responses.create";
+
+/// Least-privilege proxy operation for an already-validated inline policy.
+/// Codex Harbor adapters (RuneBench, DeepSWE) declare `responses.create`.
+/// Craftax and other chat policies keep the routed chat-completions operation.
+/// `provider.request` is never issued: the proxy does not route it.
+pub(super) fn credential_capability_scope_for_policy(
+    configuration: &Value,
+) -> admission::CredentialCapabilityScope {
+    let responses_declared = configuration
+        .get("api")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("responses"))
+        || configuration
+            .get("workload")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case("codex_responses"))
+        || configuration
+            .get("operation")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case(RESPONSES_CREATE))
+        || configuration
+            .get("operations")
+            .and_then(Value::as_array)
+            .is_some_and(|values| {
+                values.iter().any(|value| {
+                    value
+                        .as_str()
+                        .is_some_and(|operation| operation.eq_ignore_ascii_case(RESPONSES_CREATE))
+                })
+            });
+    let operation = if responses_declared {
+        RESPONSES_CREATE
+    } else {
+        INLINE_PROVIDER_OPERATION
+    };
+    admission::CredentialCapabilityScope::new([operation.to_string()], 3_600)
+}
 
 /// Resolve current authority, construct the default inline recipe, validate it,
 /// and assign its immutable digest. No recipe catalog is consulted here.
@@ -246,8 +284,7 @@ async fn discovery_context(
     // Capabilities name concrete proxy wire operations. `provider.request`
     // was never routed, so valid inline runs reached the container and then
     // failed every first model call with operation_denied.
-    let scope =
-        admission::CredentialCapabilityScope::new([INLINE_PROVIDER_OPERATION.to_string()], 3_600);
+    let scope = credential_capability_scope_for_policy(declared_configuration.as_value());
     Ok((
         DiscoveryContext {
             containers: candidates,
@@ -508,12 +545,18 @@ mod tests {
 
     #[test]
     fn inline_provider_scope_uses_the_routed_chat_operation() {
-        let scope = admission::CredentialCapabilityScope::new(
-            [INLINE_PROVIDER_OPERATION.to_string()],
-            3_600,
-        );
+        let scope = credential_capability_scope_for_policy(&json!({}));
         assert_eq!(scope.operations, ["chat.completions.create"]);
         assert_ne!(scope.operations, ["provider.request"]);
+    }
+
+    #[test]
+    fn inline_provider_scope_uses_responses_create_when_the_policy_declares_it() {
+        let scope = credential_capability_scope_for_policy(&json!({
+            "api": "responses",
+            "operation": "responses.create"
+        }));
+        assert_eq!(scope.operations, ["responses.create"]);
     }
 
     #[tokio::test]
