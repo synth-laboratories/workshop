@@ -10,11 +10,13 @@ NANOHORIZON_ROOT="${SYNTH_E2E_NANOHORIZON_ROOT:-$GITHUB_ROOT/nanohorizon-e2e-fin
 EVALS_ROOT="${SYNTH_E2E_EVALS_ROOT:-$GITHUB_ROOT/evals-craftax-live-context}"
 GAMEBENCH_ROOT="${SYNTH_E2E_GAMEBENCH_ROOT:-$GITHUB_ROOT/gamebench-craftax-live-context}"
 
-CONTAINERS_REVISION="92bb5b36ff777dab7d7b69842f9bcc3c086bb273"
-NANOHORIZON_REVISION="715b4a25149611014502a945ea743050d9a0d726"
+CONTAINERS_REVISION="c0c01101f9f1d5ff02a2678be052bcc4b44eb550"
+NANOHORIZON_REVISION="df06fce73ef0f1dcccb42cbc404ae567e939740f"
 EVALS_REVISION="43ec21b8a73f87a72fae982f5bb614245ea1f106"
 GAMEBENCH_REVISION="3d35f379a6d3f951720bfcc04d0f05518d9b8034"
 SOURCE_MANIFEST_DIGEST="sha256:6b9586d74ea2c8b9848954bdc6ac164fa334864324754fdc8b3ebecef1aa2016"
+# Live OCI for this closure (enforced at ensure/probe, not in this non-Docker gate):
+# sha256:c683876b30f228c682e66c91c5aedbaa60386bf806de35132c2bdf9fffbb9c31
 
 fail() {
   echo "nanohorizon_e2e_not_ready:$1" >&2
@@ -32,7 +34,7 @@ require_exact_clean_repo() {
   [[ -z "$(git -C "$root" status --porcelain)" ]] || fail "$label:dirty"
 }
 
-[[ "$(git -C "$WORKSHOP_ROOT" branch --show-current)" == "codex/finish-inline-eval-refactor" ]] \
+[[ "$(git -C "$WORKSHOP_ROOT" branch --show-current)" == "codex/nanohorizon-acceptance-run" ]] \
   || fail "workshop:wrong_branch"
 [[ -z "$(git -C "$WORKSHOP_ROOT" status --porcelain)" ]] || fail "workshop:dirty"
 

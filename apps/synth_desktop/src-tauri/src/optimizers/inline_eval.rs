@@ -202,11 +202,23 @@ async fn discovery_context(
         .first()
         .context("no matching registered container")?;
     request.container_id = Some(selected.container_id.clone());
+    let materialization_limits = json!({
+        "max_calls": request
+            .maximum_model_calls_per_rollout
+            .context("inline evaluation requires maximumModelCallsPerRollout before task materialization")?,
+        "max_steps": request
+            .maximum_steps_per_rollout
+            .context("inline evaluation requires maximumStepsPerRollout before task materialization")?,
+        "max_cost_usd": request
+            .hard_total_cost_usd
+            .context("inline evaluation requires hardTotalCostUsd before task materialization")?,
+    });
     materialize_seed_instances(
         selected_base_url
             .as_deref()
             .context("registered container has no base URL")?,
         &request.seeds,
+        materialization_limits,
     )
     .await?;
     let revision = policy_revisions
@@ -259,11 +271,16 @@ async fn discovery_context(
     ))
 }
 
-async fn materialize_seed_instances(base_url: &str, seeds: &[admission::Seed]) -> Result<()> {
+async fn materialize_seed_instances(
+    base_url: &str,
+    seeds: &[admission::Seed],
+    limits: Value,
+) -> Result<()> {
     anyhow::ensure!(
         !seeds.is_empty(),
         "inline evaluation requires at least one seed"
     );
+    let expected_limits = limits.clone();
     let client = crate::http::http_client_builder().build()?;
     let task = client
         .get(format!("{}/task_info", base_url.trim_end_matches('/')))
@@ -286,7 +303,7 @@ async fn materialize_seed_instances(base_url: &str, seeds: &[admission::Seed]) -
             "{}/task_instances/materialize",
             base_url.trim_end_matches('/')
         ))
-        .json(&json!({"task_id": task_id, "seeds": requested}))
+        .json(&json!({"task_id": task_id, "seeds": requested, "limits": limits}))
         .send()
         .await
         .context("POST /task_instances/materialize")?;
@@ -315,6 +332,11 @@ async fn materialize_seed_instances(base_url: &str, seeds: &[admission::Seed]) -
             instance.get("task_instance_id").and_then(Value::as_str) == Some(expected.as_str())
                 && instance.get("seed").and_then(Value::as_i64) == Some(seed.0),
             "task_instance_identity_mismatch: expected {expected}"
+        );
+        anyhow::ensure!(
+            instance.get("limits") == Some(&expected_limits),
+            "task_instance_limits_mismatch: expected {}",
+            expected_limits
         );
     }
     Ok(())
