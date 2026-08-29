@@ -106,7 +106,7 @@ fn validate_readiness_observation(
         );
     }
     if observation.bindings_digest != bindings_digest {
-        anyhow::bail!("captured bindings do not match the current durable revision");
+        anyhow::bail!("captured bindings do not match the current saved revision");
     }
     let readiness = &contract.readiness;
     // Readiness is decided by an allowlist, not a denylist. A denylist accepts
@@ -1794,22 +1794,97 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
         ("GET", "/v1/containers") => {
             Ok(json!({"containers": core.data().list_containers().await?}))
         }
+        ("POST", "/v1/container-sources/discover") => {
+            let sources =
+                crate::optimizers::container_catalog::discover(core.storage().database()).await?;
+            let rows: Vec<Value> = sources
+                .iter()
+                .map(|source| {
+                    json!({
+                        "sourceId": source.id,
+                        "manifestHash": source.manifest_hash,
+                        "gitRevision": source.git_revision,
+                        "specs": source.specs.iter().map(|spec| json!({
+                            "id": spec.id,
+                            "contract": spec.contract,
+                            "family": spec.family,
+                            "locality": spec.locality.as_str(),
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "readiness": crate::project_sources::readiness(
+                    core.storage().database(),
+                    crate::project_sources::Capability::Containers,
+                    rows.len(),
+                ),
+                "sources": rows,
+            }))
+        }
+        ("POST", "/v1/project-sources/request") => {
+            let path = body
+                .get("path")
+                .and_then(Value::as_str)
+                .context("project source request requires path")?;
+            let reason = body
+                .get("reason")
+                .and_then(Value::as_str)
+                .context("project source request requires reason")?;
+            let capabilities = body
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_else(|| vec![json!("containers")]);
+            let containers = capabilities.iter().any(|value| value == "containers");
+            let recipes = capabilities.iter().any(|value| value == "recipes");
+            let session_id = body.get("sessionId").and_then(Value::as_str);
+            let attach = body
+                .get("attachToConversation")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let request = crate::project_sources::request(
+                core.storage().database(),
+                session_id,
+                path,
+                reason,
+                containers,
+                recipes,
+                attach,
+            )
+            .await?;
+            Ok(json!({"request": request}))
+        }
         ("POST", "/v1/containers/ensure") => {
             let spec_id = body
                 .get("specId")
                 .or_else(|| body.get("spec_id"))
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("specId required"))?;
-            let session = body
-                .get("sessionRef")
-                .or_else(|| body.get("session_ref"))
+            let spec = if let Some(source_id) = body
+                .get("sourceId")
+                .or_else(|| body.get("source_id"))
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
-            let spec = crate::optimizers::container_lifecycle::resolve_spec_for_session(
-                core.storage().database(),
-                session,
-                spec_id,
-            )?;
+            {
+                crate::optimizers::container_catalog::resolve(
+                    core.storage().database(),
+                    source_id,
+                    spec_id,
+                )
+                .await?
+                .1
+            } else {
+                let session = body
+                    .get("sessionRef")
+                    .or_else(|| body.get("session_ref"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("sourceId or sessionRef required"))?;
+                crate::optimizers::container_lifecycle::resolve_spec_for_session(
+                    core.storage().database(),
+                    session,
+                    spec_id,
+                )?
+            };
             let origin = spec.origin.to_json();
             let ensured = crate::optimizers::container_lifecycle::ensure_spec(
                 core.storage().database(),
@@ -3341,6 +3416,16 @@ pub(crate) async fn dispatch_optimizer(
             let runs = optimizers.list(query).await?;
             Ok(json!({ "runs": runs }))
         }
+        ("POST", "/v1/optimizers/snapshots/import") => {
+            let request: crate::optimizers::OptimizerSnapshotImportRequest =
+                serde_json::from_value(body)?;
+            let receipt = optimizers.import_snapshot(request).await?;
+            Ok(json!({ "receipt": receipt }))
+        }
+        ("GET", path) if path.starts_with("/v1/optimizers/snapshots/") => {
+            let id = path.trim_start_matches("/v1/optimizers/snapshots/");
+            optimizers.get_snapshot(id.to_string()).await
+        }
         ("POST", "/v1/optimizers/runs") => {
             let request: crate::optimizers::OptimizerCreateRequest = serde_json::from_value(body)?;
             let (run, event) = optimizers.create(request).await?;
@@ -3491,6 +3576,15 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_end_matches("/result");
             let result = optimizers.get_result(id.to_string()).await?;
             Ok(json!({ "result": result }))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/snapshot") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/snapshot");
+            let receipt = optimizers.export_snapshot(id.to_string()).await?;
+            Ok(json!({ "receipt": receipt }))
         }
         ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/ready") => {
             let id = path
@@ -4441,7 +4535,16 @@ pub(crate) async fn import_container_trace_into(
     let indexed: Vec<Value> = result
         .traces
         .iter()
-        .map(|trace| json!({"traceId": trace.id, "digest": trace.digest}))
+        .map(|trace| {
+            json!({
+                // `traceId` is Workshop's stable local index identity.
+                "traceId": trace.id,
+                // `producerTraceId` is the identity sealed inside Trace V5.
+                // They are not interchangeable and usually differ.
+                "producerTraceId": trace.metadata.get("producerTraceId"),
+                "digest": trace.digest,
+            })
+        })
         .collect();
     Ok((
         json!({

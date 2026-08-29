@@ -255,10 +255,60 @@ pub struct MeasuredUsage {
     pub cost_usd: Option<f64>,
 }
 
+/// Trusted provider accounting summed across every capability issued to one
+/// optimizer run.
+#[derive(Clone, Debug, Default, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityLedger {
+    pub capabilities: u32,
+    pub status: Option<String>,
+    pub used_calls: u32,
+    pub max_calls: u32,
+    #[specta(type = specta_typescript::Number)]
+    pub used_input_tokens: u64,
+    #[specta(type = specta_typescript::Number)]
+    pub used_output_tokens: u64,
+    pub used_cost_usd: Option<f64>,
+    pub max_cost_usd: f64,
+}
+
+impl CapabilityLedger {
+    pub fn from_capabilities(rows: &[LiveCapability]) -> Self {
+        let mut ledger = Self {
+            capabilities: rows.len() as u32,
+            ..Self::default()
+        };
+        let mut billed_micros = 0u64;
+        for row in rows {
+            ledger.used_calls = ledger.used_calls.saturating_add(row.used_calls);
+            ledger.max_calls = ledger.max_calls.saturating_add(row.max_calls);
+            ledger.used_input_tokens = ledger
+                .used_input_tokens
+                .saturating_add(row.used_input_tokens);
+            ledger.used_output_tokens = ledger
+                .used_output_tokens
+                .saturating_add(row.used_output_tokens);
+            ledger.max_cost_usd += row.max_cost_usd_micros as f64 / 1_000_000.0;
+            billed_micros = billed_micros.saturating_add(row.used_cost_usd_micros.unwrap_or(0));
+            ledger.status = Some(row.status.clone());
+        }
+        ledger.used_cost_usd = (billed_micros > 0).then(|| billed_micros as f64 / 1_000_000.0);
+        ledger
+    }
+
+    pub fn has_accounting(&self) -> bool {
+        self.used_calls > 0
+            || self.used_input_tokens > 0
+            || self.used_output_tokens > 0
+            || self.used_cost_usd.is_some()
+    }
+}
+
 #[derive(Default)]
 pub struct CapabilityStore {
     by_handle: Mutex<HashMap<String, LiveCapability>>,
     next_request_at: Mutex<HashMap<String, Instant>>,
+    adaptive_interval: Mutex<HashMap<String, Duration>>,
 }
 
 impl CapabilityStore {
@@ -360,6 +410,44 @@ impl CapabilityStore {
             }
             tokio::time::sleep(delay).await;
         }
+    }
+
+    pub fn request_interval(&self, handle: &str) -> Duration {
+        self.adaptive_interval
+            .lock()
+            .expect("capability request pacer")
+            .get(handle)
+            .copied()
+            .unwrap_or(crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL)
+    }
+
+    pub fn observe_rate_limit(&self, handle: &str, reset: Option<Duration>) -> Duration {
+        let floor = crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL;
+        let ceiling = crate::limits::CREDENTIAL_UPSTREAM_MAX_INTERVAL;
+        let mut intervals = self
+            .adaptive_interval
+            .lock()
+            .expect("capability request pacer");
+        let current = intervals.get(handle).copied().unwrap_or(floor);
+        let raised = reset
+            .unwrap_or(current.saturating_mul(2))
+            .max(current)
+            .max(floor)
+            .min(ceiling);
+        intervals.insert(handle.to_owned(), raised);
+        raised
+    }
+
+    pub fn observe_admitted(&self, handle: &str) -> Duration {
+        let floor = crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL;
+        let mut intervals = self
+            .adaptive_interval
+            .lock()
+            .expect("capability request pacer");
+        let current = intervals.get(handle).copied().unwrap_or(floor);
+        let decayed = Duration::from_millis(current.as_millis() as u64 / 2).max(floor);
+        intervals.insert(handle.to_owned(), decayed);
+        decayed
     }
 
     pub fn list_active(&self) -> Vec<LiveCapability> {
@@ -765,10 +853,14 @@ pub fn authorize_request(
     }
     if let Some(model) = model {
         if !live.models.is_empty()
-            && !live
-                .models
-                .iter()
-                .any(|allowed| allowed.eq_ignore_ascii_case(model))
+            && !live.models.iter().any(|allowed| {
+                allowed.eq_ignore_ascii_case(model)
+                    || (live.provider.eq_ignore_ascii_case("openrouter")
+                        && !model.contains('/')
+                        && allowed
+                            .strip_prefix("openai/")
+                            .is_some_and(|bare| bare.eq_ignore_ascii_case(model)))
+            })
         {
             anyhow::bail!("model {model} is not allowed for this capability");
         }

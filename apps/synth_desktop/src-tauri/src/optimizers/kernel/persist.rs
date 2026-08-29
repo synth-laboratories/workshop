@@ -164,7 +164,7 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
             },
         )
         .optional()
-        .context("load durable optimizer kernel state")?;
+        .context("load saved optimizer kernel state")?;
     let Some((
         algorithm_id,
         legacy_status,
@@ -359,7 +359,7 @@ fn rebuild_at_terminal_sequence(
     }
     if events.len() != terminal_sequence as usize {
         anyhow::bail!(
-            "optimizer run {run_id} terminal sequence {terminal_sequence} exceeds its durable event log"
+            "optimizer run {run_id} terminal sequence {terminal_sequence} exceeds its saved event log"
         );
     }
     let rebuilt =
@@ -400,6 +400,7 @@ fn load_current_evidence(
     base: &EvidenceState,
 ) -> Result<Option<EvidenceState>> {
     let mut evidence = base.clone();
+    dedupe_equivalent_evidence_refs(&mut evidence.refs);
     let mut amended = false;
     let mut statement = conn.prepare(
         "SELECT evidence_json
@@ -441,7 +442,7 @@ fn load_current_evidence(
         if !evidence
             .refs
             .iter()
-            .any(|existing| existing.kind == reference.kind && existing.id == reference.id)
+            .any(|existing| evidence_refs_are_equivalent(existing, &reference))
         {
             evidence.refs.push(reference);
         }
@@ -451,6 +452,33 @@ fn load_current_evidence(
         evidence.reason = None;
     }
     Ok(amended.then_some(evidence))
+}
+
+fn evidence_refs_are_equivalent(existing: &EvidenceRef, candidate: &EvidenceRef) -> bool {
+    if existing.kind == candidate.kind && existing.id == candidate.id {
+        return true;
+    }
+    fn is_trace_kind(kind: &str) -> bool {
+        matches!(kind, "trace" | "trace_v5" | "trace_v5_partial")
+    }
+    existing.id == candidate.id
+        && is_trace_kind(&existing.kind)
+        && is_trace_kind(&candidate.kind)
+        && existing.digest.is_some()
+        && existing.digest == candidate.digest
+}
+
+fn dedupe_equivalent_evidence_refs(refs: &mut Vec<EvidenceRef>) {
+    let mut deduped = Vec::with_capacity(refs.len());
+    for reference in std::mem::take(refs) {
+        if !deduped
+            .iter()
+            .any(|existing| evidence_refs_are_equivalent(existing, &reference))
+        {
+            deduped.push(reference);
+        }
+    }
+    *refs = deduped;
 }
 
 pub fn insert_draft(conn: &Connection, draft: &RunDraft) -> Result<()> {

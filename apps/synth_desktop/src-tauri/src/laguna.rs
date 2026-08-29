@@ -1806,11 +1806,11 @@ impl LagunaRuntimeState {
         match self {
             Self::Ready { python } => Ok(python),
             Self::Missing { expected } => Err(anyhow::anyhow!(
-                "Laguna runtime is missing at `{}`. Install the Workshop-managed Laguna runtime in Settings → Services; no alternate interpreter will be used.",
+                "Laguna runtime is missing at `{}`. Install the Workshop-managed Laguna runtime in Settings → Models; no alternate interpreter will be used.",
                 expected.display()
             )),
             Self::Invalid { expected, detail } => Err(anyhow::anyhow!(
-                "Laguna runtime at `{}` is invalid: {detail}. Repair it in Settings → Services; no alternate interpreter will be used.",
+                "Laguna runtime at `{}` is invalid: {detail}. Repair it in Settings → Models; no alternate interpreter will be used.",
                 expected.display()
             )),
         }
@@ -1822,11 +1822,11 @@ pub(crate) fn managed_python() -> Result<PathBuf> {
     match LagunaRuntimeState::detect() {
         LagunaRuntimeState::Ready { python } => Ok(python),
         LagunaRuntimeState::Missing { expected } => Err(anyhow::anyhow!(
-            "The Workshop-managed model runtime is missing at `{}`. Install it in Settings → Services before downloading training weights.",
+            "The Workshop-managed model runtime is missing at `{}`. Install it in Settings → Models before downloading training weights.",
             expected.display()
         )),
         LagunaRuntimeState::Invalid { expected, detail } => Err(anyhow::anyhow!(
-            "The Workshop-managed model runtime at `{}` is invalid: {detail}. Repair it in Settings → Services before downloading training weights.",
+            "The Workshop-managed model runtime at `{}` is invalid: {detail}. Repair it in Settings → Models before downloading training weights.",
             expected.display()
         )),
     }

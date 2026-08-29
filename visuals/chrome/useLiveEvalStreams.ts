@@ -21,6 +21,11 @@ export type LiveEvalStreamsView = {
 };
 
 const POLL_INTERVAL_MS = 500;
+// Durable catch-up commonly arrives as 500-row producer pages. Publishing
+// each page clones the growing identity/digest indexes and reprojects the
+// whole visual. Coalesce only while `hasMore`; a caught-up live page still
+// paints immediately.
+const REPLAY_PUBLISH_BATCH_ROWS = 5_000;
 
 /**
  * Fold every declared rollout stream into one viewer from its durable poll
@@ -122,15 +127,20 @@ export function useLiveEvalStreams(
 
     const pollOne = async (stream: (typeof streams)[number]) => {
       let after = cursors.get(stream.streamId) ?? 0;
+      let pending: Parameters<typeof ingestLiveEnvelopeBatch>[1] = [];
       for (let pageNumber = 0; pageNumber < REPLAY_PAGE_LIMIT_MAX; pageNumber++) {
         const page = await clientRef.current.poll(stream, after, REPLAY_PAGE_LIMIT);
         answered = true;
-        publish(page.events);
+        pending.push(...page.events);
         const { next, hasMore, closed: streamClosed } = page.cursor;
         if (next < after) {
           throw new Error(`replay cursor regressed from ${after} to ${next} on ${stream.streamId}`);
         }
         cursors.set(stream.streamId, next);
+        if (pending.length >= REPLAY_PUBLISH_BATCH_ROWS || streamClosed || !hasMore) {
+          publish(pending);
+          pending = [];
+        }
         if (streamClosed) {
           closedStreams.add(stream.streamId);
           return;

@@ -9,7 +9,7 @@
     "dev:instance": "../../scripts/desktop-instance.sh dev",
     "dev:install": "../../scripts/desktop.sh install",
     "dev:restart": "../../scripts/desktop.sh restart",
-    "build": "../../scripts/stage-mlx-runtime-distribution.sh && tauri build --config src-tauri/tauri.package.json",
+    "build": "../../scripts/build-tier.sh stable",
     "build:tier": "../../scripts/build-tier.sh",
     "frontend:dev": "vite --host 127.0.0.1",
     "frontend:build": "vite build",

@@ -312,6 +312,7 @@ pub struct GrantedRunMedia {
 pub struct OptimizerService {
     db: Arc<Database>,
     frame_store: ContentStore,
+    content: ContentStore,
     #[allow(dead_code)]
     journal: EventJournal,
     visuals: VisualRegistry,
@@ -503,12 +504,14 @@ impl OptimizerService {
     pub fn new(
         db: Arc<Database>,
         journal: EventJournal,
+        content: ContentStore,
         visuals: VisualRegistry,
         events_tx: broadcast::Sender<AppEvent>,
     ) -> Self {
         Self::new_with_manager(
             db,
             journal,
+            content,
             visuals,
             events_tx,
             Arc::new(super::OptimizerManager::new()),
@@ -518,6 +521,7 @@ impl OptimizerService {
     pub fn new_with_manager(
         db: Arc<Database>,
         journal: EventJournal,
+        content: ContentStore,
         visuals: VisualRegistry,
         events_tx: broadcast::Sender<AppEvent>,
         manager: Arc<super::OptimizerManager>,
@@ -531,6 +535,7 @@ impl OptimizerService {
         Self {
             db,
             frame_store,
+            content,
             journal,
             visuals,
             local_recipes: Arc::new(Mutex::new(HashMap::new())),
@@ -1018,7 +1023,7 @@ impl OptimizerService {
             .run(move |conn| {
                 super::kernel::persist::load_state(conn, &optimizer_run_id)?.ok_or_else(|| {
                     anyhow!(
-                        "optimizer run {} has no durable kernel projection",
+                        "optimizer run {} has no saved kernel projection",
                         optimizer_run_id
                     )
                 })
@@ -1256,7 +1261,16 @@ impl OptimizerService {
 
     pub async fn get(&self, optimizer_run_id: String) -> Result<OptimizerRunRecord> {
         let db = self.db.clone();
-        db.run(move |conn| load_run(conn, &optimizer_run_id)).await
+        db.run(move |conn| {
+            let mut run = load_run(conn, &optimizer_run_id)?;
+            if OptimizerRunStatus::str_is_terminal(&run.status) {
+                if let Some(state) = super::kernel::persist::load_state(conn, &optimizer_run_id)? {
+                    rewrite_terminal_summary_progress(&mut run, &state);
+                }
+            }
+            Ok(run)
+        })
+        .await
     }
 
     pub(super) fn negotiate_effective_contract(
@@ -1333,7 +1347,7 @@ impl OptimizerService {
             let state =
                 super::kernel::persist::load_state(conn, &optimizer_run_id)?.ok_or_else(|| {
                     anyhow!(
-                        "optimizer run {} did not produce a durable kernel projection",
+                        "optimizer run {} did not produce a saved kernel projection",
                         optimizer_run_id
                     )
                 })?;
@@ -1341,6 +1355,53 @@ impl OptimizerService {
             Ok(super::kernel::project_view_with_context(&state, &context))
         })
         .await
+    }
+
+    pub async fn export_snapshot(
+        &self,
+        optimizer_run_id: String,
+    ) -> Result<super::OptimizerSnapshotReceipt> {
+        let run = self.get(optimizer_run_id.clone()).await?;
+        let result = self.get_result(optimizer_run_id.clone()).await?;
+        let terminal_manifest = self.terminal_manifest(optimizer_run_id.clone()).await?;
+        let cursor = run.cursor_seq;
+        let db = self.db.clone();
+        let run_id = optimizer_run_id.clone();
+        let events = db
+            .run(move |conn| load_events_upto(conn, &run_id, cursor))
+            .await?;
+        let snapshot = super::snapshot::OptimizerRunSnapshot {
+            schema_version: super::snapshot::OPTIMIZER_SNAPSHOT_SCHEMA.into(),
+            source_instance_id: crate::instance::name().unwrap_or_else(|| "canonical".into()),
+            source_bundle_id: crate::instance::bundle_id().unwrap_or_else(|| "unknown".into()),
+            source_run_id: optimizer_run_id,
+            captured_at: Utc::now().to_rfc3339(),
+            terminal_cursor: cursor,
+            sealed: terminal_manifest.is_some(),
+            run,
+            result,
+            terminal_manifest,
+            events,
+        };
+        super::snapshot::persist(self.db.clone(), &self.content, &snapshot)
+    }
+
+    pub async fn import_snapshot(
+        &self,
+        request: super::OptimizerSnapshotImportRequest,
+    ) -> Result<super::OptimizerSnapshotReceipt> {
+        super::snapshot::import_path(self.db.clone(), &self.content, request)
+    }
+
+    pub async fn get_snapshot(&self, snapshot_id: String) -> Result<Value> {
+        let (snapshot, receipt) =
+            super::snapshot::load(self.db.clone(), &self.content, &snapshot_id)?;
+        let evidence_summary = super::snapshot::evidence_summary(&snapshot);
+        Ok(json!({
+            "snapshot": snapshot,
+            "receipt": receipt,
+            "evidenceSummary": evidence_summary,
+        }))
     }
 
     pub async fn create(
@@ -1516,7 +1577,10 @@ impl OptimizerService {
         }
         let mut run = self.get(optimizer_run_id.clone()).await?;
         run = reconcile_via_driver(self, run).await?;
-        let slices = self.project_slices(&run.id, run.cursor_seq, None).await?;
+        let cursor = self
+            .resolve_projection_cursor(&run.id, None, run.cursor_seq)
+            .await?;
+        let slices = self.project_slices(&run.id, cursor, None).await?;
         let db = self.db.clone();
         db.run(move |conn| {
             for slice in &slices {
@@ -2077,7 +2141,7 @@ impl OptimizerService {
                 move |conn| super::kernel::persist::load_state(conn, &optimizer_run_id)
             })
             .await?
-            .context("evidence degradation requires a durable kernel projection")?;
+            .context("evidence degradation requires a saved kernel projection")?;
         let observed_at = Utc::now().to_rfc3339();
         let degradation = json!({
             "stage": stage,
@@ -2122,8 +2186,15 @@ impl OptimizerService {
         at_seq: Option<u64>,
     ) -> Result<OptimizerStateSlice> {
         let run = self.get(optimizer_run_id.clone()).await?;
-        let cursor = at_seq.unwrap_or(run.cursor_seq);
-        if at_seq.is_none() {
+        let cursor = self
+            .resolve_projection_cursor(&optimizer_run_id, at_seq, run.cursor_seq)
+            .await?;
+        // A post-terminal amendment advances the run record while the sealed
+        // kernel projection intentionally keeps its terminal sequence. A
+        // cached slice at that terminal cursor may predate the amendment, so
+        // only use the fast path when both cursors still describe the same
+        // revision.
+        if at_seq.is_none() && run.cursor_seq == cursor {
             let db = self.db.clone();
             let sid = slice_id.clone();
             let rid = optimizer_run_id.clone();
@@ -2154,12 +2225,34 @@ impl OptimizerService {
         at_seq: Option<u64>,
     ) -> Result<Vec<OptimizerStateSlice>> {
         let run = self.get(optimizer_run_id.clone()).await?;
-        let cursor = at_seq.unwrap_or(run.cursor_seq);
+        let cursor = self
+            .resolve_projection_cursor(&optimizer_run_id, at_seq, run.cursor_seq)
+            .await?;
         let mut slices = self.project_slices(&optimizer_run_id, cursor, None).await?;
         if let Some(ids) = slice_ids {
             slices.retain(|slice| ids.iter().any(|id| id == &slice.slice_id));
         }
         Ok(slices)
+    }
+
+    async fn resolve_projection_cursor(
+        &self,
+        optimizer_run_id: &str,
+        requested: Option<u64>,
+        run_cursor: u64,
+    ) -> Result<u64> {
+        if let Some(requested) = requested {
+            return Ok(requested);
+        }
+        let run_id = optimizer_run_id.to_string();
+        let state = self
+            .db
+            .clone()
+            .run(move |conn| super::kernel::persist::load_state(conn, &run_id))
+            .await?;
+        Ok(state
+            .map(|state| state.aggregate_sequence)
+            .unwrap_or(run_cursor))
     }
 
     pub async fn relationships(
@@ -2362,6 +2455,7 @@ impl OptimizerService {
         session_ref: Option<String>,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let mut run = self.get(optimizer_run_id.clone()).await?;
+        super::container_eval::refresh_terminal_visual_projection_if_stale(self, &run).await?;
         let presentation_session_ref = session_ref.or_else(|| run.session_ref.clone());
         let title = format!(
             "{} · {}",
@@ -3265,9 +3359,8 @@ impl OptimizerService {
         let db = self.db.clone();
         db.run(move |conn| {
             let run = load_run(conn, &run_id)?;
-            let state = super::kernel::persist::load_state(conn, &run_id)?.ok_or_else(|| {
-                anyhow!("optimizer run {run_id} has no durable kernel projection")
-            })?;
+            let state = super::kernel::persist::load_state(conn, &run_id)?
+                .ok_or_else(|| anyhow!("optimizer run {run_id} has no saved kernel projection"))?;
             if state.aggregate_sequence != at_seq {
                 bail!(
                     "optimizer run {run_id} projection is at sequence {}, requested {at_seq}",
@@ -3905,6 +3998,7 @@ fn commit_validated_events(
             "error": run.error.clone().unwrap_or(Value::Null),
         });
         let sealed = terminal::seal(conn, &run.id, &manifest)?;
+        settle_paid_compute_conversation(conn, &run)?;
         if let Some(object) = run.summary.as_object_mut() {
             object.insert("terminalManifest".into(), sealed);
         }
@@ -4300,6 +4394,7 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
         let events = load_events_upto(conn, &run.id, run.cursor_seq)?;
         let manifest = terminal::derive(&run, &events, "interrupted", None);
         let sealed = terminal::seal(conn, &run.id, &manifest)?;
+        settle_paid_compute_conversation(conn, &run)?;
         if let Some(object) = run.summary.as_object_mut() {
             object.insert("terminalManifest".into(), sealed);
         }
@@ -4576,6 +4671,78 @@ fn load_events_upto(
     Ok(out)
 }
 
+
+fn settle_paid_compute_conversation(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
+    let Some(session_id) = run
+        .session_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let Some(approval_id) = run
+        .usage
+        .extra
+        .get("paidComputeApproval")
+        .and_then(|value| value.get("approvalId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let outcome = paid_compute_settlement_outcome(conn, run)?;
+    let Some(snapshot) =
+        crate::session::paid_compute_budget::settle(conn, session_id, approval_id, outcome)?
+    else {
+        return Ok(());
+    };
+    if run
+        .usage
+        .extra
+        .get("paidComputeApproval")
+        .and_then(|value| value.get("receiptViolation"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        crate::session::paid_compute_budget::disable_auto(conn, session_id)?;
+    }
+    crate::session::paid_compute_budget::append_settlement_receipt(
+        conn,
+        session_id,
+        approval_id,
+        outcome,
+        &snapshot,
+    )?;
+    Ok(())
+}
+
+fn paid_compute_settlement_outcome(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+) -> Result<crate::session::paid_compute_budget::SettlementOutcome> {
+    use crate::session::paid_compute_budget::{micros_from_reported_cost, SettlementOutcome};
+    if let Ok(Some(receipt)) = crate::secrets::capability::provider_usage_receipt(conn, &run.id) {
+        return Ok(match receipt.cost_usd.and_then(micros_from_reported_cost) {
+            Some(cost_usd_micros) => SettlementOutcome::Exact { cost_usd_micros },
+            None => SettlementOutcome::Unknown,
+        });
+    }
+    let complete = run
+        .usage
+        .extra
+        .get("costTelemetryComplete")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if !complete {
+        return Ok(SettlementOutcome::Unknown);
+    }
+    match run.usage.cost_usd.and_then(micros_from_reported_cost) {
+        Some(cost_usd_micros) => Ok(SettlementOutcome::Exact { cost_usd_micros }),
+        None => Ok(SettlementOutcome::Unknown),
+    }
+}
 
 fn update_paid_compute_violation(run: &mut OptimizerRunRecord) {
     let Some(approval) = run.usage.extra.get("paidComputeApproval").cloned() else {

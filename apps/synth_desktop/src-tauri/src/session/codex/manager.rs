@@ -1099,7 +1099,7 @@ impl CodexManager {
                     return Ok(true);
                 };
                 let Some(run) = runs.get(turn_id.to_owned()).await? else {
-                    anyhow::bail!("durable Codex run {turn_id} disappeared during reconciliation");
+                    anyhow::bail!("recorded Codex run {turn_id} disappeared during reconciliation");
                 };
                 if run.status == status.as_str() {
                     self.set_status(session_id, session_status_for_run(status))

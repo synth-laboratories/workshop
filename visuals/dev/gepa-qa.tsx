@@ -31,7 +31,7 @@ const fixtureProjected: ProjectedState = {
       { id: "minibatch", label: "Minibatch gate", status: "active" }, { id: "full_train", label: "Full train evaluation", status: "pending" },
       { id: "heldout", label: "Heldout", status: "pending" }, { id: "complete", label: "Complete", status: "pending" }
     ],
-    evaluations, failedAttempts: [{ candidateId: "gepa_3", sequence: 81, stage: "candidate_minibatch", exampleId: "banking77:5", jobId: "job-5", attempt: 3, maxAttempts: 3, failureClass: "stream_timeout", message: "policy stream timed out after durable cursor 218" }],
+    evaluations, failedAttempts: [{ candidateId: "gepa_3", sequence: 81, stage: "candidate_minibatch", exampleId: "banking77:5", jobId: "job-5", attempt: 3, maxAttempts: 3, failureClass: "stream_timeout", message: "policy stream timed out after recorded cursor 218" }],
     coverage: [{ candidateId: "gepa_3", stage: "candidate_minibatch", required: 10, scored: 8, failed: 1, pending: 1, complete: false, promotionEligible: false, sequence: 82 }],
     proposerTraces: [], activity: { phase: "rollout_running", label: "Evaluating minibatch", proposalActive: false, evaluationActive: true, evaluationStage: "candidate_minibatch", activeCandidateIds: ["gepa_3"], generation: 2, sequence: 82, terminal: false },
     incumbentId: "gepa_2", best: { candidateId: "gepa_3", trainReward: 0.82 }, models: { proposer: "gpt-5.6-sol", policy: "gpt-5.6-luna" }, timing: { startedAt: "2026-08-13T01:00:00Z", lastEventAt: "2026-08-13T01:08:00Z" }, rolloutsCompleted: 80,
@@ -87,7 +87,7 @@ function App() {
 
   const jobState = projected.gepa?.runtime.job?.state;
   const bridgeLabel = live
-    ? `${jobState && jobState !== "running" ? jobState.toUpperCase() : "LIVE"} · ${run.id} · ${live.events.length} durable events`
+    ? `${jobState && jobState !== "running" ? jobState.toUpperCase() : "LIVE"} · ${run.id} · ${live.events.length} recorded events`
     : `FIXTURE · ${error ?? "connecting to live event bridge"}`;
   const bridgeColor = jobState === "terminated" || jobState === "failed" ? "#b23830" : live ? "#16a36a" : "#a36b16";
 

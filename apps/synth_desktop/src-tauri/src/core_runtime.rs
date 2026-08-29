@@ -163,6 +163,7 @@ impl CoreRuntime {
         let optimizers = OptimizerService::new_with_manager(
             storage.database().clone(),
             journal.clone(),
+            content.clone(),
             visuals.clone(),
             events_tx.clone(),
             optimizer_manager.clone(),

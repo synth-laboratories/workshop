@@ -298,7 +298,7 @@ pub async fn attach(
     let path = path.to_string_lossy().into_owned();
     db.run_transaction(move |conn| {
         if load(conn, &id)?.is_none() && !initialize_from_session(conn, &id)? {
-            return Err(anyhow!("conversation has no durable workspace metadata"));
+            return Err(anyhow!("conversation has no saved workspace metadata"));
         }
         reject_overlap(conn, &id, Path::new(&path))?;
         conn.execute("INSERT INTO workspace_attachments(session_id,path,access,source,created_at) VALUES(?1,?2,?3,?4,datetime('now'))", params![id,path,access.as_str(),source.as_str()]).context("attachment is already present")?;

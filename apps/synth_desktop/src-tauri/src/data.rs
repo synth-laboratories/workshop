@@ -835,6 +835,11 @@ impl DataStore {
                     let title = request.title.clone().unwrap_or_else(|| trace.trace_id.clone());
                     let metadata = serde_json::json!({
                         "schemaVersion": trace.schema_version.as_deref().unwrap_or("synth.trace.v5"),
+                        // The producer identity and Workshop's local trace row id
+                        // intentionally occupy different namespaces. Keep both so
+                        // reconciliation can validate the sealed bundle without
+                        // comparing a rollout-owned id to `tracev5_...`.
+                        "producerTraceId": trace.trace_id,
                         "bundleDigest": bundle_digest,
                         "archiveDigest": archive_digest,
                         "compatibilityLevel": compatibility,

@@ -30,6 +30,8 @@ impl Commands {
     pub const CODEX_THREAD_ITEMS_LIST: &'static str = "codex_thread_items_list";
     pub const CODEX_TURN_STEER: &'static str = "codex_turn_steer";
     pub const CODEX_APPROVAL_RESOLVE: &'static str = "codex_approval_resolve";
+    pub const APPROVALS_PENDING: &'static str = "approvals_pending";
+    pub const APPROVALS_APPROVE_DIGEST: &'static str = "approvals_approve_digest";
     pub const CODEX_SESSION_CLOSE: &'static str = "codex_session_close";
     pub const ACCOUNT_BEGIN_SIGN_IN: &'static str = "account_begin_sign_in";
     pub const ACCOUNT_POLL_SIGN_IN: &'static str = "account_poll_sign_in";

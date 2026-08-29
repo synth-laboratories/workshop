@@ -2,6 +2,7 @@
 pub(crate) mod approval;
 pub(crate) mod approval_policy;
 pub mod codex;
+pub(crate) mod paid_compute_budget;
 mod persistence;
 /// The gate on persisting agent- or user-written visual template code.
 pub(crate) mod template_persist;

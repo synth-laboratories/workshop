@@ -31,6 +31,7 @@ import {
 	type SyncSessionStatus
 } from "../types/landing";
 import { assertLocalActivityPlacementInvariant } from "./activityPlacementInvariant";
+import { formatUsdMicros } from "./paidComputeUsd";
 import { modelCapabilitiesForExecutionTarget } from "./modelCapabilities";
 import {
 	modelCatalogEntry,
@@ -1577,7 +1578,15 @@ export function eventsToLocalActivity(
 										: "Approval requested";
 				break;
 			case "approval.granted":
-				label = `${approvalSubject} granted`;
+				if (payload.policyAuto === true && payload.approvalPolicy === "conversation_paid_compute_budget") {
+					const reserved = typeof payload.reservedUsdMicros === "number" ? payload.reservedUsdMicros : 0;
+					const remaining = typeof payload.remainingUsdMicros === "number" ? payload.remainingUsdMicros : 0;
+					const cap = typeof payload.conversationCapUsdMicros === "number" ? payload.conversationCapUsdMicros : 0;
+					const used = Math.max(0, cap - remaining);
+					label = `Auto-approved a $${formatUsdMicros(reserved)} maximum · $${formatUsdMicros(used)} of $${formatUsdMicros(cap)} conversation allowance used`;
+				} else {
+					label = `${approvalSubject} granted`;
+				}
 				break;
 			case "approval.rejected":
 				label = `${approvalSubject} rejected`;
@@ -1640,10 +1649,23 @@ export function eventsToLocalActivity(
 		// (`ApprovalKind::visual_template_detail`), which names the id, the tier,
 		// the byte count, the origin and whether it replaces reviewed code.
 		// Re-deriving that here would be a second copy of the question.
+		const autoPaid = event.eventKind === "approval.granted"
+			&& approvalKind === "paid_compute"
+			&& payload.policyAuto === true
+			&& payload.approvalPolicy === "conversation_paid_compute_budget";
+		const autoPaidDetail = autoPaid
+			? [
+				typeof payload.reservedUsdMicros === "number" ? `reserved $${formatUsdMicros(payload.reservedUsdMicros)}` : null,
+				typeof payload.settledSpendUsdMicros === "number" ? `settled $${formatUsdMicros(payload.settledSpendUsdMicros)}` : null,
+				typeof payload.remainingUsdMicros === "number" ? `remaining $${formatUsdMicros(payload.remainingUsdMicros)}` : null,
+				typeof payload.conversationCapUsdMicros === "number" ? `conversation $${formatUsdMicros(payload.conversationCapUsdMicros)}` : null
+			].filter((value): value is string => Boolean(value)).join(" · ")
+			: undefined;
 		const safeKind = payload.kind === "shell_command" || payload.kind === "file_change" || payload.kind === "permission"
 			|| payload.kind === "plugin_lifecycle" || payload.kind === "paid_compute"
 			|| payload.kind === "visual_template_persist";
-		const detail = typedDetail
+		const detail = autoPaidDetail
+			?? typedDetail
 			?? computerUseDetail
 			?? pluginDetail
 			?? (safeKind && typeof payload.detail === "string"
@@ -1678,6 +1700,17 @@ export function eventsToLocalActivity(
 				displayPath: typeof payload.displayPath === "string" ? payload.displayPath : undefined,
 				variable: typeof payload.variable === "string" ? payload.variable : undefined,
 				switchFromDisplay: typeof payload.switchFromDisplay === "string" ? payload.switchFromDisplay : undefined
+			} : autoPaid ? {
+				policyAuto: true,
+				reservedUsdMicros: typeof payload.reservedUsdMicros === "number" ? payload.reservedUsdMicros : undefined,
+				settledSpendUsdMicros: typeof payload.settledSpendUsdMicros === "number" ? payload.settledSpendUsdMicros : undefined,
+				remainingUsdMicros: typeof payload.remainingUsdMicros === "number" ? payload.remainingUsdMicros : undefined,
+				conversationCapUsdMicros: typeof payload.conversationCapUsdMicros === "number" ? payload.conversationCapUsdMicros : undefined,
+				requestedCap: payload.requestedCap && typeof payload.requestedCap === "object" && !Array.isArray(payload.requestedCap)
+					? payload.requestedCap as { maxCostUsdMicros?: number; maxRollouts?: number }
+					: payload.cap && typeof payload.cap === "object" && !Array.isArray(payload.cap)
+						? payload.cap as { maxCostUsdMicros?: number; maxRollouts?: number }
+						: undefined
 			} : undefined,
 			alwaysAllowSupported: event.eventKind === "approval.requested" && payload.alwaysSupported === true,
 			detail,

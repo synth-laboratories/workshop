@@ -45,6 +45,10 @@ if [[ -z "${SYNTH_MLX_RL_PROJECT_ROOT:-}" ]]; then
   done
 fi
 "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
+"$ROOT/scripts/stage-optimizer-runtime-distribution.sh"
+if [[ ! -x "$ROOT/services/victoria-logs/victoria-logs" ]]; then
+  "$ROOT/scripts/diagnostics/fetch-victorialogs.sh"
+fi
 
 TARGET_ROOT="${CARGO_TARGET_DIR:-$APP_DIR/src-tauri/target}"
 
@@ -87,9 +91,14 @@ build_one() {
   ditto "$bundle_dir/$product.app" "$out_dir/$product.app"
   python3 - "$out_dir/manifest.json" <<PYEOF
 import json, subprocess, sys
+from pathlib import Path
 from datetime import datetime, timezone
 commit = subprocess.run(["git", "-C", "$ROOT", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 dirty = bool(subprocess.run(["git", "-C", "$ROOT", "status", "--porcelain"], capture_output=True, text=True).stdout.strip())
+if not commit:
+    export_manifest = Path("$ROOT") / "PUBLIC_EXPORT_MANIFEST.json"
+    if export_manifest.is_file():
+        commit = json.loads(export_manifest.read_text(encoding="utf-8")).get("source", {}).get("commit", "")
 json.dump({
     "tier": "$tier",
     "productName": "$product",

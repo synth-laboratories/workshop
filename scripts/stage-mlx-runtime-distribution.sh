@@ -7,7 +7,17 @@ TARGET="$ROOT/runtime-distributions/mlx-rl"
 VERSION="0.6.0"
 EXPECTED_SOURCE_REVISION="6b4595f9bf1a65efe895d1f145ad9f5e4913d971"
 EXPECTED_LOCK_SHA256="7f14b704ba9a6c30e6ced5cc88fc2ba6a58a936a9531cfaf168cbb664f83c420"
+SOURCE_REPOSITORY="${SYNTH_MLX_RL_REPOSITORY_URL:-https://github.com/synth-laboratories/synth-mlx-rl.git}"
+SOURCE_REF="${SYNTH_MLX_RL_SOURCE_REF:-workshop-v0.8.0-runtime}"
 UV="${SYNTH_OPTIMIZER_UV_PATH:-}"
+SOURCE_STAGING=""
+WHEEL_STAGING=""
+
+cleanup() {
+  [[ -z "$SOURCE_STAGING" ]] || rm -rf "$SOURCE_STAGING"
+  [[ -z "$WHEEL_STAGING" ]] || rm -rf "$WHEEL_STAGING"
+}
+trap cleanup EXIT
 
 verify_existing_wheelhouse() {
   python3 - "$TARGET" "$VERSION" "$EXPECTED_SOURCE_REVISION" "$EXPECTED_LOCK_SHA256" <<'PY'
@@ -58,10 +68,14 @@ if verify_existing_wheelhouse; then
   exit 0
 fi
 
-if [[ ! -f "$PROJECT/pyproject.toml" ]] || ! rg -q '^name = "synth-mlx-rl"$' "$PROJECT/pyproject.toml"; then
-  echo "[mlx-runtime] synth-mlx-rl source is unavailable at $PROJECT" >&2
-  echo "[mlx-runtime] set SYNTH_MLX_RL_PROJECT_ROOT to the release checkout" >&2
-  exit 1
+if [[ ! -f "$PROJECT/pyproject.toml" ]] \
+  || ! grep -q '^name = "synth-mlx-rl"$' "$PROJECT/pyproject.toml" \
+  || [[ "$(git -C "$PROJECT" rev-parse HEAD 2>/dev/null || true)" != "$EXPECTED_SOURCE_REVISION" ]]; then
+  SOURCE_STAGING="$(mktemp -d "${TMPDIR:-/tmp}/synth-mlx-source.XXXXXX")"
+  rm -rf "$SOURCE_STAGING"
+  echo "[mlx-runtime] fetching immutable source $SOURCE_REF"
+  git clone --quiet --depth 1 --branch "$SOURCE_REF" "$SOURCE_REPOSITORY" "$SOURCE_STAGING"
+  PROJECT="$SOURCE_STAGING"
 fi
 if [[ ! -f "$PROJECT/uv.lock" ]]; then
   echo "[mlx-runtime] pinned source lock is unavailable at $PROJECT/uv.lock" >&2
@@ -138,24 +152,23 @@ if [[ ! -x "$UV" ]]; then
   exit 1
 fi
 
-STAGING="$(mktemp -d "${TMPDIR:-/tmp}/synth-mlx-runtime.XXXXXX")"
-trap 'rm -rf "$STAGING"' EXIT
-mkdir -p "$STAGING/build" "$STAGING/wheels"
+WHEEL_STAGING="$(mktemp -d "${TMPDIR:-/tmp}/synth-mlx-runtime.XXXXXX")"
+mkdir -p "$WHEEL_STAGING/build" "$WHEEL_STAGING/wheels"
 
-"$UV" build --wheel --out-dir "$STAGING/build" "$PROJECT"
-WHEEL="$(find "$STAGING/build" -maxdepth 1 -type f -name "synth_mlx_rl-${VERSION}-*.whl" -print -quit)"
+"$UV" build --wheel --out-dir "$WHEEL_STAGING/build" "$PROJECT"
+WHEEL="$(find "$WHEEL_STAGING/build" -maxdepth 1 -type f -name "synth_mlx_rl-${VERSION}-*.whl" -print -quit)"
 if [[ -z "$WHEEL" ]]; then
   echo "[mlx-runtime] build omitted synth-mlx-rl==$VERSION" >&2
   exit 1
 fi
 
 "$UV" export --project "$PROJECT" --extra mlx --no-dev --no-emit-project \
-  --format requirements-txt --no-hashes --frozen --output-file "$STAGING/requirements.txt"
+  --format requirements-txt --no-hashes --frozen --output-file "$WHEEL_STAGING/requirements.txt"
 "$UV" run --no-project --with pip python -m pip download \
-  --only-binary=:all: --dest "$STAGING/wheels" --requirement "$STAGING/requirements.txt"
-cp "$WHEEL" "$STAGING/wheels/"
+  --only-binary=:all: --dest "$WHEEL_STAGING/wheels" --requirement "$WHEEL_STAGING/requirements.txt"
+cp "$WHEEL" "$WHEEL_STAGING/wheels/"
 
-/usr/bin/python3 - "$STAGING" "$VERSION" "$SOURCE_REVISION" "$LOCK_SHA256" <<'PY'
+/usr/bin/python3 - "$WHEEL_STAGING" "$VERSION" "$SOURCE_REVISION" "$LOCK_SHA256" <<'PY'
 import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 version = sys.argv[2]
@@ -183,6 +196,6 @@ PY
 
 rm -rf "$TARGET"
 mkdir -p "$(dirname "$TARGET")"
-mv "$STAGING" "$TARGET"
-trap - EXIT
+mv "$WHEEL_STAGING" "$TARGET"
+WHEEL_STAGING=""
 echo "[mlx-runtime] staged verified offline wheelhouse at $TARGET"

@@ -1226,11 +1226,13 @@ export type DesktopPermissionSettings = {
 	configPath: string,
 	approvalPolicy: string,
 	sandboxMode: string,
+	paidCompute: PaidComputeAutoApprovalSettings,
 };
 
 export type DesktopPermissionUpdate = {
 	approvalPolicy: string,
 	sandboxMode: string,
+	paidCompute?: PaidComputeAutoApprovalSettings | null,
 };
 
 /**
@@ -2764,6 +2766,20 @@ export type PageCursor_Serialize = {
 	 *  drop rows, and the one field this reader does decide.
 	 */
 	closed: boolean,
+};
+
+/**
+ *  User-owned paid-compute auto-approval, stored only in Workshop config.
+ *
+ *  Amounts travel as decimal USD strings (at most six fractional digits). The
+ *  host converts them to integer USD micros so authorization never sees
+ *  floating-point money.
+ */
+export type PaidComputeAutoApprovalSettings = {
+	enabled: boolean,
+	maxRequestUsd: string,
+	maxConversationUsd: string,
+	providers: string[],
 };
 
 export type PendingGrantSummary = {

@@ -39,6 +39,7 @@ mod sft_client;
 mod sft_recipes;
 mod sft_result;
 mod sidecar_training;
+mod snapshot;
 mod terminal;
 mod tinker_catalog;
 mod training;
@@ -73,6 +74,7 @@ pub use models::{
 pub(crate) use service::reconcile_stale_local_runs_in_tx;
 pub use service::OptimizerService;
 pub(crate) use sidecar_training::launch_artifact_inference;
+pub use snapshot::{OptimizerSnapshotImportRequest, OptimizerSnapshotReceipt};
 pub use training::{TrainingEvent, TrainingLifecycle, TrainingProjection};
 
 /// The adapter-tree digest the catalog keys on. Re-exported so the installer

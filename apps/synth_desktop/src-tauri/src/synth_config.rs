@@ -194,12 +194,71 @@ pub struct WorkspaceAccessUpdate {
     pub allowed_roots: Vec<String>,
 }
 
+/// User-owned paid-compute auto-approval, stored only in Workshop config.
+///
+/// Amounts travel as decimal USD strings (at most six fractional digits). The
+/// host converts them to integer USD micros so authorization never sees
+/// floating-point money.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PaidComputeAutoApprovalSettings {
+    pub enabled: bool,
+    pub max_request_usd: String,
+    pub max_conversation_usd: String,
+    pub providers: Vec<String>,
+}
+
+impl PaidComputeAutoApprovalSettings {
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            max_request_usd: "0.10".into(),
+            max_conversation_usd: "1.00".into(),
+            providers: Vec::new(),
+        }
+    }
+
+    /// Fail closed: malformed amounts or providers never become a policy.
+    pub fn policy(&self) -> Result<PaidComputeAutoApprovalPolicy> {
+        Ok(PaidComputeAutoApprovalPolicy {
+            enabled: self.enabled,
+            max_request_usd_micros: parse_usd_micros(&self.max_request_usd)?,
+            max_conversation_usd_micros: parse_usd_micros(&self.max_conversation_usd)?,
+            providers: normalize_paid_compute_providers(&self.providers)?,
+        })
+    }
+}
+
+/// Integer-micros form sealed onto a session at start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaidComputeAutoApprovalPolicy {
+    pub enabled: bool,
+    pub max_request_usd_micros: u64,
+    pub max_conversation_usd_micros: u64,
+    pub providers: Vec<String>,
+}
+
+impl PaidComputeAutoApprovalPolicy {
+    pub fn disabled() -> Self {
+        PaidComputeAutoApprovalSettings::disabled()
+            .policy()
+            .expect("default paid-compute settings are well-formed")
+    }
+
+    pub fn allows_provider(&self, provider: &str) -> bool {
+        normalize_provider(provider)
+            .ok()
+            .is_some_and(|normalized| self.providers.iter().any(|allowed| allowed == &normalized))
+    }
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopPermissionSettings {
     pub config_path: String,
     pub approval_policy: String,
     pub sandbox_mode: String,
+    pub paid_compute: PaidComputeAutoApprovalSettings,
 }
 
 #[derive(Clone, Debug, Deserialize, specta::Type)]
@@ -207,6 +266,8 @@ pub struct DesktopPermissionSettings {
 pub struct DesktopPermissionUpdate {
     pub approval_policy: String,
     pub sandbox_mode: String,
+    #[serde(default)]
+    pub paid_compute: Option<PaidComputeAutoApprovalSettings>,
 }
 
 /// One user-admitted project source root.
@@ -666,7 +727,13 @@ fn desktop_permission_settings_at(path: &Path) -> Result<DesktopPermissionSettin
     desktop_permission_settings_with_fallback(path, None)
 }
 
-fn permission_values(document: &toml::Value) -> (Option<String>, Option<String>) {
+fn permission_values(
+    document: &toml::Value,
+) -> Result<(
+    Option<String>,
+    Option<String>,
+    Option<PaidComputeAutoApprovalSettings>,
+)> {
     let permissions = document
         .get("desktop")
         .and_then(|value| value.get("permissions"));
@@ -682,7 +749,11 @@ fn permission_values(document: &toml::Value) -> (Option<String>, Option<String>)
         .and_then(toml::Value::as_str)
         .filter(|value| is_sandbox_mode(value))
         .map(str::to_owned);
-    (approval_policy, sandbox_mode)
+    let paid_compute = match permissions.and_then(|value| value.get("paid_compute")) {
+        Some(value) => Some(parse_paid_compute_table(value)?),
+        None => None,
+    };
+    Ok((approval_policy, sandbox_mode, paid_compute))
 }
 
 fn desktop_permission_settings_with_fallback(
@@ -690,10 +761,10 @@ fn desktop_permission_settings_with_fallback(
     fallback: Option<&Path>,
 ) -> Result<DesktopPermissionSettings> {
     let document = read_toml(path)?;
-    let (approval_policy, sandbox_mode) = permission_values(&document);
-    let (fallback_approval, fallback_sandbox) = match fallback {
-        Some(fallback_path) => permission_values(&read_toml(fallback_path)?),
-        None => (None, None),
+    let (approval_policy, sandbox_mode, paid_compute) = permission_values(&document)?;
+    let (fallback_approval, fallback_sandbox, fallback_paid) = match fallback {
+        Some(fallback_path) => permission_values(&read_toml(fallback_path)?)?,
+        None => (None, None, None),
     };
     Ok(DesktopPermissionSettings {
         config_path: path.display().to_string(),
@@ -703,6 +774,9 @@ fn desktop_permission_settings_with_fallback(
         sandbox_mode: sandbox_mode
             .or(fallback_sandbox)
             .unwrap_or_else(|| "workspace-write".into()),
+        paid_compute: paid_compute
+            .or(fallback_paid)
+            .unwrap_or_else(PaidComputeAutoApprovalSettings::disabled),
     })
 }
 
@@ -738,6 +812,30 @@ fn update_desktop_permissions_at(
         "sandbox_mode".into(),
         toml::Value::String(request.sandbox_mode),
     );
+    if let Some(paid_compute) = request.paid_compute {
+        let policy = paid_compute.policy()?;
+        let mut table = toml::value::Table::new();
+        table.insert("auto_approve".into(), toml::Value::Boolean(policy.enabled));
+        table.insert(
+            "max_request_usd".into(),
+            toml::Value::String(format_usd_micros(policy.max_request_usd_micros)),
+        );
+        table.insert(
+            "max_conversation_usd".into(),
+            toml::Value::String(format_usd_micros(policy.max_conversation_usd_micros)),
+        );
+        table.insert(
+            "providers".into(),
+            toml::Value::Array(
+                policy
+                    .providers
+                    .into_iter()
+                    .map(toml::Value::String)
+                    .collect(),
+            ),
+        );
+        permissions.insert("paid_compute".into(), toml::Value::Table(table));
+    }
     write_toml(path, &document)?;
     desktop_permission_settings_at(path)
 }
@@ -751,6 +849,126 @@ fn is_sandbox_mode(value: &str) -> bool {
         value,
         "read-only" | "workspace-write" | "danger-full-access"
     )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaidComputeToml {
+    auto_approve: bool,
+    max_request_usd: String,
+    max_conversation_usd: String,
+    providers: Vec<String>,
+}
+
+fn parse_paid_compute_table(value: &toml::Value) -> Result<PaidComputeAutoApprovalSettings> {
+    let parsed: PaidComputeToml = value
+        .clone()
+        .try_into()
+        .map_err(|error| anyhow!("malformed [desktop.permissions.paid_compute]: {error}"))?;
+    let settings = PaidComputeAutoApprovalSettings {
+        enabled: parsed.auto_approve,
+        max_request_usd: parsed.max_request_usd,
+        max_conversation_usd: parsed.max_conversation_usd,
+        providers: parsed.providers,
+    };
+    settings.policy()?;
+    Ok(settings)
+}
+
+/// Decimal USD string → integer micros. Rejects sign, exponent, and more than
+/// six fractional digits so authorization never sees a float.
+pub(crate) fn parse_usd_micros(value: &str) -> Result<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("USD amount must not be empty"));
+    }
+    if trimmed.starts_with('+') || trimmed.starts_with('-') {
+        return Err(anyhow!("USD amount must not be signed: {value}"));
+    }
+    if trimmed.contains(['e', 'E']) {
+        return Err(anyhow!(
+            "USD amount must not use exponent notation: {value}"
+        ));
+    }
+    let (whole, frac) = match trimmed.split_once('.') {
+        Some((whole, frac)) => (whole, frac),
+        None => (trimmed, ""),
+    };
+    if whole.is_empty() || !whole.chars().all(|c| c.is_ascii_digit()) {
+        return Err(anyhow!("USD amount is not a decimal string: {value}"));
+    }
+    if !frac.chars().all(|c| c.is_ascii_digit()) {
+        return Err(anyhow!("USD amount is not a decimal string: {value}"));
+    }
+    if frac.len() > 6 {
+        return Err(anyhow!(
+            "USD amount may have at most six fractional digits: {value}"
+        ));
+    }
+    let whole_micros = whole
+        .parse::<u64>()
+        .map_err(|_| anyhow!("USD amount is out of range: {value}"))?
+        .checked_mul(1_000_000)
+        .ok_or_else(|| anyhow!("USD amount is out of range: {value}"))?;
+    let frac_micros = if frac.is_empty() {
+        0
+    } else {
+        let mut padded = frac.to_string();
+        while padded.len() < 6 {
+            padded.push('0');
+        }
+        padded
+            .parse::<u64>()
+            .map_err(|_| anyhow!("USD amount is out of range: {value}"))?
+    };
+    whole_micros
+        .checked_add(frac_micros)
+        .ok_or_else(|| anyhow!("USD amount is out of range: {value}"))
+}
+
+pub(crate) fn format_usd_micros(micros: u64) -> String {
+    let dollars = micros / 1_000_000;
+    let rem = micros % 1_000_000;
+    if rem == 0 {
+        format!("{dollars}.00")
+    } else if rem % 10_000 == 0 {
+        format!("{dollars}.{:02}", rem / 10_000)
+    } else {
+        let frac = format!("{rem:06}");
+        format!("{dollars}.{}", frac.trim_end_matches('0'))
+    }
+}
+
+pub(crate) fn normalize_provider(value: &str) -> Result<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(anyhow!("paid-compute provider must not be empty"));
+    }
+    if !normalized
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase())
+        || !normalized
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
+        return Err(anyhow!(
+            "paid-compute provider `{value}` is not a normalized identifier"
+        ));
+    }
+    Ok(normalized)
+}
+
+fn normalize_paid_compute_providers(providers: &[String]) -> Result<Vec<String>> {
+    let mut normalized = Vec::new();
+    for provider in providers {
+        let value = normalize_provider(provider)?;
+        if normalized.iter().any(|existing| existing == &value) {
+            return Err(anyhow!("duplicate paid-compute provider `{value}`"));
+        }
+        normalized.push(value);
+    }
+    Ok(normalized)
 }
 
 pub fn model_multi_agent_settings() -> Result<Vec<ModelMultiAgentSetting>> {

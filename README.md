@@ -7,7 +7,7 @@ release is built with Tauri 2, Rust, React, and TypeScript.
 ## Download or build
 
 - Download the prebuilt v0.8 release from
-  [synthlabs.ai/download](https://synthlabs.ai/download).
+  [usesynth.ai/download](https://www.usesynth.ai/download).
 - Build the unsigned app from source with the commands below. The build does
   not require private Synth repositories or macOS Keychain credentials.
 
@@ -19,8 +19,8 @@ cd workshop
 ./scripts/build.sh
 ```
 
-The app bundle is written under
-`apps/synth_desktop/src-tauri/target/release/bundle/macos/`. macOS may require
+The app bundle is written to
+`work/tier-builds/stable/Synth Workshop.app`. macOS may require
 you to approve or ad-hoc sign a locally built app before opening it. Official
 downloads are signed and notarized separately from this source build.
 
@@ -87,5 +87,5 @@ Read [`SECURITY.md`](SECURITY.md) before reporting a vulnerability and
 contains product and build source; the private release verification corpus is
 maintained separately.
 
-Copyright Synth Laboratories. The OSS license for the v0.8 publication must be
-selected and added before the repository's visibility is changed to public.
+Copyright 2026 Synth Laboratories. Licensed under the
+[Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution notices.

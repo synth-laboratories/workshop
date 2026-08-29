@@ -8,6 +8,16 @@ VERSION="0.2.19"
 EXPECTED_SOURCE_REVISION="686f41c413b9368e0dee5bcefa91bc89a2631084"
 EXPECTED_LOCK_SHA256="b2c0d9b7c9920ea2cc3d51619709f247b00e3f5919bf15538a6f9d41022e43dd"
 PROJECT="${SYNTH_OPTIMIZER_DISTRIBUTION_SOURCE:-}"
+SOURCE_REPOSITORY="${SYNTH_OPTIMIZER_REPOSITORY_URL:-https://github.com/synth-laboratories/optimizers.git}"
+SOURCE_REF="${SYNTH_OPTIMIZER_SOURCE_REF:-workshop-v0.8.0-runtime}"
+SOURCE_STAGING=""
+STAGING=""
+
+cleanup() {
+  [[ -z "$SOURCE_STAGING" ]] || rm -rf "$SOURCE_STAGING"
+  [[ -z "$STAGING" ]] || rm -rf "$STAGING"
+}
+trap cleanup EXIT
 
 verify_existing_distribution() {
   python3 - "$TARGET" "$VERSION" "$EXPECTED_SOURCE_REVISION" "$EXPECTED_LOCK_SHA256" <<'PY'
@@ -57,14 +67,15 @@ if verify_existing_distribution; then
   exit 0
 fi
 
-if [[ -z "$PROJECT" ]]; then
-  echo "[optimizers-runtime] synth-optimizers source is unavailable" >&2
-  echo "[optimizers-runtime] set SYNTH_OPTIMIZER_DISTRIBUTION_SOURCE to the pinned release checkout" >&2
-  exit 1
-fi
-if [[ ! -f "$PROJECT/pyproject.toml" ]] || ! rg -q '^name = "synth-optimizers"$' "$PROJECT/pyproject.toml"; then
-  echo "[optimizers-runtime] invalid synth-optimizers source: $PROJECT" >&2
-  exit 1
+if [[ -z "$PROJECT" ]] \
+  || [[ ! -f "$PROJECT/pyproject.toml" ]] \
+  || ! grep -q '^name = "synth-optimizers"$' "$PROJECT/pyproject.toml" \
+  || [[ "$(git -C "$PROJECT" rev-parse HEAD 2>/dev/null || true)" != "$EXPECTED_SOURCE_REVISION" ]]; then
+  SOURCE_STAGING="$(mktemp -d "${TMPDIR:-/tmp}/synth-optimizers-source.XXXXXX")"
+  rm -rf "$SOURCE_STAGING"
+  echo "[optimizers-runtime] fetching immutable source $SOURCE_REF"
+  git clone --quiet --depth 1 --branch "$SOURCE_REF" "$SOURCE_REPOSITORY" "$SOURCE_STAGING"
+  PROJECT="$SOURCE_STAGING"
 fi
 if [[ ! -f "$PROJECT/uv.lock" ]]; then
   echo "[optimizers-runtime] pinned source lock is unavailable at $PROJECT/uv.lock" >&2
@@ -97,7 +108,6 @@ if [[ ! -x "$UV" ]]; then
 fi
 
 STAGING="$(mktemp -d "${TMPDIR:-/tmp}/synth-optimizers-runtime.XXXXXX")"
-trap 'rm -rf "$STAGING"' EXIT
 mkdir -p "$STAGING/wheels"
 WHEEL="$(find "$PROJECT/target/wheels" -maxdepth 1 -type f -name "synth_optimizers-${VERSION}-*.whl" -print -quit 2>/dev/null || true)"
 if [[ -z "$WHEEL" ]]; then
@@ -108,7 +118,9 @@ if [[ -z "$WHEEL" ]]; then
   echo "[optimizers-runtime] build omitted synth-optimizers==$VERSION" >&2
   exit 1
 fi
-cp "$WHEEL" "$STAGING/wheels/"
+if [[ "$(dirname "$WHEEL")" != "$STAGING/wheels" ]]; then
+  cp "$WHEEL" "$STAGING/wheels/"
+fi
 
 python3 - "$STAGING" "$VERSION" "$SOURCE_REVISION" "$LOCK_SHA256" <<'PY'
 import hashlib
@@ -144,5 +156,5 @@ if [[ -e "$TARGET" ]]; then
   echo "[optimizers-runtime] retained invalid distribution at $retained"
 fi
 mv "$STAGING" "$TARGET"
-trap - EXIT
+STAGING=""
 echo "[optimizers-runtime] staged verified embedded distribution at $TARGET"

@@ -21,6 +21,7 @@ const INLINE_PROVIDER_OPERATION: &str = "chat.completions.create";
 const OPENROUTER_CODEX_SWE_NAMESPACE: &str = "openrouter";
 const OPENROUTER_CODEX_SWE_POLICY: &str = "codex-cli-openrouter-swe-proxy-v1";
 const OPENROUTER_CODEX_SWE_MODEL: &str = "openai/gpt-5.6-luna";
+const RUNEBENCH_NAMESPACE: &str = "runebench";
 const RESPONSES_CREATE: &str = "responses.create";
 // Capabilities name concrete proxy wire operations. `provider.request` was
 // never routed, so a capability scoped to it failed every first model call
@@ -40,6 +41,10 @@ pub(super) fn credential_capability_scope_for_policy(
 ) -> admission::CredentialCapabilityScope {
     let exact_codex_swe_pin = namespace.eq_ignore_ascii_case(OPENROUTER_CODEX_SWE_NAMESPACE)
         && name == OPENROUTER_CODEX_SWE_POLICY
+        && provider.eq_ignore_ascii_case(OPENROUTER_CODEX_SWE_NAMESPACE)
+        && model == OPENROUTER_CODEX_SWE_MODEL;
+    let exact_runebench_pin = namespace.eq_ignore_ascii_case(RUNEBENCH_NAMESPACE)
+        && matches!(name, "luna_low" | "luna_high")
         && provider.eq_ignore_ascii_case(OPENROUTER_CODEX_SWE_NAMESPACE)
         && model == OPENROUTER_CODEX_SWE_MODEL;
     let empty_configuration = configuration
@@ -67,7 +72,9 @@ pub(super) fn credential_capability_scope_for_policy(
                         .is_some_and(|operation| operation.eq_ignore_ascii_case(RESPONSES_CREATE))
                 })
             });
-    let operation = if exact_codex_swe_pin && (empty_configuration || responses_declared) {
+    let operation = if (exact_codex_swe_pin && (empty_configuration || responses_declared))
+        || (exact_runebench_pin && responses_declared)
+    {
         RESPONSES_CREATE
     } else {
         GENERIC_PROVIDER_OPERATION
@@ -489,6 +496,23 @@ fn container_candidate(
         .or_else(|| metadata.pointer("/capabilities/revision"))
         .and_then(Value::as_str)
         .context("container declaration has no source revision")?;
+    // What the running container says it loaded, as distinct from what the
+    // declaration recorded. The declaration digest cannot answer this: the v9
+    // harness source moved while the declaration stayed byte-identical.
+    //
+    // Only `/info/...` counts: `metadata.gitRevision` and
+    // `metadata.capabilities.revision` are both copied from the launch
+    // declaration, so reading either back would compare the declaration to
+    // itself and report every container fresh.
+    let runtime_revision = metadata
+        .pointer("/info/source_revision")
+        .or_else(|| metadata.pointer("/info/runtime_revision"))
+        .or_else(|| metadata.pointer("/info/capabilities/runtime/source_revision"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(SourceRevision::new)
+        .transpose()?;
     let evaluator_id = metadata
         .pointer("/info/logical_service_ids/evaluator")
         .and_then(Value::as_str)
@@ -505,6 +529,7 @@ fn container_candidate(
     }))?;
     let operations = metadata
         .pointer("/capabilities/operations")
+        .or_else(|| metadata.pointer("/info/capabilities/operations"))
         .and_then(Value::as_object)
         .map(|values| {
             values
@@ -542,6 +567,7 @@ fn container_candidate(
         container_id: ContainerId::new(id)?,
         registration_id: ContainerRegistrationId::new(id)?,
         source_revision: SourceRevision::new(source_revision)?,
+        runtime_revision,
         health: status.to_owned(),
         family,
         declaration: EvalDeclaration {

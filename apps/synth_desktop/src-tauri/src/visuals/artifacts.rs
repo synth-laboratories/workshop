@@ -917,7 +917,7 @@ fn require_primary_optimizer_seal_evidence(
     if header.get("lifecycle").and_then(Value::as_str) != Some("terminal")
         || header.get("terminal").is_none_or(Value::is_null)
     {
-        bail!("optimizer visual can be sealed only after its run reaches a durable terminal state");
+        bail!("optimizer visual can be sealed only after its run finishes");
     }
     let projected_complete = header
         .pointer("/evidence/completeness")
@@ -938,7 +938,7 @@ fn require_primary_optimizer_seal_evidence(
             })
             .unwrap_or("missing");
         bail!(
-            "optimizer visual cannot be sealed because durable run evidence is {completeness}, not complete"
+            "optimizer visual cannot be sealed because run evidence is {completeness}, not complete"
         );
     }
     if optimizer_runtime_evidence_rejected(run_summary) {
@@ -949,10 +949,10 @@ fn require_primary_optimizer_seal_evidence(
 
 fn optimizer_view_is_primary(visual_id: &str, run_id: &str, run_view: &Value) -> Result<bool> {
     let header = run_view.get("header").ok_or_else(|| {
-        anyhow!("optimizer visual cannot be sealed because its durable run view has no header")
+        anyhow!("optimizer visual cannot be sealed because its run view has no header")
     })?;
     if header.get("runId").and_then(Value::as_str) != Some(run_id) {
-        bail!("optimizer visual cannot be sealed because its durable run identity changed");
+        bail!("optimizer visual cannot be sealed because its run identity changed");
     }
     Ok(header
         .get("visualRefs")

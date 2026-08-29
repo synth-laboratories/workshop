@@ -285,6 +285,7 @@ pub const VISUAL_BINDING_KINDS: &[&str] = &[
     "live_sse",
     "fixture",
     "optimizer_run",
+    "optimizer_snapshot",
     "query_snapshot",
     // The document pane's grant: the one workspace path a visual declares. It
     // is resolved by the host on every read through the conversation's session

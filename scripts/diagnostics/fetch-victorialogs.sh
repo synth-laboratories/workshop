@@ -32,6 +32,15 @@ esac
 
 ASSET="victoria-logs-${OS}-${ARCH}-${VERSION}.tar.gz"
 URL="https://github.com/VictoriaMetrics/VictoriaLogs/releases/download/${VERSION}/${ASSET}"
+EXPECTED_SHA256="${VICTORIALOGS_SHA256:-}"
+if [[ -z "$EXPECTED_SHA256" && "$VERSION/$OS/$ARCH" == "v1.52.0/darwin/arm64" ]]; then
+  EXPECTED_SHA256="3157d4b6181d8a7e3e30918e2cbfcd4cc4cb66263e3ef21ea91e4f20f8980883"
+fi
+if [[ -z "$EXPECTED_SHA256" ]]; then
+  echo "[victoria-logs] no trusted SHA-256 is declared for $VERSION ($OS/$ARCH)" >&2
+  echo "[victoria-logs] set VICTORIALOGS_SHA256 to the verified release digest" >&2
+  exit 1
+fi
 
 mkdir -p "$DEST_DIR"
 WORK="$(mktemp -d)"
@@ -39,6 +48,11 @@ trap 'rm -rf "$WORK"' EXIT
 
 echo "[victoria-logs] fetching ${VERSION} (${OS}/${ARCH})"
 curl --fail --location --silent --show-error --output "$WORK/$ASSET" "$URL"
+ACTUAL_SHA256="$(shasum -a 256 "$WORK/$ASSET" | awk '{print $1}')"
+if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]; then
+  echo "[victoria-logs] archive digest mismatch: expected $EXPECTED_SHA256, got $ACTUAL_SHA256" >&2
+  exit 1
+fi
 tar -xzf "$WORK/$ASSET" -C "$WORK"
 
 # The archive ships `victoria-logs-prod`; the app looks for `victoria-logs`.

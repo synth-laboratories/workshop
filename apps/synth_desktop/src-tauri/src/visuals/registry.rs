@@ -1303,8 +1303,23 @@ impl VisualRegistry {
                     );
                     document
                 }
+                "optimizer_snapshot" => {
+                    let snapshot_id = source.ok_or_else(|| {
+                        anyhow!("optimizer_snapshot slot {slot} needs a snapshot id")
+                    })?;
+                    let service = self.optimizer_runs.get().ok_or_else(|| {
+                        anyhow!("this runtime has no optimizer service attached, so slot {slot} cannot be read")
+                    })?;
+                    let document = service.get_snapshot(snapshot_id.to_string()).await?;
+                    receipt["source"] = json!(snapshot_id);
+                    receipt["digest"] = document.pointer("/receipt/contentDigest").cloned().unwrap_or(Value::Null);
+                    receipt["sealed"] = document.pointer("/receipt/sealed").cloned().unwrap_or(Value::Bool(false));
+                    receipt["sourceRunId"] = document.pointer("/receipt/sourceRunId").cloned().unwrap_or(Value::Null);
+                    receipt["sourceInstanceId"] = document.pointer("/receipt/sourceInstanceId").cloned().unwrap_or(Value::Null);
+                    document
+                }
                 other => bail!(
-                    "input {slot} is bound as {other}, which a chart cannot read; supported kinds are inline, fixture, local_cas, trace_v5, query_snapshot, optimizer_run"
+                    "input {slot} is bound as {other}, which a chart cannot read; supported kinds are inline, fixture, local_cas, trace_v5, query_snapshot, optimizer_run, optimizer_snapshot"
                 ),
             };
             provenance.insert(slot.clone(), receipt);

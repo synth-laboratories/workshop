@@ -143,7 +143,7 @@ export function ExperimentsPage({ initialId, onBack }: { initialId?: string; onB
 				<div>
 					<span className="eyebrow">LOCAL REGISTRY</span>
 					<h1>Experiments</h1>
-					<p>Durable comparisons and explicit lineage. Nothing is uploaded.</p>
+					<p>Saved comparisons and explicit lineage. Nothing is uploaded.</p>
 				</div>
 			</header>
 			<div className="experiments-workbench">

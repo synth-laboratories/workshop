@@ -8,7 +8,8 @@ cd "$repo_root"
 [[ -d node_modules ]] || npm ci
 npm run typecheck
 npm run build:graph
-cargo build --manifest-path apps/synth_desktop/src-tauri/Cargo.toml --release -j "${WORKSHOP_BUILD_JOBS:-4}"
+WORKSHOP_BUILD_JOBS="${WORKSHOP_BUILD_JOBS:-4}" \
+  "$repo_root/scripts/build-tier.sh" stable
 
 echo "Unsigned Workshop build complete."
-echo "Native binaries: apps/synth_desktop/src-tauri/target/release/"
+echo "App bundle: work/tier-builds/stable/Synth Workshop.app"

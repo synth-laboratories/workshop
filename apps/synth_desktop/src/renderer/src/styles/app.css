@@ -3262,6 +3262,29 @@ html.visual-expanded .titlebar {
 .tool-status-running { color: #6d5dad; background: rgba(140, 116, 214, 0.1); }
 .tool-status-completed { color: #3f7e59; background: rgba(63, 126, 89, 0.09); }
 .tool-status-failed { color: #a45353; background: rgba(164, 83, 83, 0.09); }
+/* Cancellation is a terminal outcome of its own, not a failure, and the chip
+   said "Cancelled" with no rule to render it by. */
+.tool-status-cancelled { color: var(--color-warning-text); background: var(--color-bg-subtle); }
+
+/* A tool line whose run has since stopped. The line is not wrong — it recorded
+   what the call returned — so it is set back rather than struck out, and the
+   marker names what the run became. */
+.local-activity.superseded .mcp-activity-name,
+.local-activity.superseded .tool-activity-detail,
+.local-activity.superseded .tool-status {
+	opacity: 0.55;
+}
+
+.tool-superseded {
+	flex: 0 0 auto;
+	padding: 1px 6px;
+	border-radius:var(--radius-pill);
+	font-size:var(--font-size-xs);
+	line-height: 1.5;
+	color: var(--color-text-muted);
+	border: 1px solid var(--color-border);
+	white-space: nowrap;
+}
 
 .tool-visual-open {
 	display: inline-flex;
@@ -5421,6 +5444,40 @@ html.visual-expanded .titlebar {
 }
 
 /* Controls keep intrinsic widths: narrow numbers, content-sized selects. */
+.settings-item-control input[type="text"] {
+	width: 92px;
+	min-height: 28px;
+	padding: 3px 6px;
+	text-align: right;
+	border: 1px solid var(--color-border);
+	border-radius: 6px;
+	background: var(--color-bg);
+	color: var(--color-text);
+	font-variant-numeric: tabular-nums;
+}
+
+.settings-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 13px;
+	color: var(--color-text);
+}
+
+.settings-provider-toggles {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 12px;
+}
+
+.settings-error {
+	margin: 0;
+	padding: 8px 16px 12px;
+	font-size: 12px;
+	color: var(--color-danger, #c23);
+}
+
 .settings-item-control input[type="number"] {
 	width: 92px;
 	min-height: 28px;

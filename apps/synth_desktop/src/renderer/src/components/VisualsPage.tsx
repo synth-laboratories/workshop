@@ -1,5 +1,5 @@
 // @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import { artifactFromVisualRecord, VisualHost } from "./VisualHost";
 import { bridges } from "../runtime/desktopBridge";
@@ -47,13 +47,13 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 	const [listEpoch, setListEpoch] = useState(0);
 	const [focusVisualId, setFocusVisualId] = useState<string | null>(null);
 	const [listWidth, setListWidth] = useState(() => getPreferences().layout.last.visualsListWidth);
-	const updateListWidth = (width: number) => {
+	const updateListWidth = useCallback((width: number) => {
 		setListWidth(width);
 		updatePreferences((current) => ({
 			...current,
 			layout: { ...current.layout, last: { ...current.layout.last, visualsListWidth: width } }
 		}));
-	};
+	}, []);
 	const [seals, setSeals] = useState<VisualSeal[]>([]);
 	const [sealedBundle, setSealedBundle] = useState<VisualSealBundle | null>(null);
 	const [compareBundle, setCompareBundle] = useState<VisualSealBundle | null>(null);

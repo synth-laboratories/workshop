@@ -13,6 +13,7 @@ export type VisualBindingKind =
   | "live_sse"
   | "fixture"
   | "optimizer_run"
+  | "optimizer_snapshot"
   | "query_snapshot"
   | "workspace_file";
 
@@ -73,6 +74,7 @@ export type VisualBinding = {
    * - live_sse → absolute SSE URL
    * - fixture → relative path under visuals/fixtures/ or template examples/
    * - optimizer_run → cloud/local optimizer_run_id
+   * - optimizer_snapshot → immutable imported optimizer evidence snapshot id
    * - query_snapshot → immutable trace query snapshot id
    * - run_ref → run identity resolved by the host
    * - workspace_file → canonical path of one workspace document. Read by the

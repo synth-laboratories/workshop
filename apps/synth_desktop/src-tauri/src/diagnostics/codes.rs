@@ -175,7 +175,7 @@ const REMEDIATIONS: &[(&str, &str)] = &[
     ),
     (
         STREAM_INTERRUPTED,
-        "The live stream dropped while durable polling continued. Results are not lost — reconnect the stream, or read the rollout's terminal record instead of the live feed.",
+        "The live stream dropped while background polling continued. Results are not lost — reconnect the stream, or read the rollout's terminal record instead of the live feed.",
     ),
     (
         STREAM_SUBSCRIBE_TIMEOUT,
@@ -183,7 +183,7 @@ const REMEDIATIONS: &[(&str, &str)] = &[
     ),
     (
         STREAM_REPLAY_GAP,
-        "The replayed history has a hole in its sequence. Reload the stream from a durable snapshot rather than patching over the gap; a partial history is not evidence.",
+        "The replayed history has a hole in its sequence. Reload the stream from a saved snapshot rather than patching over the gap; a partial history is not evidence.",
     ),
     (
         CONTAINER_CAPABILITY_REJECTED,
@@ -267,7 +267,7 @@ const REMEDIATIONS: &[(&str, &str)] = &[
     ),
     (
         PROVIDER_DISCONNECTED,
-        "The local agent connection dropped. The turn's durable journal is intact; reconnect and resume rather than restarting the task.",
+        "The local agent connection dropped. The turn's recorded history is intact; reconnect and resume rather than restarting the task.",
     ),
     (
         PROVIDER_STALLED,
@@ -275,11 +275,11 @@ const REMEDIATIONS: &[(&str, &str)] = &[
     ),
     (
         SESSION_TRANSITION_REJECTED,
-        "The durable session refused a lifecycle edge, so storage and the running app now disagree. The requested status and the refusing cause are in the details; reconcile the session before starting another turn.",
+        "The saved session refused a lifecycle edge, so storage and the running app now disagree. The requested status and the refusing cause are in the details; reconcile the session before starting another turn.",
     ),
     (
         TURN_NOT_RECORDED,
-        "The provider turn started but could not be given a durable run. The upstream turn was interrupted and no partial run was left behind; the correlated session diagnostic names the underlying storage cause.",
+        "The provider turn started but could not be given a recorded run. The upstream turn was interrupted and no partial run was left behind; the correlated session diagnostic names the underlying storage cause.",
     ),
     (
         DIAGNOSTICS_QUEUE_SATURATED,

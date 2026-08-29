@@ -290,7 +290,7 @@ impl SessionPersistence {
             "session",
             "session.transition.rejected",
             crate::diagnostics::codes::SESSION_TRANSITION_REJECTED,
-            format!("the durable session could not move to {}", status.as_str()),
+            format!("the saved session could not move to {}", status.as_str()),
         )
         .retryable(false);
         input.correlation.session_id = Some(session_id.to_owned());

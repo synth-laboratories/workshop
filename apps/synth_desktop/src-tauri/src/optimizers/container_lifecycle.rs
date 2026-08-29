@@ -22,6 +22,16 @@ use uuid::Uuid;
 
 const HEALTH_POLL: Duration = Duration::from_millis(200);
 
+fn declaration_manifest_hash(spec: &ContainerSpec) -> Result<String> {
+    let bytes = std::fs::read(&spec.origin.manifest_path).with_context(|| {
+        format!(
+            "read container declaration {}",
+            spec.origin.manifest_path.display()
+        )
+    })?;
+    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
 fn children() -> &'static Mutex<HashMap<u32, Child>> {
     static CHILDREN: OnceLock<Mutex<HashMap<u32, Child>>> = OnceLock::new();
     CHILDREN.get_or_init(|| Mutex::new(HashMap::new()))
@@ -360,6 +370,21 @@ fn start_command(spec: &ContainerSpec) -> Result<LaunchedCommand> {
         .ok_or_else(|| anyhow!("container `{}` command is empty", spec.id))?;
     let mut command = Command::new(program);
     command.envs(&spec.environment);
+    // Stamp the launch with the revision this declaration named, so the
+    // running process can answer what it loaded. Freshness cannot be read off
+    // the declaration alone: the v9 harness source moved while the launch
+    // declaration stayed byte-identical, so its digest went on matching and
+    // nothing could say the managed container had not been replaced. A
+    // container left over from an earlier launch echoes that earlier
+    // revision, and admission refuses it.
+    if let Some(revision) = spec
+        .source_revision
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        command.env(crate::limits::CONTAINER_SOURCE_REVISION_ENV, revision);
+    }
     // Provider credentials never enter the launched process. The declaration
     // names which Workshop proxy routes may be minted later for an approved
     // run; the proxy remains the sole holder of provider secret material.
@@ -643,6 +668,18 @@ async fn upsert_ready(
     base_url: &str,
     process: Option<(u32, String)>,
 ) -> Result<String> {
+    let info = crate::http::http_client_builder()
+        .timeout(Duration::from_secs(2))
+        .build()?
+        .get(format!("{}/info", base_url.trim_end_matches('/')))
+        .send()
+        .await
+        .context("container_identity_pending: query /info before registration")?
+        .error_for_status()
+        .context("container_identity_pending: /info was not successful")?
+        .json::<Value>()
+        .await
+        .context("container_identity_pending: /info response is not JSON")?;
     let spec_id = spec.id.clone();
     let family = spec.family.clone();
     let contract = spec.contract.clone();
@@ -660,7 +697,7 @@ async fn upsert_ready(
     });
     let policy_source_path = spec.policy_source.clone();
     let source_revision = spec.source_revision.clone();
-    let manifest_digest = spec.manifest_digest.clone();
+    let manifest_digest = Some(declaration_manifest_hash(spec)?);
     let base_url = base_url.to_string();
     let (supervised_pid, process_start_identity) = process
         .map(|(pid, start)| (Some(pid), Some(start)))
@@ -710,6 +747,7 @@ async fn upsert_ready(
                     "protocol": contract,
                     "revision": source_revision,
                 },
+                "info": info,
                 "supervisedPid": retained_pid,
                 "processStartIdentity": retained_start,
             }))?;
@@ -757,7 +795,7 @@ fn merge_declaration_metadata(
     });
     let spec_id = spec.id.clone();
     let source_revision = spec.source_revision.clone();
-    let manifest_digest = spec.manifest_digest.clone();
+    let manifest_digest = Some(declaration_manifest_hash(spec)?);
     let policy_source_path = spec.policy_source.clone();
     db.with_conn(move |conn| {
         let raw: String = conn.query_row(

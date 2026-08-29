@@ -533,16 +533,43 @@ export function projectCraftaxViewer(
   chosenLane?: string | null,
   cutoffIndex?: number | null
 ): CraftaxViewerProjection {
-  const ordered = events
+  const decorated = events
     .map(normalizedCraftaxEvent)
-    .map((event, arrival) => ({ event, arrival }))
-    .sort((left, right) =>
-      eventTime(left.event) - eventTime(right.event) ||
-      craftaxEventLane(left.event).localeCompare(craftaxEventLane(right.event)) ||
-      craftaxEventSequence(left.event, left.arrival) - craftaxEventSequence(right.event, right.arrival) ||
-      left.arrival - right.arrival
-    )
-    .map(({ event }) => event);
+    // Sorting calls its comparator O(n log n) times. Decorate once so large
+    // retained traces do not repeatedly parse ISO timestamps and rediscover
+    // lane/sequence identity on the browser's main thread.
+    .map((event, arrival) => ({
+      event,
+      arrival,
+      time: eventTime(event),
+      lane: craftaxEventLane(event),
+      sequence: craftaxEventSequence(event, arrival)
+    }));
+  const compare = (left: (typeof decorated)[number], right: (typeof decorated)[number]) =>
+    left.time - right.time ||
+    left.lane.localeCompare(right.lane) ||
+    left.sequence - right.sequence ||
+    left.arrival - right.arrival;
+  // Durable replay pages are normally already canonical. Verify that in one
+  // linear pass and avoid an unnecessary n log n sort; producers that deliver
+  // out of order still take the same stable comparator path.
+  let canonical = true;
+  for (let index = 1; index < decorated.length; index += 1) {
+    if (compare(decorated[index - 1], decorated[index]) > 0) {
+      canonical = false;
+      break;
+    }
+  }
+  const ordered = (canonical ? decorated : decorated.sort(compare)).map(({ event }) => event);
+  return projectOrderedCraftaxViewer(ordered, chosenLane, cutoffIndex);
+}
+
+/** Project a sequence already normalized into the viewer's canonical order. */
+export function projectOrderedCraftaxViewer(
+  ordered: LiveEvalEvent[],
+  chosenLane?: string | null,
+  cutoffIndex?: number | null
+): CraftaxViewerProjection {
   const observedLanes = [...new Set(ordered.map(craftaxEventLane))];
   // Optimizer journals include run-level lifecycle envelopes on a synthetic
   // `eval` lane. It is useful durable evidence, but it is not a rollout and

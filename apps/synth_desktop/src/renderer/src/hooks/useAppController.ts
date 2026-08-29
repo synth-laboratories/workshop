@@ -1921,6 +1921,7 @@ export function useAppController() {
 					else if (kind === "approve" || kind === "reject") {
 						const approvalId = typeof payload.approvalId === "string" ? payload.approvalId : null;
 						if (!approvalId) throw new Error("Approval id is missing");
+						const approvalDigest = typeof payload.approvalDigest === "string" ? payload.approvalDigest : undefined;
 						if (settlingApprovalIdsRef.current.has(approvalId)) return;
 						const requestedDecision = payload.decision;
 						const decision = kind === "reject"
@@ -1949,7 +1950,7 @@ export function useAppController() {
 						};
 						settlingApprovalIdsRef.current.add(approvalId);
 						try {
-							await nativeCodex.resolveApproval(activeSessionId, approvalId, decision);
+							await nativeCodex.resolveApproval(activeSessionId, approvalId, decision, approvalDigest);
 							// The durable native settlement event is authoritative, but the RPC
 							// reply is also a settlement receipt. Publish a local equivalent so a
 							// dropped/reordered event cannot leave a live approval modal behind.

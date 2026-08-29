@@ -671,6 +671,16 @@ struct PendingApproval {
     settle: Mutex<bool>,
 }
 
+#[derive(Clone, Debug, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingApprovalView {
+    pub approval_id: String,
+    pub session_id: String,
+    pub kind: String,
+    pub requires_human: bool,
+    pub preparation_digest: Option<String>,
+}
+
 pub(crate) struct ApprovalBroker {
     pending: Mutex<HashMap<String, Arc<PendingApproval>>>,
     session_grants: Mutex<HashSet<(String, String)>>,
@@ -681,6 +691,9 @@ pub(crate) struct ApprovalBroker {
     effective_policies: Mutex<HashMap<String, super::approval_policy::EffectiveApprovalProfile>>,
     persistence: SessionPersistence,
     restore_started: AtomicBool,
+    /// Serializes conversation-budget reserve/release so concurrent host
+    /// authorizations cannot oversubscribe even before SQLite queues them.
+    paid_compute_lock: Mutex<()>,
 }
 
 impl ApprovalBroker {
@@ -692,7 +705,56 @@ impl ApprovalBroker {
             effective_policies: Mutex::new(HashMap::new()),
             persistence,
             restore_started: AtomicBool::new(false),
+            paid_compute_lock: Mutex::new(()),
         }
+    }
+
+    pub(crate) async fn pending_snapshot(&self) -> Vec<PendingApprovalView> {
+        let mut views = self
+            .pending
+            .lock()
+            .await
+            .iter()
+            .map(|(approval_id, pending)| PendingApprovalView {
+                approval_id: approval_id.clone(),
+                session_id: pending.origin.session_id.clone(),
+                kind: pending.kind.name().to_owned(),
+                requires_human: pending.kind.requires_human(),
+                preparation_digest: pending.kind.approval_digest().map(str::to_owned),
+            })
+            .collect::<Vec<_>>();
+        views.sort_by(|left, right| left.approval_id.cmp(&right.approval_id));
+        views
+    }
+
+    pub(crate) async fn approve_digest<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        digest: &str,
+    ) -> Result<(String, bool)> {
+        let matched = self.pending.lock().await.iter().find_map(|(id, pending)| {
+            (pending.kind.approval_digest() == Some(digest)).then(|| {
+                (
+                    id.clone(),
+                    pending.origin.session_id.clone(),
+                    pending.kind.clone(),
+                )
+            })
+        });
+        let Some((approval_id, session_id, kind)) = matched else {
+            return Err(anyhow!("no approval sheet is open for digest {digest}"));
+        };
+        let decision = match kind {
+            ApprovalKind::PaidCompute { requested_cap, .. } => {
+                ApprovalDecision::ApproveWithCap { cap: requested_cap }
+            }
+            _ => ApprovalDecision::Approve {
+                scope: ApprovalScope::Once,
+            },
+        };
+        self.resolve(app, &session_id, &approval_id, decision)
+            .await?;
+        Ok((approval_id, false))
     }
 
     /// Seal the profile a session start resolved and persist the atomic
@@ -712,6 +774,15 @@ impl ApprovalBroker {
                 profile.receipt_payload(session_id),
             )
             .await?;
+        if let Some(database) = self.persistence.database() {
+            let session = session_id.to_owned();
+            let policy = profile.paid_compute.clone();
+            database
+                .run_transaction(move |conn| {
+                    super::paid_compute_budget::seed_conversation_budget(conn, &session, &policy)
+                })
+                .await?;
+        }
         self.effective_policies
             .lock()
             .await
@@ -785,12 +856,36 @@ impl ApprovalBroker {
     ) -> Result<String> {
         kind.validate_decision(decision)?;
         let approval_id = format!("approval-auto-{}", uuid::Uuid::new_v4().simple());
-        let mut payload = kind.safe_payload(&approval_id);
+        self.write_auto_grant(app, session_id, &approval_id, kind, decision, policy, None)
+            .await?;
+        Ok(approval_id)
+    }
+
+    async fn write_auto_grant<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+        approval_id: &str,
+        kind: &ApprovalKind,
+        decision: &ApprovalDecision,
+        policy: &str,
+        extra: Option<Value>,
+    ) -> Result<()> {
+        kind.validate_decision(decision)?;
+        let mut payload = kind.safe_payload(approval_id);
         payload["decision"] = json!(decision.event_value());
         payload["policyAuto"] = json!(true);
         payload["approvalPolicy"] = json!(policy);
         if let ApprovalDecision::ApproveWithCap { cap } = decision {
             payload["cap"] = serde_json::to_value(cap)?;
+        }
+        if let Some(extra) = extra {
+            if let (Some(object), Some(extra_object)) = (payload.as_object_mut(), extra.as_object())
+            {
+                for (key, value) in extra_object {
+                    object.insert(key.clone(), value.clone());
+                }
+            }
         }
         self.persistence
             .append_boundary_event(
@@ -801,7 +896,7 @@ impl ApprovalBroker {
                 payload,
             )
             .await?;
-        Ok(approval_id)
+        Ok(())
     }
 
     pub(crate) async fn resolve<R: tauri::Runtime>(
@@ -1195,6 +1290,14 @@ impl ApprovalBroker {
             return Ok((approval_id, decision));
         }
         if let Some(session_id) = session_id {
+            if let Some(outcome) = self
+                .try_auto_authorize_paid_compute(app, session_id, &kind)
+                .await?
+            {
+                return Ok(outcome);
+            }
+        }
+        if let Some(session_id) = session_id {
             let (resolver, receiver) = HostDecisionResolver::pair();
             let approval_id = self
                 .request(
@@ -1226,6 +1329,80 @@ impl ApprovalBroker {
         Err(anyhow!(
             "this mutation requires an agent session for approval"
         ))
+    }
+
+    /// Conversation-scoped paid-compute auto-approval. Ineligible requests
+    /// return `None` so the native modal stays in charge. Accounting lives on
+    /// the broker (and SQLite), never in the synchronous policy table.
+    pub(crate) async fn try_auto_authorize_paid_compute<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+        kind: &ApprovalKind,
+    ) -> Result<Option<(String, ApprovalDecision)>> {
+        let ApprovalKind::PaidCompute {
+            requested_cap,
+            preparation_digest,
+            ..
+        } = kind
+        else {
+            return Ok(None);
+        };
+        let Some(ceiling) = requested_cap.max_cost_usd_micros.filter(|value| *value > 0) else {
+            return Ok(None);
+        };
+        let Some(provider) = paid_compute_provider(kind) else {
+            return Ok(None);
+        };
+        let Some(database) = self.persistence.database() else {
+            return Ok(None);
+        };
+        let _lock = self.paid_compute_lock.lock().await;
+        let approval_id = format!("approval-auto-{}", uuid::Uuid::new_v4().simple());
+        let session = session_id.to_owned();
+        let digest = preparation_digest.clone();
+        let reserved_id = approval_id.clone();
+        let grant = database
+            .run_transaction(move |conn| {
+                if !super::paid_compute_budget::budget_allows_provider(conn, &session, &provider)? {
+                    return Ok(None);
+                }
+                super::paid_compute_budget::try_reserve(
+                    conn,
+                    &session,
+                    &reserved_id,
+                    digest.as_deref(),
+                    ceiling,
+                )
+            })
+            .await?;
+        let Some(grant) = grant else {
+            return Ok(None);
+        };
+        let decision = ApprovalDecision::ApproveWithCap {
+            cap: requested_cap.clone(),
+        };
+        if let Err(error) = self
+            .write_auto_grant(
+                app,
+                session_id,
+                &approval_id,
+                kind,
+                &decision,
+                super::paid_compute_budget::CONVERSATION_POLICY,
+                Some(grant.receipt_fields()),
+            )
+            .await
+        {
+            let release_id = approval_id.clone();
+            let _ = database
+                .run_transaction(move |conn| {
+                    super::paid_compute_budget::release_reservation(conn, &release_id)
+                })
+                .await;
+            return Err(error);
+        }
+        Ok(Some((approval_id, decision)))
     }
 
     pub(crate) async fn is_pending(&self, approval_id: &str) -> bool {
@@ -1296,6 +1473,31 @@ impl ApprovalBroker {
         }
     }
 
+}
+
+fn paid_compute_provider(kind: &ApprovalKind) -> Option<String> {
+    let ApprovalKind::PaidCompute {
+        parameters,
+        credential_names,
+        ..
+    } = kind
+    else {
+        return None;
+    };
+    let raw = parameters
+        .pointer("/model/provider")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            parameters
+                .pointer("/credentialRoute/provider")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            credential_names
+                .first()
+                .and_then(|name| name.split(':').next())
+        })?;
+    crate::synth_config::normalize_provider(raw).ok()
 }
 
 fn remembered_key(kind: &ApprovalKind) -> Option<String> {

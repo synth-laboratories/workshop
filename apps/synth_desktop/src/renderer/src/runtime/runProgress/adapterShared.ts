@@ -294,7 +294,7 @@ export function evidenceOf(
 			reason: "the run finished but its evidence did not persist",
 			diagnostic: typeof degradation?.reason === "string"
 				? `${String(degradation.stage ?? "evidence")}: ${degradation.reason}`
-				: `no durable evidence at cursor ${input.cursorSeq}`
+				: `no recorded evidence at cursor ${input.cursorSeq}`
 		};
 	}
 	if (observedUnits > 0 || frozenWork(run) != null) return { state: "present" };

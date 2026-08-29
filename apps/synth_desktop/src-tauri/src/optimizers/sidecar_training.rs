@@ -1702,7 +1702,7 @@ async fn drive_hosted_cispo_job(
     validate_tunneled_evaluation_plan(config)?;
     let _ = (runtime, job_id);
     bail!(
-        "hosted CISPO is fail-closed until an authenticated sidecar capability projects a durable signed slime-canary admission receipt"
+        "hosted CISPO is fail-closed until an authenticated sidecar capability projects a signed slime-canary admission receipt"
     )
 }
 

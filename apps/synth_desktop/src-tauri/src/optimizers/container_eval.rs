@@ -674,7 +674,7 @@ async fn project_worker_failure_visual(
                     workbench_id,
                     progress.as_ref(),
                     run.started_at.as_deref().unwrap_or(&run.created_at),
-                    None,
+                    Some(&run.usage),
                 )),
                 status: Some(VisualStatus::Failed),
                 renderer_kind: None,
@@ -925,7 +925,7 @@ async fn mint_experiment_visual(
                 "",
                 progress.as_ref(),
                 &run.created_at,
-                None,
+                Some(&run.usage),
             ),
             metadata: json!({
                 "optimizerRunId": run.id,
@@ -951,7 +951,7 @@ fn experiment_bindings(
     workbench_id: &str,
     progress_projection: Option<&Value>,
     started_at: &str,
-    provider_usage: Option<&Value>,
+    authoritative_usage: Option<&super::models::OptimizerUsageSummary>,
 ) -> Value {
     let train_mean = mean_for_pool(records, "train");
     let heldout_mean = mean_for_pool(records, "heldout");
@@ -999,7 +999,10 @@ fn experiment_bindings(
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let elapsed = elapsed_label(started_at);
-    let usage = usage_from_records(records, spec.cost_ceiling_usd);
+    let measured_usage = usage_from_records(records, spec.cost_ceiling_usd);
+    let usage = authoritative_usage
+        .map(|current| usage_with_authoritative_provider_receipt(measured_usage.clone(), current))
+        .unwrap_or(measured_usage);
     let total_tokens = usage.prompt_tokens + usage.completion_tokens;
     let phase = if matches!(
         status,
@@ -1020,8 +1023,9 @@ fn experiment_bindings(
     } else {
         eta_label(&elapsed, completed, total)
     };
-    let provider_requests = provider_usage
-        .and_then(|usage| usage.get("requestAttempts"))
+    let provider_requests = authoritative_usage
+        .and_then(|usage| usage.extra.get("providerUsageReceipt"))
+        .and_then(|receipt| receipt.get("calls"))
         .and_then(Value::as_u64);
     let usage_label = if total_tokens > 0 && provider_requests.is_some() {
         format!(
@@ -1039,7 +1043,7 @@ fn experiment_bindings(
     };
     let cost_label = usage
         .cost_usd
-        .map(|cost| format!("${cost:.4} / ${:.2}", spec.cost_ceiling_usd))
+        .map(|cost| format!("${cost:.6} / ${:.2}", spec.cost_ceiling_usd))
         .unwrap_or_else(|| {
             if status == "running" {
                 format!("awaiting telemetry / ${:.2}", spec.cost_ceiling_usd)
@@ -1214,7 +1218,7 @@ fn experiment_bindings(
                     {"label": "Overall mean", "value": mean_reward, "detail": "missing rewards stay missing"},
                     {"label": "Provider requests", "value": provider_requests, "detail": "authoritative Workshop proxy request attempts across the run"}
                 ],
-                "providerUsage": provider_usage,
+                "providerUsage": Value::Null,
                 "results": {
                     "rollouts": rollouts,
                 },
@@ -1760,28 +1764,6 @@ async fn append_provider_usage_receipt(
         );
     }
     let current = service.get(run_id.to_string()).await?.usage;
-    if current.calls > receipt.calls
-        || current.prompt_tokens > receipt.input_tokens
-        || current.completion_tokens > receipt.output_tokens
-    {
-        bail!(
-            "provider_usage_reconciliation_conflict: receipt totals for {run_id} are below committed provider usage (calls {} < {}, prompt {} < {}, completion {} < {})",
-            receipt.calls,
-            current.calls,
-            receipt.input_tokens,
-            current.prompt_tokens,
-            receipt.output_tokens,
-            current.completion_tokens,
-        );
-    }
-    if let (Some(receipt_cost), Some(committed_cost)) = (receipt.cost_usd, current.cost_usd) {
-        if receipt_cost + f64::EPSILON < committed_cost {
-            bail!(
-                "provider_usage_reconciliation_conflict: receipt cost ${receipt_cost:.6} is below committed cost ${committed_cost:.6}"
-            );
-        }
-    }
-
     let cost_delta = match (receipt.cost_usd, current.cost_usd) {
         (Some(receipt_cost), Some(committed_cost)) => json!(receipt_cost - committed_cost),
         (Some(receipt_cost), None) => json!(receipt_cost),
@@ -1804,11 +1786,13 @@ async fn append_provider_usage_receipt(
         ),
         (
             "prompt_tokens".into(),
-            json!(receipt.input_tokens - current.prompt_tokens),
+            json!(receipt.input_tokens.saturating_sub(current.prompt_tokens)),
         ),
         (
             "completion_tokens".into(),
-            json!(receipt.output_tokens - current.completion_tokens),
+            json!(receipt
+                .output_tokens
+                .saturating_sub(current.completion_tokens)),
         ),
         ("cost_usd".into(), cost_delta),
         ("usage_completeness".into(), json!("reconciled")),
@@ -2761,7 +2745,7 @@ pub(super) async fn reconcile_evidence(
                 super::admission::load_admitted_execution_spec(conn, &owned_run_id)?
                     .context("evaluation run has no approved execution specification")?;
             let kernel_state = super::kernel::persist::load_state(conn, &owned_run_id)?
-                .context("evaluation run has no durable kernel projection")?;
+                .context("evaluation run has no saved kernel projection")?;
             Ok((execution_spec, kernel_state))
         })
         .await?;
@@ -2834,9 +2818,7 @@ pub(super) async fn reconcile_evidence(
             .map(str::to_string)
             .or_else(|| ledger_identity.and_then(|entry| entry.rollout_id.clone()))
             .with_context(|| {
-                format!(
-                    "terminal record and durable trial ledger for seed {seed} have no rolloutId"
-                )
+                format!("terminal record and saved trial ledger for seed {seed} have no rolloutId")
             })?;
         let trial_id = record
             .get("trialId")
@@ -2844,7 +2826,7 @@ pub(super) async fn reconcile_evidence(
             .map(str::to_string)
             .or_else(|| ledger_identity.and_then(|entry| entry.trial_id.clone()))
             .with_context(|| {
-                format!("terminal record and durable trial ledger for seed {seed} have no trialId")
+                format!("terminal record and saved trial ledger for seed {seed} have no trialId")
             })?;
         // Repair the weaker summary copy from the append-only kernel ledger so
         // a successful evidence retry also leaves future readers consistent.
@@ -2884,34 +2866,20 @@ pub(super) async fn reconcile_evidence(
             .and_then(Value::as_array)
             .and_then(|traces| traces.first())
             .context("sealed bundle indexed no trace")?;
-        let trace_ref = imported_trace
-            .get("traceId")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .with_context(|| {
-                format!("sealed bundle for rollout `{rollout_id}` indexed no trace")
-            })?;
-        let trace_digest = imported_trace
-            .get("digest")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|digest| valid_sha256_digest(digest))
-            .with_context(|| {
-                format!("sealed bundle for rollout `{rollout_id}` indexed a trace without an immutable digest")
-            })?
-            .to_string();
-        if trace_ref != producer_trace_id {
-            bail!(
-                "trace_identity_mismatch: rollout `{rollout_id}` declared `{producer_trace_id}` but the immutable bundle indexed `{trace_ref}`"
-            );
-        }
+        let (trace_ref, trace_digest) =
+            verify_reconciled_trace_identity(imported_trace, producer_trace_id, &rollout_id)?;
         record
             .as_object_mut()
             .with_context(|| format!("terminal record for seed {seed} is not an object"))?
             .insert("sealedTrace".into(), imported);
         attach_reported_facts(record);
+        let trace_kind = if matches!(frame_mode, FrameTraceMode::SealedPartial { .. }) {
+            "trace_v5_partial"
+        } else {
+            "trace_v5"
+        };
         evidence_refs.push(json!({
-            "kind": "trace",
+            "kind": trace_kind,
             "id": trace_ref,
             "digest": trace_digest,
         }));
@@ -2944,7 +2912,10 @@ pub(super) async fn reconcile_evidence(
         .and_then(|visuals| visuals.get("trace_workbench"))
         .and_then(Value::as_str)
         .context("evaluation run has no trace workbench visualId")?;
-    persist_progress(
+    // The terminal manifest and summary are immutable. Reconciliation amends
+    // evidence through the append-only event above, then republishes only the
+    // derived visuals from that authoritative projection.
+    publish_terminal_visual_projection(
         service,
         run_id,
         &spec,
@@ -2956,6 +2927,139 @@ pub(super) async fn reconcile_evidence(
     )
     .await?;
     service.get(run_id.to_string()).await
+}
+
+/// Validate the identity sealed by the producer while returning Workshop's
+/// local trace reference. Producer ids (often the rollout id) and local
+/// `tracev5_...` row ids are separate namespaces and must never be compared.
+fn verify_reconciled_trace_identity(
+    imported_trace: &Value,
+    declared_producer_trace_id: &str,
+    rollout_id: &str,
+) -> Result<(String, String)> {
+    let trace_ref = imported_trace
+        .get("traceId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|identity| !identity.is_empty())
+        .with_context(|| format!("sealed bundle for rollout `{rollout_id}` indexed no trace"))?
+        .to_string();
+    let indexed_producer_trace_id = imported_trace
+        .get("producerTraceId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|identity| !identity.is_empty())
+        .with_context(|| {
+            format!("sealed bundle for rollout `{rollout_id}` indexed no producer trace identity")
+        })?;
+    if indexed_producer_trace_id != declared_producer_trace_id {
+        bail!(
+            "trace_identity_mismatch: rollout `{rollout_id}` declared producer trace `{declared_producer_trace_id}` but the immutable bundle declared `{indexed_producer_trace_id}` (Workshop index `{trace_ref}`)"
+        );
+    }
+    let trace_digest = imported_trace
+        .get("digest")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|digest| valid_sha256_digest(digest))
+        .with_context(|| {
+            format!("sealed bundle for rollout `{rollout_id}` indexed a trace without an immutable digest")
+        })?
+        .to_string();
+    Ok((trace_ref, trace_digest))
+}
+
+/// Refresh a completed inline evaluation's visual from its authoritative run
+/// projection when a newer Workshop build can present previously omitted
+/// provider-receipt fields. Reopening a visual must not require replaying or
+/// mutating its immutable Trace V5 evidence.
+pub(super) async fn refresh_terminal_visual_projection_if_stale(
+    service: &OptimizerService,
+    run: &OptimizerRunRecord,
+) -> Result<bool> {
+    if run.algorithm_id != EVAL_ALGORITHM_ID
+        || run
+            .summary
+            .pointer("/recipeSourceKind")
+            .and_then(Value::as_str)
+            != Some("inline")
+        || !matches!(
+            run.status.as_str(),
+            "completed" | "failed" | "failed_evidence" | "cancelled" | "degraded"
+        )
+    {
+        return Ok(false);
+    }
+    let Some(cost) = run.usage.cost_usd else {
+        return Ok(false);
+    };
+    let summary = run
+        .summary
+        .as_object()
+        .context("evaluation run summary is not an object")?;
+    let visual_id = summary
+        .get("visualId")
+        .and_then(Value::as_str)
+        .context("evaluation run has no primary visualId")?;
+    let expected_cost = format!(
+        "${cost:.6} / ${:.2}",
+        summary
+            .get("costCeilingUsd")
+            .and_then(Value::as_f64)
+            .context("evaluation run has no cost ceiling")?
+    );
+    let visual = service.visuals().get(visual_id.to_string()).await?;
+    if visual
+        .bindings
+        .pointer("/inputs/0/data/progress/cost")
+        .and_then(Value::as_str)
+        == Some(expected_cost.as_str())
+    {
+        return Ok(false);
+    }
+
+    let owned_run_id = run.id.clone();
+    let execution_spec = service
+        .database()
+        .clone()
+        .run(move |conn| {
+            super::admission::load_admitted_execution_spec(conn, &owned_run_id)?
+                .context("evaluation run has no approved execution specification")
+        })
+        .await?;
+    let records = summary
+        .get("records")
+        .and_then(Value::as_array)
+        .context("evaluation run has no terminal records")?;
+    let family = summary
+        .get("task")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .context("evaluation run summary has no task family")?;
+    let world_ref = records
+        .first()
+        .and_then(|record| record.get("worldRef"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .context("evaluation terminal records have no worldRef")?;
+    let spec = EvalSpec::from_execution_spec(&execution_spec, family, world_ref)?;
+    let workbench_id = summary
+        .get("visualIds")
+        .and_then(|visuals| visuals.get("trace_workbench"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    publish_terminal_visual_projection(
+        service,
+        &run.id,
+        &spec,
+        visual_id,
+        workbench_id,
+        records,
+        execution_spec.recipe.rollout_plan.seeds.len(),
+        &run.status,
+    )
+    .await?;
+    Ok(true)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3247,6 +3351,7 @@ async fn persist_progress(
             Ok(())
         })
         .await?;
+    let run_after_patch = service.get(run_id.to_string()).await?;
 
     let visual_status = match status {
         "failed" | "failed_evidence" => VisualStatus::Failed,
@@ -3270,7 +3375,7 @@ async fn persist_progress(
                     workbench_id,
                     progress_projection.as_ref(),
                     &started_at,
-                    provider_usage.as_ref(),
+                    Some(&run_after_patch.usage),
                 )),
                 status: Some(visual_status.clone()),
                 renderer_kind: None,
@@ -3373,7 +3478,7 @@ async fn publish_terminal_visual_projection(
                     workbench_id,
                     Some(&progress_projection),
                     started_at,
-                    None,
+                    Some(&run.usage),
                 )),
                 status: Some(visual_status.clone()),
                 renderer_kind: None,

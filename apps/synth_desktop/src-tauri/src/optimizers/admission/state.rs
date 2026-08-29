@@ -396,6 +396,15 @@ pub struct RunProgress {
     /// Whether the credential capability minted for this run has been
     /// confirmed revoked. Unconfirmed revocation blocks `completed`.
     pub credential_revocation_confirmed: bool,
+    /// Whether an operator asked this run to stop.
+    ///
+    /// Recorded on the authoritative progress record, not just on the run
+    /// mirror, because the worker settles from this record. Without it a
+    /// deliberate stop arrives at settlement looking exactly like an evaluator
+    /// that could not produce a reward, and the run reports `failed` for work
+    /// nobody expected to finish.
+    #[serde(default)]
+    pub cancel_requested: bool,
 }
 
 impl RunProgress {
@@ -416,6 +425,7 @@ impl RunProgress {
             state: RunState::Draft,
             rollouts,
             credential_revocation_confirmed: false,
+            cancel_requested: false,
         }
     }
 
@@ -439,6 +449,7 @@ impl RunProgress {
             state: RunState::Starting,
             rollouts,
             credential_revocation_confirmed: false,
+            cancel_requested: false,
         }
     }
 
@@ -561,11 +572,33 @@ impl RunProgress {
             })
             .count();
 
+        // A run that finished everything before the stop landed is completed;
+        // cancelling after the fact does not retract evidence that exists.
+        let cancelled_rollouts = self
+            .rollouts
+            .values()
+            .filter(|record| {
+                matches!(
+                    record.state,
+                    Some(RolloutStateHolder(RolloutState::Cancelled))
+                )
+            })
+            .count();
+        let failed_rollouts = self
+            .rollouts
+            .values()
+            .filter(|record| matches!(record.state, Some(RolloutStateHolder(RolloutState::Failed))))
+            .count();
         let target = if gaps.is_empty()
             && completed == self.rollouts.len()
             && self.credential_revocation_confirmed
         {
             RunState::Completed
+        } else if self.cancel_requested || (cancelled_rollouts > 0 && failed_rollouts == 0) {
+            // An intentional stop is not an evaluator failure. It reports as
+            // what it is, whether the operator asked Workshop or the container
+            // reported the cancellation first.
+            RunState::Cancelled
         } else if completed == 0 {
             RunState::Failed
         } else {
@@ -576,6 +609,44 @@ impl RunProgress {
             .transition_to(target)
             .map_err(|error| SettlementRefusal::InvalidTransition(Box::new(error)))?;
         Ok(self.state)
+    }
+
+    /// Record that an operator asked this run to stop.
+    ///
+    /// Idempotent, and never reopens a settled run: a stop that arrives after
+    /// the terminal record is a stop that arrived too late to change anything.
+    pub fn request_cancel(&mut self) -> bool {
+        if self.state.is_terminal() || self.cancel_requested {
+            return false;
+        }
+        self.cancel_requested = true;
+        true
+    }
+
+    /// Terminalize a cancelled run: every nonterminal child becomes
+    /// `Cancelled`, then the run does. Distinct from [`Self::fail_pre_dispatch`]
+    /// so a stop never has to borrow the failure path's vocabulary.
+    pub fn cancel_pre_dispatch(&mut self) -> Result<(), StateTransitionError> {
+        self.cancel_requested = true;
+        let indexes: Vec<u32> = self.rollouts.keys().copied().collect();
+        for index in indexes {
+            let Some(RolloutStateHolder(state)) = self.rollouts[&index].state else {
+                continue;
+            };
+            if state.is_terminal() {
+                continue;
+            }
+            let next = if state.may_transition_to(RolloutState::Cancelled) {
+                RolloutState::Cancelled
+            } else {
+                RolloutState::Failed
+            };
+            self.transition_rollout(index, next)?;
+        }
+        if !self.state.is_terminal() {
+            self.transition_run(RunState::Cancelled)?;
+        }
+        Ok(())
     }
 
     /// Pre-dispatch or worker abort: every nonterminal child becomes terminal

@@ -68,7 +68,7 @@ fn hosted_slime_recipe() -> Value {
             "costNotice": "Hosted Tinker plus the bound container. Sidecar owns the tunnel lease."
         },
         "credentialInputs": [],
-        "prerequisites": ["Optimizers sidecar", "authenticated sidecar capability projecting a durable signed slime-canary admission receipt"]
+        "prerequisites": ["Optimizers sidecar", "authenticated sidecar capability projecting a signed slime-canary admission receipt"]
     })
 }
 
