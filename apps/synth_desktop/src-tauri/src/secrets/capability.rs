@@ -853,10 +853,14 @@ pub fn authorize_request(
     }
     if let Some(model) = model {
         if !live.models.is_empty()
-            && !live
-                .models
-                .iter()
-                .any(|allowed| allowed.eq_ignore_ascii_case(model))
+            && !live.models.iter().any(|allowed| {
+                allowed.eq_ignore_ascii_case(model)
+                    || (live.provider.eq_ignore_ascii_case("openrouter")
+                        && !model.contains('/')
+                        && allowed
+                            .strip_prefix("openai/")
+                            .is_some_and(|bare| bare.eq_ignore_ascii_case(model)))
+            })
         {
             anyhow::bail!("model {model} is not allowed for this capability");
         }
