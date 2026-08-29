@@ -579,6 +579,9 @@ test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears w
 	await expect(splitter).toBeVisible();
 	await expect(splitter).toHaveAttribute("role", "separator");
 	await expect(splitter).toHaveAttribute("aria-orientation", "vertical");
+	await expect(splitter).toHaveAttribute("aria-valuenow", /^\d+$/);
+	await expect(splitter).toHaveAttribute("aria-valuemin", /^\d+$/);
+	await expect(splitter).toHaveAttribute("aria-valuemax", /^\d+$/);
 	await expect.poll(async () => {
 		const reported = Number(await splitter.getAttribute("aria-valuenow"));
 		const realized = await page.getByTestId("visuals-grid").evaluate((element) => Math.round(element.getBoundingClientRect().width));
@@ -589,9 +592,11 @@ test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears w
 	const before = Number(await splitter.getAttribute("aria-valuenow"));
 	const box = await splitter.boundingBox();
 	if (!box) throw new Error("Visuals splitter geometry unavailable");
-	await page.mouse.move(box.x + box.width / 2, box.y + 80);
+	await splitter.hover({ position: { x: box.width / 2, y: Math.min(80, box.height / 2) } });
 	await page.mouse.down();
-	await page.mouse.move(box.x + 72, box.y + 80, { steps: 4 });
+	const activeBox = await splitter.boundingBox();
+	if (!activeBox) throw new Error("Visuals splitter geometry unavailable during drag");
+	await page.mouse.move(activeBox.x + activeBox.width / 2 + 72, activeBox.y + Math.min(80, activeBox.height / 2), { steps: 4 });
 	await page.mouse.up();
 	await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 	// Concurrent browser workers can coalesce intermediate pointer-move frames;
@@ -601,13 +606,15 @@ test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears w
 	const dragged = Number(await splitter.getAttribute("aria-valuenow"));
 	const grownBox = await splitter.boundingBox();
 	if (!grownBox) throw new Error("Visuals splitter geometry unavailable after growing the list");
-	await page.mouse.move(grownBox.x + grownBox.width / 2, grownBox.y + 80);
+	await splitter.hover({ position: { x: grownBox.width / 2, y: Math.min(80, grownBox.height / 2) } });
 	await page.mouse.down();
-	await page.mouse.move(grownBox.x - 112, grownBox.y + 80, { steps: 4 });
+	const shrinkingBox = await splitter.boundingBox();
+	if (!shrinkingBox) throw new Error("Visuals splitter geometry unavailable during shrink drag");
+	await page.mouse.move(shrinkingBox.x + shrinkingBox.width / 2 - 112, shrinkingBox.y + Math.min(80, shrinkingBox.height / 2), { steps: 4 });
 	await page.mouse.up();
 	await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+	await expect.poll(async () => Number(await splitter.getAttribute("aria-valuenow"))).toBeLessThan(dragged);
 	const draggedLeft = Number(await splitter.getAttribute("aria-valuenow"));
-	expect(draggedLeft).toBeLessThan(dragged);
 	await page.waitForTimeout(100);
 	await expect(splitter).toHaveAttribute("aria-valuenow", String(draggedLeft));
 	await page.reload();

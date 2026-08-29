@@ -102,36 +102,25 @@ export function PaneResizeHandle({
 		return parent ? Math.max(floor, parent.getBoundingClientRect().width - (direction === "primary" ? minSecondary : minPrimary)) : floor;
 	}, [direction, minPrimary, minSecondary]);
 
-	const persistRealized = useCallback((target: HTMLElement) => {
-		if (target.getClientRects().length === 0 || getComputedStyle(target).display === "none") return;
-		const named = namedPaneElement(target, direction);
-		if (!named) return;
-		const cssWidth = Math.round(named.getBoundingClientRect().width);
-		if (!Number.isFinite(cssWidth) || cssWidth < 1) return;
-		setRealized(cssWidth);
-		if (Math.abs(cssWidth - valueRef.current) >= 1) onChangeRef.current(cssWidth);
-	}, [direction]);
-
 	const cancelSettlement = useCallback(() => {
 		if (settleFrame.current !== null) cancelAnimationFrame(settleFrame.current);
 		settleFrame.current = null;
 		settling.current = false;
 	}, []);
 
-	const settleAfterLayout = useCallback((target: HTMLElement) => {
+	const settleAfterLayout = useCallback(() => {
 		cancelSettlement();
 		settling.current = true;
-		// Pointer capture is released before React is guaranteed to have painted
-		// the final drag value. Reconcile only after two layout frames so a stale
-		// pre-release box cannot overwrite the user's resize and snap the pane back.
+		// Pointer release can precede React's final paint. Suppress observer
+		// reconciliation for two frames; reading and persisting geometry here can
+		// capture the stale pre-drag box and snap the pane back to its old width.
 		settleFrame.current = requestAnimationFrame(() => {
 			settleFrame.current = requestAnimationFrame(() => {
 				settleFrame.current = null;
 				settling.current = false;
-				persistRealized(target);
 			});
 		});
-	}, [cancelSettlement, persistRealized]);
+	}, [cancelSettlement]);
 
 	const resize = useCallback((clientX: number, target: HTMLElement) => {
 		const max = measureMaximum(target);
@@ -160,7 +149,7 @@ export function PaneResizeHandle({
 		const pointerId = activePointer.current;
 		activePointer.current = null;
 		if (target && pointerId !== null && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
-		if (target) settleAfterLayout(target);
+		if (target) settleAfterLayout();
 	}, [settleAfterLayout]);
 
 	useEffect(() => {
@@ -196,6 +185,30 @@ export function PaneResizeHandle({
 			if (pointerId !== null && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
 		};
 	}, [cancelSettlement, direction, measureMaximum, release]);
+
+	useEffect(() => {
+		// Pointer capture is the primary path, but a React/layout commit can make
+		// browsers release capture while a physical gesture is still active.
+		// The window fallback keeps that same pointer authoritative until up or
+		// cancel; unrelated pointers are ignored.
+		const move = (event: globalThis.PointerEvent) => {
+			const target = handleRef.current;
+			if (!target || activePointer.current !== event.pointerId) return;
+			resize(event.clientX, target);
+		};
+		const end = (event: globalThis.PointerEvent) => {
+			if (activePointer.current !== event.pointerId) return;
+			release();
+		};
+		window.addEventListener("pointermove", move);
+		window.addEventListener("pointerup", end);
+		window.addEventListener("pointercancel", end);
+		return () => {
+			window.removeEventListener("pointermove", move);
+			window.removeEventListener("pointerup", end);
+			window.removeEventListener("pointercancel", end);
+		};
+	}, [release, resize]);
 
 	const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
 		event.preventDefault();
@@ -246,11 +259,6 @@ export function PaneResizeHandle({
 		onPointerMove={onPointerMove}
 		onPointerUp={onPointerUp}
 		onPointerCancel={onPointerUp}
-		onLostPointerCapture={() => {
-			activePointer.current = null;
-			const target = handleRef.current;
-			if (target) settleAfterLayout(target);
-		}}
 		onKeyDown={onKeyDown}
 		onDoubleClick={() => onChange(clampPaneWidth(resolvedResetValue, minimum, maximum))}
 	/>;
