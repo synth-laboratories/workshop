@@ -45,6 +45,10 @@ if [[ -z "${SYNTH_MLX_RL_PROJECT_ROOT:-}" ]]; then
   done
 fi
 "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
+"$ROOT/scripts/stage-optimizer-runtime-distribution.sh"
+if [[ ! -x "$ROOT/services/victoria-logs/victoria-logs" ]]; then
+  "$ROOT/scripts/diagnostics/fetch-victorialogs.sh"
+fi
 
 TARGET_ROOT="${CARGO_TARGET_DIR:-$APP_DIR/src-tauri/target}"
 
