@@ -53,6 +53,21 @@ test("batch ingest preserves lane-local identity, controls, and duplicate truth"
   assert.equal(healed.lastSequenceByScope.get("a"), 3);
 });
 
+test("batch ingest quarantines malformed rows and normalizes legacy type-only rows", () => {
+  const state = ingestLiveEnvelopeBatch(undefinedState(), [
+    undefined,
+    null,
+    {},
+    { type: "reward_signal", sequence: 1, payload: { value: 0 } },
+  ]);
+
+  assert.equal(state.events.length, 1);
+  assert.equal(state.events[0].kind, "reward_signal");
+  assert.equal(state.events[0].payload.value, 0);
+  assert.equal(state.conflicts.length, 3);
+  assert.ok(state.conflicts.every((message) => message.includes("Malformed live-eval envelope")));
+});
+
 test("numeric string sequences reach the same high-water mark as numbers", () => {
   const state = ingestLiveEnvelopeBatch(undefinedState(), [
     { lane: "a", sequence: "1", kind: "observation" },

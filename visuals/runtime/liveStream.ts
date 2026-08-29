@@ -92,6 +92,18 @@ export type LiveIngestState = {
   delivered: number;
 };
 
+function normalizeLiveEnvelope(value: unknown): LiveEnvelope | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const event = value as LiveEnvelope;
+  const kind = typeof event.kind === "string" && event.kind.length > 0
+    ? event.kind
+    : typeof event.type === "string" && event.type.length > 0
+      ? event.type
+      : null;
+  if (!kind) return null;
+  return event.kind === kind ? event : { ...event, kind };
+}
+
 export function isLiveEvalTemplate(templateId: string): boolean {
   return LIVE_EVAL_TEMPLATE_PREFIXES.some((prefix) => templateId.startsWith(prefix));
 }
@@ -311,8 +323,13 @@ export function ingestLiveEnvelopeBatch(
   let delivered = state.delivered;
   let ready = state.ready;
 
-  for (const event of incoming) {
+  for (const candidate of incoming as unknown[]) {
     delivered += 1;
+    const event = normalizeLiveEnvelope(candidate);
+    if (!event) {
+      conflicts.push("Malformed live-eval envelope: expected an object with a non-empty kind or type");
+      continue;
+    }
     const id = envelopeIdentity(event, delivered);
     const digest = typeof event.digest === "string" ? event.digest : canonicalJson(event);
     if (ids.has(id)) {
