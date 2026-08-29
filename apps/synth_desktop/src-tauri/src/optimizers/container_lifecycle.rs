@@ -1344,7 +1344,9 @@ include = ["launch-a.sh", "launch-b.sh"]
             .unwrap();
         let marker = root.join("launch-marker");
         let deadline = Instant::now() + Duration::from_secs(1);
-        while !marker.exists() && Instant::now() < deadline {
+        while fs::read_to_string(&marker).ok().as_deref() != Some("validated\n")
+            && Instant::now() < deadline
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(fs::read_to_string(&marker).unwrap(), "validated\n");
