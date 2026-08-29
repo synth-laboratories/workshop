@@ -90,6 +90,17 @@ overlay(internalManifests, "templates-internal");
 const ORDERED_ENTRIES = [...BY_ID.values()].sort((left, right) => left.meta.id.localeCompare(right.meta.id));
 const INTERNAL_IDS = new Set(Object.values(internalManifests).map((meta) => meta.id));
 
+// v0.8 development builds briefly persisted this pre-registration spelling.
+// Keep those immutable run artifacts inspectable while all new producers use
+// the canonical family id.
+const LEGACY_TEMPLATE_IDS: Readonly<Record<string, string>> = {
+  "trace.workbench.v1": "craftax.trace_workbench.v1"
+};
+
+export function canonicalTemplateId(id: string): string {
+  return LEGACY_TEMPLATE_IDS[id] ?? id;
+}
+
 type ShellModule = {
   Shell: (props: Record<string, unknown>) => unknown;
   default: (props: Record<string, unknown>) => unknown;
@@ -386,7 +397,7 @@ export function listTemplates(): VisualTemplate[] {
 
 export function resolveTemplate(id: string): VisualTemplate | undefined {
   // Bundled first, always: the runtime tier can add ids, never redefine one.
-  const entry = BY_ID.get(id) ?? RUNTIME_BY_ID.get(id);
+  const entry = BY_ID.get(canonicalTemplateId(id)) ?? RUNTIME_BY_ID.get(id);
   if (!entry) return undefined;
   return withDistribution(entry);
 }
@@ -397,7 +408,7 @@ export function resolveTemplate(id: string): VisualTemplate | undefined {
  * back to another template's shell; `VisualHost` compiles its source instead.
  */
 export function getShellImporter(id: string) {
-  return shellImporters[id];
+  return shellImporters[canonicalTemplateId(id)];
 }
 
 export function isInternalTemplate(id: string): boolean {

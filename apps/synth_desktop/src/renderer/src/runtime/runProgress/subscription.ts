@@ -85,7 +85,12 @@ export type RunProgressTransport = {
 	onEvent(listener: (event: { payload?: Record<string, unknown> }) => void): () => void;
 };
 
-const PAGE_SIZE = 500;
+// Eval events can contain observation text and model-call payloads. A 500-row
+// IPC response can exceed WebKit/Tauri's practical message size even though
+// the same page is harmless inside Rust. Keep replay pages deliberately small;
+// readPersisted exhausts them before publishing, so this changes transport
+// pressure without changing cursor or snapshot semantics.
+const PAGE_SIZE = 100;
 const POLL_INTERVAL_MS = 750;
 /** How long a hung get/eventsAfter may sit before the UI leaves Running. */
 const STALL_TIMEOUT_MS = 15_000;

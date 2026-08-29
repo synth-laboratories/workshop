@@ -14,6 +14,28 @@ import {
 } from "../runtime/craftaxTraceView.ts";
 import { evalAggregateV1, evalAggregateWorkFacts, evalTerminalFacts } from "../runtime/evalAggregate.ts";
 
+test("terminal scheduler ids reconcile with their semantic Craftax trial", () => {
+  const trialId = "trial:craftax:780005";
+  const rows = craftaxTrialsFromRun({ summary: {} }, [
+    {
+      type: "eval.trial.started",
+      delta: { trial_id: trialId, rollout_id: "roll_1", seed: 780005, pool: "train" }
+    },
+    {
+      type: "eval.trial.terminal",
+      item: {
+        id: "eval:trial:0",
+        valid: true,
+        raw: { trialId, rolloutId: "roll_1", seed: 780005, reward: 4 }
+      }
+    }
+  ]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].trialId, trialId);
+  assert.equal(rows[0].state, "done");
+  assert.equal(rows[0].reward, 4);
+});
+
 const CAS = (seed) => `ab${String(seed).padStart(62, "c")}`;
 
 let sequence = 0;
