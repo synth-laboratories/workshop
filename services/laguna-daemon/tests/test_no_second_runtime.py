@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import importlib
 import tempfile
 import time
 import unittest
@@ -101,11 +100,14 @@ class NoSecondRuntimeTests(unittest.TestCase):
                 )
 
     def test_legacy_modules_are_gone(self) -> None:
-        for module in ("laguna_daemon.manager", "laguna_daemon.responses"):
-            with self.assertRaises(
-                ModuleNotFoundError, msg=f"{module} should have been deleted"
-            ):
-                importlib.import_module(module)
+        # Inspect this checkout directly. An editable install elsewhere on the
+        # interpreter's meta path must not make a deleted local module appear
+        # to be part of the release candidate under test.
+        for filename in ("manager.py", "responses.py"):
+            self.assertFalse(
+                (PACKAGE_ROOT / filename).exists(),
+                msg=f"laguna_daemon/{filename} should have been deleted",
+            )
 
     def test_config_exposes_no_local_upstream(self) -> None:
         with tempfile.TemporaryDirectory(prefix="synth-laguna-guard-") as tmp:

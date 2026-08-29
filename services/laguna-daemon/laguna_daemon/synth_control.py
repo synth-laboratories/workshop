@@ -309,6 +309,7 @@ class SynthControl:
         downloader: Downloader | None = None,
         system_memory_bytes: int | None = None,
         available_memory_bytes: int | None = None,
+        free_disk_bytes: int | None = None,
         settings: SettingsStore | None = None,
     ) -> None:
         self.config = config
@@ -324,6 +325,9 @@ class SynthControl:
             else _physical_memory_bytes()
         )
         self.available_memory_bytes = available_memory_bytes
+        # Injectable for deterministic contract tests. Production keeps using
+        # the filesystem that actually owns the configured model directory.
+        self.free_disk_bytes = free_disk_bytes
         self._state = "starting"
         self._state_since = time.time()
         self._load_lock = asyncio.Lock()
@@ -627,7 +631,11 @@ class SynthControl:
                 409,
                 details={"model": canonical},
             )
-        free_disk = shutil.disk_usage(self.config.models_dir).free
+        free_disk = (
+            self.free_disk_bytes
+            if self.free_disk_bytes is not None
+            else shutil.disk_usage(self.config.models_dir).free
+        )
         if free_disk < REQUIRED_FREE_DISK_BYTES:
             raise ControlError(
                 "download_failed",

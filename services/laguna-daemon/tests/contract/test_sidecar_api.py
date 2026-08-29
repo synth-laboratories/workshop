@@ -135,6 +135,8 @@ class ControlApiTestCase(unittest.TestCase):
         # Real machine RAM must not decide test outcomes.
         self.control.system_memory_bytes = 64 * GIB
         self.control.available_memory_bytes = 64 * GIB
+        # Real host capacity must not decide deterministic download contracts.
+        self.control.free_disk_bytes = 64 * GIB
 
     def status(self) -> dict:
         response = self.client.get("/v1/synth/status")
@@ -456,6 +458,13 @@ class DownloadTests(ControlApiTestCase):
         load = self.client.post(f"/v1/synth/models/{MODEL}/load")
         self.assertEqual(load.status_code, 200, load.text)
         self.assertEqual(self.status()["state"], "resident_idle")
+
+    def test_download_refuses_insufficient_disk(self) -> None:
+        self.control.free_disk_bytes = 8 * GIB
+        response = self.client.post(f"/v1/synth/models/{MODEL}/download")
+        body = self.assert_error(response, 507, "download_failed")
+        self.assertEqual(body["error"]["details"]["reason"], "insufficient_disk")
+        self.assertEqual(body["error"]["details"]["free_bytes"], 8 * GIB)
 
     def test_download_failure_is_recorded_not_fabricated(self) -> None:
         self.control.downloader = FakeDownloader(fail=True)
@@ -985,6 +994,7 @@ class EventStreamTests(ControlApiTestCase):
         client = TestClient(build_app(_config(Path(temp.name))))
         control: SynthControl = client.app.state.synth_control
         control.system_memory_bytes = 64 * GIB
+        control.free_disk_bytes = 64 * GIB
         control.downloader = FakeDownloader()
         job = client.post(f"/v1/synth/models/{MODEL}/download").json()
         deadline = time.monotonic() + 5
