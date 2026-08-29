@@ -594,11 +594,11 @@ test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears w
 	await page.mouse.move(box.x + 72, box.y + 80, { steps: 4 });
 	await page.mouse.up();
 	await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-	const dragged = Number(await splitter.getAttribute("aria-valuenow"));
 	// Concurrent browser workers can coalesce intermediate pointer-move frames;
-	// require the pointer gesture to grow the pane without assuming how many
-	// synthetic steps painted.
-	expect(dragged).toBeGreaterThan(before);
+	// require the committed pointer gesture to grow the pane without assuming
+	// which animation frame commits the state update.
+	await expect.poll(async () => Number(await splitter.getAttribute("aria-valuenow"))).toBeGreaterThan(before);
+	const dragged = Number(await splitter.getAttribute("aria-valuenow"));
 	const grownBox = await splitter.boundingBox();
 	if (!grownBox) throw new Error("Visuals splitter geometry unavailable after growing the list");
 	await page.mouse.move(grownBox.x + grownBox.width / 2, grownBox.y + 80);
