@@ -21,6 +21,7 @@ const INLINE_PROVIDER_OPERATION: &str = "chat.completions.create";
 const OPENROUTER_CODEX_SWE_NAMESPACE: &str = "openrouter";
 const OPENROUTER_CODEX_SWE_POLICY: &str = "codex-cli-openrouter-swe-proxy-v1";
 const OPENROUTER_CODEX_SWE_MODEL: &str = "openai/gpt-5.6-luna";
+const RUNEBENCH_NAMESPACE: &str = "runebench";
 const RESPONSES_CREATE: &str = "responses.create";
 // Capabilities name concrete proxy wire operations. `provider.request` was
 // never routed, so a capability scoped to it failed every first model call
@@ -40,6 +41,10 @@ pub(super) fn credential_capability_scope_for_policy(
 ) -> admission::CredentialCapabilityScope {
     let exact_codex_swe_pin = namespace.eq_ignore_ascii_case(OPENROUTER_CODEX_SWE_NAMESPACE)
         && name == OPENROUTER_CODEX_SWE_POLICY
+        && provider.eq_ignore_ascii_case(OPENROUTER_CODEX_SWE_NAMESPACE)
+        && model == OPENROUTER_CODEX_SWE_MODEL;
+    let exact_runebench_pin = namespace.eq_ignore_ascii_case(RUNEBENCH_NAMESPACE)
+        && matches!(name, "luna_low" | "luna_high")
         && provider.eq_ignore_ascii_case(OPENROUTER_CODEX_SWE_NAMESPACE)
         && model == OPENROUTER_CODEX_SWE_MODEL;
     let empty_configuration = configuration
@@ -67,7 +72,9 @@ pub(super) fn credential_capability_scope_for_policy(
                         .is_some_and(|operation| operation.eq_ignore_ascii_case(RESPONSES_CREATE))
                 })
             });
-    let operation = if exact_codex_swe_pin && (empty_configuration || responses_declared) {
+    let operation = if (exact_codex_swe_pin && (empty_configuration || responses_declared))
+        || (exact_runebench_pin && responses_declared)
+    {
         RESPONSES_CREATE
     } else {
         GENERIC_PROVIDER_OPERATION
@@ -766,6 +773,30 @@ mod tests {
             TARGET_PROVIDER,
             TARGET_MODEL,
             &json!({"api": "responses", "operation": "responses.create"}),
+        );
+        assert_eq!(scope.operations, ["chat.completions.create"]);
+    }
+
+    #[test]
+    fn declared_runebench_codex_policy_selects_responses_create() {
+        let scope = credential_capability_scope_for_policy(
+            "runebench",
+            "luna_low",
+            TARGET_PROVIDER,
+            TARGET_MODEL,
+            &json!({"api": "responses", "operation": "responses.create"}),
+        );
+        assert_eq!(scope.operations, ["responses.create"]);
+    }
+
+    #[test]
+    fn undeclared_runebench_policy_remains_chat_scoped() {
+        let scope = credential_capability_scope_for_policy(
+            "runebench",
+            "luna_low",
+            TARGET_PROVIDER,
+            TARGET_MODEL,
+            &json!({}),
         );
         assert_eq!(scope.operations, ["chat.completions.create"]);
     }
