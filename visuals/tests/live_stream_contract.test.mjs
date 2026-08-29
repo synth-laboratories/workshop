@@ -281,7 +281,8 @@ test("finite fixture replay is ready without a live subscription control", () =>
   assert.match(hook, /setState\("terminal"\)/);
   // A declared stream always wins over a fixture: local example evidence never
   // stands in for the transport a visual actually declared.
-  assert.match(hook, /declared \? live : fixture/);
+  assert.match(hook, /declared \? live : durableEvents\?\.length \? persisted : fixture/);
+  assert.match(hook, /useDurableReplay/);
 });
 
 test("live Craftax resolves persisted fixture references from packaged template assets", () => {

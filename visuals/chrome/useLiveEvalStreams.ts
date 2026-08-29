@@ -27,6 +27,17 @@ const POLL_INTERVAL_MS = 500;
 // paints immediately.
 const REPLAY_PUBLISH_BATCH_ROWS = 5_000;
 
+type CachedLiveFold = {
+  ingest: ReturnType<typeof emptyLiveIngest>;
+  cursors: Map<string, number>;
+};
+
+// Visual panes are routinely unmounted when the operator changes outputs. Keep
+// their materialized fold at module scope so navigation is not a destructive
+// operation. This is a read-through cache only: the declared poll authorities
+// remain the durable source of truth and every mount resumes from its cursor.
+const liveFoldCache = new Map<string, CachedLiveFold>();
+
 /**
  * Fold every declared rollout stream into one viewer from its durable poll
  * authority.
@@ -59,11 +70,17 @@ export function useLiveEvalStreams(
   clientRef.current = client;
   const streamKey = client.streams.map((stream) => stream.streamId).join("\n");
   const { visualId, revision } = identity;
+  // A visual's revision commonly grows its declared stream set as rollouts are
+  // admitted. Keying by that set would make the revision itself erase the
+  // fold. Named visuals therefore retain one fold while newly declared streams
+  // join it; anonymous previews remain isolated by their descriptor identity.
+  const cacheKey = visualId ? `visual:${visualId}` : `anonymous:${streamKey}`;
 
   useEffect(() => {
-    ingest.current = emptyLiveIngest();
-    setEvents([]);
-    setReady(false);
+    const cached = liveFoldCache.get(cacheKey);
+    ingest.current = cached?.ingest ?? emptyLiveIngest();
+    setEvents(ingest.current.events as LiveEvalEvent[]);
+    setReady(ingest.current.ready);
     setRecovered(0);
     setError(null);
     setClosed(0);
@@ -78,7 +95,9 @@ export function useLiveEvalStreams(
     let stopped = false;
     let answered = false;
     let timer: number | undefined;
-    const cursors = new Map(streams.map((stream) => [stream.streamId, 0]));
+    const cursors = new Map(
+      streams.map((stream) => [stream.streamId, cached?.cursors.get(stream.streamId) ?? 0])
+    );
     const closedStreams = new Set<string>();
 
     const fail = (message: string, code: string) => {
@@ -109,6 +128,7 @@ export function useLiveEvalStreams(
     const publish = (rows: Parameters<typeof ingestLiveEnvelopeBatch>[1]) => {
       const before = ingest.current.events.length;
       ingest.current = ingestLiveEnvelopeBatch(ingest.current, rows);
+      liveFoldCache.set(cacheKey, { ingest: ingest.current, cursors });
       setEvents(ingest.current.events as LiveEvalEvent[]);
       setReady(ingest.current.ready);
       setRecovered((value) => value + Math.max(0, ingest.current.events.length - before));
@@ -179,7 +199,7 @@ export function useLiveEvalStreams(
     };
     // streamKey is the stable descriptor identity; hosts rebuild the array.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamKey, visualId, revision]);
+  }, [cacheKey, streamKey, visualId]);
 
   return { events, state, closed, ready, recovered, error };
 }

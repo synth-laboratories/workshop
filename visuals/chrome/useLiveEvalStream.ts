@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { LiveEvalEvent } from "../runtime/types.ts";
 import { emptyLiveIngest, ingestLiveEnvelopeBatch, type LiveEnvelope } from "../runtime/liveStream.ts";
 import type { ReplayClient, TransportState } from "../runtime/replayClient.ts";
@@ -27,22 +27,43 @@ const NO_STREAMS: ReplayClient = {
 export function useLiveEvalStream(options: {
   replay?: ReplayClient;
   fixtureEvents?: LiveEvalEvent[];
+  /** Workshop-owned persisted events, folded immediately on reopen. */
+  durableEvents?: LiveEvalEvent[];
   replayMs?: number;
   /** Identity for correlated diagnostics. Absent outside Workshop. */
   visualId?: string | null;
   revision?: number | null;
 }): LiveEvalStreamsView {
-  const { replay, fixtureEvents, replayMs = 800, visualId, revision } = options;
+  const { replay, fixtureEvents, durableEvents, replayMs = 800, visualId, revision } = options;
   const declared = (replay?.streams.length ?? 0) > 0;
   const live = useLiveEvalStreams(declared ? replay! : NO_STREAMS, { visualId, revision });
   // Binding resolution may reconstruct an equivalent inline array while its
   // visual revision is unchanged. Array identity is therefore not fixture
   // identity; using it as an effect dependency recursively resets playback.
-  const fixtureKey = declared || !fixtureEvents
+  const persisted = useDurableReplay(declared ? undefined : durableEvents);
+  const fixtureKey = declared || durableEvents?.length || !fixtureEvents
     ? ""
     : `${visualId ?? "preview"}:${revision ?? "draft"}:${JSON.stringify(fixtureEvents)}`;
-  const fixture = useFixtureReplay(declared ? undefined : fixtureEvents, replayMs, fixtureKey);
-  return declared ? live : fixture;
+  const fixture = useFixtureReplay(
+    declared || durableEvents?.length ? undefined : fixtureEvents,
+    replayMs,
+    fixtureKey
+  );
+  return declared ? live : durableEvents?.length ? persisted : fixture;
+}
+
+function useDurableReplay(events: LiveEvalEvent[] | undefined): LiveEvalStreamsView {
+  return useMemo(() => {
+    const folded = ingestLiveEnvelopeBatch(emptyLiveIngest(), events ?? []);
+    return {
+      events: folded.events as LiveEvalEvent[],
+      state: events?.length ? "terminal" : "idle",
+      closed: events?.length ? 1 : 0,
+      ready: Boolean(events?.length),
+      recovered: events?.length ?? 0,
+      error: folded.conflicts.at(-1) ?? null
+    };
+  }, [events]);
 }
 
 /**

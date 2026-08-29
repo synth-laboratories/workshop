@@ -43,6 +43,7 @@ type StreamScope = {
 };
 type StreamPayload = {
   events?: LiveEvalEvent[];
+  enrichmentEvents?: LiveEvalEvent[];
   replay_ms?: number;
   sse_url?: string;
   poll_url?: string;
@@ -156,6 +157,26 @@ function runCostLabel(lifecycle: RunLifecycle | undefined, producerCost: number 
 
 function asStream(raw: unknown): StreamPayload {
   return object(raw) as StreamPayload;
+}
+
+/**
+ * Container events are relayed into Workshop's durable optimizer journal as
+ * `optimizer_event.v1` rows. Once a run is terminal its transient live_sse
+ * bindings are removed, so reopening must unwrap those rows instead of
+ * pretending the renderer's former in-memory fold is the record.
+ */
+export function persistedCraftaxEvents(raw: unknown): LiveEvalEvent[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    const row = object(entry);
+    const delta = object(row.delta);
+    const rawPayload = object(row.raw);
+    const nested = delta.container_event ?? rawPayload.container_event;
+    if (!nested || typeof nested !== "object" || Array.isArray(nested)) return [];
+    const event = nested as LiveEvalEvent;
+    const kind = typeof event.kind === "string" ? event.kind : "";
+    return kind ? [event] : [];
+  });
 }
 
 function bundledFixtureStream(bindings: VisualBinding[]): StreamPayload | undefined {
@@ -423,13 +444,20 @@ export function Shell(props: ShellProps) {
   const optimizerJournalBound = bindingList.some((binding) => bindingInputName(binding) === "optimizer_run");
   // A fixture is authoring evidence. It never stands in for a declared stream,
   // and a declared stream is never inferred from the fixture's own fields.
+  const durableEvents = useMemo(
+    () => optimizerEvents || declaredStreamCount > 0
+      ? undefined
+      : persistedCraftaxEvents([...(stream.events ?? []), ...(stream.enrichmentEvents ?? [])]),
+    [optimizerEvents, declaredStreamCount, stream.events, stream.enrichmentEvents]
+  );
   const fixtureEvents = useMemo(
-    () => (optimizerEvents || declaredStreamCount > 0 ? undefined : stream.events),
-    [optimizerEvents, declaredStreamCount, stream.events]
+    () => (optimizerEvents || declaredStreamCount > 0 || durableEvents?.length ? undefined : stream.events),
+    [optimizerEvents, declaredStreamCount, durableEvents, stream.events]
   );
   const liveStream = useLiveEvalStream({
     replay: props.replay,
     fixtureEvents,
+    durableEvents,
     replayMs: stream.replay_ms,
     visualId: props.visualId,
     revision: props.revision
