@@ -1823,28 +1823,6 @@ async fn append_provider_usage_receipt(
         );
     }
     let current = service.get(run_id.to_string()).await?.usage;
-    if current.calls > receipt.calls
-        || current.prompt_tokens > receipt.input_tokens
-        || current.completion_tokens > receipt.output_tokens
-    {
-        bail!(
-            "provider_usage_reconciliation_conflict: receipt totals for {run_id} are below committed provider usage (calls {} < {}, prompt {} < {}, completion {} < {})",
-            receipt.calls,
-            current.calls,
-            receipt.input_tokens,
-            current.prompt_tokens,
-            receipt.output_tokens,
-            current.completion_tokens,
-        );
-    }
-    if let (Some(receipt_cost), Some(committed_cost)) = (receipt.cost_usd, current.cost_usd) {
-        if receipt_cost + f64::EPSILON < committed_cost {
-            bail!(
-                "provider_usage_reconciliation_conflict: receipt cost ${receipt_cost:.6} is below committed cost ${committed_cost:.6}"
-            );
-        }
-    }
-
     let cost_delta = match (receipt.cost_usd, current.cost_usd) {
         (Some(receipt_cost), Some(committed_cost)) => json!(receipt_cost - committed_cost),
         (Some(receipt_cost), None) => json!(receipt_cost),
@@ -1867,11 +1845,13 @@ async fn append_provider_usage_receipt(
         ),
         (
             "prompt_tokens".into(),
-            json!(receipt.input_tokens - current.prompt_tokens),
+            json!(receipt.input_tokens.saturating_sub(current.prompt_tokens)),
         ),
         (
             "completion_tokens".into(),
-            json!(receipt.output_tokens - current.completion_tokens),
+            json!(receipt
+                .output_tokens
+                .saturating_sub(current.completion_tokens)),
         ),
         ("cost_usd".into(), cost_delta),
         ("usage_completeness".into(), json!("reconciled")),
@@ -5466,6 +5446,44 @@ mod tests {
             manifest["usage"]["providerReceipt"]["receiptDigest"],
             json!(format!("sha256:{}", "a".repeat(64)))
         );
+    }
+
+    #[tokio::test]
+    async fn provider_receipt_replaces_higher_container_reported_usage() {
+        let (svc, _dir, _) = service().await;
+        let run = empty_eval_run(&svc, "opt_eval_provider_usage_lower_authority").await;
+        append_status(&svc, &run.id, "optimizer.run.started", "running")
+            .await
+            .unwrap();
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                OptimizerEventDraft::new("optimizer.usage", EVAL_ALGORITHM_ID).usage_delta(
+                    Map::from_iter([
+                        ("calls".into(), json!(30)),
+                        ("cost_usd".into(), json!(0.04)),
+                        ("prompt_tokens".into(), json!(700_000)),
+                        ("completion_tokens".into(), json!(3_000)),
+                    ]),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+        append_provider_usage_receipt(
+            &svc,
+            &run.id,
+            provider_usage_receipt(&run.id, 25, 644_061, 2_336, Some(0.025973), 'd'),
+        )
+        .await
+        .unwrap();
+
+        let projected = svc.get(run.id).await.unwrap();
+        assert_eq!(projected.usage.calls, 25);
+        assert_eq!(projected.usage.prompt_tokens, 644_061);
+        assert_eq!(projected.usage.completion_tokens, 2_336);
+        assert_eq!(projected.usage.cost_usd, Some(0.025973));
     }
 
     #[test]
