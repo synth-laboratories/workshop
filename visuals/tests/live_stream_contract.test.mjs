@@ -270,6 +270,8 @@ test("finite fixture replay is ready without a live subscription control", () =>
   // a stalled connection.
   assert.match(hook, /ready: Boolean\(fixtureEvents\?\.length\)/);
   assert.match(hook, /setState\("terminal"\)/);
+  assert.match(hook, /fixtureReplayIdentity\(fixtureEvents, visualId, revision\)/);
+  assert.match(hook, /\[fixtureIdentity, replayMs\]/, "equivalent host arrays must not restart finite fixture playback");
   // A declared stream always wins over a fixture: local example evidence never
   // stands in for the transport a visual actually declared.
   assert.match(hook, /declared \? live : fixture/);
@@ -365,6 +367,9 @@ test("live Craftax keeps replay-driven call fallback out of passive state effect
   assert.match(shell, /Only reasoning and tool evidence emitted into the retained trace is shown/);
   assert.match(shell, /<ReplayEvidence label="Policy reasoning"/);
   assert.match(shell, /<ReplayEvidence label="Tool calls"/);
+  assert.match(shell, /data-testid="craftax-selected-achievement-timeline"/);
+  assert.match(shell, /className="cv-achievement-marker cv-selected-achievement-marker"/);
+  assert.match(shell, /achievement\.icon/);
 });
 
 test("live Craftax declares optimizer lifecycle authority and makes failure senior to transport", () => {

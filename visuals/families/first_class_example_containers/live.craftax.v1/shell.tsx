@@ -669,11 +669,6 @@ export function Shell(props: ShellProps) {
         const value = finite(object(event.payload).total_reward);
         return value == null ? [] : [value];
       });
-  const achievementSeries = visibleEvents.reduce<number[]>((series, event) => {
-    if (event.kind === "achievement_unlocked") series.push((series.at(-1) ?? 0) + 1);
-    else if (event.kind === "reward_signal") series.push(series.at(-1) ?? 0);
-    return series;
-  }, []);
   const aggregateTimeline = useMemo(
     () => projectCraftaxAggregateTimeline(
       evaluationEvents,
@@ -682,6 +677,25 @@ export function Shell(props: ShellProps) {
     ),
     [evaluationEvents, evaluationCutoff, lanes, terminalRollouts]
   );
+  const selectedTimeline = useMemo(
+    () => selectedLane ? projectCraftaxAggregateTimeline(visibleEvents, [selectedLane])[0] : undefined,
+    [selectedLane, visibleEvents]
+  );
+  const selectedAchievementPoints = useMemo(() => {
+    const points = [{ step: 0, reward: 0 }];
+    for (const [index, achievement] of (selectedTimeline?.achievements ?? []).entries()) {
+      points.push({ step: achievement.step, reward: index + 1 });
+    }
+    const terminalStep = selectedTimeline?.terminalStep ?? 0;
+    if (terminalStep > (points.at(-1)?.step ?? 0)) {
+      points.push({ step: terminalStep, reward: selectedTimeline?.achievements.length ?? 0 });
+    }
+    return points;
+  }, [selectedTimeline]);
+  const selectedPlotMaxStep = Math.max(1, selectedTimeline?.terminalStep ?? 0);
+  const selectedAchievementMax = Math.max(1, selectedTimeline?.achievements.length ?? 0);
+  const selectedAchievementX = (step: number) => 42 + (Math.max(0, step) / selectedPlotMaxStep) * 580;
+  const selectedAchievementY = (count: number) => 156 - (count / selectedAchievementMax) * 134;
   const aggregateMaxStep = Math.max(1, ...aggregateTimeline.map((timeline) => timeline.terminalStep));
   const aggregateMinReward = Math.min(0, ...aggregateTimeline.flatMap((timeline) => timeline.points.map((point) => point.reward)));
   const aggregateMaxReward = Math.max(1, ...aggregateTimeline.flatMap((timeline) => timeline.points.map((point) => point.reward)));
@@ -925,7 +939,20 @@ export function Shell(props: ShellProps) {
 
       {config.showPlots ? <section className="cv-plots cv-surface-replay" data-visual-landmark="selected-outcome-plots">
         <article className="cv-panel"><div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>Cumulative reward</h3></div><strong>{formatMissingNumber(viewer.cumulativeReward)}</strong></div><svg viewBox="0 0 640 190" role="img" aria-label="Cumulative reward by step"><line x1="28" y1="166" x2="612" y2="166"/><polyline points={sparkline(rewardSeries)} /></svg></article>
-        <article className="cv-panel"><div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>Achievements through time</h3></div><strong>{achievements.length}</strong></div><svg viewBox="0 0 640 190" role="img" aria-label="Cumulative achievements by step"><line x1="28" y1="166" x2="612" y2="166"/><polyline className="secondary" points={sparkline(achievementSeries)} /></svg></article>
+        <article className="cv-panel" data-testid="craftax-selected-achievement-timeline"><div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>Achievements through time</h3></div><strong>{achievements.length}</strong></div><svg viewBox="0 0 640 190" role="img" aria-label="Cumulative achievements by environment step, with unlock icons"><line x1="42" y1="156" x2="622" y2="156"/><path className="cv-selected-achievement-line" d={craftaxStepPath(selectedAchievementPoints, selectedPlotMaxStep, 0, selectedAchievementMax, 640, 190)} />
+          {(selectedTimeline?.achievements ?? []).map((achievement, index) => <g
+            className="cv-achievement-marker cv-selected-achievement-marker"
+            key={`${achievement.step}:${achievement.name}`}
+            transform={`translate(${selectedAchievementX(achievement.step)} ${selectedAchievementY(index + 1)})`}
+            tabIndex={0}
+            role="img"
+            aria-label={`${achievement.name.replaceAll("_", " ")} unlocked at environment step ${achievement.step}`}
+          >
+            <title>{achievement.name.replaceAll("_", " ")} · step {achievement.step}</title>
+            <circle r="13" />
+            <text textAnchor="middle" dominantBaseline="central">{achievement.icon}</text>
+          </g>)}
+        </svg>{selectedTimeline?.achievements.length ? <div className="cv-selected-achievement-key" aria-label="Selected rollout achievement unlocks">{selectedTimeline.achievements.map((achievement) => <span key={`${achievement.step}:${achievement.name}`}><i aria-hidden="true">{achievement.icon}</i>{achievement.name.replaceAll("_", " ")}<small>step {achievement.step}</small></span>)}</div> : <p className="cv-aggregate-note">No achievement unlock evidence at this replay position.</p>}</article>
       </section> : null}
 
       <section className="cv-panel cv-transcript cv-surface-transcript" data-visual-landmark="agent-transcript">

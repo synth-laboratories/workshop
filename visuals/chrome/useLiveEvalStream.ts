@@ -35,8 +35,19 @@ export function useLiveEvalStream(options: {
   const { replay, fixtureEvents, replayMs = 800, visualId, revision } = options;
   const declared = (replay?.streams.length ?? 0) > 0;
   const live = useLiveEvalStreams(declared ? replay! : NO_STREAMS, { visualId, revision });
-  const fixture = useFixtureReplay(declared ? undefined : fixtureEvents, replayMs);
+  const fixture = useFixtureReplay(
+    declared ? undefined : fixtureEvents,
+    replayMs,
+    fixtureReplayIdentity(fixtureEvents, visualId, revision)
+  );
   return declared ? live : fixture;
+}
+
+function fixtureReplayIdentity(events: LiveEvalEvent[] | undefined, visualId?: string | null, revision?: number | null): string {
+  const eventIdentity = (event: LiveEvalEvent | undefined) => event
+    ? `${event.kind}:${event.run_id ?? ""}:${event.sequence ?? (event as LiveEvalEvent & { sequence_number?: unknown }).sequence_number ?? ""}`
+    : "none";
+  return [visualId ?? "fixture", revision ?? "draft", events?.length ?? 0, eventIdentity(events?.[0]), eventIdentity(events?.at(-1))].join(":");
 }
 
 /**
@@ -49,34 +60,47 @@ export function useLiveEvalStream(options: {
  */
 function useFixtureReplay(
   fixtureEvents: LiveEvalEvent[] | undefined,
-  replayMs: number
+  replayMs: number,
+  fixtureIdentity: string
 ): LiveEvalStreamsView {
   const [events, setEvents] = useState<LiveEvalEvent[]>([]);
-  const [state, setState] = useState<TransportState>("idle");
+  const [state, setState] = useState<TransportState>(() => fixtureEvents?.length ? "live" : "idle");
   const ingest = useRef(emptyLiveIngest());
   const index = useRef(0);
+  const activeIdentity = useRef(fixtureIdentity);
+  const fixtureEventsRef = useRef(fixtureEvents);
+  fixtureEventsRef.current = fixtureEvents;
 
   useEffect(() => {
+    const replayEvents = fixtureEventsRef.current;
+    const identityChanged = activeIdentity.current !== fixtureIdentity;
+    activeIdentity.current = fixtureIdentity;
     ingest.current = emptyLiveIngest();
     index.current = 0;
-    setEvents([]);
-    if (!fixtureEvents?.length) {
-      setState("idle");
+    if (identityChanged) setEvents((current) => current.length ? [] : current);
+    if (!replayEvents?.length) {
+      if (identityChanged) setState((current) => current === "idle" ? current : "idle");
       return;
     }
-    setState("live");
+    if (identityChanged) setState((current) => current === "live" ? current : "live");
+    // Browsers cannot present more than roughly one visual update per frame.
+    // Coalesce faster fixture cadences so a dense trace does not force one
+    // React render per transport envelope (and trip React's nested-update
+    // guard) while preserving the fixture's requested average replay rate.
+    const batchSize = Math.max(1, Math.ceil(16 / Math.max(1, replayMs)));
     const timer = window.setInterval(() => {
-      if (index.current >= fixtureEvents.length) {
+      const end = Math.min(replayEvents.length, index.current + batchSize);
+      const next = replayEvents.slice(index.current, end) as LiveEnvelope[];
+      index.current = end;
+      ingest.current = ingestLiveEnvelopeBatch(ingest.current, next);
+      setEvents(ingest.current.events as LiveEvalEvent[]);
+      if (index.current >= replayEvents.length) {
         window.clearInterval(timer);
         setState("terminal");
-        return;
       }
-      const next = fixtureEvents[index.current++] as LiveEnvelope;
-      ingest.current = ingestLiveEnvelopeBatch(ingest.current, [next]);
-      setEvents(ingest.current.events as LiveEvalEvent[]);
-    }, replayMs);
+    }, Math.max(replayMs, replayMs * batchSize));
     return () => window.clearInterval(timer);
-  }, [fixtureEvents, replayMs]);
+  }, [fixtureIdentity, replayMs]);
 
   return {
     events,
