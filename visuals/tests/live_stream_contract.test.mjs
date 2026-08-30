@@ -339,9 +339,15 @@ test("shared trace workbench responds to the visual pane rather than the desktop
 
 test("live Craftax loads retained frame CAS through the host and never guesses a relative rollout URL", () => {
   const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
+  const css = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/viewer.css"), "utf8");
   assert.match(shell, /props\.media\.warm\(retainedFrameDigests, selectedIndex\)/);
-  assert.match(shell, /\? loadedFrame\?\.dataUrl/, "an absent selected frame must remain safe after production minification");
-  assert.match(shell, /loadedFrame\?\.digest === selectedMediaDigest && selectedMediaDigest != null/);
+  assert.match(shell, /const \[displayedFrame, setDisplayedFrame\]/);
+  assert.match(shell, /const \[pendingFrame, setPendingFrame\]/);
+  assert.match(shell, /pendingFrame\?\.casDigest === selectedMediaDigest/);
+  assert.match(shell, /onLoad=\{\(\) => \{/);
+  assert.match(shell, /setDisplayedFrame\(pendingFrame\)/);
+  assert.doesNotMatch(shell, /if \(!selectedMediaDigest \|\| !props\.media\) \{\s*setDisplayedFrame\(null\);\s*return;/s, "changing retained digests must not clear the displayed frame before the replacement loads");
+  assert.match(css, /\.cv-frame \.cv-frame-preload\{[^}]*opacity:0/s);
   assert.match(shell, /if \(!frameBaseUrl && !\/\^https\?:\|\^data:\/i\.test\(viewer\.frameUrl\)\) return undefined/);
   assert.doesNotMatch(shell, /frameBaseUrl \?\? window\.location\.href/);
   assert.match(shell, /Loading retained gameplay PNG/);

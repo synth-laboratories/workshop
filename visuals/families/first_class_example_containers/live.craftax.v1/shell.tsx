@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Identifier } from "../../../chrome/Identifier.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber, formatMissingUsd } from "../../../runtime/liveStream.ts";
-import { mediaRefFrom } from "../../../runtime/mediaClient.ts";
+import { mediaRefFrom, type LoadedMedia } from "../../../runtime/mediaClient.ts";
 import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
 import { callForSequence, projectAgentTurns, reconcileCallSelection, type EvidenceField } from "../../../runtime/agentTranscript.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
@@ -471,7 +471,12 @@ export function Shell(props: ShellProps) {
   const [framePlaying, setFramePlaying] = useState(false);
   const [frameFps, setFrameFps] = useState(4);
   const [failedFrameUrl, setFailedFrameUrl] = useState<string | null>(null);
-  const [loadedFrame, setLoadedFrame] = useState<{ digest: string; dataUrl: string } | null>(null);
+  // Retained PNG playback is double-buffered. `displayedFrame` remains on
+  // screen while `pendingFrame` is fetched and decoded by an offscreen image;
+  // swapping only from that image's load event prevents the black frame that
+  // otherwise appears between CAS-backed replay frames.
+  const [displayedFrame, setDisplayedFrame] = useState<LoadedMedia | null>(null);
+  const [pendingFrame, setPendingFrame] = useState<LoadedMedia | null>(null);
   const [failedMediaDigest, setFailedMediaDigest] = useState<string | null>(null);
   const moments = useMemo(() => replayMomentIndexes(fullProjection.ordered), [fullProjection.ordered]);
   const environmentSteps = useMemo(() => environmentStepCount(fullProjection.ordered), [fullProjection.ordered]);
@@ -593,12 +598,14 @@ export function Shell(props: ShellProps) {
   const selectedMediaDigest = viewer.frameMedia?.casDigest;
   useEffect(() => {
     if (!selectedMediaDigest || !props.media) {
-      setLoadedFrame(null);
+      setPendingFrame(null);
+      setDisplayedFrame(null);
       return;
     }
+    setPendingFrame(null);
     const cached = props.media.peek(selectedMediaDigest);
     if (cached) {
-      setLoadedFrame({ digest: selectedMediaDigest, dataUrl: cached.dataUrl });
+      if (displayedFrame?.casDigest !== selectedMediaDigest) setPendingFrame(cached);
       setFailedMediaDigest(null);
       return;
     }
@@ -610,13 +617,12 @@ export function Shell(props: ShellProps) {
         setFailedMediaDigest(selectedMediaDigest);
         return;
       }
-      setLoadedFrame({ digest: loaded.casDigest, dataUrl: loaded.dataUrl });
-      setFailedMediaDigest(null);
+      setPendingFrame(loaded);
     }).catch(() => {
       if (!cancelled) setFailedMediaDigest(selectedMediaDigest);
     });
     return () => { cancelled = true; };
-  }, [props.media, retainedFrameDigests, selectedMediaDigest]);
+  }, [displayedFrame?.casDigest, props.media, retainedFrameDigests, selectedMediaDigest]);
   const directFrameUrl = useMemo(() => {
     if (!viewer.frameUrl || viewer.frameUrl === failedFrameUrl) return undefined;
     try {
@@ -631,11 +637,15 @@ export function Shell(props: ShellProps) {
       return undefined;
     }
   }, [viewer.frameUrl, failedFrameUrl, frameBaseUrl]);
-  const retainedFrameUrl = loadedFrame?.digest === selectedMediaDigest && selectedMediaDigest != null && failedMediaDigest !== selectedMediaDigest
-    ? loadedFrame?.dataUrl
+  const showingSelectedRetainedFrame = displayedFrame?.casDigest === selectedMediaDigest;
+  const retainedFrameUrl = selectedMediaDigest != null
+    && displayedFrame != null
+    && failedMediaDigest !== selectedMediaDigest
+    && failedMediaDigest !== displayedFrame.casDigest
+    ? displayedFrame.dataUrl
     : undefined;
   const frameUrl = retainedFrameUrl ?? directFrameUrl;
-  const retainedFrameLoading = Boolean(selectedMediaDigest && props.media && !retainedFrameUrl && failedMediaDigest !== selectedMediaDigest);
+  const retainedFrameLoading = Boolean(selectedMediaDigest && props.media && !showingSelectedRetainedFrame && failedMediaDigest !== selectedMediaDigest);
   const rewardSeries = rewardSignals.length
     ? rewardSignals.reduce<number[]>((series, event) => {
         series.push((series.at(-1) ?? 0) + (craftaxRewardValue(event.payload) ?? 0));
@@ -837,8 +847,24 @@ export function Shell(props: ShellProps) {
       <section className="cv-workspace cv-surface-replay" data-visual-landmark="primary-surface">
         <article className="cv-panel cv-game">
           <div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>{selectedLane ? <Identifier value={selectedLane} max={30} style={{ font: "inherit" }} /> : "Waiting for events"}</h3></div><span>{lifecycleFailed ? "failed" : viewer.terminal ? "finished" : visualLive ? "live" : "waiting"}</span></div>
-          <div className="cv-frame">
-            {frameUrl ? <img src={frameUrl} alt="Craftax gameplay frame" onError={() => retainedFrameUrl ? setFailedMediaDigest(selectedMediaDigest ?? null) : setFailedFrameUrl(viewer.frameUrl ?? null)} /> : retainedFrameLoading ? <p>Loading retained gameplay PNG…</p> : failedMediaDigest === selectedMediaDigest ? <p>Retained gameplay PNG failed integrity-checked media loading. No symbolic frame is substituted.</p> : (failedFrameUrl || viewer.frameUnavailable) ? <p>Gameplay PNG is unavailable. No symbolic frame is substituted for missing image evidence.</p> : viewer.ascii ? <pre aria-label="Craftax symbolic gameplay frame">{viewer.ascii}</pre> : <p>No renderable gameplay frame was emitted at this point in the trace.</p>}
+          <div className="cv-frame" aria-busy={retainedFrameLoading}>
+            {frameUrl ? <img key={retainedFrameUrl ? displayedFrame?.casDigest : frameUrl} src={frameUrl} alt="Craftax gameplay frame" onError={() => retainedFrameUrl && displayedFrame ? setFailedMediaDigest(displayedFrame.casDigest) : setFailedFrameUrl(viewer.frameUrl ?? null)} /> : retainedFrameLoading ? <p>Loading retained gameplay PNG…</p> : failedMediaDigest === selectedMediaDigest ? <p>Retained gameplay PNG failed integrity-checked media loading. No symbolic frame is substituted.</p> : (failedFrameUrl || viewer.frameUnavailable) ? <p>Gameplay PNG is unavailable. No symbolic frame is substituted for missing image evidence.</p> : viewer.ascii ? <pre aria-label="Craftax symbolic gameplay frame">{viewer.ascii}</pre> : <p>No renderable gameplay frame was emitted at this point in the trace.</p>}
+            {pendingFrame?.casDigest === selectedMediaDigest && pendingFrame.casDigest !== displayedFrame?.casDigest ? <img
+              className="cv-frame-preload"
+              src={pendingFrame.dataUrl}
+              alt=""
+              aria-hidden="true"
+              onLoad={() => {
+                if (pendingFrame.casDigest !== selectedMediaDigest) return;
+                setDisplayedFrame(pendingFrame);
+                setPendingFrame(null);
+                setFailedMediaDigest(null);
+              }}
+              onError={() => {
+                setFailedMediaDigest(pendingFrame.casDigest);
+                setPendingFrame(null);
+              }}
+            /> : null}
             <div className="cv-frame-caption"><span>step {selectedEnvironmentStep ?? "—"}</span><span>{timeLabel(latest, true)}</span></div>
           </div>
           <div className="cv-video-controls" data-visual-landmark="image-replay">
