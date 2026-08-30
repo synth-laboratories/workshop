@@ -3163,7 +3163,7 @@ mod tests {
     }
 
     #[test]
-    fn exhausted_capability_remains_authoritative_when_run_chain_is_sealed() {
+    fn exhausted_capability_is_revoked_when_run_chain_is_sealed() {
         let (dir, service) = service();
         let source_id = service
             .db
@@ -3246,15 +3246,15 @@ mod tests {
             .unwrap()
             .expect("durable lifecycle");
 
-        assert_eq!(lifecycle.status, capability::CapabilityStatus::Exhausted);
-        assert_eq!(lifecycle.revoked_at, None);
-        assert_eq!(sealed["capabilityStatus"], json!("exhausted"));
-        assert_eq!(sealed["capabilityRevoked"], json!(false));
-        assert_eq!(sealed["revokedAt"], json!(null));
+        assert_eq!(lifecycle.status, capability::CapabilityStatus::Revoked);
+        assert!(lifecycle.revoked_at.is_some());
+        assert_eq!(sealed["capabilityStatus"], json!("revoked"));
+        assert_eq!(sealed["capabilityRevoked"], json!(true));
+        assert!(sealed["revokedAt"].is_string());
         assert_eq!(
             service.capabilities.lookup(&issued.handle).unwrap().status,
-            "exhausted",
-            "run sealing must not copy revoked over an exhausted live capability"
+            "revoked",
+            "run sealing must revoke an exhausted capability after preserving usage"
         );
     }
 

@@ -76,7 +76,7 @@ impl CapabilityStatus {
     }
 
     fn can_be_revoked(self) -> bool {
-        matches!(self, Self::Granted | Self::Active)
+        !matches!(self, Self::Revoked)
     }
 }
 
@@ -782,7 +782,7 @@ pub fn revoke_run(conn: &Connection, store: &CapabilityStore, run_id: &str) -> R
     let rows = {
         let mut stmt = conn.prepare(
             "SELECT id, handle FROM secret_capabilities
-             WHERE run_id=?1 AND status IN ('granted','active')",
+             WHERE run_id=?1 AND status != 'revoked'",
         )?;
         let rows = stmt
             .query_map([run_id], |row| {
@@ -794,13 +794,8 @@ pub fn revoke_run(conn: &Connection, store: &CapabilityStore, run_id: &str) -> R
     let (ids, handles): (Vec<String>, Vec<String>) = rows.into_iter().unzip();
     conn.execute(
         "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
-         WHERE run_id=?2 AND status IN ('granted','active')",
+         WHERE run_id=?2 AND status != 'revoked'",
         params![Utc::now().to_rfc3339(), run_id],
-    )?;
-    conn.execute(
-        "UPDATE secret_capabilities SET revoked_at=NULL
-         WHERE run_id=?1 AND status IN ('exhausted','expired')",
-        [run_id],
     )?;
     for handle in &handles {
         store.revoke_handle(handle);
