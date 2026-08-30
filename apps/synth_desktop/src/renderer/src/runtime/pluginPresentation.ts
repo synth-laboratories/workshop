@@ -1,7 +1,7 @@
 /**
  * The single owner of plugin lifecycle presentation.
  *
- * Sidebar, Optimizers page, the v0.8 capability manifest, and any future
+ * Sidebar, Optimizers page, the v0.9 capability manifest, and any future
  * plugin detail surface derive their label, tone, and usability from here —
  * never from a local boolean and never from a second copy of the phase map.
  *

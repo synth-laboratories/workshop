@@ -1682,7 +1682,7 @@ mod tests {
     #[test]
     fn sibling_registry_exposes_only_safe_switcher_data() {
         let temp = tempfile::tempdir().unwrap();
-        let instance_root = temp.path().join("v08").join("alpha");
+		let instance_root = temp.path().join("v09").join("alpha");
         let app_bundle = instance_root.join("build/Synth Workshop alpha.app");
         fs::create_dir_all(&instance_root).unwrap();
         fs::write(
@@ -1691,8 +1691,8 @@ mod tests {
                 "schemaVersion": "synth.desktop-instance.v1",
                 "name": "alpha",
                 "displayName": "Synth Workshop · alpha",
-                "releaseLine": "v0.8",
-                "bundleId": "com.synth.desktop.v08.dev.alpha",
+				"releaseLine": "v0.9",
+				"bundleId": "com.synth.desktop.v09.dev.alpha",
                 "instanceRoot": instance_root,
                 "appBundle": app_bundle,
                 "runtime": {"status": "running"},

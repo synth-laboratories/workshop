@@ -1,5 +1,5 @@
 /**
- * v0.8 capability manifest — About + Diagnostics must tell the truth about
+ * v0.9 capability manifest — About + Diagnostics must tell the truth about
  * Optimizers vs CUA vs Laguna vs Intern. Source-string plus behavioral cover
  * so a copy edit cannot quietly re-merge those nouns.
  */
@@ -28,7 +28,7 @@ buildSync({
 	outfile: compiled
 });
 
-const { v08CapabilityRows, OPTIMIZERS_VISUAL_FAMILIES_BUNDLED } = await import(
+const { v09CapabilityRows, OPTIMIZERS_VISUAL_FAMILIES_BUNDLED } = await import(
 	pathToFileURL(compiled).href
 );
 
@@ -58,7 +58,7 @@ test("Intern/CloudDesk are listed unsupported; Laguna is not a plugin", () => {
 	const catalog = read("runtime/capabilityManifest.ts");
 	const nav = read("runtime/pluginNav.ts");
 	assert.match(catalog, /intern \/ CloudDesk/);
-	assert.match(catalog, /Unsupported in v0\.8 \(v0\.1 removal\)/);
+	assert.match(catalog, /Unsupported in v0\.9 \(v0\.1 removal\)/);
 	assert.match(catalog, /parallel LagunaStatus, not a plugin/);
 	assert.match(catalog, /Local sidecar/);
 	assert.doesNotMatch(nav, /id: "laguna"/);
@@ -78,7 +78,7 @@ test("optimizers visual families are bundled independently of sidecar phase", ()
 });
 
 test("not_installed sidecar does not imply the recipe runner is ready", () => {
-	const rows = v08CapabilityRows({
+	const rows = v09CapabilityRows({
 		pluginStatuses: [status({ phase: "not_installed" })],
 		lagunaPhase: "ready"
 	});
@@ -95,7 +95,7 @@ test("not_installed sidecar does not imply the recipe runner is ready", () => {
 });
 
 test("a ready sidecar says the recipe runner is available and still bundles families", () => {
-	const rows = v08CapabilityRows({
+	const rows = v09CapabilityRows({
 		pluginStatuses: [status({ phase: "ready" })]
 	});
 	const optimizers = rows.find((row) => row.id === "optimizers");
@@ -105,7 +105,7 @@ test("a ready sidecar says the recipe runner is available and still bundles fami
 });
 
 test("computer-use is human-only and never agent-installable", () => {
-	const rows = v08CapabilityRows({
+	const rows = v09CapabilityRows({
 		pluginStatuses: [status({ pluginId: "computer-use", phase: "not_installed" })]
 	});
 	const cua = rows.find((row) => row.id === "computer-use");
@@ -115,7 +115,7 @@ test("computer-use is human-only and never agent-installable", () => {
 });
 
 test("Laguna this-build is a local sidecar phase, not a plugin row", () => {
-	const rows = v08CapabilityRows({ lagunaPhase: "loading" });
+	const rows = v09CapabilityRows({ lagunaPhase: "loading" });
 	const laguna = rows.find((row) => row.id === "laguna");
 	assert.equal(laguna.kind, "parallel LagunaStatus, not a plugin");
 	assert.match(laguna.thisBuild, /Local sidecar · Loading/);
@@ -123,9 +123,9 @@ test("Laguna this-build is a local sidecar phase, not a plugin row", () => {
 });
 
 test("Intern/CloudDesk stay unsupported in this build", () => {
-	const intern = v08CapabilityRows().find((row) => row.id === "intern / CloudDesk");
+	const intern = v09CapabilityRows().find((row) => row.id === "intern / CloudDesk");
 	assert.equal(intern.kind, "unmounted");
-	assert.equal(intern.thisBuild, "Unsupported in v0.8 (v0.1 removal)");
+	assert.equal(intern.thisBuild, "Unsupported in v0.9 (v0.1 removal)");
 });
 
 test("routes pass existing pluginStatuses and LagunaStatus phase, inventing no IPC", () => {

@@ -583,7 +583,7 @@ export function SettingsPage({
 					{section === "secrets" ? <SecretsSettings /> : null}
 					{section === "about" ? (
 						<div className="settings-sections" data-testid="settings-about">
-							<SettingsCard title="v0.8 capabilities">
+							<SettingsCard title="v0.9 capabilities">
 								<CapabilityManifest pluginStatuses={pluginStatuses} lagunaPhase={lagunaPhase} />
 							</SettingsCard>
 							<SettingsCard title="Synth Desktop">

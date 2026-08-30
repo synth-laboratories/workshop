@@ -1,5 +1,5 @@
 /**
- * v0.8 capability catalog — one owner of “what this build actually ships”.
+ * v0.9 capability catalog — one owner of “what this build actually ships”.
  *
  * Plugin sidecar phases come from `pluginPresentation`. Laguna is a parallel
  * LagunaStatus local sidecar, not a PLUGIN_NAV plugin. Intern/CloudDesk stay
@@ -20,7 +20,7 @@ const RECIPE_NOT_READY = "GEPA/SFT recipe runner is not ready";
 const RECIPE_AVAILABLE = "GEPA/SFT recipe runner is available";
 const NEVER_AGENT_INSTALLABLE = "never agent-installable";
 const LOCAL_SIDECAR = "Local sidecar";
-const UNSUPPORTED_V08 = "Unsupported in v0.8 (v0.1 removal)";
+const UNSUPPORTED_V09 = "Unsupported in v0.9 (v0.1 removal)";
 const BUNDLED_SOURCE_FAMILIES = "Bundled (source families)";
 
 const LAGUNA_PHASE_LABELS: Record<string, string> = {
@@ -69,8 +69,8 @@ export function lagunaSidecarLabel(phase?: string | null): string {
 	return LAGUNA_PHASE_LABELS[phase] ?? phase;
 }
 
-/** Honest v0.8 rows for About and Diagnostics. Order is the acceptance table. */
-export function v08CapabilityRows(input: CapabilityManifestInput = {}): CapabilityRow[] {
+/** Honest v0.9 rows for About and Diagnostics. Order is the acceptance table. */
+export function v09CapabilityRows(input: CapabilityManifestInput = {}): CapabilityRow[] {
 	const statuses = input.pluginStatuses;
 	const optimizers = sidecarPhase(statuses, OPTIMIZERS_PLUGIN_ID);
 	const computerUse = sidecarPhase(statuses, COMPUTER_USE_PLUGIN_ID);
@@ -95,7 +95,7 @@ export function v08CapabilityRows(input: CapabilityManifestInput = {}): Capabili
 		{
 			id: "intern / CloudDesk",
 			kind: "unmounted",
-			thisBuild: UNSUPPORTED_V08
+			thisBuild: UNSUPPORTED_V09
 		},
 		{
 			id: "compose/sourced visuals",
