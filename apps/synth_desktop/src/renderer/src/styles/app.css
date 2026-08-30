@@ -4242,27 +4242,22 @@ html.visual-expanded .titlebar {
 }
 
 .visual-pane-head {
+	position: relative;
+	z-index: 20;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	gap: 10px;
-	min-height: 44px;
-	padding: 0 14px;
+	gap: 8px;
+	min-height: 40px;
+	padding: 0 8px 0 12px;
 	border-bottom: 1px solid var(--color-border);
 	background: var(--color-card);
 	flex-shrink: 0;
 }
 
 .visual-pane-head-text {
+	flex: 1;
 	min-width: 0;
-}
-
-.visual-pane-kind {
-	display: block;
-	font-size: 10px;
-	letter-spacing: 0.05em;
-	text-transform: uppercase;
-	color: var(--color-text-muted);
 }
 
 .visual-pane-title {
@@ -4320,9 +4315,8 @@ html.visual-expanded .titlebar {
 .visual-close {
 	width: 30px;
 	height: 30px;
-	border-radius: 8px;
-	font-size: 18px;
-	line-height: 1;
+	border-radius:var(--radius-sm);
+	font: 18px / 1 var(--font-sans);
 	color: var(--color-text-muted);
 	flex-shrink: 0;
 }
@@ -4339,6 +4333,144 @@ html.visual-expanded .titlebar {
 	flex-shrink: 0;
 }
 
+.visual-pane-overflow {
+	position: relative;
+	display: inline-flex;
+}
+
+.visual-pane-more {
+	display: inline-grid;
+	place-items: center;
+	width: 30px;
+	height: 30px;
+	color: var(--color-text-muted);
+	font: 700 var(--font-size-xs) / 1 var(--font-sans);
+	letter-spacing: 0.08em;
+}
+
+.visual-pane-more:hover,
+.visual-pane-more[aria-expanded="true"] {
+	background: var(--surface-hover);
+	color: var(--color-text);
+}
+
+.visual-artifact-inspector {
+	position: absolute;
+	top: calc(100% + 7px);
+	right: 0;
+	z-index: 100;
+	width: min(380px, calc(100vw - 32px));
+	max-height: min(72vh, 640px);
+	overflow: auto;
+	padding: 8px;
+	border: 1px solid var(--color-border);
+	background: var(--color-bg);
+	box-shadow: 0 18px 48px rgba(24, 28, 36, 0.22);
+	color: var(--color-text);
+}
+
+.visual-inspector-section {
+	display: grid;
+	gap: 7px;
+	padding: 10px;
+	border-bottom: 1px solid var(--color-border);
+}
+
+.visual-inspector-section:last-of-type {
+	border-bottom: 0;
+}
+
+.visual-inspector-section h3 {
+	margin: 0;
+	color: var(--color-text-faint);
+	font: 700 var(--font-size-xs) / 1.2 var(--font-sans);
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+.visual-inspector-actions,
+.visual-inspector-revisions > div {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.visual-inspector-revisions {
+	display: grid;
+	gap: 6px;
+}
+
+.visual-inspector-actions button,
+.visual-inspector-revisions button,
+.visual-share-url button {
+	min-height: 30px;
+	padding: 5px 9px;
+	border: 1px solid var(--color-border);
+	background: var(--color-card);
+	color: var(--color-text);
+	font: var(--font-size-sm) / 1.3 var(--font-sans);
+}
+
+.visual-inspector-actions button:hover,
+.visual-inspector-revisions button:hover,
+.visual-share-url button:hover {
+	background: var(--color-bg-subtle);
+}
+
+.visual-inspector-actions button:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.visual-inspector-note,
+.visual-inspector-error {
+	margin: 0;
+	font: var(--font-size-xs) / 1.4 var(--font-sans);
+	line-height: 1.4;
+}
+
+.visual-inspector-note {
+	color: var(--color-text-muted);
+}
+
+.visual-inspector-error {
+	color: var(--color-danger);
+}
+
+.visual-artifact-inspector .visual-pane-identity,
+.visual-artifact-inspector .visual-ops-line {
+	margin: 0;
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+
+.visual-inspector-debug {
+	padding: 9px 10px;
+	font: var(--font-size-xs) / 1.4 var(--font-sans);
+}
+
+.visual-inspector-debug summary {
+	cursor: pointer;
+	color: var(--color-text-muted);
+	font-weight: 650;
+}
+
+.visual-inspector-debug dl {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	gap: 5px 12px;
+	margin: 9px 0 0;
+}
+
+.visual-inspector-debug dt {
+	color: var(--color-text-faint);
+}
+
+.visual-inspector-debug dd {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+
 .visual-seal-disabled-reason {
 	max-width: 260px;
 	color: var(--color-warning-text);
@@ -4350,10 +4482,9 @@ html.visual-expanded .titlebar {
 	height: 26px;
 	padding: 0 10px;
 	border: 1px solid var(--color-border);
-	border-radius: 8px;
+	border-radius:var(--radius-sm);
 	background: var(--color-card);
-	font-size: 11.5px;
-	font-weight: 600;
+	font: 600 11.5px / 1 var(--font-sans);
 	color: var(--color-text-muted);
 }
 
@@ -4377,8 +4508,7 @@ html.visual-expanded .titlebar {
 }
 
 .visual-seal-strip,
-.visual-label-form,
-.visual-share-url {
+.visual-label-form {
 	display: flex;
 	align-items: center;
 	gap: 6px;
@@ -4387,6 +4517,12 @@ html.visual-expanded .titlebar {
 	background: color-mix(in srgb, var(--color-card) 92%, var(--color-bg-subtle));
 	font-size:var(--font-size-xs);
 	overflow-x: auto;
+}
+
+.visual-share-url {
+	display: flex;
+	align-items: center;
+	gap: 8px;
 }
 
 .visual-share-url a {
@@ -4412,9 +4548,7 @@ html.visual-expanded .titlebar {
 .visual-shared-open {
 	display: flex;
 	gap: 6px;
-	padding: 8px 14px;
-	border-bottom: 1px solid var(--color-border);
-	background: var(--color-card);
+	padding: 0;
 }
 
 .visual-shared-open input {
@@ -4560,26 +4694,25 @@ html.visual-expanded .titlebar {
    delayed or resolves against the visual's intrinsic width. Expanded visuals
    keep their wide layout; the embedded pane always uses the compact stack. */
 .visual-pane:not(.visual-pane-expanded) .visual-pane-head {
-	align-items: stretch;
-	flex-direction: column;
-	gap: 6px;
-	padding: 8px 10px;
+	align-items: center;
+	flex-direction: row;
+	gap: 8px;
+	padding: 0 8px 0 10px;
 }
 
-.visual-pane:not(.visual-pane-expanded) .visual-pane-head-text,
-.visual-pane:not(.visual-pane-expanded) .visual-pane-head-actions {
-	width: 100%;
+.visual-pane:not(.visual-pane-expanded) .visual-pane-head-text {
+	width: auto;
 }
 
-.visual-pane:not(.visual-pane-expanded) .visual-pane-title,
-.visual-pane:not(.visual-pane-expanded) .visual-pane-identity {
-	overflow-wrap: anywhere;
-	text-overflow: clip;
-	white-space: normal;
+.visual-pane:not(.visual-pane-expanded) .visual-pane-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .visual-pane:not(.visual-pane-expanded) .visual-pane-head-actions {
-	flex-wrap: wrap;
+	width: auto;
+	flex-wrap: nowrap;
 }
 
 .visual-pane:not(.visual-pane-expanded) .trace-workbench-layout {
@@ -7960,7 +8093,7 @@ html.visual-expanded .sidebar {
 .optimizer-plugin-status .optimizer-plugin-active-runs { grid-column: 1 / -1; color: var(--color-warning-text); font-weight: 600; }
 .optimizer-plugin-status .optimizer-plugin-receipt { grid-column: 1 / -1; font-variant-numeric: tabular-nums; }
 @media (max-width: 760px) { .optimizer-plugin-status { grid-template-columns: 1fr; } .optimizer-release-channel { min-width: 0; } }
-.visual-connection-state { margin: 0 0 8px; color: var(--color-text-faint); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.visual-connection-state { margin: 0; padding: 7px 12px; border-bottom: 1px solid color-mix(in srgb, var(--color-warning-text) 30%, var(--color-border)); background: color-mix(in srgb, var(--color-warning-text) 9%, var(--color-card)); color: var(--color-warning-text); font: 650 var(--font-size-xs) / 1.4 var(--font-sans); }
 
 /* Page tabs, following the training-workspace tab pattern. */
 .optimizer-tabs { display: flex; gap: var(--sp-2); margin: 0 0 14px; overflow-x: auto; border-bottom: 1px solid var(--color-border); }

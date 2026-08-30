@@ -29,7 +29,8 @@ test("the visual pane keeps the 320px certification floor", () => {
     css,
     /\.visual-pane-body\s*\{[^}]*container-type:\s*inline-size;[^}]*container-name:\s*visual-pane;/s
   );
-  assert.match(css, /\.visual-pane:not\(\.visual-pane-expanded\) \.visual-pane-head\s*\{[^}]*flex-direction:\s*column/s);
+  assert.match(css, /\.visual-pane:not\(\.visual-pane-expanded\) \.visual-pane-head\s*\{[^}]*flex-direction:\s*row/s);
+  assert.match(css, /\.visual-pane:not\(\.visual-pane-expanded\) \.visual-pane-title\s*\{[^}]*text-overflow:\s*ellipsis/s);
   assert.match(css, /\.visual-pane:not\(\.visual-pane-expanded\) \.trace-workbench-layout\s*\{[^}]*--tw-main-columns:\s*minmax\(0,\s*1fr\)/s);
   assert.match(css, /\.visual-pane:not\(\.visual-pane-expanded\) \.cv-overview-grid[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
 });
@@ -120,23 +121,25 @@ test("routes.tsx mounts one VisualPane host including chat", () => {
   assert.match(controller, /view\.kind === "settings" && Boolean\(openArtifactId\)/);
 });
 
-test("Escape hierarchy intercepts labeling and expanded before pane close, and Back restores origin", () => {
+test("Escape hierarchy intercepts labeling, inspector, and expanded before pane close, and Back restores origin", () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src");
   const host = readFileSync(join(root, "components/VisualHost.tsx"), "utf8");
   const escapeHandler =
     host.match(/if \(event\.key !== "Escape"\) return;[\s\S]*?addEventListener\("keydown"/)?.[0] ?? "";
   assert.match(escapeHandler, /if \(labeling\)/);
+  assert.match(escapeHandler, /if \(inspectorOpen\)/);
   assert.match(escapeHandler, /if \(expanded\)/);
   assert.match(escapeHandler, /preventDefault/);
   assert.match(escapeHandler, /stopPropagation/);
   assert.ok(
-    escapeHandler.indexOf("if (labeling)") < escapeHandler.indexOf("if (expanded)"),
-    "labeling must cancel before expanded restore"
+    escapeHandler.indexOf("if (labeling)") < escapeHandler.indexOf("if (inspectorOpen)") &&
+      escapeHandler.indexOf("if (inspectorOpen)") < escapeHandler.indexOf("if (expanded)"),
+    "labeling and inspector must close before expanded restore"
   );
   assert.doesNotMatch(escapeHandler, /onClose|dispatchVisualRevision|type: "close"/);
   assert.match(host, /cancelLabeling/);
-  assert.match(host, /labelButtonRef\.current\?\.focus\(\)/);
-  assert.match(host, /key="window-visual-host"|labelButtonRef/);
+  assert.match(host, /moreButtonRef\.current\?\.focus\(\)/);
+  assert.match(host, /key="window-visual-host"|moreButtonRef/);
   assert.match(host, /classList\.toggle\("visual-expanded"/);
   assert.match(host, /<VisualPane|export function VisualPane/);
 

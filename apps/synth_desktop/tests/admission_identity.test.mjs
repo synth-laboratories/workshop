@@ -70,8 +70,12 @@ test("attach/pin/seal chrome show vis_ identity and do not call live pointers Fr
     join(appRoot, "src/renderer/src/components/VisualHost.tsx"),
     "utf8"
   );
-  assert.match(visualHost, /visual-pane-identity/);
-  assert.match(visualHost, /visual-pane-ops/);
+  const visualChrome = readFileSync(
+    join(appRoot, "src/renderer/src/components/VisualPaneChrome.tsx"),
+    "utf8"
+  );
+  assert.match(visualChrome, /visual-pane-identity/);
+  assert.match(visualChrome, /visual-pane-ops/);
   assert.match(visualHost, /sessionId: visual\.sessionId/);
   assert.match(visualHost, /runId: optimizerRunIdFromBindings\(visual\.bindings\) \?\? visual\.runId \?\? undefined/);
   assert.match(visualHost, /traceId: visual\.traceId/);

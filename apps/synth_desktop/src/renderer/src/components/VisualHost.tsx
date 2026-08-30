@@ -1,6 +1,5 @@
 import { Component, useEffect, useMemo, useRef, useState, type ComponentType, type ErrorInfo, type MouseEvent, type ReactNode } from "react";
-import { formatVisualAdmissionIdentity, type ArtifactRef } from "../types/landing";
-import { VisualOpsLine } from "./VisualOpsLine";
+import type { ArtifactRef } from "../types/landing";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import {
 	bindTemplateSlots,
@@ -37,6 +36,7 @@ import { openTraceReference, VISUAL_REFERENCE_ERROR_EVENT, VISUAL_REFERENCE_OPEN
 import { previewVariantForTemplate, SEALED_TRACE_WORKBENCH_TEMPLATES } from "../runtime/templatePresentation";
 import { optimizerRunIdFromBindings } from "../runtime/visualBindings";
 import { projectVisualRunLifecycle } from "../runtime/visualRunLifecycle";
+import { VisualPaneChrome, type VisualPaneDebugState } from "./VisualPaneChrome";
 
 type ShellProps = {
 	title?: string;
@@ -1179,7 +1179,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		throw new Error("injected renderer crash");
 	}
 	const resolvedProps = selected.projection ?? { ...synchronouslyResolved.props, ...traceResolution.props };
-	const showConnection = Boolean(optimizerPayload || optimizerLoadError || connectionState !== "loading");
+	const degradedConnection = ["reconnecting", "failed", "interrupted"].includes(connectionState);
 	const boundEvents = Array.isArray(optimizerPayload?.events) ? optimizerPayload.events as unknown[] : [];
 	const runLifecycle = projectVisualRunLifecycle(
 		optimizerPayload?.run as Parameters<typeof projectVisualRunLifecycle>[0],
@@ -1194,7 +1194,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	return (
 		<div
 			data-testid="visual-template-shell"
-			data-connection-state={showConnection ? connectionState : undefined}
+			data-connection-state={connectionState}
 			data-visual-transport-state={connectionState === "loading" ? "idle" : connectionState}
 			data-visual-terminal={transportTerminal ? "true" : "false"}
 			data-visual-semantic-event-count={String(boundEvents.length)}
@@ -1225,7 +1225,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					Showing last known good projection while live rendering recovers.
 				</p>
 			) : null}
-			{showConnection ? <p className="visual-connection-state" data-testid="visual-connection-state">{connectionState}</p> : null}
+			{degradedConnection ? <p className="visual-connection-state" role="status" data-testid="visual-connection-state">Visual connection {connectionState}.</p> : null}
 			<Shell
 				{...(resolvedProps as ShellProps)}
 				title={artifact.title}
@@ -1514,6 +1514,8 @@ function optimizerSealGateFromPane(host: HTMLElement): OptimizerSealGate {
 
 export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClose: () => void }) {
 	const paneRef = useRef<HTMLElement>(null);
+	const overflowRef = useRef<HTMLDivElement>(null);
+	const moreButtonRef = useRef<HTMLButtonElement>(null);
 	const primaryOptimizerRunId = productOwnedPrimaryOptimizerRunId(artifact);
 	const [optimizerSealGate, setOptimizerSealGate] = useState<OptimizerSealGate>(() => ({
 		ready: false,
@@ -1531,23 +1533,65 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const [labelBody, setLabelBody] = useState("");
 	const [artifactError, setArtifactError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
-	const labelButtonRef = useRef<HTMLButtonElement | null>(null);
-
+	const [inspectorOpen, setInspectorOpen] = useState(false);
+	const [debugState, setDebugState] = useState<VisualPaneDebugState>({
+		connectionState: null,
+		transportState: null,
+		projectionSource: null,
+		stale: false
+	});
 	function cancelLabeling() {
 		setLabeling(false);
 		setLabelPoint(null);
-		requestAnimationFrame(() => labelButtonRef.current?.focus());
+		requestAnimationFrame(() => moreButtonRef.current?.focus());
+	}
+
+	function readDebugState(): VisualPaneDebugState {
+		const shell = paneRef.current?.querySelector<HTMLElement>('[data-testid="visual-template-shell"]');
+		return {
+			connectionState: shell?.dataset.connectionState ?? null,
+			transportState: shell?.dataset.visualTransportState ?? null,
+			projectionSource: shell?.dataset.visualProjectionSource ?? null,
+			stale: shell?.dataset.visualProjectionStale === "true"
+		};
+	}
+
+	function closeInspector(restoreFocus = true) {
+		setInspectorOpen(false);
+		if (restoreFocus) requestAnimationFrame(() => moreButtonRef.current?.focus());
+	}
+
+	function toggleInspector() {
+		setInspectorOpen((open) => {
+			if (!open) setDebugState(readDebugState());
+			return !open;
+		});
 	}
 
 	useEffect(() => {
-		if (!labeling && !expanded) return;
+		if (!inspectorOpen) return;
+		const closeOnPointerDown = (event: PointerEvent) => {
+			if (!overflowRef.current?.contains(event.target as Node)) closeInspector(false);
+		};
+		document.addEventListener("pointerdown", closeOnPointerDown);
+		return () => document.removeEventListener("pointerdown", closeOnPointerDown);
+	}, [inspectorOpen]);
+
+	useEffect(() => {
+		if (!labeling && !inspectorOpen && !expanded) return;
 		const onKeyDown = (event: KeyboardEvent) => {
 			if (event.key !== "Escape") return;
-			// Escape hierarchy: labeling, then expanded; pane close stays in the controller.
+			// Escape hierarchy: labeling, inspector, then expanded; pane close stays in the controller.
 			if (labeling) {
 				event.preventDefault();
 				event.stopPropagation();
 				cancelLabeling();
+				return;
+			}
+			if (inspectorOpen) {
+				event.preventDefault();
+				event.stopPropagation();
+				closeInspector();
 				return;
 			}
 			if (expanded) {
@@ -1558,7 +1602,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 		};
 		window.addEventListener("keydown", onKeyDown, true);
 		return () => window.removeEventListener("keydown", onKeyDown, true);
-	}, [labeling, expanded]);
+	}, [labeling, inspectorOpen, expanded]);
 	useEffect(() => {
 		const root = document.documentElement;
 		root.classList.toggle("visual-expanded", expanded);
@@ -1684,10 +1728,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 
 	async function openSharedUrl() {
 		const url = sharedUrl.trim();
-		if (!isSharedArtifactUrl(url)) {
-			if (url) setArtifactError(SHARED_URL_INVALID);
-			return;
-		}
+		if (!isSharedArtifactUrl(url)) return;
 		if (!bridges.visuals) return;
 		setBusy(true);
 		setArtifactError(null);
@@ -1704,6 +1745,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	}
 
 	function closeVisualPane() {
+		setInspectorOpen(false);
 		onClose();
 		requestAnimationFrame(restoreFocusAfterVisualPaneClose);
 	}
@@ -1723,19 +1765,12 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 		}
 	}
 	const isSubagents = artifact.templateId === "synth.subagents.v1";
-	const isMermaid = artifact.templateId === "diagram.mermaid.v1" || artifact.rendererKind === "mermaid";
-	const isSystemsDynamic = artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
-	const isSystems = artifact.templateId === "diagram.systems.v1" || artifact.rendererKind === "systems";
-	const kindLabel = isSubagents ? "Agents" : isSystemsDynamic ? "Benjamin Dicken Style" : isSystems ? "Systems map · 2D" : isMermaid ? "Diagram" : "Visual";
 	const sharedUrlValid = isSharedArtifactUrl(sharedUrl);
 	const sharedUrlError = sharedUrl.trim() && !sharedUrlValid ? SHARED_URL_INVALID : null;
 	const revisionSync = artifact.metadata?.revisionSync as {
-		loading?: boolean;
-		requestedRevision?: number;
-		acceptedRevision?: number;
 		error?: string | null;
 	} | undefined;
-	const paneAlert = sharedUrlError ?? artifactError ?? (revisionSync?.error ? `Visual refresh failed · ${revisionSync.error}` : null);
+	const paneAlert = artifactError ?? (revisionSync?.error ? `Visual refresh failed · ${revisionSync.error}` : null);
 	return (
 		<aside
 			ref={paneRef}
@@ -1743,109 +1778,40 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 			data-testid="visual-pane"
 			aria-label={isSubagents ? "Subagents" : "Visual artifact"}
 		>
-			<header className="visual-pane-head">
-				<div className="visual-pane-head-text">
-					<span className="visual-pane-kind">
-						{kindLabel}{revision ? ` · rev ${revision}` : ""}
-						{revisionSync?.loading ? ` · reconciling${(revisionSync.requestedRevision ?? -1) > (revisionSync.acceptedRevision ?? -1) ? ` rev ${revisionSync.requestedRevision}` : ""}` : ""}
-					</span>
-					<span className="visual-pane-title">{artifact.title}</span>
-					<span className="visual-pane-identity" data-testid="visual-pane-identity">
-						{formatVisualAdmissionIdentity({
-							visualId: visualId ?? artifact.id,
-							revision,
-							receiptDigest: seals.find((seal) => seal.visualRevision === revision)?.receiptDigest ?? artifact.receiptDigest,
-							contentDigest: artifact.contentDigest
-						})}
-					</span>
-					<VisualOpsLine
-						sessionId={artifact.sessionId ?? artifact.ownerSessionId}
-						runId={artifact.runId}
-						traceId={artifact.traceId}
-						testId="visual-pane-ops"
-						probe
-					/>
-				</div>
-				<div className="visual-pane-head-actions">
-					{isSubagents ? null : sealedBundle ? (
-						<>
-							<button type="button" className="visual-expand" onClick={() => { setSealedBundle(null); setCompareBundle(null); setShareUpload(null); }}>Live revision</button>
-							{compareBundle ? <button type="button" className="visual-expand" onClick={() => setCompareBundle(null)}>Close comparison</button> : null}
-							<button type="button" className="visual-expand" onClick={() => void shareCurrentSeal()} disabled={busy} title="Human Share uploads this sealed digest privately">
-								{shareUpload?.state === "committed" ? "Shared privately" : "Share privately"}
-							</button>
-						</>
-					) : null}
-					{isSubagents ? null : (
-					<button
-						ref={labelButtonRef}
-						type="button"
-						className="visual-expand"
-						onClick={() => { setLabeling(true); setLabelPoint(null); }}
-						disabled={!visualId || !revision || busy}
-						title="Place a label on this exact revision"
-					>
-						Label{annotations.length ? ` · ${annotations.length}` : ""}
-					</button>
-					)}
-					{isSubagents || !sealDisabledReason ? null : <span className="visual-seal-disabled-reason" role="status">{sealDisabledReason}</span>}
-					{isSubagents ? null : (
-					<button
-						type="button"
-						className="visual-expand"
-						onClick={() => void sealCurrentRevision()}
-						disabled={!sealEligible || busy}
-						title={sealEligible ? "Seal this exact revision for offline use" : sealDisabledReason ?? "Seal is unavailable"}
-					>
-						{busy ? "Working…" : "Seal"}
-					</button>
-					)}
-					<button
-						type="button"
-						className="visual-expand"
-						onClick={() => setExpanded((current) => !current)}
-						aria-pressed={expanded}
-						aria-label={expanded ? "Restore split view" : "Expand visual"}
-						data-testid="toggle-visual-expand"
-					>
-						{expanded ? "Restore" : "Expand"}
-					</button>
-					<button type="button" className="visual-close" onClick={closeVisualPane} aria-label="Close visual">×</button>
-				</div>
-			</header>
+			<VisualPaneChrome
+				artifact={artifact}
+				expanded={expanded}
+				inspectorOpen={inspectorOpen}
+				overflowRef={overflowRef}
+				moreButtonRef={moreButtonRef}
+				busy={busy}
+				artifactOperationsEnabled={!isSubagents}
+				annotationsCount={annotations.length}
+				sealEligible={!isSubagents && sealEligible}
+				sealDisabledReason={isSubagents ? null : sealDisabledReason}
+				seals={isSubagents ? [] : seals}
+				sealedBundle={isSubagents ? null : sealedBundle}
+				compareBundle={isSubagents ? null : compareBundle}
+				shareUpload={isSubagents ? null : shareUpload}
+				sharedUrl={sharedUrl}
+				sharedUrlValid={!isSubagents && sharedUrlValid}
+				sharedUrlError={isSubagents ? null : sharedUrlError}
+				debugState={debugState}
+				onToggleInspector={toggleInspector}
+				onBeginLabeling={() => { closeInspector(false); setLabeling(true); setLabelPoint(null); }}
+				onSeal={() => void sealCurrentRevision()}
+				onLiveRevision={() => { setSealedBundle(null); setCompareBundle(null); setShareUpload(null); }}
+				onCloseComparison={() => setCompareBundle(null)}
+				onShare={() => void shareCurrentSeal()}
+				onReopenSeal={(receiptDigest) => void reopenSeal(receiptDigest)}
+				onCompareSeal={(receiptDigest) => void compareSeal(receiptDigest)}
+				onSharedUrlChange={setSharedUrl}
+				onOpenShared={() => void openSharedUrl()}
+				onCopySharedUrl={() => void navigator.clipboard?.writeText(shareUpload?.committedUrl ?? "")}
+				onToggleExpanded={() => { closeInspector(false); setExpanded((current) => !current); }}
+				onClose={closeVisualPane}
+			/>
 			{paneAlert ? <div className="visual-artifact-error" role="alert">{paneAlert}</div> : null}
-			{seals.length ? (
-				<div className="visual-seal-strip" aria-label="Sealed revisions">
-					<span>Offline:</span>
-					{seals.map((seal) => (
-						<span key={seal.receiptDigest} className="visual-seal-choice">
-							<button type="button" onClick={() => void reopenSeal(seal.receiptDigest)}>
-								rev {seal.visualRevision} · {seal.receiptDigest.slice(0, 8)}
-							</button>
-							{sealedBundle?.seal.receiptDigest !== seal.receiptDigest ? (
-								<button type="button" onClick={() => void compareSeal(seal.receiptDigest)}>Compare</button>
-							) : null}
-						</span>
-					))}
-				</div>
-			) : null}
-			<form className="visual-shared-open" onSubmit={(event) => { event.preventDefault(); void openSharedUrl(); }}>
-				<input
-					value={sharedUrl}
-					onChange={(event) => setSharedUrl(event.target.value)}
-					placeholder="Paste private artifact URL"
-					aria-label="Private artifact URL"
-					aria-invalid={Boolean(sharedUrlError)}
-				/>
-				<button type="submit" disabled={!sharedUrlValid || busy}>Open shared</button>
-			</form>
-			{shareUpload?.committedUrl ? (
-				<div className="visual-share-url">
-					<span>Private permalink</span>
-					<a href={shareUpload.committedUrl} target="_blank" rel="noreferrer">{shareUpload.committedUrl}</a>
-					<button type="button" onClick={() => void navigator.clipboard?.writeText(shareUpload.committedUrl!)}>Copy</button>
-				</div>
-			) : null}
 			{labeling ? (
 				<form className="visual-label-form visual-label-form-stack" onSubmit={(event) => { event.preventDefault(); void createLabel(); }}>
 					<span className="visual-label-status">{labelPoint ? (labelPoint.targetLabel ? `Attached to ${labelPoint.targetLabel}` : `Placed at ${Math.round(labelPoint.x * 100)}%, ${Math.round(labelPoint.y * 100)}%`) : "Click the visual to place the label."}</span>
