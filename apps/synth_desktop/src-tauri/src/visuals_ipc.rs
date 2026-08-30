@@ -827,6 +827,9 @@ async fn dispatch_request(
     if method == "POST" && path == "/v1/sessions/present" {
         return present_session(app, core, json_body).await;
     }
+    if path.starts_with("/v1/approvals") {
+        return dispatch_approvals(method, path, json_body, app).await;
+    }
     if path.starts_with("/v1/optimizers")
         || path.starts_with("/v1/training")
         || path.starts_with("/v1/mlx")
@@ -855,6 +858,43 @@ async fn dispatch_request(
         return dispatch_template_import(json_body, core, app).await;
     }
     dispatch(method, path, json_body, core).await
+}
+
+/// Token-authenticated operator/accessibility surface for native approvals.
+///
+/// Approval remains bound to the broker's exact preparation digest; this does
+/// not create a second authorization path or permit a caller to choose a cap.
+/// It gives CUA and release automation the same narrow operation exposed by
+/// `approvals_approve_digest` to the renderer.
+async fn dispatch_approvals(
+    method: &str,
+    path: &str,
+    body: Value,
+    app: &AppHandle,
+) -> Result<Value> {
+    let broker = app
+        .try_state::<Arc<crate::session::approval::ApprovalBroker>>()
+        .ok_or_else(|| anyhow::anyhow!("approval broker unavailable"))?;
+    match (method, path) {
+        ("GET", "/v1/approvals/pending") => {
+            Ok(json!({ "approvals": broker.pending_snapshot().await }))
+        }
+        ("POST", "/v1/approvals/approve-digest") => {
+            let digest = body
+                .get("executionSpecDigest")
+                .or_else(|| body.get("execution_spec_digest"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("executionSpecDigest is required"))?;
+            let (approval_id, already_settled) = broker.approve_digest(app, digest).await?;
+            Ok(json!({
+                "approvalId": approval_id,
+                "alreadySettled": already_settled,
+                "executionSpecDigest": digest,
+            }))
+        }
+        _ => anyhow::bail!("unsupported approvals IPC route {method} {path}"),
+    }
 }
 
 fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {

@@ -143,12 +143,12 @@ impl SftProjection {
             || self.selected_checkpoint_id.is_some()
             || !self.checkpoints.is_empty()
         {
-                EvidenceCompleteness::Complete
-            } else if self.dataset_digest.is_some() {
-                EvidenceCompleteness::Partial
-            } else {
-                EvidenceCompleteness::Absent
-            };
+            EvidenceCompleteness::Complete
+        } else if self.dataset_digest.is_some() {
+            EvidenceCompleteness::Partial
+        } else {
+            EvidenceCompleteness::Absent
+        };
         EvidenceState {
             completeness,
             reason: None,

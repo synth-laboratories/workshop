@@ -863,9 +863,21 @@ impl OptimizerService {
                     {
                         continue;
                     }
-                    if let Ok(outcome) = super::workspace_recipe::load_recipes_with_diagnostics(&root) {
-                        recipes.extend(outcome.recipes.iter().map(super::workspace_recipe::catalog_entry));
-                        recipes.extend(outcome.diagnostics.iter().map(super::workspace_recipe::invalid_catalog_entry));
+                    if let Ok(outcome) =
+                        super::workspace_recipe::load_recipes_with_diagnostics(&root)
+                    {
+                        recipes.extend(
+                            outcome
+                                .recipes
+                                .iter()
+                                .map(super::workspace_recipe::catalog_entry),
+                        );
+                        recipes.extend(
+                            outcome
+                                .diagnostics
+                                .iter()
+                                .map(super::workspace_recipe::invalid_catalog_entry),
+                        );
                     }
                 }
             }

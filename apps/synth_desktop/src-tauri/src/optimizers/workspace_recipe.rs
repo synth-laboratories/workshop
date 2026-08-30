@@ -674,10 +674,9 @@ pub fn recipe_search_roots(
     session_id: &str,
 ) -> Result<Vec<PathBuf>> {
     let mut roots = session_search_roots(db, session_id)?;
-    for root in crate::project_sources::discovery_roots(
-        db,
-        crate::project_sources::Capability::Recipes,
-    )? {
+    for root in
+        crate::project_sources::discovery_roots(db, crate::project_sources::Capability::Recipes)?
+    {
         if !roots.iter().any(|existing| existing == &root) {
             roots.push(root);
         }
@@ -689,7 +688,12 @@ pub fn find_recipe_in_roots(search_roots: &[PathBuf], recipe_id: &str) -> Result
     let mut matches = Vec::new();
     for root in search_roots {
         let outcome = load_recipes_with_diagnostics(root)?;
-        matches.extend(outcome.recipes.into_iter().filter(|recipe| recipe.id == recipe_id));
+        matches.extend(
+            outcome
+                .recipes
+                .into_iter()
+                .filter(|recipe| recipe.id == recipe_id),
+        );
         if let Some(diagnostic) = outcome
             .diagnostics
             .iter()
@@ -701,7 +705,9 @@ pub fn find_recipe_in_roots(search_roots: &[PathBuf], recipe_id: &str) -> Result
     match matches.len() {
         0 => bail!("workspace recipe `{recipe_id}` is not declared in any approved project source"),
         1 => Ok(matches.remove(0)),
-        _ => bail!("workspace recipe `{recipe_id}` is declared in more than one approved project source"),
+        _ => bail!(
+            "workspace recipe `{recipe_id}` is declared in more than one approved project source"
+        ),
     }
 }
 
