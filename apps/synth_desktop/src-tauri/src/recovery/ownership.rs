@@ -220,10 +220,24 @@ pub struct OptimizerRunClaim {
 }
 
 impl OptimizerRunClaim {
-    /// Same two-halves rule as [`TurnClaim::is_live`]: this process holds it,
-    /// and the lease has not expired. Do not change `TurnClaim::is_live`.
+    /// A fresh claim held by the current process or a live peer is ownership.
+    /// Optimizer MCP clients open the same instance database in short-lived
+    /// sibling processes; treating their different boot epoch as abandonment
+    /// would seal an actively-running app-owned campaign as interrupted.
     pub fn is_live(&self, instance_id: &str, now: DateTime<Utc>) -> bool {
-        self.owner_instance_id == instance_id && !self.lease_expired(now)
+        if self.lease_expired(now) {
+            return false;
+        }
+        if self.owner_instance_id == instance_id {
+            return true;
+        }
+        let Some(pid) = self.pid else {
+            return false;
+        };
+        let Some(expected) = self.process_start_identity.as_deref() else {
+            return false;
+        };
+        crate::instance::process_start_identity(pid).as_deref() == Some(expected)
     }
 
     pub fn lease_expired(&self, now: DateTime<Utc>) -> bool {
@@ -352,5 +366,26 @@ pub fn claim_is_live(
         }
         KIND_OPTIMIZER_RUN => optimizer_run_is_live(conn, id, instance_id, now),
         _ => Ok(false),
+    }
+}
+
+#[cfg(test)]
+mod optimizer_claim_tests {
+    use super::*;
+
+    #[test]
+    fn a_live_peer_process_keeps_its_optimizer_run_owned() {
+        let now = Utc::now();
+        let pid = std::process::id();
+        let claim = OptimizerRunClaim {
+            run_id: "opt_peer".into(),
+            owner_instance_id: "app-boot".into(),
+            boot_epoch: "app-boot".into(),
+            pid: Some(pid),
+            process_start_identity: crate::instance::process_start_identity(pid),
+            heartbeat_at: now.to_rfc3339(),
+            lease_expires_at: (now + LEASE_DURATION).to_rfc3339(),
+        };
+        assert!(claim.is_live("mcp-boot", now));
     }
 }
