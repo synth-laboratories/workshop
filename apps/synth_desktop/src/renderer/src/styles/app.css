@@ -8200,6 +8200,26 @@ html.visual-expanded .sidebar {
 .optimizer-eval-selection dd { margin: 0; color: var(--color-text-muted); font-size:var(--fs-micro); line-height: 1.4; }
 .optimizer-eval-evidence { display: block; margin-top: 9px; overflow-wrap: anywhere; color: var(--color-text-faint); font: 10px/1.4 var(--font-mono); }
 
+/* One terminal starter projection, split into four stable reading zones. */
+.starter-result { margin: 0 0 14px; padding: 12px; border: 1px solid var(--color-accent-ring); border-radius:var(--radius-md); background: var(--color-accent-subtle); }
+.starter-result:focus-visible { outline: 2px solid var(--color-selection); outline-offset: 2px; }
+.starter-result-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.starter-result-header h2 { margin: 2px 0 0; font-size:var(--fs-section); }
+.starter-result-zones { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.starter-result-zones > section { min-width: 0; padding: 10px; border: 1px solid var(--color-border); border-radius:var(--radius-sm); background: var(--color-card); }
+.starter-result-zones h3 { margin: 0 0 7px; color: var(--color-text); font-size:var(--font-size-sm); }
+.starter-result-zones p { margin: 6px 0; color: var(--color-text-muted); font-size:var(--font-size-xs); line-height: 1.45; }
+.starter-result-zones small { color: var(--color-text-faint); overflow-wrap: anywhere; }
+.starter-result-zones dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 8px; margin: 0; font-size:var(--font-size-xs); }
+.starter-result-zones dt { color: var(--color-text-faint); }
+.starter-result-zones dd { margin: 0; color: var(--color-text); }
+.starter-result-zones ul { max-height: 92px; margin: 7px 0; padding-left: 18px; overflow: auto; color: var(--color-text-muted); font-size:var(--fs-micro); }
+.starter-result-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+
+@media (max-width: 760px) {
+	.starter-result-zones { grid-template-columns: 1fr; }
+}
+
 .optimizer-toolbar {
 	display: flex;
 	flex-wrap: wrap;

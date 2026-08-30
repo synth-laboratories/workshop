@@ -35,6 +35,8 @@ test("starter prompts require preflight and approval instead of auto-running", (
 		assert.match(starter.prompt, /explicit approval/);
 		assert.match(starter.prompt, new RegExp(starter.recipeId.replaceAll(".", "\\.")));
 	}
+	assert.match(workshopStarter("nanohorizon-craftax").prompt, /github\.com\/synth-laboratories\/nanohorizon/);
+	assert.match(workshopStarter("nanohorizon-craftax").prompt, /stop for my explicit approval before provider use or any run/);
 });
 
 test("only the exact referred recipe receives the bounded starter prompt", () => {
