@@ -748,6 +748,13 @@ impl ApprovalBroker {
             ApprovalKind::PaidCompute { requested_cap, .. } => {
                 ApprovalDecision::ApproveWithCap { cap: requested_cap }
             }
+            ApprovalKind::CredentialAccess { consent, .. } => ApprovalDecision::Credential {
+                outcome: match consent {
+                    CredentialConsent::RememberLocator => CredentialDecision::RememberLocator,
+                    CredentialConsent::RegisterSource => CredentialDecision::RegisterSource,
+                    CredentialConsent::IssueLease => CredentialDecision::IssueLease,
+                },
+            },
             _ => ApprovalDecision::Approve {
                 scope: ApprovalScope::Once,
             },
