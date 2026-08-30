@@ -12,7 +12,6 @@ import {
 	rememberLastKnownGood,
 	propsFromBindings,
 	replayStreamsFromBindings,
-	canonicalTemplateId,
 	resolveTemplate,
 	resolveVisualBindings,
 	selectRenderedProjection,

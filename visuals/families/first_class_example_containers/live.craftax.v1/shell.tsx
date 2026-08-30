@@ -451,7 +451,10 @@ export function Shell(props: ShellProps) {
     [optimizerEvents, declaredStreamCount, stream.events, stream.enrichmentEvents]
   );
   const fixtureEvents = useMemo(
-    () => (optimizerEvents || declaredStreamCount > 0 || durableEvents?.length ? undefined : stream.events),
+    () => {
+      const candidate = optimizerEvents || declaredStreamCount > 0 ? undefined : stream.events;
+      return durableEvents?.length ? undefined : candidate;
+    },
     [optimizerEvents, declaredStreamCount, durableEvents, stream.events]
   );
   const liveStream = useLiveEvalStream({

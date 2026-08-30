@@ -397,7 +397,7 @@ export function listTemplates(): VisualTemplate[] {
 
 export function resolveTemplate(id: string): VisualTemplate | undefined {
   // Bundled first, always: the runtime tier can add ids, never redefine one.
-  const entry = BY_ID.get(canonicalTemplateId(id)) ?? RUNTIME_BY_ID.get(id);
+  const entry = BY_ID.get(id) ?? RUNTIME_BY_ID.get(id) ?? BY_ID.get(canonicalTemplateId(id));
   if (!entry) return undefined;
   return withDistribution(entry);
 }
@@ -408,7 +408,7 @@ export function resolveTemplate(id: string): VisualTemplate | undefined {
  * back to another template's shell; `VisualHost` compiles its source instead.
  */
 export function getShellImporter(id: string) {
-  return shellImporters[canonicalTemplateId(id)];
+  return shellImporters[id];
 }
 
 export function isInternalTemplate(id: string): boolean {

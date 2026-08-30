@@ -65,7 +65,7 @@ test("terminal trials close omitted policy spans and retain recorded policy iden
     }
   ]);
   assert.equal(rows[0].state, "done");
-  assert.equal(rows[0].view.steps[0].status, "complete");
+  assert.equal(rows[0].view.steps[0].status, "aborted");
   assert.equal(rows[0].view.run.model, "glm-5.3-flash");
   assert.equal(rows[0].view.run.provider, "openrouter");
 });

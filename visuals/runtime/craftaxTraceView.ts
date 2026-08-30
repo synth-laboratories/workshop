@@ -687,13 +687,6 @@ export function foldCraftaxTrace(
       target.turn_start = first?.step ?? null;
       target.turn_end = last?.step ?? null;
     }
-    // A terminal trial is authoritative evidence that every opened policy span
-    // settled. Some container relays omit the final span.policy.closed event;
-    // keeping those rows "running" after the trial is done misstates durable
-    // evidence and makes a reopened visual look live forever.
-    if (["done", "completed", "failed", "cancelled"].includes(identity.status)) {
-      target.status = identity.status === "failed" ? "failed" : "complete";
-    }
   }
 
   const declaredFrames = num(relay.frameObservationsDeclared ?? relay.framesDeclared);
@@ -934,7 +927,7 @@ export function craftaxTrialsFromRun(
       effort: text(run?.summary?.policy?.effort),
       totalReward: num(record?.reward),
       costUsd: num(record?.usage?.cost_usd),
-      parentTerminal,
+      parentTerminal: parentTerminal || record !== null,
       relay: (record?.relay ?? null) as Any
     });
     return {
