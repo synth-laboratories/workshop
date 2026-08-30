@@ -42,20 +42,22 @@ impl SftProjection {
             }
             "sft.training.metrics" | "sft.step.metrics" => {
                 self.phase = Some(RunPhase::Training);
-                self.train_loss = payload
+                let metrics = payload.get("delta").unwrap_or(payload);
+                self.train_loss = metrics
                     .get("trainLoss")
-                    .or_else(|| payload.get("train_loss"))
-                    .or_else(|| payload.get("loss"))
+                    .or_else(|| metrics.get("train_loss"))
+                    .or_else(|| metrics.get("loss"))
                     .and_then(|v| v.as_f64());
-                if let Some(step) = payload.get("step").and_then(|v| v.as_u64()) {
+                if let Some(step) = metrics.get("step").and_then(|v| v.as_u64()) {
                     self.usage.steps = Some(step);
                 }
             }
             "sft.checkpoint.ready" | "sft.checkpoint.created" => {
-                let id = payload
+                let checkpoint = payload.get("item").unwrap_or(payload);
+                let id = checkpoint
                     .get("checkpointId")
-                    .or_else(|| payload.get("checkpoint_id"))
-                    .or_else(|| payload.get("id"))
+                    .or_else(|| checkpoint.get("checkpoint_id"))
+                    .or_else(|| checkpoint.get("id"))
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| {
                         KernelError::new(
@@ -137,8 +139,10 @@ impl SftProjection {
     }
 
     pub fn evidence_state(&self) -> EvidenceState {
-        let completeness =
-            if self.produced_adapter.is_some() || self.selected_checkpoint_id.is_some() {
+        let completeness = if self.produced_adapter.is_some()
+            || self.selected_checkpoint_id.is_some()
+            || !self.checkpoints.is_empty()
+        {
                 EvidenceCompleteness::Complete
             } else if self.dataset_digest.is_some() {
                 EvidenceCompleteness::Partial
@@ -148,20 +152,31 @@ impl SftProjection {
         EvidenceState {
             completeness,
             reason: None,
-            refs: Vec::new(),
+            refs: self
+                .checkpoints
+                .iter()
+                .map(|id| crate::optimizers::kernel::evidence::EvidenceRef {
+                    kind: "checkpoint".into(),
+                    id: id.clone(),
+                    digest: None,
+                })
+                .collect(),
         }
     }
 
     pub fn settle(&self) -> KernelResult<SftResult> {
-        if self.dataset_digest.is_none() {
+        if self.dataset_digest.is_none() && self.checkpoints.is_empty() {
             return Err(KernelError::new(
                 KernelErrorCode::EvidenceMissing,
-                "SFT cannot settle without a dataset digest",
+                "SFT cannot settle without a dataset digest or materialized checkpoint",
             ));
         }
         Ok(SftResult {
             dataset_digest: self.dataset_digest.clone(),
-            selected_checkpoint_id: self.selected_checkpoint_id.clone(),
+            selected_checkpoint_id: self
+                .selected_checkpoint_id
+                .clone()
+                .or_else(|| self.checkpoints.last().cloned()),
             produced_adapter: self.produced_adapter.clone(),
             child_eval_run_ids: self.child_eval_run_ids.clone(),
             train_loss: self.train_loss,
@@ -250,5 +265,32 @@ mod tests {
         let result = projection.settle().unwrap();
         assert_eq!(result.dataset_digest.as_deref(), Some("sha256:ds"));
         assert_eq!(result.child_eval_run_ids, vec!["eval-run-1".to_string()]);
+    }
+
+    #[test]
+    fn sidecar_envelope_checkpoint_is_terminal_evidence() {
+        let mut projection = SftProjection::default();
+        projection
+            .apply(&committed(
+                "sft.training.metrics",
+                json!({"delta": {"step": 4, "train_loss": 0.5}}),
+                1,
+            ))
+            .unwrap();
+        projection
+            .apply(&committed(
+                "sft.checkpoint.ready",
+                json!({"item": {"id": "ckpt-4", "sha256": "abc", "ready": true}}),
+                2,
+            ))
+            .unwrap();
+
+        let result = projection.settle().unwrap();
+        assert_eq!(result.selected_checkpoint_id.as_deref(), Some("ckpt-4"));
+        assert_eq!(result.train_loss, Some(0.5));
+        assert_eq!(result.usage.steps, Some(4));
+        let evidence = projection.evidence_state();
+        assert_eq!(evidence.completeness, EvidenceCompleteness::Complete);
+        assert_eq!(evidence.refs[0].id, "ckpt-4");
     }
 }
