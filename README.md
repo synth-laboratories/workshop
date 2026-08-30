@@ -1,12 +1,12 @@
 # Workshop
 
 Workshop is a local-first macOS workbench for coding agents, evaluations,
-optimization runs, containers, and inspectable research artifacts. The v0.8
+optimization runs, containers, and inspectable research artifacts. The v0.9
 release is built with Tauri 2, Rust, React, and TypeScript.
 
 ## Download or build
 
-- Download the prebuilt v0.8 release from
+- Download the prebuilt v0.9 release from
   [usesynth.ai/download](https://www.usesynth.ai/download).
 - Build the unnotarized app and a shareable ZIP from source with one command.
   The build does
