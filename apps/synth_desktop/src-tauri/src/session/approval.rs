@@ -757,6 +757,36 @@ impl ApprovalBroker {
         Ok((approval_id, false))
     }
 
+    /// Approve one currently open native sheet by its broker-issued identity.
+    /// This is the accessibility equivalent of pressing the sheet's approve
+    /// button and intentionally derives the paid cap from the pending request.
+    pub(crate) async fn approve_pending<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        approval_id: &str,
+    ) -> Result<()> {
+        let matched = self
+            .pending
+            .lock()
+            .await
+            .get(approval_id)
+            .map(|pending| (pending.origin.session_id.clone(), pending.kind.clone()));
+        let Some((session_id, kind)) = matched else {
+            return Err(anyhow!("no approval sheet is open for id {approval_id}"));
+        };
+        let decision = match kind {
+            ApprovalKind::PaidCompute { requested_cap, .. } => {
+                ApprovalDecision::ApproveWithCap { cap: requested_cap }
+            }
+            _ => ApprovalDecision::Approve {
+                scope: ApprovalScope::Once,
+            },
+        };
+        self.resolve(app, &session_id, approval_id, decision)
+            .await
+            .map(|_| ())
+    }
+
     /// Seal the profile a session start resolved and persist the atomic
     /// `approval.policy.effective` receipt for it.
     pub(crate) async fn record_policy_effective<R: tauri::Runtime>(

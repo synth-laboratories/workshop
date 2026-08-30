@@ -893,6 +893,16 @@ async fn dispatch_approvals(
                 "executionSpecDigest": digest,
             }))
         }
+        ("POST", "/v1/approvals/approve") => {
+            let approval_id = body
+                .get("approvalId")
+                .or_else(|| body.get("approval_id"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("approvalId is required"))?;
+            broker.approve_pending(app, approval_id).await?;
+            Ok(json!({ "approvalId": approval_id, "status": "approved" }))
+        }
         _ => anyhow::bail!("unsupported approvals IPC route {method} {path}"),
     }
 }
