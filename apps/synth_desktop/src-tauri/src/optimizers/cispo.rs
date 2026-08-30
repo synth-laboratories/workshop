@@ -207,8 +207,11 @@ async fn start_local(
                 "reward_url": cispo.reward_url,
                 "train_world_ref": cispo.train_world_ref,
                 "heldout_world_ref": cispo.heldout_world_ref,
-                "train_instances": 16,
-                "heldout_instances": 16
+                // The packaged Hendrycks-MATH fixture exposes eight disjoint
+                // rows per split. Keep the admitted job inside that declared
+                // surface; requesting row 8 fails closed before training.
+                "train_instances": 8,
+                "heldout_instances": 8
             },
             "output_dir": output_dir,
             "max_steps": 1,
