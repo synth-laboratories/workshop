@@ -16,6 +16,7 @@ type Props = {
 	selectedLagunaAdapterId?: string | null;
 	onSelectLagunaAdapter?: (checkpointId: string | null) => void;
 	onConfigureAccount?: () => void;
+	onConnectSynth?: () => void;
 	onConfigureModels?: () => void;
 	onResolveBilling?: () => void;
 };
@@ -321,6 +322,7 @@ export function LandingPage({
 	selectedLagunaAdapterId = null,
 	onSelectLagunaAdapter,
 	onConfigureAccount,
+	onConnectSynth,
 	onConfigureModels,
 	onResolveBilling
 }: Props) {
@@ -370,7 +372,7 @@ export function LandingPage({
 							<strong>Activate your free month</strong>
 							<small>Create or sign in to your Synth account in your browser, then return here to start.</small>
 						</div>
-						<button type="button" className="quick-card is-primary" data-testid="activate-free-month" onClick={onConfigureAccount}>
+						<button type="button" className="quick-card is-primary" data-testid="activate-free-month" onClick={onConnectSynth}>
 							<span><strong>Activate free month</strong><small>Sign up or sign in with Synth</small></span>
 						</button>
 						<button type="button" className="quick-card" onClick={() => {

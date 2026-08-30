@@ -165,6 +165,65 @@ test("first run leads with free-month activation and preserves local use", async
 	await expect(choices).not.toBeVisible();
 });
 
+test("first-run activation starts browser pairing in one click", async ({ page }) => {
+	await page.addInitScript(() => {
+		window.localStorage.removeItem("synth.accountChoiceMade");
+		(window as Window & { __pairBegins?: number }).__pairBegins = 0;
+		window.synthAccount = {
+			beginSignIn: async () => {
+				(window as Window & { __pairBegins?: number }).__pairBegins! += 1;
+				return {
+					verificationUri: "https://www.usesynth.ai/signin?redirect_to=x",
+					expiresAtEpochS: Math.floor(Date.now() / 1000) + 600,
+					intervalS: 30
+				};
+			},
+			pollSignIn: async () => ({ status: "pending" as const, retryInS: 30 }),
+			cancelSignIn: async () => undefined,
+			signOut: async () => { throw new Error("unused"); },
+			getSummary: async () => ({ signedIn: false, state: "signed_out" as const, environment: "prod" as const })
+		};
+	});
+	await page.reload();
+	await page.getByTestId("activate-free-month").click();
+	await expect(page.getByTestId("synth-connection-status")).toContainText("Finish connecting in your browser");
+	await expect(page.getByTestId("settings-page")).toHaveCount(0);
+	expect(await page.evaluate(() => (window as Window & { __pairBegins?: number }).__pairBegins)).toBe(1);
+});
+
+test("pairing survives leaving Account and completes exactly once", async ({ page }) => {
+	await page.addInitScript(() => {
+		let polls = 0;
+		(window as Window & { __pairActives?: number }).__pairActives = 0;
+		window.synthAccount = {
+			beginSignIn: async () => ({
+				verificationUri: "https://www.usesynth.ai/signin?redirect_to=x",
+				expiresAtEpochS: Math.floor(Date.now() / 1000) + 600,
+				intervalS: 1
+			}),
+			pollSignIn: async () => {
+				polls += 1;
+				if (polls >= 2) {
+					(window as Window & { __pairActives?: number }).__pairActives! += 1;
+					return { status: "active" as const };
+				}
+				return { status: "pending" as const, retryInS: 1 };
+			},
+			cancelSignIn: async () => undefined,
+			signOut: async () => { throw new Error("unused"); },
+			getSummary: async () => ({ signedIn: false, state: "signed_out" as const, environment: "prod" as const })
+		};
+	});
+	await page.reload();
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-menu").getByTestId("open-account-settings").click();
+	await page.getByTestId("sign-in-begin").click();
+	await page.getByRole("button", { name: /Back/ }).click();
+	await expect(page.getByTestId("settings-page")).toHaveCount(0);
+	await expect(page.getByTestId("synth-connection-status")).toContainText("Synth connected", { timeout: 10_000 });
+	expect(await page.evaluate(() => (window as Window & { __pairActives?: number }).__pairActives)).toBe(1);
+});
+
 test("cancel during pairing returns to the idle sign-in affordance", async ({ page }) => {
 	await page.addInitScript(() => {
 		window.synthAccount = {

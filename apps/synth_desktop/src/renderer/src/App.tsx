@@ -20,10 +20,12 @@ import { copyText } from "./runtime/clipboard";
 import { eventsToMessages } from "./runtime/sessionView";
 import { MainRoutes } from "./routes";
 import { bridges } from "./runtime/desktopBridge";
+import { useSynthConnection } from "./hooks/useSynthConnection";
 
 /** Shell + wiring only — orchestration lives in useAppController / ComposerDock. */
 export default function App() {
 	const c = useAppController();
+	const synthConnection = useSynthConnection();
 	const tabCopyItems = useMemo<TabCopyItem[]>(() => {
 		if (c.view.kind !== "chat" || !c.activeSessionId) return [];
 		const messages = eventsToMessages(c.eventsBySession[c.activeSessionId] ?? []);
@@ -50,6 +52,32 @@ export default function App() {
 	return (
 		<div className="app-shell">
 			<ManderLabGate />
+			{synthConnection.state.kind !== "idle" ? (
+				<div className={`synth-connection-banner is-${synthConnection.state.kind}`} role="status" data-testid="synth-connection-status">
+					<span>
+						<strong>{synthConnection.state.kind === "opening_browser"
+							? "Opening Synth sign-in…"
+							: synthConnection.state.kind === "awaiting_approval"
+								? "Finish connecting in your browser"
+								: synthConnection.state.kind === "connected"
+									? "Synth connected"
+									: "Synth connection needs attention"}</strong>
+						<small>{synthConnection.state.kind === "awaiting_approval"
+							? "You can keep using Workshop. This status will update automatically."
+							: synthConnection.state.kind === "failed" || synthConnection.state.kind === "expired"
+								? synthConnection.state.message
+								: synthConnection.state.kind === "connected"
+									? "Your account and cloud access are ready to refresh."
+									: ""}</small>
+					</span>
+					<div>
+						{synthConnection.state.kind === "awaiting_approval" ? <button type="button" onClick={() => void synthConnection.reopenBrowser()}>Reopen browser</button> : null}
+						{synthConnection.state.kind === "opening_browser" || synthConnection.state.kind === "awaiting_approval" ? <button type="button" onClick={() => void synthConnection.cancel()}>Cancel</button> : null}
+						{synthConnection.state.kind === "failed" || synthConnection.state.kind === "expired" ? <button type="button" onClick={() => void synthConnection.start()}>Try again</button> : null}
+						{synthConnection.state.kind === "connected" || synthConnection.state.kind === "failed" || synthConnection.state.kind === "expired" ? <button type="button" onClick={synthConnection.dismiss}>Dismiss</button> : null}
+					</div>
+				</div>
+			) : null}
 			<div className="body-row">
 				{c.view.kind !== "settings" ? (
 					<Sidebar
@@ -188,6 +216,7 @@ export default function App() {
 						pluginStatuses={c.pluginStatuses}
 						refreshPluginStatuses={c.refreshPluginStatuses}
 						state={c.state}
+						onConnectSynth={() => void synthConnection.start()}
 						sessions={c.sessions}
 						selectedTargetId={c.selectedTargetId}
 						onSelectTarget={c.onSelectTarget}

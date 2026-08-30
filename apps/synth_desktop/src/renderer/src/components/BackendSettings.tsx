@@ -1,14 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { SynthBackendSettings } from "../bridge";
 import { bridges } from "../runtime/desktopBridge";
 import { publicError } from "../runtime/publicError";
-
-type PairState =
-	| { kind: "idle" }
-	| { kind: "pairing"; verificationUri: string; userCode: string | null }
-	| { kind: "error"; message: string };
-
-const DEFAULT_POLL_INTERVAL_S = 4;
+import { useSynthConnection } from "../hooks/useSynthConnection";
 
 function announceAccountChange(next: SynthBackendSettings) {
 	window.dispatchEvent(new CustomEvent("synth:account-changed", {
@@ -25,8 +19,7 @@ export function AccountSignIn() {
 	const [settings, setSettings] = useState<SynthBackendSettings | null>(null);
 	const [status, setStatus] = useState<string | null>(null);
 	const [saving, setSaving] = useState(false);
-	const [pair, setPair] = useState<PairState>({ kind: "idle" });
-	const pollTimer = useRef<number | null>(null);
+	const connection = useSynthConnection();
 
 	const load = () => {
 		void bridges.config?.get().then(setSettings).catch(() => undefined);
@@ -38,61 +31,6 @@ export function AccountSignIn() {
 		return () => window.removeEventListener("synth:account-changed", onChanged);
 	}, []);
 
-	const stopPolling = () => {
-		if (pollTimer.current !== null) {
-			window.clearTimeout(pollTimer.current);
-			pollTimer.current = null;
-		}
-	};
-	useEffect(() => stopPolling, []);
-
-	// The host paces polling: each pending result names the next delay
-	// (RFC 8628 interval / slow_down), so a rate-limited service slows the
-	// loop instead of erroring it.
-	const schedulePoll = (delayS: number) => {
-		stopPolling();
-		pollTimer.current = window.setTimeout(() => {
-			void bridges.account?.pollSignIn().then((result) => {
-				if (result.status === "active") {
-					stopPolling();
-					setPair({ kind: "idle" });
-					setStatus("Signed in · runtime reconnected");
-					void bridges.config?.get().then((next) => {
-						setSettings(next);
-						announceAccountChange(next);
-					});
-				} else if (result.status === "expired") {
-					stopPolling();
-					setPair({ kind: "error", message: result.reason });
-				} else {
-					schedulePoll(result.retryInS ?? DEFAULT_POLL_INTERVAL_S);
-				}
-			}).catch((error) => {
-				stopPolling();
-				setPair({ kind: "error", message: publicError(error) });
-			});
-		}, delayS * 1000);
-	};
-
-	const beginSignIn = async () => {
-		if (!bridges.account) return;
-		try {
-			const begin = await bridges.account.beginSignIn();
-			setPair({
-				kind: "pairing",
-				verificationUri: begin.verificationUri,
-				userCode: begin.userCode ?? null
-			});
-			schedulePoll(begin.intervalS ?? DEFAULT_POLL_INTERVAL_S);
-		} catch (error) {
-			setPair({ kind: "error", message: publicError(error) });
-		}
-	};
-	const cancelSignIn = () => {
-		stopPolling();
-		setPair({ kind: "idle" });
-		void bridges.account?.cancelSignIn();
-	};
 	const signOut = async () => {
 		if (!bridges.account) return;
 		setSaving(true);
@@ -109,7 +47,7 @@ export function AccountSignIn() {
 	};
 	return (
 		<div className="backend-signin" data-testid="account-sign-in">
-			{pair.kind === "pairing" ? (
+			{connection.state.kind === "opening_browser" || connection.state.kind === "awaiting_approval" ? (
 				<>
 					<span role="status" className="finetune-meta" data-testid="sign-in-status">
 						Browser sign-in started. Finish signup or sign-in there — Workshop updates automatically when pairing completes.
@@ -117,15 +55,15 @@ export function AccountSignIn() {
 					<span className="finetune-meta backend-signin-note" data-testid="sign-in-browser-help">
 						If no page appeared, check your browser tabs or choose Reopen browser. You can safely cancel and retry.
 					</span>
-					{pair.userCode ? (
+					{connection.state.kind === "awaiting_approval" && connection.state.begin.userCode ? (
 						<span className="finetune-meta backend-signin-code" data-testid="sign-in-user-code">
 							Approve only if the browser shows pairing code{" "}
-							<strong>{pair.userCode}</strong>.
+							<strong>{connection.state.begin.userCode}</strong>.
 						</span>
 					) : null}
 					<div className="backend-signin-actions">
-						<button type="button" className="settings-secondary-btn" onClick={() => void beginSignIn()}>Reopen browser</button>
-						<button type="button" className="settings-secondary-btn" data-testid="sign-in-cancel" onClick={cancelSignIn}>Cancel</button>
+						<button type="button" className="settings-secondary-btn" onClick={() => void connection.reopenBrowser()}>Reopen browser</button>
+						<button type="button" className="settings-secondary-btn" data-testid="sign-in-cancel" onClick={() => void connection.cancel()}>Cancel</button>
 					</div>
 				</>
 			) : (
@@ -133,14 +71,16 @@ export function AccountSignIn() {
 					{/* Steady-state copy stays here; a transient confirmation gets its own
 					    line so the status never hides what the device's state is. */}
 					<span role="status" className="finetune-meta" data-testid="sign-in-status">
-						{pair.kind === "error"
-							? pair.message
+						{connection.state.kind === "failed" || connection.state.kind === "expired"
+							? connection.state.message
+							: connection.state.kind === "connected"
+								? "Connected to Synth · runtime reconnected"
 							: settings?.apiKeyConfigured
 								? "Connected to Synth. Sign in again to switch accounts."
 								: "New here? Browser sign-in creates your Synth account and connects this device."}
 					</span>
 					<div className="backend-signin-actions">
-						<button type="button" className="settings-secondary-btn" data-testid="sign-in-begin" onClick={() => void beginSignIn()}>
+						<button type="button" className="settings-secondary-btn" data-testid="sign-in-begin" onClick={() => void connection.start()}>
 							Activate free month in browser
 						</button>
 						{settings?.apiKeyConfigured ? (

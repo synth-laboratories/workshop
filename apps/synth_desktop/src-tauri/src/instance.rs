@@ -227,6 +227,15 @@ fn decode_deep_link_component(value: &str) -> Option<String> {
 }
 
 pub fn parse_workshop_deep_link(raw: &str) -> Result<WorkshopDeepLink, String> {
+    // Authentication return carries no credential or device code. It only
+    // focuses Workshop; device-token polling remains the source of truth.
+    if raw == "synth-workshop://auth-return" || raw == "synth-workshop://auth-return/" {
+        return Ok(WorkshopDeepLink {
+            instance: None,
+            view: "landing".to_string(),
+            run_id: None,
+        });
+    }
     let query = raw
         .strip_prefix("synth-workshop://open")
         .ok_or_else(|| "unsupported Workshop deep link".to_string())?
@@ -1754,5 +1763,20 @@ mod tests {
             parse_workshop_deep_link("synth-workshop://open?instance=../../canonical").is_err()
         );
         assert!(parse_workshop_deep_link("https://example.com").is_err());
+    }
+
+    #[test]
+    fn auth_return_is_focus_only_and_contains_no_authority() {
+        assert_eq!(
+            parse_workshop_deep_link("synth-workshop://auth-return").unwrap(),
+            WorkshopDeepLink {
+                instance: None,
+                view: "landing".into(),
+                run_id: None,
+            }
+        );
+        assert!(
+            parse_workshop_deep_link("synth-workshop://auth-return?device_code=secret").is_err()
+        );
     }
 }

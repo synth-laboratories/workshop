@@ -5,6 +5,7 @@ import { bridges, installDesktopBridge } from "./runtime/desktopBridge";
 import { DIAGNOSTIC_CODES, installVisualDiagnosticSink, reportDiagnostic } from "./runtime/diagnostics";
 import { installRunProgressDiagnostics } from "./runtime/runProgress/subscription";
 import { installRunProgressTelemetry } from "./runtime/runProgress/telemetry";
+import { SynthConnectionProvider } from "./hooks/useSynthConnection";
 import "./styles/tokens.css";
 import "./styles/primitives.css";
 import "./styles/app.css";
@@ -62,6 +63,8 @@ void bridges.desktop.getInstanceDiagnostics().then((identity) => {
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
-		<App />
+		<SynthConnectionProvider>
+			<App />
+		</SynthConnectionProvider>
 	</StrictMode>
 );

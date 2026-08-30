@@ -116,6 +116,50 @@ input,
 	-webkit-app-region: drag;
 }
 
+.synth-connection-banner {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--sp-4);
+	min-height: 48px;
+	padding: 8px 16px 8px 84px;
+	background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface));
+	border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 38%, transparent);
+	-webkit-app-region: no-drag;
+}
+
+.synth-connection-banner > span {
+	display: grid;
+	gap: 2px;
+}
+
+.synth-connection-banner small {
+	color: var(--color-text-muted);
+}
+
+.synth-connection-banner > div {
+	display: flex;
+	gap: 8px;
+}
+
+.synth-connection-banner button {
+	padding: 5px 10px;
+	border: 1px solid var(--color-border);
+	border-radius:var(--radius-xs);
+	background: var(--color-surface);
+	color: var(--color-text);
+	cursor: pointer;
+}
+
+.synth-connection-banner.is-connected {
+	background: var(--tone-success-bg);
+}
+
+.synth-connection-banner.is-failed,
+.synth-connection-banner.is-expired {
+	background: var(--tone-danger-bg);
+}
+
 .body-row,
 .main-pane,
 .sidebar,

@@ -125,6 +125,7 @@ export type MainRoutesProps = {
 	onRevokeComputerUseApp: (bundleId: string) => void;
 	setView: (view: MainView) => void;
 	state: LandingState;
+	onConnectSynth: () => void;
 	sessions: Session[];
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
@@ -203,6 +204,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		onOpenComputerUseSettings,
 		onRevokeComputerUseApp,
 		state,
+		onConnectSynth,
 		sessions,
 		selectedTargetId,
 		onSelectTarget,
@@ -774,6 +776,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					selectedLagunaAdapterId={selectedLagunaAdapterId}
 					onSelectLagunaAdapter={onSelectLagunaAdapter}
 					onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
+					onConnectSynth={onConnectSynth}
 					onConfigureModels={() => setView({ kind: "settings", section: "models" })}
 					onResolveBilling={() => setUsageSheetOpen(true)}
 				/>
