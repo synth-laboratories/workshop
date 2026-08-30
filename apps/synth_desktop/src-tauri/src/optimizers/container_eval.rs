@@ -2895,9 +2895,7 @@ pub(super) async fn reconcile_evidence(
             .pointer("/trace/bundle_trace_id")
             .or_else(|| record.pointer("/trace/trace_id"))
             .and_then(Value::as_str)
-            .with_context(|| {
-                format!("terminal record for rollout `{rollout_id}` names no sealed trace")
-            })?;
+            .map(str::to_string);
         // Always reopen the immutable container bundle, even when its trace
         // identity is already indexed. Trace identity and optimizer-run media
         // authority are separate bindings: the old index shortcut returned a
@@ -2925,8 +2923,29 @@ pub(super) async fn reconcile_evidence(
             .and_then(Value::as_array)
             .and_then(|traces| traces.first())
             .context("sealed bundle indexed no trace")?;
+        // A container may publish its terminal rollout before the immutable
+        // bundle reference becomes visible. Reconciliation is explicitly the
+        // durable repair path, so accept the identity from the freshly
+        // imported, trusted bundle when the terminal snapshot did not contain
+        // it. This does not weaken identity checking: import verifies the
+        // bundle and binds it to this exact container, rollout, run, and trial.
+        let producer_trace_id = producer_trace_id.or_else(|| {
+            imported_trace
+                .get("traceId")
+                .or_else(|| imported_trace.get("trace_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        }).with_context(|| {
+            format!("sealed bundle for rollout `{rollout_id}` names no trace identity")
+        })?;
         let (trace_ref, trace_digest) =
-            verify_reconciled_trace_identity(imported_trace, producer_trace_id, &rollout_id)?;
+            verify_reconciled_trace_identity(imported_trace, &producer_trace_id, &rollout_id)?;
+        if record.get("trace").is_none() {
+            record["trace"] = json!({
+                "bundle_trace_id": producer_trace_id,
+                "closed": true,
+            });
+        }
         record
             .as_object_mut()
             .with_context(|| format!("terminal record for seed {seed} is not an object"))?
