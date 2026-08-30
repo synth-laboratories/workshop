@@ -36,6 +36,40 @@ test("terminal scheduler ids reconcile with their semantic Craftax trial", () =>
   assert.equal(rows[0].reward, 4);
 });
 
+test("terminal trials close omitted policy spans and retain recorded policy identity", () => {
+  const trialId = "trial:craftax:780005";
+  const rows = craftaxTrialsFromRun({ summary: {} }, [
+    {
+      type: "eval.trial.started",
+      delta: { trial_id: trialId, rollout_id: "roll_1", seed: 780005 }
+    },
+    {
+      type: "eval.trial.event",
+      delta: {
+        trial_id: trialId,
+        container_event: { sequence: 1, kind: "span.policy.opened", payload: {} }
+      }
+    },
+    {
+      type: "eval.trial.terminal",
+      item: {
+        id: "eval:trial:0",
+        valid: true,
+        raw: {
+          trialId,
+          rolloutId: "roll_1",
+          reward: 4,
+          policyRef: { provider: "openrouter", config: "glm-5.3-flash" }
+        }
+      }
+    }
+  ]);
+  assert.equal(rows[0].state, "done");
+  assert.equal(rows[0].view.steps[0].status, "complete");
+  assert.equal(rows[0].view.run.model, "glm-5.3-flash");
+  assert.equal(rows[0].view.run.provider, "openrouter");
+});
+
 const CAS = (seed) => `ab${String(seed).padStart(62, "c")}`;
 
 let sequence = 0;

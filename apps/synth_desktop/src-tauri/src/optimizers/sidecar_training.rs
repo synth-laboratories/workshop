@@ -498,6 +498,17 @@ pub fn require_placement(capabilities: &Value, placement: &str) -> Result<()> {
     bail!("optimizer sidecar does not advertise placement `{placement}`")
 }
 
+fn advertised_algorithm(capabilities: &Value, algorithm: &str) -> bool {
+    capabilities
+        .get("optimization_algorithms")
+        .or_else(|| capabilities.get("algorithms"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|item| item == algorithm || item == algorithm.split('.').next().unwrap_or(algorithm))
+}
+
 fn append_job_event(job: &mut TrainingJob, kind: &str, payload: Value) {
     let sequence = job.events.len() as u64 + 1;
     job.events.push(json!({
@@ -620,17 +631,7 @@ pub async fn require_training_ready(
     super::recipes::require_plugin_ready(service.manager()).await?;
     let capabilities = service.manager().advertised_capabilities();
     let algorithm = algorithm_for_placement(placement);
-    let algorithms = capabilities
-        .get("algorithms")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect::<Vec<_>>();
-    if !algorithms
-        .iter()
-        .any(|item| *item == algorithm || *item == algorithm.split('.').next().unwrap_or(algorithm))
-    {
+    if !advertised_algorithm(&capabilities, algorithm) {
         bail!("optimizer runtime does not advertise algorithm `{algorithm}`");
     }
     require_placement(&capabilities, placement)?;
@@ -2148,6 +2149,22 @@ mod tests {
             .any(|item| item == PLACEMENT_TRAINING_SFT_LOCAL));
         assert!(merged.get("recipes").is_none());
         assert!(merged.get("compatibleTemplateIds").is_none());
+    }
+
+    #[test]
+    fn training_readiness_accepts_manager_capability_key_and_legacy_key() {
+        assert!(advertised_algorithm(
+            &json!({"optimization_algorithms": ["sft", "cispo"]}),
+            "sft"
+        ));
+        assert!(advertised_algorithm(
+            &json!({"algorithms": ["gepa", "sft"]}),
+            "sft"
+        ));
+        assert!(!advertised_algorithm(
+            &json!({"optimization_algorithms": ["gepa"]}),
+            "sft"
+        ));
     }
 
     #[test]
