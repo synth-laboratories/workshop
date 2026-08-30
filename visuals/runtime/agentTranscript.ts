@@ -63,9 +63,21 @@ export function projectAgentTurns(events: LiveEvalEvent[]): AgentTurnProjection 
       : terminalSource && terminalSequence !== null && terminalSequence >= sequence(raw[0], open.index)
         ? parentTerminalPolicyCallClosure(terminalSource, terminalSequence)
         : null;
-    const followingClosedStep = events.slice(open.index).find((event) => event.kind === "span.step.closed");
+    const nextPolicyOpenedIndex = events.findIndex((event, index) => index > open.index && event.kind === "span.policy.opened");
+    const causalWindow = events.slice(open.index + 1, nextPolicyOpenedIndex < 0 ? events.length : nextPolicyOpenedIndex);
+    const producedSteps = causalWindow
+      .filter((event) => event.kind === "frame" || event.kind === "span.step.closed")
+      .map((event) => step(event))
+      .filter((value): value is number => value !== undefined);
     const precedingObservation = [...events.slice(0, open.index + 1)].reverse().find((event) => event.kind === "observation" || event.kind === "snapshot");
-    const startStep = step(precedingObservation); const endStep = step(followingClosedStep) ?? startStep;
+    const precedingStep = step(precedingObservation);
+    // A policy call can emit a batch of actions. Associate the entire batch up
+    // to the next policy opening, not merely the first closed environment step.
+    // The initial observation belongs to the first decision; subsequent calls
+    // begin at the first frame/step they actually produce so ranges never
+    // overlap at the preceding observation.
+    const startStep = producedSteps[0] ?? precedingStep;
+    const endStep = producedSteps.at(-1) ?? startStep;
     const callNumber = finite(snapshot.call) ?? finite(opened.call_number) ?? open.ordinal;
     const provider = String(snapshot.provider ?? object(snapshot.policy).provider ?? config.provider ?? "") || undefined;
     const model = String(snapshot.model ?? snapshot["gen_ai.request.model"] ?? object(snapshot.policy).model ?? config.model ?? "") || undefined;
@@ -83,6 +95,7 @@ export function projectAgentTurns(events: LiveEvalEvent[]): AgentTurnProjection 
       toolResults: field(results, { complete: closure !== null, applicable: tools != null && tools !== "" }), usage,
       latencyMs: finite(snapshot.latency_ms ?? snapshot.duration_ms), costUsd: finite(usage.cost_usd), rawEvents: raw,
       outcome: closure?.outcome ?? null, closure });
+    if (open.ordinal === 1 && precedingStep != null) callIdByEnvironmentStep.set(precedingStep, id);
     if (startStep != null && endStep != null) for (let value = startStep; value <= endStep; value += 1) callIdByEnvironmentStep.set(value, id);
     if (malformed) missingPolicyEnvelopeCount += 1; open = undefined;
   };

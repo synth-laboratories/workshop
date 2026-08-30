@@ -258,6 +258,7 @@ test.describe("Craftax semantic viewer", () => {
 			});
 		};
 		const push = (kind: string, payload: Record<string, unknown> = {}) => pushLane(lane, kind, payload);
+		const frameUrl = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='4' height='4' fill='%2300a000'/%3E%3C/svg%3E";
 		push("trace.opened");
 		push("observation", { readout: { env_steps: 0, observation_text: "Forest clearing", inventory: { health: 9, food: 8, drink: 7, energy: 9, wood: 2 } } });
 		push("span.policy.opened", { call: { provider: "openrouter", model: "gpt-5.6-luna" } });
@@ -269,8 +270,15 @@ test.describe("Craftax semantic viewer", () => {
 		push("span.policy.closed", { length: 2 });
 		push("reward_signal", { value: 1.0 });
 		push("span.step.closed", { step: 0, action: "up" });
+		push("frame", { step: 0, format: "svg", url: frameUrl });
 		push("achievement_unlocked", { achievement: "collect_wood" });
 		push("span.step.closed", { step: 1, action: "left" });
+		push("frame", { step: 1, format: "svg", url: frameUrl });
+		push("span.policy.opened", { call_number: 2, call: { provider: "openrouter", model: "gpt-5.6-luna" } });
+		push("span.policy.data", { channel: "summary", reasoning: "second-call-reasoning", tool_arguments: '{"actions":["down"]}', usage: { total_tokens: 120 } });
+		push("span.policy.closed", { length: 1 });
+		push("span.step.closed", { step: 2, action: "down" });
+		push("frame", { step: 2, format: "svg", url: frameUrl });
 		push("trace.reconciled", { digest: "d".repeat(64) });
 		pushLane(comparisonLane, "trace.opened");
 		pushLane(comparisonLane, "snapshot", { step: 0, total_reward: 0 });
@@ -358,23 +366,29 @@ test.describe("Craftax semantic viewer", () => {
 		// Transcript renders one normalized call card while preserving every
 		// delta under expandable Trace V5 evidence.
 		await viewer.getByRole("button", { name: "Agent transcript", exact: true }).click();
-		await expect(viewer.locator(".cv-call-list > li")).toHaveCount(1);
+		await expect(viewer.locator(".cv-call-list > li")).toHaveCount(2);
 		await expect(viewer.getByRole("heading", { name: "Agent transcript" })).toBeVisible();
-		const rawEvidence = viewer.getByText("Raw Trace V5 evidence (34 envelopes)");
-		await expect(rawEvidence).toHaveCount(1);
 		await viewer.getByRole("button", { name: "Focus", exact: true }).click();
 		await expect(viewer.locator(".cv-call-list button[aria-current=true]")).toContainText("Call 1");
+		await expect(viewer.getByText("Raw Trace V5 evidence (34 envelopes)")).toHaveCount(1);
 		await expect(viewer).toContainText("Step 0");
 		await expect(viewer).toContainText("collect_wood");
 
 		await viewer.getByRole("button", { name: "Replay", exact: true }).click();
 		const frameCallPanel = viewer.getByTestId("craftax-frame-call-panel");
 		await expect(frameCallPanel).toBeVisible();
+		await expect(frameCallPanel).toContainText("Call 2");
+		await expect(frameCallPanel).toContainText("second-call-reasoning");
+		const frameSlider = viewer.getByRole("slider", { name: "Replay gameplay frames" });
+		await frameSlider.fill("1");
 		await expect(frameCallPanel).toContainText("Call 1");
 		await expect(frameCallPanel).toContainText("Policy reasoning");
 		await expect(frameCallPanel).toContainText("token0");
 		await expect(frameCallPanel).toContainText("Tool calls");
 		await expect(frameCallPanel).toContainText('"actions":["up","left"]');
+		await frameSlider.fill("2");
+		await expect(frameCallPanel).toContainText("Call 2");
+		await expect(frameCallPanel).toContainText('"actions":["down"]');
 		await page.getByTestId("toggle-visual-expand").click();
 		await captureViewportSweep(page, "craftax");
 		await aggregateTimeline.screenshot({ path: join(SHOT_DIR, "craftax-aggregate-timeline-wide.png") });

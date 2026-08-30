@@ -359,6 +359,8 @@ test("live Craftax keeps replay-driven call fallback out of passive state effect
   assert.match(shell, /reconcileCallSelection\(turns\.calls, selectedCallId, transcriptMode === "focus"\)/);
   assert.doesNotMatch(shell, /setSelectedCallId\(\(current\) => reconcileCallSelection/);
   assert.match(shell, /callIdByEnvironmentStep\.get\(selectedEnvironmentStep\)/);
+  assert.match(shell, /callForSequence\(turns\.calls, craftaxEventSequence\(selectedFrameEvent/);
+  assert.doesNotMatch(shell, /replayCall[\s\S]{0,300}turns\.calls\.at\(-1\)/, "a frame must never fall back to an unrelated last call");
   assert.match(shell, /data-testid="craftax-frame-call-panel"/);
   assert.match(shell, /Only reasoning and tool evidence emitted into the retained trace is shown/);
   assert.match(shell, /<ReplayEvidence label="Policy reasoning"/);

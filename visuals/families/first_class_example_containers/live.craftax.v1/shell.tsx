@@ -514,10 +514,11 @@ export function Shell(props: ShellProps) {
     [evaluationEvents, terminalRollouts]
   );
   const latest = visibleEvents.at(-1);
-  const selectedEnvironmentStep = useMemo(
-    () => [...visibleEvents].reverse().map(eventStep).find((step) => step != null),
+  const selectedFrameEvent = useMemo(
+    () => [...visibleEvents].reverse().find((event) => event.kind === "frame"),
     [visibleEvents]
   );
+  const selectedEnvironmentStep = selectedFrameEvent ? eventStep(selectedFrameEvent) : undefined;
   const observation = latestObservation(visibleEvents);
   const inventory = inventoryFrom(observation);
   const runCost = runCostSummary(props.runLifecycle, finite(policy.usage.cost_usd), runAggregate);
@@ -588,8 +589,7 @@ export function Shell(props: ShellProps) {
     ?? turns.calls.find((call) => call.id === reconcileCallSelection(turns.calls, selectedCallId, transcriptMode === "focus"));
   const replayCallId = selectedEnvironmentStep == null ? undefined : turns.callIdByEnvironmentStep.get(selectedEnvironmentStep);
   const replayCall = turns.calls.find((call) => call.id === replayCallId)
-    ?? callForSequence(turns.calls, craftaxEventSequence(latest ?? ({} as LiveEvalEvent), Number.MAX_SAFE_INTEGER))
-    ?? turns.calls.at(-1);
+    ?? (selectedFrameEvent ? callForSequence(turns.calls, craftaxEventSequence(selectedFrameEvent, Number.MAX_SAFE_INTEGER)) : undefined);
   const renderedCalls = turns.calls.length <= TRANSCRIPT_CALL_WINDOW ? turns.calls : (() => {
     const recent = turns.calls.slice(-TRANSCRIPT_CALL_WINDOW);
     return selectedCall && !recent.some((call) => call.id === selectedCall.id) ? [selectedCall, ...recent.slice(1)] : recent;
@@ -901,7 +901,7 @@ export function Shell(props: ShellProps) {
               <div><dt>Tokens</dt><dd>{truthNumber(finite(replayCall.usage.total_tokens), replayCall.outcome !== null, (value) => formatMissingNumber(value, 0))}</dd></div>
               <div><dt>Authority</dt><dd>{replayCall.authority ?? policy.actionAuthority ?? "—"}</dd></div>
             </dl>
-          </> : <><h3>No policy call yet</h3><p className="cv-frame-call-note">This replay position precedes the first retained model call.</p></>}</section>
+          </> : <><h3>No related policy call</h3><p className="cv-frame-call-note">No retained model call is causally associated with this gameplay frame.</p></>}</section>
           <section><p className="cv-eyebrow">Environment</p><dl>
             {(["health", "food", "drink", "energy", "mana", "xp"] as const).map((key) => <div key={key}><dt>{key}</dt><dd>{formatMissingNumber(finite(inventory[key]), 0)}</dd></div>)}
           </dl><h4>Resources &amp; gear</h4><div className="cv-tokens">{usefulInventory(inventory).map(([name, value]) => <span key={name}>{name} {value}</span>)}{!usefulInventory(inventory).length ? <i>None carried</i> : null}</div>
