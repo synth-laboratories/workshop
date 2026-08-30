@@ -1049,8 +1049,16 @@ impl OptimizerService {
     /// Files and mutable summary JSON are evidence only. They never select a
     /// result type or substitute for the algorithm-owned projection.
     pub async fn get_result(&self, optimizer_run_id: String) -> Result<Value> {
-        let run = self.get(optimizer_run_id.clone()).await?;
         let manifest = self.terminal_manifest(optimizer_run_id.clone()).await?;
+        if manifest.is_some() {
+            // Producer-driven terminals can seal without passing through the
+            // command settlement path. Result retrieval is the lifecycle's
+            // mandatory evidence boundary, so repair the idempotent cleanup
+            // here before returning the terminal projection.
+            self.revoke_credentials_post_terminal(&optimizer_run_id, None)
+                .await;
+        }
+        let run = self.get(optimizer_run_id.clone()).await?;
         let db = self.db.clone();
         let state = db
             .run(move |conn| {
