@@ -206,7 +206,7 @@ async fn discovery_context(
         selected_base_url
             .as_deref()
             .context("registered container has no base URL")?,
-        &request.seeds,
+        &request,
     )
     .await?;
     let revision = policy_revisions
@@ -259,11 +259,13 @@ async fn discovery_context(
     ))
 }
 
-async fn materialize_seed_instances(base_url: &str, seeds: &[admission::Seed]) -> Result<()> {
+async fn materialize_seed_instances(base_url: &str, request: &InlineRequest) -> Result<()> {
+    let seeds = &request.seeds;
     anyhow::ensure!(
         !seeds.is_empty(),
         "inline evaluation requires at least one seed"
     );
+    let limits = materialization_limits(request)?;
     let client = crate::http::http_client_builder().build()?;
     let task = client
         .get(format!("{}/task_info", base_url.trim_end_matches('/')))
@@ -286,7 +288,7 @@ async fn materialize_seed_instances(base_url: &str, seeds: &[admission::Seed]) -
             "{}/task_instances/materialize",
             base_url.trim_end_matches('/')
         ))
-        .json(&json!({"task_id": task_id, "seeds": requested}))
+        .json(&json!({"task_id": task_id, "seeds": requested, "limits": limits}))
         .send()
         .await
         .context("POST /task_instances/materialize")?;
@@ -318,6 +320,26 @@ async fn materialize_seed_instances(base_url: &str, seeds: &[admission::Seed]) -
         );
     }
     Ok(())
+}
+
+fn materialization_limits(request: &InlineRequest) -> Result<Value> {
+    let calls = request
+        .maximum_model_calls_per_rollout
+        .context("inline evaluation requires a per-rollout model-call limit")?;
+    let steps = request
+        .maximum_steps_per_rollout
+        .context("inline evaluation requires a per-rollout step limit")?;
+    let ceiling = request
+        .hard_total_cost_usd
+        .context("inline evaluation requires a hard total cost ceiling")?;
+    let ceiling_micros = admission::CostMicros::from_usd(ceiling)
+        .context("inline evaluation hard total cost ceiling is invalid")?
+        .as_micros();
+    Ok(json!({
+        "maximumModelCallsPerRollout": calls,
+        "maximumStepsPerRollout": steps,
+        "hardTotalCostMicros": ceiling_micros,
+    }))
 }
 
 fn read_policy_source(
@@ -492,6 +514,24 @@ mod tests {
         );
         assert_eq!(scope.operations, ["chat.completions.create"]);
         assert_ne!(scope.operations, ["provider.request"]);
+    }
+
+    #[test]
+    fn task_instance_materialization_carries_the_approved_resource_limits() {
+        let request = InlineRequest {
+            maximum_model_calls_per_rollout: Some(10),
+            maximum_steps_per_rollout: Some(2_000),
+            hard_total_cost_usd: Some(2.45),
+            ..InlineRequest::default()
+        };
+        assert_eq!(
+            materialization_limits(&request).unwrap(),
+            json!({
+                "maximumModelCallsPerRollout": 10,
+                "maximumStepsPerRollout": 2_000,
+                "hardTotalCostMicros": 2_450_000,
+            })
+        );
     }
 
     #[tokio::test]
