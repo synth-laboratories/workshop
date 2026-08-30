@@ -8,21 +8,22 @@ release is built with Tauri 2, Rust, React, and TypeScript.
 
 - Download the prebuilt v0.8 release from
   [usesynth.ai/download](https://www.usesynth.ai/download).
-- Build the unsigned app from source with the commands below. The build does
+- Build the unnotarized app and a shareable ZIP from source with one command.
+  The build does
   not require private Synth repositories or macOS Keychain credentials.
 
 ```bash
 git clone https://github.com/synth-laboratories/workshop.git
 cd workshop
-./scripts/bootstrap.sh
-./scripts/doctor.sh
 ./scripts/build.sh
 ```
 
 The app bundle is written to
-`work/tier-builds/stable/Synth Workshop.app`. macOS may require
-you to approve or ad-hoc sign a locally built app before opening it. Official
-downloads are signed and notarized separately from this source build.
+`work/tier-builds/stable/Synth Workshop.app`. A clearly labelled, ad-hoc-signed
+ZIP, SHA-256 checksum, and build manifest are written to `dist/`. macOS will
+require explicit approval to open this unnotarized local build. Official
+downloads are Developer ID signed and notarized separately; see
+[`docs/APPLE_DISTRIBUTION.md`](docs/APPLE_DISTRIBUTION.md).
 
 ## Requirements
 
