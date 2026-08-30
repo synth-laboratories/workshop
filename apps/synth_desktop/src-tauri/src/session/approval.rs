@@ -1545,7 +1545,11 @@ fn paid_compute_provider(kind: &ApprovalKind) -> Option<String> {
                 .first()
                 .and_then(|name| name.split(':').next())
         })?;
-    crate::synth_config::normalize_provider(raw).ok()
+    let provider = raw
+        .strip_suffix("_API_KEY")
+        .unwrap_or(raw)
+        .to_ascii_lowercase();
+    crate::synth_config::normalize_provider(&provider).ok()
 }
 
 fn remembered_key(kind: &ApprovalKind) -> Option<String> {
@@ -2193,6 +2197,21 @@ mod tests {
             credential_names: vec!["openrouter:workshop_secrets_proxy".into()],
             preparation_digest: Some("sha256:spec".into()),
         }
+    }
+
+    #[test]
+    fn paid_compute_provider_accepts_workspace_credential_names() {
+        let mut request = openrouter_paid(Some(60_000));
+        if let ApprovalKind::PaidCompute {
+            parameters,
+            credential_names,
+            ..
+        } = &mut request
+        {
+            *parameters = json!({});
+            *credential_names = vec!["OPENROUTER_API_KEY".into()];
+        }
+        assert_eq!(paid_compute_provider(&request).as_deref(), Some("openrouter"));
     }
 
     fn enabled_paid_compute() -> crate::synth_config::PaidComputeAutoApprovalSettings {
