@@ -854,6 +854,21 @@ impl OptimizerService {
                     "diagnosticCode": "workspace_unavailable",
                 })),
             }
+            if let Ok(roots) = super::workspace_recipe::recipe_search_roots(&self.db, session) {
+                for root in roots {
+                    if super::workspace_recipe::session_workspace(&self.db, session)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|workspace| workspace == root)
+                    {
+                        continue;
+                    }
+                    if let Ok(outcome) = super::workspace_recipe::load_recipes_with_diagnostics(&root) {
+                        recipes.extend(outcome.recipes.iter().map(super::workspace_recipe::catalog_entry));
+                        recipes.extend(outcome.diagnostics.iter().map(super::workspace_recipe::invalid_catalog_entry));
+                    }
+                }
+            }
         }
         recipes.push(super::hosted_gelo::recipe_catalog());
         recipes.push(super::sft_recipes::recipe_catalog());

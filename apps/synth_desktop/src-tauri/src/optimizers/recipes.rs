@@ -52,9 +52,13 @@ async fn start_inner(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("workspace recipes require session_ref"))?;
-    let workspace =
-        super::workspace_recipe::require_session_workspace(service.database(), session)?;
-    let recipe = super::workspace_recipe::find_recipe(&workspace, &request.recipe_id)?;
+    let roots = super::workspace_recipe::recipe_search_roots(service.database(), session)?;
+    let recipe = super::workspace_recipe::find_recipe_in_roots(&roots, &request.recipe_id)?;
+    let workspace = recipe
+        .source_path
+        .parent()
+        .ok_or_else(|| anyhow!("workspace recipe source has no parent directory"))?
+        .to_path_buf();
     match recipe.algorithm {
         super::workspace_recipe::AlgorithmKind::Eval => {
             let (run, event) = super::container_eval::start(service, request).await?;
