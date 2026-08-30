@@ -4135,6 +4135,7 @@ fn commit_validated_events(
         }
         if event.event_type == "optimizer.evidence.amended" {
             evidence_amendments.push(event.clone());
+            apply_credential_revocation_amendment(&mut run, event);
         }
         run.cursor_seq = event.sequence_number;
         upsert_cursor(conn, &run.id, run.cursor_seq, &event.occurred_at)?;
@@ -4325,6 +4326,11 @@ fn rewrite_terminal_summary_progress(
             )
         })
         .collect::<Map<String, Value>>();
+    let credential_revocation_confirmed = summary
+        .get("credentialChain")
+        .and_then(|chain| chain.get("capabilityRevoked"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let authoritative = json!({
         "schemaVersion": super::kernel::RUN_VIEW_SCHEMA_VERSION,
         "asOfSequence": state.aggregate_sequence,
@@ -4339,6 +4345,7 @@ fn rewrite_terminal_summary_progress(
         },
         "inFlight": work.running,
         "evidence": state.evidence_state(),
+        "credentialRevocationConfirmed": credential_revocation_confirmed,
         "rollouts": rollouts,
     });
     let mut progress = summary
@@ -4360,6 +4367,39 @@ fn rewrite_terminal_summary_progress(
     progress.insert("authoritative".into(), authoritative);
     summary.insert("progress".into(), Value::Object(progress));
     run.summary = Value::Object(summary);
+}
+
+/// Fold the post-terminal revocation receipt into the cached compatibility
+/// summary. The amendment is the durable authority; the in-memory secrets
+/// registry may already have discarded the lease by the time a result is
+/// revisited after restart.
+fn apply_credential_revocation_amendment(
+    run: &mut OptimizerRunRecord,
+    event: &OptimizerEventEnvelope,
+) {
+    let Some(revocation) = event.delta.get("credentialRevocation") else {
+        return;
+    };
+    let capability_ids = revocation
+        .get("capabilityIds")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !run.summary.is_object() {
+        run.summary = json!({});
+    }
+    let summary = run.summary.as_object_mut().expect("summary object");
+    let chain = summary
+        .entry("credentialChain")
+        .or_insert_with(|| json!({}))
+        .as_object_mut();
+    let Some(chain) = chain else {
+        return;
+    };
+    chain.insert("capabilityRevoked".into(), json!(true));
+    chain.insert("capabilityStatus".into(), json!("revoked"));
+    chain.insert("revokedAt".into(), json!(event.occurred_at));
+    chain.insert("revokedCapabilityIds".into(), Value::Array(capability_ids));
 }
 
 /// Turn every open cancellation request for this run into a receipt by
