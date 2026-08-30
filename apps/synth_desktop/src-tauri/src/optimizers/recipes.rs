@@ -790,7 +790,14 @@ fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::Sec
     let input_tokens_per_call = config
         .get("policy")
         .and_then(toml::Value::as_table)
-        .and_then(|section| section.get("context_token_budget"))
+        .and_then(|section| {
+            section.get("context_token_budget").or_else(|| {
+                section
+                    .get("config")
+                    .and_then(toml::Value::as_table)
+                    .and_then(|config| config.get("context_token_budget"))
+            })
+        })
         .and_then(toml::Value::as_integer)
         .and_then(|value| u64::try_from(value).ok())
         .filter(|value| *value > 0)
@@ -1488,6 +1495,8 @@ max_cost_usd = 0.90
 
 [policy]
 max_tokens = 16000
+
+[policy.config]
 context_token_budget = 8000
 "#,
         )
