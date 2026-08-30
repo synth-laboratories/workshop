@@ -785,16 +785,25 @@ fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::Sec
         .and_then(toml::Value::as_integer)
         .and_then(|value| u64::try_from(value).ok())
         .filter(|value| *value > 0);
-    let declared_output_tokens =
-        rollout_output_limit.map(|limit| rollout_limit.saturating_mul(limit));
+    let call_limit = rollout_limit.saturating_mul(16);
+    let declared_output_tokens = rollout_output_limit.map(|limit| call_limit.saturating_mul(limit));
+    let input_tokens_per_call = config
+        .get("policy")
+        .and_then(toml::Value::as_table)
+        .and_then(|section| section.get("context_token_budget"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .or_else(|| rollout_output_limit.map(|limit| limit.saturating_mul(4)));
+    let declared_input_tokens = input_tokens_per_call.map(|limit| call_limit.saturating_mul(limit));
     Ok(super::admission::provider_use_policy_from_bounds(
         vec!["chat.completions.create".into()],
         models,
         reasoning_efforts,
-        rollout_limit.saturating_mul(16).min(u64::from(u32::MAX)) as u32,
+        call_limit.min(u64::from(u32::MAX)) as u32,
         (max_cost_usd * 1_000_000.0).round() as u64,
         crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
-        declared_output_tokens.map(|tokens| tokens.saturating_mul(4)),
+        declared_input_tokens,
         declared_output_tokens,
     ))
 }
@@ -1479,12 +1488,13 @@ max_cost_usd = 0.90
 
 [policy]
 max_tokens = 16000
+context_token_budget = 8000
 "#,
         )
         .unwrap();
         let policy = provider_use_policy(Some(&config)).unwrap();
-        assert_eq!(policy.max_output_tokens, 96_000);
-        assert_eq!(policy.max_input_tokens, 384_000);
+        assert_eq!(policy.max_output_tokens, 1_536_000);
+        assert_eq!(policy.max_input_tokens, 768_000);
         assert_eq!(policy.max_calls, 96);
         assert_eq!(policy.max_cost_usd, 0.90);
     }
