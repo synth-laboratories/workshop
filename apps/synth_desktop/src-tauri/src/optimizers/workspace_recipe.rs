@@ -684,6 +684,21 @@ pub fn recipe_search_roots(
     Ok(roots)
 }
 
+pub fn container_search_roots(
+    db: &crate::storage::Database,
+    session_id: &str,
+) -> Result<Vec<PathBuf>> {
+    let mut roots = session_search_roots(db, session_id)?;
+    for root in
+        crate::project_sources::discovery_roots(db, crate::project_sources::Capability::Containers)?
+    {
+        if !roots.iter().any(|existing| existing == &root) {
+            roots.push(root);
+        }
+    }
+    Ok(roots)
+}
+
 pub fn find_recipe_in_roots(search_roots: &[PathBuf], recipe_id: &str) -> Result<WorkspaceRecipe> {
     let mut matches = Vec::new();
     for root in search_roots {

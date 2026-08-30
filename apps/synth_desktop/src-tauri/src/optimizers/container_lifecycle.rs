@@ -231,7 +231,7 @@ pub fn resolve_declared_spec(
     container_id: &str,
 ) -> Result<workspace_recipe::ContainerSpec> {
     let (spec_id, metadata) = declared_record(db, container_id)?;
-    let search_roots = workspace_recipe::session_search_roots(db, session_id)?;
+    let search_roots = workspace_recipe::container_search_roots(db, session_id)?;
     let stored = workspace_recipe::origin_from_metadata(&metadata, &spec_id);
     workspace_recipe::resolve_container_spec(&search_roots, &spec_id, stored.as_ref())
 }
@@ -241,7 +241,7 @@ pub fn resolve_spec_for_session(
     session_id: &str,
     spec_id: &str,
 ) -> Result<workspace_recipe::ContainerSpec> {
-    let search_roots = workspace_recipe::session_search_roots(db, session_id)?;
+    let search_roots = workspace_recipe::container_search_roots(db, session_id)?;
     workspace_recipe::resolve_container_spec(&search_roots, spec_id, None)
 }
 
