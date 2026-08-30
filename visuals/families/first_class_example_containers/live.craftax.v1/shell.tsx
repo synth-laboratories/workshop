@@ -239,6 +239,13 @@ function Evidence({ label, field }: { label: string; field: EvidenceField }) {
     {field.state === "visible" ? <pre>{traceText(field.value)}</pre> : <p>{field.detail ?? EVIDENCE_LABELS[field.state]}</p>}</section>;
 }
 
+function ReplayEvidence({ label, field }: { label: string; field: EvidenceField }) {
+  return <section className={`cv-replay-evidence state-${field.state}`}>
+    <div><h4>{label}</h4><span>{EVIDENCE_LABELS[field.state]}</span></div>
+    {field.state === "visible" ? <pre>{traceText(field.value)}</pre> : <p>{field.detail ?? EVIDENCE_LABELS[field.state]}</p>}
+  </section>;
+}
+
 function semanticTraceText(item: CraftaxSemanticTraceItem | undefined, field: "input" | "thinking" | "output" | "tools"): string {
   const interaction = item?.interaction;
   if (!interaction) return field === "input" ? "Not applicable for this event" : "Not applicable";
@@ -579,6 +586,10 @@ export function Shell(props: ShellProps) {
   // change; an explicit click is the only reason to pin a call in state.
   const selectedCall = turns.calls.find((call) => call.id === selectedCallId)
     ?? turns.calls.find((call) => call.id === reconcileCallSelection(turns.calls, selectedCallId, transcriptMode === "focus"));
+  const replayCallId = selectedEnvironmentStep == null ? undefined : turns.callIdByEnvironmentStep.get(selectedEnvironmentStep);
+  const replayCall = turns.calls.find((call) => call.id === replayCallId)
+    ?? callForSequence(turns.calls, craftaxEventSequence(latest ?? ({} as LiveEvalEvent), Number.MAX_SAFE_INTEGER))
+    ?? turns.calls.at(-1);
   const renderedCalls = turns.calls.length <= TRANSCRIPT_CALL_WINDOW ? turns.calls : (() => {
     const recent = turns.calls.slice(-TRANSCRIPT_CALL_WINDOW);
     return selectedCall && !recent.some((call) => call.id === selectedCall.id) ? [selectedCall, ...recent.slice(1)] : recent;
@@ -598,14 +609,16 @@ export function Shell(props: ShellProps) {
   const selectedMediaDigest = viewer.frameMedia?.casDigest;
   useEffect(() => {
     if (!selectedMediaDigest || !props.media) {
-      setPendingFrame(null);
-      setDisplayedFrame(null);
+      setPendingFrame((current) => current === null ? current : null);
+      setDisplayedFrame((current) => current === null ? current : null);
       return;
     }
-    setPendingFrame(null);
+    setPendingFrame((current) => current?.casDigest === selectedMediaDigest ? current : null);
     const cached = props.media.peek(selectedMediaDigest);
     if (cached) {
-      if (displayedFrame?.casDigest !== selectedMediaDigest) setPendingFrame(cached);
+      if (displayedFrame?.casDigest !== selectedMediaDigest) {
+        setPendingFrame((current) => current?.casDigest === selectedMediaDigest ? current : cached);
+      }
       setFailedMediaDigest(null);
       return;
     }
@@ -849,7 +862,7 @@ export function Shell(props: ShellProps) {
           <div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>{selectedLane ? <Identifier value={selectedLane} max={30} style={{ font: "inherit" }} /> : "Waiting for events"}</h3></div><span>{lifecycleFailed ? "failed" : viewer.terminal ? "finished" : visualLive ? "live" : "waiting"}</span></div>
           <div className="cv-frame" aria-busy={retainedFrameLoading}>
             {frameUrl ? <img key={retainedFrameUrl ? displayedFrame?.casDigest : frameUrl} src={frameUrl} alt="Craftax gameplay frame" onError={() => retainedFrameUrl && displayedFrame ? setFailedMediaDigest(displayedFrame.casDigest) : setFailedFrameUrl(viewer.frameUrl ?? null)} /> : retainedFrameLoading ? <p>Loading retained gameplay PNG…</p> : failedMediaDigest === selectedMediaDigest ? <p>Retained gameplay PNG failed integrity-checked media loading. No symbolic frame is substituted.</p> : (failedFrameUrl || viewer.frameUnavailable) ? <p>Gameplay PNG is unavailable. No symbolic frame is substituted for missing image evidence.</p> : viewer.ascii ? <pre aria-label="Craftax symbolic gameplay frame">{viewer.ascii}</pre> : <p>No renderable gameplay frame was emitted at this point in the trace.</p>}
-            {pendingFrame?.casDigest === selectedMediaDigest && pendingFrame.casDigest !== displayedFrame?.casDigest ? <img
+            {pendingFrame && pendingFrame.casDigest === selectedMediaDigest && pendingFrame.casDigest !== displayedFrame?.casDigest ? <img
               className="cv-frame-preload"
               src={pendingFrame.dataUrl}
               alt=""
@@ -875,13 +888,20 @@ export function Shell(props: ShellProps) {
           </div>
         </article>
 
-        <aside className="cv-panel cv-details">
-          <section><p className="cv-eyebrow">Policy</p><h3>{policy.model ?? "Unavailable"}</h3><dl>
-            <div><dt>Provider</dt><dd>{policy.provider ?? props.runLifecycle?.usage.provider ?? "—"}</dd></div>
-            <div><dt>Actions</dt><dd>{policy.actions.length}</dd></div>
-            <div><dt>Tokens</dt><dd>{truthNumber(finite(policy.usage.total_tokens), viewer.terminal, (value) => formatMissingNumber(value, 0))}</dd></div>
-            <div><dt>Authority</dt><dd>{policy.actionAuthority ?? "—"}</dd></div>
-          </dl>{policy.actions.length ? <p className="cv-plan">{policy.actions.join(" → ")}</p> : null}</section>
+        <aside className="cv-panel cv-details" data-testid="craftax-frame-call-panel" aria-live="polite">
+          <section className="cv-frame-call"><p className="cv-eyebrow">Decision at this frame</p>{replayCall ? <>
+            <header><div><h3>Call {replayCall.callNumber}</h3><span>{replayCall.model ?? policy.model ?? "Model not recorded"}</span></div><i>steps {replayCall.environmentStepStart ?? "—"}{replayCall.environmentStepEnd !== replayCall.environmentStepStart ? `–${replayCall.environmentStepEnd ?? "—"}` : ""}</i></header>
+            <p className="cv-frame-call-note">Only reasoning and tool evidence emitted into the retained trace is shown.</p>
+            <ReplayEvidence label="Policy reasoning" field={replayCall.reasoning} />
+            <ReplayEvidence label="Tool calls" field={replayCall.toolCalls} />
+            <ReplayEvidence label="Model output / actions" field={replayCall.output} />
+            {replayCall.toolResults.state === "visible" ? <ReplayEvidence label="Tool results" field={replayCall.toolResults} /> : null}
+            <dl>
+              <div><dt>Provider</dt><dd>{replayCall.provider ?? policy.provider ?? props.runLifecycle?.usage.provider ?? "—"}</dd></div>
+              <div><dt>Tokens</dt><dd>{truthNumber(finite(replayCall.usage.total_tokens), replayCall.outcome !== null, (value) => formatMissingNumber(value, 0))}</dd></div>
+              <div><dt>Authority</dt><dd>{replayCall.authority ?? policy.actionAuthority ?? "—"}</dd></div>
+            </dl>
+          </> : <><h3>No policy call yet</h3><p className="cv-frame-call-note">This replay position precedes the first retained model call.</p></>}</section>
           <section><p className="cv-eyebrow">Environment</p><dl>
             {(["health", "food", "drink", "energy", "mana", "xp"] as const).map((key) => <div key={key}><dt>{key}</dt><dd>{formatMissingNumber(finite(inventory[key]), 0)}</dd></div>)}
           </dl><h4>Resources &amp; gear</h4><div className="cv-tokens">{usefulInventory(inventory).map(([name, value]) => <span key={name}>{name} {value}</span>)}{!usefulInventory(inventory).length ? <i>None carried</i> : null}</div>

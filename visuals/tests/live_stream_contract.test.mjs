@@ -343,7 +343,7 @@ test("live Craftax loads retained frame CAS through the host and never guesses a
   assert.match(shell, /props\.media\.warm\(retainedFrameDigests, selectedIndex\)/);
   assert.match(shell, /const \[displayedFrame, setDisplayedFrame\]/);
   assert.match(shell, /const \[pendingFrame, setPendingFrame\]/);
-  assert.match(shell, /pendingFrame\?\.casDigest === selectedMediaDigest/);
+  assert.match(shell, /pendingFrame && pendingFrame\.casDigest === selectedMediaDigest/);
   assert.match(shell, /onLoad=\{\(\) => \{/);
   assert.match(shell, /setDisplayedFrame\(pendingFrame\)/);
   assert.doesNotMatch(shell, /if \(!selectedMediaDigest \|\| !props\.media\) \{\s*setDisplayedFrame\(null\);\s*return;/s, "changing retained digests must not clear the displayed frame before the replacement loads");
@@ -358,6 +358,11 @@ test("live Craftax keeps replay-driven call fallback out of passive state effect
   assert.match(shell, /const selectedCall = turns\.calls\.find/);
   assert.match(shell, /reconcileCallSelection\(turns\.calls, selectedCallId, transcriptMode === "focus"\)/);
   assert.doesNotMatch(shell, /setSelectedCallId\(\(current\) => reconcileCallSelection/);
+  assert.match(shell, /callIdByEnvironmentStep\.get\(selectedEnvironmentStep\)/);
+  assert.match(shell, /data-testid="craftax-frame-call-panel"/);
+  assert.match(shell, /Only reasoning and tool evidence emitted into the retained trace is shown/);
+  assert.match(shell, /<ReplayEvidence label="Policy reasoning"/);
+  assert.match(shell, /<ReplayEvidence label="Tool calls"/);
 });
 
 test("live Craftax declares optimizer lifecycle authority and makes failure senior to transport", () => {

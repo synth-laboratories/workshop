@@ -368,6 +368,13 @@ test.describe("Craftax semantic viewer", () => {
 		await expect(viewer).toContainText("collect_wood");
 
 		await viewer.getByRole("button", { name: "Replay", exact: true }).click();
+		const frameCallPanel = viewer.getByTestId("craftax-frame-call-panel");
+		await expect(frameCallPanel).toBeVisible();
+		await expect(frameCallPanel).toContainText("Call 1");
+		await expect(frameCallPanel).toContainText("Policy reasoning");
+		await expect(frameCallPanel).toContainText("token0");
+		await expect(frameCallPanel).toContainText("Tool calls");
+		await expect(frameCallPanel).toContainText('"actions":["up","left"]');
 		await page.getByTestId("toggle-visual-expand").click();
 		await captureViewportSweep(page, "craftax");
 		await aggregateTimeline.screenshot({ path: join(SHOT_DIR, "craftax-aggregate-timeline-wide.png") });
