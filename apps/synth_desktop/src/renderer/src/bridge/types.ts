@@ -1144,6 +1144,14 @@ export type SynthAccountPlan = {
 	state?: string;
 	/** False when the backend reports no dollar allowance: show no dollars. */
 	metered?: boolean;
+	effectivePriceUsd?: number;
+	billingInterval?: string;
+	grantKind?: "subscription" | "trial" | "promotion" | "admin" | "none";
+	entitlementState?: "pending" | "active" | "exhausted" | "expired" | "revoked";
+	entitlementStartsAt?: string;
+	entitlementExpiresAt?: string;
+	campaignId?: string;
+	claimState?: "eligible" | "claimed" | "unavailable";
 	monthlyAllowanceUsd?: number;
 	usedUsd?: number;
 	remainingUsd?: number;

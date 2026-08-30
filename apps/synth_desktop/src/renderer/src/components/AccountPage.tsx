@@ -130,6 +130,13 @@ export function AccountPage({
 				description="Synth Cloud dollars for the current period."
 				testId="account-page-plan"
 			>
+				<div className={`account-entitlement-card is-${view.activation.state}`} data-testid="account-entitlement-card">
+					<strong data-testid="account-entitlement-label">{view.activation.label}</strong>
+					<p>{view.activation.note}</p>
+					{view.activation.rows.map((row) => (
+						<Row key={row.label} label={row.label} value={row.value} testId={`account-entitlement-${row.label.toLowerCase().replaceAll(" ", "-")}`} />
+					))}
+				</div>
 				{view.planIsDevSeed ? (
 					<p className="account-page-warning" data-testid="account-page-dev-seed">
 						Dev stand-in — this allowance is seeded locally and charged from this device's

@@ -7,6 +7,7 @@ import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 import type { LagunaPolicy } from "../bridge/types";
 import { policyLabel } from "../runtime/lagunaPolicies";
 import { bridges } from "../runtime/desktopBridge";
+import { WORKSHOP_STARTERS } from "../runtime/starterCatalog";
 
 type Props = {
 	state: LandingState;
@@ -19,6 +20,7 @@ type Props = {
 	onConnectSynth?: () => void;
 	onConfigureModels?: () => void;
 	onResolveBilling?: () => void;
+	onOpenStarter?: (starterId: string) => void;
 };
 
 export function ModelPicker({
@@ -324,7 +326,8 @@ export function LandingPage({
 	onConfigureAccount,
 	onConnectSynth,
 	onConfigureModels,
-	onResolveBilling
+	onResolveBilling,
+	onOpenStarter
 }: Props) {
 	const [accountChoiceMade, setAccountChoiceMade] = useState(
 		() => window.localStorage.getItem("synth.accountChoiceMade") === "1"
@@ -409,6 +412,26 @@ export function LandingPage({
 						</div>
 					</div>
 				) : null}
+				<div className="quick-actions starter-actions" data-testid="starter-catalog">
+					<div className="first-run-activation-copy">
+						<strong>Start with a bounded experiment</strong>
+						<small>Workshop checks the real recipe, prerequisites, and cost before anything runs.</small>
+					</div>
+					{WORKSHOP_STARTERS.map((starter, index) => (
+						<button
+							key={starter.id}
+							type="button"
+							className={`quick-card${index === 0 ? " is-primary" : ""}`}
+							data-testid={`open-starter-${starter.id}`}
+							onClick={() => onOpenStarter?.(starter.id)}
+						>
+							<span>
+								<strong>{starter.title}</strong>
+								<small>{starter.flow.join(" → ")} · up to ${starter.maxCostUsd.toFixed(2)}</small>
+							</span>
+						</button>
+					))}
+				</div>
 			</div>
 		</div>
 	);

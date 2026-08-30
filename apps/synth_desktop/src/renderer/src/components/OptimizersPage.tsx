@@ -7,6 +7,7 @@ import { canonicalEvalState, type CanonicalEvalState } from "../runtime/evalAggr
 import { isLagunaCompatibleAdapter, LOCAL_FT_POLICY } from "../runtime/lagunaPolicies";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
 import { isTerminalRunStatus } from "../runtime/runProgress/types";
+import { workshopStarter } from "../runtime/starterCatalog";
 import { TrainingWorkspace } from "./TrainingWorkspace";
 import { TrainingEvaluationCurve } from "./TrainingEvaluationCurve";
 import { RunInspector } from "./optimizers/RunInspector";
@@ -81,6 +82,7 @@ type Props = {
 	pluginStatuses?: readonly PluginStatus[] | null;
 	onRefreshPlugins?: () => Promise<void>;
 	initialRunId?: string | null;
+	initialStarterId?: string | null;
 	onSelectedRunIdChange?: (runId: string | null) => void;
 };
 
@@ -234,9 +236,10 @@ export function OptimizersPage({
 	pluginStatuses = null,
 	onRefreshPlugins,
 	initialRunId = null,
+	initialStarterId = null,
 	onSelectedRunIdChange
 }: Props) {
-	const [tab, setTab] = useState<OptimizersTab>("runs");
+	const [tab, setTab] = useState<OptimizersTab>(initialStarterId ? "launch" : "runs");
 	const [runs, setRuns] = useState<OptimizerRunRecord[]>([]);
 	const [algorithms, setAlgorithms] = useState<OptimizerAlgorithmInfo[]>([]);
 	const [search, setSearch] = useState("");
@@ -303,6 +306,21 @@ export function OptimizersPage({
 
 	const [lifecycleBusy, setLifecycleBusy] = useState<PluginLifecycleOperation | null>(null);
 	const [receipt, setReceipt] = useState<PluginActionReceipt | null>(null);
+	const selectedStarter = workshopStarter(initialStarterId);
+	const orderedEvalRecipes = useMemo(() => {
+		if (!selectedStarter) return evalRecipes;
+		return [...evalRecipes].sort((left, right) =>
+			Number(right.id === selectedStarter.recipeId) - Number(left.id === selectedStarter.recipeId)
+		);
+	}, [evalRecipes, selectedStarter]);
+
+	useEffect(() => {
+		if (!selectedStarter || tab !== "launch") return;
+		window.setTimeout(() => {
+			document.querySelector<HTMLElement>(`[data-testid="optimizer-eval-recipe-${selectedStarter.recipeId}"]`)
+				?.scrollIntoView({ behavior: "smooth", block: "center" });
+		}, 0);
+	}, [selectedStarter, tab, evalRecipes.length]);
 
 	const refreshPlugin = useCallback(async () => {
 		setPluginOverride(null);
@@ -1154,14 +1172,27 @@ export function OptimizersPage({
 			</section>
 			) : null}
 
-			{tab === "launch" && evalRecipes.length > 0 ? (
+			{tab === "launch" && (evalRecipes.length > 0 || selectedStarter) ? (
 				<section className="optimizer-recipes optimizer-eval-catalog" aria-labelledby="optimizer-eval-title">
 					<div className="optimizer-recipes-head">
-						<div><span className="optimizer-eyebrow">Eval · local</span><h2 id="optimizer-eval-title">Score staged policies</h2></div>
+						<div><span className="optimizer-eyebrow">Eval · local</span><h2 id="optimizer-eval-title">{selectedStarter ? selectedStarter.title : "Score staged policies"}</h2></div>
 						<p>Fixed recipes run against pinned local container targets and do not install the Optimizers plugin.</p>
 					</div>
+					{selectedStarter ? (
+						<div className="optimizer-starter-summary" data-testid="optimizer-starter-summary">
+							<strong>{selectedStarter.description}</strong>
+							<span>{selectedStarter.flow.join(" → ")} · maximum ${selectedStarter.maxCostUsd.toFixed(2)}</span>
+							<details><summary>Starter prompt</summary><pre>{selectedStarter.prompt}</pre></details>
+						</div>
+					) : null}
+					{selectedStarter && !evalRecipes.some((recipe) => recipe.id === selectedStarter.recipeId) ? (
+						<div className="optimizer-empty" role="status" data-testid="optimizer-starter-unavailable">
+							<strong>The selected starter is not available in this workspace yet.</strong>
+							<p>Expected recipe <code>{selectedStarter.recipeId}</code>. Add its source project or choose another admitted recipe below.</p>
+						</div>
+					) : null}
 					<div className="optimizer-recipe-grid">
-						{evalRecipes.map((recipe) => {
+						{orderedEvalRecipes.map((recipe) => {
 							// Only fields a producer actually writes: `limits.trials`,
 							// `budget.max_usd`, `models`, task/source/semantics, and the
 							// admission booleans projected by eval_recipes.rs. The old
@@ -1187,7 +1218,7 @@ export function OptimizersPage({
 								{ id: "target-admitted", label: "Admitted", ok: recipe.targetAdmitted }
 							].filter((flag): flag is { id: string; label: string; ok: boolean } => typeof flag.ok === "boolean");
 							return (
-								<article className="optimizer-recipe-card" aria-labelledby={`optimizer-eval-${recipe.id}`} data-testid={`optimizer-eval-recipe-${recipe.id}`} key={recipe.id}>
+								<article className={`optimizer-recipe-card${recipe.id === selectedStarter?.recipeId ? " is-starter" : ""}`} aria-labelledby={`optimizer-eval-${recipe.id}`} data-testid={`optimizer-eval-recipe-${recipe.id}`} key={recipe.id}>
 									<div className="optimizer-recipe-top">
 										<span className="optimizer-recipe-mark">EV</span>
 										<span className="optimizer-availability" data-available={available} data-testid={`optimizer-eval-availability-${recipe.id}`}>{recipe.availability}</span>

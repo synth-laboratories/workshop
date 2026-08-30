@@ -661,6 +661,14 @@ export type AccountPlan = {
 	 *  must then omit allowance figures instead of showing zeros.
 	 */
 	metered: boolean,
+	effectivePriceUsd?: number | null,
+	billingInterval?: string | null,
+	grantKind?: string | null,
+	entitlementState?: string | null,
+	entitlementStartsAt?: string | null,
+	entitlementExpiresAt?: string | null,
+	campaignId?: string | null,
+	claimState?: string | null,
 	monthlyAllowanceUsd?: number | null,
 	usedUsd: number | null,
 	remainingUsd?: number | null,

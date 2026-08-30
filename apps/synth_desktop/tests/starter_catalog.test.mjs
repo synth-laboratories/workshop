@@ -1,0 +1,38 @@
+import assert from "node:assert/strict";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import test from "node:test";
+import { transformSync } from "esbuild";
+
+const appRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const compiledDir = join(appRoot, "node_modules/.cache/synth-desktop-tests");
+mkdirSync(compiledDir, { recursive: true });
+
+const source = join(appRoot, "src/renderer/src/runtime/starterCatalog.ts");
+const compiled = join(compiledDir, "starterCatalog.mjs");
+writeFileSync(compiled, transformSync(readFileSync(source, "utf8"), {
+	loader: "ts",
+	format: "esm",
+	target: "es2022",
+	sourcefile: source
+}).code);
+
+const { WORKSHOP_STARTERS, workshopStarter } = await import(pathToFileURL(compiled).href);
+
+test("the first-run catalog pins Craftax and NanoHorizon recipe identities", () => {
+	assert.deepEqual(WORKSHOP_STARTERS.map((starter) => starter.recipeId), [
+		"eval.craftax.code-policy.smoke.v1",
+		"nanohorizon.craftax.glm-5.3-flash.eval.v1"
+	]);
+	assert.equal(workshopStarter("nanohorizon-craftax").maxCostUsd, 2.45);
+	assert.equal(workshopStarter("unsupported"), null);
+});
+
+test("starter prompts require preflight and approval instead of auto-running", () => {
+	for (const starter of WORKSHOP_STARTERS) {
+		assert.match(starter.prompt, /Do not start compute yet/);
+		assert.match(starter.prompt, /explicit approval/);
+		assert.match(starter.prompt, new RegExp(starter.recipeId.replaceAll(".", "\\.")));
+	}
+});
