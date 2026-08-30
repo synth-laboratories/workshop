@@ -75,7 +75,7 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	await page.getByTestId("account-menu-trigger").click();
 	await page.getByTestId("account-menu").getByTestId("open-account-settings").click();
 	const signIn = page.getByTestId("account-sign-in");
-	await expect(signIn.getByTestId("sign-in-begin")).toContainText("Activate free month in browser");
+	await expect(signIn.getByTestId("sign-in-begin")).toContainText("Connect Synth in browser");
 	await expect(signIn).toContainText("creates your Synth account");
 
 	await signIn.getByTestId("sign-in-begin").click();
@@ -154,18 +154,18 @@ test("account acquires credentials through native browser pairing, never rendere
 	await expect(signIn.getByLabel("Synth API key")).toHaveCount(0);
 });
 
-test("first run leads with free-month activation and preserves local use", async ({ page }) => {
+test("first run leads with Synth connection and preserves local use", async ({ page }) => {
 	await page.addInitScript(() => window.localStorage.removeItem("synth.accountChoiceMade"));
 	await page.reload();
 	const choices = page.getByTestId("first-run-account-choice");
-	await expect(choices).toContainText("Activate your free month");
-	await expect(choices.getByTestId("activate-free-month")).toBeVisible();
+	await expect(choices).toContainText("Connect Synth");
+	await expect(choices.getByTestId("connect-synth")).toBeVisible();
 	await expect(choices.getByRole("button", { name: /Continue locally/ })).toBeVisible();
 	await choices.getByRole("button", { name: /Continue locally/ }).click();
 	await expect(choices).not.toBeVisible();
 });
 
-test("first-run activation starts browser pairing in one click", async ({ page }) => {
+test("first-run connection starts browser pairing in one click", async ({ page }) => {
 	await page.addInitScript(() => {
 		window.localStorage.removeItem("synth.accountChoiceMade");
 		(window as Window & { __pairBegins?: number }).__pairBegins = 0;
@@ -185,7 +185,7 @@ test("first-run activation starts browser pairing in one click", async ({ page }
 		};
 	});
 	await page.reload();
-	await page.getByTestId("activate-free-month").click();
+	await page.getByTestId("connect-synth").click();
 	await expect(page.getByTestId("synth-connection-status")).toContainText("Finish connecting in your browser");
 	await expect(page.getByTestId("settings-page")).toHaveCount(0);
 	expect(await page.evaluate(() => (window as Window & { __pairBegins?: number }).__pairBegins)).toBe(1);

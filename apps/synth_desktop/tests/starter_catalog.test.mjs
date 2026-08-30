@@ -18,7 +18,7 @@ writeFileSync(compiled, transformSync(readFileSync(source, "utf8"), {
 	sourcefile: source
 }).code);
 
-const { WORKSHOP_STARTERS, workshopStarter } = await import(pathToFileURL(compiled).href);
+const { WORKSHOP_STARTERS, starterPromptForRecipe, workshopStarter } = await import(pathToFileURL(compiled).href);
 
 test("the first-run catalog pins Craftax and NanoHorizon recipe identities", () => {
 	assert.deepEqual(WORKSHOP_STARTERS.map((starter) => starter.recipeId), [
@@ -35,4 +35,13 @@ test("starter prompts require preflight and approval instead of auto-running", (
 		assert.match(starter.prompt, /explicit approval/);
 		assert.match(starter.prompt, new RegExp(starter.recipeId.replaceAll(".", "\\.")));
 	}
+});
+
+test("only the exact referred recipe receives the bounded starter prompt", () => {
+	const starter = workshopStarter("nanohorizon-craftax");
+	assert.equal(
+		starterPromptForRecipe(starter, "nanohorizon.craftax.glm-5.3-flash.eval.v1", "fallback"),
+		starter.prompt
+	);
+	assert.equal(starterPromptForRecipe(starter, "another.recipe", "fallback"), "fallback");
 });

@@ -33,3 +33,12 @@ export const WORKSHOP_STARTERS: readonly WorkshopStarter[] = [
 export function workshopStarter(id: string | null | undefined): WorkshopStarter | null {
 	return WORKSHOP_STARTERS.find((starter) => starter.id === id) ?? null;
 }
+
+/** A referral can recommend setup copy only for the exact selected recipe. */
+export function starterPromptForRecipe(
+	starter: WorkshopStarter | null,
+	recipeId: string,
+	fallback: string
+): string {
+	return starter?.recipeId === recipeId ? starter.prompt : fallback;
+}

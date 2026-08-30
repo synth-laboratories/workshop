@@ -81,7 +81,7 @@ export function AccountSignIn() {
 					</span>
 					<div className="backend-signin-actions">
 						<button type="button" className="settings-secondary-btn" data-testid="sign-in-begin" onClick={() => void connection.start()}>
-							Activate free month in browser
+							Connect Synth in browser
 						</button>
 						{settings?.apiKeyConfigured ? (
 							<button type="button" className="settings-secondary-btn" data-testid="account-sign-out" disabled={saving} onClick={() => void signOut()}>

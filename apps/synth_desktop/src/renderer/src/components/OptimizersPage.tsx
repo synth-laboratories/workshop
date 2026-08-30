@@ -7,7 +7,7 @@ import { canonicalEvalState, type CanonicalEvalState } from "../runtime/evalAggr
 import { isLagunaCompatibleAdapter, LOCAL_FT_POLICY } from "../runtime/lagunaPolicies";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
 import { isTerminalRunStatus } from "../runtime/runProgress/types";
-import { workshopStarter } from "../runtime/starterCatalog";
+import { starterPromptForRecipe, workshopStarter } from "../runtime/starterCatalog";
 import { TrainingWorkspace } from "./TrainingWorkspace";
 import { TrainingEvaluationCurve } from "./TrainingEvaluationCurve";
 import { RunInspector } from "./optimizers/RunInspector";
@@ -1266,7 +1266,11 @@ export function OptimizersPage({
 												name: recipe.title,
 												description: recipe.description ?? "",
 												flow: ["Stage", "Score", "Select"],
-												prompt: `Run the Workshop eval recipe ${recipe.id} on policy variants in this project. Stage the policy files with optimizer_stage_eval_candidates using workspace-relative paths, kind python-code.v1, entrypoint policy:Policy, one labelled candidate each, marking the baseline; then call optimizer_start_recipe with the recipe id and returned candidate_set_id. Never replace a policy on your own. Report the run status and selection status separately, the per-candidate scorecard, and the evidence directory.`
+										prompt: starterPromptForRecipe(
+											selectedStarter,
+											recipe.id,
+											`Run the Workshop eval recipe ${recipe.id} on policy variants in this project. Stage the policy files with optimizer_stage_eval_candidates using workspace-relative paths, kind python-code.v1, entrypoint policy:Policy, one labelled candidate each, marking the baseline; then call optimizer_start_recipe with the recipe id and returned candidate_set_id. Never replace a policy on your own. Report the run status and selection status separately, the per-candidate scorecard, and the evidence directory.`
+										)
 											});
 										}}
 									>

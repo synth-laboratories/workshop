@@ -16,8 +16,8 @@ test.describe("first-five-minutes golden path", () => {
 	test("a fresh install boots to a usable landing with an explicit account choice", async ({ page }) => {
 		const choices = page.getByTestId("first-run-account-choice");
 		await expect(choices).toBeVisible();
-		await expect(choices).toContainText("Activate your free month");
-		await expect(choices.getByTestId("activate-free-month")).toBeVisible();
+		await expect(choices).toContainText("Connect Synth");
+		await expect(choices.getByTestId("connect-synth")).toBeVisible();
 		await expect(choices.getByRole("button", { name: /Continue locally/ })).toBeVisible();
 		// The shell is complete behind the choice: sidebar, titlebar, composer.
 		await expect(page.getByTestId("sidebar")).toBeVisible();

@@ -90,6 +90,7 @@ pub struct WorkshopDeepLink {
     pub instance: Option<String>,
     pub view: String,
     pub run_id: Option<String>,
+    pub starter_id: Option<String>,
 }
 
 fn safe_registry_component(value: &str) -> bool {
@@ -234,6 +235,7 @@ pub fn parse_workshop_deep_link(raw: &str) -> Result<WorkshopDeepLink, String> {
             instance: None,
             view: "landing".to_string(),
             run_id: None,
+            starter_id: None,
         });
     }
     let query = raw
@@ -244,6 +246,7 @@ pub fn parse_workshop_deep_link(raw: &str) -> Result<WorkshopDeepLink, String> {
     let mut instance = None;
     let mut view = "landing".to_string();
     let mut run_id = None;
+    let mut starter_id = None;
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         let value = decode_deep_link_component(value)
@@ -259,19 +262,21 @@ pub fn parse_workshop_deep_link(raw: &str) -> Result<WorkshopDeepLink, String> {
                 view = value
             }
             "runId" if safe_registry_component(&value) => run_id = Some(value),
-            "instance" | "view" | "runId" => {
+            "starterId" if safe_registry_component(&value) => starter_id = Some(value),
+            "instance" | "view" | "runId" | "starterId" => {
                 return Err(format!("invalid {key} in Workshop deep link"))
             }
             _ => {}
         }
     }
-    if run_id.is_some() {
+    if run_id.is_some() || starter_id.is_some() {
         view = "optimizers".into();
     }
     Ok(WorkshopDeepLink {
         instance,
         view,
         run_id,
+        starter_id,
     })
 }
 
@@ -1757,6 +1762,7 @@ mod tests {
                 instance: Some("alpha".into()),
                 view: "optimizers".into(),
                 run_id: Some("opt_123".into()),
+                starter_id: None,
             }
         );
         assert!(
@@ -1773,10 +1779,28 @@ mod tests {
                 instance: None,
                 view: "landing".into(),
                 run_id: None,
+                starter_id: None,
             }
         );
         assert!(
             parse_workshop_deep_link("synth-workshop://auth-return?device_code=secret").is_err()
+        );
+    }
+
+    #[test]
+    fn starter_deep_links_are_bounded_and_route_to_optimizers() {
+        assert_eq!(
+            parse_workshop_deep_link("synth-workshop://open?starterId=nanohorizon-craftax")
+                .unwrap(),
+            WorkshopDeepLink {
+                instance: None,
+                view: "optimizers".into(),
+                run_id: None,
+                starter_id: Some("nanohorizon-craftax".into()),
+            }
+        );
+        assert!(
+            parse_workshop_deep_link("synth-workshop://open?starterId=../../not-safe").is_err()
         );
     }
 }

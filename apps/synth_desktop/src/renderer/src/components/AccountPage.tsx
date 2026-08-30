@@ -93,7 +93,7 @@ export function AccountPage({
 				title="Synth account"
 				description={view.signedIn
 					? "This device is connected to your Synth account."
-					: "Activate your free month by creating or signing in to a Synth account in your browser."}
+					: "Connect Synth in your browser to check your account, plan, allowance, and any available offer."}
 				testId="account-page-profile"
 			>
 				<div className="account-page-identity">
