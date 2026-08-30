@@ -75,9 +75,11 @@ impl CispoProjection {
                 self.no_learning_signal = true;
             }
             "cispo.checkpoint.ready" | "sft.checkpoint.ready" => {
-                if let Some(id) = payload
+                let checkpoint = payload.get("item").unwrap_or(payload);
+                if let Some(id) = checkpoint
                     .get("checkpointId")
-                    .or_else(|| payload.get("checkpoint_id"))
+                    .or_else(|| checkpoint.get("checkpoint_id"))
+                    .or_else(|| checkpoint.get("id"))
                     .and_then(|v| v.as_str())
                 {
                     self.checkpoints.push(id.to_string());
@@ -130,7 +132,15 @@ impl CispoProjection {
         EvidenceState {
             completeness,
             reason: None,
-            refs: Vec::new(),
+            refs: self
+                .checkpoints
+                .iter()
+                .map(|id| crate::optimizers::kernel::evidence::EvidenceRef {
+                    kind: "checkpoint".into(),
+                    id: id.clone(),
+                    digest: None,
+                })
+                .collect(),
         }
     }
 
@@ -218,5 +228,23 @@ mod tests {
         let result = projection.settle().unwrap();
         assert!(result.no_learning_signal);
         assert_eq!(result.mean_advantage, Some(0.0));
+    }
+
+    #[test]
+    fn sidecar_envelope_checkpoint_is_terminal_evidence() {
+        let mut projection = CispoProjection::default();
+        projection
+            .apply(&committed(
+                "sft.checkpoint.ready",
+                json!({"item": {"id": "cispo-step-1", "sha256": "abc", "ready": true}}),
+                1,
+            ))
+            .unwrap();
+
+        let result = projection.settle().unwrap();
+        assert_eq!(result.policy_checkpoint_id.as_deref(), Some("cispo-step-1"));
+        let evidence = projection.evidence_state();
+        assert_eq!(evidence.completeness, EvidenceCompleteness::Complete);
+        assert_eq!(evidence.refs[0].id, "cispo-step-1");
     }
 }
