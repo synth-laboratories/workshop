@@ -2931,7 +2931,9 @@ pub(super) async fn reconcile_evidence(
         // bundle and binds it to this exact container, rollout, run, and trial.
         let producer_trace_id = producer_trace_id.or_else(|| {
             imported_trace
-                .get("traceId")
+                .get("producerTraceId")
+                .or_else(|| imported_trace.get("producer_trace_id"))
+                .or_else(|| imported_trace.get("traceId"))
                 .or_else(|| imported_trace.get("trace_id"))
                 .and_then(Value::as_str)
                 .map(str::to_string)
