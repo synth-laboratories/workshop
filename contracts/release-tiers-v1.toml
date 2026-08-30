@@ -181,9 +181,12 @@ dispositions = { core = "required", stable = "required", beta = "recommended", a
 
 [[verification]]
 name = "crash_recovery_drill"
-kind = "drill"
-command = "scripts/crash-recovery-drill.sh"
+kind = "manual"
+command = "scripts/crash-recovery-drill.sh after_turn_start"
 dispositions = { core = "required", stable = "required", beta = "required", alpha = "recommended", dev = "optional" }
+# This drill launches Workshop, requires an operator to drive one turn through
+# the named crash checkpoint, then requires a normal relaunch and inspection.
+# It cannot truthfully run as an unattended release-gate subprocess.
 
 [[verification]]
 name = "auth_pre_release_live_driver"

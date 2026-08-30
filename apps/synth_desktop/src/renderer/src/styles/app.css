@@ -1432,6 +1432,8 @@ html[data-synth-review-capture] .visuals-preview {
 }
 
 .titlebar {
+	position: relative;
+	z-index: 40;
 	display: flex;
 	align-items: flex-end;
 	justify-content: space-between;
