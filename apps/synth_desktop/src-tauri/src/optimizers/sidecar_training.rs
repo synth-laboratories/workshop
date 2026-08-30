@@ -499,11 +499,9 @@ pub fn require_placement(capabilities: &Value, placement: &str) -> Result<()> {
 }
 
 fn advertised_algorithm(capabilities: &Value, algorithm: &str) -> bool {
-    capabilities
-        .get("optimization_algorithms")
-        .or_else(|| capabilities.get("algorithms"))
-        .and_then(Value::as_array)
+    ["optimization_algorithms", "algorithms"]
         .into_iter()
+        .filter_map(|key| capabilities.get(key).and_then(Value::as_array))
         .flatten()
         .filter_map(Value::as_str)
         .any(|item| item == algorithm || item == algorithm.split('.').next().unwrap_or(algorithm))
@@ -2159,6 +2157,13 @@ mod tests {
         ));
         assert!(advertised_algorithm(
             &json!({"algorithms": ["gepa", "sft"]}),
+            "sft"
+        ));
+        assert!(advertised_algorithm(
+            &json!({
+                "optimization_algorithms": ["gepa"],
+                "algorithms": ["sft", "cispo"]
+            }),
             "sft"
         ));
         assert!(!advertised_algorithm(
