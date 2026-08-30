@@ -3152,19 +3152,6 @@ fn verify_complete_native_frame_trace(
     rollout_id: &str,
     mode: FrameTraceMode,
 ) -> Result<()> {
-    let steps = match mode {
-        FrameTraceMode::SealedComplete => terminal_record
-            .get("steps")
-            .and_then(Value::as_u64)
-            .with_context(|| {
-                format!(
-                    "full_trace_step_count_missing: rollout `{rollout_id}` has no terminal environment-step count"
-                )
-            })?,
-        FrameTraceMode::SealedPartial {
-            last_pre_cancellation_step,
-        } => last_pre_cancellation_step,
-    };
     let observed = imported
         .get("importedFrameSteps")
         .and_then(Value::as_array)
@@ -3178,6 +3165,38 @@ fn verify_complete_native_frame_trace(
                 .context("full_trace_frame_step_invalid: frame step is not an unsigned integer")
         })
         .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    // Code-repair and other non-visual evaluators legitimately have no
+    // environment-step timeline. Their sealed agent/tool trace is complete
+    // with zero native frames. Only permit that shape when the retained relay
+    // explicitly reports that it declared and observed no frames.
+    let declares_no_environment_frames = terminal_record
+        .pointer("/relay/framesDeclared")
+        .and_then(Value::as_u64)
+        == Some(0)
+        && terminal_record
+            .pointer("/relay/frameObservationsDeclared")
+            .and_then(Value::as_u64)
+            == Some(0);
+    if matches!(mode, FrameTraceMode::SealedComplete)
+        && terminal_record.get("steps").and_then(Value::as_u64).is_none()
+        && declares_no_environment_frames
+        && observed.is_empty()
+    {
+        return Ok(());
+    }
+    let steps = match mode {
+        FrameTraceMode::SealedComplete => terminal_record
+            .get("steps")
+            .and_then(Value::as_u64)
+            .with_context(|| {
+                format!(
+                    "full_trace_step_count_missing: rollout `{rollout_id}` has no terminal environment-step count"
+                )
+            })?,
+        FrameTraceMode::SealedPartial {
+            last_pre_cancellation_step,
+        } => last_pre_cancellation_step,
+    };
     let expected = (0..=steps).collect::<std::collections::BTreeSet<_>>();
     if observed != expected {
         let missing = expected.difference(&observed).copied().collect::<Vec<_>>();
@@ -9060,6 +9079,34 @@ max_total_rollouts = 1
         .unwrap_err();
         assert!(format!("{error:#}").contains("full_trace_frame_coverage_incomplete"));
         assert!(format!("{error:#}").contains("1 of 4 required native frame steps"));
+    }
+
+    #[test]
+    fn terminal_non_visual_trace_accepts_explicit_zero_frame_contract() {
+        let terminal = json!({
+            "relay": {
+                "framesDeclared": 0,
+                "frameObservationsDeclared": 0
+            }
+        });
+        let imported = json!({"importedFrameSteps": []});
+        verify_complete_native_frame_trace(
+            &terminal,
+            &imported,
+            "roll_code_repair",
+            FrameTraceMode::SealedComplete,
+        )
+        .unwrap();
+
+        let missing_contract = json!({});
+        let error = verify_complete_native_frame_trace(
+            &missing_contract,
+            &imported,
+            "roll_ambiguous",
+            FrameTraceMode::SealedComplete,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("full_trace_step_count_missing"));
     }
 
     #[test]
