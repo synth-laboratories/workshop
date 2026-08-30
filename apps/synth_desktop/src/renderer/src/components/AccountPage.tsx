@@ -91,7 +91,9 @@ export function AccountPage({
 
 			<Section
 				title="Synth account"
-				description="Connect this device with your browser or a Synth API key."
+				description={view.signedIn
+					? "This device is connected to your Synth account."
+					: "Activate your free month by creating or signing in to a Synth account in your browser."}
 				testId="account-page-profile"
 			>
 				<div className="account-page-identity">
@@ -114,7 +116,7 @@ export function AccountPage({
 					<p className="account-page-note">No organization is reported for this account.</p>
 				) : (
 					<p className="account-page-note">
-						Local models work without an account. Sign in to use Synth Cloud and see a plan.
+						No payment method is entered in Workshop. Continue in your browser to see the promotional terms before activation; local models remain available without an account.
 					</p>
 				)}
 				<AccountSignIn />

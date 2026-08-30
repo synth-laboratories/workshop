@@ -112,7 +112,10 @@ export function AccountSignIn() {
 			{pair.kind === "pairing" ? (
 				<>
 					<span role="status" className="finetune-meta" data-testid="sign-in-status">
-						Finish sign-in in your browser — this page updates automatically.
+						Browser sign-in started. Finish signup or sign-in there — Workshop updates automatically when pairing completes.
+					</span>
+					<span className="finetune-meta backend-signin-note" data-testid="sign-in-browser-help">
+						If no page appeared, check your browser tabs or choose Reopen browser. You can safely cancel and retry.
 					</span>
 					{pair.userCode ? (
 						<span className="finetune-meta backend-signin-code" data-testid="sign-in-user-code">
@@ -138,7 +141,7 @@ export function AccountSignIn() {
 					</span>
 					<div className="backend-signin-actions">
 						<button type="button" className="settings-secondary-btn" data-testid="sign-in-begin" onClick={() => void beginSignIn()}>
-							Sign in with browser
+							Activate free month in browser
 						</button>
 						{settings?.apiKeyConfigured ? (
 							<button type="button" className="settings-secondary-btn" data-testid="account-sign-out" disabled={saving} onClick={() => void signOut()}>

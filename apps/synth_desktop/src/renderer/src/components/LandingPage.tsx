@@ -365,15 +365,19 @@ export function LandingPage({
 						/>
 				</div>
 				{!state.apiKeyConfigured && !accountChoiceMade ? (
-					<div className="quick-actions" data-testid="first-run-account-choice">
+					<div className="quick-actions first-run-activation" data-testid="first-run-account-choice">
+						<div className="first-run-activation-copy">
+							<strong>Activate your free month</strong>
+							<small>Create or sign in to your Synth account in your browser, then return here to start.</small>
+						</div>
+						<button type="button" className="quick-card is-primary" data-testid="activate-free-month" onClick={onConfigureAccount}>
+							<span><strong>Activate free month</strong><small>Sign up or sign in with Synth</small></span>
+						</button>
 						<button type="button" className="quick-card" onClick={() => {
 							window.localStorage.setItem("synth.accountChoiceMade", "1");
 							setAccountChoiceMade(true);
 						}}>
 							<span><strong>Continue locally</strong><small>No account required</small></span>
-						</button>
-						<button type="button" className="quick-card" onClick={onConfigureAccount}>
-							<span><strong>Sign in to Synth</strong><small>Connect cloud models</small></span>
 						</button>
 					</div>
 				) : null}

@@ -75,11 +75,12 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	await page.getByTestId("account-menu-trigger").click();
 	await page.getByTestId("account-menu").getByTestId("open-account-settings").click();
 	const signIn = page.getByTestId("account-sign-in");
-	await expect(signIn.getByTestId("sign-in-begin")).toContainText("Sign in with browser");
+	await expect(signIn.getByTestId("sign-in-begin")).toContainText("Activate free month in browser");
 	await expect(signIn).toContainText("creates your Synth account");
 
 	await signIn.getByTestId("sign-in-begin").click();
-	await expect(signIn.getByTestId("sign-in-status")).toContainText("Finish sign-in in your browser");
+	await expect(signIn.getByTestId("sign-in-status")).toContainText("Browser sign-in started");
+	await expect(signIn.getByTestId("sign-in-browser-help")).toContainText("check your browser tabs");
 	// The pairing code from the host is shown so the user can match it
 	// against the browser approval page before clicking Approve.
 	await expect(signIn.getByTestId("sign-in-user-code")).toContainText("ABCD-2345");
@@ -153,12 +154,13 @@ test("account acquires credentials through native browser pairing, never rendere
 	await expect(signIn.getByLabel("Synth API key")).toHaveCount(0);
 });
 
-test("first run offers local use and Synth sign-in as equal choices", async ({ page }) => {
+test("first run leads with free-month activation and preserves local use", async ({ page }) => {
 	await page.addInitScript(() => window.localStorage.removeItem("synth.accountChoiceMade"));
 	await page.reload();
 	const choices = page.getByTestId("first-run-account-choice");
+	await expect(choices).toContainText("Activate your free month");
+	await expect(choices.getByTestId("activate-free-month")).toBeVisible();
 	await expect(choices.getByRole("button", { name: /Continue locally/ })).toBeVisible();
-	await expect(choices.getByRole("button", { name: /Sign in to Synth/ })).toBeVisible();
 	await choices.getByRole("button", { name: /Continue locally/ }).click();
 	await expect(choices).not.toBeVisible();
 });

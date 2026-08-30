@@ -1878,6 +1878,28 @@ html.visual-expanded .titlebar {
 	justify-content: center;
 }
 
+.first-run-activation {
+	flex-wrap: wrap;
+	padding: 14px;
+	border: 1px solid color-mix(in srgb, var(--color-accent) 32%, var(--color-border));
+	border-radius:var(--radius-sm);
+	background: color-mix(in srgb, var(--color-accent) 5%, var(--color-bg));
+}
+
+.first-run-activation-copy {
+	display: grid;
+	gap: 3px;
+	width: 100%;
+	text-align: left;
+}
+
+.first-run-activation-copy strong { color: var(--color-text); font-size:var(--font-size-sm); }
+.first-run-activation-copy small { color: var(--color-text-muted); line-height: 1.4; }
+.quick-card.is-primary {
+	border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-border));
+	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-bg));
+}
+
 .landing-consent {
 	display: flex;
 	align-items: center;
