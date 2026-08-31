@@ -4500,6 +4500,16 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
     instance_id: &str,
     now: DateTime<Utc>,
 ) -> Result<Vec<OptimizerRunRecord>> {
+    // A crash can occur after a capability is granted but before the run row
+    // is inserted. At boot there is no legitimate worker for such an orphan.
+    conn.execute(
+        "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
+         WHERE status IN ('granted','active')
+           AND NOT EXISTS (
+               SELECT 1 FROM optimizer_runs WHERE optimizer_runs.id=secret_capabilities.run_id
+           )",
+        params![now.to_rfc3339()],
+    )?;
     let mut stmt =
         conn.prepare("SELECT payload_json FROM optimizer_runs WHERE source = 'local'")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
@@ -4512,6 +4522,13 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
     for payload in payloads {
         let mut run: OptimizerRunRecord = serde_json::from_str(&payload)?;
         if is_terminal_status(&run.status) {
+            // A previous process may have crashed after terminal settlement
+            // but before its in-memory capability guard ran.
+            conn.execute(
+                "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
+                 WHERE run_id=?2 AND status IN ('granted','active')",
+                params![now.to_rfc3339(), run.id],
+            )?;
             continue;
         }
         if crate::recovery::ownership::optimizer_run_is_live(conn, &run.id, instance_id, now)? {
@@ -4525,6 +4542,15 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
         }));
         upsert_run(conn, &run)?;
         crate::recovery::ownership::release_optimizer_run(conn, &run.id)?;
+        // CoreRuntime performs this reconciliation before the live secret
+        // broker exists. Revoke the persisted capability rows here so a crash
+        // between grant and worker startup cannot leave usable authority
+        // behind. The capability store is rebuilt from this database state.
+        conn.execute(
+            "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
+             WHERE run_id=?2 AND status IN ('granted','active')",
+            params![now.to_rfc3339(), run.id],
+        )?;
         let events = load_events_upto(conn, &run.id, run.cursor_seq)?;
         let manifest = terminal::derive(&run, &events, "interrupted", None);
         let sealed = terminal::seal(conn, &run.id, &manifest)?;

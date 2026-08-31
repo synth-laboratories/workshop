@@ -332,46 +332,53 @@ fn discover_template_directories(
     canonical_root: &Path,
     out: &mut Vec<PathBuf>,
 ) -> anyhow::Result<()> {
-    let metadata = fs::symlink_metadata(directory)?;
-    if metadata.file_type().is_symlink() {
-        anyhow::bail!(
-            "visual template registry refuses symlink: {}",
-            directory.display()
-        );
-    }
-    let canonical = fs::canonicalize(directory)?;
-    if !canonical.starts_with(canonical_root) {
-        anyhow::bail!(
-            "visual template path escapes family root: {}",
-            directory.display()
-        );
-    }
-
-    let manifest = directory.join("template.json");
-    if manifest.exists() {
-        let manifest_metadata = fs::symlink_metadata(&manifest)?;
-        if manifest_metadata.file_type().is_symlink() {
+    // This runs while an optimizer launch future is already carrying a large
+    // amount of state. Recursive filesystem descent can exhaust a Tokio
+    // worker's comparatively small stack even for an ordinary registry. Keep
+    // traversal state on the heap instead.
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let metadata = fs::symlink_metadata(&directory)?;
+        if metadata.file_type().is_symlink() {
             anyhow::bail!(
                 "visual template registry refuses symlink: {}",
-                manifest.display()
+                directory.display()
             );
         }
-        out.push(directory.to_path_buf());
-        return Ok(());
-    }
-
-    let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        let file_type = entry.file_type()?;
-        if file_type.is_symlink() {
+        let canonical = fs::canonicalize(&directory)?;
+        if !canonical.starts_with(canonical_root) {
             anyhow::bail!(
-                "visual template registry refuses symlink: {}",
-                entry.path().display()
+                "visual template path escapes family root: {}",
+                directory.display()
             );
         }
-        if file_type.is_dir() {
-            discover_template_directories(&entry.path(), canonical_root, out)?;
+
+        let manifest = directory.join("template.json");
+        if manifest.exists() {
+            let manifest_metadata = fs::symlink_metadata(&manifest)?;
+            if manifest_metadata.file_type().is_symlink() {
+                anyhow::bail!(
+                    "visual template registry refuses symlink: {}",
+                    manifest.display()
+                );
+            }
+            out.push(directory);
+            continue;
+        }
+
+        let mut entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries.into_iter().rev() {
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                anyhow::bail!(
+                    "visual template registry refuses symlink: {}",
+                    entry.path().display()
+                );
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            }
         }
     }
     Ok(())

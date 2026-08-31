@@ -1038,6 +1038,7 @@ async fn run_worker(
     local_mlx_token: Option<String>,
     mut cancel: super::CancelObserver,
 ) -> Result<()> {
+    let _revoke_capabilities = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
     append_status(&service, &run_id, "optimizer.run.started", "running").await?;
     fs::create_dir_all(&run_dir).context("create eval run directory")?;

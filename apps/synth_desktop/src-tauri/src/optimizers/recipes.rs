@@ -487,6 +487,7 @@ async fn run_recipe_worker(
     manager: Arc<super::OptimizerManager>,
     mut cancel_rx: super::CancelObserver,
 ) -> Result<()> {
+    let _revoke_capabilities = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
     append_status_event(&service, &run_id, "optimizer.run.started", "running").await?;
     let provider = fs::read_to_string(&config_path)

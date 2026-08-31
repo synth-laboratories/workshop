@@ -1447,6 +1447,7 @@ async fn run_eval_worker(
     workbench_id: String,
     cancel: super::CancelObserver,
 ) -> Result<()> {
+    let _revoke_capabilities = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
     evidence(
         "run_started",
