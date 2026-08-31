@@ -108,7 +108,10 @@ Do not claim a paid Luna 10× run from this skill.
    probe another port, register a new record, or switch to a raw engine.
 5. Create the task-family visual through `synth_visuals.visual_manage`:
    `live.craftax.v1` for native Craftax, `live.harbor_eval.v1` for a Harbor
-   attempt. Bind slot `stream` (never
+   attempt. Give it a short, specific `display_name` of 2–6 words (for example,
+   `GLM Craftax Results`), unique among this task's outputs; do not use a raw
+   run, rollout, session, or visual ID as the name. Keep `title` descriptive.
+   Bind slot `stream` (never
    `live` or `jobs`) as `live_sse` to the **declared** SSE URL, with the
    declared `poll_url` beside it. Do not construct `/events` or
    `/rollouts/{id}/stream`.

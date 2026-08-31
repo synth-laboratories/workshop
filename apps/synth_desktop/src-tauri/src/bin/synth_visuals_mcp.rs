@@ -223,6 +223,23 @@ mod tests {
     }
 
     #[test]
+    fn every_visual_creation_tool_advertises_a_short_display_name() {
+        let listed = tools();
+        let tools = listed["tools"].as_array().unwrap();
+        for name in [
+            "visual_create",
+            "visual_create_from_template",
+            "visual_chart",
+            "visual_fork",
+        ] {
+            let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+            let display_name = &tool["inputSchema"]["properties"]["display_name"];
+            assert_eq!(display_name["minLength"], 1, "{name}");
+            assert_eq!(display_name["maxLength"], 64, "{name}");
+        }
+    }
+
+    #[test]
     fn parses_loopback_connection_without_treating_request_path_as_part_of_address() {
         assert_eq!(
             socket_addr("http://127.0.0.1:49262").unwrap().to_string(),
@@ -482,15 +499,15 @@ fn tools() -> Value {
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_create","description":"Create a visual from a registered template. Give every visual a short, sensible display_name for the Outputs shelf; keep title descriptive. sourced.visual.v1 compiles arguments.content (allowlisted TSX) in the pane. Prefer create_with_bind with input+kind+data for experiment.overview.v1, analysis.visual.v1, and compose.visual.v1. compose.visual.v1 binds spec, then stream (eval) or optimizer_run (GEPA/SFT/CISPO optimizer_event.v1). Do not flatten Harbor/Craftax eval traces into optimizer_run. Hosted RLVR is CISPO, not rlvr.*. Unconstrained fetch/EventSource modules fail closed. For ad-hoc data charts prefer visual_chart.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"display_name":{"type":"string","minLength":1,"maxLength":64,"description":"Short human-readable name, usually 2–6 words, unique within the task."},"content":{"type":"string"},"props":{"type":"object"},"bindings":{"type":"object"},"input":{"type":"string","description":"Required input name for create_with_bind, e.g. experiment or spec. slot still binds; new writers use input."},"slot":{"type":"string","description":"Read-only alias of input on stored envelopes; still binds."},"kind":{"type":"string","description":"Binding kind. Inline inputs require data."},"data":{"description":"Required when kind is inline"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
-            {"name":"visual_create_from_template","description":"Alias of visual_create. Include a short sensible display_name.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"display_name":{"type":"string","minLength":1,"maxLength":64},"props":{"type":"object"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
+            {"name":"visual_create_from_template","description":"Alias of visual_create. Include a short sensible display_name (2–6 words, unique in the task).","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"display_name":{"type":"string","minLength":1,"maxLength":64,"description":"Short human-readable name, usually 2–6 words, unique within the task."},"props":{"type":"object"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
             {"name":"visual_update","description":"Revise visual bindings, title, short display_name, trusted-template configuration, or Mermaid/systems/chart content","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"display_name":{"type":"string","minLength":1,"maxLength":64,"description":"Short human-readable name, usually 2–6 words."},"content":{"type":"string"},"bindings":{"type":"object","description":"Canonical synth.visual-bindings.v1 envelope: {\"schemaVersion\":\"synth.visual-bindings.v1\",\"inputs\":[{\"input\":...,\"kind\":...,\"source\":...}]}. slot still binds on stored envelopes; new writers emit input/inputs. A slot-keyed map such as {\"stream\":[...]} is legacy, is upgraded with a warning, and will be refused in a later release. Prefer visual_bind_data_source.","properties":{"schemaVersion":{"type":"string","const":"synth.visual-bindings.v1"},"inputs":{"type":"array","items":{"type":"object","properties":{"input":{"type":"string"},"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"data":{}},"required":["kind"]}}},"required":["schemaVersion"]},"status":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_bind_data_source","description":"Bind one input on a visual. This is the only supported way to write bindings: it emits the canonical synth.visual-bindings.v1 envelope. Inline inputs require data; other kinds require source. compose.visual.v1 stream is eval SSE; optimizer_run is optimizer_event.v1 (GEPA/SFT/CISPO). Use mode=append with bindings[] to put several sources on one input. slot still binds; new writers use input.","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"input":{"type":"string","description":"Bind-point name, e.g. spec, stream, optimizer_run"},"slot":{"type":"string","description":"Read-only alias of input on stored envelopes; still binds."},"mode":{"type":"string","enum":["replace","append"],"description":"replace (default) drops existing bindings on this input; append adds to them"},"kind":{"type":"string","enum":["trace_v5","local_cas","live_sse","fixture","inline","run_ref","optimizer_run","optimizer_snapshot","query_snapshot"]},"source":{"type":"string"},"data":{"description":"Required when kind is inline"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"},"schema":{"type":"string"},"bindings":{"type":"array","description":"Several descriptors for one input. Each is {kind, source, data?, poll_url?, path?, schema?}; the named input is authoritative.","items":{"type":"object","properties":{"kind":{"type":"string"},"source":{"type":"string"},"data":{},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"}},"required":["kind"],"additionalProperties":false}}},"required":["instance_id"],"additionalProperties":false}},
              {"name":"visual_show","description":"Open a visual in the Desktop right pane","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"session_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
              {"name":"document_show","description":"Open one workspace file in the Desktop right pane. The path is resolved against this conversation's workspace roots; a path outside them is refused, and a file that cannot be typeset (missing, binary, a directory) comes back with the named reason. Read-only: there is no write or delete counterpart.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path, or a path relative to a workspace root, of the file to open"}},"required":["path"],"additionalProperties":false}},
             {"name":"document_show","description":"Open one workspace file in the Desktop right pane. The path is resolved against this conversation's workspace roots; a path outside them is refused, and a file that cannot be typeset (missing, binary, a directory) comes back with the named reason. Read-only: there is no write or delete counterpart.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path, or a path relative to a workspace root, of the file to open"}},"required":["path"],"additionalProperties":false}},
             {"name":"visual_open_in_pane","description":"Alias of visual_show","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"}},"required":["instance_id"],"additionalProperties":false}},
-            {"name":"visual_fork","description":"Fork a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_chart","description":"Author or revise an ad-hoc data chart and get the rendered PNG back in one call. Pass a synth.visual.chart-spec.v1 object as spec; omit visual_id to create, pass it to revise. Panels: metrics, series (line/stepped/area with optional band), bars (grouped/stacked, vertical/horizontal), scatter (optional Pareto frontier), histogram, heatmap, table, note. Panels either carry literal values or derive them from bound evidence with a from block — bind a trace digest, fixture, CAS blob, or query snapshot with input/kind/source and the host reads it, so charting a trace does not mean pasting its numbers. Every value channel accepts null for an unmeasured point, which renders as a gap or a hatched cell — never as zero. Renders deterministically without opening the Desktop window.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string","description":"Revise this chart instead of creating one"},"title":{"type":"string"},"spec":{"type":"object","description":"synth.visual.chart-spec.v1: {version:1, title?, subtitle?, theme?:light|dark, width?:480-2000, panels:[...]}. A panel carries literal values OR a from block: {from:{source:{slot,path?,projection?,transform:[...]}, ...channel mapping}}. Transforms: filter, sort, limit, select, unwind, unpivot, derive, groupAggregate, bin."},
+            {"name":"visual_fork","description":"Fork a visual and give the copy a short sensible display_name distinct within the task.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"display_name":{"type":"string","minLength":1,"maxLength":64,"description":"Short human-readable name for the fork, usually 2–6 words."}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"visual_chart","description":"Author or revise an ad-hoc data chart and get the rendered PNG back in one call. Give a new chart a short sensible display_name (2–6 words, unique in the task); keep title descriptive. Pass a synth.visual.chart-spec.v1 object as spec; omit visual_id to create, pass it to revise. Panels: metrics, series (line/stepped/area with optional band), bars (grouped/stacked, vertical/horizontal), scatter (optional Pareto frontier), histogram, heatmap, table, note. Panels either carry literal values or derive them from bound evidence with a from block — bind a trace digest, fixture, CAS blob, or query snapshot with input/kind/source and the host reads it, so charting a trace does not mean pasting its numbers. Every value channel accepts null for an unmeasured point, which renders as a gap or a hatched cell — never as zero. Renders deterministically without opening the Desktop window.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string","description":"Revise this chart instead of creating one"},"title":{"type":"string"},"display_name":{"type":"string","minLength":1,"maxLength":64,"description":"Short human-readable chart name, usually 2–6 words, unique within the task."},"spec":{"type":"object","description":"synth.visual.chart-spec.v1: {version:1, title?, subtitle?, theme?:light|dark, width?:480-2000, panels:[...]}. A panel carries literal values OR a from block: {from:{source:{slot,path?,projection?,transform:[...]}, ...channel mapping}}. Transforms: filter, sort, limit, select, unwind, unpivot, derive, groupAggregate, bin."},
               "slot":{"type":"string","description":"Read-only alias of input on stored envelopes; still binds."},
               "input":{"type":"string","description":"Bind evidence in the same call: the input name a from block reads"},
               "kind":{"type":"string","enum":["inline","fixture","local_cas","trace_v5","query_snapshot","optimizer_run","optimizer_snapshot"],"description":"Binding kind for this input. An optimizer_run may be read before it seals; optimizer_snapshot is immutable imported evidence."},
@@ -976,6 +993,15 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                     if let Some(bindings) = bindings.clone() {
                         body["bindings"] = bindings;
                     }
+                    if let Some(display_name) = args.get("display_name").cloned() {
+                        let current = request("GET", &format!("/v1/visuals/{id}"), None)?;
+                        let mut metadata = current
+                            .pointer("/visual/metadata")
+                            .cloned()
+                            .unwrap_or_else(|| json!({}));
+                        metadata["displayName"] = display_name;
+                        body["metadata"] = metadata;
+                    }
                     request("POST", &format!("/v1/visuals/{id}"), Some(body))?
                 }
                 None => {
@@ -991,6 +1017,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                             "content": content,
                             "bindings": bindings.clone().unwrap_or(json!({})),
                             "metadata": {
+                                "displayName": args.get("display_name").cloned().unwrap_or(Value::Null),
                                 "presentation": args
                                     .get("presentation")
                                     .cloned()
@@ -1232,10 +1259,27 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             // record of what it came from. Adopting the original silently is
             // what this replaces.
             let session_id = require_session_identity(&session_env, "fork a visual")?;
-            request(
+            let forked = request(
                 "POST",
                 &format!("/v1/visuals/{id}/fork"),
                 Some(json!({"title": args.get("title"), "sessionId": session_id})),
+            )?;
+            let Some(display_name) = args.get("display_name").cloned() else {
+                return Ok(forked);
+            };
+            let fork_id = forked
+                .pointer("/visual/id")
+                .and_then(Value::as_str)
+                .ok_or("fork response missing visual id")?;
+            let mut metadata = forked
+                .pointer("/visual/metadata")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            metadata["displayName"] = display_name;
+            request(
+                "POST",
+                &format!("/v1/visuals/{fork_id}"),
+                Some(json!({"metadata": metadata})),
             )
         }
         "visual_archive" => {

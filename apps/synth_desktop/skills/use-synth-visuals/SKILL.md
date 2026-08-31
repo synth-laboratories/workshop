@@ -66,6 +66,7 @@ not call a separate `experiment_create` tool.
 3. Choose only visual forms that answer that question. Read [visual-recipes.md](references/visual-recipes.md) for mappings. For a one-off quantitative comparison, also read [ad-hoc-visuals.md](references/ad-hoc-visuals.md). It is the canonical guide for chart selection, style, metric denominators, and evidence/event-source bindings.
 4. Create the smallest useful visual with a stable ID, a descriptive title that names the task and comparison, and a short sensible `display_name` (normally 2–6 words, such as “GLM Craftax Results” or “Reward by Seed”). Keep names distinct within the task and never use raw IDs as names. Use operation `chart` for quantitative comparisons and `create`/`create_with_bind` for other registered templates. Use `presentation: "canvas"` for gameplay, trace workbenches, and dense live dashboards.
    If instance-scope discovery finds a useful visual owned by another task, call `fork` first and revise the returned current-task visual ID. Never update or `show` the other task's original: its presentation event routes to its owner, not this chat.
+   Apply the same naming rule to `create_with_bind`, `chart`, and `fork`. When the visual's analytical purpose changes materially, update `display_name`; ordinary data refreshes should keep the existing name stable.
 5. Show exact units and provenance. Preserve small costs rather than rounding them to `$0.00`.
 6. Call the `show` operation after creation or update so the result opens in the Desktop pane.
 7. Inspect the rendered visual in Desktop canvas mode. Fix clipped labels, empty sections, misleading encodings, weak hierarchy, and excessive whitespace.
@@ -123,6 +124,7 @@ await tools.mcp__synth_visuals__visual_manage({
   arguments: {
     template_id: "analysis.visual.v1",
     title: "HealthBench smoke · policy vs scorer",
+    display_name: "HealthBench Comparison",
     input: "spec",
     kind: "inline",
     data: {
@@ -151,6 +153,7 @@ const created = await tools.mcp__synth_visuals__visual_manage({
   arguments: {
     template_id: "compose.visual.v1",
     title: "Harbor smoke · live stream",
+    display_name: "Harbor Live Stream",
     input: "spec",
     kind: "inline",
     data: {
@@ -187,6 +190,7 @@ const created = await tools.mcp__synth_visuals__visual_manage({
   arguments: {
     template_id: "compose.visual.v1",
     title: "CISPO clip · optimizer_run",
+    display_name: "CISPO Clip Events",
     input: "spec",
     kind: "inline",
     data: {
@@ -239,6 +243,7 @@ const created = await tools.mcp__synth_visuals__visual_manage({
   arguments: {
     template_id: "sourced.visual.v1",
     title: "Harbor smoke · custom log",
+    display_name: "Harbor Event Log",
     content: sourcedTsx
   }
 });
@@ -311,6 +316,7 @@ await tools.mcp__synth_visuals__visual_manage({
   arguments: {
     template_id: "experiment.overview.v1",
     title: "Banking77 baseline eval",
+    display_name: "Banking77 Baseline",
     input: "experiment",
     kind: "inline",
     data: {
