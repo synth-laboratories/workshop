@@ -1641,7 +1641,7 @@ export function eventsToLocalActivity(
 				...(payload.payload && typeof payload.payload === "object" && !Array.isArray(payload.payload)
 					? Object.entries(payload.payload as Record<string, unknown>)
 						.filter(([, value]) => value !== null && value !== undefined && value !== "")
-						.map(([key, value]) => `${key}: ${String(value)}`)
+						.map(([key, value]) => `${key}: ${formatApprovalPayloadValue(value)}`)
 					: [])
 			].filter((value): value is string => typeof value === "string" && value !== "").join(" · ")
 			: undefined;

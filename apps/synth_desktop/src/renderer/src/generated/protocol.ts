@@ -151,10 +151,15 @@ export const commands = {
 	computerUseOpenSettings: (permissionId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("computer_use_open_settings", { permissionId })),
 	/**  Read-only managed-browser preflight plus the human-owned origin policy. */
 	browserRuntimeStatus: () => typedError<BrowserRuntimeStatus, AppError_Serialize>(__TAURI_INVOKE("browser_runtime_status")),
+	/**  Human-only lifecycle recovery. Active managed sessions are discarded. */
+	browserServiceRestart: () => typedError<BrowserRuntimeStatus, AppError_Serialize>(__TAURI_INVOKE("browser_service_restart")),
 	/**  Human-only origin approval. Browser MCP deliberately has no equivalent tool. */
 	browserPolicyAllowOrigin: (origin: string) => typedError<BrowserRuntimeStatus, AppError_Serialize>(__TAURI_INVOKE("browser_policy_allow_origin", { origin })),
 	/**  Revoke a persistent origin approval for future navigations. */
 	browserPolicyRevokeOrigin: (origin: string) => typedError<BrowserRuntimeStatus, AppError_Serialize>(__TAURI_INVOKE("browser_policy_revoke_origin", { origin })),
+	/**  Human-only upload-folder selection. Pages and agents cannot widen this scope. */
+	browserPolicyChooseUploadRoot: () => typedError<BrowserRuntimeStatus, AppError_Serialize>(__TAURI_INVOKE("browser_policy_choose_upload_root")),
+	browserPolicyRevokeUploadRoot: (path: string) => typedError<BrowserRuntimeStatus, AppError_Serialize>(__TAURI_INVOKE("browser_policy_revoke_upload_root", { path })),
 	visualSubscriptionReady: (request: VisualReadyRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visual_subscription_ready", { request })),
 	/**
 	 *  Fetch a visual's persisted, declaration-validated poll authority through
@@ -850,6 +855,10 @@ export type BrowserRuntimeStatus = {
 	profileRoot: string,
 	allowedOrigins: string[],
 	defaultLocalOrigins: string[],
+	uploadRoots: string[],
+	serviceRunning: boolean,
+	crashCount: number,
+	chromeClaimEnabled: boolean,
 };
 
 /**
