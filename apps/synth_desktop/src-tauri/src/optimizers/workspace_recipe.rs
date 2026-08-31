@@ -1028,6 +1028,10 @@ fn compile_gepa_task_contract(
                     "reasoning_effort".into(),
                     toml::Value::String(reasoning_effort),
                 ),
+                (
+                    "allow_unverified_model".into(),
+                    toml::Value::Boolean(recipe.provider == "openrouter"),
+                ),
                 ("auth_mode".into(), toml::Value::String("api_key".into())),
                 (
                     "api_key_env".into(),
@@ -1882,8 +1886,9 @@ max_total_rollouts = 32
 id = "gepa.banking77.workspace.v1"
 algorithm = "gepa"
 container = "banking77"
-provider = "openai"
-model = "gpt-5.6-luna"
+provider = "openrouter"
+model = "openai/gpt-5.6-luna"
+proposer_model = "openai/gpt-5.6-luna"
 locality = "container"
 candidate_field = "system_prompt"
 train_seeds = [0, 1]
@@ -1901,8 +1906,11 @@ max_total_rollouts = 1
         let run_dir = workspace.join("run");
         let copied = copy_into_run_dir(&recipe, &run_dir).unwrap();
         let document: toml::Value = toml::from_str(&fs::read_to_string(copied).unwrap()).unwrap();
-        assert_eq!(document["policy"]["provider"].as_str(), Some("openai"));
-        assert_eq!(document["policy"]["model"].as_str(), Some("gpt-5.6-luna"));
+        assert_eq!(document["policy"]["provider"].as_str(), Some("openrouter"));
+        assert_eq!(
+            document["policy"]["model"].as_str(),
+            Some("openai/gpt-5.6-luna")
+        );
         assert_eq!(document["policy"]["max_calls"].as_integer(), Some(32));
         assert_eq!(document["policy"]["effort"].as_str(), Some("xhigh"));
         assert_eq!(
@@ -1925,7 +1933,14 @@ max_total_rollouts = 1
             document["proposer"]["backend"].as_str(),
             Some("chat_completions")
         );
-        assert_eq!(document["proposer"]["model"].as_str(), Some("gpt-5.6-luna"));
+        assert_eq!(
+            document["proposer"]["model"].as_str(),
+            Some("openai/gpt-5.6-luna")
+        );
+        assert_eq!(
+            document["proposer"]["allow_unverified_model"].as_bool(),
+            Some(true)
+        );
         assert_eq!(
             document["proposer"]["reasoning_effort"].as_str(),
             Some("high")
