@@ -37,3 +37,12 @@ test("hide-terminal restores toggle-terminal", () => {
 	assert.match(helper, /requestAnimationFrame/);
 	assert.doesNotMatch(hide, /restoreFocusAfterVisualPaneClose/);
 });
+
+test("composer follows the live transcript width while the side panel divider moves", () => {
+	const composer = read("components/Composer.tsx");
+	assert.match(composer, /querySelector<HTMLElement>\("\.chat-transcript"\)/);
+	assert.match(composer, /resizeObserver\.observe\(transcript\)/);
+	assert.doesNotMatch(composer, /querySelector<HTMLElement>\("\.chat-transcript-scroll"\)/);
+	assert.match(composer, /contentLeft - paneRect\.left \+ 24/);
+	assert.match(composer, /paneRect\.right - contentRight \+ 24/);
+});
