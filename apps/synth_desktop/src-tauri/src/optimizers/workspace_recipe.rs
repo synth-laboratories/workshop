@@ -609,9 +609,12 @@ pub fn load_container_specs_from_root(source_root: &Path) -> Result<Vec<Containe
 }
 
 pub fn load_container_specs_from_manifest(manifest_path: &Path) -> Result<Vec<ContainerSpec>> {
-    let source_root = manifest_path
-        .parent()
-        .ok_or_else(|| anyhow!("container manifest {} has no parent", manifest_path.display()))?;
+    let source_root = manifest_path.parent().ok_or_else(|| {
+        anyhow!(
+            "container manifest {} has no parent",
+            manifest_path.display()
+        )
+    })?;
     let text = fs::read_to_string(manifest_path).map_err(|cause| {
         LaunchDeclarationError::ManifestUnreadable {
             manifest_path: manifest_path.to_path_buf(),
@@ -968,8 +971,65 @@ fn compile_gepa_task_contract(
         .unwrap_or("chat_completions")
         .to_string();
     policy.insert("api_family".into(), toml::Value::String(api_family));
-    policy.insert("api_key_env".into(), toml::Value::String("OPENAI_API_KEY".into()));
-    policy.insert("proxy_mode".into(), toml::Value::String("proxy_only".into()));
+    policy.insert(
+        "api_key_env".into(),
+        toml::Value::String("OPENAI_API_KEY".into()),
+    );
+    policy.insert(
+        "proxy_mode".into(),
+        toml::Value::String("proxy_only".into()),
+    );
+
+    // The installed runtime otherwise defaults an omitted proposer to the
+    // Codex app-server with a public OpenAI origin.  A Workshop proxy sentinel
+    // is not a public API key, so that fallback both violates the admitted
+    // route and fails with a misleading 401. Materialize the workspace-owned
+    // proposer explicitly; bind_locality_urls attaches its bounded host proxy
+    // URL later, alongside the policy's container-visible route.
+    let declared_proposer = recipe
+        .proposer_model
+        .as_deref()
+        .unwrap_or(recipe.model.as_str());
+    let proposer_model = declared_proposer
+        .strip_prefix(&format!("{}/", recipe.provider))
+        .unwrap_or(declared_proposer)
+        .to_string();
+    let reasoning_effort = policy
+        .get("effort")
+        .and_then(toml::Value::as_str)
+        .unwrap_or("medium")
+        .to_string();
+    root.insert(
+        "proposer".into(),
+        toml::Value::Table(
+            [
+                (
+                    "backend".into(),
+                    toml::Value::String("chat_completions".into()),
+                ),
+                (
+                    "provider".into(),
+                    toml::Value::String(recipe.provider.clone()),
+                ),
+                (
+                    "api_family".into(),
+                    toml::Value::String("chat_completions".into()),
+                ),
+                ("model".into(), toml::Value::String(proposer_model)),
+                (
+                    "reasoning_effort".into(),
+                    toml::Value::String(reasoning_effort),
+                ),
+                ("auth_mode".into(), toml::Value::String("api_key".into())),
+                (
+                    "api_key_env".into(),
+                    toml::Value::String("OPENAI_API_KEY".into()),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+    );
 
     let first_train = train_ids[0].clone();
     let mut gepa = toml::value::Table::new();
@@ -990,7 +1050,10 @@ fn compile_gepa_task_contract(
         "task_pools".into(),
         toml::Value::Table(
             [
-                ("pareto".into(), toml::Value::Array(vec![first_train.clone()])),
+                (
+                    "pareto".into(),
+                    toml::Value::Array(vec![first_train.clone()]),
+                ),
                 ("minibatch".into(), toml::Value::Array(vec![first_train])),
                 ("reflection".into(), toml::Value::Array(train_ids)),
                 ("heldout".into(), toml::Value::Array(heldout_ids)),
@@ -1323,7 +1386,10 @@ fn validate_launch(
         .ok_or_else(|| anyhow::anyhow!("launch_declaration_invalid: container URL is required"))?;
     for (name, authoritative) in [
         ("PORT", launch.expected_port.to_string()),
-        ("CRAFTAX_URL", canonical_url.trim_end_matches('/').to_string()),
+        (
+            "CRAFTAX_URL",
+            canonical_url.trim_end_matches('/').to_string(),
+        ),
     ] {
         if !launch.declared_environment.iter().any(|item| item == name) {
             continue;
@@ -1827,15 +1893,33 @@ max_total_rollouts = 1
         let copied = copy_into_run_dir(&recipe, &run_dir).unwrap();
         let document: toml::Value = toml::from_str(&fs::read_to_string(copied).unwrap()).unwrap();
         assert_eq!(document["policy"]["provider"].as_str(), Some("openai"));
-        assert_eq!(
-            document["policy"]["model"].as_str(),
-            Some("gpt-5.6-luna")
-        );
+        assert_eq!(document["policy"]["model"].as_str(), Some("gpt-5.6-luna"));
         assert_eq!(document["policy"]["max_calls"].as_integer(), Some(32));
-        assert_eq!(document["taskset"]["train_ids"][0].as_str(), Some("train:0"));
-        assert_eq!(document["taskset"]["heldout_ids"][0].as_str(), Some("test:77"));
-        assert_eq!(document["gepa"]["task_pools"]["pareto"][0].as_str(), Some("train:0"));
-        assert_eq!(document["candidate"]["target_modules"][0].as_str(), Some("system_prompt"));
+        assert_eq!(
+            document["taskset"]["train_ids"][0].as_str(),
+            Some("train:0")
+        );
+        assert_eq!(
+            document["taskset"]["heldout_ids"][0].as_str(),
+            Some("test:77")
+        );
+        assert_eq!(
+            document["gepa"]["task_pools"]["pareto"][0].as_str(),
+            Some("train:0")
+        );
+        assert_eq!(
+            document["candidate"]["target_modules"][0].as_str(),
+            Some("system_prompt")
+        );
+        assert_eq!(
+            document["proposer"]["backend"].as_str(),
+            Some("chat_completions")
+        );
+        assert_eq!(document["proposer"]["model"].as_str(), Some("gpt-5.6-luna"));
+        assert_eq!(
+            document["proposer"]["reasoning_effort"].as_str(),
+            Some("medium")
+        );
     }
 
     #[test]
@@ -1974,6 +2058,16 @@ locality = "container"
                 toml::Value::String("openai".into()),
             )])),
         );
+        table.insert(
+            "proposer".into(),
+            toml::Value::Table(toml::map::Map::from_iter([
+                (
+                    "backend".into(),
+                    toml::Value::String("chat_completions".into()),
+                ),
+                ("provider".into(), toml::Value::String("openai".into())),
+            ])),
+        );
         bind_locality_urls(
             &mut table,
             PolicyLocality::Container,
@@ -1985,6 +2079,10 @@ locality = "container"
         assert_eq!(
             table["policy"]["base_url"].as_str().unwrap(),
             "http://host.docker.internal:9/providers/openai"
+        );
+        assert_eq!(
+            table["proposer"]["base_url"].as_str().unwrap(),
+            "http://127.0.0.1:9/providers/openai"
         );
         bind_locality_urls(
             &mut table,
@@ -2046,7 +2144,10 @@ include = ["{include}"]
         let dir = tempfile::tempdir().unwrap();
         write_container_manifest(dir.path(), "scripts/up_craftax_container.sh");
         let spec = find_container_spec(dir.path(), "nanohorizon-craftax").unwrap();
-        assert_eq!(spec.environment.get("PORT").map(String::as_str), Some("18091"));
+        assert_eq!(
+            spec.environment.get("PORT").map(String::as_str),
+            Some("18091")
+        );
         assert_eq!(
             spec.environment.get("CRAFTAX_URL").map(String::as_str),
             Some("http://127.0.0.1:18091")
@@ -2242,13 +2343,14 @@ tracked_revision = "{tracked_revision}"
         let source = dir.path().join("nanohorizon");
         fs::create_dir_all(&session).unwrap();
         write_container_manifest(&source, "scripts/up_craftax_container.sh");
-        let spec = find_container_spec_in_roots(
-            &[session.clone(), source.clone()],
-            "nanohorizon-craftax",
-        )
-        .unwrap();
+        let spec =
+            find_container_spec_in_roots(&[session.clone(), source.clone()], "nanohorizon-craftax")
+                .unwrap();
         assert_eq!(spec.origin.source_root, source.canonicalize().unwrap());
-        assert!(spec.origin.manifest_path.starts_with(&spec.origin.source_root));
+        assert!(spec
+            .origin
+            .manifest_path
+            .starts_with(&spec.origin.source_root));
         assert!(spec.cwd.starts_with(&spec.origin.source_root));
         assert!(spec.cwd.starts_with(&source.canonicalize().unwrap()));
         assert!(!spec.cwd.starts_with(&session));
@@ -2296,11 +2398,9 @@ tracked_revision = "{tracked_revision}"
             source_revision: Some("fixture-revision".into()),
             source_digest: None,
         };
-        let actual = launch_source_manifest_digest(
-            &origin,
-            &["scripts/up_craftax_container.sh".into()],
-        )
-        .unwrap();
+        let actual =
+            launch_source_manifest_digest(&origin, &["scripts/up_craftax_container.sh".into()])
+                .unwrap();
         fs::write(
             source.join(CONTAINERS_FILE),
             format!(
@@ -2371,10 +2471,7 @@ include = ["scripts/missing.sh"]
         assert_eq!(failure.code, "launch_source_path_not_found");
         assert_eq!(failure.details["declared_path"], "scripts/missing.sh");
         let resolved = failure.details["resolved_path"].as_str().unwrap();
-        assert!(
-            resolved.ends_with("scripts/missing.sh"),
-            "{resolved}"
-        );
+        assert!(resolved.ends_with("scripts/missing.sh"), "{resolved}");
         let json = failure.to_json();
         assert_eq!(json["code"], "launch_source_path_not_found");
         assert_eq!(json["declared_path"], "scripts/missing.sh");
@@ -2393,11 +2490,9 @@ include = ["scripts/missing.sh"]
             source_revision: Some("fixture-revision".into()),
             source_digest: None,
         };
-        let actual = launch_source_manifest_digest(
-            &origin,
-            &["scripts/up_craftax_container.sh".into()],
-        )
-        .unwrap();
+        let actual =
+            launch_source_manifest_digest(&origin, &["scripts/up_craftax_container.sh".into()])
+                .unwrap();
         fs::write(
             source.join(CONTAINERS_FILE),
             format!(
