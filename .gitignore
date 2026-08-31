@@ -25,3 +25,4 @@ work/bombadil-src/
 .turbo/
 work/
 apps/synth_desktop/src-tauri/generated-resources/
+apps/synth_desktop/browser/runtime
