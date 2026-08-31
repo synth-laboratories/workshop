@@ -831,6 +831,12 @@ pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
         "limits": {
             "maxCostUsd": recipe.bounds.max_cost_usd,
             "maxTotalRollouts": recipe.bounds.max_total_rollouts,
+            "maximumModelCallsPerRollout": recipe.policy
+                .get("max_calls")
+                .and_then(Value::as_i64),
+            "maximumStepsPerRollout": recipe.policy
+                .get("max_steps")
+                .and_then(Value::as_i64),
             "maxTrainRollouts": recipe.bounds.max_train_rollouts,
             "maxHeldoutRollouts": recipe.bounds.max_heldout_rollouts,
             "maxGenerations": recipe.bounds.max_generations,
@@ -1642,6 +1648,33 @@ max_total_rollouts = 1
             catalog_entry(&recipe)["credentialInputs"],
             json!(["OPENROUTER_API_KEY"])
         );
+    }
+
+    #[test]
+    fn catalog_projects_declared_per_rollout_limits() {
+        let (_dir, workspace) = write_workspace();
+        fs::write(
+            workspace.join(RECIPE_FILE),
+            r#"
+id = "gepa.banking77.workspace.v1"
+algorithm = "gepa"
+container = "banking77"
+provider = "openai"
+model = "gpt-5.6-luna"
+locality = "container"
+[policy]
+max_calls = 32
+max_steps = 2000
+[bounds]
+max_cost_usd = 2.0
+max_total_rollouts = 32
+"#,
+        )
+        .unwrap();
+        let recipe = find_recipe(&workspace, "gepa.banking77.workspace.v1").unwrap();
+        let limits = catalog_entry(&recipe)["limits"].clone();
+        assert_eq!(limits["maximumModelCallsPerRollout"], json!(32));
+        assert_eq!(limits["maximumStepsPerRollout"], json!(2000));
     }
 
     #[test]
