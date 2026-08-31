@@ -35,10 +35,13 @@ test("starter prompts require preflight and approval instead of auto-running", (
 		assert.match(starter.prompt, /explicit approval/);
 		assert.match(starter.prompt, new RegExp(starter.recipeId.replaceAll(".", "\\.")));
 	}
-	assert.match(workshopStarter("nanohorizon-craftax").prompt, /github\.com\/synth-laboratories\/nanohorizon/);
+	assert.match(workshopStarter("nanohorizon-craftax").prompt, /github\.com\/synth-laboratories\/nanohorizon-starter/);
+	assert.match(workshopStarter("nanohorizon-craftax").prompt, /aba3dfb7c7e77ddee0cc5686f636355f166dc910/);
+	assert.match(workshopStarter("nanohorizon-craftax").prompt, /\.\/scripts\/setup\.sh/);
+	assert.match(workshopStarter("nanohorizon-craftax").prompt, /\.\/scripts\/preflight\.sh/);
 	assert.match(workshopStarter("nanohorizon-craftax").prompt, /thinking budget 640/);
 	assert.match(workshopStarter("nanohorizon-craftax").prompt, /780000 through 780004/);
-	assert.match(workshopStarter("nanohorizon-craftax").prompt, /stop for my explicit approval before provider use or any run/);
+	assert.match(workshopStarter("nanohorizon-craftax").prompt, /stop for my explicit approval before Docker, provider use, or any run/);
 });
 
 test("only the exact referred recipe receives the bounded starter prompt", () => {
