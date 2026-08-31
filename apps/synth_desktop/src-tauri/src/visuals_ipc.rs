@@ -1619,21 +1619,46 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             Ok(json!({"containers": core.data().list_containers().await?}))
         }
         ("POST", "/v1/containers/ensure") => {
+            let manifest_path = body
+                .get("manifestPath")
+                .or_else(|| body.get("manifest_path"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!(
+                    "manifestPath required; container resolution is not coupled to the active workspace"
+                ))?;
+            let manifest_path = std::path::PathBuf::from(manifest_path);
+            if !manifest_path.is_absolute() {
+                anyhow::bail!("manifestPath must be absolute");
+            }
+            if manifest_path.file_name().and_then(|value| value.to_str())
+                != Some("workshop.containers.toml")
+            {
+                anyhow::bail!("manifestPath must name workshop.containers.toml");
+            }
+            let manifest_path = manifest_path.canonicalize().with_context(|| {
+                format!(
+                    "canonicalize container manifest {}",
+                    manifest_path.display()
+                )
+            })?;
             let spec_id = body
                 .get("specId")
                 .or_else(|| body.get("spec_id"))
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("specId required"))?;
-            let session = body
-                .get("sessionRef")
-                .or_else(|| body.get("session_ref"))
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
-            let spec = crate::optimizers::container_lifecycle::resolve_spec_for_session(
-                core.storage().database(),
-                session,
-                spec_id,
-            )?;
+            let spec = crate::optimizers::workspace_recipe::load_container_specs_from_manifest(
+                &manifest_path,
+            )?
+            .into_iter()
+            .find(|candidate| candidate.id == spec_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "container spec `{spec_id}` is not declared in {}",
+                    manifest_path.display()
+                )
+            })?;
             let origin = spec.origin.to_json();
             let ensured = crate::optimizers::container_lifecycle::ensure_spec(
                 core.storage().database(),

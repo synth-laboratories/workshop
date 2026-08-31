@@ -217,13 +217,24 @@ pub fn declared_record(
 
 pub fn resolve_declared_spec(
     db: &Arc<Database>,
-    session_id: &str,
+    _session_id: &str,
     container_id: &str,
 ) -> Result<workspace_recipe::ContainerSpec> {
     let (spec_id, metadata) = declared_record(db, container_id)?;
-    let search_roots = workspace_recipe::session_search_roots(db, session_id)?;
-    let stored = workspace_recipe::origin_from_metadata(&metadata, &spec_id);
-    workspace_recipe::resolve_container_spec(&search_roots, &spec_id, stored.as_ref())
+    let stored = workspace_recipe::origin_from_metadata(&metadata, &spec_id).ok_or_else(|| {
+        anyhow!(
+            "launch_declaration_missing: container `{container_id}` has no persisted declaration origin"
+        )
+    })?;
+    workspace_recipe::load_container_specs_from_manifest(&stored.manifest_path)?
+        .into_iter()
+        .find(|candidate| candidate.id == spec_id)
+        .ok_or_else(|| {
+            anyhow!(
+                "container spec `{spec_id}` is not declared in persisted manifest {}",
+                stored.manifest_path.display()
+            )
+        })
 }
 
 pub fn resolve_spec_for_session(

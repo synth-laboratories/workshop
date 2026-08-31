@@ -108,7 +108,7 @@ fn parse_status_code(head: &str) -> Option<u16> {
 fn tools() -> Value {
     json!({"tools":[
         {"name":"container_list","description":"List registered local containers with cached readiness, task family, and the typed live-eval capability projection (operations, advertised policy_refs, capability source, observation time)","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
-        {"name":"container_ensure","description":"Start or attach the container spec declared in workshop.containers.toml. Relative launch paths resolve against that declaring repository, not the chat or instance workspace. Waits until /health succeeds and returns the registered handle. Does not scan ports. v1 is a supervised child process, not Docker.","inputSchema":{"type":"object","properties":{"spec_id":{"type":"string","description":"id from workshop.containers.toml"},"session_ref":{"type":"string","description":"Optional. Defaults to the calling session."}},"required":["spec_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}},
+        {"name":"container_ensure","description":"Start or attach the exact container declaration identified by manifest_path plus spec_id. The manifest path is authoritative; no chat or instance workspace is consulted and no unrelated container is substituted. Relative launch paths resolve against the manifest's repository. Waits until /health succeeds and returns the registered handle. Does not scan ports. v1 is a supervised child process, not Docker.","inputSchema":{"type":"object","properties":{"manifest_path":{"type":"string","description":"Absolute path to the authoritative workshop.containers.toml"},"spec_id":{"type":"string","description":"id from that exact workshop.containers.toml"}},"required":["manifest_path","spec_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}},
         {"name":"container_get","description":"Get a container including cached health, hydrated /info metadata, and metadata.capabilities: the typed live-eval capability state. Health proves liveness only; read capabilities.operations before planning a prepared-rollout workflow.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
         {"name":"container_probe","description":"Probe one registered container and refresh /health, /info, and the typed capability projection. Read-only against the container; never scans ports and never issues a rollout to discover support.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
         ,{"name":"container_stop","description":"Stop one Workshop-owned supervised container by its registered identity. Verifies the recorded PID start identity before signaling and refuses external or stale processes.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":true,"openWorldHint":false}}
@@ -131,30 +131,23 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "container_list" => request("GET", "/v1/containers", None),
         "container_ensure" => {
+            let manifest_path = args
+                .get("manifest_path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    "manifest_path required; pass the exact workshop.containers.toml".to_string()
+                })?;
             let spec_id = args
                 .get("spec_id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "spec_id required".to_string())?;
-            let mut payload = json!({ "specId": spec_id });
-            if let Some(session) = args
-                .get("session_ref")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-                .or_else(|| {
-                    std::env::var("SYNTH_SESSION_ID")
-                        .ok()
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty())
-                })
-            {
-                payload
-                    .as_object_mut()
-                    .expect("object")
-                    .insert("sessionRef".into(), json!(session));
-            }
-            request("POST", "/v1/containers/ensure", Some(payload))
+            request(
+                "POST",
+                "/v1/containers/ensure",
+                Some(json!({ "manifestPath": manifest_path, "specId": spec_id })),
+            )
         }
         "container_register" => {
             let base_url = args
@@ -428,6 +421,23 @@ mod tests {
                 .iter()
                 .any(|tool| tool["name"] == name));
         }
+        let ensure = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "container_ensure")
+            .unwrap();
+        assert_eq!(
+            ensure["inputSchema"]["required"],
+            json!(["manifest_path", "spec_id"])
+        );
+        assert!(ensure["inputSchema"]["properties"]
+            .get("session_ref")
+            .is_none());
+        assert!(ensure["description"]
+            .as_str()
+            .unwrap()
+            .contains("no chat or instance workspace is consulted"));
         for name in ["container_list", "container_get", "container_probe"] {
             let tool = catalog["tools"]
                 .as_array()
