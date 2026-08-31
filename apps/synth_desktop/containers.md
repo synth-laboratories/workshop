@@ -1,8 +1,6 @@
 # Containers — first-class registry, chat, visuals
 
 Status: **First-class local registry and Craftax agent workflow shipped; richer task catalogs and chat chips remain follow-ups.**  
-**Engineer handoff (Craftax dogfood):** [`HANDOFF_CONTAINERS_CRAFTAX.md`](./HANDOFF_CONTAINERS_CRAFTAX.md) — spin up Rust Craftax → register/hydrate → CUA test.  
-**Before UI:** [`refs/inventory-containers-empty.png`](./refs/inventory-containers-empty.png).  
 Source of truth for the wire contract: [`synth-containers` OpenAPI](https://github.com/synth-laboratories/containers/blob/main/openapi/container-contract-v1.yaml) (`container-contract-v1.yaml` v0.2.0).  
 Package: PyPI `synth-containers` · repo [`containers`](https://github.com/synth-laboratories/containers).
 
