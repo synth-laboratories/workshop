@@ -397,16 +397,7 @@ pub(super) async fn start_inline(
     let recipe = approved.recipe();
     let (mut container, family) =
         find_ready_container_by_id(service, recipe.container.container_id.as_str()).await?;
-    let info = crate::http::http_client()
-        .get(format!("{}/info", container.base_url))
-        .send()
-        .await
-        .context("refresh inline container declaration")?
-        .error_for_status()
-        .context("inline container /info was not successful")?
-        .json::<Value>()
-        .await
-        .context("decode inline container /info")?;
+    let info = fresh_container_info(&container.base_url, "inline container").await?;
     refresh_inline_container_provenance(&mut container, &info)?;
     let evaluator_ref = info
         .pointer("/logical_service_ids/evaluator")
@@ -754,23 +745,11 @@ async fn preflight_container_credentials(
     container: &ReadyContainer,
     spec: &EvalSpec,
 ) -> Result<Value> {
-    let client = crate::http::http_client_with_timeout(Duration::from_secs(15));
-    let info = client
-        .get(format!("{}/info", container.base_url))
-        .send()
-        .await
-        .with_context(|| format!("{} credential preflight GET /info", spec.family))?;
-    if !info.status().is_success() {
-        bail!(
-            "{} credential preflight returned {}",
-            spec.family,
-            info.status()
-        );
-    }
-    let info = info
-        .json::<Value>()
-        .await
-        .with_context(|| format!("decode {} credential preflight", spec.family))?;
+    let info = fresh_container_info(
+        &container.base_url,
+        &format!("{} credential preflight", spec.family),
+    )
+    .await?;
     let roles = info
         .pointer("/metadata/model_roles")
         .and_then(Value::as_object);
@@ -836,6 +815,47 @@ async fn preflight_container_credentials(
                 "message": format!("{owner} requires {credential}; configure it before starting the eval"),
             })
         );
+    }
+    Ok(info)
+}
+
+async fn fresh_container_info(base_url: &str, label: &str) -> Result<Value> {
+    let client = crate::http::http_client_with_timeout(Duration::from_secs(15));
+    let mut info = client
+        .get(format!("{}/info", base_url.trim_end_matches('/')))
+        .send()
+        .await
+        .with_context(|| format!("{label} GET /info"))?
+        .error_for_status()
+        .with_context(|| format!("{label} /info was not successful"))?
+        .json::<Value>()
+        .await
+        .with_context(|| format!("decode {label} /info"))?;
+    if info.get("imageDigest").is_none() || info.get("producerSourceRevision").is_none() {
+        let health = client
+            .get(format!("{}/health", base_url.trim_end_matches('/')))
+            .send()
+            .await
+            .with_context(|| format!("{label} GET /health identity"))?
+            .error_for_status()
+            .with_context(|| format!("{label} /health identity was not successful"))?
+            .json::<Value>()
+            .await
+            .with_context(|| format!("decode {label} /health identity"))?;
+        if let Some(object) = info.as_object_mut() {
+            if let Some(identity) = health.get("runtime_identity") {
+                if object.get("imageDigest").is_none() {
+                    if let Some(value) = identity.get("image_digest") {
+                        object.insert("imageDigest".into(), value.clone());
+                    }
+                }
+                if object.get("producerSourceRevision").is_none() {
+                    if let Some(value) = identity.get("producer_source_revision") {
+                        object.insert("producerSourceRevision".into(), value.clone());
+                    }
+                }
+            }
+        }
     }
     Ok(info)
 }
