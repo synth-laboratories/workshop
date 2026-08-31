@@ -541,7 +541,7 @@ async fn wait_healthy(base_url: &str, health_path: &str, spec: &ContainerSpec) -
                     .await
                     .context("health_contract_invalid: response is not JSON")?;
                 validate_health_identity(spec, &payload)?;
-                match validate_declared_runtime_identity(&client, base_url, spec).await {
+                match validate_declared_runtime_identity(&client, base_url, spec, &payload).await {
                     Ok(()) => return Ok(()),
                     Err(error) => last = error.to_string(),
                 }
@@ -579,7 +579,7 @@ async fn healthy_now(base_url: &str, health_path: &str, spec: &ContainerSpec) ->
         .await
         .context("health_contract_invalid: response is not JSON")?;
     validate_health_identity(spec, &payload)?;
-    Ok(validate_declared_runtime_identity(&client, base_url, spec)
+    Ok(validate_declared_runtime_identity(&client, base_url, spec, &payload)
         .await
         .is_ok())
 }
@@ -592,6 +592,7 @@ async fn validate_declared_runtime_identity(
     client: &reqwest::Client,
     base_url: &str,
     spec: &ContainerSpec,
+    health: &Value,
 ) -> Result<()> {
     let expected_image = spec.environment.get("SYNTH_CONTAINER_IMAGE_DIGEST");
     let expected_producer = spec
@@ -600,30 +601,49 @@ async fn validate_declared_runtime_identity(
     if expected_image.is_none() && expected_producer.is_none() {
         return Ok(());
     }
-    let info_url = format!("{}/info", base_url.trim_end_matches('/'));
-    let response = client
-        .get(&info_url)
-        .send()
-        .await
-        .with_context(|| format!("container_identity_pending: query {info_url}"))?;
+    let mut evidence = vec![health.clone()];
+    for path in ["/info"] {
+        let url = format!("{}{path}", base_url.trim_end_matches('/'));
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("container_identity_pending: query {url}"))?;
+        if response.status().is_success() {
+            evidence.push(
+                response
+                    .json::<Value>()
+                    .await
+                    .with_context(|| format!("container_identity_pending: {path} response is not JSON"))?,
+            );
+        }
+    }
     anyhow::ensure!(
-        response.status().is_success(),
-        "container_identity_pending: {info_url} returned HTTP {}",
-        response.status()
+        !evidence.is_empty(),
+        "container_identity_pending: neither /info nor /health returned identity evidence"
     );
-    let info = response
-        .json::<Value>()
-        .await
-        .context("container_identity_pending: /info response is not JSON")?;
+    let identity_field = |camel: &str, snake: &str| {
+        evidence.iter().find_map(|payload| {
+            payload
+                .get(camel)
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    payload
+                        .get("runtime_identity")
+                        .and_then(|identity| identity.get(snake))
+                        .and_then(Value::as_str)
+                })
+        })
+    };
     if let Some(expected) = expected_image {
-        let actual = info.get("imageDigest").and_then(Value::as_str);
+        let actual = identity_field("imageDigest", "image_digest");
         anyhow::ensure!(
             actual == Some(expected.as_str()),
             "container_identity_pending: expected imageDigest {expected}, got {actual:?}"
         );
     }
     if let Some(expected) = expected_producer {
-        let actual = info.get("producerSourceRevision").and_then(Value::as_str);
+        let actual = identity_field("producerSourceRevision", "producer_source_revision");
         anyhow::ensure!(
             actual == Some(expected.as_str()),
             "container_identity_pending: expected producerSourceRevision {expected}, got {actual:?}"
