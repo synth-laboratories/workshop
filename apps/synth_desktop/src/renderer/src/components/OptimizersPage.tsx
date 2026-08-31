@@ -713,6 +713,22 @@ export function OptimizersPage({
 		}
 	};
 	const pluginPhaseLabel = presentation.label;
+	const setupAction = plugin
+		? plugin.phase === "not_installed"
+			? LIFECYCLE_ACTIONS.find((action) => action.operation === "install")
+			: !plugin.enabled
+				? LIFECYCLE_ACTIONS.find((action) => action.operation === "enable")
+				: plugin.phase === "installed" || plugin.phase === "stopped"
+					? LIFECYCLE_ACTIONS.find((action) => action.operation === "start")
+					: undefined
+		: undefined;
+	const setupLabel = setupAction?.operation === "install"
+		? "Install and start Optimizers"
+		: setupAction?.operation === "enable"
+			? "Enable Optimizers"
+			: setupAction?.operation === "start"
+				? "Start Optimizers"
+				: "Open plugin controls";
 
 	const startAgent = async (guide: OptimizerGuide) => {
 		setStartingAgent(guide.id);
@@ -960,6 +976,27 @@ export function OptimizersPage({
 					</button>
 				))}
 			</nav>
+
+			{plugin && !presentation.isUsable ? (
+				<section className="optimizer-setup-card" role="status" data-testid="optimizer-setup-card">
+					<div>
+						<span className="optimizer-eyebrow">Setup required</span>
+						<strong>Optimizers is {(pluginPhaseLabel ?? "not ready").toLowerCase()}</strong>
+						<p>{plugin.phase === "not_installed"
+							? `Install the verified official runtime v${plugin.catalogVersion}. Workshop downloads, verifies, and starts it for you.`
+							: plugin.detail ?? "Finish plugin setup before planning or launching optimization work."}</p>
+					</div>
+					<button
+						type="button"
+						className="primary-button"
+						data-testid="optimizer-setup-action"
+						disabled={lifecycleBusy !== null}
+						onClick={() => setupAction ? void runLifecycle(setupAction) : setTab("plugin")}
+					>
+						{setupAction && lifecycleBusy === setupAction.operation ? `${setupLabel}…` : setupLabel}
+					</button>
+				</section>
+			) : null}
 
 			{tab === "plugin" ? (plugin ? (
 				<section className="optimizer-plugin-status" data-testid="optimizer-plugin-status" data-phase={plugin.phase}>

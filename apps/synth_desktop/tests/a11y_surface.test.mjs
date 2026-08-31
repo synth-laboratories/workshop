@@ -66,6 +66,9 @@ test("plugin navigation announces the active page and hides impossible pre-insta
   assert.match(sidebar, /aria-current=\{active \? "page" : undefined\}/);
   assert.match(optimizers, /operation: "enable"[\s\S]*status\.phase !== "not_installed" && !status\.enabled/);
   assert.match(optimizers, /operation: "disable"[\s\S]*status\.phase !== "not_installed" && status\.enabled/);
+  assert.match(optimizers, /data-testid="optimizer-setup-card"/);
+  assert.match(optimizers, /data-testid="optimizer-setup-action"/);
+  assert.match(optimizers, /Install and start Optimizers/);
 });
 
 test("hosted CISPO requires an explicit compatible retained SFT training state", () => {
