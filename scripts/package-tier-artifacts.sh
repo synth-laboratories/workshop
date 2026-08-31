@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${1:-$ROOT/dist/v0.9.2-channels}"
+OUT="${1:-$ROOT/dist/v0.9.3-channels}"
 VERSION="$(node -p "require('$ROOT/apps/synth_desktop/package.json').version")"
 ARCH="$(uname -m)"
 
