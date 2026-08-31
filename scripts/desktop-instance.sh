@@ -374,7 +374,7 @@ import sys
 from pathlib import Path
 
 source, destination = map(Path, sys.argv[1:])
-allowed = ("SYNTH_API_KEY", "OPENROUTER_API_KEY")
+allowed = ("SYNTH_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY")
 
 def parse(path):
     values = {}
@@ -398,7 +398,7 @@ for key in allowed:
         seed[key] = os.environ[key].strip()
 
 existing = destination.read_text().splitlines() if destination.is_file() else []
-kept = [line for line in existing if not re.match(r"^\s*(?:export\s+)?(?:SYNTH_API_KEY|OPENROUTER_API_KEY)\s*=", line)]
+kept = [line for line in existing if not re.match(r"^\s*(?:export\s+)?(?:SYNTH_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY)\s*=", line)]
 for key in allowed:
     value = seed.get(key)
     if value:
@@ -812,7 +812,10 @@ stage_gepa_runtime() {
   local optimizer_target="$runtime_root/optimizer-project"
   local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-$REPO_SIBLING_ROOT/optimizers-g1}"
   local use_local_optimizer="${SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0}"
-  local secret_target="$DATA_ROOT/gepa-secret.env"
+  # Workshop's durable instance locator resolves every configured provider
+  # against this one private file. Keeping a GEPA-only side file made the
+  # staged OpenAI key invisible to the secrets proxy after restart.
+  local secret_target="$DATA_ROOT/.env"
   local secret_source="${SYNTH_GEPA_SECRET_ENV_SOURCE:-$REPO_SIBLING_ROOT/synth-ai/.env}"
 
   unset SYNTH_BANKING77_GEPA_COOKBOOK_ROOT SYNTH_CRAFTAX_GEPA_COOKBOOK_ROOT
@@ -843,15 +846,17 @@ stage_gepa_runtime() {
   # Finder-launched apps do not inherit shell secrets. Stage only the one
   # allowlisted key inside the mode-0700 instance data root so the app never
   # probes protected source folders at runtime.
-  if [[ ! -s "$secret_target" && -f "$secret_source" ]]; then
-    local secret_tmp="$secret_target.tmp"
+  if ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPENAI_API_KEY=' "$secret_target" 2>/dev/null \
+      && [[ -f "$secret_source" ]]; then
+    local secret_tmp="$secret_target.openai.tmp"
     umask 077
     awk '/^[[:space:]]*(export[[:space:]]+)?OPENAI_API_KEY=/{print; exit}' "$secret_source" >"$secret_tmp"
     if [[ -s "$secret_tmp" ]]; then
-      mv "$secret_tmp" "$secret_target"
-    else
-      rm -f "$secret_tmp"
+      printf '\n' >>"$secret_target"
+      cat "$secret_tmp" >>"$secret_target"
+      chmod 600 "$secret_target"
     fi
+    rm -f "$secret_tmp"
   fi
   export SYNTH_GEPA_SECRET_ENV_FILE="$secret_target"
 }
