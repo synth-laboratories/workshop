@@ -1144,6 +1144,14 @@ export type SynthAccountPlan = {
 	state?: string;
 	/** False when the backend reports no dollar allowance: show no dollars. */
 	metered?: boolean;
+	effectivePriceUsd?: number;
+	billingInterval?: string;
+	grantKind?: "subscription" | "trial" | "promotion" | "admin" | "none";
+	entitlementState?: "pending" | "active" | "exhausted" | "expired" | "revoked";
+	entitlementStartsAt?: string;
+	entitlementExpiresAt?: string;
+	campaignId?: string;
+	claimState?: "eligible" | "claimed" | "unavailable";
 	monthlyAllowanceUsd?: number;
 	usedUsd?: number;
 	remainingUsd?: number;
@@ -1258,6 +1266,7 @@ export type ProductTelemetryBridge = {
 	recent(limit: number): Promise<ProductTelemetryEvent[]>;
 	/** Manual flush; resolves to the number of events shipped (0 without consent). */
 	flushNow(): Promise<number>;
+	recordStarter(event: "selected" | "started" | "result_viewed", succeeded?: boolean): Promise<void>;
 };
 
 export type ReleaseTier = "core" | "stable" | "beta" | "alpha" | "dev";

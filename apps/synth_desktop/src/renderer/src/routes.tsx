@@ -61,7 +61,7 @@ export type MainView =
 	| { kind: "visuals" }
 	| { kind: "reports"; reportId?: string }
 	| { kind: "experiments"; experimentId?: string }
-	| { kind: "optimizers" }
+	| { kind: "optimizers"; starterId?: string }
 	| { kind: "computer-use" };
 
 const INVENTORY_ORIGIN_KINDS = new Set<MainView["kind"]>([
@@ -125,6 +125,7 @@ export type MainRoutesProps = {
 	onRevokeComputerUseApp: (bundleId: string) => void;
 	setView: (view: MainView) => void;
 	state: LandingState;
+	onConnectSynth: () => void;
 	sessions: Session[];
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
@@ -203,6 +204,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		onOpenComputerUseSettings,
 		onRevokeComputerUseApp,
 		state,
+		onConnectSynth,
 		sessions,
 		selectedTargetId,
 		onSelectTarget,
@@ -268,7 +270,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		if (!isDesktopApp()) return;
 		let disposed = false;
 		let unlisten: (() => void) | undefined;
-		void listen<{ instance?: string | null; view: string; runId?: string | null }>(
+		void listen<{ instance?: string | null; view: string; runId?: string | null; starterId?: string | null }>(
 			"desktop:deep-link",
 			(event) => {
 				const route = event.payload;
@@ -277,7 +279,9 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					return;
 				}
 				if (route.runId) persistLayoutSnapshot({ optimizers: { selectedRunId: route.runId } });
-				if (route.view === "optimizers" || route.runId) setView({ kind: "optimizers" });
+				if (route.view === "optimizers" || route.runId || route.starterId) {
+					setView({ kind: "optimizers", starterId: route.starterId ?? undefined });
+				}
 				else if (route.view === "experiments") setView({ kind: "experiments" });
 				else if (route.view === "visuals") setView({ kind: "visuals" });
 				else setView({ kind: "landing" });
@@ -578,6 +582,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						<OptimizersPage
 							pluginStatuses={pluginStatuses}
 							initialRunId={preferences.layout.last.optimizers.selectedRunId}
+							initialStarterId={view.starterId}
 							onSelectedRunIdChange={(selectedRunId) => persistLayoutSnapshot({ optimizers: { selectedRunId } })}
 							selectedContainerId={openContainer?.id ?? null}
 							onRefreshPlugins={refreshPluginStatuses}
@@ -774,8 +779,10 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					selectedLagunaAdapterId={selectedLagunaAdapterId}
 					onSelectLagunaAdapter={onSelectLagunaAdapter}
 					onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
+					onConnectSynth={onConnectSynth}
 					onConfigureModels={() => setView({ kind: "settings", section: "models" })}
 					onResolveBilling={() => setUsageSheetOpen(true)}
+					onOpenStarter={(starterId) => setView({ kind: "optimizers", starterId })}
 				/>
 			) : null}
 

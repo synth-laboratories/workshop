@@ -199,8 +199,13 @@ test("V5: actual Craftax viewer sustains 10 lanes and 100k envelopes with bounde
     const traceMode = viewer.getByRole("button", { name: "Full trace" });
     await traceMode.click();
     await expect(viewer.locator(".cv-trace-summary")).toContainText("recorded envelopes");
-    const rawForSelectedLane = Number((await viewer.locator(".cv-trace-summary").innerText()).match(/from ([\d,]+) recorded/)?.[1].replaceAll(",", ""));
-    expect(rawForSelectedLane).toBeGreaterThanOrEqual(9_999);
+    const selectedLaneDurableEnvelopes = async () => Number(
+      (await viewer.locator(".cv-trace-summary").innerText())
+        .match(/from ([\d,]+) recorded/)?.[1]
+        .replaceAll(",", "")
+    );
+    await expect.poll(selectedLaneDurableEnvelopes, { timeout: 30_000 }).toBeGreaterThanOrEqual(9_999);
+    const rawForSelectedLane = await selectedLaneDurableEnvelopes();
 
     const scrubMs = await viewer.getByLabel("Replay selected rollout by raw event").evaluate(async (input: HTMLInputElement) => {
       const started = performance.now();
@@ -215,10 +220,12 @@ test("V5: actual Craftax viewer sustains 10 lanes and 100k envelopes with bounde
       laneButtons: root.querySelectorAll(".cv-lanes button").length
     }));
 
+    // Snapshot product long tasks before forcing the final measurement GC.
+    // The GC is test instrumentation, not part of ingest, rendering, or scrub.
+    const longTasks = await page.evaluate(() => (window as any).__v5LongTasks as Array<{ startTime: number; duration: number }>);
     await cdp.send("HeapProfiler.collectGarbage");
     const finalMetrics = await cdp.send("Performance.getMetrics");
     const finalHeap = finalMetrics.metrics.find((metric) => metric.name === "JSHeapUsedSize")?.value ?? 0;
-    const longTasks = await page.evaluate(() => (window as any).__v5LongTasks as Array<{ startTime: number; duration: number }>);
     const maxLongTaskMs = Math.max(0, ...longTasks.map((entry) => entry.duration));
     const totalLongTaskMs = longTasks.reduce((sum, entry) => sum + entry.duration, 0);
     const heapDeltaBytes = finalHeap - baselineHeap;

@@ -93,7 +93,7 @@ export function AccountPage({
 				title="Synth account"
 				description={view.signedIn
 					? "This device is connected to your Synth account."
-					: "Activate your free month by creating or signing in to a Synth account in your browser."}
+					: "Connect Synth in your browser to check your account, plan, allowance, and any available offer."}
 				testId="account-page-profile"
 			>
 				<div className="account-page-identity">
@@ -130,6 +130,13 @@ export function AccountPage({
 				description="Synth Cloud dollars for the current period."
 				testId="account-page-plan"
 			>
+				<div className={`account-entitlement-card is-${view.activation.state}`} data-testid="account-entitlement-card">
+					<strong data-testid="account-entitlement-label">{view.activation.label}</strong>
+					<p>{view.activation.note}</p>
+					{view.activation.rows.map((row) => (
+						<Row key={row.label} label={row.label} value={row.value} testId={`account-entitlement-${row.label.toLowerCase().replaceAll(" ", "-")}`} />
+					))}
+				</div>
 				{view.planIsDevSeed ? (
 					<p className="account-page-warning" data-testid="account-page-dev-seed">
 						Dev stand-in — this allowance is seeded locally and charged from this device's

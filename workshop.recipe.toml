@@ -9,6 +9,7 @@ credential_mode = "proxy"
 family = "craftax"
 harness = "nanohorizon"
 policy_config = "glm-5.3-flash"
+policy_source = "src/challenge/policy.py"
 requires_credential_advertisement = false
 concurrency = 5
 train_seeds = [780000, 780001, 780002, 780003, 780004]
@@ -25,7 +26,9 @@ max_calls = 10
 max_steps = 2000
 compact_after_tokens = 10000
 max_compactions = 20
-thinking_budget = 2048
+# Canonical GLM 5.3 Flash profile value. Keep this manifest as the only
+# Workshop recipe declaration; tests assert the public v0.9.1 seed ledger.
+thinking_budget = 640
 answer_max_tokens = 256
 context_token_budget = 32000
 min_actions = 2

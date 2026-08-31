@@ -152,7 +152,7 @@ enforcement = "bundled"
 [[verification]]
 name = "host_unit_tests"
 kind = "test"
-command = "cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml"
+command = "cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml -- --test-threads=1"
 dispositions = { core = "required", stable = "required", beta = "required", alpha = "required", dev = "recommended" }
 
 [[verification]]
@@ -170,20 +170,23 @@ dispositions = { core = "required", stable = "required", beta = "required", alph
 [[verification]]
 name = "playwright_suites"
 kind = "test"
-command = "npm --prefix apps/synth_desktop run test:playwright"
+command = "PLAYWRIGHT_WORKERS=1 npm --prefix apps/synth_desktop run test:playwright"
 dispositions = { core = "required", stable = "required", beta = "required", alpha = "recommended", dev = "optional" }
 
 [[verification]]
 name = "desktop_ui_gates"
 kind = "test"
-command = "npm --prefix apps/synth_desktop run test:ui-gates"
+command = "PLAYWRIGHT_WORKERS=1 npm --prefix apps/synth_desktop run test:ui-gates"
 dispositions = { core = "required", stable = "required", beta = "recommended", alpha = "optional", dev = "optional" }
 
 [[verification]]
 name = "crash_recovery_drill"
-kind = "drill"
-command = "scripts/crash-recovery-drill.sh"
+kind = "manual"
+command = "scripts/crash-recovery-drill.sh after_turn_start"
 dispositions = { core = "required", stable = "required", beta = "required", alpha = "recommended", dev = "optional" }
+# This drill launches Workshop, requires an operator to drive one turn through
+# the named crash checkpoint, then requires a normal relaunch and inspection.
+# It cannot truthfully run as an unattended release-gate subprocess.
 
 [[verification]]
 name = "auth_pre_release_live_driver"

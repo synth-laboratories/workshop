@@ -384,6 +384,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::telemetry::product_telemetry_set_consent,
             crate::telemetry::product_telemetry_recent,
             crate::telemetry::product_telemetry_flush_now,
+            crate::telemetry::product_telemetry_record_starter,
             crate::release_tier::release_tier_get,
             crate::adapters::tauri::failures_query,
             crate::adapters::tauri::failures_get,
@@ -565,8 +566,10 @@ mod tests {
         // picker-confirmed approve and its deny.
         // → 304 (+2, DeepSWE lifecycle): source-bound pre-spend approval
         // reverification and durable run-lifecycle inspection.
+        // → 305: host-owned, enum-bounded starter telemetry; renderer cannot
+        // submit event names, prompt text, run ids, paths, or properties.
         assert_eq!(
-            exported, 304,
+            exported, 305,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

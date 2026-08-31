@@ -2,7 +2,7 @@
 
 **Status:** built — see [Implementation status](#implementation-status-2026-08-10) for what shipped against this sketch and what is deliberately still open.  
 **Updated:** 2026-08-10  
-**Related:** [`AUTH_FLOW.md`](../../AUTH_FLOW.md), [`AUTH_BILLING_FLOW.md`](../../AUTH_BILLING_FLOW.md), [`HANDOFF_LOCAL_DEV_ACCOUNT_200_PLAN_AND_UI_INVARIANTS.md`](HANDOFF_LOCAL_DEV_ACCOUNT_200_PLAN_AND_UI_INVARIANTS.md)
+This document describes the public cloud API and account/billing boundaries used by Workshop.
 
 ## How it works (target)
 

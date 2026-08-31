@@ -10,10 +10,10 @@ NANOHORIZON_ROOT="${SYNTH_E2E_NANOHORIZON_ROOT:-$GITHUB_ROOT/nanohorizon-e2e-fin
 EVALS_ROOT="${SYNTH_E2E_EVALS_ROOT:-$GITHUB_ROOT/evals-craftax-live-context}"
 GAMEBENCH_ROOT="${SYNTH_E2E_GAMEBENCH_ROOT:-$GITHUB_ROOT/gamebench-craftax-live-context}"
 
-CONTAINERS_REVISION="92bb5b36ff777dab7d7b69842f9bcc3c086bb273"
-NANOHORIZON_REVISION="715b4a25149611014502a945ea743050d9a0d726"
+CONTAINERS_REVISION="6ae8225a6221ded40b963124b1ac0c59a1b4dda2"
+NANOHORIZON_REVISION="e8be0dc5f6565b1744a96ee2e054442ce4185559"
 EVALS_REVISION="43ec21b8a73f87a72fae982f5bb614245ea1f106"
-GAMEBENCH_REVISION="3d35f379a6d3f951720bfcc04d0f05518d9b8034"
+GAMEBENCH_REVISION="fcf925554f8b171e91a44986bb65b4c5dfbd9f66"
 SOURCE_MANIFEST_DIGEST="sha256:6b9586d74ea2c8b9848954bdc6ac164fa334864324754fdc8b3ebecef1aa2016"
 
 fail() {
@@ -32,9 +32,52 @@ require_exact_clean_repo() {
   [[ -z "$(git -C "$root" status --porcelain)" ]] || fail "$label:dirty"
 }
 
-[[ "$(git -C "$WORKSHOP_ROOT" branch --show-current)" == "codex/finish-inline-eval-refactor" ]] \
-  || fail "workshop:wrong_branch"
 [[ -z "$(git -C "$WORKSHOP_ROOT" status --porcelain)" ]] || fail "workshop:dirty"
+
+python3 - "$WORKSHOP_ROOT/workshop.recipe.toml" \
+  "$WORKSHOP_ROOT/workshop.containers.toml" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
+
+recipe = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+container_manifest = tomllib.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+
+expected_recipe = {
+    "id": "nanohorizon.craftax.glm-5.3-flash.eval.v1",
+    "container": "nanohorizon-craftax",
+    "provider": "openrouter",
+    "model": "z-ai/glm-5.3-flash",
+    "policy_source": "src/challenge/policy.py",
+    "train_seeds": [780000, 780001, 780002, 780003, 780004],
+}
+for key, expected in expected_recipe.items():
+    if recipe.get(key) != expected:
+        raise SystemExit(f"nanohorizon_e2e_not_ready:workshop_recipe:{key}")
+if (recipe.get("policy") or {}).get("thinking_budget") != 640:
+    raise SystemExit("nanohorizon_e2e_not_ready:workshop_recipe:thinking_budget")
+if (recipe.get("bounds") or {}).get("max_cost_usd") != 2.45:
+    raise SystemExit("nanohorizon_e2e_not_ready:workshop_recipe:max_cost_usd")
+if (recipe.get("bounds") or {}).get("max_total_rollouts") != 5:
+    raise SystemExit("nanohorizon_e2e_not_ready:workshop_recipe:max_total_rollouts")
+for key, expected in {
+    "max_calls": 10,
+    "max_steps": 2000,
+    "timeout_seconds": 180.0,
+}.items():
+    if (recipe.get("policy") or {}).get(key) != expected:
+        raise SystemExit(f"nanohorizon_e2e_not_ready:workshop_recipe:{key}")
+
+containers = container_manifest.get("container") or []
+if len(containers) != 1 or containers[0].get("id") != "nanohorizon-craftax":
+    raise SystemExit("nanohorizon_e2e_not_ready:workshop_container:identity")
+if containers[0].get("contract") != "synth.container.live-eval.v1":
+    raise SystemExit("nanohorizon_e2e_not_ready:workshop_container:contract")
+if containers[0].get("health") != "/health":
+    raise SystemExit("nanohorizon_e2e_not_ready:workshop_container:health")
+if containers[0].get("policy_source") != "src/challenge/policy.py":
+    raise SystemExit("nanohorizon_e2e_not_ready:workshop_container:policy_source")
+PY
 
 require_exact_clean_repo "containers" "$CONTAINERS_ROOT" "$CONTAINERS_REVISION"
 require_exact_clean_repo "nanohorizon" "$NANOHORIZON_ROOT" "$NANOHORIZON_REVISION"
@@ -58,10 +101,31 @@ payload = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
 rows = payload.get("container") or []
 if len(rows) != 1:
     raise SystemExit("nanohorizon_e2e_not_ready:manifest:container_count")
+container = rows[0]
+if container.get("id") != "nanohorizon-craftax":
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:container_id")
+if container.get("contract") != "synth.container.live-eval.v1":
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:contract")
+if container.get("health") != "/health":
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:health")
 launch = rows[0].get("launch") or {}
 if launch.get("environment") != {**expected, "WORKSHOP_PROXY_ONLY": "1", "REPLACE": "1"}:
     raise SystemExit("nanohorizon_e2e_not_ready:manifest:launch_environment")
-if (launch.get("source") or {}).get("dirty_digest") != sys.argv[5]:
+if launch.get("command") != ["scripts/up_craftax_container.sh"]:
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:launch_command")
+if launch.get("health_target") != "craftax_nanohorizon":
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:health_target")
+source = launch.get("source") or {}
+if source.get("tracked_revision") != "a6e9999daf811adf2c67351c544bf647411d3e81":
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:tracked_revision")
+if source.get("include") != [
+    "scripts/up_craftax_container.sh",
+    "scripts/lib_local.sh",
+    "scripts/validate_craftax_sources.py",
+    "src/challenge/policy.py",
+]:
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:source_include")
+if source.get("dirty_digest") != sys.argv[5]:
     raise SystemExit("nanohorizon_e2e_not_ready:manifest:source_digest")
 if launch.get("expected_port") != 18091:
     raise SystemExit("nanohorizon_e2e_not_ready:manifest:expected_port")
@@ -91,5 +155,5 @@ echo "NanoHorizon: $NANOHORIZON_REVISION"
 echo "Evals: $EVALS_REVISION"
 echo "GameBench: $GAMEBENCH_REVISION"
 echo "Source manifest: $SOURCE_MANIFEST_DIGEST"
-echo "Run contract: seeds 780005..780009; rollouts 5; calls/rollout 10; steps/rollout 2000; hard cap USD 2.45"
+echo "Run contract: seeds 780000..780004; rollouts 5; calls/rollout 10; steps/rollout 2000; hard cap USD 2.45"
 echo "Docker/provider execution remains authorization-required."

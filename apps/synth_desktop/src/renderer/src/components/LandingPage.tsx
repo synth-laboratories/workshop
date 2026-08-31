@@ -7,6 +7,7 @@ import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 import type { LagunaPolicy } from "../bridge/types";
 import { policyLabel } from "../runtime/lagunaPolicies";
 import { bridges } from "../runtime/desktopBridge";
+import { WORKSHOP_STARTERS } from "../runtime/starterCatalog";
 
 type Props = {
 	state: LandingState;
@@ -16,8 +17,10 @@ type Props = {
 	selectedLagunaAdapterId?: string | null;
 	onSelectLagunaAdapter?: (checkpointId: string | null) => void;
 	onConfigureAccount?: () => void;
+	onConnectSynth?: () => void;
 	onConfigureModels?: () => void;
 	onResolveBilling?: () => void;
+	onOpenStarter?: (starterId: string) => void;
 };
 
 export function ModelPicker({
@@ -321,8 +324,10 @@ export function LandingPage({
 	selectedLagunaAdapterId = null,
 	onSelectLagunaAdapter,
 	onConfigureAccount,
+	onConnectSynth,
 	onConfigureModels,
-	onResolveBilling
+	onResolveBilling,
+	onOpenStarter
 }: Props) {
 	const [accountChoiceMade, setAccountChoiceMade] = useState(
 		() => window.localStorage.getItem("synth.accountChoiceMade") === "1"
@@ -367,11 +372,11 @@ export function LandingPage({
 				{!state.apiKeyConfigured && !accountChoiceMade ? (
 					<div className="quick-actions first-run-activation" data-testid="first-run-account-choice">
 						<div className="first-run-activation-copy">
-							<strong>Activate your free month</strong>
-							<small>Create or sign in to your Synth account in your browser, then return here to start.</small>
+							<strong>Connect Synth</strong>
+							<small>Sign in to check your account, plan, allowance, and any available offer before cloud work.</small>
 						</div>
-						<button type="button" className="quick-card is-primary" data-testid="activate-free-month" onClick={onConfigureAccount}>
-							<span><strong>Activate free month</strong><small>Sign up or sign in with Synth</small></span>
+						<button type="button" className="quick-card is-primary" data-testid="connect-synth" onClick={onConnectSynth}>
+							<span><strong>Connect Synth</strong><small>Sign up or sign in in your browser</small></span>
 						</button>
 						<button type="button" className="quick-card" onClick={() => {
 							window.localStorage.setItem("synth.accountChoiceMade", "1");
@@ -407,6 +412,26 @@ export function LandingPage({
 						</div>
 					</div>
 				) : null}
+				<div className="quick-actions starter-actions" data-testid="starter-catalog">
+					<div className="first-run-activation-copy">
+						<strong>Start with a bounded experiment</strong>
+						<small>Workshop checks the real recipe, prerequisites, and cost before anything runs.</small>
+					</div>
+					{WORKSHOP_STARTERS.map((starter, index) => (
+						<button
+							key={starter.id}
+							type="button"
+							className={`quick-card${index === 0 ? " is-primary" : ""}`}
+							data-testid={`open-starter-${starter.id}`}
+							onClick={() => onOpenStarter?.(starter.id)}
+						>
+							<span>
+								<strong>{starter.title}</strong>
+								<small>{starter.flow.join(" → ")} · up to ${starter.maxCostUsd.toFixed(2)}</small>
+							</span>
+						</button>
+					))}
+				</div>
 			</div>
 		</div>
 	);

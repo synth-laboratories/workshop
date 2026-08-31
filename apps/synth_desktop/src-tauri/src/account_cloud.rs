@@ -89,6 +89,23 @@ pub struct CloudPlan {
     #[specta(type = specta_typescript::Number)]
     pub price_cents: i64,
     #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
+    pub effective_price_cents: Option<i64>,
+    #[serde(default)]
+    pub billing_interval: Option<String>,
+    #[serde(default)]
+    pub grant_kind: Option<String>,
+    #[serde(default)]
+    pub entitlement_state: Option<String>,
+    #[serde(default)]
+    pub entitlement_starts_at: Option<String>,
+    #[serde(default)]
+    pub entitlement_expires_at: Option<String>,
+    #[serde(default)]
+    pub campaign_id: Option<String>,
+    #[serde(default)]
+    pub claim_state: Option<String>,
+    #[serde(default)]
     pub renews_at: Option<String>,
     #[serde(default)]
     pub is_paid: bool,

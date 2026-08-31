@@ -23,9 +23,10 @@ export type LiveEvalStreamsView = {
 const POLL_INTERVAL_MS = 500;
 // Durable catch-up commonly arrives as 500-row producer pages. Publishing
 // each page clones the growing identity/digest indexes and reprojects the
-// whole visual. Coalesce only while `hasMore`; a caught-up live page still
-// paints immediately.
-const REPLAY_PUBLISH_BATCH_ROWS = 5_000;
+// whole visual, but very large folds monopolize the renderer during a deep
+// replay. Five pages keeps that work bounded while still coalescing network
+// pages; a caught-up live page still paints immediately.
+const REPLAY_PUBLISH_BATCH_ROWS = 2_500;
 
 type CachedLiveFold = {
   ingest: ReturnType<typeof emptyLiveIngest>;

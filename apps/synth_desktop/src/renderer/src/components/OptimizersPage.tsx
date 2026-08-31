@@ -7,6 +7,9 @@ import { canonicalEvalState, type CanonicalEvalState } from "../runtime/evalAggr
 import { isLagunaCompatibleAdapter, LOCAL_FT_POLICY } from "../runtime/lagunaPolicies";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
 import { isTerminalRunStatus } from "../runtime/runProgress/types";
+import { starterPromptForRecipe, workshopStarter } from "../runtime/starterCatalog";
+import { matchingStarterRun, projectStarterResult, type PendingStarterRun } from "../runtime/starterResult";
+import { StarterResult } from "./StarterResult";
 import { TrainingWorkspace } from "./TrainingWorkspace";
 import { TrainingEvaluationCurve } from "./TrainingEvaluationCurve";
 import { RunInspector } from "./optimizers/RunInspector";
@@ -56,6 +59,19 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 	},
 ];
 
+const PENDING_STARTER_RUN_KEY = "workshop.pending-starter-run.v1";
+
+function retainedPendingStarterRun(): PendingStarterRun | null {
+	try {
+		const value = JSON.parse(window.sessionStorage.getItem(PENDING_STARTER_RUN_KEY) ?? "null") as Partial<PendingStarterRun> | null;
+		return typeof value?.recipeId === "string" && typeof value.notBefore === "string"
+			? { recipeId: value.recipeId, notBefore: value.notBefore }
+			: null;
+	} catch {
+		return null;
+	}
+}
+
 /**
  * The page's four surfaces. `runs` is the landing tab: the page's primary job
  * is inspecting work that exists, not launching more of it. No URL router
@@ -81,6 +97,7 @@ type Props = {
 	pluginStatuses?: readonly PluginStatus[] | null;
 	onRefreshPlugins?: () => Promise<void>;
 	initialRunId?: string | null;
+	initialStarterId?: string | null;
 	onSelectedRunIdChange?: (runId: string | null) => void;
 };
 
@@ -234,9 +251,10 @@ export function OptimizersPage({
 	pluginStatuses = null,
 	onRefreshPlugins,
 	initialRunId = null,
+	initialStarterId = null,
 	onSelectedRunIdChange
 }: Props) {
-	const [tab, setTab] = useState<OptimizersTab>("runs");
+	const [tab, setTab] = useState<OptimizersTab>(initialStarterId ? "launch" : "runs");
 	const [runs, setRuns] = useState<OptimizerRunRecord[]>([]);
 	const [algorithms, setAlgorithms] = useState<OptimizerAlgorithmInfo[]>([]);
 	const [search, setSearch] = useState("");
@@ -255,6 +273,9 @@ export function OptimizersPage({
 	const [errorDetails, setErrorDetails] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(initialRunId);
+	const [directStarterRunId, setDirectStarterRunId] = useState<string | null>(null);
+	const [pendingStarterRun, setPendingStarterRun] = useState<PendingStarterRun | null>(retainedPendingStarterRun);
+	const [revealedStarterRunId, setRevealedStarterRunId] = useState<string | null>(null);
 	const [startingAgent, setStartingAgent] = useState<OptimizerGuide["id"] | null>(null);
 	const [startingLocalSft, setStartingLocalSft] = useState(false);
 	const [startingLocalCispo, setStartingLocalCispo] = useState(false);
@@ -303,6 +324,25 @@ export function OptimizersPage({
 
 	const [lifecycleBusy, setLifecycleBusy] = useState<PluginLifecycleOperation | null>(null);
 	const [receipt, setReceipt] = useState<PluginActionReceipt | null>(null);
+	const selectedStarter = workshopStarter(initialStarterId);
+	useEffect(() => {
+		if (selectedStarter?.id !== "nanohorizon-craftax") return;
+		void bridges.telemetry?.recordStarter("selected").catch(() => undefined);
+	}, [selectedStarter?.id]);
+	const orderedEvalRecipes = useMemo(() => {
+		if (!selectedStarter) return evalRecipes;
+		return [...evalRecipes].sort((left, right) =>
+			Number(right.id === selectedStarter.recipeId) - Number(left.id === selectedStarter.recipeId)
+		);
+	}, [evalRecipes, selectedStarter]);
+
+	useEffect(() => {
+		if (!selectedStarter || tab !== "launch") return;
+		window.setTimeout(() => {
+			document.querySelector<HTMLElement>(`[data-testid="optimizer-eval-recipe-${selectedStarter.recipeId}"]`)
+				?.scrollIntoView({ behavior: "smooth", block: "center" });
+		}, 0);
+	}, [selectedStarter, tab, evalRecipes.length]);
 
 	const refreshPlugin = useCallback(async () => {
 		setPluginOverride(null);
@@ -586,6 +626,32 @@ export function OptimizersPage({
 		() => runs.find((run) => run.id === selectedId) ?? null,
 		[runs, selectedId]
 	);
+	const starterResult = useMemo(() => {
+		if (!selected || selected.id !== directStarterRunId || !evalState) return null;
+		return projectStarterResult(selected, evalState.aggregate);
+	}, [directStarterRunId, evalState, selected]);
+
+	useEffect(() => {
+		if (!pendingStarterRun) return;
+		const run = matchingStarterRun(runs, pendingStarterRun);
+		if (!run) return;
+		window.sessionStorage.removeItem(PENDING_STARTER_RUN_KEY);
+		setPendingStarterRun(null);
+		setDirectStarterRunId(run.id);
+		setSelectedId(run.id);
+	}, [pendingStarterRun, runs]);
+
+	useEffect(() => {
+		if (!starterResult || revealedStarterRunId === starterResult.runId) return;
+		setRevealedStarterRunId(starterResult.runId);
+		if (starterResult.starter.id === "nanohorizon-craftax") {
+			void bridges.telemetry?.recordStarter("result_viewed", starterResult.state === "completed").catch(() => undefined);
+		}
+		setTab("runs");
+		window.setTimeout(() => {
+			document.querySelector<HTMLElement>("#starter-result")?.focus({ preventScroll: false });
+		}, 0);
+	}, [revealedStarterRunId, starterResult]);
 
 	const facetsById = useMemo(
 		() => new Map(runs.map((run) => [run.id, runFacets(run)] as const)),
@@ -726,6 +792,16 @@ export function OptimizersPage({
 		}
 	};
 
+	const startStarterAgent = async (guide: OptimizerGuide, recipeId: string) => {
+		const notBefore = new Date().toISOString();
+		const pending = { recipeId, notBefore };
+		window.sessionStorage.setItem(PENDING_STARTER_RUN_KEY, JSON.stringify(pending));
+		setPendingStarterRun(pending);
+		setRevealedStarterRunId(null);
+		void bridges.telemetry?.recordStarter("started").catch(() => undefined);
+		await startAgent(guide);
+	};
+
 	const reviewTrainingLaunch = async () => {
 		const guide = OPTIMIZER_GUIDES.find((item) => item.id === trainingAlgorithm);
 		if (!guide) return;
@@ -769,17 +845,26 @@ export function OptimizersPage({
 		});
 	};
 
-	const startBoundedRecipe = async (recipeId: string, setter: (busy: boolean) => void) => {
+	const startBoundedRecipe = async (
+		recipeId: string,
+		setter: (busy: boolean) => void,
+		trackStarterResult = false
+	) => {
 		if (!bridges.optimizers) return;
 		setter(true);
 		setError(null);
 		try {
+			if (trackStarterResult) void bridges.telemetry?.recordStarter("started").catch(() => undefined);
 			const run = await bridges.optimizers.startRecipe({
 				recipeId,
 				openVisual: true,
 				containerId: selectedContainerId ?? undefined
 			});
 			setSelectedId(run.id);
+			if (trackStarterResult) {
+				setDirectStarterRunId(run.id);
+				setRevealedStarterRunId(null);
+			}
 			await refresh();
 			const visualId = run.visualRefs?.find((ref) => ref.kind === "visual")?.id;
 			if (visualId) onOpenVisual(visualId);
@@ -788,6 +873,17 @@ export function OptimizersPage({
 		} finally {
 			setter(false);
 		}
+	};
+
+	const proposeStarterContinuation = (prompt: string) => {
+		void startAgent({
+			id: "eval",
+			label: "EV",
+			name: "Next bounded experiment",
+			description: "Review retained starter evidence and propose one bounded follow-up without executing it.",
+			flow: ["Review", "Propose", "Approve"],
+			prompt
+		});
 	};
 
 	const openSelectedVisual = async () => {
@@ -1154,14 +1250,43 @@ export function OptimizersPage({
 			</section>
 			) : null}
 
-			{tab === "launch" && evalRecipes.length > 0 ? (
+			{tab === "launch" && (evalRecipes.length > 0 || selectedStarter) ? (
 				<section className="optimizer-recipes optimizer-eval-catalog" aria-labelledby="optimizer-eval-title">
 					<div className="optimizer-recipes-head">
-						<div><span className="optimizer-eyebrow">Eval · local</span><h2 id="optimizer-eval-title">Score staged policies</h2></div>
+						<div><span className="optimizer-eyebrow">Eval · local</span><h2 id="optimizer-eval-title">{selectedStarter ? selectedStarter.title : "Score staged policies"}</h2></div>
 						<p>Fixed recipes run against pinned local container targets and do not install the Optimizers plugin.</p>
 					</div>
+					{selectedStarter ? (
+						<div className="optimizer-starter-summary" data-testid="optimizer-starter-summary">
+							<strong>{selectedStarter.description}</strong>
+							<span>{selectedStarter.flow.join(" → ")} · maximum ${selectedStarter.maxCostUsd.toFixed(2)}</span>
+							<details><summary>Starter prompt</summary><pre>{selectedStarter.prompt}</pre></details>
+						</div>
+					) : null}
+					{selectedStarter && !evalRecipes.some((recipe) => recipe.id === selectedStarter.recipeId) ? (
+						<div className="optimizer-empty" role="status" data-testid="optimizer-starter-unavailable">
+							<strong>The selected starter is not available in this workspace yet.</strong>
+							<p>Expected recipe <code>{selectedStarter.recipeId}</code>. Add its source project or choose another admitted recipe below.</p>
+							<button
+								className="secondary-button"
+								type="button"
+								disabled={startingAgent !== null}
+								data-testid="setup-starter-with-agent"
+								onClick={() => void startStarterAgent({
+									id: "eval",
+									label: "EV",
+									name: `Set up ${selectedStarter.title}`,
+									description: selectedStarter.description,
+									flow: ["Inspect", "Preflight", "Approve"],
+									prompt: selectedStarter.prompt
+								}, selectedStarter.recipeId)}
+							>
+								{startingAgent === "eval" ? "Opening agent…" : "Set up with agent"}
+							</button>
+						</div>
+					) : null}
 					<div className="optimizer-recipe-grid">
-						{evalRecipes.map((recipe) => {
+						{orderedEvalRecipes.map((recipe) => {
 							// Only fields a producer actually writes: `limits.trials`,
 							// `budget.max_usd`, `models`, task/source/semantics, and the
 							// admission booleans projected by eval_recipes.rs. The old
@@ -1187,7 +1312,7 @@ export function OptimizersPage({
 								{ id: "target-admitted", label: "Admitted", ok: recipe.targetAdmitted }
 							].filter((flag): flag is { id: string; label: string; ok: boolean } => typeof flag.ok === "boolean");
 							return (
-								<article className="optimizer-recipe-card" aria-labelledby={`optimizer-eval-${recipe.id}`} data-testid={`optimizer-eval-recipe-${recipe.id}`} key={recipe.id}>
+								<article className={`optimizer-recipe-card${recipe.id === selectedStarter?.recipeId ? " is-starter" : ""}`} aria-labelledby={`optimizer-eval-${recipe.id}`} data-testid={`optimizer-eval-recipe-${recipe.id}`} key={recipe.id}>
 									<div className="optimizer-recipe-top">
 										<span className="optimizer-recipe-mark">EV</span>
 										<span className="optimizer-availability" data-available={available} data-testid={`optimizer-eval-availability-${recipe.id}`}>{recipe.availability}</span>
@@ -1226,17 +1351,28 @@ export function OptimizersPage({
 										data-testid={`start-eval-${recipe.id}`}
 										onClick={() => {
 											if (isWorkspaceBaselineEval(recipe)) {
-												void startBoundedRecipe(recipe.id, setBusy);
+												void startBoundedRecipe(
+													recipe.id,
+													setBusy,
+													selectedStarter?.recipeId === recipe.id
+												);
 												return;
 											}
-											void startAgent({
+											const guide: OptimizerGuide = {
 												id: "eval",
 												label: "EV",
 												name: recipe.title,
 												description: recipe.description ?? "",
 												flow: ["Stage", "Score", "Select"],
-												prompt: `Run the Workshop eval recipe ${recipe.id} on policy variants in this project. Stage the policy files with optimizer_stage_eval_candidates using workspace-relative paths, kind python-code.v1, entrypoint policy:Policy, one labelled candidate each, marking the baseline; then call optimizer_start_recipe with the recipe id and returned candidate_set_id. Never replace a policy on your own. Report the run status and selection status separately, the per-candidate scorecard, and the evidence directory.`
-											});
+												prompt: starterPromptForRecipe(
+													selectedStarter,
+													recipe.id,
+													`Run the Workshop eval recipe ${recipe.id} on policy variants in this project. Stage the policy files with optimizer_stage_eval_candidates using workspace-relative paths, kind python-code.v1, entrypoint policy:Policy, one labelled candidate each, marking the baseline; then call optimizer_start_recipe with the recipe id and returned candidate_set_id. Never replace a policy on your own. Report the run status and selection status separately, the per-candidate scorecard, and the evidence directory.`
+												)
+											};
+											void (selectedStarter?.recipeId === recipe.id
+												? startStarterAgent(guide, recipe.id)
+												: startAgent(guide));
 										}}
 									>
 										{isWorkspaceBaselineEval(recipe)
@@ -1356,6 +1492,14 @@ export function OptimizersPage({
 				<section id="optimizer-run-inspector" className="optimizer-inspector" aria-label="Optimizer inspector" tabIndex={-1}>
 					{selected ? (
 						<RunInspector run={selected} executionLabel={selectedExecution}>
+							{starterResult ? (
+								<StarterResult
+									result={starterResult}
+									onOpenVisual={starterResult.visualId ? () => void openSelectedVisual() : undefined}
+									onRefresh={() => void refreshSelected()}
+									onContinue={proposeStarterContinuation}
+								/>
+							) : null}
 							{trainingProjection ? (
 								<section className="optimizer-training-progress" data-testid="optimizer-training-progress">
 									<div className="optimizer-training-title">

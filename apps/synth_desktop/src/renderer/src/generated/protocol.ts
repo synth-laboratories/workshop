@@ -567,6 +567,11 @@ export const commands = {
 	 */
 	productTelemetryFlushNow: () => typedError<number, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_flush_now")),
 	/**
+	 *  Narrow renderer boundary for starter telemetry. The native host chooses
+	 *  every event/property; prompts, IDs, paths, and arbitrary strings cannot cross.
+	 */
+	productTelemetryRecordStarter: (event: StarterTelemetryEvent, succeeded: boolean | null) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_record_starter", { event, succeeded })),
+	/**
 	 *  Display-safe build envelope for the renderer: the compiled tier and the
 	 *  per-feature included/enabled resolution.
 	 */
@@ -661,6 +666,14 @@ export type AccountPlan = {
 	 *  must then omit allowance figures instead of showing zeros.
 	 */
 	metered: boolean,
+	effectivePriceUsd?: number | null,
+	billingInterval?: string | null,
+	grantKind?: string | null,
+	entitlementState?: string | null,
+	entitlementStartsAt?: string | null,
+	entitlementExpiresAt?: string | null,
+	campaignId?: string | null,
+	claimState?: string | null,
 	monthlyAllowanceUsd?: number | null,
 	usedUsd: number | null,
 	remainingUsd?: number | null,
@@ -3596,6 +3609,8 @@ export type SkillHit = {
 	name: string,
 	description: string,
 };
+
+export type StarterTelemetryEvent = "selected" | "started" | "result_viewed";
 
 export type Status = {
 	state: AuthState,
