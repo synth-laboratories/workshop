@@ -2823,7 +2823,14 @@ pub(crate) async fn dispatch_optimizer(
             Ok(json!({ "algorithms": optimizers.list_algorithms() }))
         }
         ("GET", "/v1/optimizers/recipes") => {
-            let session = std::env::var("SYNTH_SESSION_ID").ok();
+            let session = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_ref"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
             Ok(json!({
                 "recipes": optimizers.list_recipes_for_session(session.as_deref())
             }))

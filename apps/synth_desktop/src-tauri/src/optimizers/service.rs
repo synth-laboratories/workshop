@@ -975,7 +975,30 @@ impl OptimizerService {
             })
             .await?;
         let settled = super::kernel::settle_result(&state).map_err(|error| anyhow!("{error}"))?;
-        results::from_kernel(&run, &state, settled, manifest.as_ref())
+        let result = results::from_kernel(&run, &state, settled, manifest.as_ref())?;
+        if run
+            .summary
+            .pointer("/policyPin/harness")
+            .or_else(|| run.summary.pointer("/policyRef/harness"))
+            .and_then(Value::as_str)
+            == Some("nanohorizon")
+        {
+            let succeeded = run.status == "completed";
+            crate::telemetry::mark_once(
+                "starter_result_viewed",
+                json!({
+                    "workflow_family": "nanohorizon",
+                    "outcome": if succeeded { "success" } else { "failure" }
+                }),
+            );
+            if succeeded {
+                crate::telemetry::mark_once(
+                    "first_run_succeeded",
+                    json!({"workflow_family": "nanohorizon", "outcome": "success"}),
+                );
+            }
+        }
+        Ok(result)
     }
 
     pub(super) async fn register_local_recipe(&self, run_id: String, cancel: super::CancelSignal) {

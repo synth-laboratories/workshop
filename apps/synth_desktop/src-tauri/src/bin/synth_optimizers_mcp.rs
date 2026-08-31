@@ -345,7 +345,32 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             )
         }
         "optimizer_list_algorithms" => request("GET", "/v1/optimizers/algorithms", None),
-        "optimizer_list_recipes" => request("GET", "/v1/optimizers/recipes", None),
+		"optimizer_export_snapshot" => request(
+            "POST",
+            &format!("/v1/optimizers/runs/{}/snapshot", id()?),
+            Some(json!({})),
+        ),
+        "optimizer_import_snapshot" => request(
+            "POST",
+            "/v1/optimizers/snapshots/import",
+            Some(json!({"path": args.get("path"), "expectedDigest": args.get("expected_digest")})),
+        ),
+        "optimizer_get_snapshot" => {
+            let snapshot_id = args
+                .get("snapshot_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "snapshot_id required".to_string())?;
+            request(
+                "GET",
+                &format!("/v1/optimizers/snapshots/{snapshot_id}"),
+                None,
+            )
+        }
+		"optimizer_list_recipes" => request(
+            "GET",
+            "/v1/optimizers/recipes",
+			Some(json!({ "sessionRef": session_ref() })),
+		),
         "optimizer_inspect_local_mlx" => request("GET", "/v1/mlx/inspect", None),
         "optimizer_inspect_training_runtime" => request("GET", "/v1/training/mlx-runtime", None),
         "optimizer_install_training_runtime" => request(

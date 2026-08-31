@@ -204,7 +204,7 @@ impl ProductTelemetry {
         map.insert("app_version".into(), json!(env!("CARGO_PKG_VERSION")));
         map.insert(
             "release_channel".into(),
-            json!(std::env::var("SYNTH_RELEASE_CHANNEL").unwrap_or_else(|_| "dev".into())),
+            json!(crate::update_check::CHANNEL),
         );
         map.insert("platform".into(), json!(std::env::consts::OS));
         map.insert("architecture".into(), json!(std::env::consts::ARCH));
