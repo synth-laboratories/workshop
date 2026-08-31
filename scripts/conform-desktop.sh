@@ -88,7 +88,9 @@ map_err_to_string="$(count_rg 'map_err\(\|e\| e\.to_string\(\)\)' src-tauri/src)
 to_string_contains="$(count_rg '\.to_string\(\)\.contains\(' src-tauri/src --glob '!**/*tests*.rs' --glob '!**/tests.rs' --glob '!**/tests/**')"
 # Production error-path check; cfg(test) modules in *service.rs / *ingestion.rs still match —
 # subtract known test-only assert sites that live beside production code.
-to_string_contains_tests="$(rg -c --no-messages 'assert!.*\.to_string\(\)\.contains\(' src-tauri/src 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}')"
+to_string_contains_tests="$({
+  rg -c --no-messages 'assert!.*\.to_string\(\)\.contains\(' src-tauri/src 2>/dev/null || true
+} | awk -F: '{s+=$NF} END{print s+0}')"
 to_string_contains=$(( to_string_contains > to_string_contains_tests ? to_string_contains - to_string_contains_tests : 0 ))
 
 # Pattern as published in SynthStyle CONFORM CHECKS (Wave 1 magic status strings).
