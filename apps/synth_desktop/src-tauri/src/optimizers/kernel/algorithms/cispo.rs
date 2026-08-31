@@ -78,6 +78,7 @@ impl CispoProjection {
                 if let Some(id) = payload
                     .get("checkpointId")
                     .or_else(|| payload.get("checkpoint_id"))
+                    .or_else(|| payload.get("id"))
                     .and_then(|v| v.as_str())
                 {
                     self.checkpoints.push(id.to_string());
@@ -178,3 +179,48 @@ fn apply_usage(usage: &mut UsageCompleteness, event: &CommittedEvent) {
     );
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::optimizers::kernel::sequences::ProducerEvent;
+    use crate::optimizers::kernel::types::PRODUCER_EVENT_SCHEMA_VERSION;
+    use serde_json::json;
+
+    fn committed(event_type: &str, payload: serde_json::Value, seq: u64) -> CommittedEvent {
+        let producer = ProducerEvent {
+            producer_id: "cispo".into(),
+            producer_sequence: seq,
+            idempotency_key: format!("{event_type}-{seq}"),
+            schema_version: PRODUCER_EVENT_SCHEMA_VERSION.into(),
+            algorithm_id: "cispo".into(),
+            event_type: event_type.into(),
+            occurred_at: "2026-08-27T18:00:00Z".into(),
+            payload_digest: String::new(),
+            payload,
+        }
+        .with_computed_digest();
+        CommittedEvent {
+            aggregate_sequence: seq,
+            committed_at: "2026-08-27T18:00:01Z".into(),
+            producer,
+        }
+    }
+
+    #[test]
+    fn sidecar_checkpoint_item_id_settles() {
+        let mut projection = CispoProjection::default();
+        projection
+            .apply(&committed(
+                "sft.checkpoint.ready",
+                json!({"id": "cispo_mlx_job:step-1", "path": "/tmp/adapter", "sha256": "abc"}),
+                1,
+            ))
+            .unwrap();
+        let result = projection.settle().unwrap();
+        assert_eq!(
+            result.policy_checkpoint_id.as_deref(),
+            Some("cispo_mlx_job:step-1")
+        );
+        assert!(!result.no_learning_signal);
+    }
+}
