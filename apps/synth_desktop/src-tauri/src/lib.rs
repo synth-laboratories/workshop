@@ -1544,6 +1544,76 @@ async fn optimizers_run_view_v2(
         .map_err(AppError::from)
 }
 
+/// One coherent read for a visual's first paint: the durable projection, the
+/// run record the templates still read compatibility fields from, and the
+/// journal tail an evidence reader pages against.
+///
+/// `if_newer_than` makes it conditional. A caller holding projection revision
+/// *n* passes it and is told `unchanged` instead of being handed the same
+/// bytes again — which is what turns a background freshness check into one
+/// indexed column read rather than a full projection load and IPC round trip.
+/// The render receipt for one visual revision, if it has ever rendered.
+///
+/// Read on reopen so a visual can tell "the projection has moved on" (normal)
+/// from "the projection is now older than, or different from, what I already
+/// showed" (a regression that must be reported rather than rendered).
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_visual_render_receipt(
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+    visual_revision: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<Option<crate::optimizers::models::VisualRenderReceipt>, AppError> {
+    state
+        .optimizers()
+        .visual_render_receipt(
+            visual_id,
+            visual_revision.map(|value| value.0).unwrap_or(0),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+/// Read the parts of an evidence window the caller does not already hold.
+///
+/// `held` is the coverage returned by the previous call, sent back verbatim.
+/// The answer is the complement, so re-opening Replay after a restart transfers
+/// only what is genuinely missing rather than the whole journal again.
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_evidence_page(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    window: crate::optimizers::events::EvidenceRange,
+    held: Option<Vec<crate::optimizers::events::EvidenceRange>>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<crate::optimizers::events::EvidencePage, AppError> {
+    state
+        .optimizers()
+        .evidence_page(
+            optimizer_run_id,
+            window,
+            held.unwrap_or_default(),
+            limit.map(|value| value.0),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_view(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    if_newer_than: Option<contract::specta::OpaqueInteger<u64>>,
+) -> Result<crate::optimizers::kernel::OptimizerRunViewEnvelope, AppError> {
+    state
+        .optimizers()
+        .run_view_envelope(optimizer_run_id, if_newer_than.map(|value| value.0))
+        .await
+        .map_err(AppError::from)
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn optimizers_create(

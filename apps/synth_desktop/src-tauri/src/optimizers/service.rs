@@ -927,12 +927,98 @@ impl OptimizerService {
         optimizer_run_id: String,
         receipt: Value,
     ) -> Result<Value> {
+        // The typed row is the checkable claim; the summary field stays because
+        // the paid-compute start gate reads it as proof a visual was mounted
+        // before money is spent.
+        if let Some(typed) = visual_render_receipt_from(&optimizer_run_id, &receipt) {
+            self.record_visual_render_receipt(typed).await?;
+        }
         let mut run = self.get(optimizer_run_id.clone()).await?;
         let mut summary = run.summary.as_object().cloned().unwrap_or_default();
         summary.insert("visualReadyReceipt".into(), receipt.clone());
         run.summary = Value::Object(summary);
         self.persist_run(run).await?;
         Ok(receipt)
+    }
+
+    /// Persist a render receipt, refusing to move a revision backwards.
+    ///
+    /// Monotonicity is enforced here rather than trusted from the caller: a
+    /// renderer that reconnected to an older projection must not be able to
+    /// overwrite the proof that a newer one already rendered, or the
+    /// regression it should be reporting becomes invisible.
+    pub async fn record_visual_render_receipt(
+        &self,
+        receipt: super::models::VisualRenderReceipt,
+    ) -> Result<()> {
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            conn.execute(
+                "INSERT INTO visual_render_receipts(
+                    visual_id, visual_revision, optimizer_run_id, template_id,
+                    template_version, projection_revision, data_digest,
+                    tail_cursor, rendered_at
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+                 ON CONFLICT(visual_id, visual_revision) DO UPDATE SET
+                    optimizer_run_id=excluded.optimizer_run_id,
+                    template_id=excluded.template_id,
+                    template_version=excluded.template_version,
+                    projection_revision=excluded.projection_revision,
+                    data_digest=excluded.data_digest,
+                    tail_cursor=excluded.tail_cursor,
+                    rendered_at=excluded.rendered_at
+                 WHERE excluded.projection_revision >= visual_render_receipts.projection_revision
+                    OR excluded.template_version <> visual_render_receipts.template_version",
+                params![
+                    receipt.visual_id,
+                    receipt.visual_revision,
+                    receipt.optimizer_run_id,
+                    receipt.template_id,
+                    receipt.template_version,
+                    receipt.projection_revision as i64,
+                    receipt.data_digest,
+                    receipt.tail_cursor as i64,
+                    receipt.rendered_at,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// The render receipt for one visual revision, if it has ever rendered.
+    pub async fn visual_render_receipt(
+        &self,
+        visual_id: String,
+        visual_revision: i64,
+    ) -> Result<Option<super::models::VisualRenderReceipt>> {
+        let db = self.db.clone();
+        db.run_read(move |conn| {
+            conn.query_row(
+                "SELECT visual_id, visual_revision, optimizer_run_id, template_id,
+                        template_version, projection_revision, data_digest,
+                        tail_cursor, rendered_at
+                 FROM visual_render_receipts
+                 WHERE visual_id = ?1 AND visual_revision = ?2",
+                params![visual_id, visual_revision],
+                |row| {
+                    Ok(super::models::VisualRenderReceipt {
+                        visual_id: row.get(0)?,
+                        visual_revision: row.get(1)?,
+                        optimizer_run_id: row.get(2)?,
+                        template_id: row.get(3)?,
+                        template_version: row.get(4)?,
+                        projection_revision: row.get::<_, i64>(5)?.max(0) as u64,
+                        data_digest: row.get(6)?,
+                        tail_cursor: row.get::<_, i64>(7)?.max(0) as u64,
+                        rendered_at: row.get(8)?,
+                    })
+                },
+            )
+            .optional()
+            .context("load visual render receipt")
+        })
+        .await
     }
 
     pub async fn await_visual_ready(
@@ -1279,35 +1365,156 @@ impl OptimizerService {
     }
 
     /// Versioned backend projection. Raw events do not determine this view.
+    ///
+    /// Compatibility shape for callers that want the view unconditionally.
+    /// New callers should prefer [`Self::run_view_envelope`], which reads the
+    /// projection and the run record together and can answer `unchanged`.
     pub async fn run_view_v2(
         &self,
         optimizer_run_id: String,
     ) -> Result<super::kernel::OptimizerRunViewV2> {
+        let envelope = self.run_view_envelope(optimizer_run_id.clone(), None).await?;
+        envelope.view.ok_or_else(|| {
+            anyhow!("optimizer run {optimizer_run_id} returned an empty run view envelope")
+        })
+    }
+
+    /// One coherent read for a visual's first paint.
+    ///
+    /// Deliberately three separable things in one call, because the renderer
+    /// was previously orchestrating them as three serial IPC hops:
+    ///
+    ///   · the durable kernel projection (product truth),
+    ///   · the run record the templates still read compatibility fields from,
+    ///   · the durable tail cursor an evidence reader pages against.
+    ///
+    /// All three come from a single **deferred** transaction, so this read
+    /// takes a WAL snapshot and never queues behind the producer appending to
+    /// the run it is describing.
+    ///
+    /// `if_newer_than` makes the read conditional. The projection revision is
+    /// already monotonic; a caller holding revision *n* is told `unchanged`
+    /// rather than handed the same bytes again, which is what lets a cached
+    /// visual revalidate in the background for the cost of one indexed column
+    /// read.
+    pub async fn run_view_envelope(
+        &self,
+        optimizer_run_id: String,
+        if_newer_than: Option<u64>,
+    ) -> Result<super::kernel::OptimizerRunViewEnvelope> {
+        let db = self.db.clone();
+        let run_id = optimizer_run_id.clone();
+        let cached = if_newer_than;
+        let read = db
+            .run_read(move |conn| {
+                // Cheapest possible freshness check first: one indexed column,
+                // no run row, no 5 KB projection deserialize, no IPC payload.
+                if let Some(cached_revision) = cached {
+                    if let Some(durable) =
+                        super::kernel::persist::load_projection_revision(conn, &run_id)?
+                    {
+                        if durable == cached_revision {
+                            return Ok(Some(super::kernel::OptimizerRunViewEnvelope {
+                                unchanged: true,
+                                view: None,
+                                run: None,
+                                projection_revision: durable,
+                                tail_cursor: durable_tail_cursor(conn, &run_id)?,
+                            }));
+                        }
+                    }
+                }
+                let run = load_run(conn, &run_id)?;
+                let Some(state) = super::kernel::persist::load_state(conn, &run_id)? else {
+                    // No durable projection. Repair is a write, and a write has
+                    // no business running inside a read that a user is waiting
+                    // on: it would take the exclusive lock, replay the whole
+                    // journal, and — for a run with no admitted spec — roll all
+                    // of that back and do it again on the next attempt.
+                    return Ok(None);
+                };
+                let context = run_view_context(conn, &run)?;
+                let view = super::kernel::project_view_with_context(&state, &context);
+                let tail_cursor = durable_tail_cursor(conn, &run_id)?;
+                Ok(Some(super::kernel::OptimizerRunViewEnvelope {
+                    unchanged: false,
+                    projection_revision: state.projection_revision,
+                    tail_cursor,
+                    view: Some(view),
+                    run: Some(run),
+                }))
+            })
+            .await?;
+        if let Some(envelope) = read {
+            return Ok(envelope);
+        }
+
+        // Historical row that predates the kernel projection. Repair it once,
+        // in its own write transaction, then re-read through the fast path.
+        self.repair_kernel_projection(optimizer_run_id.clone())
+            .await?;
+        let db = self.db.clone();
+        let run_id = optimizer_run_id.clone();
+        db.run_read(move |conn| {
+            let run = load_run(conn, &run_id)?;
+            let state = super::kernel::persist::load_state(conn, &run_id)?.ok_or_else(|| {
+                anyhow!("optimizer run {run_id} did not produce a saved kernel projection")
+            })?;
+            let context = run_view_context(conn, &run)?;
+            let view = super::kernel::project_view_with_context(&state, &context);
+            let tail_cursor = durable_tail_cursor(conn, &run_id)?;
+            Ok(super::kernel::OptimizerRunViewEnvelope {
+                unchanged: false,
+                projection_revision: state.projection_revision,
+                tail_cursor,
+                view: Some(view),
+                run: Some(run),
+            })
+        })
+        .await
+    }
+
+    /// Rebuild a missing kernel projection by replaying the durable journal.
+    ///
+    /// Only reachable for rows written before the kernel owned admission —
+    /// every admitted run persists a projection at birth. It is a write, it is
+    /// expensive, and it is idempotent, so it belongs here rather than inline
+    /// in a read.
+    ///
+    /// A run with no admitted spec cannot be repaired at all. That is a
+    /// permanent structural fact about the row, not a transient transport
+    /// fault, so it raises a non-retryable typed failure: retrying it five
+    /// times with a backoff ladder — which is what the renderer does with an
+    /// untyped error — only replays the whole journal five more times before
+    /// showing the same message.
+    pub async fn repair_kernel_projection(&self, optimizer_run_id: String) -> Result<()> {
         let db = self.db.clone();
         db.run_transaction(move |conn| {
-            let run = load_run(conn, &optimizer_run_id)?;
-            if let Some(state) = super::kernel::persist::load_state(conn, &optimizer_run_id)? {
-                let context = run_view_context(conn, &run)?;
-                return Ok(super::kernel::project_view_with_context(&state, &context));
+            if super::kernel::persist::load_state(conn, &optimizer_run_id)?.is_some() {
+                return Ok(());
             }
-
-            // One-time repair for a historical row that predates the kernel
-            // projection. Replay happens here in CoreRuntime and is committed
-            // before the view is returned; the renderer never receives raw
-            // events as a competing state authority.
+            let run = load_run(conn, &optimizer_run_id)?;
             super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id)
                 .map_err(|error| anyhow!("{error}"))?;
+            if !super::kernel::persist::spec_exists(conn, &optimizer_run_id)? {
+                return Err(crate::error::StructuredFailure::new(
+                    "optimizer.projection.missing_admitted_spec",
+                    format!(
+                        "Run {optimizer_run_id} predates admitted specs, so its projection cannot be rebuilt."
+                    ),
+                    "Re-import or re-run this optimizer run to record it under the current contract.",
+                )
+                .retryable(false)
+                .with_details(serde_json::json!({
+                    "stage": "projection",
+                    "optimizerRunId": optimizer_run_id,
+                    "algorithmId": run.algorithm_id,
+                }))
+                .into());
+            }
             let events = load_events_upto(conn, &run.id, run.cursor_seq)?;
             persist_kernel_projection(conn, &run, &events)?;
-            let state =
-                super::kernel::persist::load_state(conn, &optimizer_run_id)?.ok_or_else(|| {
-                    anyhow!(
-                        "optimizer run {} did not produce a saved kernel projection",
-                        optimizer_run_id
-                    )
-                })?;
-            let context = run_view_context(conn, &run)?;
-            Ok(super::kernel::project_view_with_context(&state, &context))
+            Ok(())
         })
         .await
     }
@@ -1553,6 +1760,90 @@ impl OptimizerService {
             .await?;
         super::strip_frame_bodies_for_ipc(&mut events);
         Ok(events)
+    }
+
+    /// Read the parts of an evidence window the caller does not already hold.
+    ///
+    /// The lazy, restart-survivable counterpart to `events_after`. A cursor can
+    /// only say "after N", which is the right shape for a live tail and the
+    /// wrong one for browsing: a reader that opens Replay at the end of a run
+    /// and scrolls back holds disjoint spans, and asking "after the highest
+    /// one" both re-fetches nothing useful and silently keeps the hole in the
+    /// middle. Sending held spans and receiving their complement expresses
+    /// "besides what I have" exactly, so nothing is transferred twice.
+    ///
+    /// One contiguous gap is answered per call, bounded by `limit`, so a page
+    /// is always a single span the caller can store as one coverage entry.
+    pub async fn evidence_page(
+        &self,
+        optimizer_run_id: String,
+        window: super::events::EvidenceRange,
+        held: Vec<super::events::EvidenceRange>,
+        limit: Option<i64>,
+    ) -> Result<super::events::EvidencePage> {
+        let limit = limit.unwrap_or(200).clamp(1, 2000);
+        let db = self.db.clone();
+        let mut page = db
+            .run_read(move |conn| {
+                // Ownership and existence are resolved the same way for a
+                // cached read as for an uncached one: the run row is loaded
+                // before any evidence leaves the database.
+                load_run(conn, &optimizer_run_id)?;
+                let tail_cursor = durable_tail_cursor(conn, &optimizer_run_id)?;
+                let window = super::events::EvidenceRange::new(
+                    window.from.max(1),
+                    window.to.min(tail_cursor),
+                );
+                let gaps = super::events::complement(window, &held);
+                let Some(gap) = gaps.first().copied() else {
+                    return Ok(super::events::EvidencePage {
+                        events: Vec::new(),
+                        range: None,
+                        coverage: super::events::normalize_ranges(&held),
+                        complete: true,
+                        tail_cursor,
+                    });
+                };
+                let mut stmt = conn.prepare(
+                    "SELECT sequence_number, payload_json FROM optimizer_events
+                     WHERE optimizer_run_id = ?1
+                       AND sequence_number >= ?2 AND sequence_number <= ?3
+                     ORDER BY sequence_number ASC LIMIT ?4",
+                )?;
+                let rows = stmt.query_map(
+                    params![optimizer_run_id, gap.from as i64, gap.to as i64, limit],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )?;
+                let mut events = Vec::new();
+                let mut highest = gap.from;
+                for row in rows {
+                    let (sequence, payload) = row?;
+                    highest = sequence.max(0) as u64;
+                    events.push(serde_json::from_str(&payload)?);
+                }
+                // A short page covers only what it reached. A gap that is
+                // genuinely empty of rows — a pruned or never-written span —
+                // still counts as covered, or the caller would ask forever.
+                let covered = if events.len() as i64 == limit {
+                    super::events::EvidenceRange::new(gap.from, highest)
+                } else {
+                    gap
+                };
+                let mut coverage = held.clone();
+                coverage.push(covered);
+                let coverage = super::events::normalize_ranges(&coverage);
+                let complete = super::events::complement(window, &coverage).is_empty();
+                Ok(super::events::EvidencePage {
+                    events,
+                    range: Some(covered),
+                    coverage,
+                    complete,
+                    tail_cursor,
+                })
+            })
+            .await?;
+        super::strip_frame_bodies_for_ipc(&mut page.events);
+        Ok(page)
     }
 
     /// Latest changed native frame per seed after a durable frame cursor.
@@ -3982,6 +4273,7 @@ fn commit_validated_events(
     let plan = plan_batch(&run.id, run.cursor_seq, &durable, &events, contract)
         .with_context(|| format!("validate optimizer event batch for {}", run.id))?;
     let mut appended = 0usize;
+    let mut appended_events: Vec<OptimizerEventEnvelope> = Vec::new();
     let mut evidence_amendments = Vec::new();
     for (event, verdict) in events.iter_mut().zip(plan) {
         super::experiment_bind::fold_candidate(conn, event)?;
@@ -4005,6 +4297,7 @@ fn commit_validated_events(
         }
         run.cursor_seq = event.sequence_number;
         upsert_cursor(conn, &run.id, run.cursor_seq, &event.occurred_at)?;
+        appended_events.push(event.clone());
         appended += 1;
     }
     if appended == 0 {
@@ -4012,17 +4305,55 @@ fn commit_validated_events(
         // bus stays quiet rather than waking every subscriber for no news.
         return Ok((run, None));
     }
-    let history = load_events_upto(conn, &run.id, run.cursor_seq)?;
+    // Fold forward from the durable projection when the batch permits it, and
+    // replay the whole journal only when it does not.
+    //
+    // The full replay used to be unconditional: every append loaded and
+    // deserialized every event the run had ever emitted, folded usage over all
+    // of it, and re-reduced it from an empty state — inside the exclusive
+    // write transaction. Per-append cost was linear in history (~24µs per
+    // event of history, measured), total cost quadratic, and every UI read
+    // queued behind it. At the 50,000-event scale the acceptance tests target,
+    // a single append reads 50,000 events before it can commit.
+    //
+    // `commit` was always an incremental fold — it takes a prior state and a
+    // batch — and `RunKernelState` was always persisted whole. Only
+    // `reduce_envelopes` discarded that by starting from `new()`.
+    let prior_state = super::kernel::persist::load_state(conn, &run.id)?;
+    let incremental = prior_state
+        .as_ref()
+        .is_some_and(|state| can_fold_incrementally(state, &appended_events));
+    let history = if incremental {
+        Vec::new()
+    } else {
+        note_full_journal_replay(&run.id);
+        load_events_upto(conn, &run.id, run.cursor_seq)?
+    };
+    let folded: &[OptimizerEventEnvelope] = if incremental {
+        &appended_events
+    } else {
+        &history
+    };
+
     // The append-only event log owns measured usage. Rebuild its accumulator
     // at the same cursor that will be terminal-sealed, while preserving only
     // non-measurement admission metadata (notably the paid-compute receipt).
     // Persist before terminal::seal so the run row and manifest freeze the
     // same numbers in one transaction.
-    let mut canonical_usage = OptimizerUsageSummary {
-        extra: run.usage.extra.clone(),
-        ..OptimizerUsageSummary::default()
+    //
+    // Incrementally the accumulator resumes from the run row, which is where
+    // this same fold left it on the previous append. The guard below keeps a
+    // reconciliation event — the one thing that *replaces* rather than adds —
+    // on the full-replay path.
+    let mut canonical_usage = if incremental {
+        run.usage.clone()
+    } else {
+        OptimizerUsageSummary {
+            extra: run.usage.extra.clone(),
+            ..OptimizerUsageSummary::default()
+        }
     };
-    for event in &history {
+    for event in folded {
         if event.event_type == "optimizer.usage.reconciled" {
             apply_authoritative_provider_usage(&mut canonical_usage, event)?;
         } else if let Some(delta) = &event.usage_delta {
@@ -4049,7 +4380,12 @@ fn commit_validated_events(
     run.usage = canonical_usage;
     update_paid_compute_violation(&mut run);
     upsert_run(conn, &run)?;
-    let mut state = persist_kernel_projection(conn, &run, &history)?;
+    let mut state = match prior_state {
+        Some(prior) if incremental => {
+            persist_kernel_projection_from(conn, &run, prior, &appended_events)?
+        }
+        _ => persist_kernel_projection(conn, &run, &history)?,
+    };
     for amendment in &evidence_amendments {
         persist_evidence_amendment(conn, &state, amendment)?;
     }
@@ -4059,7 +4395,12 @@ fn commit_validated_events(
     }
     run.status = kernel_compatibility_status(&state).into();
     if state.lifecycle != super::kernel::RunLifecycle::Queued && run.started_at.is_none() {
-        run.started_at = history.first().map(|event| event.occurred_at.clone());
+        // The run's first event, not the batch's: an incremental fold never
+        // holds the head of the journal, so read it rather than infer it.
+        run.started_at = match history.first() {
+            Some(event) => Some(event.occurred_at.clone()),
+            None => first_event_occurred_at(conn, &run.id)?,
+        };
     }
     run.finished_at = state
         .terminal
@@ -4381,6 +4722,117 @@ async fn reconcile_via_driver(
     }
 }
 
+/// How many times the append path has replayed a whole journal.
+///
+/// Instrumented rather than timed: "the append got faster" is a flaky
+/// assertion, "the append stopped reading the whole journal" is a fact. The
+/// test below asserts the count directly.
+/// Keyed by run so the assertion holds while the rest of the suite runs in
+/// parallel: a global counter would make this test a race.
+#[cfg(test)]
+pub(super) static FULL_JOURNAL_REPLAYS: std::sync::Mutex<
+    Option<std::collections::HashMap<String, usize>>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn note_full_journal_replay(run_id: &str) {
+    let mut guard = FULL_JOURNAL_REPLAYS.lock().unwrap();
+    let counts = guard.get_or_insert_with(std::collections::HashMap::new);
+    *counts.entry(run_id.to_string()).or_insert(0) += 1;
+}
+
+#[cfg(test)]
+pub(super) fn full_journal_replays_for(run_id: &str) -> usize {
+    FULL_JOURNAL_REPLAYS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|counts| counts.get(run_id).copied())
+        .unwrap_or(0)
+}
+
+#[cfg(not(test))]
+fn note_full_journal_replay(_run_id: &str) {}
+
+/// Event types whose kernel treatment is decided across the whole history
+/// rather than within one batch.
+///
+/// `envelopes_to_producer` demotes an algorithm settlement to non-lifecycle
+/// evidence when a canonical terminal fact appears *later in the same slice*.
+/// Fold those incrementally and a settlement arriving in one batch would seal
+/// the run before the canonical terminal arrived in the next, which is a
+/// different — and wrong — answer. Evidence amendments and usage
+/// reconciliation likewise rewrite earlier facts rather than extend them.
+///
+/// These are a handful of events per run. Keeping them on the full-replay path
+/// costs one replay each and preserves settlement semantics exactly, while the
+/// ordinary progress events — which is essentially all of them — fold forward.
+fn batch_forces_full_replay(events: &[OptimizerEventEnvelope]) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "optimizer.run.completed"
+                | "optimizer.run.failed"
+                | "optimizer.run.degraded"
+                | "optimizer.run.cancelled"
+                | "gepa.run.finished"
+                | "goex.run_finished"
+                | "go-ex.run.finished"
+                | "run.completed"
+                | "optimizer.evidence.amended"
+                | "optimizer.usage.reconciled"
+        )
+    })
+}
+
+/// Whether this batch may fold forward from the durable projection.
+fn can_fold_incrementally(
+    prior: &super::kernel::RunKernelState,
+    batch: &[OptimizerEventEnvelope],
+) -> bool {
+    if batch.is_empty() {
+        return false;
+    }
+    // A sealed run only accepts post-terminal evidence, which the guard above
+    // already routes to full replay. Anything else reaching a terminal state
+    // must be evaluated against the whole history so the refusal is the one
+    // the kernel intends.
+    if prior.terminal.is_some() || prior.lifecycle.is_terminal() {
+        return false;
+    }
+    !batch_forces_full_replay(batch)
+}
+
+/// Fold `batch` onto the durable projection and persist the result.
+///
+/// The incremental twin of [`persist_kernel_projection`]. Both end in
+/// `upsert_projection`, so the durable row, its revision, and the outbox entry
+/// are produced the same way; only the reduction differs.
+fn persist_kernel_projection_from(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+    prior: super::kernel::RunKernelState,
+    batch: &[OptimizerEventEnvelope],
+) -> Result<super::kernel::RunKernelState> {
+    let state = super::kernel::bridge::fold_envelopes(prior, &run.id, batch)
+        .map_err(|error| anyhow!("kernel fold failed for {}: {error}", run.id))?;
+    super::kernel::persist::upsert_projection(conn, &state)
+        .with_context(|| format!("persist kernel projection for {}", run.id))?;
+    Ok(state)
+}
+
+/// The run's earliest durable event time.
+fn first_event_occurred_at(conn: &Connection, run_id: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT occurred_at FROM optimizer_events
+         WHERE optimizer_run_id = ?1 ORDER BY sequence_number ASC LIMIT 1",
+        params![run_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .context("load first optimizer event time")
+}
+
 fn persist_kernel_projection(
     conn: &Connection,
     run: &OptimizerRunRecord,
@@ -4586,6 +5038,71 @@ fn durable_event_ids(
         }
     }
     Ok(out)
+}
+
+/// The tail an evidence reader may page up to.
+///
+/// The run's own cursor and the highest durable event can disagree when an
+/// older build rewound one of them; the higher of the two is the only safe
+/// floor, which is the same rule the append path applies when allocating.
+/// Read a typed render receipt out of the renderer's untyped ready payload.
+///
+/// Returns `None` rather than erroring when the payload predates the typed
+/// shape: an old renderer posting an old receipt must keep working, it simply
+/// does not get the stronger guarantee.
+fn visual_render_receipt_from(
+    optimizer_run_id: &str,
+    receipt: &Value,
+) -> Option<super::models::VisualRenderReceipt> {
+    let object = receipt.as_object()?;
+    let visual_id = object.get("visualId").and_then(Value::as_str)?.to_string();
+    let visual_revision = object
+        .get("visualRevision")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let projection_revision = object.get("projectionRevision").and_then(Value::as_u64)?;
+    let data_digest = object
+        .get("dataDigest")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if data_digest.is_empty() {
+        return None;
+    }
+    Some(super::models::VisualRenderReceipt {
+        visual_id,
+        visual_revision,
+        optimizer_run_id: optimizer_run_id.to_string(),
+        template_id: object
+            .get("templateId")
+            .and_then(Value::as_str)
+            .unwrap_or("optimizer.run.v1")
+            .to_string(),
+        template_version: object
+            .get("templateDigest")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        projection_revision,
+        data_digest,
+        tail_cursor: object
+            .get("replayedThrough")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        rendered_at: Utc::now().to_rfc3339(),
+    })
+}
+
+fn durable_tail_cursor(conn: &Connection, run_id: &str) -> Result<u64> {
+    let cursor: Option<i64> = conn
+        .query_row(
+            "SELECT cursor_seq FROM optimizer_event_cursors WHERE optimizer_run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let cursor = cursor.unwrap_or(0).max(0) as u64;
+    Ok(cursor.max(max_event_sequence(conn, run_id)?))
 }
 
 fn max_event_sequence(conn: &Connection, run_id: &str) -> Result<u64> {
@@ -7677,6 +8194,501 @@ pub(in crate::optimizers) mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    /// Build one GEPA progress event.
+    fn gepa_progress_event(run_id: &str, sequence: u64) -> OptimizerEventEnvelope {
+        let mut delta = serde_json::Map::new();
+        delta.insert("calls".into(), json!(1));
+        delta.insert("prompt_tokens".into(), json!(10));
+        delta.insert("completion_tokens".into(), json!(4));
+        delta.insert("rollouts".into(), json!(1));
+        delta.insert("cost_usd".into(), json!(0.001));
+        let mut usage = serde_json::Map::new();
+        usage.insert("calls".into(), json!(1));
+        usage.insert("prompt_tokens".into(), json!(10));
+        usage.insert("completion_tokens".into(), json!(4));
+        usage.insert("rollouts".into(), json!(1));
+        usage.insert("cost_usd".into(), json!(0.001));
+        OptimizerEventEnvelope {
+            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+            event_id: Some(format!("{run_id}:{sequence}")),
+            event_type: "gepa.candidate.evaluated".into(),
+            sequence_number: sequence,
+            occurred_at: format!("2026-08-31T00:00:{:02}Z", sequence.min(59)),
+            optimizer_run_id: run_id.into(),
+            algorithm_id: "gepa".into(),
+            level: Some("info".into()),
+            item: None,
+            delta,
+            snapshot: None,
+            usage_delta: Some(usage),
+            artifact_refs: vec![],
+            error: None,
+            raw: json!({ "source": "fold_test" }),
+        }
+    }
+
+    /// Acceptance: every completed run in a real library projects from local
+    /// evidence alone, with no producer and no event replay.
+    ///
+    /// Run explicitly against a copy of a real database:
+    ///
+    /// ```text
+    /// SYNTH_ACCEPTANCE_DB=~/.synth-desktop/instances/v08/readpath/data/synth.sqlite3 \
+    ///   cargo test -p synth-desktop --lib terminal_visuals_open_from_local_evidence -- --ignored --nocapture
+    /// ```
+    ///
+    /// Ignored by default because it needs a real library; a fixture would
+    /// only retest what the unit tests already cover. What this adds is the one
+    /// thing they cannot: production data, production code, no producer.
+    #[tokio::test]
+    #[ignore = "needs a real library; set SYNTH_ACCEPTANCE_DB"]
+    async fn terminal_visuals_open_from_local_evidence() {
+        let Ok(path) = std::env::var("SYNTH_ACCEPTANCE_DB") else {
+            panic!("set SYNTH_ACCEPTANCE_DB to a copy of a real synth.sqlite3");
+        };
+        let root = std::path::Path::new(&path)
+            .parent()
+            .expect("database path has a parent")
+            .to_path_buf();
+        let storage = Storage::open(&root).expect("open the real library");
+        let journal = EventJournal::new(storage.database().clone());
+        let content = ContentStore::new(storage.content_root());
+        let visuals =
+            VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
+        let (events_tx, _events_rx) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(crate::optimizers::OptimizerManager::with_home(
+            root.join("optimizer-home"),
+        ));
+        let svc = OptimizerService::new_with_manager(
+            storage.database().clone(),
+            journal,
+            content,
+            visuals,
+            events_tx,
+            manager,
+        );
+
+        let runs = svc
+            .list(serde_json::from_value(json!({})).unwrap())
+            .await
+            .expect("list runs");
+        let terminal: Vec<_> = runs
+            .iter()
+            .filter(|run| OptimizerRunStatus::str_is_terminal(&run.status))
+            .collect();
+        assert!(!terminal.is_empty(), "the library has completed runs to open");
+
+        let mut slowest = 0u128;
+        let mut failures = Vec::new();
+        for run in &terminal {
+            let started = std::time::Instant::now();
+            match svc.run_view_envelope(run.id.clone(), None).await {
+                Ok(envelope) => {
+                    let elapsed = started.elapsed().as_millis();
+                    slowest = slowest.max(elapsed);
+                    assert!(envelope.view.is_some(), "{} projected an empty view", run.id);
+                    assert!(envelope.run.is_some(), "{} carried no run record", run.id);
+                    println!(
+                        "  {:<44} {:>5}ms  rev={} tail={}",
+                        run.id, elapsed, envelope.projection_revision, envelope.tail_cursor
+                    );
+                }
+                Err(error) => failures.push(format!("{}: {error}", run.id)),
+            }
+        }
+        println!("\n  {} completed runs, slowest cold open {}ms", terminal.len(), slowest);
+        assert!(failures.is_empty(), "runs failed to open: {failures:#?}");
+        assert!(
+            slowest < 1_000,
+            "a cold open from local SQLite must stay under 1s; slowest was {slowest}ms"
+        );
+
+        // The conditional read must answer `unchanged` without a payload.
+        let first = terminal[0];
+        let held = svc.run_view_envelope(first.id.clone(), None).await.unwrap();
+        let again = svc
+            .run_view_envelope(first.id.clone(), Some(held.projection_revision))
+            .await
+            .unwrap();
+        assert!(again.unchanged, "a current revision must answer `unchanged`");
+        assert!(again.view.is_none(), "an unchanged answer carries no payload");
+    }
+
+    /// A run that cannot be projected says so once, in a way the renderer can
+    /// act on.
+    ///
+    /// The old behaviour: `run_view_v2` replayed the whole journal inside the
+    /// write transaction, failed on the missing spec, rolled back so nothing
+    /// was repaired, and did it again on the next of five retries — arriving
+    /// at "Run evidence unavailable" after five full replays. A permanent,
+    /// nameable condition presented as a flaky transport.
+    #[tokio::test]
+    async fn a_run_without_an_admitted_spec_fails_once_and_names_itself() {
+        let (svc, _dir, _rx) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_no_spec",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Reduce the row to its pre-admission shape: events, no spec, no
+        // projection — which is what 25 of 26 runs looked like on the
+        // reference machine.
+        let db = svc.db.clone();
+        let run_id = run.id.clone();
+        db.run_transaction(move |conn| {
+            conn.execute(
+                "DELETE FROM optimizer_run_specs WHERE optimizer_run_id = ?1",
+                params![run_id],
+            )?;
+            conn.execute(
+                "DELETE FROM optimizer_algorithm_projections WHERE optimizer_run_id = ?1",
+                params![run_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let failure = svc
+            .run_view_envelope(run.id.clone(), None)
+            .await
+            .expect_err("a run with no admitted spec cannot be projected");
+        let app_error = crate::error::AppError::from(failure);
+        assert_eq!(app_error.code, "optimizer.projection.missing_admitted_spec");
+        let structured = app_error
+            .structured
+            .expect("the failure travels as a typed structure, not as prose");
+        assert!(
+            !structured.retryable,
+            "a missing spec is structural: retrying replays the journal again and fails identically"
+        );
+        assert_eq!(structured.details["stage"], json!("projection"));
+        assert_eq!(structured.details["optimizerRunId"], json!(run.id));
+    }
+
+    /// A render receipt is durable, typed, and never moves backwards.
+    #[tokio::test]
+    async fn a_render_receipt_records_what_rendered_and_refuses_to_regress() {
+        let (svc, _dir, _rx) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_receipt",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let ready = |projection_revision: u64, digest: &str, template: &str| {
+            json!({
+                "visualId": "vis-receipt",
+                "visualRevision": 4,
+                "templateId": "optimizer.run.v1",
+                "templateDigest": template,
+                "replayedThrough": 120,
+                "subscribedFrom": 121,
+                "projectionRevision": projection_revision,
+                "dataDigest": digest
+            })
+        };
+
+        svc.record_visual_ready(run.id.clone(), ready(12, "fnv1a64:aaaa", "tpl-abc"))
+            .await
+            .unwrap();
+        let stored = svc
+            .visual_render_receipt("vis-receipt".into(), 4)
+            .await
+            .unwrap()
+            .expect("a receipt is written for a typed ready payload");
+        assert_eq!(stored.projection_revision, 12);
+        assert_eq!(stored.data_digest, "fnv1a64:aaaa");
+        assert_eq!(stored.tail_cursor, 120);
+        assert_eq!(stored.optimizer_run_id, run.id);
+
+        // The paid-compute gate reads the untyped summary field; it must keep
+        // being written alongside the typed row.
+        let gated = svc.get(run.id.clone()).await.unwrap();
+        assert!(gated.summary.get("visualReadyReceipt").is_some());
+
+        // Forward is fine.
+        svc.record_visual_ready(run.id.clone(), ready(15, "fnv1a64:bbbb", "tpl-abc"))
+            .await
+            .unwrap();
+        assert_eq!(
+            svc.visual_render_receipt("vis-receipt".into(), 4)
+                .await
+                .unwrap()
+                .unwrap()
+                .projection_revision,
+            15
+        );
+
+        // Backwards is not. A renderer that reconnected to an older projection
+        // must not be able to erase the proof that a newer one rendered — that
+        // proof is what makes the regression reportable at all.
+        svc.record_visual_ready(run.id.clone(), ready(9, "fnv1a64:cccc", "tpl-abc"))
+            .await
+            .unwrap();
+        let held = svc
+            .visual_render_receipt("vis-receipt".into(), 4)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(held.projection_revision, 15, "a lower revision cannot overwrite a higher one");
+        assert_eq!(held.data_digest, "fnv1a64:bbbb");
+
+        // A template change is a different render, so it replaces regardless:
+        // digests are not comparable across template versions.
+        svc.record_visual_ready(run.id.clone(), ready(9, "fnv1a64:dddd", "tpl-xyz"))
+            .await
+            .unwrap();
+        let rerendered = svc
+            .visual_render_receipt("vis-receipt".into(), 4)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(rerendered.template_version, "tpl-xyz");
+        assert_eq!(rerendered.projection_revision, 9);
+
+        // An untyped payload from an older renderer still works; it simply
+        // does not earn the stronger guarantee.
+        svc.record_visual_ready(
+            run.id.clone(),
+            json!({ "visualId": "vis-legacy", "templateId": "optimizer.run.v1" }),
+        )
+        .await
+        .unwrap();
+        assert!(svc
+            .visual_render_receipt("vis-legacy".into(), 0)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// Evidence is fetched by range, and nothing is sent twice.
+    #[tokio::test]
+    async fn an_evidence_window_transfers_only_what_the_caller_lacks() {
+        use super::super::events::EvidenceRange;
+
+        let (svc, _dir, _rx) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_evidence_ranges",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let events: Vec<_> = (1..=30)
+            .map(|sequence| gepa_progress_event(&run.id, sequence))
+            .collect();
+        svc.append_events(run.id.clone(), events).await.unwrap();
+
+        // A reader opening the tail first, the way a Replay tab does when the
+        // user jumps to the end of a run.
+        let tail = svc
+            .evidence_page(run.id.clone(), EvidenceRange::new(21, 30), vec![], None)
+            .await
+            .unwrap();
+        assert_eq!(tail.events.len(), 10);
+        assert_eq!(tail.range, Some(EvidenceRange::new(21, 30)));
+        assert_eq!(tail.tail_cursor, 30);
+        assert!(tail.complete);
+
+        // Scrolling back widens the window. Only the hole is transferred; the
+        // ten events already held are not sent again.
+        let back = svc
+            .evidence_page(run.id.clone(), EvidenceRange::new(1, 30), tail.coverage.clone(), None)
+            .await
+            .unwrap();
+        assert_eq!(back.events.len(), 20, "only the missing span crosses the bridge");
+        assert_eq!(back.range, Some(EvidenceRange::new(1, 20)));
+        assert_eq!(back.coverage, vec![EvidenceRange::new(1, 30)]);
+        assert!(back.complete);
+
+        // Asking again with full coverage is the "nothing to send" answer,
+        // which is what makes re-opening a tab after a restart free.
+        let again = svc
+            .evidence_page(run.id.clone(), EvidenceRange::new(1, 30), back.coverage.clone(), None)
+            .await
+            .unwrap();
+        assert!(again.events.is_empty());
+        assert_eq!(again.range, None);
+        assert!(again.complete);
+
+        // A bounded page reports only the span it reached, so the caller's
+        // coverage never claims more than it received.
+        let bounded = svc
+            .evidence_page(run.id.clone(), EvidenceRange::new(1, 30), vec![], Some(7))
+            .await
+            .unwrap();
+        assert_eq!(bounded.events.len(), 7);
+        assert_eq!(bounded.range, Some(EvidenceRange::new(1, 7)));
+        assert!(!bounded.complete, "a partial page must not claim the window");
+
+        // The window is clamped to what actually exists rather than trusted.
+        let beyond = svc
+            .evidence_page(run.id.clone(), EvidenceRange::new(1, 9_999), vec![], None)
+            .await
+            .unwrap();
+        assert_eq!(beyond.range, Some(EvidenceRange::new(1, 30)));
+        assert!(beyond.complete);
+    }
+
+    /// The append path must stop reading the whole journal.
+    ///
+    /// The defect: `commit_validated_events` loaded and deserialized every
+    /// event a run had ever emitted on *every* append, inside the exclusive
+    /// write transaction — linear per append, quadratic per run, measured at
+    /// ~24µs per event of history. At 50,000 events a single append reads
+    /// 50,000 events before it can commit, and every UI read queues behind it.
+    ///
+    /// Asserted by counting replays rather than by timing, so the test states
+    /// the property instead of approximating it.
+    #[tokio::test]
+    async fn ordinary_appends_never_replay_the_whole_journal() {
+        let (svc, _dir, _rx) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_no_replay",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        for sequence in 1..=40u64 {
+            svc.append_events(
+                run.id.clone(),
+                vec![gepa_progress_event(&run.id, sequence)],
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            full_journal_replays_for(&run.id),
+            0,
+            "forty ordinary progress appends must fold forward from the durable \
+             projection, not replay the journal forty times"
+        );
+
+        // The settlement fact still gets the whole history: its ordering rule
+        // is defined across the run, not within a batch. One replay, once.
+        let mut terminal = gepa_progress_event(&run.id, 41);
+        terminal.event_type = "optimizer.run.completed".into();
+        terminal.usage_delta = None;
+        terminal.delta = serde_json::Map::new();
+        svc.append_events(run.id.clone(), vec![terminal])
+            .await
+            .unwrap();
+        assert_eq!(
+            full_journal_replays_for(&run.id),
+            1,
+            "a terminal fact is evaluated against the whole history exactly once"
+        );
+
+        let view = svc.run_view_v2(run.id.clone()).await.unwrap();
+        let header = serde_json::to_value(&view).unwrap();
+        assert_eq!(header["header"]["lifecycle"], json!("terminal"));
+    }
+
+    /// The incremental fold must produce exactly what the full replay produced.
+    ///
+    /// This is the safety net for taking the whole-history replay off the
+    /// append path. Appending one event at a time exercises the incremental
+    /// path on every append after the first; appending the same events as a
+    /// single batch exercises it once. Both are compared against a run whose
+    /// projection is rebuilt from the complete journal.
+    ///
+    /// If these ever diverge, the optimization is wrong and the guard in
+    /// `can_fold_incrementally` is too permissive — this test is the thing
+    /// that says so, rather than a user seeing a wrong reward weeks later.
+    #[tokio::test]
+    async fn incremental_fold_matches_full_replay_of_the_whole_journal() {
+        let (svc, _dir, _rx) = service().await;
+
+        async fn build(svc: &OptimizerService, id: &str, batch_size: usize) -> serde_json::Value {
+            let (run, _) = svc
+                .create(
+                    serde_json::from_value(json!({
+                        "algorithmId": "gepa",
+                        "id": id,
+                        "openVisual": false
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let events: Vec<_> = (1..=24)
+                .map(|sequence| gepa_progress_event(&run.id, sequence))
+                .collect();
+            for chunk in events.chunks(batch_size) {
+                svc.append_events(run.id.clone(), chunk.to_vec())
+                    .await
+                    .unwrap();
+            }
+            let view = svc.run_view_v2(run.id.clone()).await.unwrap();
+            let mut value = serde_json::to_value(&view).unwrap();
+            // Identity and revision legitimately differ between the two runs;
+            // everything the product reads must not.
+            let header = value
+                .get_mut("header")
+                .and_then(serde_json::Value::as_object_mut)
+                .unwrap();
+            header.remove("runId");
+            header.remove("specId");
+            header.remove("specDigest");
+            header.remove("projectionRevision");
+            value
+        }
+
+        let one_at_a_time = build(&svc, "gepa_fold_incremental", 1).await;
+        let single_batch = build(&svc, "gepa_fold_batched", 24).await;
+        let mid_batches = build(&svc, "gepa_fold_chunked", 5).await;
+
+        assert_eq!(
+            one_at_a_time, single_batch,
+            "folding forward one event at a time must equal reducing the batch whole"
+        );
+        assert_eq!(
+            one_at_a_time, mid_batches,
+            "the projection must not depend on how the producer chunked its appends"
+        );
+
+        // And the usage accumulator, which resumes from the run row on the
+        // incremental path rather than being rebuilt from zero.
+        let incremental = svc
+            .get("gepa_fold_incremental".to_string())
+            .await
+            .unwrap();
+        let batched = svc.get("gepa_fold_batched".to_string()).await.unwrap();
+        assert_eq!(incremental.usage.calls, 24);
+        assert_eq!(incremental.usage.calls, batched.usage.calls);
+        assert_eq!(incremental.usage.prompt_tokens, batched.usage.prompt_tokens);
+        assert_eq!(
+            incremental.usage.completion_tokens,
+            batched.usage.completion_tokens
+        );
+        assert_eq!(incremental.usage.rollouts, batched.usage.rollouts);
+        assert_eq!(incremental.usage.cost_usd, batched.usage.cost_usd);
     }
 
     #[tokio::test]

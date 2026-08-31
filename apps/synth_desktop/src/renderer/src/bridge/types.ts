@@ -86,6 +86,10 @@ import type {
 	ReportVisibilityRequest,
 	ResearchLogEntry,
 	OptimizerRunOutputs,
+	EvidencePage,
+	EvidenceRange,
+	VisualRenderReceipt,
+	OptimizerRunViewEnvelope,
 	OptimizerRunViewV2,
 	OptimizerFrameContent,
 	OptimizerFrameDelta,
@@ -174,6 +178,10 @@ export type {
 	ReportVisibilityRequest,
 	ResearchLogEntry,
 	OptimizerRunOutputs,
+	EvidencePage,
+	EvidenceRange,
+	VisualRenderReceipt,
+	OptimizerRunViewEnvelope,
 	OptimizerRunViewV2,
 	OptimizerFrameContent,
 	OptimizerFrameDelta,
@@ -906,6 +914,23 @@ export type OptimizersBridge = {
 	}): Promise<OptimizerRunRecord[]>;
 	get(optimizerRunId: string): Promise<OptimizerRunRecord>;
 	runViewV2(optimizerRunId: string): Promise<OptimizerRunViewV2>;
+	/**
+	 * One coherent read for first paint: the kernel projection, the run record
+	 * the templates still read compatibility fields from, and the durable
+	 * journal tail. Pass `ifNewerThan` with a projection revision already held
+	 * to get `unchanged` back instead of the same bytes again.
+	 */
+	runView(optimizerRunId: string, ifNewerThan?: number | null): Promise<OptimizerRunViewEnvelope>;
+	/**
+	 * Everything in `window` the caller does not already hold. `held` is the
+	 * coverage from the previous answer, sent back verbatim.
+	 */
+	evidencePage(
+		optimizerRunId: string,
+		window: EvidenceRange,
+		held?: EvidenceRange[] | null,
+		limit?: number | null
+	): Promise<EvidencePage>;
 	create(request: {
 		algorithmId: string;
 		algorithmVersion?: string;
@@ -971,7 +996,23 @@ export type OptimizersBridge = {
 		replayedThrough: number;
 		subscribedFrom: number;
 		templateDigest?: string;
+		/** Visual revision this render belongs to. */
+		visualRevision?: number | null;
+		/** Durable projection revision the render was produced from. */
+		projectionRevision?: number | null;
+		/** Digest of that projection, so identical revisions with different
+		 *  content are detectable. */
+		dataDigest?: string;
 	}): Promise<unknown>;
+	/**
+	 * Proof that this visual revision has rendered before, if it has. Read on
+	 * reopen to tell a normal revision advance from evidence that has gone
+	 * backwards under a visual that already showed something newer.
+	 */
+	visualRenderReceipt?(
+		visualId: string,
+		visualRevision?: number | null
+	): Promise<VisualRenderReceipt | null>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
 };
 

@@ -161,6 +161,17 @@ function browserCoreBridge() {
 				databasePath: "browser-memory://core-runtime",
 				schemaVersion: 0,
 				integrityOk: true,
+				// A browser preview has no SQLite, so nothing ever waits for a
+				// lock. Zeroes here are the honest reading, not a placeholder.
+				lockWait: {
+					readTransactions: 0,
+					readWaitAvgUs: 0,
+					readWaitMaxUs: 0,
+					writeTransactions: 0,
+					writeWaitAvgUs: 0,
+					writeWaitMaxUs: 0,
+					timeouts: 0
+				},
 				contentStorePath: "browser-memory://content",
 				journalHead: 0,
 				sessionCount: 0,
@@ -962,6 +973,23 @@ window.synthWorkspaceScope ??= isTauri
 			get: (optimizerRunId) => fromGenerated(spectaCommands.optimizersGet(optimizerRunId)),
 			runViewV2: (optimizerRunId) =>
 				fromGenerated(spectaCommands.optimizersRunViewV2(optimizerRunId)) as Promise<OptimizerRunViewV2>,
+			visualRenderReceipt: (visualId, visualRevision) =>
+				fromGenerated(spectaCommands.optimizersVisualRenderReceipt(
+					visualId,
+					visualRevision ?? null
+				)) as Promise<import("../bridge").VisualRenderReceipt | null>,
+			evidencePage: (optimizerRunId, window, held, limit) =>
+				fromGenerated(spectaCommands.optimizersEvidencePage(
+					optimizerRunId,
+					window,
+					held ?? null,
+					limit ?? null
+				)) as Promise<import("../bridge").EvidencePage>,
+			runView: (optimizerRunId, ifNewerThan) =>
+				fromGenerated(spectaCommands.optimizersRunView(
+					optimizerRunId,
+					ifNewerThan ?? null
+				)) as Promise<import("../bridge").OptimizerRunViewEnvelope>,
 			create: (request) => fromGenerated(spectaCommands.optimizersCreate(request)),
 			refresh: (optimizerRunId) => fromGenerated(spectaCommands.optimizersRefresh(optimizerRunId)),
 			eventsAfter: (optimizerRunId, afterSeq = 0, limit) =>

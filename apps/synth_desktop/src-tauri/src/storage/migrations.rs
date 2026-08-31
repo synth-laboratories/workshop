@@ -62,6 +62,12 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_57,
     MIGRATION_58,
     MIGRATION_59,
+    MIGRATION_60,
+    MIGRATION_61,
+    MIGRATION_62,
+    MIGRATION_63,
+    MIGRATION_64,
+    MIGRATION_65,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -4795,6 +4801,83 @@ mod tests {
     }
 
     #[test]
+    fn migration_64_backfills_specs_for_pre_admission_local_runs() {
+        // Without a spec row `persist_kernel_projection` refuses to rebuild,
+        // and without a projection `run_view_v2` has nothing to return — so a
+        // pre-admission run replays its whole journal on every open only to
+        // fail identically. The backfill is what makes those runs readable at
+        // all; it is not a performance nicety.
+        let conn = seed_at_version(63);
+        for (id, algorithm) in [("gepa-legacy", "gepa"), ("eval-legacy", "eval")] {
+            conn.execute(
+                "INSERT INTO optimizer_runs(
+                    id, algorithm_id, status, source, created_at, payload_json, updated_at
+                 ) VALUES(?1,?2,'completed','local','2026-08-16T00:00:00Z','{}',
+                          '2026-08-16T00:00:00Z')",
+                rusqlite::params![id, algorithm],
+            )
+            .unwrap();
+        }
+        // A run whose algorithm the kernel does not recognise must be left
+        // alone: synthesizing a spec for it would only move the failure.
+        conn.execute(
+            "INSERT INTO optimizer_runs(
+                id, algorithm_id, status, source, created_at, payload_json, updated_at
+             ) VALUES('unknown-legacy','not-an-algorithm','completed','local',
+                      '2026-08-16T00:00:00Z','{}','2026-08-16T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        // An already-admitted run keeps the spec it was admitted under.
+        conn.execute(
+            "INSERT INTO optimizer_runs(
+                id, algorithm_id, status, source, created_at, payload_json, updated_at
+             ) VALUES('admitted','gepa','completed','local','2026-08-30T00:00:00Z','{}',
+                      '2026-08-30T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO optimizer_run_specs(
+                optimizer_run_id, spec_json, spec_digest, authorization_json, admitted_at
+             ) VALUES('admitted','{}','sha256:real','{}','2026-08-30T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        apply_migrations(&conn).unwrap();
+
+        let digest = |id: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT spec_digest FROM optimizer_run_specs WHERE optimizer_run_id = ?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+        };
+        assert_eq!(digest("gepa-legacy").as_deref(), Some("legacy-local:gepa-legacy"));
+        assert_eq!(digest("eval-legacy").as_deref(), Some("legacy-local:eval-legacy"));
+        assert_eq!(digest("unknown-legacy"), None, "unknown algorithms are left alone");
+        assert_eq!(
+            digest("admitted").as_deref(),
+            Some("sha256:real"),
+            "a real admitted spec is never overwritten by the backfill"
+        );
+
+        // Provenance stays honest: the synthesized rows say they were adopted,
+        // not admitted, so a later audit can tell the two apart.
+        let authorization: String = conn
+            .query_row(
+                "SELECT authorization_json FROM optimizer_run_specs WHERE optimizer_run_id='gepa-legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(authorization.contains("pre_admission_local_run_migration"));
+        assert!(authorization.contains("not_required"));
+    }
+
+    #[test]
     fn migration_58_backfills_query_fields_with_an_explicit_legacy_clock_witness() {
         let conn = seed_at_version(57);
         conn.execute(
@@ -4895,3 +4978,90 @@ mod tests {
         }
     }
 }
+
+
+/// Backfill admitted specs for runs that predate kernel admission.
+///
+/// `persist_kernel_projection` refuses to rebuild a projection without a spec
+/// digest, and `run_view_v2` needs a projection. A local run created before
+/// admission existed therefore has neither, cannot acquire either, and fails
+/// every read forever — the visual replays its whole journal, throws, rolls
+/// back, and retries. On a developer machine carrying runs from before the
+/// cutover that is most of the library.
+///
+/// MIGRATION_46 already did exactly this for `legacy_campaign_migration`
+/// rows. This extends the same treatment to the other pre-admission sources,
+/// which were simply not present when that migration was written.
+///
+/// The synthesized spec is deliberately marked as reconstructed rather than
+/// admitted: the digest is namespaced `legacy-local:`, and the authorization
+/// records `not_required` with a reason. Provenance stays honest about the
+/// difference between a run that was admitted under contract and a run that
+/// was adopted afterwards, so a later audit can tell them apart.
+const MIGRATION_64: &str = r#"
+INSERT OR IGNORE INTO optimizer_run_specs(
+    optimizer_run_id, spec_json, spec_digest, authorization_json, admitted_at
+)
+SELECT
+    run.id,
+    json_object(
+        'schemaVersion', 'legacy_local_run_spec.v1',
+        'optimizerRunId', run.id,
+        'algorithmId', run.algorithm_id,
+        'source', run.source,
+        'reconstructed', json('true')
+    ),
+    'legacy-local:' || run.id,
+    '{"state":"not_required","reason":"pre_admission_local_run_migration"}',
+    run.created_at
+FROM optimizer_runs run
+LEFT JOIN optimizer_run_specs spec ON spec.optimizer_run_id = run.id
+WHERE spec.optimizer_run_id IS NULL
+  AND run.algorithm_id IN ('eval','gepa','go-ex','sft','cispo');
+"#;
+
+
+/// Durable proof that a specific visual revision rendered from complete local
+/// evidence.
+///
+/// The invariant this exists for: *once Workshop has successfully rendered a
+/// revision, that revision stays viewable after restart and while the producer
+/// is unavailable.* The evidence itself needs no new home — the kernel
+/// projection is already durable in SQLite and, since reads stopped taking the
+/// write lock, is readable in about a millisecond with no producer involved.
+/// Copying it into a second table would create a second authority for product
+/// truth that can drift from the projection, which is exactly what the kernel
+/// invariants forbid.
+///
+/// What was missing was the *claim*, not the data. "This rendered" lived as
+/// untyped JSON on the mutable `optimizer_runs.summary_json` blob, with no
+/// revision, no template version, and no digest — so nothing could tell that a
+/// reopened visual was being served evidence older than, or different from,
+/// what it had already shown. This table makes that claim typed and checkable:
+///
+///   · identity   — visual, revision, run, and template it was rendered from;
+///   · freshness  — the projection revision it was rendered at, so a lower one
+///                  is a detectable regression rather than a silent downgrade;
+///   · integrity  — a digest of the rendered projection, so the same revision
+///                  carrying different content is detectable;
+///   · extent     — the journal tail it had replayed through.
+///
+/// One row per (visual, revision): a re-render of the same revision replaces
+/// it, and `projection_revision` never moves backwards.
+const MIGRATION_65: &str = r#"
+CREATE TABLE IF NOT EXISTS visual_render_receipts (
+    visual_id TEXT NOT NULL,
+    visual_revision INTEGER NOT NULL,
+    optimizer_run_id TEXT NOT NULL,
+    template_id TEXT NOT NULL,
+    template_version TEXT NOT NULL,
+    projection_revision INTEGER NOT NULL,
+    data_digest TEXT NOT NULL,
+    tail_cursor INTEGER NOT NULL,
+    rendered_at TEXT NOT NULL,
+    PRIMARY KEY (visual_id, visual_revision)
+);
+
+CREATE INDEX IF NOT EXISTS visual_render_receipts_run
+ON visual_render_receipts(optimizer_run_id);
+"#;

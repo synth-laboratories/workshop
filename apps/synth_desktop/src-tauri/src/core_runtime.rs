@@ -103,6 +103,31 @@ impl CoreRuntime {
                 ),
             );
         }
+        // Neither visual cache is product truth, and nothing else ever removes
+        // from them. Collecting at startup keeps that bounded without adding a
+        // background timer whose only job is to delete rows nobody is reading.
+        match storage.database().transaction(|conn| {
+            crate::visuals::cache_gc::collect(conn, crate::visuals::RENDITION_RENDERER_VERSION)
+        }) {
+            Ok(collected) if collected.total() > 0 => observability.logs.info(
+                "recovery",
+                "visuals.cache_collected",
+                format!(
+                    "collected {} visual cache row(s): {} stale-renderer, {} over-budget, {} orphaned receipt(s)",
+                    collected.total(),
+                    collected.stale_renditions,
+                    collected.evicted_renditions,
+                    collected.orphaned_receipts
+                ),
+            ),
+            Ok(_) => {}
+            // A cache that failed to shrink is not a reason to fail startup.
+            Err(error) => observability.logs.error(
+                "recovery",
+                "visuals.cache_collect_failed",
+                format!("visual cache collection failed: {error}"),
+            ),
+        }
         let recovered_runs = storage
             .database()
             .transaction(|conn| {

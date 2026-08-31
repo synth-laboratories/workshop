@@ -96,6 +96,42 @@ fn replace_work_items(conn: &Connection, run_id: &str, items: &[WorkItem]) -> Re
     Ok(())
 }
 
+/// The cheapest possible freshness check: one indexed primary-key lookup of a
+/// single integer column.
+///
+/// This is what a conditional read and a live-revision probe should cost.
+/// Reaching for `load_state` instead means a four-table join plus a projection
+/// deserialize just to learn that nothing has changed — which is what the
+/// renderer's 750 ms poll was doing, per subscribed run, forever.
+pub fn load_projection_revision(conn: &Connection, run_id: &str) -> Result<Option<u64>> {
+    let revision: Option<Option<i64>> = conn
+        .query_row(
+            "SELECT projection_revision FROM optimizer_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("load optimizer projection revision")?;
+    Ok(revision.flatten().map(|value| value.max(0) as u64))
+}
+
+/// Whether the run has an admitted spec.
+///
+/// A projection cannot be rebuilt without one, and the distinction between
+/// "not yet projected" and "can never be projected" is the difference between
+/// a retryable wait and a permanent, reportable condition.
+pub fn spec_exists(conn: &Connection, run_id: &str) -> Result<bool> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM optimizer_run_specs WHERE optimizer_run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("probe optimizer run spec")?;
+    Ok(found.is_some())
+}
+
 pub fn load_projection_json(conn: &Connection, run_id: &str) -> Result<Option<String>> {
     conn.query_row(
         "SELECT projection_json FROM optimizer_algorithm_projections WHERE optimizer_run_id = ?1",

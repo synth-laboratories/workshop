@@ -2,6 +2,10 @@
 
 mod artifacts;
 mod backfill;
+pub mod cache_gc;
+
+/// The renderer version stamped on stored renditions.
+pub use mermaid::RENDERER_VERSION as RENDITION_RENDERER_VERSION;
 pub mod chart_data;
 pub mod charts;
 mod live_eval;

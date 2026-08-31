@@ -79,6 +79,52 @@ export const commands = {
 } | null) => typedError<OptimizerRunRecord[], AppError_Serialize>(__TAURI_INVOKE("optimizers_list", { query })),
 	optimizersGet: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_get", { optimizerRunId })),
 	optimizersRunViewV2: (optimizerRunId: string) => typedError<OptimizerRunViewV2, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_view_v2", { optimizerRunId })),
+	optimizersRunView: (optimizerRunId: string, ifNewerThan: number | null) => typedError<OptimizerRunViewEnvelope_Serialize, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_view", { optimizerRunId, ifNewerThan })),
+	/**
+	 *  Read the parts of an evidence window the caller does not already hold.
+	 *
+	 *  `held` is the coverage returned by the previous call, sent back verbatim.
+	 *  The answer is the complement, so re-opening Replay after a restart transfers
+	 *  only what is genuinely missing rather than the whole journal again.
+	 */
+	optimizersEvidencePage: (optimizerRunId: string, window: EvidenceRange, held: EvidenceRange[] | null, limit: number | null) => typedError<EvidencePage_Serialize, AppError_Serialize>(__TAURI_INVOKE("optimizers_evidence_page", { optimizerRunId, window, held, limit })),
+	/**
+	 *  One coherent read for a visual's first paint: the durable projection, the
+	 *  run record the templates still read compatibility fields from, and the
+	 *  journal tail an evidence reader pages against.
+	 *
+	 *  `if_newer_than` makes it conditional. A caller holding projection revision
+	 *  *n* passes it and is told `unchanged` instead of being handed the same
+	 *  bytes again — which is what turns a background freshness check into one
+	 *  indexed column read rather than a full projection load and IPC round trip.
+	 *  The render receipt for one visual revision, if it has ever rendered.
+	 *
+	 *  Read on reopen so a visual can tell "the projection has moved on" (normal)
+	 *  from "the projection is now older than, or different from, what I already
+	 *  showed" (a regression that must be reported rather than rendered).
+	 */
+	optimizersVisualRenderReceipt: (visualId: string, visualRevision: number | null) => typedError<{
+	visualId: string,
+	visualRevision: number,
+	optimizerRunId: string,
+	templateId: string,
+	/**
+	 *  The template digest the render was produced by. A template change
+	 *  invalidates the comparison rather than failing it: different code
+	 *  legitimately renders the same projection differently.
+	 */
+	templateVersion: string,
+	/**  The durable projection revision this render was produced from. */
+	projectionRevision: number,
+	/**
+	 *  Digest of the projection content, so the same revision carrying
+	 *  different bytes is detectable.
+	 */
+	dataDigest: string,
+	/**  How far the journal had been replayed when the render completed. */
+	tailCursor: number,
+	renderedAt: string,
+} | null, AppError_Serialize>(__TAURI_INVOKE("optimizers_visual_render_receipt", { visualId, visualRevision })),
 	optimizersCreate: (request: OptimizerCreateRequest) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_create", { request })),
 	optimizersRefresh: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_refresh", { optimizerRunId })),
 	optimizersEventsAfter: (optimizerRunId: string, afterSeq: number | null, limit: number | null) => typedError<OptimizerEventEnvelope[], AppError_Serialize>(__TAURI_INVOKE("optimizers_events_after", { optimizerRunId, afterSeq, limit })),
@@ -1035,6 +1081,17 @@ export type CoreDiagnostics = {
 	runCount: number,
 	visualCount: number,
 	migrationComplete: boolean,
+	/**
+	 *  Transaction lock-acquisition wait, split by intent.
+	 *
+	 *  The interval between asking for a transaction and getting one — not
+	 *  query, deserialize, or IPC time. It is the number that made a busy
+	 *  producer look like a dead one from the renderer, and until now nothing
+	 *  measured it. Reads should sit near zero: in WAL mode a deferred read
+	 *  takes a snapshot rather than queueing, so a rising read wait means a
+	 *  read path is still opening `Immediate` somewhere.
+	 */
+	lockWait: LockWaitDiagnostics,
 };
 
 /**
@@ -1258,6 +1315,68 @@ export type EvalStageCandidatesRequest = {
 export type EventSource = "local" | "remote" | "intern" | "codex" | "system" | "mlx" | "visual" | "report";
 
 export type EvidenceCompleteness = "absent" | "partial" | "complete" | "unusable";
+
+/**  One answer to "everything in this window except what I already hold". */
+export type EvidencePage = EvidencePage_Serialize | EvidencePage_Deserialize;
+
+/**  One answer to "everything in this window except what I already hold". */
+export type EvidencePage_Deserialize = {
+	events: OptimizerEventEnvelope[],
+	/**
+	 *  The span this page actually covers. `None` when the window was already
+	 *  fully held, which is the "nothing to send" answer.
+	 */
+	range?: EvidenceRange | null,
+	/**
+	 *  Held spans plus this page, normalized. The caller stores it verbatim
+	 *  and sends it back on the next request; it never has to reconstruct
+	 *  what it has from what it displayed.
+	 */
+	coverage: EvidenceRange[],
+	/**  Whether `coverage` now spans the whole requested window. */
+	complete: boolean,
+	/**
+	 *  The run's durable tail, so a reader knows what "the end" is without a
+	 *  second call.
+	 */
+	tailCursor: number,
+};
+
+/**  One answer to "everything in this window except what I already hold". */
+export type EvidencePage_Serialize = {
+	events: OptimizerEventEnvelope[],
+	/**
+	 *  The span this page actually covers. `None` when the window was already
+	 *  fully held, which is the "nothing to send" answer.
+	 */
+	range?: EvidenceRange | null,
+	/**
+	 *  Held spans plus this page, normalized. The caller stores it verbatim
+	 *  and sends it back on the next request; it never has to reconstruct
+	 *  what it has from what it displayed.
+	 */
+	coverage: EvidenceRange[],
+	/**  Whether `coverage` now spans the whole requested window. */
+	complete: boolean,
+	/**
+	 *  The run's durable tail, so a reader knows what "the end" is without a
+	 *  second call.
+	 */
+	tailCursor: number,
+};
+
+/**
+ *  An inclusive span of durable event sequences.
+ *
+ *  Evidence is browsed, not streamed. A reader that opens Replay at the end of
+ *  a run and then scrolls back holds two disjoint spans, not a prefix — so the
+ *  unit of both request and answer is a range, and `from > to` is empty rather
+ *  than an error.
+ */
+export type EvidenceRange = {
+	from: number,
+	to: number,
+};
 
 export type EvidenceRef = {
 	kind: string,
@@ -1853,6 +1972,17 @@ export type LegacyDetection = {
 	warnings: string[],
 };
 
+export type LockWaitDiagnostics = {
+	readTransactions: number,
+	readWaitAvgUs: number,
+	readWaitMaxUs: number,
+	writeTransactions: number,
+	writeWaitAvgUs: number,
+	writeWaitMaxUs: number,
+	/**  Transactions that gave up rather than acquiring. */
+	timeouts: number,
+};
+
 export type LogQuery = {
 	level: string | null,
 	component: string | null,
@@ -2413,6 +2543,97 @@ export type OptimizerRunStatus =
 "interrupted" | "infrastructure_lost" |
 /**  Stopped because a spend or step ceiling was reached. */
 "cap_reached";
+
+/**
+ *  One coherent read of everything a visual needs to mount.
+ *
+ *  Replaces the renderer's `runViewV2 → get → eventsAfter` choreography for
+ *  first paint. The projection and the run record are read in the same
+ *  deferred transaction — `run_view_v2` already loaded the run row to build
+ *  the view's context, so carrying it costs nothing and removes an entire
+ *  IPC round trip from the mount path.
+ *
+ *  The envelope is also *conditional*. `projection_revision` is already a
+ *  monotonic version stamp on the durable projection; a caller that holds a
+ *  revision sends it as `if_newer_than` and gets `unchanged` back instead of a
+ *  second copy of bytes it already has. That is what makes a background
+ *  freshness check cheap enough to run against a cached first paint.
+ */
+export type OptimizerRunViewEnvelope = OptimizerRunViewEnvelope_Serialize | OptimizerRunViewEnvelope_Deserialize;
+
+/**
+ *  One coherent read of everything a visual needs to mount.
+ *
+ *  Replaces the renderer's `runViewV2 → get → eventsAfter` choreography for
+ *  first paint. The projection and the run record are read in the same
+ *  deferred transaction — `run_view_v2` already loaded the run row to build
+ *  the view's context, so carrying it costs nothing and removes an entire
+ *  IPC round trip from the mount path.
+ *
+ *  The envelope is also *conditional*. `projection_revision` is already a
+ *  monotonic version stamp on the durable projection; a caller that holds a
+ *  revision sends it as `if_newer_than` and gets `unchanged` back instead of a
+ *  second copy of bytes it already has. That is what makes a background
+ *  freshness check cheap enough to run against a cached first paint.
+ */
+export type OptimizerRunViewEnvelope_Deserialize = {
+	/**
+	 *  True when the caller's `if_newer_than` already matched the durable
+	 *  revision. `view` and `run` are then `None` — deliberately, so a stale
+	 *  consumer cannot mistake an empty envelope for an empty run.
+	 */
+	unchanged: boolean,
+	view?: OptimizerRunViewV2 | null,
+	/**
+	 *  Compatibility fields the templates still read: usage extras, the
+	 *  terminal manifest, timings, objective, and capabilities.
+	 */
+	run?: OptimizerRunRecord | null,
+	projectionRevision: number,
+	/**
+	 *  The run's durable event cursor: the tail an evidence reader may page
+	 *  up to. Carried here so a detail tab never has to call `get` to learn
+	 *  how much journal exists.
+	 */
+	tailCursor: number,
+};
+
+/**
+ *  One coherent read of everything a visual needs to mount.
+ *
+ *  Replaces the renderer's `runViewV2 → get → eventsAfter` choreography for
+ *  first paint. The projection and the run record are read in the same
+ *  deferred transaction — `run_view_v2` already loaded the run row to build
+ *  the view's context, so carrying it costs nothing and removes an entire
+ *  IPC round trip from the mount path.
+ *
+ *  The envelope is also *conditional*. `projection_revision` is already a
+ *  monotonic version stamp on the durable projection; a caller that holds a
+ *  revision sends it as `if_newer_than` and gets `unchanged` back instead of a
+ *  second copy of bytes it already has. That is what makes a background
+ *  freshness check cheap enough to run against a cached first paint.
+ */
+export type OptimizerRunViewEnvelope_Serialize = {
+	/**
+	 *  True when the caller's `if_newer_than` already matched the durable
+	 *  revision. `view` and `run` are then `None` — deliberately, so a stale
+	 *  consumer cannot mistake an empty envelope for an empty run.
+	 */
+	unchanged: boolean,
+	view?: OptimizerRunViewV2 | null,
+	/**
+	 *  Compatibility fields the templates still read: usage extras, the
+	 *  terminal manifest, timings, objective, and capabilities.
+	 */
+	run?: OptimizerRunRecord | null,
+	projectionRevision: number,
+	/**
+	 *  The run's durable event cursor: the tail an evidence reader may page
+	 *  up to. Carried here so a detail tab never has to call `get` to learn
+	 *  how much journal exists.
+	 */
+	tailCursor: number,
+};
 
 export type OptimizerRunViewV2 = {
 	algorithm: "eval",
@@ -3588,6 +3809,40 @@ export type VisualRecord = {
 	metadata: unknown,
 	createdAt: string,
 	updatedAt: string,
+};
+
+/**
+ *  Durable proof that one visual revision rendered from complete local
+ *  evidence.
+ *
+ *  Not a copy of the evidence — the kernel projection remains the sole
+ *  authority and is already durable. This is the checkable claim *about* a
+ *  render, which is what lets a reopened visual tell the difference between
+ *  "the projection has moved on" (normal) and "the projection is now older or
+ *  different than what I already showed" (a regression that must be reported,
+ *  never silently rendered).
+ */
+export type VisualRenderReceipt = {
+	visualId: string,
+	visualRevision: number,
+	optimizerRunId: string,
+	templateId: string,
+	/**
+	 *  The template digest the render was produced by. A template change
+	 *  invalidates the comparison rather than failing it: different code
+	 *  legitimately renders the same projection differently.
+	 */
+	templateVersion: string,
+	/**  The durable projection revision this render was produced from. */
+	projectionRevision: number,
+	/**
+	 *  Digest of the projection content, so the same revision carrying
+	 *  different bytes is detectable.
+	 */
+	dataDigest: string,
+	/**  How far the journal had been replayed when the render completed. */
+	tailCursor: number,
+	renderedAt: string,
 };
 
 export type VisualRendition = {

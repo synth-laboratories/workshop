@@ -49,6 +49,24 @@ export type ShellProps = {
   bindings?: VisualBinding[] | { inputs?: VisualBinding[]; slots?: VisualBinding[] };
   /** Desktop can inject live/reconciled events for an optimizer_run binding. */
   events?: OptimizerEvent[];
+  /**
+   * Where raw-evidence hydration has got to.
+   *
+   * The live workspace formats the backend projection and never needs this.
+   * Time travel does: an empty `events` array while evidence is still loading
+   * is not the same claim as a run that produced nothing, and a scrubber that
+   * cannot tell them apart silently offers an empty history as if it were the
+   * whole one.
+   */
+  evidenceState?: "pending" | "loading" | "ready" | "partial" | "unavailable";
+  /**
+   * Lazy, range-addressed access to the journal. Present in the desktop host;
+   * absent in previews and fixtures, where `events` is whatever was injected.
+   */
+  evidence?: {
+    load(window: { from: number; to: number }): Promise<unknown[]>;
+    tail(): number;
+  };
   run?: OptimizerRun;
   runViewV2?: OptimizerRunViewV2Like;
   runProgress?: RunProgressAgreementLike;
@@ -148,15 +166,44 @@ export function Shell(props: ShellProps) {
   const [followLive, setFollowLive] = useState(true);
   const [cursorIndex, setCursorIndex] = useState(Math.max(0, events.length - 1));
   const [selectedCandidate, setSelectedCandidate] = useState<string | null>(null);
+  // Evidence fetched on intent, kept separately from whatever the host
+  // injected so a fixture or preview keeps rendering exactly what it was given.
+  const [loadedEvidence, setLoadedEvidence] = useState<OptimizerEvent[] | null>(null);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+
+  const evidenceState = props.evidenceState ?? payload?.evidenceState;
+  const hydrating = evidenceState === "pending" || evidenceState === "loading";
+
+  // Leaving live is the intent signal. Nothing is fetched while the user is
+  // watching the aggregate, which is the whole point of splitting the two.
+  useEffect(() => {
+    if (followLive || !props.evidence || loadedEvidence || evidenceLoading) return;
+    const tail = props.evidence.tail();
+    if (tail <= 0) return;
+    let cancelled = false;
+    setEvidenceLoading(true);
+    void props.evidence
+      .load({ from: 1, to: tail })
+      .then((rows) => {
+        if (!cancelled) setLoadedEvidence(normalizeEvents(rows));
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setEvidenceLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [followLive, props.evidence, loadedEvidence, evidenceLoading]);
+
+  const timelineEvents = loadedEvidence ?? events;
 
   useEffect(() => {
-    if (followLive) setCursorIndex(Math.max(0, events.length - 1));
-  }, [events.length, followLive]);
+    if (followLive) setCursorIndex(Math.max(0, timelineEvents.length - 1));
+  }, [timelineEvents.length, followLive]);
 
-  const atSeq = events[cursorIndex]?.sequenceNumber;
+  const atSeq = timelineEvents[cursorIndex]?.sequenceNumber;
   const projected = useMemo(
-    () => (followLive ? null : projectAtCursor(run, events, atSeq)),
-    [followLive, run, events, atSeq]
+    () => (followLive ? null : projectAtCursor(run, timelineEvents, atSeq)),
+    [followLive, run, timelineEvents, atSeq]
   );
 
   // Raw events are reduced only for an explicit historical cursor. The live
@@ -238,23 +285,35 @@ export function Shell(props: ShellProps) {
         ]}
       />
 
-      <GlobalTimeline
-        events={displayed.timeline.map((e) => ({
-          sequence: Number(e.sequence),
-          type: String(e.type),
-          occurredAt: String(e.occurredAt)
-        }))}
-        cursorIndex={cursorIndex}
-        onScrub={(index) => {
-          setFollowLive(false);
-          setCursorIndex(index);
-        }}
-        followLive={followLive}
-        onFollowLive={() => {
-          setFollowLive(true);
-          setCursorIndex(Math.max(0, events.length - 1));
-        }}
-      />
+      {/*
+        The aggregate above is authoritative already; only time travel needs the
+        journal. While it is still arriving, say so — an empty timeline would
+        otherwise read as "this run produced nothing", which is a different and
+        wrong claim.
+      */}
+      {(hydrating || evidenceLoading) && timelineEvents.length === 0 ? (
+        <p className="sv-lede" role="status" data-testid="optimizer-evidence-hydrating">
+          Loading run history for time travel. Metrics above are already current.
+        </p>
+      ) : (
+        <GlobalTimeline
+          events={displayed.timeline.map((e) => ({
+            sequence: Number(e.sequence),
+            type: String(e.type),
+            occurredAt: String(e.occurredAt)
+          }))}
+          cursorIndex={cursorIndex}
+          onScrub={(index) => {
+            setFollowLive(false);
+            setCursorIndex(index);
+          }}
+          followLive={followLive}
+          onFollowLive={() => {
+            setFollowLive(true);
+            setCursorIndex(Math.max(0, timelineEvents.length - 1));
+          }}
+        />
+      )}
 
       {run.algorithmId === "gepa" ? (
         <GepaOverlay

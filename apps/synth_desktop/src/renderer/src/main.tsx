@@ -4,6 +4,7 @@ import App from "./App";
 import { bridges, installDesktopBridge } from "./runtime/desktopBridge";
 import { DIAGNOSTIC_CODES, installVisualDiagnosticSink, reportDiagnostic } from "./runtime/diagnostics";
 import { installRunProgressDiagnostics } from "./runtime/runProgress/subscription";
+import { installReadPathTelemetry } from "./runtime/runProgress/readPathTelemetry";
 import { installRunProgressTelemetry } from "./runtime/runProgress/telemetry";
 import "./styles/tokens.css";
 import "./styles/primitives.css";
@@ -52,6 +53,39 @@ installRunProgressTelemetry((record) => {
 			estimateCoverage: record.estimateCoverage,
 			samples: record.samples,
 			staleSamples: record.staleSamples
+		}
+	});
+});
+// One record per run for the read behind the card, as distinct from the card
+// itself: whether the aggregate mounted without waiting for the journal, which
+// stage owned a slow open, and how much the conditional probe actually saved.
+// None of it is visible from a screenshot, and "it feels faster" is not a
+// measurement.
+installReadPathTelemetry((record) => {
+	reportDiagnostic({
+		optimizerRunId: record.runId,
+		streamId: record.runId,
+		severity: record.pagesBeforeFirstPaint > 0 ? "warn" : "info",
+		component: "renderer",
+		event: "run_progress.read_path",
+		code: "run_progress_read_path",
+		message: record.firstPaintMs != null
+			? `visual read: first paint ${record.firstPaintMs}ms, ${record.pagesBeforeFirstPaint} event pages before it`
+			: "visual read closed before first paint",
+		details: {
+			firstPaintMs: record.firstPaintMs ?? null,
+			interactiveMs: record.interactiveMs ?? null,
+			projectionMaxMs: record.projectionMaxMs ?? null,
+			evidencePageMaxMs: record.evidencePageMaxMs ?? null,
+			pagesBeforeFirstPaint: record.pagesBeforeFirstPaint,
+			eventsBeforeFirstPaint: record.eventsBeforeFirstPaint,
+			pages: record.pages,
+			events: record.events,
+			probes: record.probes,
+			probesUnchanged: record.probesUnchanged,
+			replays: record.replays,
+			replayReasons: record.replayReasons,
+			failures: record.failures
 		}
 	});
 });

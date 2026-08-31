@@ -196,4 +196,33 @@ pub struct CoreDiagnostics {
     #[specta(type = specta_typescript::Number)]
     pub visual_count: i64,
     pub migration_complete: bool,
+    /// Transaction lock-acquisition wait, split by intent.
+    ///
+    /// The interval between asking for a transaction and getting one — not
+    /// query, deserialize, or IPC time. It is the number that made a busy
+    /// producer look like a dead one from the renderer, and until now nothing
+    /// measured it. Reads should sit near zero: in WAL mode a deferred read
+    /// takes a snapshot rather than queueing, so a rising read wait means a
+    /// read path is still opening `Immediate` somewhere.
+    pub lock_wait: LockWaitDiagnostics,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LockWaitDiagnostics {
+    #[specta(type = specta_typescript::Number)]
+    pub read_transactions: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub read_wait_avg_us: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub read_wait_max_us: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub write_transactions: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub write_wait_avg_us: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub write_wait_max_us: i64,
+    /// Transactions that gave up rather than acquiring.
+    #[specta(type = specta_typescript::Number)]
+    pub timeouts: i64,
 }

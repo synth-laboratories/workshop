@@ -23,6 +23,8 @@ import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } fro
 import { loadVisualShell } from "../runtime/visualsLoader";
 import { bridges } from "../runtime/desktopBridge";
 import { subscribeToRun } from "../runtime/runProgress/subscription";
+import { createEvidenceClient } from "../runtime/runProgress/evidence";
+import { verifyAgainstReceipt, visualDataDigest, type ReceiptVerdict } from "../runtime/runProgress/receipt";
 import { progressAgreement, projectRunProgress, splitSnapshotEvents } from "../runtime/runProgress/project";
 import type { ProgressAgreement } from "../runtime/runProgress/project";
 import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
@@ -574,6 +576,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [Shell, setShell] = useState<ComponentType<ShellProps> | null>(null);
 	const [failed, setFailed] = useState(false);
 	const [optimizerPayload, setOptimizerPayload] = useState<Record<string, unknown> | null>(null);
+	const [receiptVerdict, setReceiptVerdict] = useState<ReceiptVerdict>({ kind: "unverified", reason: "no_receipt" });
 	const [optimizerLoadError, setOptimizerLoadError] = useState<string | null>(null);
 	const [comparisonPayload, setComparisonPayload] = useState<Record<string, unknown> | null>(null);
 	const [progressView, setProgressView] = useState<ProgressAgreement | null>(null);
@@ -674,6 +677,22 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			(entry) => bindingInputName(entry) === "optimizer_run" && entry.kind === "optimizer_run"
 		)?.source
 		: undefined;
+	const evidenceClient = useMemo(
+		() =>
+			// Lazy raw-journal access for the detail surfaces — Replay, the
+			// transcript, frame drill-down — that genuinely need events. The
+			// aggregate never waits for it. Same capability check as the two
+			// clients above: without the bridge method there is no client, and
+			// a template renders its evidence panel as unavailable rather than
+			// throwing on first open.
+			optimizerRunId && typeof bridges.optimizers?.evidencePage === "function"
+				? createEvidenceClient(optimizerRunId, {
+					evidencePage: (runId, window, held, limit) =>
+						bridges.optimizers!.evidencePage(runId, window, held, limit)
+				})
+				: undefined,
+		[optimizerRunId]
+	);
 	const templateDigest = typeof artifact.metadata?.templateDigest === "string"
 		? artifact.metadata.templateDigest
 		: undefined;
@@ -951,6 +970,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			return;
 		}
 		let postedReady = false;
+		let verifiedReceipt = false;
+		setReceiptVerdict({ kind: "unverified", reason: "no_receipt" });
 		return subscribeToRun(optimizerRunId, (snapshot) => {
 			const projection = projectRunProgress(snapshot, Date.now());
 			const agreement = projection ? progressAgreement(projection) : null;
@@ -964,7 +985,14 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					events: lanes.terminalEvents,
 					enrichmentEvents: lanes.enrichmentEvents,
 					terminalCursor: lanes.terminalCursor,
-					enrichmentCursor: lanes.enrichmentCursor
+					enrichmentCursor: lanes.enrichmentCursor,
+					// Aggregate surfaces are already authoritative here; raw
+					// evidence may still be arriving. A template that draws
+					// from `events` — Replay, the transcript, frame drill-down
+					// — reads this instead of inferring emptiness from a
+					// zero-length array it cannot distinguish from a run that
+					// genuinely produced nothing.
+					evidenceState: snapshot.evidence
 				}
 				: null;
 
@@ -1021,15 +1049,59 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 						: snapshot.state === "replaying" ? "replaying"
 							: "subscribed"
 			);
-			if (!postedReady) {
+			if (!verifiedReceipt && snapshot.viewV2) {
+				verifiedReceipt = true;
+				const view = snapshot.viewV2;
+				// Compare before recording, or the receipt this render is about
+				// to write would be the thing it is compared against.
+				void Promise.resolve(
+					bridges.optimizers?.visualRenderReceipt?.(
+						artifact.id,
+						typeof artifact.revision === "number" ? artifact.revision : 0
+					)
+				)
+					.then((receipt) => {
+						const verdict = verifyAgainstReceipt(receipt, {
+							optimizerRunId,
+							projectionRevision: view.header.projectionRevision,
+							dataDigest: visualDataDigest(view),
+							templateVersion: templateDigest ?? ""
+						});
+						setReceiptVerdict(verdict);
+						if (verdict.kind === "regressed" || verdict.kind === "content_changed") {
+							reportDiagnostic({
+								...visualIdentity,
+								optimizerRunId,
+								severity: "warn",
+								component: "visual-host",
+								event: "visual.receipt.mismatch",
+								code: DIAGNOSTIC_CODES.streamReplayGap,
+								message: verdict.kind === "regressed"
+									? `Local evidence is at projection revision ${verdict.localRevision}, behind the ${verdict.renderedRevision} this visual already rendered.`
+									: `Projection revision ${verdict.projectionRevision} now carries different content than when this visual rendered.`,
+								retryable: true,
+								details: { verdict: verdict.kind, renderedAt: verdict.renderedAt },
+							});
+						}
+					})
+					.catch(() => undefined);
+			}
+			if (!postedReady && snapshot.viewV2) {
 				postedReady = true;
+				const projectionRevision = snapshot.viewV2.header.projectionRevision;
 				void bridges.optimizers?.recordVisualReady?.({
 					visualId: artifact.id,
 					optimizerRunId,
 					templateId: artifact.templateId ?? "optimizer.run.v1",
 					replayedThrough: snapshot.cursor,
 					subscribedFrom: snapshot.cursor + 1,
-					templateDigest
+					templateDigest,
+					visualRevision: typeof artifact.revision === "number" ? artifact.revision : 0,
+					projectionRevision,
+					// Identity of what was actually rendered, not of the whole
+					// run: the same projection revision carrying different
+					// content is exactly the case a bare revision misses.
+					dataDigest: visualDataDigest(snapshot.viewV2)
 				}).catch(() => undefined);
 			}
 		});
@@ -1188,6 +1260,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const resolvedProps = selected.projection ?? { ...synchronouslyResolved.props, ...traceResolution.props };
 	const degradedConnection = ["reconnecting", "failed", "interrupted"].includes(connectionState);
 	const boundEvents = Array.isArray(optimizerPayload?.events) ? optimizerPayload.events as unknown[] : [];
+	const optimizerEvidenceState = typeof optimizerPayload?.evidenceState === "string"
+		? optimizerPayload.evidenceState
+		: undefined;
 	const runLifecycle = projectVisualRunLifecycle(
 		optimizerPayload?.run as Parameters<typeof projectVisualRunLifecycle>[0],
 		progressView
@@ -1204,6 +1279,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			data-connection-state={connectionState}
 			data-visual-transport-state={connectionState === "loading" ? "idle" : connectionState}
 			data-visual-terminal={transportTerminal ? "true" : "false"}
+			data-visual-evidence={optimizerEvidenceState}
+			data-visual-receipt={receiptVerdict.kind}
 			data-visual-semantic-event-count={String(boundEvents.length)}
 			data-visual-rollout-count={String(boundEvents.length)}
 			data-visual-error={optimizerLoadError ?? (liveFailed ? traceResolution.error : undefined)}
@@ -1246,6 +1323,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				replay={replayClient}
 				media={mediaClient}
 				sealedTraceProjections={sealedTraceProjections}
+				evidence={evidenceClient}
 				runLifecycle={runLifecycle}
 				replayMissingTransport={replay.missingTransport}
 				visualId={artifact.visualId ?? artifact.id}

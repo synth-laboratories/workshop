@@ -711,6 +711,39 @@ pub struct OptimizerExecutionBinding {
     pub metadata: Value,
 }
 
+/// Durable proof that one visual revision rendered from complete local
+/// evidence.
+///
+/// Not a copy of the evidence — the kernel projection remains the sole
+/// authority and is already durable. This is the checkable claim *about* a
+/// render, which is what lets a reopened visual tell the difference between
+/// "the projection has moved on" (normal) and "the projection is now older or
+/// different than what I already showed" (a regression that must be reported,
+/// never silently rendered).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualRenderReceipt {
+    pub visual_id: String,
+    #[specta(type = specta_typescript::Number)]
+    pub visual_revision: i64,
+    pub optimizer_run_id: String,
+    pub template_id: String,
+    /// The template digest the render was produced by. A template change
+    /// invalidates the comparison rather than failing it: different code
+    /// legitimately renders the same projection differently.
+    pub template_version: String,
+    /// The durable projection revision this render was produced from.
+    #[specta(type = specta_typescript::Number)]
+    pub projection_revision: u64,
+    /// Digest of the projection content, so the same revision carrying
+    /// different bytes is detectable.
+    pub data_digest: String,
+    /// How far the journal had been replayed when the render completed.
+    #[specta(type = specta_typescript::Number)]
+    pub tail_cursor: u64,
+    pub rendered_at: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OptimizerRunRecord {

@@ -7,7 +7,7 @@
  * the durable pages, and cross-run isolation.
  */
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
@@ -17,9 +17,18 @@ const appRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const compiledDir = join(appRoot, "node_modules/.cache/synth-desktop-tests");
 mkdirSync(compiledDir, { recursive: true });
 
+// One bundle for the store and its telemetry. Built separately, esbuild would
+// inline a second copy of the counter module and the test would read a map the
+// store never writes to.
+const entry = join(compiledDir, "runProgressSubscription.entry.ts");
+writeFileSync(
+	entry,
+	`export * from ${JSON.stringify(join(appRoot, "src/renderer/src/runtime/runProgress/subscription.ts"))};\n` +
+		`export * from ${JSON.stringify(join(appRoot, "src/renderer/src/runtime/runProgress/readPathTelemetry.ts"))};\n`
+);
 const outfile = join(compiledDir, "runProgressSubscription.mjs");
 buildSync({
-	entryPoints: [join(appRoot, "src/renderer/src/runtime/runProgress/subscription.ts")],
+	entryPoints: [entry],
 	bundle: true,
 	format: "esm",
 	target: "es2022",
@@ -28,8 +37,11 @@ buildSync({
 });
 const {
 	installRunProgressDiagnostics,
+	peekReadPath,
+	resetReadPathTelemetry,
 	resetRunProgressStore,
 	resolveOwnedRun,
+	runSnapshot,
 	runSubscriberCount,
 	setRunProgressPollInterval,
 	setRunProgressRetryBase,
@@ -39,6 +51,8 @@ const {
 } = await import(pathToFileURL(outfile).href);
 
 setRunProgressPollInterval(3_600_000);
+
+
 
 /** A fake durable store: a run record plus persisted event pages by sequence. */
 function fakeTransport({ runs, pages, views, onEventsAfter, onRunViewV2 } = {}) {
@@ -112,6 +126,41 @@ function runRecord(overrides = {}) {
 
 function runView(projectionRevision, lifecycle = "running") {
 	return { header: { projectionRevision, lifecycle } };
+}
+
+/**
+ * A transport that implements the conditional envelope read, the way the real
+ * desktop bridge does. `runView` folds the projection and the run record into
+ * one call and answers `unchanged` when the caller's revision is current.
+ */
+function envelopeTransport({ runs, pages, views, holdEvents } = {}) {
+	const base = fakeTransport({ runs, pages, views });
+	base.calls.runView = 0;
+	base.calls.unchanged = 0;
+	base.runView = async (runId, ifNewerThan) => {
+		base.calls.runView += 1;
+		const view = views[runId];
+		const revision = view?.header?.projectionRevision ?? 0;
+		if (ifNewerThan != null && ifNewerThan === revision) {
+			base.calls.unchanged += 1;
+			return { unchanged: true, projectionRevision: revision, tailCursor: runs[runId]?.cursorSeq ?? 0 };
+		}
+		return {
+			unchanged: false,
+			view,
+			run: runs[runId],
+			projectionRevision: revision,
+			tailCursor: runs[runId]?.cursorSeq ?? 0
+		};
+	};
+	if (holdEvents) {
+		const inner = base.eventsAfter.bind(base);
+		base.eventsAfter = async (runId, afterSeq = 0) => {
+			await holdEvents.promise;
+			return inner(runId, afterSeq);
+		};
+	}
+	return base;
 }
 
 /** Resolve after the store's internal promise chain drains. */
@@ -653,4 +702,250 @@ test("without a bridge the state is unavailable, not a crash", async () => {
 	assert.match(seen.at(-1).error, /bridge is unavailable/);
 	stop();
 	assert.equal(await resolveOwnedRun("run-a", "sess-1"), null);
+});
+
+
+test("first paint does not wait for the journal: the projection publishes before any event page", async () => {
+	// The defect this pins: `load()` used to await runViewV2, then get, then
+	// every event page, and publish once at the end. A visual therefore sat in
+	// "Restoring run evidence…" for the duration of the whole walk even though
+	// the aggregate it needed was in hand after the first read.
+	let release;
+	const gate = { promise: new Promise((resolve) => { release = resolve; }) };
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 3 }) },
+		pages: { "run-a": [event(1), event(2), event(3)] },
+		views: { "run-a": runView(4) },
+		holdEvents: gate
+	});
+	setRunProgressTransport(transport);
+
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+
+	const painted = seen.filter((snapshot) => snapshot.run && snapshot.viewV2);
+	assert.ok(painted.length > 0, "the aggregate must be published while events are still loading");
+	const first = painted[0];
+	assert.equal(first.evidence, "loading", "evidence is still hydrating at first paint");
+	assert.equal(first.events.length, 0, "no event page has landed yet");
+	assert.equal(first.viewV2.header.projectionRevision, 4, "the projection is already authoritative");
+	assert.equal(transport.calls.eventsAfter, 0, "no page has been read");
+
+	release();
+	await settle();
+	const last = seen[seen.length - 1];
+	assert.equal(last.evidence, "ready");
+	assert.equal(last.events.length, 3);
+	assert.equal(last.cursor, 3);
+});
+
+test("one read, not three: the envelope carries the run record and the tail", async () => {
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 2 }) },
+		pages: { "run-a": [event(1), event(2)] },
+		views: { "run-a": runView(2) }
+	});
+	setRunProgressTransport(transport);
+	subscribeToRun("run-a", () => undefined);
+	await settle();
+	assert.equal(transport.calls.runView, 1, "one projection read");
+	assert.equal(transport.calls.get, 0, "the separate run-record hop is gone");
+	assert.equal(transport.calls.runViewV2, 0, "the unconditional view read is not used");
+});
+
+test("a freshness probe on an unchanged revision costs no payload and republishes nothing", async () => {
+	setRunProgressPollInterval(15);
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 1, status: "running" }) },
+		pages: { "run-a": [event(1)] },
+		views: { "run-a": runView(7) }
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	const settledCount = seen.length;
+	const readsBefore = transport.calls.runView;
+
+	await new Promise((resolve) => setTimeout(resolve, 80));
+	assert.ok(transport.calls.unchanged > 0, "the probe ran and was answered `unchanged`");
+	assert.ok(
+		transport.calls.runView > readsBefore,
+		"the probe is a real call"
+	);
+	assert.equal(seen.length, settledCount, "an unchanged probe publishes nothing");
+	setRunProgressPollInterval(3_600_000);
+});
+
+test("a non-retryable projection failure is reported once, not replayed five times", async () => {
+	// A run with no admitted spec can never acquire one. Retrying re-reads the
+	// whole journal before failing identically, which is how a permanent,
+	// nameable condition became a stalled subscription.
+	setRunProgressRetryBase(5);
+	let attempts = 0;
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord() },
+		pages: { "run-a": [] }
+	});
+	transport.runView = async () => {
+		attempts += 1;
+		throw {
+			code: "optimizer.projection.missing_admitted_spec",
+			message: "Run run-a predates admitted specs, so its projection cannot be rebuilt.",
+			retryable: false
+		};
+	};
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await new Promise((resolve) => setTimeout(resolve, 120));
+
+	assert.equal(attempts, 1, "a permanent failure is attempted exactly once");
+	const last = seen[seen.length - 1];
+	assert.equal(last.state, "failed");
+	assert.match(last.error, /admitted specs/);
+	setRunProgressRetryBase(250);
+});
+
+test("a terminal run arms no polling interval at all", async () => {
+	setRunProgressPollInterval(15);
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ status: "completed", cursorSeq: 1 }) },
+		pages: { "run-a": [event(1)] },
+		views: { "run-a": runView(3, "terminal") }
+	});
+	setRunProgressTransport(transport);
+	subscribeToRun("run-a", () => undefined);
+	await settle();
+	const reads = transport.calls.runView;
+	await new Promise((resolve) => setTimeout(resolve, 90));
+	assert.equal(transport.calls.runView, reads, "a terminal run is never probed again");
+	setRunProgressPollInterval(3_600_000);
+});
+
+test("published event arrays are not mutated by a later page walk", async () => {
+	// The cursor state is mutated in place to keep a paged walk linear. The
+	// moment those events reach a consumer they stop being ours, so the
+	// publish boundary copies. Without that copy a React tree holding an
+	// earlier snapshot would silently see it grow.
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 2 }) },
+		pages: { "run-a": [event(1), event(2)] },
+		views: { "run-a": runView(1) }
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push({ events: snapshot.events, at: snapshot.events.length }));
+	await settle();
+	const hydrated = seen[seen.length - 1];
+	const lengthAtPublish = hydrated.at;
+
+	transport.setPages("run-a", [event(1), event(2), event(3)]);
+	transport.setRun("run-a", runRecord({ cursorSeq: 3 }));
+	transport.setView("run-a", runView(2));
+	transport.emit("run-a");
+	await settle();
+
+	assert.equal(hydrated.events.length, lengthAtPublish, "an already-published array must not grow");
+	assert.equal(seen[seen.length - 1].events.length, 3, "the new snapshot has the new page");
+});
+
+test("parked journals are bounded by volume, not just by entry count", async () => {
+	// The retention policy bounded how many runs were remembered and not how
+	// much: a five-event smoke run and a fifty-thousand-event eval counted the
+	// same, so the store could hold thirty-two complete journals long after
+	// every visual was closed.
+	const runs = {};
+	const pages = {};
+	const big = 4_000;
+	for (let index = 0; index < 8; index += 1) {
+		const id = `run-big-${index}`;
+		runs[id] = runRecord({ id, cursorSeq: big });
+		pages[id] = Array.from({ length: big }, (_, i) => ({ ...event(i + 1), optimizerRunId: id }));
+	}
+	const transport = fakeTransport({ runs, pages, views: {} });
+	for (const id of Object.keys(runs)) transport.setView(id, runView(1, "terminal"));
+	setRunProgressTransport(transport);
+
+	for (let index = 0; index < 8; index += 1) {
+		const id = `run-big-${index}`;
+		const stop = subscribeToRun(id, () => undefined);
+		await settle();
+		stop();
+	}
+
+	let retained = 0;
+	for (let index = 0; index < 8; index += 1) {
+		retained += runSnapshot(`run-big-${index}`)?.events.length ?? 0;
+	}
+	assert.ok(
+		retained <= 20_000,
+		`parked journals must stay inside the retention budget (held ${retained} events)`
+	);
+	// The run the user just left keeps its history: that is what parking is for.
+	assert.equal(
+		runSnapshot("run-big-7")?.events.length,
+		big,
+		"the most recently parked run still resumes from its retained history"
+	);
+	// An older one gave its journal back but kept its projection, so reopening
+	// it still paints immediately and re-reads evidence from the durable start.
+	const oldest = runSnapshot("run-big-0");
+	assert.equal(oldest?.events.length, 0, "an older parked journal is released");
+	assert.equal(oldest?.cursor, 0, "its cursor resets so the next read replays rather than resuming over a hole");
+	assert.ok(oldest?.viewV2, "the projection that mounts the visual is kept");
+});
+
+test("the read path reports what it cost, with the stage that owned it", async () => {
+	// "It feels faster" is not a measurement. These are the counters that say
+	// whether the aggregate actually stopped waiting for the journal.
+	resetReadPathTelemetry();
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 3, status: "running" }) },
+		pages: { "run-a": [event(1), event(2), event(3)] },
+		views: { "run-a": runView(4) }
+	});
+	setRunProgressTransport(transport);
+	const stop = subscribeToRun("run-a", () => undefined);
+	await settle();
+
+	const record = peekReadPath("run-a");
+	assert.ok(record, "a subscribed run is being measured");
+	assert.equal(
+		record.pagesBeforeFirstPaint,
+		0,
+		"the aggregate must mount without reading a single event page"
+	);
+	assert.equal(record.eventsBeforeFirstPaint, 0);
+	assert.ok(record.firstPaintMs != null, "first paint is timed");
+	assert.ok(record.interactiveMs != null, "interactive is timed separately from first paint");
+	assert.ok(record.pages > 0, "evidence still hydrated, just not before the mount");
+	assert.equal(record.events, 3);
+	assert.equal(record.failures, 0);
+	assert.deepEqual(record.replayReasons, ["cold_open"], "a first open is attributed, not silent");
+	stop();
+});
+
+test("a probe that changes nothing is counted as carrying nothing", async () => {
+	resetReadPathTelemetry();
+	setRunProgressPollInterval(15);
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 1, status: "running" }) },
+		pages: { "run-a": [event(1)] },
+		views: { "run-a": runView(7) }
+	});
+	setRunProgressTransport(transport);
+	const stop = subscribeToRun("run-a", () => undefined);
+	await settle();
+	await new Promise((resolve) => setTimeout(resolve, 80));
+	const record = peekReadPath("run-a");
+	assert.ok(record.probes > 0, "the freshness probe ran");
+	assert.equal(
+		record.probes,
+		record.probesUnchanged,
+		"every probe against an unchanged revision must report as carrying no payload"
+	);
+	stop();
+	setRunProgressPollInterval(3_600_000);
 });

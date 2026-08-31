@@ -143,6 +143,40 @@ pub fn envelopes_to_producer(
     Ok(events)
 }
 
+/// Fold a batch of envelopes onto an existing kernel state.
+///
+/// The incremental twin of [`reduce_envelopes`], which always starts from
+/// `RunKernelState::new` and replays everything. `commit` has always taken a
+/// prior state and a batch; this is simply the call that uses it that way.
+///
+/// The producer log is empty for the same reason it is empty in
+/// `reduce_envelopes`: the service has already decided which envelopes are new
+/// — a confirmed replay never reaches here — so the batch is numbered from 1
+/// and every event is an append. Cross-batch ordering rules are the caller's
+/// responsibility; `can_fold_incrementally` in the service keeps the events
+/// that have them on the replay path.
+pub fn fold_envelopes(
+    state: super::commit::RunKernelState,
+    run_id: &str,
+    envelopes: &[OptimizerEventEnvelope],
+) -> KernelResult<super::commit::RunKernelState> {
+    let events = envelopes_to_producer(envelopes, run_id)?;
+    if events.is_empty() {
+        return Ok(state);
+    }
+    let committed_at = events
+        .last()
+        .map(|event| event.occurred_at.as_str())
+        .unwrap_or("1970-01-01T00:00:00Z");
+    let plan = super::commit::commit(
+        state,
+        &super::sequences::DurableProducerLog::default(),
+        &events,
+        committed_at,
+    )?;
+    Ok(plan.state)
+}
+
 pub fn reduce_envelopes(
     run_id: &str,
     algorithm: AlgorithmKind,

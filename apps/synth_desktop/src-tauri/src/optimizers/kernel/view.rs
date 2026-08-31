@@ -76,6 +76,41 @@ pub struct OptimizerRunHeader {
     pub projection_revision: u64,
 }
 
+/// One coherent read of everything a visual needs to mount.
+///
+/// Replaces the renderer's `runViewV2 → get → eventsAfter` choreography for
+/// first paint. The projection and the run record are read in the same
+/// deferred transaction — `run_view_v2` already loaded the run row to build
+/// the view's context, so carrying it costs nothing and removes an entire
+/// IPC round trip from the mount path.
+///
+/// The envelope is also *conditional*. `projection_revision` is already a
+/// monotonic version stamp on the durable projection; a caller that holds a
+/// revision sends it as `if_newer_than` and gets `unchanged` back instead of a
+/// second copy of bytes it already has. That is what makes a background
+/// freshness check cheap enough to run against a cached first paint.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OptimizerRunViewEnvelope {
+    /// True when the caller's `if_newer_than` already matched the durable
+    /// revision. `view` and `run` are then `None` — deliberately, so a stale
+    /// consumer cannot mistake an empty envelope for an empty run.
+    pub unchanged: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<OptimizerRunViewV2>,
+    /// Compatibility fields the templates still read: usage extras, the
+    /// terminal manifest, timings, objective, and capabilities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<OptimizerRunRecord>,
+    #[specta(type = specta_typescript::Number)]
+    pub projection_revision: u64,
+    /// The run's durable event cursor: the tail an evidence reader may page
+    /// up to. Carried here so a detail tab never has to call `get` to learn
+    /// how much journal exists.
+    #[specta(type = specta_typescript::Number)]
+    pub tail_cursor: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(tag = "algorithm", rename_all = "kebab-case")]
 pub enum OptimizerRunViewV2 {
