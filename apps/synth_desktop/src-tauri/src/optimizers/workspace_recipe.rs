@@ -994,11 +994,19 @@ fn compile_gepa_task_contract(
         .strip_prefix(&format!("{}/", recipe.provider))
         .unwrap_or(declared_proposer)
         .to_string();
-    let reasoning_effort = policy
+    let declared_reasoning_effort = policy
         .get("effort")
         .and_then(toml::Value::as_str)
-        .unwrap_or("medium")
-        .to_string();
+        .unwrap_or("medium");
+    // The chat-completions proposer runtime currently supports this bounded
+    // effort vocabulary. Preserve the selected model while mapping newer
+    // Codex effort tiers to the strongest compatible proposer setting.
+    let reasoning_effort = match declared_reasoning_effort {
+        "xhigh" | "max" | "ultra" => "high",
+        "none" | "low" | "medium" | "high" => declared_reasoning_effort,
+        _ => "medium",
+    }
+    .to_string();
     root.insert(
         "proposer".into(),
         toml::Value::Table(
@@ -1882,6 +1890,7 @@ train_seeds = [0, 1]
 heldout_seeds = [77]
 [policy]
 max_calls = 32
+effort = "xhigh"
 [bounds]
 max_cost_usd = 0.10
 max_total_rollouts = 1
@@ -1895,6 +1904,7 @@ max_total_rollouts = 1
         assert_eq!(document["policy"]["provider"].as_str(), Some("openai"));
         assert_eq!(document["policy"]["model"].as_str(), Some("gpt-5.6-luna"));
         assert_eq!(document["policy"]["max_calls"].as_integer(), Some(32));
+        assert_eq!(document["policy"]["effort"].as_str(), Some("xhigh"));
         assert_eq!(
             document["taskset"]["train_ids"][0].as_str(),
             Some("train:0")
@@ -1918,7 +1928,7 @@ max_total_rollouts = 1
         assert_eq!(document["proposer"]["model"].as_str(), Some("gpt-5.6-luna"));
         assert_eq!(
             document["proposer"]["reasoning_effort"].as_str(),
-            Some("medium")
+            Some("high")
         );
     }
 
