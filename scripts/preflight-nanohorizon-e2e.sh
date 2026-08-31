@@ -58,10 +58,23 @@ if (recipe.get("policy") or {}).get("thinking_budget") != 640:
     raise SystemExit("nanohorizon_e2e_not_ready:workshop_recipe:thinking_budget")
 if (recipe.get("bounds") or {}).get("max_cost_usd") != 2.45:
     raise SystemExit("nanohorizon_e2e_not_ready:workshop_recipe:max_cost_usd")
+if (recipe.get("bounds") or {}).get("max_total_rollouts") != 5:
+    raise SystemExit("nanohorizon_e2e_not_ready:workshop_recipe:max_total_rollouts")
+for key, expected in {
+    "max_calls": 10,
+    "max_steps": 2000,
+    "timeout_seconds": 180.0,
+}.items():
+    if (recipe.get("policy") or {}).get(key) != expected:
+        raise SystemExit(f"nanohorizon_e2e_not_ready:workshop_recipe:{key}")
 
 containers = container_manifest.get("container") or []
 if len(containers) != 1 or containers[0].get("id") != "nanohorizon-craftax":
     raise SystemExit("nanohorizon_e2e_not_ready:workshop_container:identity")
+if containers[0].get("contract") != "synth.container.live-eval.v1":
+    raise SystemExit("nanohorizon_e2e_not_ready:workshop_container:contract")
+if containers[0].get("health") != "/health":
+    raise SystemExit("nanohorizon_e2e_not_ready:workshop_container:health")
 if containers[0].get("policy_source") != "src/challenge/policy.py":
     raise SystemExit("nanohorizon_e2e_not_ready:workshop_container:policy_source")
 PY
@@ -88,10 +101,31 @@ payload = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
 rows = payload.get("container") or []
 if len(rows) != 1:
     raise SystemExit("nanohorizon_e2e_not_ready:manifest:container_count")
+container = rows[0]
+if container.get("id") != "nanohorizon-craftax":
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:container_id")
+if container.get("contract") != "synth.container.live-eval.v1":
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:contract")
+if container.get("health") != "/health":
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:health")
 launch = rows[0].get("launch") or {}
 if launch.get("environment") != {**expected, "WORKSHOP_PROXY_ONLY": "1", "REPLACE": "1"}:
     raise SystemExit("nanohorizon_e2e_not_ready:manifest:launch_environment")
-if (launch.get("source") or {}).get("dirty_digest") != sys.argv[5]:
+if launch.get("command") != ["scripts/up_craftax_container.sh"]:
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:launch_command")
+if launch.get("health_target") != "craftax_nanohorizon":
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:health_target")
+source = launch.get("source") or {}
+if source.get("tracked_revision") != "a6e9999daf811adf2c67351c544bf647411d3e81":
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:tracked_revision")
+if source.get("include") != [
+    "scripts/up_craftax_container.sh",
+    "scripts/lib_local.sh",
+    "scripts/validate_craftax_sources.py",
+    "src/challenge/policy.py",
+]:
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:source_include")
+if source.get("dirty_digest") != sys.argv[5]:
     raise SystemExit("nanohorizon_e2e_not_ready:manifest:source_digest")
 if launch.get("expected_port") != 18091:
     raise SystemExit("nanohorizon_e2e_not_ready:manifest:expected_port")
