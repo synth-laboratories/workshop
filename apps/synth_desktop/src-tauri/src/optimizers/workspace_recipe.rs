@@ -850,13 +850,31 @@ pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
 pub fn copy_into_run_dir(recipe: &WorkspaceRecipe, run_dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(run_dir).context("create run-owned recipe directory")?;
     let destination = run_dir.join(RECIPE_FILE);
-    fs::copy(&recipe.source_path, &destination).with_context(|| {
-        format!(
-            "copy {} into {}",
-            recipe.source_path.display(),
-            destination.display()
-        )
-    })?;
+    let source = fs::read_to_string(&recipe.source_path)
+        .with_context(|| format!("read {}", recipe.source_path.display()))?;
+    let mut document: toml::Value = toml::from_str(&source)
+        .with_context(|| format!("parse {}", recipe.source_path.display()))?;
+    let root = document
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("workspace recipe root must be a TOML table"))?;
+    let policy = root
+        .entry("policy")
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("workspace recipe policy must be a TOML table"))?;
+    // The workspace contract owns provider/model at the recipe root, while
+    // the installed Optimizers GEPA contract consumes them from [policy].
+    // Compile those authoritative values into the run-owned snapshot instead
+    // of asking authors to maintain two potentially contradictory copies.
+    policy.insert(
+        "provider".into(),
+        toml::Value::String(recipe.provider.clone()),
+    );
+    policy.insert("model".into(), toml::Value::String(recipe.model.clone()));
+    let normalized = toml::to_string_pretty(&document)
+        .context("encode normalized run-owned workspace recipe")?;
+    fs::write(&destination, normalized)
+        .with_context(|| format!("write {}", destination.display()))?;
     Ok(destination)
 }
 
@@ -1624,6 +1642,38 @@ max_total_rollouts = 1
             catalog_entry(&recipe)["credentialInputs"],
             json!(["OPENROUTER_API_KEY"])
         );
+    }
+
+    #[test]
+    fn run_owned_recipe_compiles_authoritative_provider_and_model_into_policy() {
+        let (_dir, workspace) = write_workspace();
+        fs::write(
+            workspace.join(RECIPE_FILE),
+            r#"
+id = "gepa.banking77.workspace.v1"
+algorithm = "gepa"
+container = "banking77"
+provider = "openai"
+model = "gpt-5.6-luna"
+locality = "container"
+[policy]
+max_calls = 32
+[bounds]
+max_cost_usd = 0.10
+max_total_rollouts = 1
+"#,
+        )
+        .unwrap();
+        let recipe = find_recipe(&workspace, "gepa.banking77.workspace.v1").unwrap();
+        let run_dir = workspace.join("run");
+        let copied = copy_into_run_dir(&recipe, &run_dir).unwrap();
+        let document: toml::Value = toml::from_str(&fs::read_to_string(copied).unwrap()).unwrap();
+        assert_eq!(document["policy"]["provider"].as_str(), Some("openai"));
+        assert_eq!(
+            document["policy"]["model"].as_str(),
+            Some("gpt-5.6-luna")
+        );
+        assert_eq!(document["policy"]["max_calls"].as_integer(), Some(32));
     }
 
     #[test]
