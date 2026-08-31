@@ -134,6 +134,25 @@ pub fn resolve_template(template_id: &str) -> anyhow::Result<TemplateMeta> {
 }
 
 fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, TemplateMeta>> {
+    // Visual creation commonly runs inside a Tokio worker that is already
+    // carrying the optimizer admission future. Keep registry discovery and
+    // manifest decoding off that comparatively small stack. The traversal is
+    // iterative, but serde/path processing for the full bundled registry can
+    // still need substantially more stack than the worker has available.
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("visual-template-index".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn_scoped(scope, || build_template_index_inner(visuals_root))
+            .map_err(|error| anyhow::anyhow!("failed to start visual template indexer: {error}"))?
+            .join()
+            .map_err(|_| anyhow::anyhow!("visual template indexer panicked"))?
+    })
+}
+
+fn build_template_index_inner(
+    visuals_root: &Path,
+) -> anyhow::Result<BTreeMap<String, TemplateMeta>> {
     let families_root = visuals_root.join("families");
     if !families_root.exists() {
         return Ok(BTreeMap::new());
