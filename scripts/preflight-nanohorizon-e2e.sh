@@ -63,8 +63,11 @@ if launch.get("environment") != {**expected, "WORKSHOP_PROXY_ONLY": "1", "REPLAC
     raise SystemExit("nanohorizon_e2e_not_ready:manifest:launch_environment")
 if (launch.get("source") or {}).get("dirty_digest") != sys.argv[5]:
     raise SystemExit("nanohorizon_e2e_not_ready:manifest:source_digest")
-if launch.get("expected_port") != 18091:
-    raise SystemExit("nanohorizon_e2e_not_ready:manifest:expected_port")
+expected_port = launch.get("expected_port")
+if not isinstance(expected_port, int) or not 18080 <= expected_port <= 18127:
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:expected_port_not_in_reserved_range")
+if container.get("url") != f"http://127.0.0.1:{expected_port}":
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:url_port_mismatch")
 PY
 
 CONTAINERS_ROOT="$CONTAINERS_ROOT" \

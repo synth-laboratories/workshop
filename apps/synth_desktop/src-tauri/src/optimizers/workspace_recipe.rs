@@ -1129,7 +1129,7 @@ fn parse_containers(
 fn validate_launch(
     origin: &ContainerDeclarationOrigin,
     container_url: Option<&str>,
-    launch: ContainerLaunchFile,
+    mut launch: ContainerLaunchFile,
 ) -> Result<ContainerLaunchDeclarationV1> {
     if launch.schema_version != "synth.container-launch.v1" {
         return Err(LaunchDeclarationError::UnsupportedSchema {
@@ -1174,6 +1174,26 @@ fn validate_launch(
         "launch_declaration_invalid: expected_port {} does not match container URL",
         launch.expected_port
     );
+    let canonical_url = container_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("launch_declaration_invalid: container URL is required"))?;
+    for (name, authoritative) in [
+        ("PORT", launch.expected_port.to_string()),
+        ("CRAFTAX_URL", canonical_url.trim_end_matches('/').to_string()),
+    ] {
+        if !launch.declared_environment.iter().any(|item| item == name) {
+            continue;
+        }
+        if let Some(configured) = launch.environment.get(name) {
+            anyhow::ensure!(
+                configured == &authoritative,
+                "launch_declaration_invalid: {name}={configured} contradicts the authoritative declaration value {authoritative}"
+            );
+        } else {
+            launch.environment.insert(name.to_string(), authoritative);
+        }
+    }
     for name in &launch.declared_environment {
         if name.is_empty()
             || !name
@@ -1795,7 +1815,7 @@ shutdown_grace_seconds = 5
 expected_port = 18091
 image_ref = "craftax-gamebench-rust"
 health_target = "craftax_nanohorizon"
-declared_environment = ["WORKSHOP_PROXY_ONLY"]
+declared_environment = ["PORT", "CRAFTAX_URL", "WORKSHOP_PROXY_ONLY"]
 environment = {{ WORKSHOP_PROXY_ONLY = "1" }}
 [container.launch.source]
 revision_policy = "exact-or-dirty-digest"
@@ -1807,6 +1827,18 @@ include = ["{include}"]
         .unwrap();
         fs::create_dir_all(root.join("src/challenge")).unwrap();
         fs::write(root.join("src/challenge/policy.py"), "print('policy')").unwrap();
+    }
+
+    #[test]
+    fn expected_port_populates_declared_launch_coordinates() {
+        let dir = tempfile::tempdir().unwrap();
+        write_container_manifest(dir.path(), "scripts/up_craftax_container.sh");
+        let spec = find_container_spec(dir.path(), "nanohorizon-craftax").unwrap();
+        assert_eq!(spec.environment.get("PORT").map(String::as_str), Some("18091"));
+        assert_eq!(
+            spec.environment.get("CRAFTAX_URL").map(String::as_str),
+            Some("http://127.0.0.1:18091")
+        );
     }
 
     fn git(root: &Path, args: &[&str]) -> String {
