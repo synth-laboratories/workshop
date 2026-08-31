@@ -514,7 +514,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 				<div
 					key="window-pane-host"
 					className={paneClassName}
-					style={{ "--visual-pane-width": `${inventoryContainerWidth}px`, "--container-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}
+					style={{ "--visual-pane-width": `${inventoryContainerWidth}px`, "--container-pane-width": `${inventoryContainerWidth}px`, "--side-panel-width": `${inventoryContainerWidth}px` } as CSSProperties}
 				>
 					{chatRoute && activeChat ? (
 					<ChatTranscript
@@ -666,7 +666,15 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						</>
 					) : null}
 					{chatRoute && showSidePanel && activeChat ? (
-						<WorkbenchSidePanel
+						<>
+							<PaneResizeHandle
+								value={inventoryContainerWidth}
+								minPrimary={380}
+								minSecondary={260}
+								onChange={resizeInventoryPane}
+								ariaLabel="Resize workbench side panel"
+							/>
+							<WorkbenchSidePanel
 							activeTabId={sidePanelTab}
 							onTabChange={(tabId) => {
 								if (
@@ -763,7 +771,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 										]
 									: [])
 							]}
-						/>
+							/>
+						</>
 					) : null}
 				</div>
 			) : null}

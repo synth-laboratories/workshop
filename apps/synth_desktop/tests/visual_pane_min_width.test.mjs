@@ -20,9 +20,9 @@ test("the visual pane keeps the 320px certification floor", () => {
     css,
     /\.workbench\.with-side-panel\.with-visual\s*\{[^}]*minmax\(320px,\s*min\(var\(--visual-pane-width/s
   );
-  assert.doesNotMatch(
+  assert.match(
     css,
-    /\.workbench\.with-side-panel\.with-visual\s*\{[^}]*minmax\(260px/s
+    /\.workbench\.with-side-panel\.with-visual\s*\{[^}]*minmax\(320px,\s*min\(var\(--visual-pane-width[^}]*minmax\(260px,\s*min\(var\(--side-panel-width/s
   );
   assert.match(css, /\.inventory-workbench\.with-visual \.visual-pane\s*\{[^}]*min-width:\s*320px/s);
   assert.match(
@@ -33,6 +33,15 @@ test("the visual pane keeps the 320px certification floor", () => {
   assert.match(css, /\.visual-pane:not\(\.visual-pane-expanded\) \.visual-pane-title\s*\{[^}]*text-overflow:\s*ellipsis/s);
   assert.match(css, /\.visual-pane:not\(\.visual-pane-expanded\) \.trace-workbench-layout\s*\{[^}]*--tw-main-columns:\s*minmax\(0,\s*1fr\)/s);
   assert.match(css, /\.visual-pane:not\(\.visual-pane-expanded\) \.cv-overview-grid[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
+});
+
+test("the unified workbench side panel preserves a draggable boundary", () => {
+  const routes = readFileSync(join(rendererRoot, "routes.tsx"), "utf8");
+  const css = readFileSync(join(rendererRoot, "styles/app.css"), "utf8");
+  assert.match(routes, /"--side-panel-width": `\$\{inventoryContainerWidth\}px`/);
+  assert.match(routes, /ariaLabel="Resize workbench side panel"/);
+  assert.match(routes, /<PaneResizeHandle[\s\S]*ariaLabel="Resize workbench side panel"[\s\S]*<WorkbenchSidePanel/);
+  assert.match(css, /\.workbench\.with-side-panel\s*\{[^}]*7px[^}]*var\(--side-panel-width, 420px\)/s);
 });
 
 test("narrow windows cap the visual pane at min(40vw, persisted) then overlay via compact-workbench", () => {

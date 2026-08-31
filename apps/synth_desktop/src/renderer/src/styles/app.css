@@ -8805,14 +8805,21 @@ html.visual-expanded .sidebar {
 /* ── First-class workbench side panel ─────────────────────────────────── */
 .workbench.with-side-panel {
 	display: grid;
-	grid-template-columns: minmax(368px, 1fr) minmax(0, 300px);
+	grid-template-columns:
+		minmax(368px, 1fr)
+		7px
+		minmax(260px, min(var(--side-panel-width, 420px), calc(100% - 375px)));
 }
 
 /* When a visual or container pane is already docked, the rail takes a third
    column rather than fighting the existing two-column rules. */
 .workbench.with-side-panel.with-visual,
 .workbench.with-side-panel.with-container {
-	grid-template-columns: minmax(380px, 1fr) minmax(0, 1fr) minmax(0, 300px);
+	grid-template-columns:
+		minmax(380px, 1fr)
+		minmax(0, 1fr)
+		7px
+		minmax(260px, min(var(--side-panel-width, 420px), calc(100% - 647px)));
 }
 
 .workbench.with-side-panel.with-visual {
@@ -8820,7 +8827,8 @@ html.visual-expanded .sidebar {
 		minmax(380px, 1fr)
 		7px
 		minmax(320px, min(var(--visual-pane-width, 360px), calc(100% - 687px)))
-		minmax(0, 300px);
+		7px
+		minmax(260px, min(var(--side-panel-width, 420px), calc(100% - 954px)));
 }
 
 .workbench-side-panel {
