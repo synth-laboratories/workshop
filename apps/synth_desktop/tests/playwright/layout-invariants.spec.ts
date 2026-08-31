@@ -302,13 +302,24 @@ test("a long prompt never hides the active turn beneath the composer", async ({ 
 		return {
 			collapsed: bubble.classList.contains("is-collapsed"),
 			atTail: transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight <= 2,
+			scrollViewportClearsComposer: transcript.getBoundingClientRect().bottom <= composer.top - 8,
 			workingClearsComposer: working.bottom <= composer.top - 8
 		};
 	});
-	expect(await tailGeometry()).toEqual({ collapsed: true, atTail: true, workingClearsComposer: true });
+	expect(await tailGeometry()).toEqual({
+		collapsed: true,
+		atTail: true,
+		scrollViewportClearsComposer: true,
+		workingClearsComposer: true
+	});
 
 	await page.getByRole("button", { name: "Show full message" }).click();
-	await expect.poll(tailGeometry).toEqual({ collapsed: false, atTail: true, workingClearsComposer: true });
+	await expect.poll(tailGeometry).toEqual({
+		collapsed: false,
+		atTail: true,
+		scrollViewportClearsComposer: true,
+		workingClearsComposer: true
+	});
 });
 
 // Model-picker containment (12:54 screenshot regression): while open, the

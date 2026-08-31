@@ -2780,7 +2780,11 @@ html.visual-expanded .titlebar {
 	flex: 1;
 	min-height: 0;
 	overflow: auto;
-	padding: 28px 24px var(--composer-clearance, 148px);
+	/* The composer is an overlay, so reserve its measured footprint in the
+	   scroll viewport itself. Padding alone lets transcript rows remain visible
+	   while they travel behind and below the input. */
+	margin-bottom: var(--composer-clearance, 148px);
+	padding: 28px 24px 24px;
 }
 
 .chat-transcript-inner {
@@ -9937,7 +9941,7 @@ html.compact-workbench .experiment-task-disclosure {
 	.workbench.with-side-panel.with-container .chat-transcript-scroll,
 	html.compact-workbench .chat-transcript-scroll,
 	html.compact-workbench .workbench.with-side-panel.with-container .chat-transcript-scroll {
-		padding-bottom: calc(var(--composer-clearance, 148px) + var(--sp-6));
+		padding-bottom: var(--sp-6);
 	}
 
 	.main-pane:has(.terminal-panel) .composer-dock,

@@ -75,7 +75,7 @@ test("narrow windows cap the visual pane at min(40vw, persisted) then overlay vi
   assert.match(css, /\.visuals-tabs button[\s\S]*white-space:\s*nowrap/s);
   assert.match(
     css,
-    /\.workbench\.with-side-panel\.with-container \.chat-transcript-scroll[\s\S]*padding-bottom:\s*calc\(var\(--composer-clearance/s
+    /\.chat-transcript-scroll\s*\{[^}]*margin-bottom:\s*var\(--composer-clearance/s
   );
   assert.match(css, /html\.sidebar-hidden is the existing sidebar toggle/);
   assert.match(css, /html\.visual-expanded is Expand visual/);

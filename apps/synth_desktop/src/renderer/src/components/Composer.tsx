@@ -899,7 +899,13 @@ export function Composer({
 		let frame = 0;
 		const updateClearance = () => {
 			frame = 0;
-			const clearance = Math.ceil(window.innerHeight - dock.getBoundingClientRect().top + 16);
+			const transcript = mainPane.querySelector<HTMLElement>(".chat-transcript");
+			const transcriptBottom = transcript?.getBoundingClientRect().bottom
+				?? mainPane.getBoundingClientRect().bottom;
+			const clearance = Math.max(
+				0,
+				Math.ceil(transcriptBottom - dock.getBoundingClientRect().top + 16)
+			);
 			mainPane.style.setProperty("--composer-clearance", `${clearance}px`);
 
 			/*
@@ -920,7 +926,15 @@ export function Composer({
 		const resizeObserver = new ResizeObserver(scheduleClearanceUpdate);
 		resizeObserver.observe(dock);
 		resizeObserver.observe(mainPane);
-		const mutationObserver = new MutationObserver(scheduleClearanceUpdate);
+		const observeTranscript = () => {
+			const transcript = mainPane.querySelector<HTMLElement>(".chat-transcript");
+			if (transcript) resizeObserver.observe(transcript);
+		};
+		observeTranscript();
+		const mutationObserver = new MutationObserver(() => {
+			observeTranscript();
+			scheduleClearanceUpdate();
+		});
 		mutationObserver.observe(mainPane, { childList: true, subtree: true });
 		window.addEventListener("resize", scheduleClearanceUpdate);
 		updateClearance();
