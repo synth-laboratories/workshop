@@ -50,7 +50,7 @@ printf '%s' "$default_instance" | jq -e '
 [[ "$(printf '%s' "$beta" | jq -r .iconLabel)" == "2" ]]
 [[ -f "$(printf '%s' "$alpha" | jq -r .icon)" ]]
 printf '%s' "$alpha" | jq -e '
-  (.appBundle | endswith("/Synth Workshop v0.9 · alpha.app")) and
+  (.appBundle | endswith("/Synth Workshop v0.9.0 · alpha.app")) and
   (.executable | endswith("/debug/synth-desktop"))
 ' >/dev/null
 
@@ -124,7 +124,7 @@ fi
 
 jq -e '
   .identifier == "com.synth.desktop.v09.dev.alpha" and
-  .productName == "Synth Workshop v0.9 · alpha" and
+  .productName == "Synth Workshop v0.9.0 · alpha" and
   .version == "0.9.0" and
   (.bundle.icon | length) == 2 and
   .bundle.targets == ["app"] and
