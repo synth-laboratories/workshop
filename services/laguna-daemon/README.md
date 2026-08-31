@@ -1,7 +1,5 @@
 # Synth Laguna Responses sidecar
 
-Current engineering handoff: [`HANDOFF_NATIVE_MLX_CONSOLIDATION.md`](./HANDOFF_NATIVE_MLX_CONSOLIDATION.md).
-
 Self-contained OpenResponses/OpenAI Responses server for Synth Desktop on Apple
 silicon. The native path loads Laguna directly in-process through the pinned
 open `mlx-vlm` Laguna/NVFP4 implementation. It does not require Poolside.app,
