@@ -111,12 +111,12 @@ pub fn commit(
 ) -> KernelResult<CommitPlan> {
     if state.lifecycle.is_terminal() && state.terminal.is_some() {
         // Replays of already-committed producer events are allowed; new facts
-        // that would move a sealed run are not. Evidence amendments are the
-        // sole append-only lane after sealing and retain the original terminal
-        // sequence.
+        // that would move a sealed run are not. Typed evidence enrichment is
+        // append-only after sealing and retains the original terminal sequence.
         let plan = plan_producer_batch(log, batch)?;
         if batch.iter().zip(&plan).any(|(event, verdict)| {
-            *verdict == ProducerVerdict::Append && event.event_type != "optimizer.evidence.amended"
+            *verdict == ProducerVerdict::Append
+                && !is_post_terminal_evidence_event(&event.event_type)
         }) {
             return Err(KernelError::new(
                 KernelErrorCode::TerminalAlreadySealed,
@@ -146,7 +146,8 @@ pub fn commit(
         .filter(|verdict| **verdict == ProducerVerdict::ConfirmedReplay)
         .count();
     for event in &committed {
-        if state.terminal.is_some() && event.producer.event_type != "optimizer.evidence.amended" {
+        if state.terminal.is_some() && !is_post_terminal_evidence_event(&event.producer.event_type)
+        {
             return Err(KernelError::new(
                 KernelErrorCode::TerminalAlreadySealed,
                 format!(
@@ -203,6 +204,13 @@ pub fn commit(
         replayed,
         state,
     })
+}
+
+fn is_post_terminal_evidence_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "optimizer.evidence.amended" | "storage.snapshot.recorded"
+    )
 }
 
 fn apply_lifecycle(
@@ -468,6 +476,23 @@ mod tests {
             3,
             "an amendment advances the aggregate without rewriting termination"
         );
+        let storage = commit(
+            first.state.clone(),
+            &log,
+            &[event(
+                4,
+                "storage.snapshot.recorded",
+                json!({"terminal": true, "bytes": 1024}),
+            )],
+            "later",
+        )
+        .unwrap();
+        assert_eq!(storage.state.aggregate_sequence, 4);
+        assert_eq!(
+            storage.state.terminal.as_ref().unwrap().final_sequence,
+            3,
+            "terminal storage enrichment cannot rewrite settlement"
+        );
         let mismatched = event(
             4,
             "optimizer.evidence.amended",
@@ -515,8 +540,16 @@ mod tests {
         let events = vec![
             eval_event(1, "optimizer.run.started", json!({})),
             eval_event(2, "eval.run.planned", json!({"plannedTrials": 5})),
-            eval_event(3, "eval.trial.started", json!({"workItemId": "eval:trial:0"})),
-            eval_event(4, "eval.trial.started", json!({"workItemId": "eval:trial:1"})),
+            eval_event(
+                3,
+                "eval.trial.started",
+                json!({"workItemId": "eval:trial:0"}),
+            ),
+            eval_event(
+                4,
+                "eval.trial.started",
+                json!({"workItemId": "eval:trial:1"}),
+            ),
             eval_event(5, "optimizer.run.cancelled", json!({})),
         ];
         let batch = commit(admit_eval(), &DurableProducerLog::default(), &events, "now").unwrap();
