@@ -48,13 +48,13 @@ pub use pipeline::{
     DeclaredEvaluator, DiscoveryContext, EvalDeclaration, ExecutionSpecDraft, InlineRequest,
     PolicyResolution, ValidatedExecutionSpec,
 };
+pub(crate) use spec::provider_use_policy_from_bounds;
 pub use spec::{
     ApprovalBinding, CatalogRecipeRef, ContainerPin, CredentialCapabilityScope, CredentialRoute,
     EvaluatorSpec, ExecutionSpec, InlineRecipe, LiveEvalProtocol, ModelPin, OutputContract,
     PolicyMaterialRef, PolicyPin, RecipeSource, RecipeSourceKind, ResourceLimits, RolloutPlan,
     LIVE_EVAL_PROTOCOL_V1,
 };
-pub(crate) use spec::provider_use_policy_from_bounds;
 pub use state::{
     EvidenceGap, EvidenceRequirements, RolloutRecord, RolloutState, RolloutStateHolder,
     RunProgress, RunState, SettlementRefusal, StateTransitionError, TransitionKind,

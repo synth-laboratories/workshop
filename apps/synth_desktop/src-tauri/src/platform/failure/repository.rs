@@ -16,11 +16,7 @@ use crate::platform::operations::{OperationContext, OperationId, OperationKind, 
 pub struct FailureRepository;
 
 impl FailureRepository {
-    pub fn insert(
-        conn: &Connection,
-        failure: &OperationalFailure,
-        actor: &str,
-    ) -> Result<()> {
+    pub fn insert(conn: &Connection, failure: &OperationalFailure, actor: &str) -> Result<()> {
         let facts = redact_value(if failure.safe_facts.is_null() {
             failure.kind.safe_facts()
         } else {
@@ -49,7 +45,11 @@ impl FailureRepository {
                 failure.lifecycle_state.as_str(),
                 failure.operation.as_str(),
                 failure.phase.as_str(),
-                failure.context.operation_id.as_ref().map(|id| id.as_str().to_owned()),
+                failure
+                    .context
+                    .operation_id
+                    .as_ref()
+                    .map(|id| id.as_str().to_owned()),
                 failure.context.session_id,
                 failure.context.turn_id,
                 failure.context.container_id,
@@ -282,7 +282,9 @@ fn migrate_container_probe_errors(conn: &Connection) -> Result<()> {
          WHERE json_extract(health_json, '$.error') IS NOT NULL",
     )?;
     let rows = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
     for (container_id, health_json) in rows {
@@ -365,7 +367,8 @@ fn hydrate(
         operation: parse_operation_kind(&operation_kind)?,
         phase: parse_operation_phase(&operation_phase)?,
         disposition,
-        lifecycle_state: FailureLifecycleState::parse(&lifecycle_state).map_err(anyhow::Error::msg)?,
+        lifecycle_state: FailureLifecycleState::parse(&lifecycle_state)
+            .map_err(anyhow::Error::msg)?,
         context: OperationContext {
             operation_id: operation_id.map(OperationId),
             session_id,

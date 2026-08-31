@@ -71,7 +71,11 @@ pub fn canonicalize_persisted_bindings(conn: &Connection) -> Result<BindingsBack
             Ok(value) => value,
             Err(error) => {
                 report.refused += 1;
-                crate::platform::logging::report("visuals", "eprintln", format!("synth-desktop: visual {id} has unparseable bindings: {error}"));
+                crate::platform::logging::report(
+                    "visuals",
+                    "eprintln",
+                    format!("synth-desktop: visual {id} has unparseable bindings: {error}"),
+                );
                 continue;
             }
         };
@@ -79,10 +83,14 @@ pub fn canonicalize_persisted_bindings(conn: &Connection) -> Result<BindingsBack
             Ok(canonical) => canonical,
             Err(error) => {
                 report.refused += 1;
-                crate::platform::logging::report("visuals", "eprintln", format!(
-                    "synth-desktop: visual {id} bindings cannot be upgraded to \
+                crate::platform::logging::report(
+                    "visuals",
+                    "eprintln",
+                    format!(
+                        "synth-desktop: visual {id} bindings cannot be upgraded to \
                      {VISUAL_BINDINGS_SCHEMA_VERSION}: {error:#}"
-                ));
+                    ),
+                );
                 continue;
             }
         };
@@ -135,10 +143,14 @@ pub fn canonicalize_persisted_bindings(conn: &Connection) -> Result<BindingsBack
         )
         .context("re-stamp canonical revision digest")?;
         report.upgraded += 1;
-        crate::platform::logging::report("visuals", "eprintln", format!(
-            "synth-desktop: upgraded visual {id} rev {revision} bindings ({})",
-            canonical.form.as_str()
-        ));
+        crate::platform::logging::report(
+            "visuals",
+            "eprintln",
+            format!(
+                "synth-desktop: upgraded visual {id} rev {revision} bindings ({})",
+                canonical.form.as_str()
+            ),
+        );
     }
     Ok(report)
 }

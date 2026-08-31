@@ -7,11 +7,11 @@ pub(crate) mod cloud;
 mod container_eval;
 pub(crate) mod container_lifecycle;
 mod container_training;
+mod effective_contract;
 mod eval_candidates;
 mod eval_recipes;
 mod eval_relay;
 pub(crate) mod eval_runtime;
-mod effective_contract;
 mod event_contract;
 mod events;
 pub mod inline_eval;
@@ -63,12 +63,11 @@ pub use models::{
     CheckpointInferRequest, EffectiveContract, HostedTrainingModel, HostedTrainingModelCatalog,
     OptimizerArtifactPage, OptimizerArtifactRange, OptimizerCreateRequest, OptimizerEventEnvelope,
     OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
-    OptimizerReconcileRequest, OptimizerRelationship,
-    OptimizerRunOutputArtifact, OptimizerRunOutputCounts, OptimizerRunOutputIdentity,
-    OptimizerRunOutputs, OptimizerRunRecord, OptimizerRunStatus, OptimizerStateSlice,
-    SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery, SavedLoraDownload,
-    SavedLoraLineage, SavedLoraPatchRequest, SavedLoraRunCounts, SavedLoraRunIdentity,
-    SavedLoraRunPage,
+    OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunOutputArtifact,
+    OptimizerRunOutputCounts, OptimizerRunOutputIdentity, OptimizerRunOutputs, OptimizerRunRecord,
+    OptimizerRunStatus, OptimizerStateSlice, SavedLoraCheckpoint, SavedLoraCheckpointPage,
+    SavedLoraCheckpointQuery, SavedLoraDownload, SavedLoraLineage, SavedLoraPatchRequest,
+    SavedLoraRunCounts, SavedLoraRunIdentity, SavedLoraRunPage,
 };
 pub(crate) use service::reconcile_stale_local_runs_in_tx;
 pub use service::OptimizerService;

@@ -74,6 +74,7 @@ pub struct WorkspaceRecipe {
     pub policy_source: Option<String>,
     pub train_seeds: Vec<i64>,
     pub heldout_seeds: Vec<i64>,
+    pub minibatch_size: usize,
     pub concurrency: usize,
     pub proposer_model: Option<String>,
     pub requires_credential_advertisement: bool,
@@ -421,6 +422,8 @@ struct RecipeFile {
     train_seeds: Option<Vec<i64>>,
     #[serde(default)]
     heldout_seeds: Option<Vec<i64>>,
+    #[serde(default)]
+    minibatch_size: Option<usize>,
     #[serde(default)]
     event_stream: Option<EventStreamFile>,
     #[serde(default)]
@@ -1037,13 +1040,22 @@ fn compile_gepa_task_contract(
                     "api_key_env".into(),
                     toml::Value::String("OPENAI_API_KEY".into()),
                 ),
+                ("timeout_seconds".into(), toml::Value::Integer(300)),
+                (
+                    "message_stall_timeout_seconds".into(),
+                    toml::Value::Integer(120),
+                ),
             ]
             .into_iter()
             .collect(),
         ),
     );
 
-    let first_train = train_ids[0].clone();
+    let minibatch = train_ids
+        .iter()
+        .take(recipe.minibatch_size)
+        .cloned()
+        .collect::<Vec<_>>();
     let mut gepa = toml::value::Table::new();
     gepa.insert(
         "max_total_rollouts".into(),
@@ -1057,16 +1069,16 @@ fn compile_gepa_task_contract(
         "max_generations".into(),
         toml::Value::Integer(recipe.bounds.max_generations.unwrap_or(1)),
     );
-    gepa.insert("minibatch_size".into(), toml::Value::Integer(1));
+    gepa.insert(
+        "minibatch_size".into(),
+        toml::Value::Integer(recipe.minibatch_size as i64),
+    );
     gepa.insert(
         "task_pools".into(),
         toml::Value::Table(
             [
-                (
-                    "pareto".into(),
-                    toml::Value::Array(vec![first_train.clone()]),
-                ),
-                ("minibatch".into(), toml::Value::Array(vec![first_train])),
+                ("pareto".into(), toml::Value::Array(train_ids.clone())),
+                ("minibatch".into(), toml::Value::Array(minibatch)),
                 ("reflection".into(), toml::Value::Array(train_ids)),
                 ("heldout".into(), toml::Value::Array(heldout_ids)),
             ]
@@ -1157,6 +1169,17 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         .cloned()
         .unwrap_or_default();
     let relay = parse_relay_settings(&parsed.id, parsed.event_stream, parsed.media)?;
+    let train_seeds = parsed
+        .train_seeds
+        .unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    let minibatch_size = parsed.minibatch_size.unwrap_or(1);
+    if minibatch_size == 0 || minibatch_size > train_seeds.len() {
+        bail!(
+            "recipe `{}` minibatch_size must be 1..={} for its declared train seeds",
+            parsed.id,
+            train_seeds.len()
+        );
+    }
     Ok(WorkspaceRecipe {
         title: parsed
             .title
@@ -1182,10 +1205,9 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         policy_source: parsed
             .policy_source
             .filter(|value| !value.trim().is_empty()),
-        train_seeds: parsed
-            .train_seeds
-            .unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+        train_seeds,
         heldout_seeds: parsed.heldout_seeds.unwrap_or_default(),
+        minibatch_size,
         concurrency: parsed.concurrency.unwrap_or(1).max(1),
         proposer_model: parsed.proposer_model,
         requires_credential_advertisement: parsed.requires_credential_advertisement,
@@ -1893,6 +1915,7 @@ locality = "container"
 candidate_field = "system_prompt"
 train_seeds = [0, 1]
 heldout_seeds = [77]
+minibatch_size = 2
 [policy]
 max_calls = 32
 effort = "xhigh"
@@ -1913,6 +1936,18 @@ max_total_rollouts = 1
         );
         assert_eq!(document["policy"]["max_calls"].as_integer(), Some(32));
         assert_eq!(document["policy"]["effort"].as_str(), Some("xhigh"));
+        assert_eq!(document["gepa"]["minibatch_size"].as_integer(), Some(2));
+        assert_eq!(
+            document["gepa"]["task_pools"]["minibatch"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            document["proposer"]["timeout_seconds"].as_integer(),
+            Some(300)
+        );
         assert_eq!(
             document["taskset"]["train_ids"][0].as_str(),
             Some("train:0")

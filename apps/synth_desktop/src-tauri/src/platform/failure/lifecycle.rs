@@ -93,13 +93,13 @@ impl TransitionReason {
     }
 }
 
-pub fn allowed(
-    from: FailureLifecycleState,
-    to: FailureLifecycleState,
-) -> Result<(), String> {
+pub fn allowed(from: FailureLifecycleState, to: FailureLifecycleState) -> Result<(), String> {
     use FailureLifecycleState::*;
     let ok = match (from, to) {
-        (Open, AwaitingApproval | Repairing | RetryScheduled | Resolved | Terminalized | Superseded) => true,
+        (
+            Open,
+            AwaitingApproval | Repairing | RetryScheduled | Resolved | Terminalized | Superseded,
+        ) => true,
         (AwaitingApproval, Repairing | Retrying | Terminalized | Open | Resolved) => true,
         (Repairing, Resolved | Terminalized | Open | AwaitingApproval) => true,
         (RetryScheduled, Retrying | Terminalized | Superseded | Open) => true,

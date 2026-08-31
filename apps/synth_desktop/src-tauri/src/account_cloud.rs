@@ -504,11 +504,19 @@ impl AccountCloudClient {
             .await;
         match result {
             Ok(response) if response.status().is_success() => {}
-            Ok(response) => crate::platform::logging::report("account_cloud", "eprintln", format!(
-                "credits_unknown observability report failed with status {}",
-                response.status()
-            )),
-            Err(error) => crate::platform::logging::report("account_cloud", "eprintln", format!("credits_unknown observability report failed: {error}")),
+            Ok(response) => crate::platform::logging::report(
+                "account_cloud",
+                "eprintln",
+                format!(
+                    "credits_unknown observability report failed with status {}",
+                    response.status()
+                ),
+            ),
+            Err(error) => crate::platform::logging::report(
+                "account_cloud",
+                "eprintln",
+                format!("credits_unknown observability report failed: {error}"),
+            ),
         }
     }
 

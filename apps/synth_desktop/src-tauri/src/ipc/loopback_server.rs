@@ -49,7 +49,11 @@ where
             .await
             .context("accept a connection on a Synth Desktop loopback server")?;
         if !peer_ok(peer.ip()) {
-            crate::platform::logging::report("ipc", "eprintln", format!("synth-desktop: rejected IPC peer {peer}"));
+            crate::platform::logging::report(
+                "ipc",
+                "eprintln",
+                format!("synth-desktop: rejected IPC peer {peer}"),
+            );
             continue;
         }
         let on_request = on_request.clone();
@@ -61,7 +65,11 @@ where
                 .serve_connection(io, service)
                 .await
             {
-                crate::platform::logging::report("ipc", "eprintln", format!("synth-desktop: loopback connection ended: {error}"));
+                crate::platform::logging::report(
+                    "ipc",
+                    "eprintln",
+                    format!("synth-desktop: loopback connection ended: {error}"),
+                );
             }
         });
     }
@@ -92,7 +100,11 @@ where
                 .serve_connection(io, service)
                 .await
             {
-                crate::platform::logging::report("ipc", "eprintln", format!("synth-desktop: unix connection ended: {error}"));
+                crate::platform::logging::report(
+                    "ipc",
+                    "eprintln",
+                    format!("synth-desktop: unix connection ended: {error}"),
+                );
             }
         });
     }

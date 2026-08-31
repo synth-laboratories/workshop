@@ -4,7 +4,11 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 pub trait DomainSettlement {
-    fn apply(&self, tx: &Transaction<'_>, failure: &crate::platform::failure::OperationalFailure) -> Result<()>;
+    fn apply(
+        &self,
+        tx: &Transaction<'_>,
+        failure: &crate::platform::failure::OperationalFailure,
+    ) -> Result<()>;
 }
 
 pub struct UnitOfWork<'conn> {

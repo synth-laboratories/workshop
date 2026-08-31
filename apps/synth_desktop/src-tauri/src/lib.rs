@@ -15,8 +15,10 @@ pub mod intern_protocol_test_support {
         SyncCreateRequest,
     };
 }
+mod adapters;
 mod codex;
 mod codex_oauth;
+mod composition;
 mod computer_use;
 pub mod container_capabilities;
 pub mod container_stream;
@@ -55,8 +57,6 @@ mod session;
 mod skills;
 pub mod storage;
 mod synth_config;
-mod composition;
-mod adapters;
 mod tariffs;
 mod telemetry;
 mod terminal;
@@ -197,12 +197,18 @@ fn desktop_image_preview(path: String) -> Result<String, AppError> {
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
         "gif" => "image/gif",
-        _ => return Err(AppError::invalid_argument("Screenshot format is unsupported")),
+        _ => {
+            return Err(AppError::invalid_argument(
+                "Screenshot format is unsupported",
+            ))
+        }
     };
     let metadata =
         std::fs::metadata(&path).map_err(|_| AppError::io("Screenshot is unavailable"))?;
     if !metadata.is_file() || metadata.len() > limits::IMAGE_PREVIEW_MAX_BYTES {
-        return Err(AppError::invalid_argument("Screenshot must be a file smaller than 20 MB"));
+        return Err(AppError::invalid_argument(
+            "Screenshot must be a file smaller than 20 MB",
+        ));
     }
     let bytes = std::fs::read(path).map_err(|_| AppError::io("Screenshot could not be read"))?;
     Ok(format!(
@@ -1285,9 +1291,7 @@ pub(crate) async fn authorize_inline_evaluation_start(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
-            AppError::invalid_argument(
-                "this mutation requires an agent session for approval",
-            )
+            AppError::invalid_argument("this mutation requires an agent session for approval")
         })?;
     let admissible = optimizers::inline_eval::admit_inline(state.optimizers(), request)
         .await
@@ -1348,12 +1352,12 @@ pub(crate) async fn authorize_inline_evaluation_start(
         .await
         .map_err(AppError::from)?;
     let execution = optimizers::inline_eval::execute(
-            state.optimizers(),
-            approved,
-            session_ref.clone(),
-            Some(start_run_id.clone()),
-        )
-        .await;
+        state.optimizers(),
+        approved,
+        session_ref.clone(),
+        Some(start_run_id.clone()),
+    )
+    .await;
     let (run, event) = match execution {
         Ok(started) => started,
         Err(error) => {
@@ -1618,12 +1622,7 @@ async fn optimizers_artifact_read_range(
 ) -> Result<OptimizerArtifactRange, AppError> {
     state
         .optimizers()
-        .artifact_read_range(
-            optimizer_run_id,
-            artifact_id,
-            offset.0,
-            length.0,
-        )
+        .artifact_read_range(optimizer_run_id, artifact_id, offset.0, length.0)
         .await
         .map_err(AppError::from)
 }
@@ -4067,7 +4066,11 @@ async fn account_sign_out(
     cloud.clear_cache();
     if let Some(telemetry) = crate::telemetry::live() {
         if let Err(error) = telemetry.on_sign_out() {
-            crate::platform::logging::report("lib", "eprintln", format!("synth-desktop: sign-out telemetry wipe failed: {error}"));
+            crate::platform::logging::report(
+                "lib",
+                "eprintln",
+                format!("synth-desktop: sign-out telemetry wipe failed: {error}"),
+            );
         }
     }
     core.reload_intern_config().await.map_err(AppError::from)?;
@@ -4918,7 +4921,9 @@ fn codex_default_workspace() -> Result<String, AppError> {
         .canonicalize()
         .map_err(|error| AppError::io(format!("Default workspace is unavailable: {error}")))?;
     if !path.is_dir() {
-        return Err(AppError::invalid_argument("Default workspace must be a directory"));
+        return Err(AppError::invalid_argument(
+            "Default workspace must be a directory",
+        ));
     }
     Ok(path.to_string_lossy().into_owned())
 }

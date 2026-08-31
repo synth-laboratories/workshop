@@ -60,11 +60,21 @@ impl LogRuntime {
     }
 
     pub fn info(&self, component: &str, event: &str, message: impl Into<String>) {
-        let _ = self.emit(LogRecord::new(LogLevel::Info, component, event, message.into()));
+        let _ = self.emit(LogRecord::new(
+            LogLevel::Info,
+            component,
+            event,
+            message.into(),
+        ));
     }
 
     pub fn error(&self, component: &str, event: &str, message: impl Into<String>) {
-        let _ = self.emit(LogRecord::new(LogLevel::Error, component, event, message.into()));
+        let _ = self.emit(LogRecord::new(
+            LogLevel::Error,
+            component,
+            event,
+            message.into(),
+        ));
     }
 
     pub fn query(&self, query: LogQuery) -> Result<LogQueryResult> {
@@ -91,7 +101,11 @@ impl LogRuntime {
                     .and_then(|v| v.as_str())
                     .unwrap_or("log_emergency")
                     .to_owned(),
-                level: LogLevel::parse(line.get("level").and_then(|v| v.as_str()).unwrap_or("error")),
+                level: LogLevel::parse(
+                    line.get("level")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("error"),
+                ),
                 component: line
                     .get("component")
                     .and_then(|v| v.as_str())
@@ -115,7 +129,10 @@ impl LogRuntime {
                     .get("failureId")
                     .and_then(|v| v.as_str())
                     .map(|id| FailureId(id.to_owned())),
-                fields: line.get("fields").cloned().unwrap_or(serde_json::Value::Null),
+                fields: line
+                    .get("fields")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
                 at: chrono::DateTime::parse_from_rfc3339(
                     line.get("at").and_then(|v| v.as_str()).unwrap_or(&now),
                 )
@@ -126,9 +143,11 @@ impl LogRuntime {
         }
         crate::platform::failure::FailureRuntime::raise_in_tx(
             conn,
-            crate::platform::failure::FailureKind::Persistence(PersistenceFailure::SqliteUnavailable {
-                detail: format!("imported {} emergency records", lines.len()),
-            }),
+            crate::platform::failure::FailureKind::Persistence(
+                PersistenceFailure::SqliteUnavailable {
+                    detail: format!("imported {} emergency records", lines.len()),
+                },
+            ),
             crate::platform::operations::OperationContext::bootstrap("import"),
             crate::platform::operations::OperationKind::Bootstrap,
             crate::platform::operations::OperationPhase::Recover,

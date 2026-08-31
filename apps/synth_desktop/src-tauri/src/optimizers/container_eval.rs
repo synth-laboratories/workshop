@@ -37,7 +37,8 @@ const WORKBENCH_TEMPLATE: &str = "trace.workbench.v1";
 const EVAL_ALGORITHM_ID: &str = "eval";
 const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
-const DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT: Duration = crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT;
+const DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT: Duration =
+    crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT;
 
 /// A failure of the evidence lane — durable events, projections, the terminal
 /// manifest, or the chat-owned visual — as opposed to a failure of the compute.
@@ -461,7 +462,15 @@ pub(super) async fn start_inline(
             spec.policy_code = Some(bytes);
         }
     }
-    start_eval(service, session_ref, spec, container, Some(approved), run_id).await
+    start_eval(
+        service,
+        session_ref,
+        spec,
+        container,
+        Some(approved),
+        run_id,
+    )
+    .await
 }
 
 async fn find_ready_container_by_id(
@@ -504,8 +513,8 @@ async fn start_eval(
     }
     let examples = spec.examples();
     let suffix = Uuid::new_v4().simple().to_string();
-    let run_id = requested_run_id
-        .unwrap_or_else(|| format!("opt_eval_{}_{}", spec.family, &suffix[..12]));
+    let run_id =
+        requested_run_id.unwrap_or_else(|| format!("opt_eval_{}_{}", spec.family, &suffix[..12]));
     let effective_contract = service.negotiate_effective_contract(
         &run_id,
         &container.id,
@@ -643,7 +652,9 @@ async fn start_eval(
             // example when Workshop refuses to mint a secrets proxy).  Its
             // durable run is terminal in that case, so its chat-owned visual
             // must not survive as a false live/running artifact.
-            if let Err(settlement_error) = settle_worker_failure(&worker, &worker_run_id, error).await {
+            if let Err(settlement_error) =
+                settle_worker_failure(&worker, &worker_run_id, error).await
+            {
                 if let Err(record_error) = worker
                     .record_visual_projection_delivery_failure(&worker_run_id, &settlement_error)
                     .await
@@ -1540,8 +1551,9 @@ async fn run_eval_worker(
                         settled_child_error_record(example, spec, &policy_pin, error),
                     ),
                     Err(error) => {
-                        return Err(error)
-                            .context("inline rollout task could not be joined during cancellation");
+                        return Err(error).context(
+                            "inline rollout task could not be joined during cancellation",
+                        );
                     }
                 };
                 evidence(
@@ -1668,14 +1680,11 @@ async fn run_eval_worker(
         .iter()
         .filter_map(|record| record.pointer("/usage/calls").and_then(Value::as_u64))
         .sum();
-    let provider_usage_failure = append_provider_usage_reconciliation_at_least(
-        &service,
-        &run_id,
-        expected_provider_calls,
-    )
-        .await
-        .err()
-        .map(|error| format!("provider usage reconciliation failed: {error:#}"));
+    let provider_usage_failure =
+        append_provider_usage_reconciliation_at_least(&service, &run_id, expected_provider_calls)
+            .await
+            .err()
+            .map(|error| format!("provider usage reconciliation failed: {error:#}"));
 
     let failed = records
         .iter()
@@ -1897,7 +1906,10 @@ async fn append_provider_usage_receipt(
         "capabilities": receipt.capabilities,
     });
     let usage_delta = Map::from_iter([
-        ("calls".into(), json!(receipt.calls.saturating_sub(current.calls))),
+        (
+            "calls".into(),
+            json!(receipt.calls.saturating_sub(current.calls)),
+        ),
         (
             "prompt_tokens".into(),
             json!(receipt.input_tokens - current.prompt_tokens),
@@ -1912,14 +1924,16 @@ async fn append_provider_usage_receipt(
     service
         .append_event_payloads(
             run_id.to_string(),
-            vec![OptimizerEventDraft::new("optimizer.usage.reconciled", EVAL_ALGORITHM_ID)
-                .idempotency_key("eval:usage:provider:reconciled")
-                .item(item.clone())
-                .usage_delta(usage_delta)
-                .raw(json!({
-                    "source": "workshop_secrets_proxy",
-                    "receiptDigest": item["receiptDigest"],
-                }))],
+            vec![
+                OptimizerEventDraft::new("optimizer.usage.reconciled", EVAL_ALGORITHM_ID)
+                    .idempotency_key("eval:usage:provider:reconciled")
+                    .item(item.clone())
+                    .usage_delta(usage_delta)
+                    .raw(json!({
+                        "source": "workshop_secrets_proxy",
+                        "receiptDigest": item["receiptDigest"],
+                    })),
+            ],
         )
         .await?;
     Ok(())
@@ -2094,11 +2108,15 @@ fn terminal_usage_reconciliation(
         (0, 0, "partial")
     } else if span_events > 0 {
         match reported_tokens {
-            Some((prompt, completion)) if prompt >= span_prompt && completion >= span_completion => (
-                prompt - span_prompt,
-                completion - span_completion,
-                "reconciled",
-            ),
+            Some((prompt, completion))
+                if prompt >= span_prompt && completion >= span_completion =>
+            {
+                (
+                    prompt - span_prompt,
+                    completion - span_completion,
+                    "reconciled",
+                )
+            }
             _ => (0, 0, "partial"),
         }
     } else if let Some((prompt, completion)) = reported_tokens {
@@ -2182,13 +2200,12 @@ fn eval_terminal_evidence_refs(spec: &EvalSpec, record: &Value) -> Result<Vec<Va
         .pointer("/sealedTrace/traces")
         .and_then(Value::as_array)
     {
-        let trace_kind = if record.get("evidenceState").and_then(Value::as_str)
-            == Some("sealed_partial")
-        {
-            "trace_v5_partial"
-        } else {
-            "trace_v5"
-        };
+        let trace_kind =
+            if record.get("evidenceState").and_then(Value::as_str) == Some("sealed_partial") {
+                "trace_v5_partial"
+            } else {
+                "trace_v5"
+            };
         for trace in traces {
             let Some(id) = trace.get("traceId").and_then(Value::as_str) else {
                 continue;
@@ -2279,7 +2296,10 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
     let output_per_call = answer_tokens.saturating_add(thinking_tokens);
     super::admission::provider_use_policy_from_bounds(
         vec!["chat.completions.create".into()],
-        (!spec.model.is_empty()).then(|| spec.model.clone()).into_iter().collect(),
+        (!spec.model.is_empty())
+            .then(|| spec.model.clone())
+            .into_iter()
+            .collect(),
         spec.policy
             .get("reasoning_effort")
             .and_then(Value::as_str)
@@ -2289,8 +2309,7 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
         (spec.cost_ceiling_usd * 1_000_000.0).round().max(0.0) as u64,
         crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
         input_tokens,
-        (output_per_call > 0)
-            .then(|| total_calls.saturating_mul(output_per_call)),
+        (output_per_call > 0).then(|| total_calls.saturating_mul(output_per_call)),
     )
 }
 
@@ -2884,16 +2903,18 @@ pub(super) async fn reconcile_evidence(
         let ledger_identity = kernel_state
             .projection
             .eval_evidence_ledger()
-            .and_then(|ledger| ledger.iter().find(|entry| entry.work_item_id == work_item_id));
+            .and_then(|ledger| {
+                ledger
+                    .iter()
+                    .find(|entry| entry.work_item_id == work_item_id)
+            });
         let rollout_id = record
             .get("rolloutId")
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| ledger_identity.and_then(|entry| entry.rollout_id.clone()))
             .with_context(|| {
-                format!(
-                    "terminal record and saved trial ledger for seed {seed} have no rolloutId"
-                )
+                format!("terminal record and saved trial ledger for seed {seed} have no rolloutId")
             })?;
         let trial_id = record
             .get("trialId")
@@ -2901,9 +2922,7 @@ pub(super) async fn reconcile_evidence(
             .map(str::to_string)
             .or_else(|| ledger_identity.and_then(|entry| entry.trial_id.clone()))
             .with_context(|| {
-                format!(
-                    "terminal record and saved trial ledger for seed {seed} have no trialId"
-                )
+                format!("terminal record and saved trial ledger for seed {seed} have no trialId")
             })?;
         // Repair the weaker summary copy from the append-only kernel ledger so
         // a successful evidence retry also leaves future readers consistent.
@@ -2925,30 +2944,26 @@ pub(super) async fn reconcile_evidence(
             .import_container_trace(&container_id, &rollout_id, run_id, &trial_id)
             .await
             .with_context(|| format!("reconcile sealed trace for rollout `{rollout_id}`"))?;
-        let frame_mode = if record.get("evidenceState").and_then(Value::as_str)
-            == Some("sealed_partial")
-        {
-            FrameTraceMode::SealedPartial {
-                last_pre_cancellation_step: record
-                    .get("lastObservedStep")
-                    .or_else(|| record.get("steps"))
-                    .and_then(Value::as_u64)
-                    .context("partial trace record omitted lastObservedStep")?,
-            }
-        } else {
-            FrameTraceMode::SealedComplete
-        };
+        let frame_mode =
+            if record.get("evidenceState").and_then(Value::as_str) == Some("sealed_partial") {
+                FrameTraceMode::SealedPartial {
+                    last_pre_cancellation_step: record
+                        .get("lastObservedStep")
+                        .or_else(|| record.get("steps"))
+                        .and_then(Value::as_u64)
+                        .context("partial trace record omitted lastObservedStep")?,
+                }
+            } else {
+                FrameTraceMode::SealedComplete
+            };
         verify_complete_native_frame_trace(record, &imported, &rollout_id, frame_mode)?;
         let imported_trace = imported
             .get("traces")
             .and_then(Value::as_array)
             .and_then(|traces| traces.first())
             .context("sealed bundle indexed no trace")?;
-        let (trace_ref, trace_digest) = verify_reconciled_trace_identity(
-            imported_trace,
-            producer_trace_id,
-            &rollout_id,
-        )?;
+        let (trace_ref, trace_digest) =
+            verify_reconciled_trace_identity(imported_trace, producer_trace_id, &rollout_id)?;
         record
             .as_object_mut()
             .with_context(|| format!("terminal record for seed {seed} is not an object"))?
@@ -3031,9 +3046,7 @@ fn verify_reconciled_trace_identity(
         .map(str::trim)
         .filter(|identity| !identity.is_empty())
         .with_context(|| {
-            format!(
-                "sealed bundle for rollout `{rollout_id}` indexed no producer trace identity"
-            )
+            format!("sealed bundle for rollout `{rollout_id}` indexed no producer trace identity")
         })?;
     if indexed_producer_trace_id != declared_producer_trace_id {
         bail!(
@@ -3061,7 +3074,11 @@ pub(super) async fn refresh_terminal_visual_projection_if_stale(
     run: &OptimizerRunRecord,
 ) -> Result<bool> {
     if run.algorithm_id != EVAL_ALGORITHM_ID
-        || run.summary.pointer("/recipeSourceKind").and_then(Value::as_str) != Some("inline")
+        || run
+            .summary
+            .pointer("/recipeSourceKind")
+            .and_then(Value::as_str)
+            != Some("inline")
         || !matches!(
             run.status.as_str(),
             "completed" | "failed" | "failed_evidence" | "cancelled" | "degraded"
@@ -3290,11 +3307,12 @@ fn is_successful_eval_record(row: &Value) -> bool {
             .pointer("/evaluatorOutcome/status")
             .and_then(Value::as_str)
         {
-            Some("scored") => row
-                .pointer("/evaluatorOutcome/reward")
-                .and_then(Value::as_f64)
-                .is_some_and(f64::is_finite)
-                || has_evaluator_measurement(row),
+            Some("scored") => {
+                row.pointer("/evaluatorOutcome/reward")
+                    .and_then(Value::as_f64)
+                    .is_some_and(f64::is_finite)
+                    || has_evaluator_measurement(row)
+            }
             Some(_) => false,
             None => has_evaluator_measurement(row),
         }
@@ -3918,17 +3936,14 @@ fn lane_tokens(lane: &Value) -> Option<u64> {
     Some(prompt.saturating_add(completion))
 }
 
-fn complete_usage_u64_sum(
-    usage: &Value,
-    read: impl Fn(&Value) -> Option<u64>,
-) -> Option<u64> {
+fn complete_usage_u64_sum(usage: &Value, read: impl Fn(&Value) -> Option<u64>) -> Option<u64> {
     let lanes = usage_lanes(usage)?;
     if lanes.is_empty() {
         return None;
     }
-    lanes
-        .into_iter()
-        .try_fold(0_u64, |sum, lane| read(lane).and_then(|value| sum.checked_add(value)))
+    lanes.into_iter().try_fold(0_u64, |sum, lane| {
+        read(lane).and_then(|value| sum.checked_add(value))
+    })
 }
 
 fn complete_usage_cost_sum(usage: &Value) -> Option<f64> {
@@ -3952,13 +3967,12 @@ fn rollout_reported_facts(record: &Value) -> RolloutReportedFacts {
         .get("steps")
         .and_then(Value::as_u64)
         .map(|value| json!(value));
-    let steps_source = if record.get("stepsSource").and_then(Value::as_str)
-        == Some("retained_event_log")
-    {
-        ReportedFactSource::RetainedEventLog
-    } else {
-        ReportedFactSource::ContainerRuntime
-    };
+    let steps_source =
+        if record.get("stepsSource").and_then(Value::as_str) == Some("retained_event_log") {
+            ReportedFactSource::RetainedEventLog
+        } else {
+            ReportedFactSource::ContainerRuntime
+        };
     let achievements = record
         .get("checkpointAchievements")
         .filter(|value| value.is_array())
@@ -4659,7 +4673,9 @@ async fn fetch_reward(
             .await
             .with_context(|| format!("POST terminal reward for rollout `{rollout_id}`"))?
             .error_for_status()
-            .with_context(|| format!("terminal reward evaluation failed for rollout `{rollout_id}`"))?
+            .with_context(|| {
+                format!("terminal reward evaluation failed for rollout `{rollout_id}`")
+            })?
             .json::<Value>()
             .await
             .with_context(|| format!("decode terminal reward for rollout `{rollout_id}`"))?;
@@ -5160,7 +5176,10 @@ mod tests {
             "producerSourceRevision": "containers@abc123"
         }))
         .unwrap();
-        assert_eq!(container.producer_source_revision.as_deref(), Some("containers@abc123"));
+        assert_eq!(
+            container.producer_source_revision.as_deref(),
+            Some("containers@abc123")
+        );
 
         let missing = refresh_inline_container_provenance(
             &mut container.clone(),
@@ -5230,9 +5249,8 @@ mod tests {
             .values()
             .all(|value| !value.is_null()));
 
-        imported["traceProvenance"]["container_image_digest"] = json!(
-            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-        );
+        imported["traceProvenance"]["container_image_digest"] =
+            json!("sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
         let mismatch = bind_imported_trace_provenance(&mut imported, &summary).unwrap_err();
         assert!(format!("{mismatch:#}").contains("trace_container_image_digest_mismatch"));
     }
@@ -5347,7 +5365,10 @@ mod tests {
         append_terminal(&svc, &run.id, "failed", "fixture settlement".into())
             .await
             .unwrap();
-        let events = svc.events_after(run.id.clone(), 0, Some(100)).await.unwrap();
+        let events = svc
+            .events_after(run.id.clone(), 0, Some(100))
+            .await
+            .unwrap();
         let reconciliations = events
             .iter()
             .filter(|event| event.event_type == "optimizer.usage.reconciled")
@@ -5364,11 +5385,14 @@ mod tests {
             reconciliation.item.as_ref().unwrap()["receiptDigest"],
             json!(format!("sha256:{}", "a".repeat(64)))
         );
-        assert_eq!(reconciliation.usage_delta.as_ref().unwrap()["calls"], json!(3));
-        assert!(reconciliation
-            .raw
-            .get("requestId")
-            .is_none(), "the aggregate receipt must not fabricate request identity");
+        assert_eq!(
+            reconciliation.usage_delta.as_ref().unwrap()["calls"],
+            json!(3)
+        );
+        assert!(
+            reconciliation.raw.get("requestId").is_none(),
+            "the aggregate receipt must not fabricate request identity"
+        );
 
         let manifest = svc
             .terminal_manifest(run.id)
@@ -5430,7 +5454,10 @@ mod tests {
             usage_from_records(&[json!({"usage": {"cost_usd": 0.004}})], 2.45),
             &unknown_cost,
         );
-        assert_eq!(merged.cost_usd, None, "an unpriced provider receipt is not a producer subtotal");
+        assert_eq!(
+            merged.cost_usd, None,
+            "an unpriced provider receipt is not a producer subtotal"
+        );
     }
 
     #[test]
@@ -5495,12 +5522,15 @@ mod tests {
             .unwrap();
         svc.append_event_payloads(
             run.id.clone(),
-            vec![OptimizerEventDraft::new("optimizer.usage", EVAL_ALGORITHM_ID)
-                .usage_delta(Map::from_iter([
-                    ("cost_usd".into(), json!(0.001)),
-                    ("prompt_tokens".into(), json!(10)),
-                    ("completion_tokens".into(), json!(2)),
-                ]))],
+            vec![
+                OptimizerEventDraft::new("optimizer.usage", EVAL_ALGORITHM_ID).usage_delta(
+                    Map::from_iter([
+                        ("cost_usd".into(), json!(0.001)),
+                        ("prompt_tokens".into(), json!(10)),
+                        ("completion_tokens".into(), json!(2)),
+                    ]),
+                ),
+            ],
         )
         .await
         .unwrap();
@@ -6220,15 +6250,22 @@ max_total_rollouts = 4
         }));
         assert!(terminals.iter().all(|event| {
             event.item.as_ref().is_some_and(|item| {
-                ["calls", "steps", "tokens", "costUsd", "achievements", "frames"]
-                    .iter()
-                    .all(|name| {
-                        let fact = &item["raw"]["reportedFacts"][name];
-                        fact.is_object()
-                            && fact.get("value").is_some()
-                            && fact.get("source").and_then(Value::as_str).is_some()
-                            && fact.get("unavailableReason").is_some()
-                    })
+                [
+                    "calls",
+                    "steps",
+                    "tokens",
+                    "costUsd",
+                    "achievements",
+                    "frames",
+                ]
+                .iter()
+                .all(|name| {
+                    let fact = &item["raw"]["reportedFacts"][name];
+                    fact.is_object()
+                        && fact.get("value").is_some()
+                        && fact.get("source").and_then(Value::as_str).is_some()
+                        && fact.get("unavailableReason").is_some()
+                })
             })
         }));
         let selection = events
@@ -6422,7 +6459,13 @@ max_total_rollouts = 4
             .expect("cancelled eval manifest carries its per-rollout evidence ledger");
         assert_eq!(ledger.len(), 10);
         assert!(ledger.iter().all(|entry| entry["state"] != json!("open")));
-        assert!(ledger.iter().filter(|entry| !entry["rolloutId"].is_null()).count() >= dispatched);
+        assert!(
+            ledger
+                .iter()
+                .filter(|entry| !entry["rolloutId"].is_null())
+                .count()
+                >= dispatched
+        );
         assert_eq!(manifest["usage"]["completeness"], json!("partial"));
         let terminal_event = events
             .iter()
@@ -6463,8 +6506,7 @@ max_total_rollouts = 4
             .projection
             .work_items()
             .iter()
-            .all(|item| item.lifecycle
-                == crate::optimizers::kernel::WorkItemLifecycle::Terminal));
+            .all(|item| item.lifecycle == crate::optimizers::kernel::WorkItemLifecycle::Terminal));
         assert_eq!(
             state.terminal.as_ref().map(|terminal| terminal.kind),
             Some(crate::optimizers::kernel::TerminalKind::Cancelled)
@@ -8393,7 +8435,10 @@ max_total_rollouts = 1
         // usage (1045/245), so it cannot subtract or duplicate durable usage.
         assert_eq!(trial_terminal["usageDelta"]["prompt_tokens"], json!(0));
         assert_eq!(trial_terminal["usageDelta"]["completion_tokens"], json!(0));
-        assert_eq!(trial_terminal["usageDelta"]["usage_completeness"], json!("partial"));
+        assert_eq!(
+            trial_terminal["usageDelta"]["usage_completeness"],
+            json!("partial")
+        );
         let manifest = wait_manifest(&svc, &run_id).await;
         assert_eq!(manifest["usage"]["promptTokens"], json!(1045));
         assert_eq!(manifest["usage"]["completionTokens"], json!(245));
@@ -8838,14 +8883,13 @@ max_total_rollouts = 1
         .unwrap();
 
         let incomplete = json!({"importedFrameSteps": [0]});
-        let error =
-            verify_complete_native_frame_trace(
-                &terminal,
-                &incomplete,
-                "roll_sparse",
-                FrameTraceMode::SealedComplete,
-            )
-            .unwrap_err();
+        let error = verify_complete_native_frame_trace(
+            &terminal,
+            &incomplete,
+            "roll_sparse",
+            FrameTraceMode::SealedComplete,
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("full_trace_frame_coverage_incomplete"));
         assert!(format!("{error:#}").contains("1 of 4 required native frame steps"));
     }
@@ -8881,8 +8925,8 @@ max_total_rollouts = 1
             "imported": false,
             "error": "container was stopped before import",
         });
-        let error = verify_required_sealed_trace(&terminal, &unavailable, "roll_missing")
-            .unwrap_err();
+        let error =
+            verify_required_sealed_trace(&terminal, &unavailable, "roll_missing").unwrap_err();
         assert!(format!("{error:#}").contains("required_trace_import_failed"));
 
         let complete = json!({
@@ -8987,11 +9031,16 @@ max_total_rollouts = 1
             reported["reportedFacts"]["frames"]["source"],
             json!("trusted_trace_v5")
         );
-        assert!(
-            ["calls", "steps", "tokens", "costUsd", "achievements", "frames"]
-                .iter()
-                .all(|name| reported["reportedFacts"][name]["unavailableReason"].is_null())
-        );
+        assert!([
+            "calls",
+            "steps",
+            "tokens",
+            "costUsd",
+            "achievements",
+            "frames"
+        ]
+        .iter()
+        .all(|name| reported["reportedFacts"][name]["unavailableReason"].is_null()));
 
         let mut missing = json!({});
         attach_reported_facts(&mut missing);

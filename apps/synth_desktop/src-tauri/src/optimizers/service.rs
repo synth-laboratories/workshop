@@ -1250,13 +1250,7 @@ impl OptimizerService {
     ) -> Result<OptimizerArtifactRange> {
         let db = self.db.clone();
         db.run(move |conn| {
-            super::artifacts::read_range(
-                conn,
-                &optimizer_run_id,
-                &artifact_id,
-                offset,
-                length,
-            )
+            super::artifacts::read_range(conn, &optimizer_run_id, &artifact_id, offset, length)
         })
         .await
     }
@@ -1271,10 +1265,7 @@ impl OptimizerService {
             let run = load_run(conn, &optimizer_run_id)?;
             if let Some(state) = super::kernel::persist::load_state(conn, &optimizer_run_id)? {
                 let context = run_view_context(conn, &run)?;
-                return Ok(super::kernel::project_view_with_context(
-                    &state,
-                    &context,
-                ));
+                return Ok(super::kernel::project_view_with_context(&state, &context));
             }
 
             // One-time repair for a historical row that predates the kernel
@@ -1293,10 +1284,7 @@ impl OptimizerService {
                     )
                 })?;
             let context = run_view_context(conn, &run)?;
-            Ok(super::kernel::project_view_with_context(
-                &state,
-                &context,
-            ))
+            Ok(super::kernel::project_view_with_context(&state, &context))
         })
         .await
     }
@@ -1505,10 +1493,11 @@ impl OptimizerService {
     pub async fn reconcile_stale_local_runs(&self) -> Result<Vec<OptimizerRunRecord>> {
         let db = self.db.clone();
         let instance_id = crate::instance::boot_epoch().to_string();
-        let recovered = db.run_transaction(move |conn| {
-            reconcile_stale_local_runs_in_tx(conn, &instance_id, Utc::now())
-        })
-        .await?;
+        let recovered = db
+            .run_transaction(move |conn| {
+                reconcile_stale_local_runs_in_tx(conn, &instance_id, Utc::now())
+            })
+            .await?;
         self.sweep_projection_outbox(None, None).await?;
         Ok(recovered)
     }
@@ -1883,16 +1872,14 @@ impl OptimizerService {
         if let Some(request) = cause.cancellation() {
             self.record_cancellation_request(&optimizer_run_id, request)
                 .await?;
-            let request_event = OptimizerEventDraft::new(
-                "optimizer.run.cancel.requested",
-                &run.algorithm_id,
-            )
-            .idempotency_key(format!("cancel-request:{}", request.request_id))
-            .delta(Map::from_iter([(
-                "cancellation".into(),
-                json!(request.as_ref()),
-            )]))
-            .raw(json!({ "source": "settle_run" }));
+            let request_event =
+                OptimizerEventDraft::new("optimizer.run.cancel.requested", &run.algorithm_id)
+                    .idempotency_key(format!("cancel-request:{}", request.request_id))
+                    .delta(Map::from_iter([(
+                        "cancellation".into(),
+                        json!(request.as_ref()),
+                    )]))
+                    .raw(json!({ "source": "settle_run" }));
             self.append_event_payloads(optimizer_run_id.clone(), vec![request_event])
                 .await?;
         }
@@ -1936,8 +1923,7 @@ impl OptimizerService {
                 // A concurrent writer may have sealed between the check and
                 // the append. Its seal wins when compatible; otherwise the
                 // refusal stands.
-                let Some(manifest) = self.terminal_manifest(optimizer_run_id.clone()).await?
-                else {
+                let Some(manifest) = self.terminal_manifest(optimizer_run_id.clone()).await? else {
                     return Err(append_error);
                 };
                 cause
@@ -2000,12 +1986,8 @@ impl OptimizerService {
             Ok(run) => run,
             Err(_) => return,
         };
-        let draft = credential_revocation_amendment(
-            &run,
-            terminal_sequence,
-            capability_ids,
-            cancellation,
-        );
+        let draft =
+            credential_revocation_amendment(&run, terminal_sequence, capability_ids, cancellation);
         if let Err(error) = self
             .append_event_payloads(optimizer_run_id.to_string(), vec![draft])
             .await
@@ -2782,13 +2764,11 @@ impl OptimizerService {
                             .to_string(),
                     },
                     "optimizer.run.cancelled" => super::kernel::SettleCause::Cancelled {
-                        request: std::sync::Arc::new(
-                            super::kernel::CancellationRequest::new(
-                                super::kernel::CancellationCause::ContainerRequested,
-                                "cloud:remote",
-                                format!("run:{id}"),
-                            ),
-                        ),
+                        request: std::sync::Arc::new(super::kernel::CancellationRequest::new(
+                            super::kernel::CancellationCause::ContainerRequested,
+                            "cloud:remote",
+                            format!("run:{id}"),
+                        )),
                     },
                     _ => super::kernel::SettleCause::Failed {
                         detail: terminal
@@ -2807,28 +2787,23 @@ impl OptimizerService {
                     let terminal_sequence = self
                         .terminal_manifest(id.clone())
                         .await?
-                        .and_then(|manifest| {
-                            manifest.get("terminalCursor").and_then(Value::as_u64)
-                        })
+                        .and_then(|manifest| manifest.get("terminalCursor").and_then(Value::as_u64))
                         .context("hosted terminal seal is missing terminalCursor")?;
                     let amendments = after
                         .into_iter()
                         .map(|fact| {
-                            OptimizerEventDraft::new(
-                                "optimizer.evidence.amended",
-                                &algorithm_id,
-                            )
-                            .idempotency_key(format!(
-                                "cloud-post-terminal:{}",
-                                fact.event_id
-                                    .clone()
-                                    .unwrap_or_else(|| fact.sequence_number.to_string())
-                            ))
-                            .delta(Map::from_iter([
-                                ("terminalSequence".into(), json!(terminal_sequence)),
-                                ("postTerminalFact".into(), json!(fact)),
-                            ]))
-                            .raw(json!({"source":"cloud_reconcile"}))
+                            OptimizerEventDraft::new("optimizer.evidence.amended", &algorithm_id)
+                                .idempotency_key(format!(
+                                    "cloud-post-terminal:{}",
+                                    fact.event_id
+                                        .clone()
+                                        .unwrap_or_else(|| fact.sequence_number.to_string())
+                                ))
+                                .delta(Map::from_iter([
+                                    ("terminalSequence".into(), json!(terminal_sequence)),
+                                    ("postTerminalFact".into(), json!(fact)),
+                                ]))
+                                .raw(json!({"source":"cloud_reconcile"}))
                         })
                         .collect();
                     settled = self.append_event_payloads(id.clone(), amendments).await?.0;
@@ -3293,9 +3268,8 @@ impl OptimizerService {
         let db = self.db.clone();
         db.run(move |conn| {
             let run = load_run(conn, &run_id)?;
-            let state = super::kernel::persist::load_state(conn, &run_id)?.ok_or_else(|| {
-                anyhow!("optimizer run {run_id} has no saved kernel projection")
-            })?;
+            let state = super::kernel::persist::load_state(conn, &run_id)?
+                .ok_or_else(|| anyhow!("optimizer run {run_id} has no saved kernel projection"))?;
             if state.aggregate_sequence != at_seq {
                 bail!(
                     "optimizer run {run_id} projection is at sequence {}, requested {at_seq}",
@@ -3950,8 +3924,8 @@ fn upsert_run(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
         ],
     )?;
     if let Some(contract) = run.summary.get("effectiveContract") {
-        let contract: EffectiveContract = serde_json::from_value(contract.clone())
-            .context("decode run effectiveContract")?;
+        let contract: EffectiveContract =
+            serde_json::from_value(contract.clone()).context("decode run effectiveContract")?;
         if contract.optimizer_run_id != run.id {
             bail!(
                 "effective contract belongs to {}, refusing to persist it on {}",
@@ -4646,11 +4620,7 @@ fn shredded_event_fields(
         .and_then(|value| value.get("payload"))
         .and_then(Value::as_object);
     let rollout_id = carrier
-        .and_then(|value| {
-            value
-                .get("rollout_id")
-                .or_else(|| value.get("rolloutId"))
-        })
+        .and_then(|value| value.get("rollout_id").or_else(|| value.get("rolloutId")))
         .and_then(Value::as_str)
         .or_else(|| {
             event
@@ -4673,21 +4643,13 @@ fn shredded_event_fields(
         .or_else(|| event.raw.get("step"))
         .and_then(Value::as_i64);
     let span_id = carrier_payload
-        .and_then(|value| {
-            value
-                .get("span_id")
-                .or_else(|| value.get("spanId"))
-        })
+        .and_then(|value| value.get("span_id").or_else(|| value.get("spanId")))
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
         .or_else(|| event_string(&event.raw, "span_id", "spanId"));
     let producer_occurred_at = carrier
-        .and_then(|value| {
-            value
-                .get("occurred_at")
-                .or_else(|| value.get("occurredAt"))
-        })
+        .and_then(|value| value.get("occurred_at").or_else(|| value.get("occurredAt")))
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(&event.occurred_at)
@@ -8842,7 +8804,11 @@ pub(in crate::optimizers) mod tests {
         left_result.unwrap();
         right_result.unwrap();
 
-        let sealed = svc.terminal_manifest(run.id.clone()).await.unwrap().unwrap();
+        let sealed = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap();
         let durable = svc.get(run.id.clone()).await.unwrap();
         assert_eq!(sealed["terminalCursor"], json!(durable.cursor_seq));
         assert_eq!(sealed["error"], durable.error.unwrap());
@@ -8885,7 +8851,11 @@ pub(in crate::optimizers) mod tests {
         )
         .await
         .unwrap();
-        let sealed = svc.terminal_manifest(run.id.clone()).await.unwrap().unwrap();
+        let sealed = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap();
         let terminal_cursor = sealed["terminalCursor"].as_u64().unwrap();
 
         svc.database()
@@ -8959,7 +8929,12 @@ pub(in crate::optimizers) mod tests {
     #[tokio::test]
     async fn get_run_reprojects_a_historical_terminal_summary_from_canonical_evidence() {
         let (svc, _dir, _) = service().await;
-        let run = eval_run(&svc, "terminal_summary_evidence", "summary_evidence_session").await;
+        let run = eval_run(
+            &svc,
+            "terminal_summary_evidence",
+            "summary_evidence_session",
+        )
+        .await;
         let trace_id = "tracev5_summary_evidence";
         let trace_digest = "sha256:summary_evidence";
         svc.append_event_payloads(
@@ -9072,7 +9047,10 @@ pub(in crate::optimizers) mod tests {
         svc.append_event_payloads(run.id.clone(), vec![draft])
             .await
             .unwrap();
-        let events = svc.events_after(run.id, terminal_sequence, None).await.unwrap();
+        let events = svc
+            .events_after(run.id, terminal_sequence, None)
+            .await
+            .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "optimizer.evidence.amended");
         assert_eq!(
@@ -9126,7 +9104,12 @@ pub(in crate::optimizers) mod tests {
                     "SELECT observed_at, settled_sequence FROM optimizer_cancellation_requests \
                      WHERE request_id=?1",
                     [request_id],
-                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<i64>>(1)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<i64>>(1)?,
+                        ))
+                    },
                 )
                 .map_err(Into::into)
             })

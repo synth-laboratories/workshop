@@ -1,9 +1,7 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
-use crate::platform::failure::{
-    FailureKind, OperationalFailure, SessionFailure, TransitionReason,
-};
+use crate::platform::failure::{FailureKind, OperationalFailure, SessionFailure, TransitionReason};
 use crate::platform::operations::{OperationContext, OperationKind, OperationPhase};
 use crate::recovery::RecoveryNotice;
 
@@ -42,7 +40,11 @@ pub fn raise_from_notice(conn: &Connection, notice: &RecoveryNotice) -> Result<O
     Ok(raised)
 }
 
-pub fn resolve_resume(conn: &Connection, failure_id: &str, actor: &str) -> Result<OperationalFailure> {
+pub fn resolve_resume(
+    conn: &Connection,
+    failure_id: &str,
+    actor: &str,
+) -> Result<OperationalFailure> {
     crate::platform::failure::FailureAuthority::transition(
         conn,
         failure_id,

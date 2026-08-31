@@ -503,21 +503,63 @@ impl FailureDefinition for ContainerFailure {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AdmissionFailure {
-    CatalogRecipeNotFound { recipe_id: String, searched: usize },
-    EvaluatorNotDeclared { container_id: String },
-    ScoringContractInvalid { container_id: String, detail: String },
-    PolicyNotFound { namespace: String, name: String },
-    PolicyRevisionUnresolved { namespace: String, name: String },
-    PolicyConfigurationInvalid { namespace: String, name: String, detail: String },
-    ModelUnsupported { provider: String, model: String, container_id: String },
-    SeedControlUnsupported { container_id: String },
-    RequestedLimitUnsupported { limit: String, requested: u64, maximum_supported: Option<u64> },
+    CatalogRecipeNotFound {
+        recipe_id: String,
+        searched: usize,
+    },
+    EvaluatorNotDeclared {
+        container_id: String,
+    },
+    ScoringContractInvalid {
+        container_id: String,
+        detail: String,
+    },
+    PolicyNotFound {
+        namespace: String,
+        name: String,
+    },
+    PolicyRevisionUnresolved {
+        namespace: String,
+        name: String,
+    },
+    PolicyConfigurationInvalid {
+        namespace: String,
+        name: String,
+        detail: String,
+    },
+    ModelUnsupported {
+        provider: String,
+        model: String,
+        container_id: String,
+    },
+    SeedControlUnsupported {
+        container_id: String,
+    },
+    RequestedLimitUnsupported {
+        limit: String,
+        requested: u64,
+        maximum_supported: Option<u64>,
+    },
     CostCeilingRequired,
-    CredentialRouteUnavailable { provider: String, detail: String },
-    OutputContractUnsupported { container_id: String, missing: Vec<String> },
-    ExecutionSpecInvalid { detail: String },
-    ExecutionSpecDigestMismatch { expected: String, actual: String },
-    PolicySourceUnavailable { namespace: String, name: String },
+    CredentialRouteUnavailable {
+        provider: String,
+        detail: String,
+    },
+    OutputContractUnsupported {
+        container_id: String,
+        missing: Vec<String>,
+    },
+    ExecutionSpecInvalid {
+        detail: String,
+    },
+    ExecutionSpecDigestMismatch {
+        expected: String,
+        actual: String,
+    },
+    PolicySourceUnavailable {
+        namespace: String,
+        name: String,
+    },
 }
 
 impl FailureDefinition for AdmissionFailure {
@@ -719,11 +761,26 @@ impl FailureDefinition for AuthenticationFailure {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvaluationFailure {
-    ChildStillLive { run_id: String, rollout_id: String, state: String },
-    TerminalManifestMissing { run_id: String },
-    FailedEvidence { run_id: String, reason: String },
-    CostUnavailable { run_id: String },
-    MidRolloutContainerDeath { run_id: String, rollout_id: String, container_id: String },
+    ChildStillLive {
+        run_id: String,
+        rollout_id: String,
+        state: String,
+    },
+    TerminalManifestMissing {
+        run_id: String,
+    },
+    FailedEvidence {
+        run_id: String,
+        reason: String,
+    },
+    CostUnavailable {
+        run_id: String,
+    },
+    MidRolloutContainerDeath {
+        run_id: String,
+        rollout_id: String,
+        container_id: String,
+    },
 }
 
 impl FailureDefinition for EvaluationFailure {
@@ -762,7 +819,9 @@ impl FailureDefinition for EvaluationFailure {
     }
     fn message(&self) -> String {
         match self {
-            Self::ChildStillLive { rollout_id, state, .. } => {
+            Self::ChildStillLive {
+                rollout_id, state, ..
+            } => {
                 format!("parent cannot terminalize while rollout `{rollout_id}` is `{state}`")
             }
             Self::TerminalManifestMissing { run_id } => {
@@ -772,9 +831,11 @@ impl FailureDefinition for EvaluationFailure {
             Self::CostUnavailable { run_id } => {
                 format!("cost telemetry for run `{run_id}` is unavailable")
             }
-            Self::MidRolloutContainerDeath { rollout_id, container_id, .. } => format!(
-                "container `{container_id}` died during rollout `{rollout_id}`"
-            ),
+            Self::MidRolloutContainerDeath {
+                rollout_id,
+                container_id,
+                ..
+            } => format!("container `{container_id}` died during rollout `{rollout_id}`"),
         }
     }
     fn safe_facts(&self) -> serde_json::Value {
@@ -786,8 +847,13 @@ impl FailureDefinition for EvaluationFailure {
 #[serde(rename_all = "snake_case")]
 pub enum PersistenceFailure {
     DatabaseLocked,
-    SqliteUnavailable { detail: String },
-    HistoricalUnclassified { source_table: String, source_id: String },
+    SqliteUnavailable {
+        detail: String,
+    },
+    HistoricalUnclassified {
+        source_table: String,
+        source_id: String,
+    },
 }
 
 impl FailureDefinition for PersistenceFailure {
@@ -829,7 +895,10 @@ impl FailureDefinition for PersistenceFailure {
             Self::SqliteUnavailable { detail } => {
                 format!("SQLite is unavailable at bootstrap: {detail}")
             }
-            Self::HistoricalUnclassified { source_table, source_id } => {
+            Self::HistoricalUnclassified {
+                source_table,
+                source_id,
+            } => {
                 format!("historical {source_table} row `{source_id}` could not be classified")
             }
         }

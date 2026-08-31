@@ -53,10 +53,8 @@ impl CoreRuntime {
             .parent()
             .unwrap_or_else(|| storage.content_root())
             .to_path_buf();
-        let observability = crate::composition::ObservabilityRuntime::open(
-            storage.database().clone(),
-            data_root,
-        )?;
+        let observability =
+            crate::composition::ObservabilityRuntime::open(storage.database().clone(), data_root)?;
         // Bindings written before the canonical envelope was enforced still
         // render an empty pane, so bring them forward at open. Storage cannot
         // do this itself: deciding what a legacy shape meant is domain logic.
@@ -236,10 +234,8 @@ impl CoreRuntime {
     ) -> Result<Self> {
         let root = root.into();
         let storage = Storage::open(&root)?;
-        let observability = crate::composition::ObservabilityRuntime::open(
-            storage.database().clone(),
-            root,
-        )?;
+        let observability =
+            crate::composition::ObservabilityRuntime::open(storage.database().clone(), root)?;
         Ok(Self::from_parts(storage, Arc::new(intern), observability))
     }
 
@@ -461,7 +457,11 @@ impl CoreRuntime {
             loop {
                 tokio::time::sleep(interval).await;
                 if let Err(error) = core.sweep_expired_leases().await {
-                    crate::platform::logging::report("core_runtime", "eprintln", format!("lease watchdog sweep failed: {error}"));
+                    crate::platform::logging::report(
+                        "core_runtime",
+                        "eprintln",
+                        format!("lease watchdog sweep failed: {error}"),
+                    );
                 }
             }
         });

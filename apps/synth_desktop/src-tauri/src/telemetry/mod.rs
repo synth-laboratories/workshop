@@ -40,7 +40,11 @@ pub fn live() -> Option<Arc<ProductTelemetry>> {
 pub fn emit(name: &str, properties: Value) {
     if let Some(telemetry) = live() {
         if let Err(error) = telemetry.record(name, properties, false) {
-            crate::platform::logging::report("telemetry", "eprintln", format!("synth-desktop: product telemetry dropped {name}: {error}"));
+            crate::platform::logging::report(
+                "telemetry",
+                "eprintln",
+                format!("synth-desktop: product telemetry dropped {name}: {error}"),
+            );
         }
     }
 }
@@ -49,7 +53,11 @@ pub fn emit(name: &str, properties: Value) {
 pub fn mark_once(name: &str, properties: Value) {
     if let Some(telemetry) = live() {
         if let Err(error) = telemetry.record(name, properties, true) {
-            crate::platform::logging::report("telemetry", "eprintln", format!("synth-desktop: product telemetry dropped {name}: {error}"));
+            crate::platform::logging::report(
+                "telemetry",
+                "eprintln",
+                format!("synth-desktop: product telemetry dropped {name}: {error}"),
+            );
         }
     }
 }

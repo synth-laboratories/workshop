@@ -89,7 +89,9 @@ mod tests {
                 "run:r1",
             )),
         };
-        cancelled.accept_sealed(TerminalKind::Cancelled, "r1").unwrap();
+        cancelled
+            .accept_sealed(TerminalKind::Cancelled, "r1")
+            .unwrap();
         let error = cancelled
             .accept_sealed(TerminalKind::Failed, "r1")
             .unwrap_err();

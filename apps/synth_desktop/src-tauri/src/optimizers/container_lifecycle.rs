@@ -579,9 +579,11 @@ async fn healthy_now(base_url: &str, health_path: &str, spec: &ContainerSpec) ->
         .await
         .context("health_contract_invalid: response is not JSON")?;
     validate_health_identity(spec, &payload)?;
-    Ok(validate_declared_runtime_identity(&client, base_url, spec, &payload)
-        .await
-        .is_ok())
+    Ok(
+        validate_declared_runtime_identity(&client, base_url, spec, &payload)
+            .await
+            .is_ok(),
+    )
 }
 
 /// Bind readiness to the immutable runtime pins carried by the launch
@@ -610,12 +612,9 @@ async fn validate_declared_runtime_identity(
             .await
             .with_context(|| format!("container_identity_pending: query {url}"))?;
         if response.status().is_success() {
-            evidence.push(
-                response
-                    .json::<Value>()
-                    .await
-                    .with_context(|| format!("container_identity_pending: {path} response is not JSON"))?,
-            );
+            evidence.push(response.json::<Value>().await.with_context(|| {
+                format!("container_identity_pending: {path} response is not JSON")
+            })?);
         }
     }
     anyhow::ensure!(
@@ -624,15 +623,12 @@ async fn validate_declared_runtime_identity(
     );
     let identity_field = |camel: &str, snake: &str| {
         evidence.iter().find_map(|payload| {
-            payload
-                .get(camel)
-                .and_then(Value::as_str)
-                .or_else(|| {
-                    payload
-                        .get("runtime_identity")
-                        .and_then(|identity| identity.get(snake))
-                        .and_then(Value::as_str)
-                })
+            payload.get(camel).and_then(Value::as_str).or_else(|| {
+                payload
+                    .get("runtime_identity")
+                    .and_then(|identity| identity.get(snake))
+                    .and_then(Value::as_str)
+            })
         })
     };
     if let Some(expected) = expected_image {

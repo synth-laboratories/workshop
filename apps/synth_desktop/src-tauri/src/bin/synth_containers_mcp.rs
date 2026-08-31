@@ -298,11 +298,7 @@ fn enrich_container_breaker_args(name: &str, args: &Value) -> Value {
     if let Some(spec_id) = args.get("spec_id").and_then(Value::as_str) {
         body["specId"] = json!(spec_id);
     }
-    let resolved = match request(
-        "POST",
-        "/v1/containers/resolve_declaration",
-        Some(body),
-    ) {
+    let resolved = match request("POST", "/v1/containers/resolve_declaration", Some(body)) {
         Ok(value) => value,
         Err(error) => serde_json::from_str(&error).unwrap_or_else(|_| json!({})),
     };
@@ -414,7 +410,12 @@ mod tests {
             prepare["inputSchema"]["properties"]["max_steps"]["minimum"],
             1
         );
-        for name in ["container_ensure", "container_stop", "container_restart", "container_reconcile"] {
+        for name in [
+            "container_ensure",
+            "container_stop",
+            "container_restart",
+            "container_reconcile",
+        ] {
             assert!(catalog["tools"]
                 .as_array()
                 .unwrap()

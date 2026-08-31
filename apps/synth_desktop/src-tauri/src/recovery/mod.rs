@@ -443,7 +443,11 @@ pub fn crash_checkpoint(name: &str) {
         return;
     };
     if requested.split(',').any(|value| value.trim() == name) {
-        crate::platform::logging::report("recovery", "eprintln", format!("synth-desktop: fault injection abort at checkpoint {name}"));
+        crate::platform::logging::report(
+            "recovery",
+            "eprintln",
+            format!("synth-desktop: fault injection abort at checkpoint {name}"),
+        );
         std::process::abort();
     }
 }

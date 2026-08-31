@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::definition::{FailureDefinition, FailureDisposition, FailureId, FailureKind};
 use super::lifecycle::FailureLifecycleState;
-use crate::platform::operations::{OperationKind, OperationPhase, OperationContext};
+use crate::platform::operations::{OperationContext, OperationKind, OperationPhase};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FailureCause {

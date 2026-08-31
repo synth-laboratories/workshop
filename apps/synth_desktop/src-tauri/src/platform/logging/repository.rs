@@ -15,7 +15,10 @@ pub fn insert(conn: &Connection, record: &LogRecord) -> Result<()> {
             record.component,
             record.event,
             redact_text(&record.message),
-            record.operation_id.as_ref().map(|id| id.as_str().to_owned()),
+            record
+                .operation_id
+                .as_ref()
+                .map(|id| id.as_str().to_owned()),
             record.failure_id.as_ref().map(|id| id.as_str().to_owned()),
             redact_value(record.fields.clone()).to_string(),
             record.at.to_rfc3339(),

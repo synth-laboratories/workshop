@@ -354,7 +354,11 @@ pub async fn spawn(
         })
         .await;
         if let Err(error) = result {
-            crate::platform::logging::report("visuals_ipc", "eprintln", format!("synth-desktop: visuals IPC stopped: {error:#}"));
+            crate::platform::logging::report(
+                "visuals_ipc",
+                "eprintln",
+                format!("synth-desktop: visuals IPC stopped: {error:#}"),
+            );
         }
     });
     Ok(connection)
@@ -3550,13 +3554,7 @@ fn parse_secrets_request<T: serde::de::DeserializeOwned>(body: Value) -> Result<
         object.keys().any(|key| {
             matches!(
                 key.to_ascii_lowercase().as_str(),
-                "value"
-                    | "secret"
-                    | "apikey"
-                    | "api_key"
-                    | "token"
-                    | "password"
-                    | "credential"
+                "value" | "secret" | "apikey" | "api_key" | "token" | "password" | "credential"
             )
         })
     }) {

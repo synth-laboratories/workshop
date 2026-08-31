@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 
 export type PaneResizeDirection = "output" | "sidebar" | "primary";
 
@@ -10,6 +10,9 @@ type Props = {
 	ariaLabel?: string;
 	direction?: PaneResizeDirection;
 	resetValue?: number;
+	allowPrimaryCollapse?: boolean;
+	primaryCollapsed?: boolean;
+	onPrimaryCollapsedChange?: (collapsed: boolean) => void;
 };
 
 /**
@@ -77,14 +80,33 @@ export function PaneResizeHandle({
 	minSecondary = 340,
 	ariaLabel = "Resize container inspector",
 	direction = "output",
-	resetValue
+	resetValue,
+	allowPrimaryCollapse = false,
+	primaryCollapsed = false,
+	onPrimaryCollapsedChange
 }: Props) {
 	const handleRef = useRef<HTMLDivElement>(null);
 	const activePointer = useRef<number | null>(null);
 	const settling = useRef(false);
 	const settleFrame = useRef<number | null>(null);
+	const geometryFrame = useRef<number | null>(null);
 	const valueRef = useRef(value);
 	const onChangeRef = useRef(onChange);
+	const publishOutputWidth = (target: HTMLElement, width: number, primaryWidth?: number) => {
+		if (direction !== "output") return;
+		const mainPane = target.closest<HTMLElement>(".main-pane");
+		if (!mainPane) return;
+		mainPane.style.setProperty("--live-side-panel-width", `${width}px`);
+		const resolvedPrimaryWidth = primaryWidth ?? target.getBoundingClientRect().left - mainPane.getBoundingClientRect().left;
+		mainPane.style.setProperty("--live-transcript-width", `${resolvedPrimaryWidth}px`);
+	};
+	useLayoutEffect(() => {
+		const target = handleRef.current;
+		if (!target || direction !== "output") return;
+		const panel = namedPaneElement(target, direction);
+		if (!panel) return;
+		publishOutputWidth(target, panel.getBoundingClientRect().width);
+	}, [direction, value]);
 	const [maximum, setMaximum] = useState(value);
 	const [realized, setRealized] = useState<number | null>(null);
 	const resolvedResetValue = resetValue ?? (direction === "sidebar" ? 260 : direction === "primary" ? 560 : 420);
@@ -152,8 +174,24 @@ export function PaneResizeHandle({
 		const parent = target.parentElement;
 		if (!parent) return;
 		const bounds = parent.getBoundingClientRect();
-		onChange(clampPaneWidth(bounds.right - clientX, minSecondary, max));
-	}, [direction, measureMaximum, minPrimary, minSecondary, onChange]);
+		const requestedPrimaryWidth = clientX - bounds.left;
+		if (allowPrimaryCollapse && requestedPrimaryWidth <= 72) {
+			onPrimaryCollapsedChange?.(true);
+			return;
+		}
+		if (primaryCollapsed) onPrimaryCollapsedChange?.(false);
+		const next = clampPaneWidth(bounds.right - clientX, minSecondary, max);
+		// Use the clamped grid request, not the unconstrained pointer. Pointer
+		// capture continues beyond the grid's min/max, but the transcript does not.
+		publishOutputWidth(target, next, bounds.width - next - 7);
+		onChange(next);
+		if (geometryFrame.current !== null) cancelAnimationFrame(geometryFrame.current);
+		geometryFrame.current = requestAnimationFrame(() => {
+			geometryFrame.current = null;
+			const panel = namedPaneElement(target, direction);
+			if (panel) publishOutputWidth(target, panel.getBoundingClientRect().width);
+		});
+	}, [allowPrimaryCollapse, direction, measureMaximum, minPrimary, minSecondary, onChange, onPrimaryCollapsedChange, primaryCollapsed]);
 
 	const release = useCallback(() => {
 		const target = handleRef.current;
@@ -191,6 +229,7 @@ export function PaneResizeHandle({
 			observer.disconnect();
 			window.removeEventListener("blur", release);
 			cancelSettlement();
+			if (geometryFrame.current !== null) cancelAnimationFrame(geometryFrame.current);
 			const pointerId = activePointer.current;
 			activePointer.current = null;
 			if (pointerId !== null && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
@@ -215,6 +254,12 @@ export function PaneResizeHandle({
 	};
 
 	const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+		if (primaryCollapsed && (event.key === "ArrowRight" || event.key === "Enter" || event.key === " ")) {
+			event.preventDefault();
+			onPrimaryCollapsedChange?.(false);
+			onChange(resolvedResetValue);
+			return;
+		}
 		const current = realizedPaneWidth(value, minimum, maximum, realized);
 		const next = applyKeyboardResize({
 			key: event.key,
@@ -225,6 +270,7 @@ export function PaneResizeHandle({
 		});
 		if (next == null) return;
 		event.preventDefault();
+		publishOutputWidth(event.currentTarget, next);
 		onChange(next);
 	};
 
@@ -232,9 +278,10 @@ export function PaneResizeHandle({
 
 	return <div
 		ref={handleRef}
-		className={`pane-resize-handle${direction === "sidebar" ? " sidebar-resize-handle" : ""}${direction === "primary" ? " primary-resize-handle" : ""}`}
+		className={`pane-resize-handle${direction === "sidebar" ? " sidebar-resize-handle" : ""}${direction === "primary" ? " primary-resize-handle" : ""}${primaryCollapsed ? " is-primary-collapsed" : ""}`}
 		role="separator"
-		aria-label={ariaLabel}
+		aria-label={primaryCollapsed ? "Restore chat transcript" : ariaLabel}
+		data-primary-collapsed={primaryCollapsed ? "true" : "false"}
 		aria-orientation="vertical"
 		aria-valuemin={minimum}
 		aria-valuemax={maximum}

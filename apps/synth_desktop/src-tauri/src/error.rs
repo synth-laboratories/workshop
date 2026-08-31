@@ -61,7 +61,9 @@ impl AppError {
     }
 
     pub fn from_occurrence(failure: &crate::platform::failure::OperationalFailure) -> Self {
-        Self::from_view(crate::platform::failure::FailureView::from_occurrence(failure))
+        Self::from_view(crate::platform::failure::FailureView::from_occurrence(
+            failure,
+        ))
     }
 
     /// Boundary helper for remaining untyped command edges. New code must raise
@@ -284,7 +286,10 @@ impl StructuredFailure {
         if !self.details.is_null() {
             if let Some(fields) = self.details.as_object() {
                 for (key, value) in fields {
-                    if !body.as_object().is_some_and(|object| object.contains_key(key)) {
+                    if !body
+                        .as_object()
+                        .is_some_and(|object| object.contains_key(key))
+                    {
                         body[key] = value.clone();
                     }
                 }

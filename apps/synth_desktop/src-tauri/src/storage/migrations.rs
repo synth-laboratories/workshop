@@ -221,10 +221,7 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
         "paid_compute_conversation_budgets",
         PAID_COMPUTE_BUDGET_CREATE_ONLY,
     ),
-    (
-        "paid_compute_reservations",
-        PAID_COMPUTE_BUDGET_CREATE_ONLY,
-    ),
+    ("paid_compute_reservations", PAID_COMPUTE_BUDGET_CREATE_ONLY),
 ];
 
 const PROJECTION_OUTBOX_CREATE_ONLY: &str = r#"
@@ -4603,7 +4600,10 @@ mod tests {
                 "SELECT EXISTS(SELECT 1 FROM pragma_table_info('secret_refs') WHERE name='{column}')"
             );
             let present: bool = conn.query_row(&sql, [], |row| row.get(0)).unwrap();
-            assert!(present, "secret_refs.{column} must exist after migration 51");
+            assert!(
+                present,
+                "secret_refs.{column} must exist after migration 51"
+            );
         }
     }
 
@@ -4666,7 +4666,10 @@ mod tests {
         let state = crate::optimizers::kernel::persist::load_state(&conn, "campaign_1")
             .unwrap()
             .expect("migrated campaign must have a durable kernel projection");
-        assert_eq!(state.algorithm, crate::optimizers::kernel::AlgorithmKind::Eval);
+        assert_eq!(
+            state.algorithm,
+            crate::optimizers::kernel::AlgorithmKind::Eval
+        );
         assert!(state.lifecycle.is_terminal());
         assert_eq!(state.work_summary().planned, Some(2));
         assert_eq!(state.work_summary().succeeded, Some(2));
@@ -4702,7 +4705,10 @@ mod tests {
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='{retired}')"
             );
             let present: bool = conn.query_row(&sql, [], |row| row.get(0)).unwrap();
-            assert!(!present, "{retired} must be removed after the one-way cutover");
+            assert!(
+                !present,
+                "{retired} must be removed after the one-way cutover"
+            );
         }
     }
 

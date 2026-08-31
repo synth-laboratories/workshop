@@ -201,8 +201,8 @@ async fn start_inner(
         )
         .await
         {
-            let _ = append_terminal_event(&worker_service, &run_id, true, format!("{error:#}"))
-                .await;
+            let _ =
+                append_terminal_event(&worker_service, &run_id, true, format!("{error:#}")).await;
         }
         worker_manager.release_gepa_recipe(&run_id).await;
         worker_service.unregister_local_recipe(&run_id).await;
@@ -299,13 +299,9 @@ pub(super) async fn start_prepared(
         )
         .await
         {
-            let _ = append_terminal_event(
-                &worker_service,
-                &worker_run_id,
-                true,
-                format!("{error:#}"),
-            )
-            .await;
+            let _ =
+                append_terminal_event(&worker_service, &worker_run_id, true, format!("{error:#}"))
+                    .await;
         }
         worker_manager.release_gepa_recipe(&worker_run_id).await;
         worker_service.unregister_local_recipe(&worker_run_id).await;
@@ -745,7 +741,11 @@ fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::Sec
         .get("bounds")
         .and_then(toml::Value::as_table)
         .and_then(|section| section.get("max_cost_usd"))
-        .and_then(|value| value.as_float().or_else(|| value.as_integer().map(|v| v as f64)))
+        .and_then(|value| {
+            value
+                .as_float()
+                .or_else(|| value.as_integer().map(|v| v as f64))
+        })
         .filter(|value| value.is_finite() && *value > 0.0)
         .context("run-owned recipe is missing bounds.max_cost_usd")?;
     let rollout_output_limit = config
@@ -755,13 +755,23 @@ fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::Sec
         .and_then(toml::Value::as_integer)
         .and_then(|value| u64::try_from(value).ok())
         .filter(|value| *value > 0);
-    let declared_output_tokens = rollout_output_limit
-        .map(|limit| rollout_limit.saturating_mul(limit));
+    let calls_per_rollout = config
+        .get("policy")
+        .and_then(toml::Value::as_table)
+        .and_then(|section| section.get("max_calls"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(16);
+    let declared_output_tokens =
+        rollout_output_limit.map(|limit| rollout_limit.saturating_mul(limit));
     Ok(super::admission::provider_use_policy_from_bounds(
         vec!["chat.completions.create".into()],
         models,
         reasoning_efforts,
-        rollout_limit.saturating_mul(16).min(u64::from(u32::MAX)) as u32,
+        rollout_limit
+            .saturating_mul(calls_per_rollout)
+            .min(u64::from(u32::MAX)) as u32,
         (max_cost_usd * 1_000_000.0).round() as u64,
         crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
         declared_output_tokens.map(|tokens| tokens.saturating_mul(4)),
@@ -1268,9 +1278,7 @@ async fn append_terminal_event(
     } else {
         super::kernel::SettleCause::Completed
     };
-    service
-        .settle_run(run_id.to_string(), cause, error)
-        .await?;
+    service.settle_run(run_id.to_string(), cause, error).await?;
     Ok(())
 }
 
@@ -1451,13 +1459,14 @@ max_cost_usd = 0.90
 
 [policy]
 max_tokens = 16000
+max_calls = 128
 "#,
         )
         .unwrap();
         let policy = provider_use_policy(Some(&config)).unwrap();
         assert_eq!(policy.max_output_tokens, 96_000);
         assert_eq!(policy.max_input_tokens, 384_000);
-        assert_eq!(policy.max_calls, 96);
+        assert_eq!(policy.max_calls, 768);
         assert_eq!(policy.max_cost_usd, 0.90);
     }
 

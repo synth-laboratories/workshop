@@ -481,15 +481,18 @@ impl ExecutionSpec {
                     .unwrap_or(0),
             );
         provider_use_policy_from_bounds(
-            recipe.credential_route.capability_scope().operations.clone(),
+            recipe
+                .credential_route
+                .capability_scope()
+                .operations
+                .clone(),
             vec![recipe.model.model_id.as_str().to_string()],
             reasoning_efforts,
             total_calls,
             recipe.resource_limits.hard_total_cost_micros.as_micros(),
             u64::from(recipe.credential_route.capability_scope().lifetime_seconds),
             input_per_call.map(|value| value.saturating_mul(u64::from(total_calls))),
-            (output_per_call > 0)
-                .then(|| output_per_call.saturating_mul(u64::from(total_calls))),
+            (output_per_call > 0).then(|| output_per_call.saturating_mul(u64::from(total_calls))),
         )
     }
 }

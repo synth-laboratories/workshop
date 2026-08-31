@@ -912,18 +912,6 @@ export function Composer({
 			 * and clear of the visual, container, and inference panes in every
 			 * combination, including ones no static rule enumerated.
 			 */
-			const transcript = mainPane.querySelector<HTMLElement>(".chat-transcript");
-			if (!transcript) {
-				mainPane.style.removeProperty("--composer-dock-left");
-				mainPane.style.removeProperty("--composer-dock-right");
-				return;
-			}
-			const paneRect = mainPane.getBoundingClientRect();
-			const transcriptRect = transcript.getBoundingClientRect();
-			const contentLeft = transcriptRect.left + transcript.clientLeft;
-			const contentRight = contentLeft + transcript.clientWidth;
-			mainPane.style.setProperty("--composer-dock-left", `${Math.round(contentLeft - paneRect.left + 24)}px`);
-			mainPane.style.setProperty("--composer-dock-right", `${Math.round(paneRect.right - contentRight + 24)}px`);
 		};
 		const scheduleClearanceUpdate = () => {
 			if (frame) cancelAnimationFrame(frame);
@@ -932,8 +920,6 @@ export function Composer({
 		const resizeObserver = new ResizeObserver(scheduleClearanceUpdate);
 		resizeObserver.observe(dock);
 		resizeObserver.observe(mainPane);
-		const transcript = mainPane.querySelector<HTMLElement>(".chat-transcript");
-		if (transcript) resizeObserver.observe(transcript);
 		const mutationObserver = new MutationObserver(scheduleClearanceUpdate);
 		mutationObserver.observe(mainPane, { childList: true, subtree: true });
 		window.addEventListener("resize", scheduleClearanceUpdate);
@@ -945,8 +931,6 @@ export function Composer({
 			mutationObserver.disconnect();
 			window.removeEventListener("resize", scheduleClearanceUpdate);
 			mainPane.style.removeProperty("--composer-clearance");
-			mainPane.style.removeProperty("--composer-dock-left");
-			mainPane.style.removeProperty("--composer-dock-right");
 		};
 	}, []);
 

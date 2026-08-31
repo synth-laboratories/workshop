@@ -25,7 +25,9 @@ use sha2::{Digest, Sha256};
 use std::{
     cell::Cell,
     collections::HashMap,
-    env, ffi::OsString, fs,
+    env,
+    ffi::OsString,
+    fs,
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,
@@ -594,10 +596,14 @@ impl OptimizerManager {
                     hits.push(hit);
                 }
                 Err(error) => {
-                    crate::platform::logging::report("optimizers", "eprintln", format!(
-                        "synth-desktop: skip optimizer sidecar at {}: {error:#}",
-                        path.display()
-                    ));
+                    crate::platform::logging::report(
+                        "optimizers",
+                        "eprintln",
+                        format!(
+                            "synth-desktop: skip optimizer sidecar at {}: {error:#}",
+                            path.display()
+                        ),
+                    );
                 }
             }
         }
@@ -738,9 +744,13 @@ impl OptimizerManager {
     pub async fn start(&self) -> Result<OptimizerSidecarStatus> {
         let _guard = self.ensure_lock.lock().await;
         if self.runtime.lock().await.is_none() && runtime_lease_is_current(&self.home) {
-            crate::platform::logging::report("optimizers", "eprintln", format!(
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!(
                 "synth-desktop: reconciling optimizer runtime left by a previous boot before start"
-            ));
+            ),
+            );
             self.abort_runtime().await;
         }
         let selected = read_selected_version(&self.home)?
@@ -794,7 +804,11 @@ impl OptimizerManager {
                 })
                 .await;
             if let Err(error) = result {
-                crate::platform::logging::report("optimizers", "eprintln", format!("synth-desktop: optimizer auth proxy stopped: {error:#}"));
+                crate::platform::logging::report(
+                    "optimizers",
+                    "eprintln",
+                    format!("synth-desktop: optimizer auth proxy stopped: {error:#}"),
+                );
             }
         });
         *self.runtime.lock().await = Some(SidecarRuntime {
@@ -1893,9 +1907,13 @@ async fn terminate_process_groups(pids: &[u32]) {
         .filter_map(|&pid| {
             let group = owned_process_group(pid);
             if group.is_none() {
-                crate::platform::logging::report("optimizers", "eprintln", format!(
+                crate::platform::logging::report(
+                    "optimizers",
+                    "eprintln",
+                    format!(
                     "refusing to terminate optimizer process group for unsafe or unowned pid {pid}"
-                ));
+                ),
+                );
             }
             group
         })

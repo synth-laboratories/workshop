@@ -50,7 +50,10 @@ function playwrightChromeBinary() {
 }
 function ensureChromeOnPath() {
 	const systemChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-	const bin = existsSync(systemChrome) ? systemChrome : playwrightChromeBinary();
+	const requestedChrome = process.env.BOMBADIL_CHROME;
+	const bin = requestedChrome && existsSync(requestedChrome)
+		? requestedChrome
+		: existsSync(systemChrome) ? systemChrome : playwrightChromeBinary();
 	if (!bin) return;
 	process.env.CHROME = bin;
 	const shimDir = join(runtimeHome, "chrome-bin");
@@ -92,6 +95,7 @@ const includeApprovalCard = specificationPath.endsWith("approval-card.spec.ts");
 const includeGroupedVisualEvidence = specificationPath.endsWith("grouped-visual-evidence.spec.ts");
 const includeChartPane = specificationPath.endsWith("chart-pane.spec.ts");
 const includeMinimumWidthReplay = specificationPath.endsWith("minimum-width-replay.spec.ts");
+const includeSidePanelComposerDrag = specificationPath.endsWith("side-panel-composer-drag.spec.ts");
 // Five seconds covers every directed/eventual horizon in layout.spec.ts. Longer
 // runs intermittently wedge the current Chromiumoxide transport after the
 // properties have already been exercised, turning a clean trace into a harness
@@ -99,6 +103,8 @@ const includeMinimumWidthReplay = specificationPath.endsWith("minimum-width-repl
 const timeLimit = process.env.BOMBADIL_TIME_LIMIT
 	|| (includeComposerToolbar
 		? "45s"
+		: includeSidePanelComposerDrag
+		? "15s"
 		: includeMinimumWidthReplay
 		? "20s"
 		: includeBlankWorkedTurn || includeTerminalPolish || includeVisualContracts || includeChatgptBranding || includeApprovalCard || includeGroupedVisualEvidence || includeChartPane
@@ -120,6 +126,7 @@ const contentTypes = {
 let runtimeProcess;
 let bombadilProcess;
 let connection;
+let alignmentSessionId;
 
 async function waitForConnection() {
 	const deadline = Date.now() + 15_000;
@@ -153,6 +160,7 @@ async function seedVisualAlignmentFixture() {
 	});
 	if (!sessionResponse.ok) throw new Error(`Could not seed Bombadil alignment session (${sessionResponse.status})`);
 	const session = await sessionResponse.json();
+	alignmentSessionId = session.id;
 	const visualResponse = await fetch(`${connection.url}/v1/visuals`, {
 		method: "POST",
 		headers,
@@ -645,9 +653,32 @@ window.synthTerminal = {
 
 function browserBridgeScript() {
 	return `<script>
+window.__bombadilBootErrors = [];
+window.addEventListener("error", (event) => window.__bombadilBootErrors.push(String(event.error?.stack || event.message)));
+window.addEventListener("unhandledrejection", (event) => window.__bombadilBootErrors.push(String(event.reason?.stack || event.reason)));
+${includeSidePanelComposerDrag ? `
+try {
+  const key = "synth.preferences.v1";
+  const current = JSON.parse(localStorage.getItem(key) || "{}");
+  const layout = current.layout || {};
+  const last = layout.last || {};
+  localStorage.setItem(key, JSON.stringify({
+    ...current,
+    schemaVersion: 3,
+    layout: {
+      ...layout,
+      last: { ...last, sidebarVisible: true, selectedConversationId: ${JSON.stringify(alignmentSessionId)} }
+    }
+  }));
+} catch (error) {
+  console.warn("bombadil side-panel fixture selection failed", error);
+}
+` : ""}
 window.synthDesktop = {
   platform: "test",
   chooseWorkspaceDirectory: async () => null,
+  chooseImageFiles: async () => [],
+  getInstances: async () => [],
   getInstanceDiagnostics: async () => ({
     mode: "development", name: "bombadil", displayName: "Synth Desktop · bombadil",
     appVersion: "0.1.0", sourceRevision: "bombadil", buildRevision: "bombadil",
@@ -939,7 +970,36 @@ try {
 			resolvePromise(value ?? 1);
 		});
 	});
-	if (code !== 0) process.exitCode = code;
+	if (code !== 0) {
+		process.exitCode = code;
+	} else if (includeSidePanelComposerDrag) {
+		const tracePath = resolve(outputPath, "trace.jsonl");
+		const trace = await readFile(tracePath, "utf8");
+		const states = trace
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line));
+		const geometries = states.flatMap((state) =>
+			(state.snapshots ?? [])
+				.filter((snapshot) => snapshot.name === "geometry")
+				.map((snapshot) => snapshot.value)
+		);
+		const sawWide = geometries.some((value) => value?.panelWide === true);
+		const sawNarrow = geometries.some((value) => value?.panelNarrow === true);
+		const sawCollapsed = geometries.some((value) => value?.transcriptCollapsed === true);
+		const restoredAfterCollapse = geometries.some((value, index) =>
+			value?.transcriptCollapsed === false
+			&& geometries.slice(0, index).some((prior) => prior?.transcriptCollapsed === true)
+		);
+		const sawDrag = states.some((state) => JSON.stringify(state.action ?? null).includes("MouseDrag"));
+		if (!sawWide || !sawNarrow || !sawCollapsed || !restoredAfterCollapse || !sawDrag) {
+			throw new Error(
+				`Bombadil drag coverage incomplete: states=${states.length}, `
+				+ `mouseDrag=${sawDrag}, wide=${sawWide}, narrow=${sawNarrow}, `
+				+ `collapsed=${sawCollapsed}, restored=${restoredAfterCollapse}`
+			);
+		}
+	}
 } finally {
 	if (bombadilProcess?.pid && !bombadilProcess.killed) {
 		try { process.kill(-bombadilProcess.pid, "SIGTERM"); } catch { /* exited */ }
