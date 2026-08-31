@@ -164,6 +164,7 @@ async fn start_inner(
             "containerId": ensured.container_id,
             "locality": recipe.locality.as_str(),
             "sourceHash": recipe.source_hash,
+            "proposerModel": recipe.proposer_model,
             "limits": {
                 "maxCostUsd": recipe.bounds.max_cost_usd,
                 "maxTotalRollouts": recipe.bounds.max_total_rollouts,
