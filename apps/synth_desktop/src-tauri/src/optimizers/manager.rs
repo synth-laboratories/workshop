@@ -233,6 +233,9 @@ struct RunSpoolState {
 
 pub struct OptimizerManager {
     home: PathBuf,
+    /// Verified distributions are immutable for this process. Renderer status
+    /// polling must not re-hash the entire wheelhouse on every request.
+    discovery_cache: StdMutex<Option<Vec<OptimizerSidecarVersion>>>,
     status: Arc<RwLock<OptimizerSidecarStatus>>,
     ensure_lock: Mutex<()>,
     updates: broadcast::Sender<OptimizerSidecarStatus>,
@@ -273,6 +276,7 @@ impl OptimizerManager {
         let (updates, _) = broadcast::channel(32);
         Self {
             home,
+            discovery_cache: StdMutex::new(None),
             status: Arc::new(RwLock::new(OptimizerSidecarStatus {
                 phase: "unknown".into(),
                 base_url: None,
@@ -564,6 +568,16 @@ impl OptimizerManager {
 
     pub fn discover(&self) -> Result<Vec<OptimizerSidecarVersion>> {
         let selected = read_selected_version(&self.home)?;
+        let mut cache_guard = self.discovery_cache.lock().ok();
+        if let Some(cache) = cache_guard.as_ref() {
+            if let Some(cached) = cache.as_ref() {
+                let mut hits = cached.clone();
+                for hit in &mut hits {
+                    hit.selected = selected.as_deref() == Some(hit.version.as_str());
+                }
+                return Ok(hits);
+            }
+        }
         let versions_root = self.home.join("versions");
         let Ok(entries) = fs::read_dir(&versions_root) else {
             return Ok(Vec::new());
@@ -588,6 +602,9 @@ impl OptimizerManager {
             }
         }
         hits.sort_by(|a, b| a.version.cmp(&b.version));
+        if let Some(cache) = cache_guard.as_mut() {
+            **cache = Some(hits.clone());
+        }
         Ok(hits)
     }
 
@@ -673,6 +690,9 @@ impl OptimizerManager {
         &self,
         spec: OptimizerSidecarInstallSpec,
     ) -> Result<OptimizerSidecarVersion> {
+        if let Ok(mut cache) = self.discovery_cache.lock() {
+            *cache = None;
+        }
         validate_version_id(&spec.version)?;
         enforce_version_floor(&spec.version)?;
         fs::create_dir_all(&self.home)?;
@@ -1169,6 +1189,9 @@ impl OptimizerManager {
             // leave them behind to vouch for whatever is installed next.
             clear_stored_capabilities(&self.home);
             clear_env_sh(&self.home);
+        }
+        if let Ok(mut cache) = self.discovery_cache.lock() {
+            *cache = None;
         }
         Ok(self.refresh().await)
     }
