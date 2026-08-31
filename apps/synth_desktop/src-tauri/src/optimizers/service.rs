@@ -8264,7 +8264,6 @@ pub(in crate::optimizers) mod tests {
         let svc = OptimizerService::new_with_manager(
             storage.database().clone(),
             journal,
-            content,
             visuals,
             events_tx,
             manager,
@@ -8364,15 +8363,14 @@ pub(in crate::optimizers) mod tests {
             .expect_err("a run with no admitted spec cannot be projected");
         let app_error = crate::error::AppError::from(failure);
         assert_eq!(app_error.code, "optimizer.projection.missing_admitted_spec");
-        let structured = app_error
-            .structured
+        let structured: serde_json::Value = serde_json::from_str(&app_error.detail)
             .expect("the failure travels as a typed structure, not as prose");
         assert!(
-            !structured.retryable,
+            !structured["retryable"].as_bool().unwrap_or(true),
             "a missing spec is structural: retrying replays the journal again and fails identically"
         );
-        assert_eq!(structured.details["stage"], json!("projection"));
-        assert_eq!(structured.details["optimizerRunId"], json!(run.id));
+        assert_eq!(structured["details"]["stage"], json!("projection"));
+        assert_eq!(structured["details"]["optimizerRunId"], json!(run.id));
     }
 
     /// A render receipt is durable, typed, and never moves backwards.

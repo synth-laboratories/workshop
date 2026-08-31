@@ -108,13 +108,15 @@ test("bombadil grouped Craftax uses a bundled fixture stream", () => {
   assert.equal(harness.includes("data: { events: [] }"), false);
 });
 
-test("routes.tsx mounts one VisualPane host including chat", () => {
+test("routes.tsx keeps the window host and tabbed dock visual hosts distinct", () => {
   const source = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src/routes.tsx"),
     "utf8"
   );
-  assert.equal((source.match(/<VisualPane/g) ?? []).length, 1);
+  assert.equal((source.match(/<VisualPane/g) ?? []).length, 2);
   assert.match(source, /key="window-visual-host"/);
+	assert.match(source, /key=\{`dock-visual-\$\{artifact\.id\}`\}/);
+	assert.match(source, /\.\.\.openVisualTabs\.map/);
   assert.match(source, /view\.kind === "reports"/);
   assert.match(source, /const paneHost = inventoryHost \|\| chatRoute \|\| settingsWithPane/);
   assert.match(source, /<ReportsPage initialReportId=\{view\.reportId\} onBack=\{leaveReports\} \/>/);
@@ -122,8 +124,8 @@ test("routes.tsx mounts one VisualPane host including chat", () => {
   assert.doesNotMatch(source, /onBack=\{\(\) => openChat/);
   assert.doesNotMatch(source, /crypto\.randomUUID\(\)/);
 	assert.match(source, /const visualPaneVisible = Boolean\(openArtifact && \(!chatRoute \|\| !showSidePanel\)\)/);
-	assert.match(source, /id: "visual"/);
-	assert.match(source, /content: visualPaneContent/);
+	assert.match(source, /id: `visual:\$\{artifact\.id\}`/);
+	assert.match(source, /activeTabId=\{sidePanelTab === "visual"/);
 	assert.match(source, /setSidePanelTab\("visual"\)/);
 
   const controller = readFileSync(

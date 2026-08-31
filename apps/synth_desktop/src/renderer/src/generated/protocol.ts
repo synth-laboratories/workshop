@@ -78,8 +78,8 @@ export const commands = {
 	offset: number,
 } | null) => typedError<OptimizerRunRecord[], AppError_Serialize>(__TAURI_INVOKE("optimizers_list", { query })),
 	optimizersGet: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_get", { optimizerRunId })),
-	optimizersRunViewV2: (optimizerRunId: string) => typedError<OptimizerRunViewV2, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_view_v2", { optimizerRunId })),
 	optimizersRunView: (optimizerRunId: string, ifNewerThan: number | null) => typedError<OptimizerRunViewEnvelope_Serialize, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_view", { optimizerRunId, ifNewerThan })),
+	optimizersRunViewV2: (optimizerRunId: string) => typedError<OptimizerRunViewV2, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_view_v2", { optimizerRunId })),
 	/**
 	 *  Read the parts of an evidence window the caller does not already hold.
 	 *
@@ -945,7 +945,7 @@ export type CodexTurnSendRequest = {
 	start: CodexSessionStartRequest,
 	prompt: string,
 	effort: string | null,
-	/**  Ephemeral renderer state sent to the model but not journalled as user text. */
+	/**  Same ownership as [`CodexTurnStartRequest::ui_context`]. */
 	uiContext?: string | null,
 	/**
 	 *  When the destination model differs from the live attachment, compact the
@@ -3792,6 +3792,10 @@ export type VisualRecord = {
 	id: string,
 	currentRevision: number,
 	title: string,
+	/**
+	 *  Short, human-readable label chosen by the authoring agent. The full
+	 *  title remains the descriptive/technical fallback for older visuals.
+	 */
 	displayName?: string | null,
 	templateId: string,
 	status: VisualStatus,

@@ -133,8 +133,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::optimizers_stage_eval_candidates,
             crate::optimizers_list,
             crate::optimizers_get,
-            crate::optimizers_run_view_v2,
             crate::optimizers_run_view,
+            crate::optimizers_run_view_v2,
             crate::optimizers_evidence_page,
             crate::optimizers_visual_render_receipt,
             crate::optimizers_create,
@@ -176,11 +176,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::computer_use_revoke_app,
             crate::computer_use_open_settings,
             crate::browser_runtime_status,
-            crate::browser_service_restart,
             crate::browser_policy_allow_origin,
             crate::browser_policy_revoke_origin,
-            crate::browser_policy_choose_upload_root,
-            crate::browser_policy_revoke_upload_root,
             crate::visual_subscription_ready,
             crate::visual_stream_poll,
             crate::visual_media_read,
@@ -198,10 +195,6 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::optimizers::manager::optimizer_sidecar_uninstall,
             crate::visuals_templates_list,
             crate::visuals_templates_get,
-            crate::visuals_template_shell_source,
-            crate::visuals_template_save,
-            crate::visuals_template_create,
-            crate::visuals_template_validate,
             crate::visuals_list,
             crate::visuals_get,
             crate::visuals_observation_report,
@@ -342,9 +335,6 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::context::context_cookbooks_set_enabled,
             crate::context::context_cookbooks_uninstall,
             crate::workspace_choose_directory,
-            crate::documents::commands::workspace_read_file,
-            crate::documents::commands::workspace_list_dir,
-            crate::documents::commands::document_show,
             crate::codex_session_start,
             crate::codex_turn_start,
             crate::codex_turn_send,
@@ -387,24 +377,12 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::secrets::secrets_deny_env_import,
             crate::telemetry::product_telemetry_get_policy,
             crate::telemetry::product_telemetry_set_opt_out,
-            crate::telemetry::product_telemetry_set_consent,
-            crate::telemetry::product_telemetry_recent,
-            crate::telemetry::product_telemetry_flush_now,
-            crate::telemetry::product_telemetry_record_starter,
-            crate::release_tier::release_tier_get,
             crate::adapters::tauri::failures_query,
             crate::adapters::tauri::failures_get,
             crate::adapters::tauri::failures_timeline,
             crate::adapters::tauri::logs_query,
             crate::adapters::tauri::failure_export_bundle,
             crate::adapters::tauri::observability_status,
-            crate::project_sources_get,
-            crate::project_sources_refresh,
-            crate::project_source_add,
-            crate::project_source_remove,
-            crate::project_source_requests_list,
-            crate::project_source_approve,
-            crate::project_source_deny,
         ])
 }
 
@@ -502,8 +480,7 @@ mod tests {
         // 198 → 203: the five Computer Use commands. All five are human-only —
         // status, install, remove, revoke an app, open the System Settings
         // pane — and none is reachable from the agent's MCP surface.
-        // 203 → 209: managed browser status, lifecycle restart, and human-only
-        // origin/upload policy controls.
+        // 203 → 206: managed browser status plus human-only origin allow/revoke.
         // 206 → 220: local secrets vault + provider proxy (list/create/replace/
         // delete/test, request/grant/deny use, capabilities, env import, audit,
         // proxy status). No get/reveal/export/readValue command is included.
@@ -535,69 +512,20 @@ mod tests {
         // bridge (`synth.visual.media.v1`), which serves one bounded frame by
         // digest to a visual bound to the run that produced it.
         // 265 → 268: bounded native optimizer-frame latest/list/content lane.
-        // 268 → 276 (v0.8 stream-fold lane): telemetry consent answer,
-        // transparency view of recent events, and the manual flush — all
-        // display-safe; event creation remains host-owned. `release_tier_get`
-        // — the compiled maturity envelope (contracts/release-tiers-v1.toml)
-        // for renderer display and the bundle/host tier-mismatch check.
-        // `visuals_template_shell_source`, which reads one user-authored
-        // template's `shell.tsx` for the pane to compile — read only, it
-        // refuses non-user templates and paths outside the user template
-        // root. User visual template authoring — `visuals_template_save` and
-        // `visuals_template_create` write `template.json` + `shell.tsx` under
-        // the instance state root and are verified by rebuilding the registry
-        // index over the bytes they just wrote, rolling back whatever it
-        // refuses; `visuals_template_validate` reports that same verdict
-        // without writing. The import allowlist is not among them on purpose:
-        // it lives once, in `visuals/runtime/sourcedValidate.ts`.
-        // 276 → 292 (inline-eval refactor lane): container reconcile +
-        // restart — declaration repair and native one-time replacement, bound
-        // to the declaring repository; failure ledger query/get/timeline,
-        // logs query, redacted bundle export, and observability mode status;
-        // `optimizers_run_view_v2` — versioned kernel projection; credential
-        // roots, bindings, locators, external remember, register, and forget
-        // commands; durable optimizer artifact list and bounded range read;
-        // safe sibling instance registry projection.
-        // → 295 (user-visual-templates lane): the workspace document pane —
-        // `workspace_read_file`, `workspace_list_dir`, and `document_show`,
-        // the right panel's second presentation provider. All three take
-        // `session_id` because the scope that authorizes the read belongs to
-        // the conversation, not the window: a path outside every session root
-        // is refused with `document_outside_workspace` rather than described.
-        // Read-only on purpose — there is no write, no delete, and no
-        // arbitrary-path read, because a viewer that could also write would
-        // need the approval machinery the agent's own tools already own.
-        // → 302 (+7, phase-A project sources): persistent, inspectable roots
-        // Workshop may discover executable declarations in — get/refresh,
-        // human-only add/remove, and the pending agent-request inbox with its
-        // picker-confirmed approve and its deny.
-        // → 304 (+2, DeepSWE lifecycle): source-bound pre-spend approval
-        // reverification and durable run-lifecycle inspection.
-        // → 305: host-owned, enum-bounded starter telemetry; renderer cannot
-        // submit event names, prompt text, run ids, paths, or properties.
-        // → 309: `optimizers_run_view` — the conditional, single-transaction
-        // read behind a visual's first paint. Returns the kernel projection,
-        // the compatibility run record, and the durable journal tail together,
-        // and answers `unchanged` when the caller's projection revision is
-        // already current. It exists because the renderer was orchestrating
-        // `runViewV2 → get → eventsAfter` as three serial IPC hops and could
-        // not revalidate a cached view without re-fetching all of it.
-        // → 310: `optimizers_evidence_page` — range-addressed evidence. The
-        // caller sends the spans it already holds and receives the complement,
-        // so browsing Replay after a restart transfers what is missing rather
-        // than the journal again. A cursor cannot express this: it says "after
-        // N", and a reader that jumped to the end of a run holds disjoint
-        // spans, not a prefix.
-        // → 311: `optimizers_visual_render_receipt` — the typed, checkable
-        // proof that a visual revision rendered from complete local evidence.
-        // The evidence itself needs no new home; the kernel projection is
-        // already durable and, since reads stopped taking the write lock,
-        // readable without the producer. What was missing was the claim: it
-        // lived as untyped JSON on a mutable summary blob, so nothing could
-        // detect a reopened visual being served evidence older than what it
-        // had already shown.
+        // 268 → 270: container reconcile + restart — declaration repair and
+        // native one-time replacement, bound to the declaring repository.
+        // 270 → 276: failure ledger query/get/timeline, logs query, redacted
+        // bundle export, and observability mode status.
+        // 276 → 277: `optimizers_run_view_v2` — versioned kernel projection.
+        // 277 → 283: credential roots, bindings, locators, external remember,
+        // register, and forget commands.
+        // 283 → 285: durable optimizer artifact list and bounded range read.
+        // 285 → 286: safe sibling instance registry projection.
+        // 286 → 289: compatibility run-view projection, durable
+        // range-addressed optimizer evidence, and the visual render receipt
+        // used to validate locally cached projections.
         assert_eq!(
-            exported, 311,
+            exported, 289,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(
