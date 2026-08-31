@@ -1,4 +1,4 @@
-import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type {
 	ContainerDeployment,
@@ -264,6 +264,21 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		transcriptHistoryBySession,
 		loadOlderTranscript
 	} = props;
+	const [transcriptCollapsed, setTranscriptCollapsed] = useState(false);
+	const [openVisualTabs, setOpenVisualTabs] = useState<ArtifactRef[]>([]);
+	useEffect(() => {
+		if (!showSidePanel) setTranscriptCollapsed(false);
+	}, [showSidePanel]);
+	useEffect(() => {
+		if (!openArtifact) return;
+		setOpenVisualTabs((current) => {
+			const index = current.findIndex((artifact) => artifact.id === openArtifact.id);
+			if (index < 0) return [...current, openArtifact];
+			const next = [...current];
+			next[index] = openArtifact;
+			return next;
+		});
+	}, [openArtifact]);
 	useEffect(() => {
 		if (!isDesktopApp()) return;
 		let disposed = false;
@@ -440,6 +455,19 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		setSidePanelTab("visual");
 		setSidePanelOpen(true);
 	};
+	const closeVisualTab = (id: string) => {
+		const index = openVisualTabs.findIndex((artifact) => artifact.id === id);
+		const remaining = openVisualTabs.filter((artifact) => artifact.id !== id);
+		setOpenVisualTabs(remaining);
+		if (openArtifactId !== id) return;
+		const neighbor = remaining[Math.min(index, remaining.length - 1)] ?? null;
+		if (neighbor) {
+			toggleArtifact(neighbor.id);
+			setSidePanelTab("visual");
+			return;
+		}
+		openArtifactInDock(null);
+	};
 	const visualPaneContent = openArtifact ? (
 		<VisualPane
 			key="window-visual-host"
@@ -457,7 +485,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		persistLayoutSnapshot({ outputPaneWidth: width });
 	};
 	const paneClassName = chatRoute
-		? `workbench${visualPaneVisible ? " with-visual" : ""}${chatContainerVisible ? " with-container" : ""}${chatContainerVisible && containerPaneExpanded ? " container-expanded" : ""}${showSidePanel ? " with-side-panel" : ""}`
+		? `workbench${visualPaneVisible ? " with-visual" : ""}${chatContainerVisible ? " with-container" : ""}${chatContainerVisible && containerPaneExpanded ? " container-expanded" : ""}${showSidePanel ? " with-side-panel" : ""}${transcriptCollapsed ? " transcript-collapsed" : ""}`
 		: `inventory-workbench${visualPaneVisible ? " with-visual" : ""}${inventoryContainerVisible ? " with-container" : ""}${inventoryContainerVisible && containerPaneExpanded ? " container-expanded" : ""}`;
 
 	const settingsPage = view.kind === "settings" ? (
@@ -672,14 +700,22 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 								minPrimary={380}
 								minSecondary={260}
 								onChange={resizeInventoryPane}
+								allowPrimaryCollapse
+								primaryCollapsed={transcriptCollapsed}
+								onPrimaryCollapsedChange={setTranscriptCollapsed}
 								ariaLabel="Resize workbench side panel"
 							/>
 							<WorkbenchSidePanel
-							activeTabId={sidePanelTab}
+							activeTabId={sidePanelTab === "visual" && openArtifactId ? `visual:${openArtifactId}` : sidePanelTab}
 							onTabChange={(tabId) => {
+								if (tabId.startsWith("visual:")) {
+									const visualId = tabId.slice("visual:".length);
+									if (openArtifactId !== visualId) toggleArtifact(visualId);
+									setSidePanelTab("visual");
+									return;
+								}
 								if (
-									tabId === "visual"
-									|| tabId === "outputs"
+									tabId === "outputs"
 									|| tabId === "inference"
 									|| tabId === "trace"
 									|| tabId === "diagnostics"
@@ -690,13 +726,20 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							}}
 							onClose={() => setSidePanelOpen(false)}
 							tabs={[
-								...(openArtifact
-									? [{
-										id: "visual",
-										label: "Visual",
-										content: visualPaneContent
-									}]
-									: []),
+								...openVisualTabs.map((artifact) => ({
+										id: `visual:${artifact.id}`,
+										label: artifact.displayName?.trim() || artifact.title || "Visual",
+										title: artifact.title || artifact.displayName || "Visual",
+										content: (
+											<VisualPane
+												key={`dock-visual-${artifact.id}`}
+												artifact={artifact}
+												onClose={() => closeVisualTab(artifact.id)}
+											/>
+										),
+										kind: "document" as const,
+										onClose: () => closeVisualTab(artifact.id)
+									})),
 								{
 									id: "outputs",
 									label: "Outputs",

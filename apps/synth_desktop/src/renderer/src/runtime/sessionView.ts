@@ -1846,6 +1846,7 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 				? payload.templateId
 				: artifacts.get(id)?.templateId;
 		const prior = artifacts.get(id);
+		const metadata = objectValue(payload.metadata) ?? prior?.metadata;
 		const ownerSessionId = stringField(payload, "ownerSessionId", "owner_session_id") ?? prior?.ownerSessionId;
 		const runId = optimizerRunIdFromBindings(payload.bindings ?? prior?.bindings)
 			?? stringField(payload, "runId", "run_id")
@@ -1858,7 +1859,9 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			displayName:
 				typeof payload.displayName === "string"
 					? payload.displayName
-					: prior?.displayName ?? (typeof payload.title === "string" ? payload.title : title),
+					: stringField(metadata ?? {}, "displayName", "display_name")
+						?? prior?.displayName
+						?? (typeof payload.title === "string" ? payload.title : title),
 			updatedAt:
 				typeof payload.updatedAt === "string" ? payload.updatedAt : event.createdAt ?? prior?.updatedAt,
 			summary:
@@ -1871,7 +1874,7 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			revision: typeof payload.revision === "number" && Number.isFinite(payload.revision)
 				? payload.revision
 				: prior?.revision,
-			metadata: objectValue(payload.metadata) ?? prior?.metadata,
+			metadata,
 			ownerSessionId,
 			sessionId: ownerSessionId ?? prior?.sessionId,
 			runId: runId ?? undefined,

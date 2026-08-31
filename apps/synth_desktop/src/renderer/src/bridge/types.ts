@@ -457,7 +457,7 @@ export type CodexBridge = {
 		sessionId: string,
 		prompt: string,
 		effort?: string,
-		options?: { clientMessageId?: string }
+		options?: { clientMessageId?: string; uiContext?: string }
 	): Promise<CodexSessionInfo>;
 	/**
 	 * Atomic attach-or-resume plus turn start. Optional because browser demo
@@ -473,7 +473,7 @@ export type CodexBridge = {
 		request: CodexSessionStart,
 		prompt: string,
 		effort?: string,
-		options?: { compactBeforeModelSwitch?: boolean; clientMessageId?: string; recoveryMode?: boolean }
+		options?: { compactBeforeModelSwitch?: boolean; clientMessageId?: string; recoveryMode?: boolean; uiContext?: string }
 	): Promise<CodexSessionInfo>;
 	interrupt(sessionId: string): Promise<void>;
 	/** Atomically attaches/resumes a Codex thread and starts ad-hoc compaction. */

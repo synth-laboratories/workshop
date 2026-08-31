@@ -52,11 +52,16 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 	const metadata = visual.metadata && typeof visual.metadata === "object"
 		? visual.metadata as Record<string, unknown>
 		: undefined;
+	const metadataDisplayName = typeof metadata?.displayName === "string"
+		? metadata.displayName.trim()
+		: typeof metadata?.display_name === "string"
+			? metadata.display_name.trim()
+			: "";
 	return {
 		id: visual.id,
 		kind: "report",
 		title: visual.title,
-		displayName: visual.displayName ?? visual.title,
+		displayName: visual.displayName?.trim() || metadataDisplayName || visual.title,
 		updatedAt: visual.updatedAt,
 		templateId: visual.templateId,
 		visualId: visual.id,

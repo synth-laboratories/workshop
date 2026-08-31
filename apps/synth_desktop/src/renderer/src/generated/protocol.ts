@@ -899,6 +899,8 @@ export type CodexTurnSendRequest = {
 	start: CodexSessionStartRequest,
 	prompt: string,
 	effort: string | null,
+	/**  Ephemeral renderer state sent to the model but not journalled as user text. */
+	uiContext?: string | null,
 	/**
 	 *  When the destination model differs from the live attachment, compact the
 	 *  thread on the *source* model before rebind. Renderer sets this from the
@@ -920,6 +922,8 @@ export type CodexTurnStartRequest = {
 	sessionId: string,
 	prompt: string,
 	effort: string | null,
+	/**  Ephemeral renderer state sent to the model but not journalled as user text. */
+	uiContext?: string | null,
 	/**
 	 *  Renderer optimistic bubble id. When present, the journalled
 	 *  `message.created` reuses it so the host event collapses onto the

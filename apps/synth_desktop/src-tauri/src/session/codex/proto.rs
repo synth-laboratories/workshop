@@ -109,6 +109,9 @@ pub struct CodexTurnStartRequest {
     pub session_id: String,
     pub prompt: String,
     pub effort: Option<String>,
+    /// Ephemeral renderer state sent to the model but not journalled as user text.
+    #[serde(default)]
+    pub ui_context: Option<String>,
     /// Renderer optimistic bubble id. When present, the journalled
     /// `message.created` reuses it so the host event collapses onto the
     /// already-visible bubble instead of minting a second UUID.
@@ -125,6 +128,9 @@ pub struct CodexTurnSendRequest {
     pub start: CodexSessionStartRequest,
     pub prompt: String,
     pub effort: Option<String>,
+    /// Same ownership as [`CodexTurnStartRequest::ui_context`].
+    #[serde(default)]
+    pub ui_context: Option<String>,
     /// When the destination model differs from the live attachment, compact the
     /// thread on the *source* model before rebind. Renderer sets this from the
     /// send-time state machine (`modelSwitchPlan`): true only when the thread

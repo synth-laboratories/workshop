@@ -771,6 +771,7 @@ window.synthWorkspaceScope ??= isTauri
 						sessionId,
 						prompt,
 						effort,
+						uiContext: options?.uiContext ?? null,
 						clientMessageId: options?.clientMessageId ?? null
 					}))),
 			sendTurn: (start, prompt, effort, options) =>
@@ -778,6 +779,7 @@ window.synthWorkspaceScope ??= isTauri
 						start,
 						prompt,
 						effort,
+						uiContext: options?.uiContext ?? null,
 						compactBeforeModelSwitch: Boolean(options?.compactBeforeModelSwitch),
 						clientMessageId: options?.clientMessageId ?? null,
 						recoveryMode: Boolean(options?.recoveryMode)

@@ -163,7 +163,11 @@ pub async fn spawn(deps: EvalDriverDeps, root: PathBuf) -> Result<EvalDriverConn
         )
         .await;
         if let Err(error) = result {
-            crate::platform::logging::report("eval_driver", "eprintln", format!("synth-desktop: eval driver stopped: {error:#}"));
+            crate::platform::logging::report(
+                "eval_driver",
+                "eprintln",
+                format!("synth-desktop: eval driver stopped: {error:#}"),
+            );
         }
     });
     Ok(connection)
@@ -991,6 +995,7 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
                 start,
                 prompt,
                 effort,
+                ui_context: None,
                 compact_before_model_switch: false,
                 client_message_id: None,
                 recovery_mode: false,
@@ -2705,10 +2710,7 @@ mod tests {
             policy_rollout_timeout_seconds(&json!({})),
             crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT.as_secs()
         );
-        assert_eq!(
-            policy_rollout_timeout_seconds(&json!({"timeoutS": 90})),
-            90
-        );
+        assert_eq!(policy_rollout_timeout_seconds(&json!({"timeoutS": 90})), 90);
     }
 
     #[test]

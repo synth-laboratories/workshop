@@ -333,6 +333,7 @@ async fn shell_approval_resolves_through_the_broker_and_drains_pending_state() {
                 session_id: request.session_id.clone(),
                 prompt: "request fixture approval".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -411,6 +412,7 @@ async fn dead_approval_origin_expires_and_drains_pending_state() {
                 session_id: request.session_id.clone(),
                 prompt: "leave approval pending".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -488,6 +490,7 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
                 session_id: request.session_id.clone(),
                 prompt: "keep working until the process is killed".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -545,6 +548,7 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
                 session_id: request.session_id.clone(),
                 prompt: "continue after reconnect".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -597,6 +601,7 @@ async fn interrupt_terminates_non_cooperative_tool_tree_and_allows_a_new_turn() 
                 session_id: request.session_id.clone(),
                 prompt: "start a tool that ignores cooperative cancellation".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -674,6 +679,7 @@ async fn interrupt_terminates_non_cooperative_tool_tree_and_allows_a_new_turn() 
                 session_id: request.session_id.clone(),
                 prompt: "start a new turn after Stop".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -722,6 +728,7 @@ async fn final_answer_before_app_server_exit_completes_the_run() {
                 session_id: request.session_id.clone(),
                 prompt: "reply and finish".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -762,6 +769,7 @@ async fn steer_turn_sends_turn_steer_with_the_active_turn_id() {
                 session_id: request.session_id.clone(),
                 prompt: "keep working on the task".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -917,6 +925,7 @@ fn send_request(start: CodexSessionStartRequest, prompt: &str) -> CodexTurnSendR
         start,
         prompt: prompt.into(),
         effort: Some("none".into()),
+        ui_context: None,
         compact_before_model_switch: false,
         client_message_id: None,
         recovery_mode: false,
@@ -932,7 +941,7 @@ async fn turn_send_journals_the_renderer_message_id_once() {
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
     let manager = CodexManager::with_paths(
         SessionPersistence::from_core(Some(core.clone())),
-        codex_root,
+        codex_root.clone(),
         fixture_binary(),
         CodexManager::test_broker(),
     );
@@ -1483,6 +1492,7 @@ async fn rejected_turn_send_arguments_never_mark_the_session_running() {
                 start: request.clone(),
                 prompt: "hello".into(),
                 effort: Some("ultra".into()),
+                ui_context: None,
                 compact_before_model_switch: false,
                 client_message_id: None,
                 recovery_mode: false,
@@ -1536,6 +1546,7 @@ async fn turn_send_compacts_on_source_model_before_rebind() {
                 start: request.clone(),
                 prompt: "continue on destination".into(),
                 effort: Some("medium".into()),
+                ui_context: None,
                 compact_before_model_switch: true,
                 client_message_id: None,
                 recovery_mode: false,
@@ -1616,7 +1627,7 @@ async fn turn_send_reuses_client_message_id_in_journalled_user_prompt() {
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
     let manager = CodexManager::with_paths(
         SessionPersistence::from_core(Some(core.clone())),
-        codex_root,
+        codex_root.clone(),
         fixture_binary(),
         CodexManager::test_broker(),
     );
@@ -1631,6 +1642,7 @@ async fn turn_send_reuses_client_message_id_in_journalled_user_prompt() {
                 start: request.clone(),
                 prompt: "one bubble please".into(),
                 effort: Some("none".into()),
+                ui_context: Some("<workshop_ui_context>{\"activeVisual\":{\"displayName\":\"Craftax Results\",\"visualId\":\"vis_results\"}}</workshop_ui_context>".into()),
                 compact_before_model_switch: false,
                 client_message_id: Some(client_message_id.into()),
                 recovery_mode: false,
@@ -1668,6 +1680,28 @@ async fn turn_send_reuses_client_message_id_in_journalled_user_prompt() {
             .payload
             .get("content")
             .and_then(Value::as_str),
+        Some("one bubble please")
+    );
+    let requests = fixture_requests(&codex_root, &request.session_id);
+    let turn_start = requests
+        .iter()
+        .find(|request| request.get("method").and_then(Value::as_str) == Some("turn/start"))
+        .expect("turn/start request");
+    let input = turn_start
+        .pointer("/params/input")
+        .and_then(Value::as_array)
+        .expect("turn/start input");
+    assert_eq!(
+        input.len(),
+        2,
+        "UI context and user prompt must be separate input items"
+    );
+    assert!(input[0]
+        .get("text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.contains("Craftax Results") && text.contains("vis_results")));
+    assert_eq!(
+        input[1].get("text").and_then(Value::as_str),
         Some("one bubble please")
     );
 }
@@ -1905,6 +1939,7 @@ async fn app_server_approval_is_journaled_and_resumes_after_one_approval() {
                 session_id: request.session_id.clone(),
                 prompt: "request a shell approval".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )

@@ -40,9 +40,21 @@ test("hide-terminal restores toggle-terminal", () => {
 
 test("composer follows the live transcript width while the side panel divider moves", () => {
 	const composer = read("components/Composer.tsx");
-	assert.match(composer, /querySelector<HTMLElement>\("\.chat-transcript"\)/);
-	assert.match(composer, /resizeObserver\.observe\(transcript\)/);
-	assert.doesNotMatch(composer, /querySelector<HTMLElement>\("\.chat-transcript-scroll"\)/);
-	assert.match(composer, /contentLeft - paneRect\.left \+ 24/);
-	assert.match(composer, /paneRect\.right - contentRight \+ 24/);
+	const splitter = read("components/PaneResizeHandle.tsx");
+	const css = read("styles/app.css");
+	assert.doesNotMatch(composer, /dock\.style\.setProperty\("left"/);
+	assert.doesNotMatch(composer, /dock\.style\.setProperty\("width"/);
+	assert.match(splitter, /publishOutputWidth\(target, next, bounds\.width - next - 7\)/);
+	assert.match(css, /--live-transcript-width/);
+	assert.match(css, /\.main-pane:has\(\.workbench\.with-side-panel\) \.composer-dock/);
+});
+
+test("visual tabs use short display names while retaining descriptive titles", () => {
+	const routes = read("routes.tsx");
+	const panel = read("components/WorkbenchSidePanel.tsx");
+	const sessionView = read("runtime/sessionView.ts");
+	assert.match(routes, /label:\s*artifact\.displayName\?\.trim\(\)\s*\|\|\s*artifact\.title\s*\|\|\s*"Visual"/);
+	assert.match(routes, /title:\s*artifact\.title\s*\|\|\s*artifact\.displayName\s*\|\|\s*"Visual"/);
+	assert.match(panel, /title=\{item\.title \?\? item\.label\}/);
+	assert.match(sessionView, /stringField\(metadata \?\? \{\}, "displayName", "display_name"\)/);
 });

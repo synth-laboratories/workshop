@@ -185,10 +185,14 @@ impl CodexManager {
             record.recovery = notice.cloned();
         }
         if reconciled > 0 {
-            crate::platform::logging::report("session", "eprintln", format!(
-                "synth-desktop: {reconciled} Codex chat(s) were left running by a previous \
+            crate::platform::logging::report(
+                "session",
+                "eprintln",
+                format!(
+                    "synth-desktop: {reconciled} Codex chat(s) were left running by a previous \
                  process and are now interrupted"
-            ));
+                ),
+            );
             if let Ok(body) = serde_json::to_vec_pretty(&records) {
                 let temporary = state_path.with_extension("json.tmp");
                 if fs::write(&temporary, body).is_ok() {
@@ -644,6 +648,7 @@ impl CodexManager {
                         session_id: session_id.clone(),
                         prompt: request.prompt.clone(),
                         effort: request.effort.clone(),
+                        ui_context: request.ui_context.clone(),
                         client_message_id: request.client_message_id.clone(),
                     },
                     false,
@@ -789,10 +794,20 @@ impl CodexManager {
             )
             .await;
         }
+        let mut input = Vec::new();
+        if let Some(context) = request
+            .ui_context
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            input.push(json!({"type":"text","text":context,"textElements":[]}));
+        }
+        input.push(json!({"type":"text","text":request.prompt,"textElements":[]}));
         let mut turn_params = json!({
             "threadId": session.thread_id,
             "model": session.model,
-            "input":[{"type":"text","text":request.prompt,"textElements":[]}],
+            "input":input,
             "approvalPolicy": session.approval_policy
         });
         if let Some(effort) = effort {
@@ -990,7 +1005,11 @@ impl CodexManager {
             )
             .await
         {
-            crate::platform::logging::report("session", "eprintln", format!("could not claim turn ownership for {turn_id}: {error}"));
+            crate::platform::logging::report(
+                "session",
+                "eprintln",
+                format!("could not claim turn ownership for {turn_id}: {error}"),
+            );
         }
         if recovery.is_some() {
             if let Some(record) = self.records.write().await.get_mut(&request.session_id) {
