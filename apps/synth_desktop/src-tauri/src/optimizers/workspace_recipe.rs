@@ -877,11 +877,130 @@ pub fn copy_into_run_dir(recipe: &WorkspaceRecipe, run_dir: &Path) -> Result<Pat
         toml::Value::String(recipe.provider.clone()),
     );
     policy.insert("model".into(), toml::Value::String(recipe.model.clone()));
+    if matches!(recipe.algorithm, AlgorithmKind::Gepa) {
+        compile_gepa_task_contract(root, recipe)?;
+    }
     let normalized = toml::to_string_pretty(&document)
         .context("encode normalized run-owned workspace recipe")?;
     fs::write(&destination, normalized)
         .with_context(|| format!("write {}", destination.display()))?;
     Ok(destination)
+}
+
+/// Compile Workshop's compact, seed-oriented GEPA declaration into the
+/// installed optimizer's explicit task-set contract. Authors declare stable
+/// seeds once; the run-owned snapshot carries the concrete ids and pools that
+/// the sidecar validates before any provider call.
+fn compile_gepa_task_contract(
+    root: &mut toml::value::Table,
+    recipe: &WorkspaceRecipe,
+) -> Result<()> {
+    let train_ids = recipe
+        .train_seeds
+        .iter()
+        .map(|seed| toml::Value::String(format!("train:{seed}")))
+        .collect::<Vec<_>>();
+    let heldout_ids = recipe
+        .heldout_seeds
+        .iter()
+        .map(|seed| toml::Value::String(format!("test:{seed}")))
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        !train_ids.is_empty() && !heldout_ids.is_empty(),
+        "GEPA recipe `{}` requires non-empty train_seeds and heldout_seeds",
+        recipe.id
+    );
+
+    root.insert(
+        "taskset".into(),
+        toml::Value::Table(
+            [
+                ("train_split".into(), toml::Value::String("train".into())),
+                ("heldout_split".into(), toml::Value::String("test".into())),
+                ("train_ids".into(), toml::Value::Array(train_ids.clone())),
+                (
+                    "heldout_ids".into(),
+                    toml::Value::Array(heldout_ids.clone()),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+    );
+
+    let candidate_field = root
+        .get("candidate_field")
+        .and_then(toml::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("system_prompt")
+        .to_string();
+    root.insert(
+        "candidate".into(),
+        toml::Value::Table(
+            [(
+                "target_modules".into(),
+                toml::Value::Array(vec![toml::Value::String(candidate_field.clone())]),
+            )]
+            .into_iter()
+            .collect(),
+        ),
+    );
+    root.entry("seed_candidate").or_insert_with(|| {
+        toml::Value::Table(
+            [(
+                candidate_field,
+                toml::Value::String(
+                    "Classify the complete user request into exactly one canonical label. Return only that label, preserving its exact spelling and punctuation.".into(),
+                ),
+            )]
+            .into_iter()
+            .collect(),
+        )
+    });
+
+    let policy = root
+        .get_mut("policy")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| anyhow!("GEPA recipe policy must be a table"))?;
+    let api_family = policy
+        .get("api")
+        .and_then(toml::Value::as_str)
+        .unwrap_or("chat_completions")
+        .to_string();
+    policy.insert("api_family".into(), toml::Value::String(api_family));
+    policy.insert("api_key_env".into(), toml::Value::String("OPENAI_API_KEY".into()));
+    policy.insert("proxy_mode".into(), toml::Value::String("proxy_only".into()));
+
+    let first_train = train_ids[0].clone();
+    let mut gepa = toml::value::Table::new();
+    gepa.insert(
+        "max_total_rollouts".into(),
+        toml::Value::Integer(recipe.bounds.max_total_rollouts),
+    );
+    gepa.insert(
+        "max_cost_usd".into(),
+        toml::Value::Float(recipe.bounds.max_cost_usd),
+    );
+    gepa.insert(
+        "max_generations".into(),
+        toml::Value::Integer(recipe.bounds.max_generations.unwrap_or(1)),
+    );
+    gepa.insert("minibatch_size".into(), toml::Value::Integer(1));
+    gepa.insert(
+        "task_pools".into(),
+        toml::Value::Table(
+            [
+                ("pareto".into(), toml::Value::Array(vec![first_train.clone()])),
+                ("minibatch".into(), toml::Value::Array(vec![first_train])),
+                ("reflection".into(), toml::Value::Array(train_ids)),
+                ("heldout".into(), toml::Value::Array(heldout_ids)),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+    );
+    root.insert("gepa".into(), toml::Value::Table(gepa));
+    Ok(())
 }
 
 fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
@@ -1662,6 +1781,9 @@ container = "banking77"
 provider = "openai"
 model = "gpt-5.6-luna"
 locality = "container"
+candidate_field = "system_prompt"
+train_seeds = [0, 1]
+heldout_seeds = [77]
 [policy]
 max_calls = 32
 max_steps = 2000
@@ -1689,6 +1811,9 @@ container = "banking77"
 provider = "openai"
 model = "gpt-5.6-luna"
 locality = "container"
+candidate_field = "system_prompt"
+train_seeds = [0, 1]
+heldout_seeds = [77]
 [policy]
 max_calls = 32
 [bounds]
@@ -1707,6 +1832,10 @@ max_total_rollouts = 1
             Some("gpt-5.6-luna")
         );
         assert_eq!(document["policy"]["max_calls"].as_integer(), Some(32));
+        assert_eq!(document["taskset"]["train_ids"][0].as_str(), Some("train:0"));
+        assert_eq!(document["taskset"]["heldout_ids"][0].as_str(), Some("test:77"));
+        assert_eq!(document["gepa"]["task_pools"]["pareto"][0].as_str(), Some("train:0"));
+        assert_eq!(document["candidate"]["target_modules"][0].as_str(), Some("system_prompt"));
     }
 
     #[test]
