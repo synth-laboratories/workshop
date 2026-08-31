@@ -90,6 +90,8 @@ impl InlineRequest {
                 "session_ref",
                 "openVisual",
                 "open_visual",
+                "idempotencyKey",
+                "idempotency_key",
                 "request",
             ] {
                 object.remove(field);

@@ -385,7 +385,15 @@ pub(super) async fn start(
     let spec = EvalSpec::from_workspace(&recipe, &workspace)?;
     let container =
         find_ready_container(service, &spec.family, request.container_id.as_deref()).await?;
-    start_eval(service, request.session_ref.clone(), spec, container, None).await
+    start_eval(
+        service,
+        request.session_ref.clone(),
+        spec,
+        container,
+        None,
+        None,
+    )
+    .await
 }
 
 /// The inline executor accepts only the final, approval-bound stage.
@@ -393,6 +401,7 @@ pub(super) async fn start_inline(
     service: &OptimizerService,
     approved: super::admission::ApprovedExecutionSpec,
     session_ref: Option<String>,
+    run_id: Option<String>,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     let recipe = approved.recipe();
     let (mut container, family) =
@@ -452,7 +461,7 @@ pub(super) async fn start_inline(
             spec.policy_code = Some(bytes);
         }
     }
-    start_eval(service, session_ref, spec, container, Some(approved)).await
+    start_eval(service, session_ref, spec, container, Some(approved), run_id).await
 }
 
 async fn find_ready_container_by_id(
@@ -484,6 +493,7 @@ async fn start_eval(
     spec: EvalSpec,
     mut container: ReadyContainer,
     approved: Option<super::admission::ApprovedExecutionSpec>,
+    requested_run_id: Option<String>,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     let preflight_info = preflight_container_credentials(&container, &spec).await?;
     if approved.is_some() {
@@ -494,7 +504,8 @@ async fn start_eval(
     }
     let examples = spec.examples();
     let suffix = Uuid::new_v4().simple().to_string();
-    let run_id = format!("opt_eval_{}_{}", spec.family, &suffix[..12]);
+    let run_id = requested_run_id
+        .unwrap_or_else(|| format!("opt_eval_{}_{}", spec.family, &suffix[..12]));
     let effective_contract = service.negotiate_effective_contract(
         &run_id,
         &container.id,
@@ -1653,7 +1664,15 @@ async fn run_eval_worker(
     // visible, then settle the run failed with the contradiction in its detail.
     // Returning here used to lose those rows; wrapping it as EvidenceLaneFailure
     // incorrectly settled the same cost-ceiling run as retryable `degraded`.
-    let provider_usage_failure = append_provider_usage_reconciliation(&service, &run_id)
+    let expected_provider_calls = records
+        .iter()
+        .filter_map(|record| record.pointer("/usage/calls").and_then(Value::as_u64))
+        .sum();
+    let provider_usage_failure = append_provider_usage_reconciliation_at_least(
+        &service,
+        &run_id,
+        expected_provider_calls,
+    )
         .await
         .err()
         .map(|error| format!("provider usage reconciliation failed: {error:#}"));
@@ -1772,6 +1791,38 @@ async fn append_provider_usage_reconciliation(
         return Ok(());
     };
     let Some(receipt) = secrets.provider_usage_receipt(run_id)? else {
+        return Ok(());
+    };
+    append_provider_usage_receipt(service, run_id, receipt).await
+}
+
+/// The container may publish its terminal event immediately after receiving
+/// the final provider response while the proxy's SQLite debit is still
+/// committing on another connection. Do not freeze a terminal manifest from a
+/// momentarily empty or short receipt. The wait is local, bounded, and never
+/// performs another provider call.
+async fn append_provider_usage_reconciliation_at_least(
+    service: &OptimizerService,
+    run_id: &str,
+    expected_calls: u64,
+) -> Result<()> {
+    let Some(secrets) = crate::secrets::live() else {
+        return Ok(());
+    };
+    let mut last = None;
+    for attempt in 0..20 {
+        last = secrets.provider_usage_receipt(run_id)?;
+        if last
+            .as_ref()
+            .is_some_and(|receipt| receipt.calls >= expected_calls)
+        {
+            break;
+        }
+        if attempt < 19 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+    let Some(receipt) = last else {
         return Ok(());
     };
     append_provider_usage_receipt(service, run_id, receipt).await

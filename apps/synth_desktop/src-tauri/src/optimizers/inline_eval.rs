@@ -19,6 +19,13 @@ use std::process::Command;
 
 const INLINE_PROVIDER_OPERATION: &str = "chat.completions.create";
 
+/// Stable run identity for one caller-declared logical start. A retry reuses
+/// the same row; an intentional rerun must use a new key.
+pub fn idempotent_run_id(session_id: &str, idempotency_key: &str) -> String {
+    let digest = admission::digest_bytes(format!("{session_id}\0{idempotency_key}").as_bytes());
+    format!("opt_eval_idem_{}", &digest.as_str()[7..31])
+}
+
 /// Resolve current authority, construct the default inline recipe, validate it,
 /// and assign its immutable digest. No recipe catalog is consulted here.
 pub async fn admit_inline(
@@ -57,8 +64,9 @@ pub async fn execute(
     service: &OptimizerService,
     approved: admission::ApprovedExecutionSpec,
     session_ref: Option<String>,
+    run_id: Option<String>,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
-    container_eval::start_inline(service, approved, session_ref).await
+    container_eval::start_inline(service, approved, session_ref, run_id).await
 }
 
 /// Re-read the exact declaration and policy revision immediately before spend.
@@ -505,6 +513,15 @@ mod tests {
     use crate::data::{ContainerRegisterRequest, DataStore};
     use crate::storage::{ContentStore, Storage};
     use tempfile::tempdir;
+
+    #[test]
+    fn logical_start_identity_is_stable_and_scoped() {
+        let first = idempotent_run_id("session-a", "start-123");
+        assert_eq!(first, idempotent_run_id("session-a", "start-123"));
+        assert_ne!(first, idempotent_run_id("session-a", "start-124"));
+        assert_ne!(first, idempotent_run_id("session-b", "start-123"));
+        assert!(first.starts_with("opt_eval_idem_"));
+    }
 
     #[test]
     fn inline_provider_scope_uses_the_routed_chat_operation() {

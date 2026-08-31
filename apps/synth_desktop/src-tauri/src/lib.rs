@@ -1278,6 +1278,7 @@ pub(crate) async fn authorize_inline_evaluation_start(
     request: optimizers::admission::InlineRequest,
     session_ref: Option<String>,
     open_visual: bool,
+    idempotency_key: String,
 ) -> Result<OptimizerRunRecord, AppError> {
     let session_id = session_ref
         .as_deref()
@@ -1291,6 +1292,22 @@ pub(crate) async fn authorize_inline_evaluation_start(
     let admissible = optimizers::inline_eval::admit_inline(state.optimizers(), request)
         .await
         .map_err(AppError::from)?;
+    let admitted_digest = admissible.digest().as_str().to_string();
+    let start_run_id = optimizers::inline_eval::idempotent_run_id(session_id, &idempotency_key);
+    if let Ok(existing) = state.optimizers().get(start_run_id.clone()).await {
+        let expected = admitted_digest.as_str();
+        let actual = existing
+            .summary
+            .get("executionSpecDigest")
+            .and_then(serde_json::Value::as_str);
+        if actual != Some(expected) {
+            return Err(AppError::invalid_argument(format!(
+                "idempotencyKey is already bound to a different evaluation specification (expected {expected}, found {})",
+                actual.unwrap_or("missing digest")
+            )));
+        }
+        return Ok(existing);
+    }
     let disclosure = admissible.approval_disclosure();
     let recipe = &admissible.spec().recipe;
     let max_cost_usd_micros = recipe.resource_limits.hard_total_cost_micros.as_micros();
@@ -1330,10 +1347,33 @@ pub(crate) async fn authorize_inline_evaluation_start(
     optimizers::inline_eval::reverify(state.optimizers(), &approved)
         .await
         .map_err(AppError::from)?;
-    let (run, event) =
-        optimizers::inline_eval::execute(state.optimizers(), approved, session_ref.clone())
-            .await
-            .map_err(AppError::from)?;
+    let execution = optimizers::inline_eval::execute(
+            state.optimizers(),
+            approved,
+            session_ref.clone(),
+            Some(start_run_id.clone()),
+        )
+        .await;
+    let (run, event) = match execution {
+        Ok(started) => started,
+        Err(error) => {
+            // Two identical callers can both be released by the same human
+            // decision. The deterministic row insert is the spend fence; the
+            // loser returns that row instead of turning a safe retry into an
+            // error or dispatching another campaign.
+            if let Ok(existing) = state.optimizers().get(start_run_id).await {
+                if existing
+                    .summary
+                    .get("executionSpecDigest")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(admitted_digest.as_str())
+                {
+                    return Ok(existing);
+                }
+            }
+            return Err(AppError::from(error));
+        }
+    };
     publish_optimizer_event(app, state, event).await?;
     let run = state
         .optimizers()

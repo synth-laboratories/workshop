@@ -2841,6 +2841,18 @@ pub(crate) async fn dispatch_optimizer(
             }))
         }
         ("POST", "/v1/optimizers/evaluations/start") => {
+            let idempotency_key = body
+                .get("idempotencyKey")
+                .or_else(|| body.get("idempotency_key"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("idempotencyKey is required for evaluation_start"))?
+                .to_owned();
+            anyhow::ensure!(
+                idempotency_key.len() <= 128,
+                "idempotencyKey must be at most 128 characters"
+            );
             let request: crate::optimizers::admission::InlineRequest =
                 crate::optimizers::admission::InlineRequest::from_tool_arguments(
                     body.get("request").cloned().unwrap_or_else(|| body.clone()),
@@ -2864,6 +2876,7 @@ pub(crate) async fn dispatch_optimizer(
                 request,
                 session_ref,
                 open_visual,
+                idempotency_key,
             )
             .await
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
