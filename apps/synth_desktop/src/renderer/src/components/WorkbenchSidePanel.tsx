@@ -42,7 +42,7 @@ export function WorkbenchSidePanel({ tabs, activeTabId, onTabChange, onClose }: 
 				restoreFocusIfLost('[data-testid="resource-shelf-trigger"]');
 			}}>×</button>
 		</header>
-		<div className="workbench-side-panel-content" role="tabpanel" id={`workbench-side-tabpanel-${activeTab.id}`} aria-labelledby={`workbench-side-tab-${activeTab.id}`} data-testid={`workbench-side-tabpanel-${activeTab.id}`}>
+		<div className="workbench-side-panel-content" data-active-tab={activeTab.id} role="tabpanel" id={`workbench-side-tabpanel-${activeTab.id}`} aria-labelledby={`workbench-side-tab-${activeTab.id}`} data-testid={`workbench-side-tabpanel-${activeTab.id}`}>
 			{activeTab.content}
 		</div>
 	</aside>;

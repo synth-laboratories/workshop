@@ -1212,7 +1212,8 @@ export function useAppController() {
 	const sidePanelFits = workbenchWidth >= 368 + 300;
 	const sidePanelCanSharePane = workbenchWidth >= 380 + 7 + 260 + 300;
 	const showSidePanel = sidePanelOpen && sidePanelFits && (
-		sidePanelTab === "outputs"
+		sidePanelTab === "visual"
+		|| sidePanelTab === "outputs"
 		|| sidePanelTab === "trace"
 		|| sidePanelTab === "diagnostics"
 		|| sidePanelTab === "errors"

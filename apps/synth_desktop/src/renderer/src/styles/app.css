@@ -9035,6 +9035,8 @@ html.visual-expanded .sidebar {
 .workbench-side-panel-close { align-self: flex-start; }
 .workbench-side-panel-close:hover { background: rgba(0, 0, 0, .04); color: var(--color-text); }
 .workbench-side-panel-content { min-width: 0; min-height: 0; flex: 1; display: flex; align-items: stretch; justify-content: flex-start; overflow: auto; padding: 14px; }
+.workbench-side-panel-content[data-active-tab="visual"] { overflow: hidden; padding: 0; }
+.workbench-side-panel-content[data-active-tab="visual"] > .visual-pane { width: 100%; min-width: 0; flex: 1; border-left: 0; animation: none; }
 
 .workbench-side-panel-content .inference-panel,
 .settings-page .inference-panel,

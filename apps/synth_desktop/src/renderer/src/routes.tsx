@@ -426,7 +426,30 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 	const leaveReports = () => {
 		leaveInventory(inventoryOriginRef.current);
 	};
-	const visualPaneVisible = Boolean(openArtifact && (!chatRoute || !showSidePanel || sidePanelCanSharePane));
+	// Chat artifacts live in the same right-hand dock as Outputs and the
+	// inspector tabs.  Keep the legacy standalone pane only as the compact
+	// fallback (where the dock cannot fit) and for non-chat inventory views.
+	const visualPaneVisible = Boolean(openArtifact && (!chatRoute || !showSidePanel));
+	const openArtifactInDock = (id: string | null) => {
+		if (id == null) {
+			toggleArtifact(null);
+			setSidePanelTab("outputs");
+			return;
+		}
+		if (openArtifactId !== id) toggleArtifact(id);
+		setSidePanelTab("visual");
+		setSidePanelOpen(true);
+	};
+	const visualPaneContent = openArtifact ? (
+		<VisualPane
+			key="window-visual-host"
+			artifact={openArtifact}
+			onClose={() => {
+				toggleArtifact(null);
+				if (chatRoute && showSidePanel) setSidePanelTab("outputs");
+			}}
+		/>
+	) : null;
 	const chatContainerVisible = Boolean(chatRoute && openContainer && (!showSidePanel || sidePanelCanSharePane));
 	const inventoryContainerVisible = view.kind === "inventory" && Boolean(openContainer);
 	const resizeInventoryPane = (width: number) => {
@@ -498,13 +521,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						chat={activeChat}
 						events={eventsBySession[activeChat.id] ?? []}
 						openArtifactId={openArtifactId}
-						onOpenArtifact={(id) => {
-							if (showSidePanel && !sidePanelCanSharePane) {
-								setSidePanelOpen(false);
-								if (openArtifactId === id) return;
-							}
-							toggleArtifact(id);
-						}}
+						onOpenArtifact={openArtifactInDock}
 						openContainerId={openContainer?.id ?? null}
 						onOpenContainer={(id) => void toggleContainer(id)}
 						onApprove={(approvalId, decision) => void controlActive("approve", { approvalId, decision })}
@@ -611,7 +628,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						<ReportsPage initialReportId={view.reportId} onBack={leaveReports} />
 					) : null}
 					{view.kind === "settings" && openArtifact ? settingsPage : null}
-					{visualPaneVisible && openArtifact ? (
+					{visualPaneVisible && visualPaneContent ? (
 						<>
 							<PaneResizeHandle
 								value={inventoryContainerWidth}
@@ -620,7 +637,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 								onChange={resizeInventoryPane}
 								ariaLabel="Resize visual pane"
 							/>
-							<VisualPane key="window-visual-host" artifact={openArtifact} onClose={() => toggleArtifact(null)} />
+							{visualPaneContent}
 						</>
 					) : null}
 					{chatContainerVisible && openContainer ? (
@@ -653,7 +670,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							activeTabId={sidePanelTab}
 							onTabChange={(tabId) => {
 								if (
-									tabId === "outputs"
+									tabId === "visual"
+									|| tabId === "outputs"
 									|| tabId === "inference"
 									|| tabId === "trace"
 									|| tabId === "diagnostics"
@@ -664,6 +682,13 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							}}
 							onClose={() => setSidePanelOpen(false)}
 							tabs={[
+								...(openArtifact
+									? [{
+										id: "visual",
+										label: "Visual",
+										content: visualPaneContent
+									}]
+									: []),
 								{
 									id: "outputs",
 									label: "Outputs",
@@ -672,13 +697,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 										<OutputsPanel
 											chat={activeChat}
 											openArtifactId={openArtifactId}
-											onOpenArtifact={(id) => {
-												if (showSidePanel && !sidePanelCanSharePane) {
-													setSidePanelOpen(false);
-													if (openArtifactId === id) return;
-												}
-												toggleArtifact(id);
-											}}
+											onOpenArtifact={openArtifactInDock}
 											openContainerId={openContainer?.id ?? null}
 											onOpenContainer={(id) => void toggleContainer(id)}
 											onOpenReport={(reportId) => setView({ kind: "reports", reportId })}

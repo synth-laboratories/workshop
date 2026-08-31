@@ -112,6 +112,10 @@ test("routes.tsx mounts one VisualPane host including chat", () => {
   assert.doesNotMatch(source, /Chat still remounts/);
   assert.doesNotMatch(source, /onBack=\{\(\) => openChat/);
   assert.doesNotMatch(source, /crypto\.randomUUID\(\)/);
+	assert.match(source, /const visualPaneVisible = Boolean\(openArtifact && \(!chatRoute \|\| !showSidePanel\)\)/);
+	assert.match(source, /id: "visual"/);
+	assert.match(source, /content: visualPaneContent/);
+	assert.match(source, /setSidePanelTab\("visual"\)/);
 
   const controller = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src/hooks/useAppController.ts"),

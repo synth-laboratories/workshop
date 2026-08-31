@@ -8,7 +8,7 @@ import {
 } from "../preferences";
 import { restoreFocusIfLost } from "../runtime/restoreFocus";
 
-export type SidePanelTab = "outputs" | "inference" | "trace" | "diagnostics" | "errors";
+export type SidePanelTab = "visual" | "outputs" | "inference" | "trace" | "diagnostics" | "errors";
 
 export type ShellLayoutState = {
 	sidebarVisible: boolean;
