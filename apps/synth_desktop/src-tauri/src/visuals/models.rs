@@ -82,6 +82,10 @@ pub struct VisualRecord {
     #[specta(type = specta_typescript::Number)]
     pub current_revision: i64,
     pub title: String,
+    /// Short, human-readable label chosen by the authoring agent. The full
+    /// title remains the descriptive/technical fallback for older visuals.
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub template_id: String,
     pub status: VisualStatus,
     pub renderer_kind: RendererKind,

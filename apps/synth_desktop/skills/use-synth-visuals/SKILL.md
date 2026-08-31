@@ -5,7 +5,7 @@ description: Use when creating, updating, inspecting, or opening a Synth Desktop
 
 # Use Synth Visuals
 
-Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc analysis, prefer `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. For a live event log plus inspect overlay, prefer `compose.visual.v1` with advertised components; do not hang a `stream` input on `analysis.visual.v1`. For a custom pane that still uses those components and host-owned ingest, author TSX on `sourced.visual.v1`. Use `blank.canvas.v1` when the composition cannot be expressed cleanly with those blocks. If the artifact is a system, UML, flow picture, or time-aware technical explainer, load `author-synth-diagrams`. It chooses among `diagram.mermaid.v1`, `diagram.systems.v1`, `diagram.systems.dynamic.v1`, or a focused combination; do not dump SVG/HTML/JavaScript into a canvas.
+Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc quantitative analysis, use `visual_manage` with operation `chart`; it creates or revises `analysis.chart.v1`, renders the chart, and returns a review PNG in one call. For other ad-hoc analysis, use `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. For a live event log plus inspect overlay, prefer `compose.visual.v1` with advertised components; do not hang a `stream` input on `analysis.visual.v1`. For a custom pane that still uses those components and host-owned ingest, author TSX on `sourced.visual.v1`. Use `blank.canvas.v1` when none of those grammars express the composition cleanly. If the artifact is a system, UML, flow picture, or time-aware technical explainer, load `author-synth-diagrams`. It chooses among `diagram.mermaid.v1`, `diagram.systems.v1`, `diagram.systems.dynamic.v1`, or a focused combination; do not dump SVG/HTML/JavaScript into a canvas.
 
 Optimizer visuals are a strict exception to the authoring workflow below. The `optimizer.*` family is product-owned and already configured by `use-synth-optimizers`. Report `visualEvidence.state` (`ready` | `reviewed` | `partial` | `failed`); never loop capture/repair. `partial` and `failed` never block task completion. Only call `show` when that workflow asks you to recover a missing subscription receipt. Never call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for an optimizer-owned visual.
 
@@ -35,13 +35,17 @@ or filesystem search to discover this tool.
 | `list_templates` | `{ "genre"?: string }` — returns `inputs` (and a `slots` copy), `bindingSchema`, and `components[]` (empty when the template does not advertise parts). There is no `list_components` verb. |
 | `list` | `{ "search"?: string, "status"?: string, "session_id"?: string, "scope"?: "session" \| "instance" }` — defaults to this task; `scope: "instance"` is labeled cross-task discovery |
 | `get` | `{ "visual_id": string }` |
-| `create` | `{ "template_id": string, "title"?: string, "content"?: string, "props"?: object, "session_id"?: string, "instance_id"?: string }` — `sourced.visual.v1` requires `content` (allowlisted TSX). |
+| `create` | `{ "template_id": string, "title"?: string, "display_name"?: string, "content"?: string, "props"?: object, "session_id"?: string, "instance_id"?: string }` — `display_name` is the short human-readable Outputs label; `sourced.visual.v1` requires `content` (allowlisted TSX). |
 | `create_with_bind` | `{ "template_id": string, "title"?: string, "input": string, "kind": string, "data"?: object, "source"?: string, "schema"?: string }` — atomic create plus the first required input. Prefer this for `experiment.overview.v1`, `analysis.visual.v1`, and `compose.visual.v1` (`spec`). Bind `stream` (eval) or `optimizer_run` (GEPA/SFT/CISPO) separately. `slot` still binds on stored envelopes; new writers emit `input`. If both names are present and disagree, fail closed. |
-| `update` | `{ "visual_id": string, "title"?: string, "content"?: string, "bindings"?: object, "status"?: string }` — `bindings` must be the canonical envelope; prefer `bind` |
+| `chart` | `{ "visual_id"?: string, "title"?: string, "display_name"?: string, "spec": object, "bindings"?: object, "input"?: string, "kind"?: string, "source"?: string, "data"?: object, "viewport"?: {"width": number}, "capture"?: boolean, "presentation"?: "canvas" \| "pane" }` — create or revise an ad-hoc `analysis.chart.v1`. Bind optimizer runs or traces in the same call for provenance. The default capture returns the rendered PNG for inspection. |
+| `update` | `{ "visual_id": string, "title"?: string, "display_name"?: string, "content"?: string, "bindings"?: object, "status"?: string }` — `bindings` must be the canonical envelope; prefer `bind` |
 | `bind` | `{ "instance_id": string, "input": string, "kind": string, "source"?: string, "data"?: object, "poll_url"?: string, "path"?: string, "schema"?: string, "mode"?: "replace" \| "append", "bindings"?: [{ "kind": string, "source"?: string, "data"?: object, "poll_url"?: string }] }` — inline inputs require `data`; other kinds require `source`. `slot` still binds on stored envelopes; new writers emit `input`. Two malformed binds must not block a corrected bind. |
 | `show` | `{ "visual_id": string, "session_id"?: string }` |
 | `fork` | `{ "visual_id": string, "title"?: string }` |
 | `archive` | `{ "visual_id": string }` |
+| `experiment_create` | `{ "request_id": string, "title": string, "task"?: string, "model"?: string }` — creates or reopens the current task's durable experiment record; `request_id` is the idempotency key. |
+| `experiment_attach_evidence` | `{ "experiment_id": string, "evidence_id": string, "kind": "trace" \| "visual" \| "artifact" \| "container", "label": string, ... }` — attaches a durable evidence reference; a container evidence item requires `container_id`. |
+| `experiment_finalize` | `{ "experiment_id": string, "status": "completed" \| "partial" \| "failed", "result": object, "assessment"?: object }` — record measured results honestly; use `null` for missing values. |
 | `authoring_context` | `{ "visual_id": string }` |
 | `capture_review` | `{ "visual_id": string, "viewport": {"width": number, "height": number} }` — returns an attached PNG plus `screenshot_path` |
 | `review` | `{ "visual_id": string, "revision": number, "viewport": {"width": number, "height": number}, "checks": object, "findings": string[], "screenshot_path"?: string }` (`screenshot_path` is required for systems visuals) |
@@ -52,13 +56,16 @@ For example, list templates with
 Do not invent separate callable names such as
 `mcp__synth_visuals__visual_create`; legacy MCP names remain compatible for
 other clients but are intentionally not advertised to Codex.
+Use the same `visual_manage` facade for experiment lifecycle operations; do
+not call a separate `experiment_create` tool.
 
 ## Workflow
 
 1. Inspect the available evidence before choosing a chart: task metadata, rollout count, seeds, traces, reward components, achievements, costs, tokens, latency, and failure state.
 2. State the analytical question in one sentence: “Which arm achieves more per dollar?”, “Where do rewards diverge?”, or “What happened during this rollout?”
-3. Choose only visual forms that answer that question. Read [visual-recipes.md](references/visual-recipes.md) for mappings.
-4. Create the smallest useful visual with the `create` operation, a stable ID, and a title that names the task and comparison. Use `presentation: "canvas"` for gameplay, trace workbenches, and dense live dashboards.
+3. Choose only visual forms that answer that question. Read [visual-recipes.md](references/visual-recipes.md) for mappings. For a one-off quantitative comparison, also read [ad-hoc-visuals.md](references/ad-hoc-visuals.md). It is the canonical guide for chart selection, style, metric denominators, and evidence/event-source bindings.
+4. Create the smallest useful visual with a stable ID, a descriptive title that names the task and comparison, and a short sensible `display_name` (normally 2–6 words, such as “GLM Craftax Results” or “Reward by Seed”). Keep names distinct within the task and never use raw IDs as names. Use operation `chart` for quantitative comparisons and `create`/`create_with_bind` for other registered templates. Use `presentation: "canvas"` for gameplay, trace workbenches, and dense live dashboards.
+   If instance-scope discovery finds a useful visual owned by another task, call `fork` first and revise the returned current-task visual ID. Never update or `show` the other task's original: its presentation event routes to its owner, not this chat.
 5. Show exact units and provenance. Preserve small costs rather than rounding them to `$0.00`.
 6. Call the `show` operation after creation or update so the result opens in the Desktop pane.
 7. Inspect the rendered visual in Desktop canvas mode. Fix clipped labels, empty sections, misleading encodings, weak hierarchy, and excessive whitespace.
@@ -76,6 +83,14 @@ other clients but are intentionally not advertised to Codex.
 - Label single-rollout comparisons as exploratory. A 0% or 100% observation from one rollout is not a stable frequency estimate.
 - Distinguish missing from zero and failed from scored.
 - Keep raw trace detail available through a scrubber or table, but summarize the important transition first.
+
+For a request to compare model settings, policies, candidates, seeds, scores,
+cost, tokens, latency, or efficiency, **default to operation `chart` even when
+some requested evidence is missing**. Represent unavailable numeric values as
+`null` and explain the gap in a note panel. Do not fall back to
+`analysis.visual.v1` merely because one arm is unavailable. Use the legacy
+ordered-block grammar only when the requested result is primarily a narrative
+record rather than a quantitative chart.
 
 ## Never do this
 
@@ -412,6 +427,15 @@ binds input `optimizer_run`, shows the same durable visual ID in the current cha
 right pane, and keeps reading the optimizer event cursor while the agent continues
 to talk or poll. Reopening after a restart must reuse that ID and replay persisted
 events; unknown score, reward, cost, coverage, or evidence integrity remains missing.
+
+Ad-hoc analysis is different from the product-owned live viewer. After the user
+asks for a cross-run comparison, operation `chart` may bind completed or
+running runs as separate `optimizer_run` slots and derive panels from those
+snapshots. Label a read from an unsealed run as a snapshot. If a requested run
+is unavailable in the current catalog or task scope, do not substitute another
+run or copy values from prose: keep that arm null and name the unavailable run
+in a note. The source matrix and metric rules are in
+[ad-hoc-visuals.md](references/ad-hoc-visuals.md).
 
 ## `blank.canvas.v1`
 

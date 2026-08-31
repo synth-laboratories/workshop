@@ -46,6 +46,7 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 ## Follow every run
 
 1. For a run started from chat, pass `open_visual: true`. The host creates and binds the algorithm-family visual before starting compute, reuses one durable visual ID, and shows it in the current conversation's right pane. Do not create a second generic visual for the same run.
+   After the visual ID is known, give it a short, task-specific human name with `visual_manage` operation `update` and only `display_name` (for example, “GLM Craftax Results”). This metadata-only naming update is allowed for product visuals; do not revise their bindings or content.
 2. For an existing or historical run, call `open_visual` with its `optimizer_run_id`. This reuses its primary visual and presents it in the current conversation without changing the run's original ownership.
 3. Record `run.id`, the primary visual ID in `run.visualRefs`, and `run.cursorSeq`. Keep the pane open while following the run; the visual reads the same durable event cursor and continues updating independently of tool polling.
    After the run ID is known, call `mcp__synth_session__session_present` once with a concise title containing the task family and the run ID's final 6 characters, for example `Banking77 eval · a1b2c3`. This is the current conversation's scoped title MCP; it prevents concurrent or restored runs from becoming indistinguishable. Do not pass a session ID and do not rename another conversation.

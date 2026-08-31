@@ -56,6 +56,8 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 		id: visual.id,
 		kind: "report",
 		title: visual.title,
+		displayName: visual.displayName ?? visual.title,
+		updatedAt: visual.updatedAt,
 		templateId: visual.templateId,
 		visualId: visual.id,
 		revision: visual.currentRevision,

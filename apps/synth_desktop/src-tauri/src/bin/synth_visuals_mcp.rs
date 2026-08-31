@@ -216,6 +216,10 @@ mod tests {
         );
         assert!(bindings["properties"]["inputs"]["type"] == "array");
         assert!(bindings["properties"].get("slots").is_none());
+        assert_eq!(
+            update["inputSchema"]["properties"]["display_name"]["maxLength"],
+            64
+        );
     }
 
     #[test]
@@ -267,6 +271,18 @@ mod tests {
         );
         assert_eq!(managed_tool_name("fork").unwrap(), "visual_fork");
         assert_eq!(managed_tool_name("archive").unwrap(), "visual_archive");
+        assert_eq!(
+            managed_tool_name("experiment_create").unwrap(),
+            "experiment_create"
+        );
+        assert_eq!(
+            managed_tool_name("experiment_attach_evidence").unwrap(),
+            "experiment_attach_evidence"
+        );
+        assert_eq!(
+            managed_tool_name("experiment_finalize").unwrap(),
+            "experiment_finalize"
+        );
         assert!(managed_tool_name("delete_everything").is_err());
         assert!(
             managed_tool_name("list_components").is_err(),
@@ -434,6 +450,13 @@ const VISUAL_OPERATIONS: &[(&str, &str)] = &[
     ("get_seal", "visual_get_seal"),
     ("fork", "visual_fork"),
     ("archive", "visual_archive"),
+    // Experiment records are a lifecycle concern of the same durable visual
+    // evidence surface. Codex receives only this facade, so map the lifecycle
+    // actions here instead of advertising aliases the local provider may not
+    // register in its compact MCP catalog.
+    ("experiment_create", "experiment_create"),
+    ("experiment_attach_evidence", "experiment_attach_evidence"),
+    ("experiment_finalize", "experiment_finalize"),
 ];
 
 fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
@@ -453,26 +476,28 @@ fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
 fn tools() -> Value {
     let mut result = json!({
         "tools": [
-            {"name":"visual_manage","description":"Synth visuals. Use author-synth-diagrams; do not call MCP resources. Create/show, review PNGs wide and compact, revise defects, then mark_ready. Mermaid source goes in arguments.content. Data charts: use visual_chart.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual operation."},"arguments":{"type":"object","description":"Operation arguments. capture_review returns a PNG and screenshot_path; review and mark_ready use the current revision.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+            {"name":"visual_manage","description":"Give every created, forked, or chart visual a short sensible display_name (2–6 words, unique in the task, no raw IDs); keep title descriptive. Use author-synth-diagrams; do not call MCP resources. Chart: operation chart, arguments.spec. Mermaid: arguments.content. Then show/review/revise/mark_ready. Experiments: experiment_create/experiment_attach_evidence/experiment_finalize.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual operation."},"arguments":{"type":"object","description":"Operation arguments. Creation operations should include display_name.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_import_template","description":"Import one networkless template.json + renderer.html package into this Desktop instance's managed visual registry","inputSchema":{"type":"object","properties":{"source_path":{"type":"string","description":"Absolute package directory containing template.json and renderer.html"}},"required":["source_path"],"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_create","description":"Create a visual from a registered template. sourced.visual.v1 compiles arguments.content (allowlisted TSX) in the pane. Prefer create_with_bind with input+kind+data for experiment.overview.v1, analysis.visual.v1, and compose.visual.v1. compose.visual.v1 binds spec, then stream (eval) or optimizer_run (GEPA/SFT/CISPO optimizer_event.v1). Do not flatten Harbor/Craftax eval traces into optimizer_run. Hosted RLVR is CISPO, not rlvr.*. Unconstrained fetch/EventSource modules fail closed. For ad-hoc data charts prefer visual_chart.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"props":{"type":"object"},"bindings":{"type":"object"},"input":{"type":"string","description":"Required input name for create_with_bind, e.g. experiment or spec. slot still binds; new writers use input."},"slot":{"type":"string","description":"Read-only alias of input on stored envelopes; still binds."},"kind":{"type":"string","description":"Binding kind. Inline inputs require data."},"data":{"description":"Required when kind is inline"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
-            {"name":"visual_create_from_template","description":"Alias of visual_create","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"props":{"type":"object"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
-            {"name":"visual_update","description":"Revise visual bindings, title, trusted-template configuration, or Mermaid/systems/chart content","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"bindings":{"type":"object","description":"Canonical synth.visual-bindings.v1 envelope: {\"schemaVersion\":\"synth.visual-bindings.v1\",\"inputs\":[{\"input\":...,\"kind\":...,\"source\":...}]}. slot still binds on stored envelopes; new writers emit input/inputs. A slot-keyed map such as {\"stream\":[...]} is legacy, is upgraded with a warning, and will be refused in a later release. Prefer visual_bind_data_source.","properties":{"schemaVersion":{"type":"string","const":"synth.visual-bindings.v1"},"inputs":{"type":"array","items":{"type":"object","properties":{"input":{"type":"string"},"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"data":{}},"required":["kind"]}}},"required":["schemaVersion"]},"status":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_bind_data_source","description":"Bind one input on a visual. This is the only supported way to write bindings: it emits the canonical synth.visual-bindings.v1 envelope. Inline inputs require data; other kinds require source. compose.visual.v1 stream is eval SSE; optimizer_run is optimizer_event.v1 (GEPA/SFT/CISPO). Use mode=append with bindings[] to put several sources on one input. slot still binds; new writers use input.","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"input":{"type":"string","description":"Bind-point name, e.g. spec, stream, optimizer_run"},"slot":{"type":"string","description":"Read-only alias of input on stored envelopes; still binds."},"mode":{"type":"string","enum":["replace","append"],"description":"replace (default) drops existing bindings on this input; append adds to them"},"kind":{"type":"string","enum":["trace_v5","local_cas","live_sse","fixture","inline","run_ref","optimizer_run","query_snapshot"]},"source":{"type":"string"},"data":{"description":"Required when kind is inline"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"},"schema":{"type":"string"},"bindings":{"type":"array","description":"Several descriptors for one input. Each is {kind, source, data?, poll_url?, path?, schema?}; the named input is authoritative.","items":{"type":"object","properties":{"kind":{"type":"string"},"source":{"type":"string"},"data":{},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"}},"required":["kind"],"additionalProperties":false}}},"required":["instance_id"],"additionalProperties":false}},
-            {"name":"visual_show","description":"Open a visual in the Desktop right pane","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"session_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"visual_create","description":"Create a visual from a registered template. Give every visual a short, sensible display_name for the Outputs shelf; keep title descriptive. sourced.visual.v1 compiles arguments.content (allowlisted TSX) in the pane. Prefer create_with_bind with input+kind+data for experiment.overview.v1, analysis.visual.v1, and compose.visual.v1. compose.visual.v1 binds spec, then stream (eval) or optimizer_run (GEPA/SFT/CISPO optimizer_event.v1). Do not flatten Harbor/Craftax eval traces into optimizer_run. Hosted RLVR is CISPO, not rlvr.*. Unconstrained fetch/EventSource modules fail closed. For ad-hoc data charts prefer visual_chart.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"display_name":{"type":"string","minLength":1,"maxLength":64,"description":"Short human-readable name, usually 2–6 words, unique within the task."},"content":{"type":"string"},"props":{"type":"object"},"bindings":{"type":"object"},"input":{"type":"string","description":"Required input name for create_with_bind, e.g. experiment or spec. slot still binds; new writers use input."},"slot":{"type":"string","description":"Read-only alias of input on stored envelopes; still binds."},"kind":{"type":"string","description":"Binding kind. Inline inputs require data."},"data":{"description":"Required when kind is inline"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
+            {"name":"visual_create_from_template","description":"Alias of visual_create. Include a short sensible display_name.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"display_name":{"type":"string","minLength":1,"maxLength":64},"props":{"type":"object"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
+            {"name":"visual_update","description":"Revise visual bindings, title, short display_name, trusted-template configuration, or Mermaid/systems/chart content","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"display_name":{"type":"string","minLength":1,"maxLength":64,"description":"Short human-readable name, usually 2–6 words."},"content":{"type":"string"},"bindings":{"type":"object","description":"Canonical synth.visual-bindings.v1 envelope: {\"schemaVersion\":\"synth.visual-bindings.v1\",\"inputs\":[{\"input\":...,\"kind\":...,\"source\":...}]}. slot still binds on stored envelopes; new writers emit input/inputs. A slot-keyed map such as {\"stream\":[...]} is legacy, is upgraded with a warning, and will be refused in a later release. Prefer visual_bind_data_source.","properties":{"schemaVersion":{"type":"string","const":"synth.visual-bindings.v1"},"inputs":{"type":"array","items":{"type":"object","properties":{"input":{"type":"string"},"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"data":{}},"required":["kind"]}}},"required":["schemaVersion"]},"status":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"visual_bind_data_source","description":"Bind one input on a visual. This is the only supported way to write bindings: it emits the canonical synth.visual-bindings.v1 envelope. Inline inputs require data; other kinds require source. compose.visual.v1 stream is eval SSE; optimizer_run is optimizer_event.v1 (GEPA/SFT/CISPO). Use mode=append with bindings[] to put several sources on one input. slot still binds; new writers use input.","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"input":{"type":"string","description":"Bind-point name, e.g. spec, stream, optimizer_run"},"slot":{"type":"string","description":"Read-only alias of input on stored envelopes; still binds."},"mode":{"type":"string","enum":["replace","append"],"description":"replace (default) drops existing bindings on this input; append adds to them"},"kind":{"type":"string","enum":["trace_v5","local_cas","live_sse","fixture","inline","run_ref","optimizer_run","optimizer_snapshot","query_snapshot"]},"source":{"type":"string"},"data":{"description":"Required when kind is inline"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"},"schema":{"type":"string"},"bindings":{"type":"array","description":"Several descriptors for one input. Each is {kind, source, data?, poll_url?, path?, schema?}; the named input is authoritative.","items":{"type":"object","properties":{"kind":{"type":"string"},"source":{"type":"string"},"data":{},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"}},"required":["kind"],"additionalProperties":false}}},"required":["instance_id"],"additionalProperties":false}},
+             {"name":"visual_show","description":"Open a visual in the Desktop right pane","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"session_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
+             {"name":"document_show","description":"Open one workspace file in the Desktop right pane. The path is resolved against this conversation's workspace roots; a path outside them is refused, and a file that cannot be typeset (missing, binary, a directory) comes back with the named reason. Read-only: there is no write or delete counterpart.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path, or a path relative to a workspace root, of the file to open"}},"required":["path"],"additionalProperties":false}},
+            {"name":"document_show","description":"Open one workspace file in the Desktop right pane. The path is resolved against this conversation's workspace roots; a path outside them is refused, and a file that cannot be typeset (missing, binary, a directory) comes back with the named reason. Read-only: there is no write or delete counterpart.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path, or a path relative to a workspace root, of the file to open"}},"required":["path"],"additionalProperties":false}},
             {"name":"visual_open_in_pane","description":"Alias of visual_show","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"}},"required":["instance_id"],"additionalProperties":false}},
             {"name":"visual_fork","description":"Fork a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_chart","description":"Author or revise an ad-hoc data chart and get the rendered PNG back in one call. Pass a synth.visual.chart-spec.v1 object as spec; omit visual_id to create, pass it to revise. Panels: metrics, series (line/stepped/area with optional band), bars (grouped/stacked, vertical/horizontal), scatter (optional Pareto frontier), histogram, heatmap, table, note. Panels either carry literal values or derive them from bound evidence with a from block — bind a trace digest, fixture, CAS blob, or query snapshot with input/kind/source and the host reads it, so charting a trace does not mean pasting its numbers. Every value channel accepts null for an unmeasured point, which renders as a gap or a hatched cell — never as zero. Renders deterministically without opening the Desktop window.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string","description":"Revise this chart instead of creating one"},"title":{"type":"string"},"spec":{"type":"object","description":"synth.visual.chart-spec.v1: {version:1, title?, subtitle?, theme?:light|dark, width?:480-2000, panels:[...]}. A panel carries literal values OR a from block: {from:{source:{slot,path?,projection?,transform:[...]}, ...channel mapping}}. Transforms: filter, sort, limit, select, unwind, unpivot, derive, groupAggregate, bin."},
               "slot":{"type":"string","description":"Read-only alias of input on stored envelopes; still binds."},
               "input":{"type":"string","description":"Bind evidence in the same call: the input name a from block reads"},
-              "kind":{"type":"string","enum":["inline","fixture","local_cas","trace_v5","query_snapshot","optimizer_run"],"description":"Binding kind for this input. An optimizer_run may be read before it seals; the reading is recorded as a snapshot with its cursor."},
+              "kind":{"type":"string","enum":["inline","fixture","local_cas","trace_v5","query_snapshot","optimizer_run","optimizer_snapshot"],"description":"Binding kind for this input. An optimizer_run may be read before it seals; optimizer_snapshot is immutable imported evidence."},
               "source":{"type":"string","description":"Trace digest, fixture path under visuals/, CAS digest, query snapshot id, or optimizer run id"},
               "data":{"description":"Required when kind is inline"},
               "bindings":{"type":"object","description":"A full synth.visual-bindings.v1 envelope, instead of input/kind/source"},"viewport":{"type":"object","properties":{"width":{"type":"integer","minimum":320,"maximum":2400}},"additionalProperties":false,"description":"Capture width; the height follows the chart so nothing is scaled down"},"capture":{"type":"boolean","description":"Default true; false returns the revision and findings without a PNG"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["spec"],"additionalProperties":false}},
-            {"name":"experiment_attach_evidence","description":"Attach a saved trace, visual/plot, or artifact reference to an experiment. References are local-first and may be materialized just in time when opened. Replaying the same evidence_id is idempotent.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"},"node_id":{"type":"string","description":"Optional experiment node; defaults to the latest result node"},"evidence_id":{"type":"string","description":"Stable caller-chosen idempotency key"},"kind":{"type":"string","enum":["trace","visual","artifact"]},"label":{"type":"string"},"digest":{"type":"string"},"container_id":{"type":"string"},"rollout_id":{"type":"string"},"trace_id":{"type":"string"},"visual_id":{"type":"string"},"artifact_uri":{"type":"string"},"metadata":{"type":"object"}},"required":["experiment_id","evidence_id","kind","label"],"additionalProperties":false}},
+            {"name":"experiment_attach_evidence","description":"Attach a saved trace, visual/plot, artifact, or admitted-container reference to an experiment. `kind: container` requires container_id; `artifact` requires artifact_uri. References are local-first and may be materialized just in time when opened. Replaying the same evidence_id is idempotent.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"},"node_id":{"type":"string","description":"Optional experiment node; defaults to the latest result node"},"evidence_id":{"type":"string","description":"Stable caller-chosen idempotency key"},"kind":{"type":"string","enum":["trace","visual","artifact","container"]},"label":{"type":"string"},"digest":{"type":"string"},"container_id":{"type":"string"},"rollout_id":{"type":"string"},"trace_id":{"type":"string"},"visual_id":{"type":"string"},"artifact_uri":{"type":"string"},"metadata":{"type":"object"}},"required":["experiment_id","evidence_id","kind","label"],"additionalProperties":false}},
             {"name":"experiment_create","description":"Create or reopen the current task's saved experiment record. request_id is the stable idempotency key.","inputSchema":{"type":"object","properties":{"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"}},"required":["request_id","title"],"additionalProperties":false}},
             {"name":"experiment_create_child","description":"Create a child experiment linked to a parent. relation is follow_up (default), forked_from, or rerun_of. request_id is the stable idempotency key. Subsequent runs in this chat attach to the child.","inputSchema":{"type":"object","properties":{"parent_experiment_id":{"type":"string"},"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"},"relation":{"type":"string","enum":["follow_up","forked_from","rerun_of"]}},"required":["parent_experiment_id","request_id","title"],"additionalProperties":false}},
             {"name":"experiment_fork","description":"Fork a parent experiment (create_child with relation=forked_from). request_id is the stable idempotency key.","inputSchema":{"type":"object","properties":{"parent_experiment_id":{"type":"string"},"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"}},"required":["parent_experiment_id","request_id","title"],"additionalProperties":false}},
@@ -724,10 +749,17 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .get("source_path")
                 .and_then(Value::as_str)
                 .ok_or("source_path required")?;
+            // Importing a package writes renderer code the app compiles at
+            // every launch, so the host raises a `visual_template_persist`
+            // card before any byte lands — and a card is raised on a
+            // conversation. The identity is the server's bound session, never
+            // an agent-supplied one, for the same reason `visual_create`
+            // refuses to take ownership as an argument.
+            let session_id = require_session_identity(&session_env, "import a template")?;
             request(
                 "POST",
                 "/v1/visuals/templates/import",
-                Some(json!({"sourcePath": source_path})),
+                Some(json!({"sourcePath": source_path, "sessionRef": session_id})),
             )
         }
         "visual_list" => request("GET", "/v1/visuals", Some(args.clone())),
@@ -755,6 +787,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 "sourceAgentId": "mcp",
                 "content": args.get("content"),
                 "metadata": {
+                    "displayName": args.get("display_name").cloned().unwrap_or(Value::Null),
                     "presentation": args.get("presentation").cloned().unwrap_or(json!("pane")),
                     "visualConfig": args.get("visual_config").cloned().unwrap_or(json!({})),
                     "authoringReviews": []
@@ -768,7 +801,10 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .and_then(Value::as_str)
                 .ok_or("visual_id required")?;
             let mut body = args.clone();
-            if args.get("visual_config").is_some() || args.get("presentation").is_some() {
+            if args.get("visual_config").is_some()
+                || args.get("presentation").is_some()
+                || args.get("display_name").is_some()
+            {
                 let current = request("GET", &format!("/v1/visuals/{id}"), None)?;
                 let mut metadata = current
                     .pointer("/visual/metadata")
@@ -783,8 +819,13 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 if let Some(value) = args.get("presentation") {
                     metadata["presentation"] = value.clone();
                 }
+                if let Some(value) = args.get("display_name") {
+                    metadata["displayName"] = value.clone();
+                }
                 body["metadata"] = metadata;
             }
+            body.as_object_mut()
+                .map(|object| object.remove("display_name"));
             request("POST", &format!("/v1/visuals/{id}"), Some(body))
         }
         "visual_bind_data_source" => {
@@ -871,6 +912,26 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 "sessionId": args.get("session_id").cloned().or_else(|| session_env.map(Value::String))
             });
             request("POST", &format!("/v1/visuals/{id}/show"), Some(body))
+        }
+        // The document rail's whole agent surface. It names a path; the host
+        // re-resolves it against this conversation's workspace scope and opens
+        // the pane through the same durable `visual.show` event a visual takes.
+        // No read tool beside it: an agent that wants bytes has its own file
+        // tools, and this one is about what the *reader* sees.
+        "document_show" => {
+            let path = args
+                .get("path")
+                .or_else(|| args.get("document_path"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or("path required")?;
+            let session_id = require_session_identity(&session_env, "open a document")?;
+            request(
+                "POST",
+                "/v1/documents/show",
+                Some(json!({"path": path, "sessionRef": session_id})),
+            )
         }
         "visual_render" => {
             let id = args
@@ -959,7 +1020,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                     "visual_id": id,
                     "error": reason,
                     "retryable": true,
-                    "remediation": "Fix the named field in the spec and call visual_chart again with this visual_id."
+                    "remediation": "Fix the named field, then call visual_manage with operation chart and this visual_id."
                 })
                 .to_string());
             }
@@ -985,7 +1046,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                     object.insert("data_provenance".into(), provenance);
                     object.insert(
                         "instruction".into(),
-                        json!("Inspect the attached PNG before continuing. Revise the spec and call visual_chart again with this visual_id until the chart reads correctly; findings list defects the renderer already detected."),
+                        json!("Inspect the attached PNG. Revise through visual_manage operation chart with this visual_id until the chart reads correctly; findings list detected defects."),
                     );
                 }
                 return Ok(capture);

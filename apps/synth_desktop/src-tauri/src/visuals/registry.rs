@@ -347,6 +347,7 @@ impl VisualRegistry {
             id: id.clone(),
             current_revision: 1,
             title: title.clone(),
+            display_name: visual_display_name(&metadata, &title),
             template_id: template.id.clone(),
             status,
             renderer_kind,
@@ -401,6 +402,8 @@ impl VisualRegistry {
                             "visualId": inserted.id,
                             "revision": inserted.current_revision,
                             "title": inserted.title,
+                            "displayName": inserted.display_name,
+                            "updatedAt": inserted.updated_at,
                             "templateId": inserted.template_id,
                             "status": inserted.status.as_str(),
                         }),
@@ -519,6 +522,7 @@ impl VisualRegistry {
                     current.metadata = metadata;
                     bumped = true;
                 }
+                current.display_name = visual_display_name(&current.metadata, &current.title);
                 let mut new_bindings = None;
                 if let Some(bindings) = request.bindings {
                     // Already canonical: `update` canonicalises before the
@@ -567,6 +571,8 @@ impl VisualRegistry {
                             "visualId": current.id,
                             "revision": current.current_revision,
                             "title": current.title,
+                            "displayName": current.display_name,
+                            "updatedAt": current.updated_at,
                             "status": current.status.as_str(),
                         }),
                         remote_sequence: None,
@@ -718,6 +724,8 @@ impl VisualRegistry {
                     "visualId": record.id,
                     "revision": record.current_revision,
                     "title": record.title,
+                    "displayName": record.display_name,
+                    "updatedAt": record.updated_at,
                     "templateId": record.template_id,
                     "bindings": record.bindings,
                     "metadata": record.metadata,
@@ -1840,6 +1848,19 @@ fn load_selected_visual(conn: &Connection, session_id: &str) -> Result<Option<St
         .map(|visual| visual.id))
 }
 
+fn visual_display_name(metadata: &Value, title: &str) -> Option<String> {
+    metadata
+        .get("displayName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(64).collect())
+        .or_else(|| {
+            let fallback = title.trim();
+            (!fallback.is_empty()).then(|| fallback.chars().take(64).collect())
+        })
+}
+
 fn insert_visual(conn: &Connection, visual: &VisualRecord) -> Result<()> {
     conn.execute(
         "INSERT INTO visuals(
@@ -1953,11 +1974,15 @@ fn load_visual(conn: &Connection, id: &str) -> Result<VisualRecord> {
          FROM visuals WHERE id = ?1",
         params![id],
         |row| {
+            let title: String = row.get(2)?;
+            let metadata: Value =
+                serde_json::from_str(&row.get::<_, String>(16)?).unwrap_or(json!({}));
             Ok(VisualRecord {
                 schema_version: VISUAL_SCHEMA_VERSION.to_string(),
                 id: row.get(0)?,
                 current_revision: row.get(1)?,
-                title: row.get(2)?,
+                display_name: visual_display_name(&metadata, &title),
+                title,
                 template_id: row.get(3)?,
                 status: VisualStatus::parse(&row.get::<_, String>(4)?),
                 renderer_kind: RendererKind::parse(&row.get::<_, String>(5)?),
@@ -1971,7 +1996,7 @@ fn load_visual(conn: &Connection, id: &str) -> Result<VisualRecord> {
                 source_model: row.get(13)?,
                 content_digest: row.get(14)?,
                 preview_digest: row.get(15)?,
-                metadata: serde_json::from_str(&row.get::<_, String>(16)?).unwrap_or(json!({})),
+                metadata,
                 created_at: row.get(17)?,
                 updated_at: row.get(18)?,
             })
@@ -2023,11 +2048,14 @@ fn list_visuals(conn: &Connection, query: &VisualQuery) -> Result<Vec<VisualReco
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(binds.iter()), |row| {
+        let title: String = row.get(2)?;
+        let metadata: Value = serde_json::from_str(&row.get::<_, String>(16)?).unwrap_or(json!({}));
         Ok(VisualRecord {
             schema_version: VISUAL_SCHEMA_VERSION.to_string(),
             id: row.get(0)?,
             current_revision: row.get(1)?,
-            title: row.get(2)?,
+            display_name: visual_display_name(&metadata, &title),
+            title,
             template_id: row.get(3)?,
             status: VisualStatus::parse(&row.get::<_, String>(4)?),
             renderer_kind: RendererKind::parse(&row.get::<_, String>(5)?),
@@ -2041,7 +2069,7 @@ fn list_visuals(conn: &Connection, query: &VisualQuery) -> Result<Vec<VisualReco
             source_model: row.get(13)?,
             content_digest: row.get(14)?,
             preview_digest: row.get(15)?,
-            metadata: serde_json::from_str(&row.get::<_, String>(16)?).unwrap_or(json!({})),
+            metadata,
             created_at: row.get(17)?,
             updated_at: row.get(18)?,
         })
@@ -2087,6 +2115,19 @@ mod tests {
     use super::*;
     use crate::storage::Storage;
     use tempfile::tempdir;
+
+    #[test]
+    fn display_name_prefers_agent_label_and_falls_back_to_title() {
+        assert_eq!(
+            visual_display_name(&json!({"displayName": "  Reward by Seed  "}), "Technical title")
+                .as_deref(),
+            Some("Reward by Seed")
+        );
+        assert_eq!(
+            visual_display_name(&json!({}), "Technical title").as_deref(),
+            Some("Technical title")
+        );
+    }
 
     /// A template these tests can create without canonical source. Mermaid,
     /// systems, chart, and sourced templates all refuse a contentless create by

@@ -76,8 +76,12 @@ export function OutputsPanel({
 }: Pick<Props, "chat" | "openArtifactId" | "onOpenArtifact" | "openContainerId" | "onOpenContainer" | "onOpenReport" | "onOpenRun">) {
 	const artifacts = chat.artifacts ?? [];
 	const outputs = useChatOutputs(chat);
-	const subagents = artifacts.filter((artifact) => artifact.templateId === "synth.subagents.v1");
-	const visuals = artifacts.filter((artifact) => artifact.templateId !== "synth.subagents.v1");
+	const newestFirst = <T extends { updatedAt?: string | null; createdAt?: string | null }>(rows: T[]) =>
+		[...rows].sort((left, right) => Date.parse(right.updatedAt ?? right.createdAt ?? "") - Date.parse(left.updatedAt ?? left.createdAt ?? ""));
+	const subagents = newestFirst(artifacts.filter((artifact) => artifact.templateId === "synth.subagents.v1"));
+	const visuals = newestFirst(artifacts.filter((artifact) => artifact.templateId !== "synth.subagents.v1"));
+	const reports = newestFirst(outputs.reports);
+	const runs = newestFirst(outputs.runs);
 	return <div id="chat-resource-shelf" className="resource-shelf resource-shelf-docked" aria-label="Outputs" data-testid="resource-shelf">
 		{!outputs.hasResources ? <div className="resource-shelf-empty" data-testid="resource-shelf-empty">
 			<span className="resource-shelf-empty-icon" aria-hidden>
@@ -96,12 +100,12 @@ export function OutputsPanel({
 				<span className="resource-shelf-icon"><IconSubagents /></span><span><strong>{artifact.title}</strong><code>{artifact.summary ?? artifact.templateId}</code></span><span aria-hidden>›</span>
 			</button>;
 		})}</section> : null}
-		{outputs.reports.length > 0 ? <section className="reports-rail" data-testid="reports-rail"><h3>Saved reports</h3>{outputs.reports.map((report) => (
+		{reports.length > 0 ? <section className="reports-rail" data-testid="reports-rail"><h3>Saved reports</h3>{reports.map((report) => (
 			<button key={report.id} type="button" className="resource-shelf-row" onClick={() => onOpenReport?.(report.id)} aria-label={`Open report ${report.title}`} data-testid={`report-output-${report.id}`}>
 				<span className="resource-shelf-icon"><FileTypeIcon path="report.md" /></span><span><strong>{report.title}</strong><code>{report.id} · {report.status}</code></span><span aria-hidden>›</span>
 			</button>
 		))}</section> : null}
-		{outputs.runs.length > 0 ? <section className="runs-rail" data-testid="runs-rail"><h3>Runs</h3>{outputs.runs.map((run) => {
+		{runs.length > 0 ? <section className="runs-rail" data-testid="runs-rail"><h3>Runs</h3>{runs.map((run) => {
 			const visualId = primaryVisualId(run);
 			const active = Boolean(visualId && openArtifactId === visualId);
 			return <button key={run.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenRun?.(run)} aria-pressed={active} aria-label={`Open ${run.algorithmId} run ${run.objective ?? run.id}`} data-testid={`run-output-${run.id}`}>
@@ -124,8 +128,9 @@ export function OutputsPanel({
 				receiptDigest: artifact.receiptDigest,
 				contentDigest: artifact.contentDigest
 			});
-			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${artifact.title}` : `Show ${artifact.title}`} aria-pressed={active} aria-label={active ? `Hide visual ${artifact.title}` : `Show visual ${artifact.title}`} data-testid={`visuals-icon-${artifact.id}`}>
-				<span className="resource-shelf-icon"><IconVisual /></span><span><strong>{artifact.title}</strong><code data-testid={`outputs-visual-identity-${artifact.id}`}>{identity}</code></span><span aria-hidden>›</span>
+			const displayName = artifact.displayName?.trim() || artifact.title;
+			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${displayName}` : `Show ${displayName}`} aria-pressed={active} aria-label={active ? `Hide visual ${displayName}` : `Show visual ${displayName}`} data-testid={`visuals-icon-${artifact.id}`}>
+				<span className="resource-shelf-icon"><IconVisual /></span><span><strong>{displayName}</strong><code data-testid={`outputs-visual-identity-${artifact.id}`}>{identity}</code></span><span aria-hidden>›</span>
 			</button>;
 		})}</section> : null}
 	</div>;

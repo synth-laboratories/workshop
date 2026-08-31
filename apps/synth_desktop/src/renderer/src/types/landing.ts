@@ -142,6 +142,10 @@ export type ArtifactRef = {
 	id: string;
 	kind: ArtifactKind;
 	title: string;
+	/** Short agent-authored label shown in Outputs; title is the fallback. */
+	displayName?: string;
+	/** Latest durable edit time, used to order Outputs newest first. */
+	updatedAt?: string;
 	summary?: string;
 	/** Message that introduced / attached this visual. */
 	messageId?: string;

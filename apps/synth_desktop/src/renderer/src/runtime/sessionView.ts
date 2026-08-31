@@ -1796,6 +1796,8 @@ function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 		id,
 		kind: "report",
 		title,
+		displayName: stringField(visual, "displayName", "display_name") ?? title,
+		updatedAt: stringField(visual, "updatedAt", "updated_at") ?? event.createdAt,
 		summary: stringField(metadata ?? {}, "summary"),
 		messageId: stringField(visual, "messageId", "message_id"),
 		shownByAgent: true,
@@ -1853,6 +1855,12 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			id,
 			kind: "report",
 			title: typeof payload.title === "string" ? payload.title : prior?.title ?? title,
+			displayName:
+				typeof payload.displayName === "string"
+					? payload.displayName
+					: prior?.displayName ?? (typeof payload.title === "string" ? payload.title : title),
+			updatedAt:
+				typeof payload.updatedAt === "string" ? payload.updatedAt : event.createdAt ?? prior?.updatedAt,
 			summary:
 				typeof payload.summary === "string" ? payload.summary : prior?.summary,
 			messageId:

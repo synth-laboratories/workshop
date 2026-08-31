@@ -3567,6 +3567,7 @@ export type VisualRecord = {
 	id: string,
 	currentRevision: number,
 	title: string,
+	displayName?: string | null,
 	templateId: string,
 	status: VisualStatus,
 	rendererKind: RendererKind,

@@ -1078,6 +1078,8 @@ export function useAppController() {
 					visualId: visual.id,
 					ownerSessionId: visual.sessionId ?? sessionId,
 					title: visual.title,
+					displayName: visual.displayName ?? visual.title,
+					updatedAt: visual.updatedAt,
 					templateId: visual.templateId,
 					bindings: visual.bindings,
 					metadata: visual.metadata,
@@ -1085,7 +1087,7 @@ export function useAppController() {
 					revision: visual.currentRevision,
 					messageId: visual.messageId ?? undefined
 				},
-				createdAt: visual.createdAt,
+				createdAt: visual.updatedAt,
 				source: "local"
 			}));
 			mergeSessionReplay([[sessionId, [...visualOutputs, ...hydrated]]]);
