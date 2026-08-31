@@ -6,6 +6,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=scripts/mcp-adapters.sh
 source "$ROOT/scripts/mcp-adapters.sh"
 REPO_SIBLING_ROOT="$(dirname "$ROOT")"
+# Dev instances compile the widest maturity envelope (contracts/
+# release-tiers-v1.toml): tier-dev cargo features for the host, and the same
+# tier for the renderer bundle through Vite's WORKSHOP_TIER define. Packaged
+# releases keep the stable default by not going through this script.
+export WORKSHOP_TIER="${WORKSHOP_TIER:-dev}"
 GIT_COMMON_DIR="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 if [[ -n "$GIT_COMMON_DIR" ]]; then
   PRIMARY_REPO_SIBLING_ROOT="$(dirname "$(dirname "$GIT_COMMON_DIR")")"
@@ -48,7 +53,7 @@ WORKTREE_HASH="$(printf '%s' "$WORKTREE" | shasum -a 256 | awk '{print substr($1
 DEFAULT_NAME="codex-$WORKTREE_HASH"
 NAME="${NAME:-$DEFAULT_NAME}"
 RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.9}"
-APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.9.0}"
+APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.9.3}"
 BOOT_EPOCH="inst_$(uuidgen | tr -d '-' | tr '[:upper:]' '[:lower:]')"
 PROCESS_START_TIME="$(ps -p $$ -o lstart= | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 
@@ -110,7 +115,7 @@ MANIFEST="$INSTANCE_ROOT/instance.json"
 ICON_PNG="$GENERATED_ROOT/icon.png"
 ICON_ICNS="$GENERATED_ROOT/icon.icns"
 EXE="$TARGET_ROOT/debug/synth-desktop"
-APP_TITLE="Synth Workshop v$APP_VERSION · $NAME"
+APP_TITLE="Synth Workshop $RELEASE_LINE · $NAME"
 CUA_EXE="$TARGET_ROOT/debug/bundle/macos/$APP_TITLE.app/Contents/MacOS/synth-desktop"
 BUNDLE_ID="com.synth.desktop.$RELEASE_SLUG.dev.$NAME"
 CHECKSUM="$(printf '%s' "$NAME" | cksum | awk '{print $1}')"
@@ -398,7 +403,16 @@ for key in allowed:
         seed[key] = os.environ[key].strip()
 
 existing = destination.read_text().splitlines() if destination.is_file() else []
-kept = [line for line in existing if not re.match(r"^\s*(?:export\s+)?(?:SYNTH_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY)\s*=", line)]
+# A diagnostic or run-only launch might not receive the original source file.
+# Refresh only values available from the selected source; retain an already
+# staged allowlisted value rather than silently making the next launch invalid.
+refresh_keys = {key for key in allowed if seed.get(key)}
+refresh_pattern = re.compile(r"^\s*(?:export\s+)?(" + "|".join(allowed) + r")\s*=")
+kept = [
+    line
+    for line in existing
+    if (match := refresh_pattern.match(line)) is None or match.group(1) not in refresh_keys
+]
 for key in allowed:
     value = seed.get(key)
     if value:
@@ -810,12 +824,10 @@ status_instance() {
 stage_gepa_runtime() {
   local runtime_root="$INSTANCE_ROOT/runtime/gepa"
   local optimizer_target="$runtime_root/optimizer-project"
+  local optimizer_selection="$runtime_root/optimizer-selection"
   local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-$REPO_SIBLING_ROOT/optimizers-g1}"
-  local use_local_optimizer="${SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0}"
-  # Workshop's durable instance locator resolves every configured provider
-  # against this one private file. Keeping a GEPA-only side file made the
-  # staged OpenAI key invisible to the secrets proxy after restart.
-  local secret_target="$DATA_ROOT/.env"
+  local use_local_optimizer="${SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-}"
+  local secret_target="$DATA_ROOT/gepa-secret.env"
   local secret_source="${SYNTH_GEPA_SECRET_ENV_SOURCE:-$REPO_SIBLING_ROOT/synth-ai/.env}"
 
   unset SYNTH_BANKING77_GEPA_COOKBOOK_ROOT SYNTH_CRAFTAX_GEPA_COOKBOOK_ROOT
@@ -836,9 +848,22 @@ stage_gepa_runtime() {
       --exclude '.ruff_cache' \
       --exclude '__pycache__' \
       "$optimizer_source/" "$optimizer_target/"
+    printf '%s\n' 'local-staged-v1' >"$optimizer_selection.tmp"
+    chmod 600 "$optimizer_selection.tmp"
+    mv "$optimizer_selection.tmp" "$optimizer_selection"
     export SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_target"
   elif [[ -n "${SYNTH_OPTIMIZER_PROJECT_ROOT:-}" ]]; then
     echo "[desktop:$NAME] using caller-provided optimizer project root: $SYNTH_OPTIMIZER_PROJECT_ROOT"
+  elif [[ "$use_local_optimizer" == "0" ]]; then
+    rm -f "$optimizer_selection"
+    echo "[desktop:$NAME] optimizer runtime=immutable installed plugin"
+  elif [[ -f "$optimizer_selection" ]]; then
+    if [[ "$(<"$optimizer_selection")" != "local-staged-v1" || ! -f "$optimizer_target/pyproject.toml" || ! -f "$optimizer_target/rust/crates/synth_gepa/Cargo.toml" ]]; then
+      echo "[desktop:$NAME] ERROR persisted local optimizer selection is invalid; restage it explicitly or set SYNTH_OPTIMIZER_USE_LOCAL_SOURCE=0" >&2
+      exit 1
+    fi
+    export SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_target"
+    echo "[desktop:$NAME] optimizer runtime=persisted instance-local source"
   else
     echo "[desktop:$NAME] optimizer runtime=immutable installed plugin"
   fi
@@ -846,17 +871,15 @@ stage_gepa_runtime() {
   # Finder-launched apps do not inherit shell secrets. Stage only the one
   # allowlisted key inside the mode-0700 instance data root so the app never
   # probes protected source folders at runtime.
-  if ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPENAI_API_KEY=' "$secret_target" 2>/dev/null \
-      && [[ -f "$secret_source" ]]; then
-    local secret_tmp="$secret_target.openai.tmp"
+  if [[ ! -s "$secret_target" && -f "$secret_source" ]]; then
+    local secret_tmp="$secret_target.tmp"
     umask 077
     awk '/^[[:space:]]*(export[[:space:]]+)?OPENAI_API_KEY=/{print; exit}' "$secret_source" >"$secret_tmp"
     if [[ -s "$secret_tmp" ]]; then
-      printf '\n' >>"$secret_target"
-      cat "$secret_tmp" >>"$secret_target"
-      chmod 600 "$secret_target"
+      mv "$secret_tmp" "$secret_target"
+    else
+      rm -f "$secret_tmp"
     fi
-    rm -f "$secret_tmp"
   fi
   export SYNTH_GEPA_SECRET_ENV_FILE="$secret_target"
 }
@@ -898,6 +921,8 @@ exec_isolated_cua_bundle() {
     LOGNAME="$logname" \
     TMPDIR="$temp_dir" \
     PWD="$INSTANCE_ROOT" \
+    SYNTH_DESKTOP_INSTANCE="$NAME" \
+    SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST" \
     SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT" \
     SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml" \
     SYNTH_CODEX_HOME="$DATA_ROOT/codex" \
@@ -1096,6 +1121,8 @@ assert_bundle_identity() {
 # Non-identity runtime paths for development launches. Instance name and bundle
 # identity come only from the embedded descriptor and Info.plist.
 export_instance_env() {
+  export SYNTH_DESKTOP_INSTANCE="$NAME"
+  export SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST"
   export SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT"
   export SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml"
   export SYNTH_CODEX_HOME="$DATA_ROOT/codex"
@@ -1292,7 +1319,7 @@ dev_instance() {
     echo "[desktop:$NAME] building embedded-agent MCP adapters"
     cargo build \
       --manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
-      --features eval-driver \
+      --features eval-driver,tier-dev \
       "${adapter_bin_args[@]}"
   else
     echo "[desktop:$NAME] reusing embedded-agent MCP adapters (set SYNTH_DESKTOP_REBUILD_ADAPTERS=1 to refresh)"
@@ -1315,16 +1342,27 @@ dev_instance() {
     # local CUA loop.
     # Instance builds carry the QA control plane; release artifacts never
     # enable this feature.
-    "$ROOT/scripts/stage-optimizer-runtime-distribution.sh"
-    SYNTH_MLX_RL_PROJECT_ROOT="${SYNTH_MLX_RL_PROJECT_ROOT:-$REPO_SIBLING_ROOT/synth-mlx-rl}" \
-      "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
-    npx tauri build --debug --features eval-driver --bundles app --config "$PACKAGE_CONFIG" --config "$CONFIG"
+    # Packaging pins synth-mlx-rl 5d6db143 + lock sha. The sibling working
+    # tree is often dirty WIP and will fail closed; prefer the v0.8 pin.
+    if [[ -z "${SYNTH_MLX_RL_PROJECT_ROOT:-}" ]]; then
+      if [[ -f "$REPO_SIBLING_ROOT/synth-mlx-rl-v08-compat/pyproject.toml" ]]; then
+        SYNTH_MLX_RL_PROJECT_ROOT="$REPO_SIBLING_ROOT/synth-mlx-rl-v08-compat"
+      elif [[ -f "$REPO_SIBLING_ROOT/synth-mlx-rl-v08-pinned/pyproject.toml" ]]; then
+        SYNTH_MLX_RL_PROJECT_ROOT="$REPO_SIBLING_ROOT/synth-mlx-rl-v08-pinned"
+      else
+        SYNTH_MLX_RL_PROJECT_ROOT="$REPO_SIBLING_ROOT/synth-mlx-rl"
+      fi
+    fi
+    export SYNTH_MLX_RL_PROJECT_ROOT
+    "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
+    npx tauri build --debug --features eval-driver,tier-dev --bundles app --config "$PACKAGE_CONFIG" --config "$CONFIG"
     local app_bundle="$CARGO_TARGET_DIR/debug/bundle/macos/$APP_TITLE.app"
     local app_executable="$CUA_EXE"
     if [[ ! -x "$app_executable" ]]; then
       echo "[desktop:$NAME] expected CUA bundle executable missing: $app_executable" >&2
       exit 1
     fi
+    "$ROOT/scripts/finalize-browser-app.sh" "$app_bundle"
     revalidate_provenance "bundle-built" "$pre_build_revision"
     write_bundle_descriptor "$app_bundle"
     sign_cua_bundle "$app_bundle"
@@ -1344,7 +1382,7 @@ dev_instance() {
     exec_isolated_cua_bundle
   fi
   release_operation_lock_before_exec
-  exec npx tauri dev --features eval-driver --config "$PACKAGE_CONFIG" --config "$CONFIG"
+  exec npx tauri dev --features eval-driver,tier-dev --config "$PACKAGE_CONFIG" --config "$CONFIG"
 }
 
 clean_instance() {
