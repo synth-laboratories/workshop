@@ -1266,6 +1266,7 @@ export type ProductTelemetryBridge = {
 	recent(limit: number): Promise<ProductTelemetryEvent[]>;
 	/** Manual flush; resolves to the number of events shipped (0 without consent). */
 	flushNow(): Promise<number>;
+	recordStarter(event: "selected" | "started" | "result_viewed", succeeded?: boolean): Promise<void>;
 };
 
 export type ReleaseTier = "core" | "stable" | "beta" | "alpha" | "dev";

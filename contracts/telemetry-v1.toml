@@ -153,6 +153,33 @@ sync = "eligible"
 properties = ["outcome"]
 
 [[event]]
+name = "starter_selected"
+purpose = "Measure starter funnel selection without recording prompts or project content."
+owner = "workshop-activation"
+class = "funnel"
+sensitivity = "optional"
+sync = "local_only"
+properties = ["workflow_family"]
+
+[[event]]
+name = "starter_started"
+purpose = "Measure a starter entering its bounded run workflow without run contents."
+owner = "workshop-activation"
+class = "product"
+sensitivity = "optional"
+sync = "local_only"
+properties = ["workflow_family"]
+
+[[event]]
+name = "starter_result_viewed"
+purpose = "Measure the terminal starter result surface with only normalized outcome."
+owner = "workshop-activation"
+class = "product"
+sensitivity = "optional"
+sync = "local_only"
+properties = ["workflow_family", "outcome"]
+
+[[event]]
 name = "hosted_job_started"
 purpose = "Count hosted job starts for activation and reliability."
 owner = "workshop-reliability"

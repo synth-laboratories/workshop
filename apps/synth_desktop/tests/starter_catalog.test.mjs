@@ -36,6 +36,8 @@ test("starter prompts require preflight and approval instead of auto-running", (
 		assert.match(starter.prompt, new RegExp(starter.recipeId.replaceAll(".", "\\.")));
 	}
 	assert.match(workshopStarter("nanohorizon-craftax").prompt, /github\.com\/synth-laboratories\/nanohorizon/);
+	assert.match(workshopStarter("nanohorizon-craftax").prompt, /thinking budget 640/);
+	assert.match(workshopStarter("nanohorizon-craftax").prompt, /780000 through 780004/);
 	assert.match(workshopStarter("nanohorizon-craftax").prompt, /stop for my explicit approval before provider use or any run/);
 });
 

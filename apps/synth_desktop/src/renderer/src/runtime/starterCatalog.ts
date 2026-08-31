@@ -26,7 +26,7 @@ export const WORKSHOP_STARTERS: readonly WorkshopStarter[] = [
 		recipeId: "nanohorizon.craftax.glm-5.3-flash.eval.v1",
 		flow: ["Verify kit", "Run 5 seeds", "Compare"],
 		maxCostUsd: 2.45,
-		prompt: "Set up the exact NanoHorizon recipe nanohorizon.craftax.glm-5.3-flash.eval.v1. Do not start compute yet. If NanoHorizon is absent, clone only the public https://github.com/synth-laboratories/nanohorizon repository into this workspace, then inspect and pin its declared recipe and source revision. Verify the declared container, GLM 5.3 Flash policy, five seeds, 180 second timeout, five-rollout limit, and $2.45 maximum cost. Show every failed preflight check and stop for my explicit approval before provider use or any run. Never substitute another Craftax or GEPA recipe."
+		prompt: "Set up the exact NanoHorizon recipe nanohorizon.craftax.glm-5.3-flash.eval.v1. Do not start compute yet. Use the tracked Workshop recipe/container declarations as the canonical run contract; if NanoHorizon policy source is absent, clone only https://github.com/synth-laboratories/nanohorizon, then require an immutable source revision containing the declared policy path. Verify GLM 5.3 Flash, thinking budget 640, seeds 780000 through 780004, the live container image digest and producer revision, 180 second timeout, five-rollout limit, and $2.45 maximum cost. Show every failed preflight check—including missing source—and stop for my explicit approval before provider use or any run. Never substitute another Craftax or GEPA recipe."
 	}
 ] as const;
 

@@ -8,7 +8,7 @@ import { isLagunaCompatibleAdapter, LOCAL_FT_POLICY } from "../runtime/lagunaPol
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
 import { isTerminalRunStatus } from "../runtime/runProgress/types";
 import { starterPromptForRecipe, workshopStarter } from "../runtime/starterCatalog";
-import { projectStarterResult } from "../runtime/starterResult";
+import { matchingStarterRun, projectStarterResult, type PendingStarterRun } from "../runtime/starterResult";
 import { StarterResult } from "./StarterResult";
 import { TrainingWorkspace } from "./TrainingWorkspace";
 import { TrainingEvaluationCurve } from "./TrainingEvaluationCurve";
@@ -58,6 +58,19 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 		prompt: "Help me set up CISPO in Workshop. Do not start paid compute yet. Prefer recipe cispo.banking77.mlx.v1 on this Mac, or cispo.slime.hosted.v1 if hosted is admitted. Never draft a free-form HostedOptimizerClient.launch_training call. Wait for my explicit approval before launch."
 	},
 ];
+
+const PENDING_STARTER_RUN_KEY = "workshop.pending-starter-run.v1";
+
+function retainedPendingStarterRun(): PendingStarterRun | null {
+	try {
+		const value = JSON.parse(window.sessionStorage.getItem(PENDING_STARTER_RUN_KEY) ?? "null") as Partial<PendingStarterRun> | null;
+		return typeof value?.recipeId === "string" && typeof value.notBefore === "string"
+			? { recipeId: value.recipeId, notBefore: value.notBefore }
+			: null;
+	} catch {
+		return null;
+	}
+}
 
 /**
  * The page's four surfaces. `runs` is the landing tab: the page's primary job
@@ -261,6 +274,7 @@ export function OptimizersPage({
 	const [busy, setBusy] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(initialRunId);
 	const [directStarterRunId, setDirectStarterRunId] = useState<string | null>(null);
+	const [pendingStarterRun, setPendingStarterRun] = useState<PendingStarterRun | null>(retainedPendingStarterRun);
 	const [revealedStarterRunId, setRevealedStarterRunId] = useState<string | null>(null);
 	const [startingAgent, setStartingAgent] = useState<OptimizerGuide["id"] | null>(null);
 	const [startingLocalSft, setStartingLocalSft] = useState(false);
@@ -311,6 +325,10 @@ export function OptimizersPage({
 	const [lifecycleBusy, setLifecycleBusy] = useState<PluginLifecycleOperation | null>(null);
 	const [receipt, setReceipt] = useState<PluginActionReceipt | null>(null);
 	const selectedStarter = workshopStarter(initialStarterId);
+	useEffect(() => {
+		if (selectedStarter?.id !== "nanohorizon-craftax") return;
+		void bridges.telemetry?.recordStarter("selected").catch(() => undefined);
+	}, [selectedStarter?.id]);
 	const orderedEvalRecipes = useMemo(() => {
 		if (!selectedStarter) return evalRecipes;
 		return [...evalRecipes].sort((left, right) =>
@@ -614,8 +632,21 @@ export function OptimizersPage({
 	}, [directStarterRunId, evalState, selected]);
 
 	useEffect(() => {
+		if (!pendingStarterRun) return;
+		const run = matchingStarterRun(runs, pendingStarterRun);
+		if (!run) return;
+		window.sessionStorage.removeItem(PENDING_STARTER_RUN_KEY);
+		setPendingStarterRun(null);
+		setDirectStarterRunId(run.id);
+		setSelectedId(run.id);
+	}, [pendingStarterRun, runs]);
+
+	useEffect(() => {
 		if (!starterResult || revealedStarterRunId === starterResult.runId) return;
 		setRevealedStarterRunId(starterResult.runId);
+		if (starterResult.starter.id === "nanohorizon-craftax") {
+			void bridges.telemetry?.recordStarter("result_viewed", starterResult.state === "completed").catch(() => undefined);
+		}
 		setTab("runs");
 		window.setTimeout(() => {
 			document.querySelector<HTMLElement>("#starter-result")?.focus({ preventScroll: false });
@@ -761,6 +792,16 @@ export function OptimizersPage({
 		}
 	};
 
+	const startStarterAgent = async (guide: OptimizerGuide, recipeId: string) => {
+		const notBefore = new Date().toISOString();
+		const pending = { recipeId, notBefore };
+		window.sessionStorage.setItem(PENDING_STARTER_RUN_KEY, JSON.stringify(pending));
+		setPendingStarterRun(pending);
+		setRevealedStarterRunId(null);
+		void bridges.telemetry?.recordStarter("started").catch(() => undefined);
+		await startAgent(guide);
+	};
+
 	const reviewTrainingLaunch = async () => {
 		const guide = OPTIMIZER_GUIDES.find((item) => item.id === trainingAlgorithm);
 		if (!guide) return;
@@ -813,6 +854,7 @@ export function OptimizersPage({
 		setter(true);
 		setError(null);
 		try {
+			if (trackStarterResult) void bridges.telemetry?.recordStarter("started").catch(() => undefined);
 			const run = await bridges.optimizers.startRecipe({
 				recipeId,
 				openVisual: true,
@@ -1230,14 +1272,14 @@ export function OptimizersPage({
 								type="button"
 								disabled={startingAgent !== null}
 								data-testid="setup-starter-with-agent"
-								onClick={() => void startAgent({
+								onClick={() => void startStarterAgent({
 									id: "eval",
 									label: "EV",
 									name: `Set up ${selectedStarter.title}`,
 									description: selectedStarter.description,
 									flow: ["Inspect", "Preflight", "Approve"],
 									prompt: selectedStarter.prompt
-								})}
+								}, selectedStarter.recipeId)}
 							>
 								{startingAgent === "eval" ? "Opening agent…" : "Set up with agent"}
 							</button>
@@ -1316,7 +1358,7 @@ export function OptimizersPage({
 												);
 												return;
 											}
-											void startAgent({
+											const guide: OptimizerGuide = {
 												id: "eval",
 												label: "EV",
 												name: recipe.title,
@@ -1327,7 +1369,10 @@ export function OptimizersPage({
 													recipe.id,
 													`Run the Workshop eval recipe ${recipe.id} on policy variants in this project. Stage the policy files with optimizer_stage_eval_candidates using workspace-relative paths, kind python-code.v1, entrypoint policy:Policy, one labelled candidate each, marking the baseline; then call optimizer_start_recipe with the recipe id and returned candidate_set_id. Never replace a policy on your own. Report the run status and selection status separately, the per-candidate scorecard, and the evidence directory.`
 												)
-											});
+											};
+											void (selectedStarter?.recipeId === recipe.id
+												? startStarterAgent(guide, recipe.id)
+												: startAgent(guide));
 										}}
 									>
 										{isWorkspaceBaselineEval(recipe)

@@ -45,6 +45,53 @@ export function starterRecipeId(run: OptimizerRunRecord): string | null {
 	return identities.size === 1 ? [...identities][0] : null;
 }
 
+export type PendingStarterRun = {
+	recipeId: string;
+	notBefore: string;
+};
+
+/** Bind an agent-assisted starter only to a newly-created run with exact recipe identity. */
+export function matchingStarterRun(
+	runs: readonly OptimizerRunRecord[],
+	pending: PendingStarterRun
+): OptimizerRunRecord | null {
+	const threshold = Date.parse(pending.notBefore);
+	return runs
+		.filter((run) => starterRecipeId(run) === pending.recipeId)
+		.filter((run) => {
+			const created = Date.parse(run.createdAt);
+			return Number.isFinite(created) && Number.isFinite(threshold) && created >= threshold;
+		})
+		.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))[0] ?? null;
+}
+
+function finiteField(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function authoritativeComparison(aggregate: EvalAggregate): RunOutcome["comparison"] {
+	const raw = aggregate as unknown as Record<string, unknown>;
+	const nested = objectValue(raw.comparison);
+	// These are producer-owned aggregate fields. Do not infer comparison values
+	// from rollout text, labels, or the headline mean.
+	const baseline = finiteField(nested?.baseline ?? raw.baselineReward);
+	const candidate = finiteField(nested?.candidate ?? nested?.variant ?? raw.candidateReward ?? raw.variantReward);
+	const delta = finiteField(nested?.delta ?? raw.rewardDelta);
+	const missing = [
+		baseline == null ? "baseline" : null,
+		candidate == null ? "candidate" : null,
+		delta == null ? "delta" : null
+	].filter((field): field is string => field != null);
+	return {
+		baseline,
+		candidate,
+		delta,
+		reason: missing.length === 0
+			? "Producer-recorded comparison from the authoritative evaluation aggregate."
+			: `Authoritative evaluation aggregate is missing: ${missing.join(", ")}. No values were inferred.`
+	};
+}
+
 function terminalReason(
 	run: OptimizerRunRecord,
 	aggregate: EvalAggregate,
@@ -113,12 +160,7 @@ export function projectStarterResult(
 		state: terminal.state,
 		reason: terminal.reason,
 		headlineMetric: metricValid ? { label: "Mean reward", value: aggregate.meanReward as number } : null,
-		comparison: {
-			baseline: null,
-			candidate: null,
-			delta: null,
-			reason: "Baseline, candidate, and delta were not recorded in the authoritative evaluation aggregate."
-		},
+		comparison: authoritativeComparison(aggregate),
 		evidence: {
 			complete: evidenceComplete,
 			inspectable: evidenceInspectable,

@@ -6,3 +6,4 @@ contract = "synth-containers/v1"
 locality = "container"
 family = "craftax"
 credential_providers = ["openrouter"]
+policy_source = "src/challenge/policy.py"

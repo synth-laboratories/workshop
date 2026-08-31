@@ -18,7 +18,7 @@ buildSync({
 	target: "node22"
 });
 
-const { projectStarterResult } = await import(`${pathToFileURL(compiled).href}?v=${Date.now()}`);
+const { matchingStarterRun, projectStarterResult } = await import(`${pathToFileURL(compiled).href}?v=${Date.now()}`);
 
 function run(overrides = {}) {
 	return {
@@ -64,8 +64,29 @@ test("completed requires an exact starter recipe, finite metric, and inspectable
 		baseline: null,
 		candidate: null,
 		delta: null,
-		reason: "Baseline, candidate, and delta were not recorded in the authoritative evaluation aggregate."
+		reason: "Authoritative evaluation aggregate is missing: baseline, candidate, delta. No values were inferred."
 	});
+});
+
+test("comparison uses only producer aggregate fields and labels partial evidence", () => {
+	const result = projectStarterResult(run(), aggregate({ comparison: { baseline: 0.3, candidate: 0.42, delta: 0.12 } }));
+	assert.deepEqual(result.comparison, {
+		baseline: 0.3, candidate: 0.42, delta: 0.12,
+		reason: "Producer-recorded comparison from the authoritative evaluation aggregate."
+	});
+	const partial = projectStarterResult(run(), aggregate({ baselineReward: 0.3 }));
+	assert.equal(partial.comparison.baseline, 0.3);
+	assert.match(partial.comparison.reason, /candidate, delta/);
+});
+
+test("agent starter binding chooses the first new exact-recipe run", () => {
+	const old = run({ id: "old", createdAt: "2026-08-29T23:59:59Z" });
+	const unrelated = run({ id: "other", createdAt: "2026-08-30T00:00:02Z", summary: { recipeId: "other" } });
+	const match = run({ id: "new", createdAt: "2026-08-30T00:00:01Z" });
+	assert.equal(matchingStarterRun([unrelated, match, old], {
+		recipeId: "nanohorizon.craftax.glm-5.3-flash.eval.v1",
+		notBefore: "2026-08-30T00:00:00Z"
+	}).id, "new");
 });
 
 test("unknown recipes and nonterminal runs do not project as starter results", () => {

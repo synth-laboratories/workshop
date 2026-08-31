@@ -17,7 +17,7 @@ pub mod sink_http;
 pub mod store;
 
 use anyhow::{anyhow, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::sync::{Arc, OnceLock};
 use tauri::State;
@@ -270,6 +270,34 @@ pub async fn product_telemetry_flush_now(
         flush::FlushOutcome::Sent { events } => Ok(events as u32),
         _ => Ok(0),
     }
+}
+
+#[derive(Clone, Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum StarterTelemetryEvent {
+    Selected,
+    Started,
+    ResultViewed,
+}
+
+/// Narrow renderer boundary for starter telemetry. The native host chooses
+/// every event/property; prompts, IDs, paths, and arbitrary strings cannot cross.
+#[tauri::command]
+#[specta::specta]
+pub fn product_telemetry_record_starter(
+    state: State<'_, Arc<ProductTelemetry>>,
+    event: StarterTelemetryEvent,
+    succeeded: Option<bool>,
+) -> Result<(), AppError> {
+    let (name, properties) = match event {
+        StarterTelemetryEvent::Selected => ("starter_selected", json!({"workflow_family":"nanohorizon"})),
+        StarterTelemetryEvent::Started => ("starter_started", json!({"workflow_family":"nanohorizon"})),
+        StarterTelemetryEvent::ResultViewed => (
+            "starter_result_viewed",
+            json!({"workflow_family":"nanohorizon", "outcome": if succeeded == Some(true) { "success" } else { "failure" }}),
+        ),
+    };
+    state.record(name, properties, false).map(|_| ()).map_err(AppError::from)
 }
 
 #[cfg(test)]

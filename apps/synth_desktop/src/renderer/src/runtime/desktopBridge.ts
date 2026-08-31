@@ -475,7 +475,8 @@ window.synthTelemetry ??= isTauri
 		setOptOut: (optOut) => fromGenerated(spectaCommands.productTelemetrySetOptOut(optOut)),
 		setConsent: (granted) => fromGenerated(spectaCommands.productTelemetrySetConsent(granted)),
 		recent: (limit) => fromGenerated(spectaCommands.productTelemetryRecent(limit)),
-		flushNow: () => fromGenerated(spectaCommands.productTelemetryFlushNow())
+		flushNow: () => fromGenerated(spectaCommands.productTelemetryFlushNow()),
+		recordStarter: (event, succeeded) => fromGenerated(spectaCommands.productTelemetryRecordStarter(event, n(succeeded)))
 	}
 	: (() => {
 		// Browser dev stand-in mirrors the host semantics: local recording on
@@ -505,7 +506,8 @@ window.synthTelemetry ??= isTauri
 			setOptOut: async (optOut: boolean) => choose(!optOut),
 			setConsent: async (granted: boolean) => choose(granted),
 			recent: async () => [],
-			flushNow: async () => 0
+			flushNow: async () => 0,
+			recordStarter: async () => undefined
 		};
 	})();
 window.synthReleaseTier ??= isTauri

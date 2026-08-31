@@ -567,6 +567,11 @@ export const commands = {
 	 */
 	productTelemetryFlushNow: () => typedError<number, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_flush_now")),
 	/**
+	 *  Narrow renderer boundary for starter telemetry. The native host chooses
+	 *  every event/property; prompts, IDs, paths, and arbitrary strings cannot cross.
+	 */
+	productTelemetryRecordStarter: (event: StarterTelemetryEvent, succeeded: boolean | null) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_record_starter", { event, succeeded })),
+	/**
 	 *  Display-safe build envelope for the renderer: the compiled tier and the
 	 *  per-feature included/enabled resolution.
 	 */
@@ -3604,6 +3609,8 @@ export type SkillHit = {
 	name: string,
 	description: string,
 };
+
+export type StarterTelemetryEvent = "selected" | "started" | "result_viewed";
 
 export type Status = {
 	state: AuthState,
