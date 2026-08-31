@@ -370,7 +370,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 None,
             )
         }
-        "optimizer_list_recipes" => request("GET", "/v1/optimizers/recipes", None),
+        "optimizer_list_recipes" => request(
+            "GET",
+            "/v1/optimizers/recipes",
+            Some(json!({ "sessionRef": session_ref() })),
+        ),
         "optimizer_inspect_local_mlx" => request("GET", "/v1/mlx/inspect", None),
         "optimizer_inspect_training_runtime" => request("GET", "/v1/training/mlx-runtime", None),
         "optimizer_install_training_runtime" => request(

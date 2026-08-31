@@ -4017,8 +4017,20 @@ async fn reports_comment_create(
 
 #[tauri::command]
 #[specta::specta]
-fn synth_config_get() -> Result<BackendSettings, AppError> {
-    synth_config::get().map_err(AppError::from)
+fn synth_config_get(state: State<'_, Arc<CoreRuntime>>) -> Result<BackendSettings, AppError> {
+    // This command is the renderer's explicit configuration refresh boundary.
+    // Re-read approved locator files here so adding a value to the instance
+    // env file does not require restarting Workshop.
+    let _ = state.secrets().load_configured_env_sources();
+    let mut settings = synth_config::get().map_err(AppError::from)?;
+    if let Ok(source) = state.secrets().configured_source("openrouter") {
+        if source.loaded {
+            settings.openrouter_api_key_configured = true;
+            settings.openrouter_api_key_fingerprint = source.fingerprint;
+            settings.openrouter_api_key_source = Some(source.source_kind);
+        }
+    }
+    Ok(settings)
 }
 
 /// The startup-safe catalog path: configuration plus a persisted public
