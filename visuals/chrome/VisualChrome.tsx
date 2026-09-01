@@ -41,6 +41,7 @@ export type VisualChromeProps = {
   children: ReactNode;
   testId?: string;
   observation?: SurfaceObservation;
+  layout?: "document" | "workspace";
 };
 
 /** Shared light chrome wrapper for all genre templates. */
@@ -52,16 +53,20 @@ export function VisualChrome({
   footer,
   children,
   testId,
-  observation
+  observation,
+  layout = "document"
 }: VisualChromeProps) {
   return (
     <div
       className="synth-visual-root"
       data-testid={testId}
       data-synth-visual=""
+      data-layout={layout}
+      role={layout === "workspace" ? "region" : undefined}
+      aria-label={layout === "workspace" ? title : undefined}
       {...(observation ? surfaceObservationAttributes(observation) : {})}
     >
-      <header>
+      {layout === "document" ? <header>
         {kicker ? (
           <p className="sv-kicker">
             {live ? <span className="sv-live-dot" aria-hidden="true" /> : null}
@@ -70,7 +75,7 @@ export function VisualChrome({
         ) : null}
         <h2 className="sv-title">{title}</h2>
         {lede ? <p className="sv-lede">{lede}</p> : null}
-      </header>
+      </header> : null}
       {children}
       {footer ? (
         <footer

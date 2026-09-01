@@ -908,16 +908,6 @@ export function Composer({
 			);
 			mainPane.style.setProperty("--composer-clearance", `${clearance}px`);
 
-			/*
-			 * Horizontal geometry has the same problem as vertical clearance: the
-			 * dock is an overlay, so it cannot inherit the transcript column from
-			 * the workbench grid. Measure the scroller's *content* box — clientLeft
-			 * and clientWidth exclude a classic scrollbar gutter, which the raw
-			 * rect would fold into the centerline — and inset by the same 24px the
-			 * scroller uses. This keeps the composer on the transcript's centerline
-			 * and clear of the visual, container, and inference panes in every
-			 * combination, including ones no static rule enumerated.
-			 */
 		};
 		const scheduleClearanceUpdate = () => {
 			if (frame) cancelAnimationFrame(frame);

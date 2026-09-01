@@ -6,6 +6,7 @@ import { SynthLogo } from "./SynthLogo";
 import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 import type { LagunaPolicy } from "../bridge/types";
 import { policyLabel } from "../runtime/lagunaPolicies";
+import { ComposerLayoutHost } from "./ComposerLayout";
 
 type Props = {
 	state: LandingState;
@@ -363,6 +364,7 @@ export function LandingPage({
 					</div>
 				) : null}
 			</div>
+			<ComposerLayoutHost />
 		</div>
 	);
 }

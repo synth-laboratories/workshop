@@ -225,7 +225,8 @@ export function OptimizerFamilyShell(props: FamilyShellProps) {
       title={props.title ?? String(summary.objective ?? run.id)}
       lede={props.lede}
       testId={props.testId}
-      footer={props.templateId}
+      footer={props.chrome === "workspace" ? undefined : props.templateId}
+      layout={props.chrome === "workspace" ? "workspace" : "document"}
     >
       {props.chrome !== "workspace" ? (
         <RunHeader

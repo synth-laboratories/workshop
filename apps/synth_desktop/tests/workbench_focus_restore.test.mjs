@@ -38,15 +38,20 @@ test("hide-terminal restores toggle-terminal", () => {
 	assert.doesNotMatch(hide, /restoreFocusAfterVisualPaneClose/);
 });
 
-test("composer follows the live transcript width while the side panel divider moves", () => {
-	const composer = read("components/Composer.tsx");
-	const splitter = read("components/PaneResizeHandle.tsx");
+test("composer is owned by the active transcript layout instead of global pane geometry", () => {
+	const layout = read("components/ComposerLayout.tsx");
+	const dock = read("components/ComposerDock.tsx");
+	const transcript = read("components/ChatTranscript.tsx");
+	const landing = read("components/LandingPage.tsx");
 	const css = read("styles/app.css");
-	assert.doesNotMatch(composer, /dock\.style\.setProperty\("left"/);
-	assert.doesNotMatch(composer, /dock\.style\.setProperty\("width"/);
-	assert.match(splitter, /publishOutputWidth\(target, next, bounds\.width - next - 7\)/);
-	assert.match(css, /--live-transcript-width/);
-	assert.match(css, /\.main-pane:has\(\.workbench\.with-side-panel\) \.composer-dock/);
+	assert.match(layout, /ComposerLayoutProvider/);
+	assert.match(layout, /ComposerLayoutHost/);
+	assert.match(dock, /return createPortal\([\s\S]*?,\s*host\s*\);/);
+	assert.match(transcript, /<ComposerLayoutHost \/>/);
+	assert.match(landing, /<ComposerLayoutHost \/>/);
+	assert.match(css, /\.composer-layout-host/);
+	assert.doesNotMatch(css, /--composer-dock-(?:left|right)/);
+	assert.doesNotMatch(css, /--live-transcript-width/);
 });
 
 test("visual tabs use short display names while retaining descriptive titles", () => {

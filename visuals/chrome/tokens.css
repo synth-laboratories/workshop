@@ -50,6 +50,10 @@
   --sv-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.synth-visual-root[data-layout="workspace"] {
+  padding: 0;
+}
+
 /* One keyboard-focus contract for every shared visual template. Individual
    genres may override the color, but must not remove the visible ring. */
 .synth-visual-root :where(button, input, select, textarea, summary, a[href], [tabindex]):focus-visible {
@@ -233,13 +237,14 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
+  padding: 0 18px 20px;
 }
 
 .sv-workspace-header {
   position: sticky;
   top: 0;
   z-index: 6;
-  margin: -16px -18px 0;
+  margin: 0 -18px;
   padding: 12px 18px 10px;
   background: var(--sv-surface);
   border-bottom: 1px solid var(--sv-border);
