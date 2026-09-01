@@ -27,6 +27,7 @@ pub const OPERATIONS: &[(&str, bool, bool)] = &[
     ("annotation_estimate", true, false),
     ("annotation_start", false, true),
     ("annotation_get", true, false),
+    ("annotation_events", true, false),
     ("annotation_cancel", false, false),
     ("annotation_list", true, false),
     ("annotation_get_evidence", true, false),
@@ -61,6 +62,8 @@ const ALLOWED_ARGUMENTS: &[&str] = &[
     "traces",
     "label",
     "repeats",
+    "after",
+    "limit",
 ];
 
 const RESERVATION_TTL_SECONDS: i64 = 900;
@@ -1560,6 +1563,25 @@ pub(crate) async fn dispatch_free(
             settle_if_terminal(core, container_id, &payload).await?;
             Ok(payload)
         }
+        "annotation_events" => {
+            let job_id = string_field(body, "job_id", "jobId").ok_or_else(|| {
+                failure(
+                    "annotation_argument_missing",
+                    "job_id required",
+                    "pass the job id",
+                )
+            })?;
+            let query = query_string(Some(&json!({
+                "after": body.get("after").cloned().unwrap_or(json!(0)),
+                "limit": body.get("limit").cloned().unwrap_or(json!(1000)),
+            })));
+            forward(
+                "GET",
+                &format!("{base}/annotation-jobs/{job_id}/events{query}"),
+                None,
+            )
+            .await
+        }
         "annotation_cancel" => {
             let job_id = string_field(body, "job_id", "jobId").ok_or_else(|| {
                 failure(
@@ -2194,6 +2216,10 @@ mod tests {
         assert_eq!(
             operation_from_path("/v1/annotations/annotation_get").unwrap(),
             "annotation_get"
+        );
+        assert_eq!(
+            operation_from_path("/v1/annotations/annotation_events").unwrap(),
+            "annotation_events"
         );
         assert!(validate_arguments(&json!({"trace_id": "t", "path": "/etc/passwd"})).is_err());
         assert!(

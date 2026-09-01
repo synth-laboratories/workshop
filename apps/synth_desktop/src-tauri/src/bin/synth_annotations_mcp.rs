@@ -87,6 +87,7 @@ const OPERATIONS: &[(&str, bool, bool, &str)] = &[
     ("annotation_estimate", true, false, "Idempotency key, cached-or-not, resolved model/effort, limits, and whether a broker reservation is needed. No compute."),
     ("annotation_start", false, true, "Enqueue one annotation job (202; poll annotation_get). Cached results return without compute. Paid annotators need a reservation_id from the host broker, bound to this trace/annotator/model/session."),
     ("annotation_get", true, false, "Job state, typed error, receipts, usage, sealed output ids."),
+    ("annotation_events", true, false, "Poll the annotation job event log (sequence cursor). Events cover prepared → running → tool → validating → sealed/abstained/failed/cancelled. Hidden chain-of-thought is never included."),
     ("annotation_cancel", false, false, "Cancel a prepared or running job; sealed results are never removed."),
     ("annotation_list", true, false, "Current annotations on a trace from the sealed evidence head, with filters. Labels are diagnostics, never reward."),
     ("annotation_get_evidence", true, false, "Resolve an annotation's target and evidence selectors to the exact cited text."),
@@ -140,7 +141,9 @@ fn tools() -> Value {
                 "traces":{"type":"array","description":"annotation_campaign: trace refs {kind: trace_v5, id, digest}"},
                 "label":{"type":"string"},
                 "annotators":{"type":"array"},
-                "estimate_only":{"type":"boolean"}
+                "estimate_only":{"type":"boolean"},
+                "after":{"type":"integer","description":"annotation_events: sequence cursor, default 0"},
+                "limit":{"type":"integer","description":"annotation_events: page size, default 1000"}
             },"additionalProperties":false}
          },"required":["operation"],"additionalProperties":false},
          "annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}

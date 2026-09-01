@@ -1566,6 +1566,107 @@ mod tests {
     }
 
     #[test]
+    fn restart_resumes_running_jobs_without_a_second_reservation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.sqlite");
+        let idempotency = "ik_campaign_restart_1";
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            apply_migrations(&conn).unwrap();
+            let stage = json!({
+                "status": "submitted",
+                "containerId": "ctr_1",
+                "campaignId": "acmp_restart",
+                "jobs": [
+                    {
+                        "job_id": "ajob_restart",
+                        "trace_id": "trace_1",
+                        "trace_digest": "sha256:trace",
+                        "annotator_id": "craftax.recovery_facts"
+                    }
+                ]
+            });
+            assert_eq!(
+                seed_from_stage_payload(&conn, "opt_eval_restart", Some("post_rollout"), &stage)
+                    .unwrap(),
+                1
+            );
+            let running = json!({
+                "terminal": false,
+                "job": {
+                    "job_id": "ajob_restart",
+                    "state": "running",
+                    "reservation_id": "rsv_restart",
+                    "request": {
+                        "source_trace_id": "trace_1",
+                        "source_trace_digest": "sha256:trace",
+                        "annotator_id": "craftax.recovery_facts",
+                        "idempotency_key": idempotency
+                    }
+                }
+            });
+            let applied = apply_job_snapshot(&conn, Some("acmp_restart"), "ctr_1", &running).unwrap();
+            assert!(!applied.terminal);
+            assert_eq!(applied.state, "running");
+            let jobs = list_jobs_needing_reconcile(&conn).unwrap();
+            assert_eq!(jobs.len(), 1);
+            assert_eq!(jobs[0].state, "running");
+        }
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let jobs = list_jobs_needing_reconcile(&conn).unwrap();
+        assert_eq!(jobs.len(), 1, "Workshop restart re-reads running jobs from SQLite");
+        assert_eq!(jobs[0].job_id, "ajob_restart");
+        assert_eq!(jobs[0].state, "running");
+        let sealed = json!({
+            "terminal": true,
+            "job": {
+                "job_id": "ajob_restart",
+                "state": "sealed",
+                "bundle_digest": "sha256:head",
+                "reservation_id": "rsv_restart",
+                "applied_count": 1,
+                "abstained_count": 0,
+                "rejected_count": 0,
+                "request": {
+                    "source_trace_id": "trace_1",
+                    "source_trace_digest": "sha256:trace",
+                    "annotator_id": "craftax.recovery_facts",
+                    "idempotency_key": idempotency
+                }
+            }
+        });
+        let outcome = apply_job_snapshot(&conn, Some("acmp_restart"), "ctr_1", &sealed).unwrap();
+        assert!(outcome.terminal);
+        assert_eq!(outcome.state, "sealed");
+        let job_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM annotation_jobs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(job_count, 1, "reconciler must not insert a second job");
+        let (payload_json, reservation_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT payload_json, reservation_id FROM annotation_jobs WHERE job_id='ajob_restart'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload_json).unwrap();
+        assert_eq!(
+            payload["job"]["request"]["idempotency_key"],
+            json!(idempotency),
+            "idempotency key is unchanged across restart"
+        );
+        assert_eq!(reservation_id.as_deref(), Some("rsv_restart"));
+        let distinct: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT reservation_id) FROM annotation_jobs WHERE reservation_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(distinct, 1, "no second reservation is minted on resume");
+    }
+
+    #[test]
     fn verifier_result_summaries_project_as_available_scorecards() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         apply_migrations(&conn).unwrap();

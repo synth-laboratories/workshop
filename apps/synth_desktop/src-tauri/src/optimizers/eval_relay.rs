@@ -30,6 +30,7 @@ use crate::container_stream::{poll_event_list, STREAM_SUBSCRIBED_KIND};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 /// Algorithm id every relayed event is filed under. Same lane as the rest of
@@ -263,6 +264,8 @@ pub(crate) struct RelayOutcome {
     pub span_completion_tokens: u64,
     pub span_cost_usd: Option<f64>,
     pub span_cost_complete: bool,
+    pub reward_events_relayed: usize,
+    pub reward_grades_relayed: usize,
     pub degradations: Vec<Degradation>,
 }
 
@@ -299,6 +302,8 @@ impl RelayOutcome {
                 "cost_usd": if self.span_cost_complete { json!(self.span_cost_usd) } else { Value::Null },
                 "cost_complete": self.span_cost_complete,
             },
+            "rewardEventsRelayed": self.reward_events_relayed,
+            "rewardGradesRelayed": self.reward_grades_relayed,
             "degradations": self.degradations.iter().map(Degradation::to_json).collect::<Vec<_>>(),
         })
     }
@@ -326,6 +331,9 @@ pub(crate) struct RelayContext<'a> {
     /// resolved against this and nothing else.
     pub base: &'a str,
     pub poll_url: &'a str,
+    /// Declared `/rollouts/{id}/reward/events` sibling of the SSE reward stream.
+    /// None when the producer omitted `reward.events`; never guessed.
+    pub reward_poll_url: Option<&'a str>,
     pub client: &'a reqwest::Client,
     /// Redirect-refusing client used only for frame bodies.
     pub media_client: &'a reqwest::Client,
@@ -357,6 +365,9 @@ where
     let mut idle_drains: u32 = 0;
     let mut declares_cursor = false;
     let poll_interval = ctx.settings.event_stream.poll_interval;
+    let mut relayed: BTreeSet<u64> = BTreeSet::new();
+    let mut reward_after: u64 = 0;
+    let mut reward_ok = ctx.reward_poll_url.is_some();
 
     loop {
         let cancel_request = if settled.is_none() {
@@ -380,12 +391,21 @@ where
                     &mut acked,
                     &mut chain_head,
                     &mut journal_v2,
+                    &mut relayed,
                     &mut outcome,
                 )
                 .await
                 {
                     Ok(summary) => {
                         outcome.journal_closed |= summary.closed;
+                        let _ = drain_reward(
+                            ctx,
+                            &mut reward_after,
+                            &mut reward_ok,
+                            &mut relayed,
+                            &mut outcome,
+                        )
+                        .await;
                         cancellation_idle_drains = if summary.relayed == 0 {
                             cancellation_idle_drains.saturating_add(1)
                         } else {
@@ -426,6 +446,7 @@ where
             &mut acked,
             &mut chain_head,
             &mut journal_v2,
+            &mut relayed,
             &mut outcome,
         )
         .await
@@ -435,6 +456,14 @@ where
                     outcome.journal_closed = true;
                 }
                 declares_cursor |= summary.declares_cursor;
+                let _ = drain_reward(
+                    ctx,
+                    &mut reward_after,
+                    &mut reward_ok,
+                    &mut relayed,
+                    &mut outcome,
+                )
+                .await;
                 if settled.is_some() {
                     idle_drains = if summary.relayed == 0 {
                         idle_drains + 1
@@ -575,6 +604,7 @@ async fn drain(
     acked: &mut u64,
     chain_head: &mut String,
     journal_v2: &mut Option<bool>,
+    relayed: &mut BTreeSet<u64>,
     outcome: &mut RelayOutcome,
 ) -> Result<DrainSummary> {
     let mut summary = DrainSummary::default();
@@ -625,6 +655,10 @@ async fn drain(
                 let digest = verify_envelope_digest(event, sequence)
                     .map_err(|error| relay_integrity(format!("{error:#}")))?;
                 *chain_head = journal_chain_extend(chain_head, digest);
+            }
+            if !relayed.insert(sequence) {
+                *cursor = sequence;
+                continue;
             }
             let draft = relay_event(ctx, event, sequence, outcome).await?;
             drafts.push(draft);
@@ -740,6 +774,92 @@ async fn fetch_page(ctx: &RelayContext<'_>, after: u64, ack: u64) -> Result<Valu
         .json::<Value>()
         .await
         .context("decode rollout event page")
+}
+
+async fn fetch_reward_page(ctx: &RelayContext<'_>, url: &str, after: u64) -> Result<Value> {
+    let wait_ms = ctx
+        .settings
+        .event_stream
+        .poll_interval
+        .as_millis()
+        .min(10_000) as u64;
+    let response = ctx
+        .client
+        .get(url)
+        .query(&[
+            ("after", after.to_string()),
+            ("limit", ctx.settings.event_stream.page_limit.to_string()),
+            ("wait_ms", wait_ms.to_string()),
+        ])
+        .send()
+        .await
+        .context("GET declared reward event page")?;
+    let status = response.status();
+    if !status.is_success() {
+        bail!("reward event page returned {status}");
+    }
+    response
+        .json::<Value>()
+        .await
+        .context("decode reward event page")
+}
+
+/// Drain `/rollouts/{id}/reward/events` (same events as `/reward/stream`).
+/// Sequences may gap relative to the full journal; duplicates are skipped.
+async fn drain_reward(
+    ctx: &RelayContext<'_>,
+    after: &mut u64,
+    ok: &mut bool,
+    relayed: &mut BTreeSet<u64>,
+    outcome: &mut RelayOutcome,
+) -> Result<()> {
+    if !*ok {
+        return Ok(());
+    }
+    let Some(url) = ctx.reward_poll_url else {
+        *ok = false;
+        return Ok(());
+    };
+    let page = match fetch_reward_page(ctx, url, *after).await {
+        Ok(page) => page,
+        Err(error) => {
+            outcome.note("reward_stream_unavailable", format!("{error:#}"), 0);
+            *ok = false;
+            return Ok(());
+        }
+    };
+    let events = poll_event_list(&page);
+    let mut drafts = Vec::new();
+    for event in events {
+        let Some(sequence) = event.get("sequence").and_then(Value::as_u64) else {
+            continue;
+        };
+        if sequence <= *after {
+            continue;
+        }
+        *after = (*after).max(sequence);
+        let kind = event.get("kind").and_then(Value::as_str).unwrap_or("");
+        if kind == STREAM_SUBSCRIBED_KIND {
+            continue;
+        }
+        if !relayed.insert(sequence) {
+            continue;
+        }
+        let draft = relay_event(ctx, event, sequence, outcome).await?;
+        drafts.push(draft);
+        outcome.relayed_events += 1;
+        outcome.reward_events_relayed += 1;
+        if kind == "rubric.grade" {
+            outcome.reward_grades_relayed += 1;
+        }
+    }
+    if !drafts.is_empty() {
+        ctx.service
+            .append_event_payloads(ctx.run_id.to_string(), drafts)
+            .await
+            .context("append relayed reward events")?;
+    }
+    Ok(())
 }
 
 fn page_declares_journal_v2(page: &Value) -> bool {

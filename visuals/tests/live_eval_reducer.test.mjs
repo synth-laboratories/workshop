@@ -109,6 +109,14 @@ test("terminal status is never synthesized into reward", () => {
   }
 });
 
+test("rubric.grade is visible live and is not a zero reward", () => {
+  const projection = projectLiveEval([
+    { kind: "rubric.grade", sequence: 3, payload: { criteria_met: true, points: 1, index: 0 } },
+  ]);
+  assert.ok(projection.kinds.includes("rubric.grade"));
+  assert.equal(projection.reward, null);
+});
+
 test("C7-W04 same reducer: craftax frames, harbor reward.txt", () => {
   const c = projectLiveEval(craftax);
   const h = projectLiveEval(harbor);

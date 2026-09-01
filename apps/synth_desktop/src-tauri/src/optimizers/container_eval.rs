@@ -15,9 +15,9 @@ use super::{
     OptimizerManager, OptimizerService,
 };
 use crate::container_stream::{
-    authoritative_poll_telemetry, declared_poll_url, declared_stream_descriptor,
-    refuse_auto_transport, resolve_declared_url, wait_for_stream_subscribed, StreamDiagnostics,
-    SUBSCRIBE_READY_TIMEOUT,
+    authoritative_poll_telemetry, declared_poll_url, declared_reward_poll_url,
+    declared_stream_descriptor, refuse_auto_transport, resolve_declared_url,
+    wait_for_stream_subscribed, StreamDiagnostics, SUBSCRIBE_READY_TIMEOUT,
 };
 use crate::visuals::{VisualStatus, VisualUpdateRequest, VISUAL_BINDINGS_SCHEMA_VERSION};
 use anyhow::{bail, Context, Result};
@@ -4167,6 +4167,9 @@ async fn run_one_example(
     let stream =
         declared_stream_descriptor(&prepared)?.context("prepare omitted stream descriptor")?;
     let poll_url = resolve_declared_url(ctx.base, &declared_poll_url(&stream)?)?;
+    let reward_poll_url = declared_reward_poll_url(&stream)
+        .map(|url| resolve_declared_url(ctx.base, &url))
+        .transpose()?;
     wait_for_stream_subscribed(
         ctx.client,
         &poll_url,
@@ -4219,6 +4222,7 @@ async fn run_one_example(
         scenario: &spec.family,
         base: ctx.base,
         poll_url: &poll_url,
+        reward_poll_url: reward_poll_url.as_deref(),
         client: ctx.client,
         media_client: ctx.media_client,
         settings: spec.relay,
