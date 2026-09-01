@@ -743,6 +743,9 @@ mark_runtime() {
     --arg sourceRevision "$SOURCE_REVISION" \
     --arg bootEpoch "$BOOT_EPOCH" \
     --arg processStartIdentity "$PROCESS_START_TIME" \
+    --arg launchdLabel "$LAUNCHD_LABEL" \
+    --arg launchdDomain "$HOST_LAUNCHD_DOMAIN" \
+    --arg launchdPlist "$HOST_LAUNCHD_PLIST" \
     --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '.runtime = ((if ((.runtime.sourceRevision // "") == $sourceRevision)
                   then (.runtime // {})
@@ -754,6 +757,9 @@ mark_runtime() {
       sourceRevision: $sourceRevision,
       bootEpoch: $bootEpoch,
       processStartIdentity: $processStartIdentity,
+      launchdLabel: $launchdLabel,
+      launchdDomain: $launchdDomain,
+      launchdPlist: $launchdPlist,
       checkedAt: $checkedAt
     })' "$MANIFEST" >"$manifest_tmp"
   mv "$manifest_tmp" "$MANIFEST"

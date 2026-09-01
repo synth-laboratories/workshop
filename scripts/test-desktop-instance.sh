@@ -8,6 +8,9 @@ LOCK_HOLDER=""
 cleanup() {
   [[ -z "$UNRELATED_PID" ]] || kill "$UNRELATED_PID" 2>/dev/null || true
   [[ -z "$LOCK_HOLDER" ]] || kill "$LOCK_HOLDER" 2>/dev/null || true
+  if [[ "${LINGER_CLEANUP:-0}" == "1" ]]; then
+    "$ROOT/scripts/desktop-instance.sh" stop alpha >/dev/null 2>&1 || true
+  fi
   rm -rf "$TEST_ROOT"
 }
 trap cleanup EXIT
@@ -97,7 +100,7 @@ awk '
 # The helper writes a gui-domain LaunchAgent with no KeepAlive. This keeps
 # a packaged app alive after a bounded terminal exits without weakening the
 # existing isolated-environment contract or colliding with an active rebuild.
-isolated_exec="$(sed -n '/^write_host_launchd_plist()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
+isolated_exec="$(sed -n '/^write_host_launchd_plist()/,/^bootstrap_host_launchd_job()/p' "$ROOT/scripts/desktop-instance.sh")"
 grep -q 'KeepAlive": False' <<<"$isolated_exec"
 grep -q 'ProcessType": "Interactive"' <<<"$isolated_exec"
 grep -q 'SYNTH_DESKTOP_DATA_ROOT' <<<"$isolated_exec"
@@ -360,6 +363,7 @@ if launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
   linger_bin="$TEST_ROOT/linger"
   printf '#include <unistd.h>\nint main(void) { for (;;) sleep(30); return 0; }\n' >"$linger_src"
   cc -o "$linger_bin" "$linger_src"
+  LINGER_CLEANUP=1
   (
     SYNTH_DESKTOP_LAUNCHD_PROGRAM="$linger_bin" \
       "$ROOT/scripts/desktop-instance.sh" host-job-selftest alpha >/dev/null
@@ -394,7 +398,13 @@ PY
     echo "launchd host job died with the invoking subshell" >&2
     exit 1
   }
-    "$ROOT/scripts/desktop-instance.sh" stop alpha >/dev/null
+  beta_label="$(jq -r .launchdLabel "$TEST_ROOT/instances/v09/beta/instance.json")"
+  if launchctl print "$domain/$beta_label" >/dev/null 2>&1; then
+    echo "alpha host job leaked onto beta" >&2
+    exit 1
+  fi
+  "$ROOT/scripts/desktop-instance.sh" stop alpha >/dev/null
+  LINGER_CLEANUP=0
   still_running=0
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if kill -0 "$linger_pid" 2>/dev/null; then
