@@ -498,6 +498,30 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         secrets_skill.join("SKILL.md"),
         include_str!("../../../../skills/use-synth-secrets/SKILL.md"),
     )?;
+    let trace_v5_annotate_skill = home.join("skills/trace-v5-annotate");
+    fs::create_dir_all(&trace_v5_annotate_skill)?;
+    fs::write(
+        trace_v5_annotate_skill.join("SKILL.md"),
+        include_str!("../../../../skills/trace-v5-annotate/SKILL.md"),
+    )?;
+    let trace_v5_verify_skill = home.join("skills/trace-v5-verify");
+    fs::create_dir_all(&trace_v5_verify_skill)?;
+    fs::write(
+        trace_v5_verify_skill.join("SKILL.md"),
+        include_str!("../../../../skills/trace-v5-verify/SKILL.md"),
+    )?;
+    let craftax_trace_analysis_skill = home.join("skills/craftax-trace-analysis");
+    fs::create_dir_all(&craftax_trace_analysis_skill)?;
+    fs::write(
+        craftax_trace_analysis_skill.join("SKILL.md"),
+        include_str!("../../../../skills/craftax-trace-analysis/SKILL.md"),
+    )?;
+    let annotation_review_skill = home.join("skills/annotation-review");
+    fs::create_dir_all(&annotation_review_skill)?;
+    fs::write(
+        annotation_review_skill.join("SKILL.md"),
+        include_str!("../../../../skills/annotation-review/SKILL.md"),
+    )?;
     // Apply the durable Context settings after bundled materialization. This
     // keeps the existing reference-file setup intact while making disabled
     // skills and edited SKILL.md copies authoritative for new sessions.
@@ -512,6 +536,10 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         "use-synth-session",
         "use-synth-secrets",
         "run-live-container-evals",
+        "trace-v5-annotate",
+        "trace-v5-verify",
+        "craftax-trace-analysis",
+        "annotation-review",
     ] {
         let directory = home.join("skills").join(id);
         if !crate::context::skill_enabled(id) {
@@ -667,6 +695,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
             ("synth_session", "synth-session-mcp", "bundled"),
             ("synth_secrets", "synth-secrets-mcp", "bundled"),
             ("synth_traces", "synth-traces-mcp", "bundled"),
+            ("synth_annotations", "synth-annotations-mcp", "bundled"),
             ("synth_diagnostics", "synth-diagnostics-mcp", "bundled"),
             (
                 "synth_computer_use",

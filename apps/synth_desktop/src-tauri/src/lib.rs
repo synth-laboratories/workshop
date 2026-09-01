@@ -16,6 +16,7 @@ pub mod intern_protocol_test_support {
     };
 }
 mod adapters;
+mod annotations_ipc;
 mod codex;
 mod codex_oauth;
 mod composition;
@@ -5257,6 +5258,8 @@ pub fn run() {
             // when its window unloads, so they cannot fence a turn whose owner
             // died — this sweep can, with or without a window open.
             core.spawn_lease_watchdog();
+            annotations_ipc::spawn_reconciler(core.clone());
+            optimizers::annotation_stage::install_desktop_paid_approver(app.handle().clone());
 
             let mut status_updates = laguna.subscribe();
             let status_handle = app.handle().clone();

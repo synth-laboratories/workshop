@@ -740,6 +740,20 @@ impl DataStore {
             .unwrap_or_else(|| inspected.inspection.input_kind.clone());
         let compatibility = inspected.inspection.compatibility.clone();
         let validation_status = if validation_ok { "valid" } else { "invalid" }.to_string();
+        // The owning container is the immutable registry id, never a URL or a
+        // display name: `traces.container_id` references `containers(id)` and is
+        // what paid annotation names on its approval card.
+        let owning_container = request
+            .container_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned);
+        if let Some(id) = &owning_container {
+            if id.contains("://") || id.contains('/') {
+                bail!("owning container `{id}` must be the immutable container id from the registry, not a URL");
+            }
+        }
         let errors = inspected
             .inspection
             .validation
@@ -765,6 +779,16 @@ impl DataStore {
         let return_validation = inspected.inspection.validation.clone();
         let db = self.db.clone();
         let result = db.run_transaction(move |conn| {
+            if let Some(container_id) = &owning_container {
+                let registered: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM containers WHERE id=?1)",
+                    params![container_id],
+                    |row| row.get(0),
+                )?;
+                if !registered {
+                    bail!("owning container `{container_id}` is not registered; import with the immutable container id from container_list");
+                }
+            }
             let duplicate: bool = if trusted {
                 conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM trace_bundles WHERE bundle_digest=?1 AND archive_digest=?2)",
@@ -867,10 +891,10 @@ impl DataStore {
                         "hasEvidence": has_evidence,
                     });
                     conn.execute(
-                        "INSERT INTO traces(id,digest,title,source,reward,metrics_json,path,metadata_json,created_at)
-                         VALUES(?1,?2,?3,'import',?4,'[]',?5,?6,?7)
-                         ON CONFLICT(digest) DO UPDATE SET path=excluded.path,metadata_json=excluded.metadata_json",
-                        params![&row_id,&trace_digest,&title,trace.reward,archive_path,serde_json::to_string(&metadata)?,&now],
+                        "INSERT INTO traces(id,digest,title,source,container_id,reward,metrics_json,path,metadata_json,created_at)
+                         VALUES(?1,?2,?3,'import',?4,?5,'[]',?6,?7,?8)
+                         ON CONFLICT(digest) DO UPDATE SET container_id=COALESCE(excluded.container_id,traces.container_id),path=excluded.path,metadata_json=excluded.metadata_json",
+                        params![&row_id,&trace_digest,&title,&owning_container,trace.reward,archive_path,serde_json::to_string(&metadata)?,&now],
                     )?;
                     conn.execute(
                         "INSERT INTO trace_bundle_members(bundle_digest,trace_row_id,trace_digest,trace_id,capture_id,binding_digest,sealed_path)
@@ -1448,6 +1472,143 @@ mod tests {
             snapshot.truncated,
             "a truncated result must not read as complete"
         );
+    }
+
+    /// A trusted, self-contained Trace V5 inspection over an arbitrary archive
+    /// body, shaped the way `synth-trace inspect-input` reports it.
+    fn trusted_inspection(archive: &[u8], trace_hex: &str) -> crate::trace_ingest::InspectedInput {
+        let archive_digest = format!("sha256:{:x}", Sha256::digest(archive));
+        let inspection_json = serde_json::json!({
+            "schema_version": "synth.trace-inspection.v1",
+            "input_kind": "bundle_archive",
+            "compatibility": "native",
+            "source_bytes_digest": archive_digest,
+            "bundle_digest": format!("sha256:{}", "b".repeat(64)),
+            "archive_digest": archive_digest,
+            "self_contained": true,
+            "trusted": true,
+            "validation": {"valid": true, "issues": []},
+            "traces": [{
+                "trace_id": "rollout-1",
+                "trace_digest": format!("sha256:{trace_hex}"),
+                "schema_version": "synth.trace.v5",
+                "reward": 0.5
+            }],
+            "assets": [],
+            "projections": []
+        });
+        crate::trace_ingest::InspectedInput {
+            inspection: serde_json::from_value(inspection_json.clone()).unwrap(),
+            inspection_json,
+            archive_bytes: Some(archive.to_vec()),
+            raw_file_bytes: None,
+        }
+    }
+
+    fn ingest_request(container_id: Option<&str>) -> crate::trace_ingest::TraceBundleIngestRequest {
+        crate::trace_ingest::TraceBundleIngestRequest {
+            source_path: "/nonexistent/bundle.zip".into(),
+            source_kind: Some("test".into()),
+            title: None,
+            source_uri: None,
+            container_id: container_id.map(str::to_owned),
+        }
+    }
+
+    async fn stored_owner(db: &crate::storage::Database, digest: &str) -> Option<String> {
+        let digest = digest.to_string();
+        db.clone()
+            .run(move |conn| {
+                Ok(conn.query_row(
+                    "SELECT container_id FROM traces WHERE digest=?1",
+                    params![digest],
+                    |row| row.get::<_, Option<String>>(0),
+                )?)
+            })
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn container_driven_import_records_the_owning_registry_id() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let db = storage.database().clone();
+        db.with_conn(|conn| {
+            conn.execute("INSERT INTO containers(id,name,location,status,health_json,metadata_json,created_at,updated_at) VALUES('ctr_owner','Local','local','ready','{}','{}','2026-01-01','2026-01-01')", [])?;
+            Ok(())
+        })
+        .unwrap();
+        let data = DataStore::new(db.clone(), ContentStore::new(storage.content_root()));
+        let trace_hex = "a".repeat(64);
+        let digest = format!("sha256:{trace_hex}");
+
+        // A bare file import knows no owner: the column stays NULL rather than
+        // guessing from a title or a URL.
+        let (result, _) = data
+            .commit_inspected_trace(
+                ingest_request(None),
+                trusted_inspection(b"archive-one", &trace_hex),
+            )
+            .await
+            .unwrap();
+        assert!(result.trusted);
+        assert_eq!(result.traces[0].container_id, None);
+        assert_eq!(stored_owner(&db, &digest).await, None);
+
+        // The same trace imported from its container fills the owner in.
+        let (result, _) = data
+            .commit_inspected_trace(
+                ingest_request(Some("ctr_owner")),
+                trusted_inspection(b"archive-one", &trace_hex),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.traces[0].container_id.as_deref(), Some("ctr_owner"));
+        assert_eq!(
+            stored_owner(&db, &digest).await.as_deref(),
+            Some("ctr_owner")
+        );
+
+        // A later ownerless re-import never erases a recorded owner.
+        data.commit_inspected_trace(
+            ingest_request(None),
+            trusted_inspection(b"archive-one", &trace_hex),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stored_owner(&db, &digest).await.as_deref(),
+            Some("ctr_owner")
+        );
+    }
+
+    #[tokio::test]
+    async fn import_refuses_an_owner_that_is_not_a_registry_id() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let data = DataStore::new(
+            storage.database().clone(),
+            ContentStore::new(storage.content_root()),
+        );
+        let trace_hex = "c".repeat(64);
+        let url = data
+            .commit_inspected_trace(
+                ingest_request(Some("http://127.0.0.1:8123")),
+                trusted_inspection(b"archive-two", &trace_hex),
+            )
+            .await
+            .unwrap_err();
+        assert!(url.to_string().contains("not a URL"), "{url}");
+        let unknown = data
+            .commit_inspected_trace(
+                ingest_request(Some("ctr_never_registered")),
+                trusted_inspection(b"archive-two", &trace_hex),
+            )
+            .await
+            .unwrap_err();
+        assert!(unknown.to_string().contains("not registered"), "{unknown}");
+        assert_eq!(data.list_traces().await.unwrap().len(), 0);
     }
 
     #[tokio::test]

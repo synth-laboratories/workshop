@@ -3559,6 +3559,13 @@ export type TraceBundleIngestRequest = {
 	sourceKind: string | null,
 	title: string | null,
 	sourceUri: string | null,
+	/**
+	 *  Immutable registry id of the container that sealed this trace, when the
+	 *  importer knows it (container-driven imports do; a bare file import does
+	 *  not). Persisted on `traces.container_id` so paid annotation can name the
+	 *  owning container on the approval card. Never a URL.
+	 */
+	containerId?: string | null,
 };
 
 export type TraceBundleIngestResult = {

@@ -100,6 +100,9 @@ struct EvalSpec {
     admitted_use_policy: Option<crate::secrets::SecretsUsePolicy>,
     requires_credential_advertisement: bool,
     relay: RelaySettings,
+    /// Optional post-rollout annotation stage (lane B). Off unless the
+    /// workspace recipe declares `[annotation]`; runs only after the seal.
+    annotation: Option<super::annotation_stage::AnnotationStageSpec>,
 }
 
 impl EvalSpec {
@@ -160,6 +163,7 @@ impl EvalSpec {
             admitted_use_policy: Some(admitted_use_policy),
             requires_credential_advertisement: false,
             relay: RelaySettings::default(),
+            annotation: None,
         })
     }
 
@@ -252,6 +256,7 @@ impl EvalSpec {
             admitted_use_policy: None,
             requires_credential_advertisement: recipe.requires_credential_advertisement,
             relay: recipe.relay,
+            annotation: recipe.annotation.clone(),
         })
     }
 
@@ -282,6 +287,7 @@ impl EvalSpec {
             admitted_use_policy: None,
             requires_credential_advertisement: false,
             relay: RelaySettings::default(),
+            annotation: None,
         }
     }
 
@@ -312,6 +318,7 @@ impl EvalSpec {
             admitted_use_policy: None,
             requires_credential_advertisement: true,
             relay: RelaySettings::default(),
+            annotation: None,
         }
     }
 
@@ -1789,6 +1796,21 @@ async fn run_eval_worker(
         ),
     )
     .await?;
+    // Lane B: the optional post-rollout annotation stage. It starts only now,
+    // after the terminal manifest and selection are sealed, so it can never
+    // move objective reward or the run outcome; its own failure is recorded
+    // on the run as an evidence amendment and never fails this worker.
+    if let Some(annotation) = spec.annotation.as_ref() {
+        super::annotation_stage::run_after_terminal(
+            &service,
+            &run_id,
+            annotation,
+            &container.id,
+            &container.base_url,
+            &records,
+        )
+        .await;
+    }
     Ok(())
 }
 

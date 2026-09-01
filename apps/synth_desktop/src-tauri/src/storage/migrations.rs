@@ -62,8 +62,9 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_57,
     MIGRATION_58,
     MIGRATION_59,
-    MIGRATION_64,
-    MIGRATION_65,
+    MIGRATION_60,
+    MIGRATION_61,
+    MIGRATION_62,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -100,6 +101,11 @@ pub fn apply_migrations(conn: &Connection) -> Result<i64> {
     heal_missing_tables(conn)?;
     heal_missing_columns(conn)?;
     heal_experiment_graph_shape(conn)?;
+    // Builds briefly shipped these migrations under versions 64-66. Such a
+    // database already has a maximum version above this lineage's contiguous
+    // registry, so the ordinary loop cannot replay the data backfill. The
+    // statement is idempotent and keeps those installations readable.
+    conn.execute_batch(MIGRATION_60)?;
     Ok(version)
 }
 
@@ -224,6 +230,8 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
         PAID_COMPUTE_BUDGET_CREATE_ONLY,
     ),
     ("paid_compute_reservations", PAID_COMPUTE_BUDGET_CREATE_ONLY),
+    ("annotation_reservations", MIGRATION_62),
+    ("annotation_broker_secrets", MIGRATION_62),
 ];
 
 const PROJECTION_OUTBOX_CREATE_ONLY: &str = r#"
@@ -4797,7 +4805,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_64_backfills_specs_for_pre_admission_local_runs() {
+    fn migration_60_backfills_specs_for_pre_admission_local_runs() {
         // Without a spec row `persist_kernel_projection` refuses to rebuild,
         // and without a projection `run_view_v2` has nothing to return — so a
         // pre-admission run replays its whole journal on every open only to
@@ -4851,9 +4859,19 @@ mod tests {
             )
             .ok()
         };
-        assert_eq!(digest("gepa-legacy").as_deref(), Some("legacy-local:gepa-legacy"));
-        assert_eq!(digest("eval-legacy").as_deref(), Some("legacy-local:eval-legacy"));
-        assert_eq!(digest("unknown-legacy"), None, "unknown algorithms are left alone");
+        assert_eq!(
+            digest("gepa-legacy").as_deref(),
+            Some("legacy-local:gepa-legacy")
+        );
+        assert_eq!(
+            digest("eval-legacy").as_deref(),
+            Some("legacy-local:eval-legacy")
+        );
+        assert_eq!(
+            digest("unknown-legacy"),
+            None,
+            "unknown algorithms are left alone"
+        );
         assert_eq!(
             digest("admitted").as_deref(),
             Some("sha256:real"),
@@ -4975,7 +4993,6 @@ mod tests {
     }
 }
 
-
 /// Backfill admitted specs for runs that predate kernel admission.
 ///
 /// `persist_kernel_projection` refuses to rebuild a projection without a spec
@@ -4994,7 +5011,7 @@ mod tests {
 /// records `not_required` with a reason. Provenance stays honest about the
 /// difference between a run that was admitted under contract and a run that
 /// was adopted afterwards, so a later audit can tell them apart.
-const MIGRATION_64: &str = r#"
+const MIGRATION_60: &str = r#"
 INSERT OR IGNORE INTO optimizer_run_specs(
     optimizer_run_id, spec_json, spec_digest, authorization_json, admitted_at
 )
@@ -5015,7 +5032,6 @@ LEFT JOIN optimizer_run_specs spec ON spec.optimizer_run_id = run.id
 WHERE spec.optimizer_run_id IS NULL
   AND run.algorithm_id IN ('eval','gepa','go-ex','sft','cispo');
 "#;
-
 
 /// Durable proof that a specific visual revision rendered from complete local
 /// evidence.
@@ -5044,7 +5060,7 @@ WHERE spec.optimizer_run_id IS NULL
 ///
 /// One row per (visual, revision): a re-render of the same revision replaces
 /// it, and `projection_revision` never moves backwards.
-const MIGRATION_65: &str = r#"
+const MIGRATION_61: &str = r#"
 CREATE TABLE IF NOT EXISTS visual_render_receipts (
     visual_id TEXT NOT NULL,
     visual_revision INTEGER NOT NULL,
@@ -5060,4 +5076,33 @@ CREATE TABLE IF NOT EXISTS visual_render_receipts (
 
 CREATE INDEX IF NOT EXISTS visual_render_receipts_run
 ON visual_render_receipts(optimizer_run_id);
+"#;
+
+/// Paid Trace V5 annotation: one single-use, bound, expiring reservation per
+/// paid job, settled through the conversation budget; plus the per-launch HMAC
+/// secret a container verifies reservation tokens with.
+const MIGRATION_62: &str = r#"
+CREATE TABLE IF NOT EXISTS annotation_reservations (
+    reservation_id TEXT PRIMARY KEY,
+    approval_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    container_id TEXT NOT NULL,
+    binding_digest TEXT NOT NULL,
+    trace_digest TEXT NOT NULL,
+    annotator_id TEXT NOT NULL,
+    reserved_usd_micros INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('issued', 'forwarded', 'settled', 'released', 'expired')),
+    settled_usd_micros INTEGER,
+    job_id TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS annotation_reservations_session ON annotation_reservations(session_id, status);
+CREATE INDEX IF NOT EXISTS annotation_reservations_job ON annotation_reservations(container_id, job_id);
+CREATE TABLE IF NOT EXISTS annotation_broker_secrets (
+    container_id TEXT PRIMARY KEY,
+    secret TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 "#;

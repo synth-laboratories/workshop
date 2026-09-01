@@ -445,6 +445,11 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 	const cap = payload?.requestedCap;
 	const estimated = payload?.estimatedCostUsdMicros;
 	const inline = payload?.operation === "optimizer.evaluation.inline.start" ? payload.parameters : undefined;
+	// Paid Trace V5 annotation (`annotation.annotation_start` / `verification_start` /
+	// `annotation_campaign`): the host attaches the owning container, the bound
+	// trace, the annotator and the resolved model so the person can see who is
+	// charging and for what before approving.
+	const annotation = payload?.operation?.startsWith("annotation.") ? payload.parameters : undefined;
 	const inlineContainer = inline?.container && typeof inline.container === "object" && !Array.isArray(inline.container)
 		? inline.container as Record<string, unknown> : undefined;
 	const inlineEvaluator = inline?.evaluator && typeof inline.evaluator === "object" && !Array.isArray(inline.evaluator)
@@ -475,11 +480,18 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 	return <div className="paid-compute-modal-backdrop" data-testid="paid-compute-approval-modal">
 		<section className="paid-compute-modal" role="dialog" aria-modal="true" aria-labelledby="paid-compute-title">
 			<div className="approval-card-kicker">Paid compute</div>
-			<h2 id="paid-compute-title">{inline && rolloutLimit != null ? `Run ${rolloutLimit.toLocaleString()} evaluation rollouts?` : "Approve this bounded run?"}</h2>
+			<h2 id="paid-compute-title">{inline && rolloutLimit != null ? `Run ${rolloutLimit.toLocaleString()} evaluation rollouts?` : annotation ? "Approve this paid annotation?" : "Approve this bounded run?"}</h2>
 			<dl className="paid-compute-summary">
 				{inline ? <div><dt>Model</dt><dd><code>{`${text(inlineModel?.provider) ?? "?"}/${text(inlineModel?.modelId) ?? "?"}`}</code></dd></div> : <>
 					<div><dt>Requesting agent</dt><dd>{payload?.requestingAgent ?? "Unknown agent"}</dd></div>
 					<div><dt>Operation</dt><dd><code>{payload?.operation ?? "optimizer recipe"}</code></dd></div>
+					{annotation ? <>
+						<div><dt>Container</dt><dd><code>{text(annotation.containerId) ?? "Missing"}</code></dd></div>
+						{text(annotation.traceDigest) ? <div><dt>Trace</dt><dd><code>{text(annotation.traceRowId) ?? text(annotation.traceId) ?? "?"}</code> · <code>{text(annotation.traceDigest)}</code></dd></div> : null}
+						{text(annotation.annotatorId) ? <div><dt>Annotator</dt><dd><code>{text(annotation.annotatorId)}</code></dd></div> : null}
+						{text(annotation.model) ? <div><dt>Model</dt><dd><code>{text(annotation.model)}</code></dd></div> : null}
+						{typeof annotation.jobs === "number" ? <div><dt>Paid jobs</dt><dd>{annotation.jobs.toLocaleString()}</dd></div> : null}
+					</> : null}
 					{estimated != null ? <div><dt>Predicted spend</dt><dd>{formatUsd(estimated)}</dd></div> : null}
 				</>}
 				{cap?.maxCostUsdMicros != null ? <div><dt>Maximum charge</dt><dd>{formatUsd(cap.maxCostUsdMicros)}</dd></div> : null}

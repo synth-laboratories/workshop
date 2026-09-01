@@ -1295,6 +1295,11 @@ async fn ingest_trace_bundle(core: &CoreRuntime, body: Value) -> Result<Value> {
             .or_else(|| body.get("source_uri"))
             .and_then(Value::as_str)
             .map(str::to_string),
+        container_id: body
+            .get("containerId")
+            .or_else(|| body.get("container_id"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
     };
     let (result, event) = core.data().ingest_trace_bundle(request).await?;
     core.broadcast_committed(event);

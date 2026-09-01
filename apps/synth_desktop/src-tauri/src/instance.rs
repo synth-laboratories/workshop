@@ -1681,8 +1681,8 @@ mod tests {
         }
         assert_eq!(
             adapters,
-            10,
-            "expected the ten stdio MCP adapters under {}",
+            11,
+            "expected the eleven stdio MCP adapters under {}",
             bin_dir.display()
         );
     }

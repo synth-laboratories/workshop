@@ -67,6 +67,22 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         id: "author-synth-diagrams",
         content: include_str!("../../skills/author-synth-diagrams/SKILL.md"),
     },
+    BundledSkill {
+        id: "trace-v5-annotate",
+        content: include_str!("../../skills/trace-v5-annotate/SKILL.md"),
+    },
+    BundledSkill {
+        id: "trace-v5-verify",
+        content: include_str!("../../skills/trace-v5-verify/SKILL.md"),
+    },
+    BundledSkill {
+        id: "craftax-trace-analysis",
+        content: include_str!("../../skills/craftax-trace-analysis/SKILL.md"),
+    },
+    BundledSkill {
+        id: "annotation-review",
+        content: include_str!("../../skills/annotation-review/SKILL.md"),
+    },
 ];
 
 pub(crate) fn bundled_skill_content(id: &str) -> Option<&'static str> {

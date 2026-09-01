@@ -83,6 +83,8 @@ pub struct WorkspaceRecipe {
     /// episode and a two-call classifier do not want the same cadence, and the
     /// difference must not be a code edit.
     pub relay: super::eval_relay::RelaySettings,
+    /// Optional post-rollout annotation stage; `None` means off (the default).
+    pub annotation: Option<super::annotation_stage::AnnotationStageSpec>,
     pub source_path: PathBuf,
     pub source_hash: String,
 }
@@ -428,6 +430,8 @@ struct RecipeFile {
     event_stream: Option<EventStreamFile>,
     #[serde(default)]
     media: Option<MediaFile>,
+    #[serde(default)]
+    annotation: Option<toml::value::Table>,
 }
 
 #[derive(Deserialize, Default)]
@@ -1169,6 +1173,12 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         .cloned()
         .unwrap_or_default();
     let relay = parse_relay_settings(&parsed.id, parsed.event_stream, parsed.media)?;
+    let annotation = parsed
+        .annotation
+        .as_ref()
+        .map(|table| super::annotation_stage::AnnotationStageSpec::parse(&parsed.id, table))
+        .transpose()?
+        .flatten();
     let train_seeds = parsed
         .train_seeds
         .unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -1212,6 +1222,7 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         proposer_model: parsed.proposer_model,
         requires_credential_advertisement: parsed.requires_credential_advertisement,
         relay,
+        annotation,
         source_path: path.to_path_buf(),
         source_hash: content_hash(&text),
         id: parsed.id,
@@ -1842,6 +1853,54 @@ max_total_rollouts = 10
         assert_eq!(recipe.bounds.max_cost_usd, 0.50);
         assert_eq!(recipe.bounds.max_total_rollouts, 10);
         assert_eq!(recipe.train_seeds, vec![0, 1]);
+        assert!(recipe.annotation.is_none(), "annotation stage is off by default");
+    }
+
+    #[test]
+    fn eval_recipe_declares_the_optional_annotation_stage_and_bad_blocks_refuse_at_load() {
+        let (_dir, workspace) = write_workspace();
+        let head = r#"
+id = "eval.craftax.annotated.v1"
+algorithm = "eval"
+container = "craftax"
+provider = "openai"
+model = "gpt-4.1-nano"
+locality = "container"
+train_seeds = [0]
+[bounds]
+max_cost_usd = 0.50
+max_total_rollouts = 10
+"#;
+        fs::write(
+            workspace.join(RECIPE_FILE),
+            format!(
+                "{head}
+[annotation]
+annotators = [\"craftax.deterministic\", {{ id = \"craftax.belief\", repeats = 2 }}]
+max_cost_usd = 0.80
+[annotation.throughput]
+paid = 2
+"
+            ),
+        )
+        .unwrap();
+        let recipe = find_recipe(&workspace, "eval.craftax.annotated.v1").unwrap();
+        let stage = recipe.annotation.expect("annotation stage declared");
+        assert_eq!(stage.annotators.len(), 2);
+        assert_eq!(stage.annotators[1].repeats, 2);
+        assert_eq!(stage.max_cost_usd, Some(0.80));
+        assert_eq!(stage.throughput.get("paid"), Some(&2));
+
+        fs::write(
+            workspace.join(RECIPE_FILE),
+            format!("{head}\n[annotation]\nannotators = []\n"),
+        )
+        .unwrap();
+        let error = find_recipe(&workspace, "eval.craftax.annotated.v1").unwrap_err();
+        assert!(
+            error.to_string().contains("annotation.annotators"),
+            "{error:#}"
+        );
     }
 
     #[test]

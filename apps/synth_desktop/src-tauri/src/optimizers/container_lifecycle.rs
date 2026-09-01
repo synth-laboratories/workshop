@@ -284,6 +284,7 @@ pub async fn ensure_from_session(
 }
 
 pub async fn ensure_spec(db: &Arc<Database>, spec: &ContainerSpec) -> Result<EnsuredContainer> {
+    let broker_secret = new_broker_secret();
     let (base_url, launch) = if let Some(url) = spec.url.as_deref() {
         let base = url.trim_end_matches('/').to_string();
         let launch = if spec.command.is_empty() {
@@ -291,7 +292,7 @@ pub async fn ensure_spec(db: &Arc<Database>, spec: &ContainerSpec) -> Result<Ens
         } else if healthy_now(&base, &spec.health, spec).await? {
             None
         } else {
-            Some(start_command(spec)?)
+            Some(start_command(spec, Some(&broker_secret))?)
         };
         (base, launch)
     } else {
@@ -301,8 +302,12 @@ pub async fn ensure_spec(db: &Arc<Database>, spec: &ContainerSpec) -> Result<Ens
         );
     };
     wait_healthy(&base_url, &spec.health, spec).await?;
+    let launched = launch.is_some();
     let process = launch.as_ref().map(LaunchedCommand::receipt);
     let container_id = upsert_ready(db, spec, &base_url, process).await?;
+    if launched {
+        store_broker_secret(db, &container_id, &broker_secret).await?;
+    }
     if let Some(launch) = launch {
         launch.commit();
     }
@@ -331,10 +336,12 @@ pub async fn replace_declared(
         .filter(|value| !value.is_empty())
         .map(|value| value.trim_end_matches('/').to_string())
         .ok_or_else(|| anyhow!("container `{}` must declare url", spec.id))?;
-    let launch = start_command(spec)?;
+    let broker_secret = new_broker_secret();
+    let launch = start_command(spec, Some(&broker_secret))?;
     wait_healthy(&base_url, &spec.health, spec).await?;
     let process = launch.receipt();
     let container_id = upsert_ready(db, spec, &base_url, Some(process)).await?;
+    store_broker_secret(db, &container_id, &broker_secret).await?;
     launch.commit();
     Ok(EnsuredContainer {
         container_id,
@@ -344,7 +351,24 @@ pub async fn replace_declared(
     })
 }
 
-fn start_command(spec: &ContainerSpec) -> Result<LaunchedCommand> {
+fn new_broker_secret() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+async fn store_broker_secret(db: &Arc<Database>, container_id: &str, secret: &str) -> Result<()> {
+    let container_id = container_id.to_string();
+    let secret = secret.to_string();
+    db.run_transaction(move |conn| {
+        crate::session::annotation_reservation::store_broker_secret(conn, &container_id, &secret)
+    })
+    .await
+}
+
+fn start_command(spec: &ContainerSpec, broker_secret: Option<&str>) -> Result<LaunchedCommand> {
     let source_root = spec
         .origin
         .source_root
@@ -371,6 +395,12 @@ fn start_command(spec: &ContainerSpec) -> Result<LaunchedCommand> {
         .ok_or_else(|| anyhow!("container `{}` command is empty", spec.id))?;
     let mut command = Command::new(program);
     command.envs(&spec.environment);
+    // Workshop-owned, per-launch material (never manifest-configured): the secret a
+    // container verifies host-signed annotation reservations with. It is stored
+    // beside the container record so the host can mint tokens for it later.
+    if let Some(secret) = broker_secret {
+        command.env(crate::session::annotation_reservation::ENV_SECRET, secret);
+    }
     // Provider credentials never enter the launched process. The declaration
     // names which Workshop proxy routes may be minted later for an approved
     // run; the proxy remains the sole holder of provider secret material.
@@ -1437,7 +1467,7 @@ include = ["launch-a.sh", "launch-b.sh"]
         let spec = workspace_recipe::find_container_spec(&root, "fixture-container").unwrap();
 
         let cancelled = tokio::time::timeout(Duration::from_millis(150), async {
-            let launch = start_command(&spec)?;
+            let launch = start_command(&spec, None)?;
             wait_healthy("http://127.0.0.1:31999", "/health", &spec).await?;
             launch.commit();
             Ok::<_, anyhow::Error>(())

@@ -673,6 +673,10 @@ async fn dispatch_request(
     if path.starts_with("/v1/traces") {
         return dispatch_traces(method, path, json_body, core).await;
     }
+    if path.starts_with("/v1/annotations") {
+        return crate::annotations_ipc::dispatch_annotations(method, path, json_body, core, app)
+            .await;
+    }
     if path.starts_with("/v1/diagnostics") {
         return dispatch_diagnostics(method, path, json_body, core).await;
     }
@@ -4245,6 +4249,7 @@ pub(crate) async fn import_container_trace_into(
             source_kind: Some(source_kind.to_owned()),
             title: Some(format!("{rollout_id} · {container_id}")),
             source_uri: Some(format!("{base}/rollouts/{rollout_id}")),
+            container_id: Some(container.id.clone()),
         })
         .await;
     let (result, event) = match result {

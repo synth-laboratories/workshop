@@ -12,5 +12,6 @@ SYNTH_MCP_ADAPTERS=(
   synth-browser-mcp
   synth-session-mcp
   synth-traces-mcp
+  synth-annotations-mcp
   synth-diagnostics-mcp
 )

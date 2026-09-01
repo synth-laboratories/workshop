@@ -26,6 +26,10 @@ pub const VISUALS_IPC_HOP_TIMEOUT: Duration = Duration::from_secs(3);
 /// Longer visuals IPC hop (rollout / dataset pulls).
 pub const VISUALS_IPC_ROLL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Annotation IPC hops: an estimate or a campaign submit is bounded work (the container
+/// enqueues and returns 202); execution is polled, never awaited on the hop.
+pub const ANNOTATION_IPC_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// End-to-end live policy rollout budget. Containers may make several
 /// sequential provider calls (each with its own bounded timeout) while the
 /// subscribed visual continues to receive partial trace and frame events.
