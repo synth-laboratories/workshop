@@ -34,7 +34,7 @@ printf '%s' "$default_instance" | jq -e '
   .mode == "development" and
   .product == "workshop" and
   .releaseLine == "v0.9" and
-  .appVersion == "0.9.0" and
+  .appVersion == "0.9.3" and
   (.sourceRoot | length > 0) and
   (.sourceRevision | length > 0) and
   .hotReload.renderer == true and
@@ -50,7 +50,7 @@ printf '%s' "$default_instance" | jq -e '
 [[ "$(printf '%s' "$beta" | jq -r .iconLabel)" == "2" ]]
 [[ -f "$(printf '%s' "$alpha" | jq -r .icon)" ]]
 printf '%s' "$alpha" | jq -e '
-  (.appBundle | endswith("/Synth Workshop v0.9.0 · alpha.app")) and
+  (.appBundle | endswith("/Synth Workshop v0.9 · alpha.app")) and
   (.executable | endswith("/debug/synth-desktop"))
 ' >/dev/null
 
@@ -87,14 +87,15 @@ rg -q '^OPENAI_API_KEY=.openai-fixture.$' "$alpha_env"
 dev_instance_body="$(sed -n '/^dev_instance()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
 awk '
   /cd "\$INSTANCE_ROOT"/ && !safe_cwd {safe_cwd=NR}
-  /exec_isolated_cua_bundle/ && !launch_line {launch_line=NR}
+  /launch_isolated_cua_bundle/ && !launch_line {launch_line=NR}
   END { exit !(safe_cwd && launch_line && safe_cwd < launch_line) }
 ' <<<"$dev_instance_body"
-# The helper itself must end in an environment-scrubbed exec of the recorded
-# bundle executable; checking a removed inline exec made this gate stale while
-# missing the stronger isolation contract.
-isolated_exec="$(sed -n '/^exec_isolated_cua_bundle()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
-grep -q 'exec env -i' <<<"$isolated_exec"
+# The helper submits an environment-scrubbed, launchd-owned process. This keeps
+# a packaged app alive after a bounded terminal exits without weakening the
+# existing isolated-environment contract.
+isolated_exec="$(sed -n '/^launch_isolated_cua_bundle()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
+grep -q 'launchctl submit' <<<"$isolated_exec"
+grep -q '/usr/bin/env -i' <<<"$isolated_exec"
 grep -q 'PWD="\$INSTANCE_ROOT"' <<<"$isolated_exec"
 grep -q 'SYNTH_OPTIMIZER_PROJECT_ROOT="\$optimizer_project_root"' <<<"$isolated_exec"
 grep -q 'CONTAINERS_ROOT="\$containers_root"' <<<"$isolated_exec"
@@ -326,17 +327,14 @@ rg -q 'executable_digest.*==.*expected_digest' "$ROOT/scripts/desktop-instance.s
 rg -q 'rm -f "\$DATA_ROOT/eval-driver.json"' "$ROOT/scripts/desktop-instance.sh"
 rebuild_body="$(sed -n '/^rebuild_run_instance()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
 case "$rebuild_body" in
-  *"observe_rebuild_readiness &"*"exec_isolated_cua_bundle"*) ;;
-  *) echo "rebuild-run did not keep the app on cua-run's foreground exec path" >&2; exit 1 ;;
+  *"launch_isolated_cua_bundle"*"wait_for_health_instance"*"print_runtime_identity"*) ;;
+  *) echo "rebuild-run did not launch the persistent app and verify health" >&2; exit 1 ;;
 esac
 case "$rebuild_body" in
-  *'exec_isolated_cua_bundle &'*|*'"$CUA_EXE" &'*) echo "rebuild-run launched the app asynchronously" >&2; exit 1 ;;
+  *'launch_isolated_cua_bundle &'*|*'"$CUA_EXE" &'*) echo "rebuild-run used an unowned background child" >&2; exit 1 ;;
   *) ;;
 esac
-readiness_body="$(sed -n '/^observe_rebuild_readiness()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
-grep -q 'trap - EXIT' <<<"$readiness_body"
-grep -q 'wait_for_health_instance' <<<"$readiness_body"
-grep -q 'print_runtime_identity' <<<"$readiness_body"
+rg -q 'launchctl remove "\$LAUNCHD_LABEL"' "$ROOT/scripts/desktop-instance.sh"
 set +e
 drift_out="$($ROOT/scripts/desktop-instance.sh cua-run alpha 2>&1)"
 drift_status=$?

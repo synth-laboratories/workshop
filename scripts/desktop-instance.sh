@@ -117,6 +117,7 @@ ICON_ICNS="$GENERATED_ROOT/icon.icns"
 EXE="$TARGET_ROOT/debug/synth-desktop"
 APP_TITLE="Synth Workshop $RELEASE_LINE · $NAME"
 CUA_EXE="$TARGET_ROOT/debug/bundle/macos/$APP_TITLE.app/Contents/MacOS/synth-desktop"
+LAUNCHD_LABEL="com.synth.workshop.$RELEASE_SLUG.$NAME.host"
 BUNDLE_ID="com.synth.desktop.$RELEASE_SLUG.dev.$NAME"
 CHECKSUM="$(printf '%s' "$NAME" | cksum | awk '{print $1}')"
 VITE_PORT=$((14200 + CHECKSUM % 1000))
@@ -759,6 +760,11 @@ print_contract() {
 
 stop_instance() {
   local rows pids env_pids lease_pid all_pids
+  # Packaged CUA apps are owned by a named launchd job so their lifetime is
+  # independent of the terminal or coding-agent command that launched them.
+  # Remove that owner before signalling the process or launchd would revive it
+  # while this command is trying to prove the instance stopped.
+  launchctl remove "$LAUNCHD_LABEL" >/dev/null 2>&1 || true
   rows="$(instance_processes)"
   env_pids="$(instance_env_pids)"
   lease_pid="$(optimizer_lease_pid)"
@@ -891,7 +897,7 @@ stage_gepa_runtime() {
 # the caller's database and provider proxy.  Keep this allowlist deliberately
 # small. Provider credentials live in the named instance's private .env and
 # are loaded by the app, never inherited here.
-exec_isolated_cua_bundle() {
+launch_isolated_cua_bundle() {
   local oauth_file="${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}"
   local oauth_state="${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}"
   local sft_train_jsonl="${SYNTH_MLX_SFT_TRAIN_JSONL:-}"
@@ -914,7 +920,13 @@ exec_isolated_cua_bundle() {
 
   mark_runtime "launching" "$$"
   release_operation_lock_before_exec
-  exec env -i \
+  # `rebuild-run` and `cua-run` are routinely invoked from bounded coding-agent
+  # terminals. Executing the app in that terminal's process group caused a
+  # healthy long-running optimizer to receive SIGTERM when the command session
+  # expired. Give the signed app a named GUI launchd owner instead. The job
+  # preserves the same minimal env -i contract and is removed by stop_instance.
+  launchctl remove "$LAUNCHD_LABEL" >/dev/null 2>&1 || true
+  launchctl submit -l "$LAUNCHD_LABEL" -- /usr/bin/env -i \
     PATH="$PATH" \
     HOME="$home_dir" \
     USER="$user_name" \
@@ -1293,7 +1305,10 @@ dev_instance() {
     codesign --verify --deep --strict "$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
     echo "[desktop:$NAME] launching existing signed CUA app from $INSTANCE_ROOT"
     cd "$INSTANCE_ROOT"
-    exec_isolated_cua_bundle
+    launch_isolated_cua_bundle
+    wait_for_health_instance >/dev/null
+    print_runtime_identity
+    return
   fi
 
   # The adapter prebuild compiles the shared desktop library and therefore
@@ -1379,7 +1394,10 @@ dev_instance() {
     # traversal to the app and triggers an unnecessary Files & Folders prompt.
     # Runtime data and workspaces already live under this isolated instance.
     cd "$INSTANCE_ROOT"
-    exec_isolated_cua_bundle
+    launch_isolated_cua_bundle
+    wait_for_health_instance >/dev/null
+    print_runtime_identity
+    return
   fi
   release_operation_lock_before_exec
   exec npx tauri dev --features eval-driver --config "$PACKAGE_CONFIG" --config "$CONFIG"
@@ -1444,17 +1462,6 @@ print_runtime_identity() {
   }' "$MANIFEST"
 }
 
-observe_rebuild_readiness() {
-  # This observer is the only asynchronous process in rebuild-run. The app
-  # itself must replace the launcher exactly as it does for cua-run; launching
-  # the app as a background child loses the foreground lifecycle under which
-  # the packaged debug runtime consumes its file-backed ChatGPT authorization.
-  # Do not let the observer's subshell run the launcher's operation-lock trap.
-  trap - EXIT
-  wait_for_health_instance >/dev/null
-  print_runtime_identity
-}
-
 # build → bundle → sign → record → verify → launch with descriptor →
 # wait for /health.instance == NAME → print runtime identity. One command.
 rebuild_run_instance() {
@@ -1476,8 +1483,9 @@ rebuild_run_instance() {
   rm -f "$DATA_ROOT/eval-driver.json"
   echo "[desktop:$NAME] launching recorded bundle from $INSTANCE_ROOT"
   cd "$INSTANCE_ROOT"
-  observe_rebuild_readiness &
-  exec_isolated_cua_bundle
+  launch_isolated_cua_bundle
+  wait_for_health_instance >/dev/null
+  print_runtime_identity
 }
 
 case "$COMMAND" in
