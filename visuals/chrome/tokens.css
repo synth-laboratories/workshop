@@ -512,6 +512,12 @@
   grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr);
 }
 
+@media (max-width: 680px) {
+  .sv-gepa-contract-outcome {
+    grid-template-columns: 1fr !important;
+  }
+}
+
 @media (max-width: 520px) {
   .sv-gepa-limit-row,
   .sv-gepa-explore-row {

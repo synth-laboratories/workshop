@@ -121,7 +121,15 @@ export type GepaFrontierSnapshot = {
 };
 
 export type GepaContract = {
-  task?: { id?: string; name?: string; objective?: string; outputKind?: string };
+  task?: {
+    id?: string;
+    name?: string;
+    objective?: string;
+    description?: string;
+    family?: string;
+    version?: string;
+    outputKind?: string;
+  };
   program?: { id?: string; mutableFields: string[] };
   objectiveSet?: {
     id?: string;
@@ -130,8 +138,27 @@ export type GepaContract = {
     selectionObjective?: string;
     objectives: Array<{ name: string; direction?: string; aggregation?: string; splitPolicy?: string }>;
   };
-  splits?: { minibatch?: number; reflection?: number; pareto?: number; heldout?: number };
+  splits?: { train?: number; minibatch?: number; reflection?: number; pareto?: number; heldout?: number };
+  dataset?: {
+    source?: string;
+    config?: string;
+    revision?: string;
+    digest?: string;
+    rowCount?: number;
+    labelCount?: number;
+    splits?: {
+      train?: number;
+      selection?: number;
+      heldout?: number;
+    };
+  };
   container?: {
+    verified?: boolean;
+    specId?: string;
+    url?: string;
+    workshopInstance?: string;
+    credentialMode?: string;
+    evaluatorId?: string;
     runtimeFamily?: string;
     targetId?: string;
     rewardAuthority?: string;
@@ -646,6 +673,12 @@ function stringList(value: unknown): string[] | undefined {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 function numberList(value: unknown): number[] {
@@ -1349,12 +1382,40 @@ export function projectAtCursor(
     if (typeof event.snapshot?.bestScore === "number") summary.bestScore = event.snapshot.bestScore;
 
     const eventDelta = event.delta ?? {};
+    if (event.type === "gepa.run.started") {
+      contract.container = {
+        ...(contract.container ?? {}),
+        url: optionalString(eventDelta.container_url) ?? contract.container?.url
+      };
+    }
     if (event.type === "container.task_info.loaded") {
+      const task = objectRecord(eventDelta.task);
+      const dataset = objectRecord(eventDelta.dataset);
+      const datasetSplits = objectRecord(dataset.splits ?? eventDelta.splits);
+      const trainSplit = objectRecord(datasetSplits.train);
+      const selectionSplit = objectRecord(datasetSplits.selection);
+      const heldoutSplit = objectRecord(datasetSplits.heldout);
       contract.task = {
-        id: typeof eventDelta.task_id === "string" ? eventDelta.task_id : undefined,
-        name: typeof eventDelta.task_name === "string" ? eventDelta.task_name : undefined,
-        objective: typeof eventDelta.objective === "string" ? eventDelta.objective : undefined,
-        outputKind: typeof eventDelta.output_kind === "string" ? eventDelta.output_kind : undefined
+        id: optionalString(task.id ?? task.task_id ?? eventDelta.task_id),
+        name: optionalString(task.name ?? eventDelta.task_name),
+        objective: optionalString(eventDelta.objective),
+        description: optionalString(task.description),
+        family: optionalString(task.task_family),
+        version: optionalString(task.version),
+        outputKind: optionalString(eventDelta.output_kind)
+      };
+      contract.dataset = {
+        source: optionalString(dataset.source ?? task.benchmark),
+        config: optionalString(dataset.config),
+        revision: optionalString(dataset.revision),
+        digest: optionalString(dataset.dataset_digest),
+        rowCount: missingNumber(dataset.row_count),
+        labelCount: missingNumber(dataset.label_count),
+        splits: {
+          train: missingNumber(trainSplit.count),
+          selection: missingNumber(selectionSplit.count),
+          heldout: missingNumber(heldoutSplit.count)
+        }
       };
     }
     if (event.type === "container.program.loaded") {
@@ -1379,7 +1440,9 @@ export function projectAtCursor(
       };
     }
     if (event.type === "taskset.tasks.loaded") {
+      const taskPools = objectRecord(eventDelta.task_pools);
       contract.splits = {
+        train: contract.splits?.train ?? (Array.isArray(taskPools.pareto) ? taskPools.pareto.length : undefined),
         minibatch: missingNumber(eventDelta.minibatch_rows),
         reflection: missingNumber(eventDelta.reflection_rows),
         pareto: missingNumber(eventDelta.pareto_rows),
@@ -1389,7 +1452,35 @@ export function projectAtCursor(
     if (event.type === "container.contract.verified") {
       const refs = Array.isArray(eventDelta.policy_refs) ? eventDelta.policy_refs : [];
       const policy = refs.find((value) => value && typeof value === "object" && !Array.isArray(value)) as Record<string, unknown> | undefined;
+      const evaluator = objectRecord(eventDelta.evaluator ?? objectRecord(eventDelta.evaluation).evaluator);
+      const dataset = objectRecord(eventDelta.dataset);
+      const datasetSplits = objectRecord(dataset.splits);
+      const trainSplit = objectRecord(datasetSplits.train);
+      const selectionSplit = objectRecord(datasetSplits.selection);
+      const heldoutSplit = objectRecord(datasetSplits.heldout);
+      contract.dataset = {
+        ...(contract.dataset ?? {}),
+        source: optionalString(dataset.source) ?? contract.dataset?.source,
+        config: optionalString(dataset.config) ?? contract.dataset?.config,
+        revision: optionalString(dataset.revision) ?? contract.dataset?.revision,
+        digest: optionalString(dataset.dataset_digest) ?? contract.dataset?.digest,
+        rowCount: missingNumber(dataset.row_count) ?? contract.dataset?.rowCount,
+        labelCount: missingNumber(dataset.label_count) ?? contract.dataset?.labelCount,
+        splits: {
+          train: missingNumber(trainSplit.count) ?? contract.dataset?.splits?.train,
+          selection: missingNumber(selectionSplit.count) ?? contract.dataset?.splits?.selection,
+          heldout: missingNumber(heldoutSplit.count) ?? contract.dataset?.splits?.heldout
+        }
+      };
       contract.container = {
+        ...(contract.container ?? {}),
+        verified: true,
+        specId: optionalString(eventDelta.container_spec_id),
+        workshopInstance: optionalString(eventDelta.workshop_instance),
+        credentialMode: optionalString(eventDelta.credential_mode),
+        evaluatorId: optionalString(
+          evaluator.evaluator_id ?? evaluator.evaluatorId ?? eventDelta.evaluator_id ?? eventDelta.evaluation_plan_ref
+        ),
         runtimeFamily: typeof eventDelta.runtime_family === "string" ? eventDelta.runtime_family : undefined,
         targetId: typeof eventDelta.target_id === "string" ? eventDelta.target_id : undefined,
         rewardAuthority: typeof eventDelta.reward_authority === "string" ? eventDelta.reward_authority : undefined,
@@ -1409,6 +1500,15 @@ export function projectAtCursor(
       const trigger = typeof event.delta?.trigger === "string" ? event.delta.trigger : undefined;
       const generation = missingNumber(details.generation ?? event.delta?.generation);
       const proposalCount = missingNumber(details.proposal_count ?? event.delta?.proposal_count);
+      const trainIds = Array.isArray(details.train_ids) ? details.train_ids : undefined;
+      const heldoutIds = Array.isArray(details.heldout_ids) ? details.heldout_ids : undefined;
+      if (trainIds || heldoutIds) {
+        contract.splits = {
+          ...(contract.splits ?? {}),
+          train: trainIds?.length ?? contract.splits?.train,
+          heldout: heldoutIds?.length ?? contract.splits?.heldout
+        };
+      }
       activityPhase = nextPhase;
       activityDetail = message;
       activitySequence = event.sequenceNumber;

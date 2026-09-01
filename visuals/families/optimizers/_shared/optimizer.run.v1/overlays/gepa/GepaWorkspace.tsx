@@ -463,6 +463,7 @@ export function GepaWorkspace({
           testId="gepa-run-header"
         />
       ) : null}
+      <SearchOverviewPanel gepa={gepa} />
       <StageTimeline
         stages={gepa.stages}
         selected={stageFilter}
@@ -508,8 +509,6 @@ export function GepaWorkspace({
           </div>
         ) : null}
       </section>
-      <SearchOverviewPanel gepa={gepa} />
-      <EvidenceIntegrity gepa={gepa} />
       <HillClimbPanel gepa={gepa} onSelect={selectCandidate} />
       <div className="sv-workspace-canvas">
         <div>
@@ -525,6 +524,7 @@ export function GepaWorkspace({
           />
         </div>
       </div>
+      <EvidenceIntegrity gepa={gepa} />
       <RolloutBrowser
         groups={evaluationData.groups}
         rows={evaluationData.rows}
