@@ -5444,82 +5444,69 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
 }
 
 fn settle_paid_compute_conversation(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
-    let Some(session_id) = run
-        .session_ref
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(());
-    };
-    let approval_ids = paid_compute_approval_ids(conn, run)?;
-    if approval_ids.is_empty() {
+    let targets = paid_compute_settlement_targets(conn, run)?;
+    if targets.is_empty() {
         return Ok(());
     }
     let outcome = paid_compute_settlement_outcome(conn, run)?;
-    let mut snapshot = None;
-    for (index, approval_id) in approval_ids.iter().enumerate() {
+    for (index, (approval_id, session_id)) in targets.iter().enumerate() {
         let this_outcome = if index == 0 {
             outcome
         } else {
-            // Extra reserved rows for the same preparation are unused start
-            // retries. Release them without double-counting spend.
             crate::session::paid_compute_budget::SettlementOutcome::Exact { cost_usd_micros: 0 }
         };
-        snapshot = crate::session::paid_compute_budget::settle(
+        let Some(snapshot) = crate::session::paid_compute_budget::settle(
             conn,
             session_id,
             approval_id,
             this_outcome,
-        )?;
-        if let Some(snapshot) = snapshot.as_ref() {
-            if run
-                .usage
-                .extra
-                .get("paidComputeApproval")
-                .and_then(|value| value.get("receiptViolation"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                crate::session::paid_compute_budget::disable_auto(conn, session_id)?;
-            }
-            crate::session::paid_compute_budget::append_settlement_receipt(
-                conn,
-                session_id,
-                approval_id,
-                this_outcome,
-                snapshot,
-            )?;
+        )?
+        else {
+            continue;
+        };
+        if run
+            .usage
+            .extra
+            .get("paidComputeApproval")
+            .and_then(|value| value.get("receiptViolation"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            crate::session::paid_compute_budget::disable_auto(conn, session_id)?;
         }
+        crate::session::paid_compute_budget::append_settlement_receipt(
+            conn,
+            session_id,
+            approval_id,
+            this_outcome,
+            &snapshot,
+        )?;
     }
-    let _ = snapshot;
     Ok(())
 }
 
-fn paid_compute_approval_ids(
+fn paid_compute_settlement_targets(
     conn: &Connection,
     run: &OptimizerRunRecord,
-) -> Result<Vec<String>> {
-    let mut ids = Vec::new();
-    if let Some(approval_id) = run
-        .usage
-        .extra
-        .get("paidComputeApproval")
-        .and_then(|value| value.get("approvalId"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        ids.push(approval_id.to_string());
-    }
-    let Some(session_id) = run
+) -> Result<Vec<(String, String)>> {
+    let mut targets = Vec::new();
+    let run_session = run
         .session_ref
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(ids);
-    };
+        .filter(|value| !value.is_empty());
+    if let (Some(approval_id), Some(session_id)) = (
+        run.usage
+            .extra
+            .get("paidComputeApproval")
+            .and_then(|value| value.get("approvalId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        run_session,
+    ) {
+        targets.push((approval_id.to_string(), session_id.to_string()));
+    }
     if let Some(digest) = run
         .summary
         .get("preparationDigest")
@@ -5527,18 +5514,15 @@ fn paid_compute_approval_ids(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        for extra_id in crate::session::paid_compute_budget::reserved_approval_ids_for_digest(
-            conn,
-            session_id,
-            digest,
-        )?
+        for (approval_id, session_id) in
+            crate::session::paid_compute_budget::reserved_rows_for_digest(conn, digest)?
         {
-            if !ids.iter().any(|id| id == &extra_id) {
-                ids.push(extra_id);
+            if !targets.iter().any(|(id, _)| id == &approval_id) {
+                targets.push((approval_id, session_id));
             }
         }
     }
-    Ok(ids)
+    Ok(targets)
 }
 
 fn reconcile_orphaned_paid_compute_reservations(conn: &Connection) -> Result<()> {
@@ -9763,6 +9747,109 @@ pub(in crate::optimizers) mod tests {
         assert_eq!(status, "settled");
         assert_eq!(settled, 785_000);
         assert_eq!(remaining, 50_000_000 - 785_000);
+    }
+
+    #[tokio::test]
+    async fn terminal_settle_releases_cross_session_digest_retries() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_cross_session",
+                    "sessionRef": "sess-owner",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = svc.get(run.id.clone()).await.unwrap();
+        stored.session_ref = Some("sess-owner".into());
+        stored.status = "cancelled".into();
+        stored.summary = json!({ "preparationDigest": "sha256:shared" });
+        stored.usage.cost_usd = Some(0.0);
+        stored
+            .usage
+            .extra
+            .insert("costTelemetryComplete".into(), json!(true));
+        svc.persist_run(stored).await.unwrap();
+        svc.database()
+            .run_transaction(|conn| {
+                crate::session::paid_compute_budget::seed_conversation_budget(
+                    conn,
+                    "sess-owner",
+                    &paid_policy(2_450_000, 50_000_000),
+                )?;
+                crate::session::paid_compute_budget::seed_conversation_budget(
+                    conn,
+                    "sess-retry",
+                    &paid_policy(2_450_000, 50_000_000),
+                )?;
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-owner",
+                    "approval-owner",
+                    Some("sha256:shared"),
+                    2_450_000,
+                )?
+                .expect("owner reserve");
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-retry",
+                    "approval-retry",
+                    Some("sha256:shared"),
+                    2_450_000,
+                )?
+                .expect("retry reserve");
+                Ok(())
+            })
+            .await
+            .unwrap();
+        svc.database()
+            .run_transaction(|conn| {
+                let run = load_run(conn, "gepa_cross_session")?;
+                settle_paid_compute_conversation(conn, &run)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let (owner_status, retry_count, owner_remaining, retry_remaining): (
+            String,
+            i64,
+            u64,
+            u64,
+        ) = svc
+            .database()
+            .run(|conn| {
+                let owner_status = conn.query_row(
+                    "SELECT status FROM paid_compute_reservations WHERE approval_id=?1",
+                    ["approval-owner"],
+                    |row| row.get(0),
+                )?;
+                let retry_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM paid_compute_reservations
+                     WHERE approval_id=?1 AND status='reserved'",
+                    ["approval-retry"],
+                    |row| row.get(0),
+                )?;
+                let owner = crate::session::paid_compute_budget::snapshot(conn, "sess-owner")?
+                    .expect("owner budget");
+                let retry = crate::session::paid_compute_budget::snapshot(conn, "sess-retry")?
+                    .expect("retry budget");
+                Ok((
+                    owner_status,
+                    retry_count,
+                    owner.remaining_usd_micros,
+                    retry.remaining_usd_micros,
+                ))
+            })
+            .await
+            .unwrap();
+        assert_ne!(owner_status, "reserved");
+        assert_eq!(retry_count, 0, "cross-session unused retry must not stay reserved");
+        assert_eq!(owner_remaining, 50_000_000);
+        assert_eq!(retry_remaining, 50_000_000);
     }
 
     #[tokio::test]

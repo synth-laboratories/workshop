@@ -363,6 +363,23 @@ pub(crate) fn reserved_approval_ids_for_digest(
     Ok(ids)
 }
 
+pub(crate) fn reserved_rows_for_digest(
+    conn: &Connection,
+    preparation_digest: &str,
+) -> Result<Vec<(String, String)>> {
+    let mut statement = conn.prepare(
+        "SELECT approval_id, session_id FROM paid_compute_reservations
+         WHERE preparation_digest=?1 AND status='reserved'
+         ORDER BY created_at DESC",
+    )?;
+    let rows = statement
+        .query_map(params![preparation_digest], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 pub(crate) fn list_reserved(conn: &Connection) -> Result<Vec<(String, String, Option<String>)>> {
     let mut statement = conn.prepare(
         "SELECT approval_id, session_id, preparation_digest
