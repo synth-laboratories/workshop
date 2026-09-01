@@ -1,7 +1,7 @@
 # Handoff: live incremental annotation protocols (lane C)
 
 **Date:** 2026-09-01
-**Status:** container core, first Craftax protocol, and Workshop configure/relay/view lane implemented and unit-proven on all three repos. The container half is proven on the real Craftax Rust engine (three parallel rollouts, both streams tailed over real SSE while running; see "Proof run" below). The Workshop half has not driven a real container yet.
+**Status:** implemented and proven on all three repos. Container lane proven on the real Craftax Rust engine in both directions (three parallel rollouts, annotation SSE tailed while running; consumer controls applied mid-rollout: note, hot-swap with state, live threshold change, stop, two refusals). Workshop configure / pin / relay / auto-bound viewer / control IPC / post-seal reconciliation are unit-proven; a Workshop-driven run against a rebuilt image is the one thing not yet executed.
 **Builds on:** `docs/HANDOFF_ANNOTATIONS_POSTHOC_ARCHITECTURE_2026-09-01.md` (this is the "observe-only provisional lane" that document recommended).
 
 ---
@@ -52,12 +52,31 @@ Emits: engine-verified `achievement` findings (readout list or `achievement_unlo
 
 Tests: `tests/test_craftax_live_protocol.py` (10 tests, incl. replay of the real seal `roll_ab9de205861d` in-process and inside the isolated host; run with `PYTHONPATH=~/GitHub/containers-live-annotation/src` for the host test).
 
+## Bidirectional streaming
+
+Three parties, two directions each way, one durable authority per stream:
+
+| Direction | Transport | Contract |
+| --- | --- | --- |
+| rollout → annotator | in-container tail of the rollout's durable log (`wait_for_change`) | same `after(sequence)` cursor a remote consumer uses; observe-only |
+| annotator → consumers | poll (authority) · SSE · duplex WebSocket, all declared on `stream.annotation` | `synth.live-annotation-stream.v1`, own sequence space, `stream_id` on every row |
+| consumers → annotator | `POST …/annotations/control` or the same JSON on the WebSocket | `synth.live-annotation-control.v1`: `message` (→ `on_message`), `protocol.update` (hot-swap, `snapshot`/`restore` carries state), `stop`; immediate ack to the sender, durable `annotation.control.received/refused` on the stream for everyone |
+| annotator → rollout | **none** | findings are advisory evidence; a harness acting on them is a separate, versioned feature (it would put annotation truth upstream of reward) |
+
+Workshop speaks the consumer direction through `annotation_control_send` and `annotation_protocol_update` (install → optional run-pin advance → optional hot-swap of running rollouts); the eval worker re-reads the run's pin per dispatch. The viewer shows control acks, refusals and rebinds as lane history.
+
+## Post-seal reconciliation
+
+`session/live_annotation_projection.rs` folds the relayed annotation rows per rollout (supersede/retract history intact) into `annotation_provisional_findings` and, after lane B, checks every citation against the rollout's relay-verified journal (closed, contiguous, digest-checked; the same evidence the seal was built from) and the sealed post-hoc labels for the same trace: `resolved`, `corroborated`, `unresolved` (a citation the verified journal does not contain), or `unsealed`. Recorded as an `optimizer.evidence.amended` amendment; read back with `annotation_provisional_list`. Provisional rows keep their own table and vocabulary and never become sealed findings.
+
 ## Workshop
 
 - Recipe: `[live_annotation] protocol_id, protocol_source, [configuration], [model]` → `optimizers/live_annotation.rs::LiveAnnotationSpec` (closed key sets, credential refusal). Bundled `recipes/annotation_eval/eval.craftax.gold.live_annotated.v1.toml` declares both lanes.
 - Pin: `register_protocol_pin` mirrors the NanoHorizon policy pin (GET → PUT on mismatch → GET → refuse without `protocol_revision_id`), persisted as `summary.liveAnnotationPin`; gated on the refreshed `/info` advertisement (`live_annotation_unsupported`, fail-closed).
 - Rollouts: `run_one_example` stamps `annotation_protocol_revision_id` on prepare and start, resolves `stream.annotation.events` (never guessed), and refuses a pinned rollout whose descriptor declares no channel.
-- Relay: `eval_relay.rs` drains the annotation stream beside the reward lane with its own cursor and de-dup set, emits `eval.trial.annotation` (`idempotency eval:annotation:{rollout}:{sequence}`, `delta.annotation_event`), and gives the stream a 45 s grace to seal after the rollout journal. `RelayOutcome` reports `annotationEventsRelayed`, `annotationFindingsRelayed`, `annotationClosed`.
+- Relay: `eval_relay.rs` drains the annotation stream beside the reward lane with its own cursor and de-dup set, emits it on the owner's `eval.trial.event` carrier tagged `delta.stream = "annotation"` (`idempotency eval:annotation:{rollout}:{sequence}`, `container_event.stream_id = stream:<rollout>:annotations`), and gives the stream a 45 s grace to seal after the rollout journal. `RelayOutcome` reports `annotationEventsRelayed`, `annotationFindingsRelayed`, `annotationClosed`.
+- Live pane: when a recipe declares `[live_annotation]` the worker binds SSE, mints `live.annotated_rollouts.v1` (role `live_annotation`) with the run, and appends each rollout's declared stream and annotation sibling (`source` + `poll_url`) after prepare under a per-run lock; the pane settles with the run. The MCP prepare route returns `annotation_visual_binding` beside `visual_binding` and passes `annotation_protocol_revision_id` through prepare and start.
+- IPC/MCP: `annotation_protocol_get`, `annotation_protocol_update`, `annotation_control_send`, `annotation_provisional_list` (shim catalog and host table kept equal by the contract test).
 - Capability: `container_capabilities.rs` records `annotation.live` / `annotation.protocol.put` verbatim from `/info` without affecting `complete`.
 - Visual: `visuals/families/first_class_example_containers/live.annotated_rollouts.v1` — one multi-stream `stream` input; bind each rollout's stream **and** its annotation sibling. `project.ts` folds both by `rollout_id` (rows de-dup by `stream_id`), keeps the underlying step/reward/vitals/achievements, and layers findings (chips by kind, confidence, judge basis, superseded/retracted history), per-step markers, judge metrics, and cross-lane tallies; relayed `eval.trial.event` / `eval.trial.annotation` envelopes unwrap to the same reducer. Fixture: `visuals/fixtures/live_annotated_rollouts_craftax.json` (real seal + one synthetic lane, both annotated by the real protocol in the isolated host).
 
@@ -79,12 +98,11 @@ Findings were incremental (over 90 % of annotation events arrived before the rol
 
 ## What is not done
 
-1. **No Workshop-driven run.** The container lane is proven on the real engine from the host; the Workshop path (recipe → pin → relay → live visual) has not driven a real container. The Craftax image lives on containers `main` (`images/`), not on the annotation branch; a rebuild must include `live_annotation` and, for the judge, an `OPENAI_API_KEY`-style env var the container reads at call time.
-2. **Automatic binding of the live visual.** The eval worker relays annotation events into the run journal, but nothing yet mints `live.annotated_rollouts.v1` for a run and binds both declared streams per rollout. The MCP `container_prepare_rollout` response should add a second `visual_binding` for `stream.annotation.stream` when present, and `experiment_bindings` should surface provisional counts per seed row.
-3. **Mid-run protocol updates.** The pin is taken once per run (parity with policy). An IPC/MCP `annotation_protocol_update` (PUT + re-read) plus per-dispatch re-pin would let the protocol change between rollouts of one run.
-4. **Post-hoc reconciliation.** Provisional findings cite `(stream_id, sequences)`; a post-hoc annotator that confirms them against the sealed trace (and a projection table `annotation_provisional_findings` in Workshop keyed by `(rollout_id, sequence)`) is the next evidence step.
-5. **Optimizers vocabulary adoption** of `eval.trial.annotation` (see branches section).
-6. Skills/MCP surfaces (`trace-v5-annotate`, `synth_annotations_mcp`) do not yet mention the live lane.
+1. **Workshop-driven run against a real container.** The container lane is proven from the host in both directions; the Workshop path (recipe → pin → relay → auto-bound pane → control → reconciliation) is unit-proven with mock containers only. Driving it needs a running desktop (the MCP shims talk to `visuals-ipc.json`; there is no headless eval binary) and a Craftax image rebuilt from a tree that carries `live_annotation` (the image lives on containers `main`, the lane on the annotation branch), with a provider key in the container env for the judge.
+2. **Judge on a real run.** The LLM path is proven with a fake caller and the protocol's `judge_now` control; no real provider call has been made.
+3. **Reconciliation semantics beyond citations.** Corroboration matches labels between the live taxonomy (`criterion.mode`, milestone ids) and sealed post-hoc labels; a Craftax post-hoc annotator that confirms provisional findings explicitly would make `corroborated` precise.
+4. **Vocabulary ownership.** Annotation rows ride `eval.trial.event`; readers of that carrier must check `delta.stream` (the viewer does). If Optimizers ever grows an emitter for a dedicated type, switch the relay.
+5. Skills (`trace-v5-annotate`, `run-live-container-evals`) mention the lane; the MCP tool descriptions carry the rest.
 
 ## Definition of done for this lane
 

@@ -65,3 +65,13 @@ Always report exact ids: `trace_id` + `trace_digest`, `annotator_id` + `annotato
 Fixture: the deterministic smoke fixture (`synth_containers.tracing.annotation.fixtures.build_craftax_smoke_trace`) exercises every state without provider calls.
 
 Every `annotation_manage` call names the immutable `container_id` of the registered container that sealed the trace (from `container_list`); Workshop resolves its loopback URL from the registry and never accepts a URL from you.
+
+
+## Live lane (provisional, observe-only)
+
+Post-hoc annotation over the sealed trace stays the evidence authority. A recipe may also declare
+`[live_annotation]`: a digest-pinned protocol runs beside each rollout inside the container and
+streams provisional findings (`annotation.finding`, retractable, superseded as evidence grows) on a
+declared sibling stream. Operate it with `annotation_protocol_get` / `annotation_protocol_update` /
+`annotation_control_send`, and read the post-seal reconciliation with `annotation_provisional_list`.
+Never cite a provisional finding as sealed evidence; cite the sealed finding that corroborates it.

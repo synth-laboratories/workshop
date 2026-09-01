@@ -240,3 +240,10 @@ To watch it, create `live.annotated_rollouts.v1` and bind, per rollout, both the
 declared rollout stream and its annotation sibling (`stream.annotation.stream` /
 `stream.annotation.events` from the prepare descriptor) on the one `stream` input.
 Never guess `/annotations/events`. Bundled example: `eval.craftax.gold.live_annotated.v1`.
+
+The stream is bidirectional. While a rollout runs, `annotation_manage` offers
+`annotation_control_send` (op `message` with `{type: note|judge_now|set, ...}`, `protocol.update`
+with an installed `anprev_` revision, or `stop`), `annotation_protocol_update` (install a new
+revision; with `run_id` the run's next rollouts use it; with `rollout_ids` running rollouts hot-swap,
+carrying state), and after the seal `annotation_provisional_list` (findings with their
+reconciliation: resolved | corroborated | unresolved | unsealed). Controls never reach the policy.
