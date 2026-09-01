@@ -46,7 +46,11 @@ printf '%s' "$default_instance" | jq -e '
 [[ "$(printf '%s' "$alpha" | jq -r .workspace)" != "$(printf '%s' "$beta" | jq -r .workspace)" ]]
 [[ "$(printf '%s' "$alpha" | jq -r .cargoTargetDir)" != "$(printf '%s' "$beta" | jq -r .cargoTargetDir)" ]]
 [[ "$(printf '%s' "$alpha" | jq -r .viteUrl)" != "$(printf '%s' "$beta" | jq -r .viteUrl)" ]]
-[[ "$(printf '%s' "$alpha" | jq -r .iconLabel)" == "1" ]]
+printf '%s' "$alpha" | jq -e '
+  .launchdLabel == "com.synth.workshop.v09.alpha.host" and
+  (.launchdDomain | startswith("gui/")) and
+  (.launchdPlist | endswith("/com.synth.workshop.v09.alpha.host.plist"))
+' >/dev/null
 [[ "$(printf '%s' "$beta" | jq -r .iconLabel)" == "2" ]]
 [[ -f "$(printf '%s' "$alpha" | jq -r .icon)" ]]
 printf '%s' "$alpha" | jq -e '
@@ -90,16 +94,19 @@ awk '
   /launch_isolated_cua_bundle/ && !launch_line {launch_line=NR}
   END { exit !(safe_cwd && launch_line && safe_cwd < launch_line) }
 ' <<<"$dev_instance_body"
-# The helper submits an environment-scrubbed, launchd-owned process. This keeps
+# The helper writes a gui-domain LaunchAgent with no KeepAlive. This keeps
 # a packaged app alive after a bounded terminal exits without weakening the
-# existing isolated-environment contract.
-isolated_exec="$(sed -n '/^launch_isolated_cua_bundle()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
-grep -q 'launchctl submit' <<<"$isolated_exec"
-grep -q '/usr/bin/env -i' <<<"$isolated_exec"
-grep -q 'PWD="\$INSTANCE_ROOT"' <<<"$isolated_exec"
-grep -q 'SYNTH_OPTIMIZER_PROJECT_ROOT="\$optimizer_project_root"' <<<"$isolated_exec"
-grep -q 'CONTAINERS_ROOT="\$containers_root"' <<<"$isolated_exec"
-grep -q '"\$CUA_EXE"' <<<"$isolated_exec"
+# existing isolated-environment contract or colliding with an active rebuild.
+isolated_exec="$(sed -n '/^write_host_launchd_plist()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
+grep -q 'KeepAlive": False' <<<"$isolated_exec"
+grep -q 'ProcessType": "Interactive"' <<<"$isolated_exec"
+grep -q 'SYNTH_DESKTOP_DATA_ROOT' <<<"$isolated_exec"
+grep -q 'SYNTH_OPTIMIZER_PROJECT_ROOT' <<<"$isolated_exec"
+grep -q 'CONTAINERS_ROOT' <<<"$isolated_exec"
+grep -q 'must not carry provider credentials' <<<"$isolated_exec"
+rg -q 'launchctl bootstrap "\$HOST_LAUNCHD_DOMAIN"' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'launchctl bootout "\$HOST_LAUNCHD_TARGET"' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'host_launchd_program' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'if \(\$0 == exe \|\| \$0 == cua_exe\)' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_DEV_OAUTH_FILE' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE' "$ROOT/scripts/desktop-instance.sh"
@@ -344,5 +351,69 @@ case "$drift_out" in
   *"bundle was not produced by cua-build; run desktop-instance.sh rebuild-run alpha"*) ;;
   *) echo "cua-run drift message did not name rebuild-run: $drift_out" >&2; exit 1 ;;
 esac
+
+# The packaged host job must outlive the invoking shell. Prove it with a
+# stand-in binary: bootstrap from a subshell, let that subshell exit, then
+# require the job still running. stop must retire only that named job.
+if launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+  linger_src="$TEST_ROOT/linger.c"
+  linger_bin="$TEST_ROOT/linger"
+  printf '#include <unistd.h>\nint main(void) { for (;;) sleep(30); return 0; }\n' >"$linger_src"
+  cc -o "$linger_bin" "$linger_src"
+  (
+    SYNTH_DESKTOP_LAUNCHD_PROGRAM="$linger_bin" \
+      "$ROOT/scripts/desktop-instance.sh" host-job-selftest alpha >/dev/null
+  )
+  label="$(jq -r .launchdLabel "$TEST_ROOT/instances/v09/alpha/instance.json")"
+  domain="$(jq -r .launchdDomain "$TEST_ROOT/instances/v09/alpha/instance.json")"
+  plist="$(jq -r .launchdPlist "$TEST_ROOT/instances/v09/alpha/instance.json")"
+  [[ -f "$plist" ]] || { echo "host launchd plist was not written" >&2; exit 1; }
+  python3 - "$plist" <<'PY'
+import plistlib, sys
+payload = plistlib.loads(open(sys.argv[1], "rb").read())
+assert payload["KeepAlive"] is False
+assert payload["RunAtLoad"] is True
+assert payload["ProcessType"] == "Interactive"
+env = payload["EnvironmentVariables"]
+assert "OPENROUTER_API_KEY" not in env
+assert "OPENAI_API_KEY" not in env
+assert env["SYNTH_DESKTOP_INSTANCE"] == "alpha"
+assert env["SYNTH_DESKTOP_DATA_ROOT"].endswith("/instances/v09/alpha/data")
+PY
+  linger_pid=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    linger_pid="$(launchctl print "$domain/$label" 2>/dev/null | awk '/pid = / {print $3; exit}')"
+    [[ -n "$linger_pid" && "$linger_pid" != "0" ]] && break
+    sleep 0.2
+  done
+  [[ -n "$linger_pid" && "$linger_pid" != "0" ]] || {
+    echo "launchd host job has no pid after the caller subshell exited" >&2
+    exit 1
+  }
+  kill -0 "$linger_pid" || {
+    echo "launchd host job died with the invoking subshell" >&2
+    exit 1
+  }
+    "$ROOT/scripts/desktop-instance.sh" stop alpha >/dev/null
+  still_running=0
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if kill -0 "$linger_pid" 2>/dev/null; then
+      still_running=1
+      sleep 0.2
+    else
+      still_running=0
+      break
+    fi
+  done
+  if [[ "$still_running" -eq 1 ]]; then
+    echo "stop left the named host job running" >&2
+    kill "$linger_pid" 2>/dev/null || true
+    exit 1
+  fi
+  if launchctl print "$domain/$label" >/dev/null 2>&1; then
+    echo "stop did not boot out the named host job" >&2
+    exit 1
+  fi
+fi
 
 echo "desktop instance contract: ok"
