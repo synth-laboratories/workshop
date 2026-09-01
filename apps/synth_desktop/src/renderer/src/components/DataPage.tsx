@@ -103,7 +103,6 @@ export function DataPage({
 	});
 	const [traces, setTraces] = useState<TraceV5Record[]>([]);
 	const [usage, setUsage] = useState<UsageLedgerEntry[]>([]);
-	const [counts, setCounts] = useState({ containers: 0, traces: 0, usage: 0 });
 	const codexSessionCount = useMemo(() => sessions.filter((session) => session.metadata?.runtime === "codex-app-server").length, [sessions]);
 	const [error, setError] = useState<string | null>(null);
 	const [busyId, setBusyId] = useState<string | null>(null);
@@ -171,15 +170,13 @@ export function DataPage({
 				setContainers(await bridges.inventory.listContainers());
 				return;
 			}
-			const [nextContainers, nextUsage, nextCounts] = await Promise.all([
+			const [nextContainers, nextUsage] = await Promise.all([
 				bridges.inventory.listContainers(),
-				bridges.inventory.listUsage(100),
-				bridges.inventory.counts()
+				bridges.inventory.listUsage(100)
 			]);
 			setContainers(nextContainers);
 			setTraces([]);
 			setUsage(nextUsage);
-			setCounts(nextCounts);
 		} catch (reason) {
 			setError(publicError(reason));
 		}
@@ -526,7 +523,7 @@ export function DataPage({
 					<details className="usage-ledger">
 						<summary data-testid="inventory-usage-ledger-toggle">
 							Recent ledger entries
-							<span className="ws-item-meta ws-faint">{counts.containers} containers · {counts.traces} traces · {counts.usage} usage entries</span>
+							<span className="ws-item-meta ws-faint">{usage.length} usage entries</span>
 						</summary>
 						{usage.length === 0 ? <div className="ws-empty"><p>No usage entries yet.</p></div> : (
 							<ul className="ws-list">
