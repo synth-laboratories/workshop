@@ -4980,6 +4980,16 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
             )?;
             continue;
         }
+        // `waiting_for_viewer` is a durable prepared state, not active work.
+        // It intentionally has no worker ownership while Workshop waits for a
+        // visual-readiness receipt and native paid-compute approval. A restart
+        // expires the in-memory approval request, but must leave the immutable
+        // preparation available for a fresh bounded approval. Treating it as
+        // abandoned work sealed the run `interrupted` before approval could be
+        // retried, forcing users to create a duplicate preparation.
+        if run.status == "waiting_for_viewer" {
+            continue;
+        }
         if crate::recovery::ownership::optimizer_run_is_live(conn, &run.id, instance_id, now)? {
             continue;
         }
@@ -7049,6 +7059,58 @@ pub(in crate::optimizers) mod tests {
                 assert!(
                     terminal::load(conn, run_id)?.is_some(),
                     "open() must seal a terminal manifest in the same transaction"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn open_preserves_prepared_run_while_native_approval_is_reissued() {
+        let dir = tempdir().unwrap();
+        let run_id = "opt_waiting_for_viewer";
+        {
+            let core = crate::core_runtime::CoreRuntime::open(dir.path()).unwrap();
+            let svc = core.optimizers().clone();
+            let (mut run, _) = svc
+                .create(OptimizerCreateRequest {
+                    algorithm_id: "gepa".into(),
+                    algorithm_version: Some("1".into()),
+                    objective: Some("prepared restart approval".into()),
+                    source: Some("local".into()),
+                    project_ref: None,
+                    session_ref: Some("session_prepared_restart".into()),
+                    id: Some(run_id.into()),
+                    execution_bindings: None,
+                    input_refs: None,
+                    capabilities: None,
+                    summary: Some(json!({
+                        "recipeId": "gepa.banking77.workspace.v1",
+                        "preparationDigest": "sha256:prepared",
+                        "visualReadyReceipt": { "visualId": "vis_prepared" }
+                    })),
+                    open_visual: Some(false),
+                    seed_fixture: None,
+                    cloud_config: None,
+                    local_path: None,
+                })
+                .await
+                .unwrap();
+            run.status = "waiting_for_viewer".into();
+            svc.persist_run(run).await.unwrap();
+        }
+
+        let core = crate::core_runtime::CoreRuntime::open(dir.path()).unwrap();
+        let run = core.optimizers().get(run_id.to_string()).await.unwrap();
+        assert_eq!(run.status, "waiting_for_viewer");
+        assert!(run.finished_at.is_none());
+        assert!(run.error.is_none());
+        core.storage()
+            .database()
+            .with_conn(|conn| {
+                assert!(
+                    terminal::load(conn, run_id)?.is_none(),
+                    "a passive prepared run must not receive a terminal seal at restart"
                 );
                 Ok(())
             })
