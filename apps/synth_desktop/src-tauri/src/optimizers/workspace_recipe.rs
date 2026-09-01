@@ -1335,15 +1335,11 @@ fn parse_containers(
             }
         }
         for name in launch.environment.keys() {
-            let upper = name.to_ascii_uppercase();
             if !name
                 .chars()
                 .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
                 || name.is_empty()
-                || upper.contains("KEY")
-                || upper.contains("SECRET")
-                || upper.contains("TOKEN")
-                || upper.contains("PASSWORD")
+                || credential_bearing_environment_name(name)
             {
                 bail!(
                     "container `{}` has unsafe environment name `{name}`",
@@ -1375,6 +1371,17 @@ fn parse_containers(
         });
     }
     Ok(specs)
+}
+
+fn credential_bearing_environment_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    if upper == "SYNTH_ANNOTATION_USD_PER_MILLION_TOKENS" {
+        return false;
+    }
+    upper.contains("KEY")
+        || upper.contains("SECRET")
+        || upper.contains("TOKEN")
+        || upper.contains("PASSWORD")
 }
 
 fn validate_launch(
@@ -1458,12 +1465,8 @@ fn validate_launch(
                 LaunchDeclarationError::InvalidEnvironmentName { name: name.clone() }.into_anyhow(),
             );
         }
-        let upper = name.to_ascii_uppercase();
         anyhow::ensure!(
-            !upper.contains("KEY")
-                && !upper.contains("SECRET")
-                && !upper.contains("TOKEN")
-                && !upper.contains("PASSWORD"),
+            !credential_bearing_environment_name(name),
             "launch_declaration_invalid: credential-bearing environment name `{name}` is forbidden"
         );
     }
@@ -2138,8 +2141,8 @@ shutdown_grace_seconds = 5
 expected_port = 8098
 image_ref = "fixture"
 health_target = "fixture"
-declared_environment = ["SYNTH_CRAFTAX_URL"]
-environment = { SYNTH_CRAFTAX_URL = "http://127.0.0.1:8098" }
+declared_environment = ["SYNTH_CRAFTAX_URL", "SYNTH_ANNOTATION_USD_PER_MILLION_TOKENS"]
+environment = { SYNTH_CRAFTAX_URL = "http://127.0.0.1:8098", SYNTH_ANNOTATION_USD_PER_MILLION_TOKENS = "2" }
 [container.launch.source]
 revision_policy = "exact-or-dirty-digest"
 tracked_revision = "fixture-revision"
@@ -2154,6 +2157,10 @@ include = ["svc/serve.py"]
         assert_eq!(
             spec.environment["SYNTH_CRAFTAX_URL"],
             "http://127.0.0.1:8098"
+        );
+        assert_eq!(
+            spec.environment["SYNTH_ANNOTATION_USD_PER_MILLION_TOKENS"],
+            "2"
         );
     }
 
