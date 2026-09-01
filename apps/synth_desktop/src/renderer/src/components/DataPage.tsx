@@ -1,6 +1,7 @@
 // @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UsagePanel } from "./UsagePanel";
+import { InferencePanel } from "./InferencePanel";
 import type {
 	ContainerDeployment,
 	TraceV5Record,
@@ -20,7 +21,7 @@ import {
 	TRACE_INSPECTOR_TEMPLATE
 } from "../runtime/traceInspector";
 
-export type DataTab = "containers" | "traces" | "usage";
+export type DataTab = "containers" | "runtime" | "traces" | "usage";
 
 const CONTAINER_GONE_GRACE_MS = 30_000;
 
@@ -31,6 +32,7 @@ function visibleContainerStatus(status: ContainerDeployment["status"]): { label:
 }
 
 type Props = {
+	surface?: "data" | "inference";
 	initialTab?: DataTab;
 	onOpenVisual: (visual: VisualRecord) => void;
 	onOpenContainer: (containerId: string) => void;
@@ -76,13 +78,14 @@ function formatDuration(durationMs: number): string {
 }
 
 export function DataPage({
-	initialTab = "containers",
+	surface = "data",
+	initialTab,
 	onOpenVisual,
 	onOpenContainer,
 	openContainerId = null,
 	onBack
 }: Props) {
-	const [tab, setTab] = useState<DataTab>(initialTab);
+	const [tab, setTab] = useState<DataTab>(initialTab ?? (surface === "inference" ? "runtime" : "containers"));
 	const [containers, setContainers] = useState<ContainerDeployment[]>([]);
 	const containersRef = useRef<ContainerDeployment[]>([]);
 	const goneSinceRef = useRef(new Map<string, number>());
@@ -157,6 +160,10 @@ export function DataPage({
 			if (!bridges.inventory) {
 				throw new Error("Rust Data store is unavailable");
 			}
+			if (surface === "data") {
+				setContainers(await bridges.inventory.listContainers());
+				return;
+			}
 			const [nextContainers, nextTraces, nextUsage, nextCounts] = await Promise.all([
 				bridges.inventory.listContainers(),
 				bridges.inventory.listTraces(),
@@ -170,7 +177,7 @@ export function DataPage({
 		} catch (reason) {
 			setError(publicError(reason));
 		}
-	}, []);
+	}, [surface]);
 
 	useEffect(() => {
 		void refresh();
@@ -179,6 +186,7 @@ export function DataPage({
 	useEffect(() => { containersRef.current = containers; }, [containers]);
 
 	useEffect(() => {
+		if (surface !== "data") return;
 		let cancelled = false;
 		const poll = async () => {
 			const candidates = containersRef.current.filter((container) => container.baseUrl && !archivedContainerIds.has(container.id));
@@ -214,7 +222,7 @@ export function DataPage({
 		void poll();
 		const timer = window.setInterval(() => void poll(), CONTAINER_POLL_MS);
 		return () => { cancelled = true; window.clearInterval(timer); };
-	}, [archivedContainerIds]);
+	}, [archivedContainerIds, surface]);
 
 	const probe = async (containerId: string) => {
 		setBusyId(containerId);
@@ -314,15 +322,17 @@ export function DataPage({
 	};
 
 	return (
-		<div className="ws-page" data-testid="inventory-page">
+		<div className="ws-page" data-testid={surface === "inference" ? "inference-page" : "inventory-page"}>
 			<header className="ws-page-head">
 				<button type="button" className="desk-back ws-btn ws-btn-ghost" onClick={onBack}>
 					← Back
 				</button>
 				<div className="ws-page-head-text">
-					<h1 className="ws-title">Data</h1>
+					<h1 className="ws-title">{surface === "inference" ? "Inference" : "Data"}</h1>
 					<p className="ws-lede">
-						Local containers, Trace V5 records, and usage receipts from the runtime vault.
+						{surface === "inference"
+							? "Model runtime, Codex traces, generation activity, usage, and request health."
+							: "Local containers available to Workshop."}
 					</p>
 				</div>
 				<button type="button" className="ws-btn ws-btn-secondary ws-page-head-actions" onClick={() => void refresh()}>
@@ -336,13 +346,11 @@ export function DataPage({
 				</div>
 			) : null}
 
-			<div className="ws-tabs" role="tablist" aria-label="Data sections">
+			<div className="ws-tabs" role="tablist" aria-label={surface === "inference" ? "Inference sections" : "Data sections"}>
 				{(
-					[
-						["containers", "Containers", activeContainers.length],
-						["traces", "Traces", traces.length],
-						["usage", "Usage", usage.length]
-					] as const
+					(surface === "inference"
+						? [["runtime", "Runtime", null], ["traces", "Codex traces", traces.length], ["usage", "Usage", usage.length]]
+						: [["containers", "Containers", activeContainers.length]]) as readonly (readonly [DataTab, string, number | null])[]
 				).map(([id, label, count]) => (
 					<button
 						key={id}
@@ -359,7 +367,9 @@ export function DataPage({
 				))}
 			</div>
 
-			{tab === "containers" ? (
+			{surface === "inference" && tab === "runtime" ? <InferencePanel visible /> : null}
+
+			{surface === "data" && tab === "containers" ? (
 				<div className="ws-stack" data-testid="inventory-containers">
 					<div className="ws-stack-tight">
 						<button type="button" className="ws-btn ws-btn-secondary" data-testid="attach-container" onClick={() => setAttachOpen((value) => !value)}>Attach container</button>
@@ -412,7 +422,7 @@ export function DataPage({
 				</div>
 			) : null}
 
-			{tab === "traces" ? (
+			{surface === "inference" && tab === "traces" ? (
 				<div className="ws-stack ws-stack-loose" data-testid="inventory-traces">
 					<section className="ws-card ws-card-split" aria-label="Trace catalog summary">
 						<div className="ws-card-body">
@@ -499,7 +509,7 @@ export function DataPage({
 				</div>
 			) : null}
 
-			{tab === "usage" ? (
+			{surface === "inference" && tab === "usage" ? (
 				<div className="ws-stack" data-testid="inventory-usage">
 					{/* The dashboard reduces the whole ledger in Rust. The raw
 					    rows below stay as the receipt behind it — the most

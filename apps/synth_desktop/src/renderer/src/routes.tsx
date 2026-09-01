@@ -24,7 +24,6 @@ import { primaryVisualId, useChatOutputs } from "./hooks/useChatOutputs";
 import { ContainerPane } from "./components/ContainerPane";
 import { ConnectorsPage } from "./components/ConnectorsPage";
 import { InferencePanel } from "./components/InferencePanel";
-import { LocalInferencePage } from "./components/LocalInferencePage";
 import { PluginsPage } from "./components/PluginsPage";
 import { DataPage } from "./components/DataPage";
 import { LandingPage } from "./components/LandingPage";
@@ -661,7 +660,13 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						/>
 					) : null}
 					{view.kind === "inference" ? (
-						<LocalInferencePage onBack={() => leaveInventory(inventoryOriginRef.current)} />
+						<DataPage
+							surface="inference"
+							onOpenVisual={openVisualRecord}
+							onOpenContainer={(id) => void toggleContainer(id)}
+							openContainerId={openContainer?.id ?? null}
+							onBack={() => leaveInventory(inventoryOriginRef.current)}
+						/>
 					) : null}
 					{view.kind === "plugins" ? (
 						<PluginsPage

@@ -25,8 +25,8 @@ export const PLUGIN_NAV: readonly PluginNavEntry[] = [
 	{ id: "reports", label: "Reports", description: "Collect durable narrative and evidence reports.", testId: "open-reports", kind: "builtin" },
 	{ id: "experiments", label: "Experiments", description: "Review evaluation and training experiments.", testId: "open-experiments", kind: "builtin" },
 	{ id: "optimizers", label: "Optimizers", description: "Configure and inspect managed optimization runs.", testId: "open-optimizers", kind: "managed", pluginId: "optimizers" },
-	{ id: "inventory", label: "Data", description: "Inspect containers, traces, visuals, and usage records.", testId: "open-inventory", kind: "builtin" },
-	{ id: "inference", label: "Local Inference", description: "Monitor the local model runtime and requests.", testId: "open-inference", kind: "builtin" },
+	{ id: "inventory", label: "Data", description: "Inspect local containers available to Workshop.", testId: "open-inventory", kind: "builtin" },
+	{ id: "inference", label: "Inference", description: "Inspect model runtime, Codex traces, usage, and requests.", testId: "open-inference", kind: "builtin" },
 	// Managed like Optimizers, but its lifecycle is human-only: the agent can
 	// read this plugin's status and nothing else. See docs/COMPUTER_USE.md §4.
 	{

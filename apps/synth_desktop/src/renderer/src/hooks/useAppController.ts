@@ -2182,7 +2182,7 @@ export function useAppController() {
 			: view.kind === "inventory"
 				? "Data"
 			: view.kind === "inference"
-				? "Local Inference"
+				? "Inference"
 			: view.kind === "plugins"
 				? "Plugins"
 				: view.kind === "async"
