@@ -25,6 +25,7 @@ import { ContainerPane } from "./components/ContainerPane";
 import { ConnectorsPage } from "./components/ConnectorsPage";
 import { InferencePanel } from "./components/InferencePanel";
 import { LocalInferencePage } from "./components/LocalInferencePage";
+import { PluginsPage } from "./components/PluginsPage";
 import { DataPage } from "./components/DataPage";
 import { LandingPage } from "./components/LandingPage";
 import { ComputerUsePage } from "./components/ComputerUsePage";
@@ -56,10 +57,11 @@ export type MainView =
 	| { kind: "chat"; chatId: string }
 	| { kind: "sync"; sessionId: string }
 	| { kind: "async"; sessionId: string }
-	| { kind: "settings"; section?: "general" | "models" | "inference" | "context" | "voice" | "account" | "secrets" | "about" }
+	| { kind: "settings"; section?: "general" | "models" | "inference" | "context" | "voice" | "plugins" | "account" | "secrets" | "about" }
 	| { kind: "connectors" }
 	| { kind: "inventory" }
 	| { kind: "inference" }
+	| { kind: "plugins" }
 	| { kind: "visuals" }
 	| { kind: "reports"; reportId?: string }
 	| { kind: "experiments"; experimentId?: string }
@@ -72,6 +74,7 @@ const INVENTORY_ORIGIN_KINDS = new Set<MainView["kind"]>([
 	"optimizers",
 	"inventory",
 	"inference",
+	"plugins",
 	"settings",
 	"reports"
 ]);
@@ -394,6 +397,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		view.kind === "optimizers" ||
 		view.kind === "inventory" ||
 		view.kind === "inference" ||
+		view.kind === "plugins" ||
 		view.kind === "reports";
 	const paneHost = inventoryHost || chatRoute || settingsWithPane;
 	const inventoryOriginRef = useRef<MainView | null>(null);
@@ -658,6 +662,15 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					) : null}
 					{view.kind === "inference" ? (
 						<LocalInferencePage onBack={() => leaveInventory(inventoryOriginRef.current)} />
+					) : null}
+					{view.kind === "plugins" ? (
+						<PluginsPage
+							preferences={preferences}
+							pluginStatuses={pluginStatuses}
+							onPreferencesChange={setPreferences}
+							onOpenPlugin={(id) => setView({ kind: id === "inventory" ? "inventory" : id === "inference" ? "inference" : id === "computer-use" ? "computer-use" : id === "reports" ? "reports" : id })}
+							onBack={() => leaveInventory(inventoryOriginRef.current)}
+						/>
 					) : null}
 					{view.kind === "reports" ? (
 						<ReportsPage initialReportId={view.reportId} onBack={leaveReports} />

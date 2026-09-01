@@ -2183,6 +2183,8 @@ export function useAppController() {
 				? "Data"
 			: view.kind === "inference"
 				? "Local Inference"
+			: view.kind === "plugins"
+				? "Plugins"
 				: view.kind === "async"
 					? "Intern · Background"
 					: view.kind === "sync"

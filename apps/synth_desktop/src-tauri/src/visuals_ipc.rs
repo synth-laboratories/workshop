@@ -247,7 +247,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
 };
-use tauri::{AppHandle, LogicalSize, Manager, Size};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, Size};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -655,6 +655,9 @@ async fn dispatch_request(
     if path.starts_with("/v1/plugins") {
         return dispatch_plugins(method, path, json_body, core, app).await;
     }
+    if path.starts_with("/v1/display/plugins") {
+        return dispatch_display_plugins(method, path, json_body, app);
+    }
     if path.starts_with("/v1/computer-use") {
         return dispatch_computer_use(method, path, json_body, core, app).await;
     }
@@ -690,6 +693,50 @@ async fn dispatch_request(
         return dispatch_container_restart(path, json_body, core, app).await;
     }
     dispatch(method, path, json_body, core).await
+}
+
+fn dispatch_display_plugins(
+    method: &str,
+    path: &str,
+    body: Value,
+    app: &AppHandle,
+) -> Result<Value> {
+    const ALLOWED: [&str; 7] = [
+        "visuals",
+        "reports",
+        "experiments",
+        "optimizers",
+        "inventory",
+        "inference",
+        "computer-use",
+    ];
+    if method == "GET" && path == "/v1/display/plugins" {
+        return Ok(json!({"pluginIds": ALLOWED}));
+    }
+    if method != "POST" || path != "/v1/display/plugins/visibility" {
+        anyhow::bail!("unsupported display IPC route {method} {path}");
+    }
+    let ids = body
+        .get("visiblePluginIds")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("visiblePluginIds array required"))?;
+    let mut visible = Vec::new();
+    for value in ids {
+        let id = value
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("plugin ids must be strings"))?;
+        if !ALLOWED.contains(&id) {
+            anyhow::bail!("unknown display plugin `{id}`");
+        }
+        if !visible.iter().any(|current| current == id) {
+            visible.push(id.to_string());
+        }
+    }
+    app.emit(
+        "workshop-display-plugin-visibility",
+        json!({"visiblePluginIds": visible}),
+    )?;
+    Ok(json!({"visiblePluginIds": visible, "applied": true}))
 }
 
 fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {

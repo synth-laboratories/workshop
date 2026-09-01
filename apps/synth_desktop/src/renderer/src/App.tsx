@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { formatTps } from "./components/InferencePanel";
 import { AppTitlebar, type TabCopyItem } from "./components/AppTitlebar";
 import { AppOverlays } from "./components/AppOverlays";
@@ -48,6 +49,15 @@ export default function App() {
 		return () => window.removeEventListener("synth:visual-review-capture", openReviewSurface);
 	}, [c.setView]);
 
+	useEffect(() => {
+		let unlisten: (() => void) | undefined;
+		void listen<{ visiblePluginIds?: string[] }>("workshop-display-plugin-visibility", (event) => {
+			if (!Array.isArray(event.payload.visiblePluginIds)) return;
+			c.setPreferences({ ...c.preferences, navigation: { visiblePluginIds: event.payload.visiblePluginIds } });
+		}).then((dispose) => { unlisten = dispose; });
+		return () => unlisten?.();
+	}, [c.preferences, c.setPreferences]);
+
 	return (
 		<div className="app-shell">
 			<ManderLabGate />
@@ -64,6 +74,7 @@ export default function App() {
 						experimentsActive={c.view.kind === "experiments"}
 						optimizersActive={c.view.kind === "optimizers"}
 						computerUseActive={c.view.kind === "computer-use"}
+						visiblePluginIds={c.preferences.navigation.visiblePluginIds}
 						workingChatIds={c.workingChatIds}
 						chatPresence={c.chatPresence}
 						activeLocalDecodeTps={c.inferenceMonitor.snapshot?.active?.decodeTokensPerSecond == null
@@ -109,6 +120,7 @@ export default function App() {
 						onOpenExperiments={() => c.setView({ kind: "experiments" })}
 						onOpenOptimizers={() => c.setView({ kind: "optimizers" })}
 						onOpenComputerUse={() => c.setView({ kind: "computer-use" })}
+						onOpenPlugins={() => c.setView({ kind: "plugins" })}
 						onSearch={c.openSearch}
 						onSettings={() => c.setView({ kind: "settings" })}
 						account={c.accountView}

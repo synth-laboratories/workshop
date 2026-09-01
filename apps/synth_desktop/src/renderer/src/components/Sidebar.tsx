@@ -61,6 +61,8 @@ type Props = {
 	onOpenExperiments: () => void;
 	onOpenOptimizers: () => void;
 	onOpenComputerUse: () => void;
+	onOpenPlugins: () => void;
+	visiblePluginIds?: readonly string[];
 	onSearch: () => void;
 	onSettings: () => void;
 	/** Canonical registry listing, owned by the app controller. */
@@ -256,6 +258,8 @@ export function Sidebar({
 	onOpenExperiments,
 	onOpenOptimizers,
 	onOpenComputerUse,
+	onOpenPlugins,
+	visiblePluginIds = [],
 	onSearch,
 	onSettings,
 	pluginStatuses = null,
@@ -385,6 +389,7 @@ export function Sidebar({
 		inference: onOpenInference,
 		"computer-use": onOpenComputerUse
 	};
+	const visiblePlugins = new Set(visiblePluginIds);
 
 	if (!sidebarVisible) return null;
 
@@ -603,17 +608,19 @@ export function Sidebar({
 						<button
 							type="button"
 							className="section-header-label"
-							onClick={() => setPluginsOpen((v) => !v)}
-							aria-expanded={pluginsOpen}
+								onClick={onOpenPlugins}
+								aria-expanded={pluginsOpen}
 							aria-controls="sidebar-plugins"
 						>
 							Plugins
+						</button>
+						<button type="button" className="section-action" aria-label={pluginsOpen ? "Collapse plugins" : "Expand plugins"} onClick={() => setPluginsOpen((value) => !value)}>
 							<SectionChevron open={pluginsOpen} />
 						</button>
 					</div>
 					{pluginsOpen ? (
 						<div id="sidebar-plugins" className="section-list" data-testid="plugins-nav">
-							{PLUGIN_NAV.map((entry) => {
+							{PLUGIN_NAV.filter((entry) => visiblePlugins.has(entry.id)).map((entry) => {
 								const Icon = PLUGIN_NAV_ICONS[entry.id];
 								const active = pluginRowActive[entry.id];
 								const presentation = entry.kind === "managed" && entry.pluginId

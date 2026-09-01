@@ -114,6 +114,10 @@ name = "synth-plugins-mcp"
 path = "src/bin/synth_plugins_mcp.rs"
 
 [[bin]]
+name = "synth-display-mcp"
+path = "src/bin/synth_display_mcp.rs"
+
+[[bin]]
 name = "synth-computer-use-mcp"
 path = "src/bin/synth_computer_use_mcp.rs"
 

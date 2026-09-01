@@ -6,7 +6,9 @@
  */
 
 export const PREFERENCES_STORAGE_KEY = "synth.preferences.v1";
-export const PREFERENCES_SCHEMA_VERSION = 5 as const;
+export const PREFERENCES_SCHEMA_VERSION = 6 as const;
+
+export const DEFAULT_VISIBLE_PLUGIN_IDS = ["visuals", "experiments", "inventory", "inference"] as const;
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ToolActivityMode = "detailed" | "grouped" | "compact";
@@ -75,6 +77,9 @@ export type DesktopPreferences = {
 		/** Per-model local summarization thresholds. */
 		autoCompactTokenLimits: AutoCompactTokenLimits;
 	};
+	navigation: {
+		visiblePluginIds: string[];
+	};
 	layout: {
 		last: LayoutSnapshot;
 		default: LayoutSnapshot;
@@ -121,6 +126,9 @@ export const DEFAULT_PREFERENCES: DesktopPreferences = {
 	},
 	agentContext: {
 		autoCompactTokenLimits: { ...DEFAULT_AUTO_COMPACT_TOKEN_LIMITS }
+	},
+	navigation: {
+		visiblePluginIds: [...DEFAULT_VISIBLE_PLUGIN_IDS]
 	},
 	layout: {
 		last: { ...DEFAULT_LAYOUT },
@@ -300,6 +308,12 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 	const legacyPermissions = legacyPermissionConfig(approvalMode);
 	const approvalPolicy = APPROVAL_POLICIES.has(source.approvalPolicy as ApprovalPolicyPreference) ? source.approvalPolicy as ApprovalPolicyPreference : legacyPermissions.approvalPolicy;
 	const sandboxMode = SANDBOX_MODES.has(source.sandboxMode as SandboxModePreference) ? source.sandboxMode as SandboxModePreference : legacyPermissions.sandboxMode;
+	const navigation = source.navigation && typeof source.navigation === "object"
+		? source.navigation as Record<string, unknown>
+		: {};
+	const visiblePluginIds = Array.isArray(navigation.visiblePluginIds)
+		? [...new Set(navigation.visiblePluginIds.filter((id): id is string => typeof id === "string" && id.trim() !== ""))]
+		: [...DEFAULT_VISIBLE_PLUGIN_IDS];
 
 	return {
 		schemaVersion: PREFERENCES_SCHEMA_VERSION,
@@ -337,6 +351,7 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 				)
 			}
 		},
+		navigation: { visiblePluginIds },
 		layout: {
 			last: normalizeLayoutSnapshot(layout.last),
 			default: normalizeLayoutSnapshot(layout.default)

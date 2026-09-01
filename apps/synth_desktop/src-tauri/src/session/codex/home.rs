@@ -689,6 +689,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         // `docs/COMPUTER_USE.md` §4.
         for (server, binary, group) in [
             ("synth_plugins", "synth-plugins-mcp", "bundled"),
+            ("workshop_display", "synth-display-mcp", "bundled"),
             ("synth_containers", "synth-containers-mcp", "bundled"),
             ("synth_visuals", "synth-visuals-mcp", "bundled"),
             ("synth_optimizers", "synth-optimizers-mcp", "bundled"),

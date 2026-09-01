@@ -31,6 +31,7 @@ import { ChatgptCodexSubscriptionCard } from "./ChatgptCodexSubscriptionCard";
 import { ContextSettings } from "./ContextSettings";
 import { SecretsSettings } from "./SecretsSettings";
 import { CapabilityManifest } from "./CapabilityManifest";
+import { PluginVisibilitySettings } from "./PluginVisibilitySettings";
 
 type Props = {
 	onBack: () => void;
@@ -130,6 +131,7 @@ const SECTIONS = [
 	{ id: "models", label: "Models", icon: IconChip },
 	{ id: "inference", label: "Inference", icon: IconGauge },
 	{ id: "voice", label: "Voice", icon: IconMic },
+	{ id: "plugins", label: "Plugins", icon: IconChip },
 	{ id: "account", label: "Account", icon: IconPerson },
 	{ id: "secrets", label: "Secrets", icon: IconKey },
 	{ id: "about", label: "About", icon: IconInfo }
@@ -568,6 +570,9 @@ export function SettingsPage({
 								<VoiceRecognitionSettings />
 							</SettingsCard>
 						</div>
+					) : null}
+					{section === "plugins" && preferences && onPreferencesChange ? (
+						<PluginVisibilitySettings preferences={preferences} pluginStatuses={pluginStatuses} onPreferencesChange={onPreferencesChange} />
 					) : null}
 					{section === "account" ? (
 						<AccountPage
