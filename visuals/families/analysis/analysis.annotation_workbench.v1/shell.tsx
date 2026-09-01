@@ -247,7 +247,17 @@ export function Shell(props: ShellProps) {
 
       {view === "overview" ? (
         <section aria-label="Campaign overview">
-          <p style={{ color: "var(--sv-text-muted)", fontSize: "var(--sv-fs-body)", marginTop: 0 }}>
+          <p
+            data-testid="analysis-evidence-summary"
+            style={{
+              color: "var(--sv-text-muted)",
+              fontSize: "var(--sv-fs-body)",
+              marginTop: 0,
+              minWidth: 0,
+              overflowWrap: "anywhere",
+              wordBreak: "break-word"
+            }}
+          >
             Evidence head {projection.evidenceHead?.digest ?? "unbound"} · campaign {campaign.id ?? "—"}.
             Validation failures: {validation.validationFailures ?? 0}. Unresolved selectors: {validation.unresolvedSelectors ?? 0}.
           </p>
