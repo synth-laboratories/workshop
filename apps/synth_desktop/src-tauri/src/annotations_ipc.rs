@@ -494,19 +494,86 @@ async fn trace_owner(core: &CoreRuntime, trace_digest: &str) -> Result<Option<Tr
         .await
 }
 
+/// Resolve the owner of a paid annotation binding. The container's normalized
+/// trace digest is allowed to differ from Workshop's imported archive digest,
+/// but only when an existing evidence head and job already seal the join from
+/// that normalized digest to the same producer rollout and container.
+async fn trace_owner_for_binding(
+    core: &CoreRuntime,
+    container_id: &str,
+    producer_trace_id: Option<&str>,
+    trace_digest: &str,
+) -> Result<Option<TraceOwner>> {
+    if let Some(owner) = trace_owner(core, trace_digest).await? {
+        return Ok(Some(owner));
+    }
+    let Some(producer_trace_id) = producer_trace_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let container_id = container_id.to_string();
+    let producer_trace_id = producer_trace_id.to_string();
+    let trace_digest = crate::trace_ingest::qualified_sha256(trace_digest)
+        .unwrap_or_else(|_| trace_digest.to_string());
+    core.storage()
+        .database()
+        .run_read(move |conn| {
+            use rusqlite::OptionalExtension;
+            let linked = conn
+                .query_row(
+                    "SELECT 1
+                     FROM annotation_evidence_heads h
+                     JOIN annotation_jobs j ON j.campaign_id=h.campaign_id
+                     WHERE h.trace_digest=?1 AND j.trace_id=?2 AND j.container_id=?3
+                     LIMIT 1",
+                    rusqlite::params![trace_digest, producer_trace_id, container_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if !linked {
+                return Ok(None);
+            }
+            let Some(row_id) =
+                owned_imported_trace_id_for_producer(conn, &container_id, &producer_trace_id)?
+            else {
+                return Ok(None);
+            };
+            Ok(conn
+                .query_row(
+                    "SELECT id, source, container_id FROM traces WHERE id=?1",
+                    [row_id],
+                    |row| {
+                        Ok(TraceOwner {
+                            row_id: row.get(0)?,
+                            source: row.get(1)?,
+                            container_id: row.get(2)?,
+                        })
+                    },
+                )
+                .optional()?)
+        })
+        .await
+}
+
 /// Paid annotation charges a human's budget on behalf of one container, so
 /// the trace must have a recorded owner and it must be the container asked
 /// for. Fails closed with a distinct code for each way that can be untrue.
 async fn require_trace_owner(
     core: &CoreRuntime,
     container_id: &str,
+    producer_trace_id: Option<&str>,
     trace_digest: &str,
 ) -> Result<TraceOwner> {
-    let owner = trace_owner(core, trace_digest).await?.ok_or_else(|| {
+    let owner = trace_owner_for_binding(core, container_id, producer_trace_id, trace_digest)
+        .await?
+        .ok_or_else(|| {
         failure(
             "annotation_trace_unknown",
-            format!("trace `{trace_digest}` is not in Workshop's trace index, so no owning container can be named on the approval card"),
-            format!("import the sealed trace from container `{container_id}` first (data_trace_materialize / the traces MCP container import with the container's immutable id), then start the paid job again"),
+            format!("trace `{trace_digest}` is neither in Workshop's trace index nor joined to an existing evidence head for this producer and container, so no owning container can be named on the approval card"),
+            format!("import the sealed trace from container `{container_id}` first, or reconcile its evidence head, then start the paid job again"),
         )
     })?;
     match owner.container_id.as_deref() {
@@ -596,7 +663,8 @@ pub(crate) async fn paid_preflight(
                 "pass a registered annotator id",
             )
         })?;
-    let owner = require_trace_owner(core, container_id, trace_digest).await?;
+    let producer_trace_id = request.get("source_trace_id").and_then(Value::as_str);
+    let owner = require_trace_owner(core, container_id, producer_trace_id, trace_digest).await?;
     Ok(PaidPreflight {
         binding: ReservationBinding {
             trace_digest: trace_digest.to_string(),
@@ -606,7 +674,9 @@ pub(crate) async fn paid_preflight(
         },
         cap_usd_micros: cap,
         model,
-        container_id: owner.container_id.unwrap_or_else(|| container_id.to_string()),
+        container_id: owner
+            .container_id
+            .unwrap_or_else(|| container_id.to_string()),
         trace_row_id: owner.row_id,
     })
 }
@@ -1814,6 +1884,87 @@ mod tests {
         assert_eq!(ok.binding.session_id, "sess");
         assert_eq!(ok.container_id, "ctr");
         assert_eq!(ok.trace_row_id, "tracev5_aaaa");
+    }
+
+    #[tokio::test]
+    async fn paid_preflight_accepts_a_sealed_normalized_evidence_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = CoreRuntime::open(dir.path()).unwrap();
+        let normalized = format!("sha256:{}", "b".repeat(64));
+        let request = json!({
+            "source_trace_id": "roll_real",
+            "source_trace_digest": normalized,
+            "annotator_id": "craftax.rubric_verifier"
+        });
+        let estimate = json!({
+            "paid": true,
+            "cached": false,
+            "max_cost_usd": 2.0,
+            "resolved_model": "gpt-5.6-luna"
+        });
+        core.storage()
+            .database()
+            .run_transaction(|conn| {
+                reservations::store_broker_secret(conn, "ctr_owned", "secret")?;
+                conn.execute(
+                    "INSERT INTO containers(id,name,location,status,health_json,metadata_json,created_at,updated_at)
+                     VALUES('ctr_owned','Craftax','local','ready','{}','{}','2026-01-03','2026-01-03')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO traces(id,digest,title,source,container_id,metrics_json,metadata_json,created_at)
+                     VALUES('tracev5_archive',?1,'Trace','container','ctr_owned','[]',?2,'2026-01-03')",
+                    rusqlite::params![
+                        format!("sha256:{}", "a".repeat(64)),
+                        json!({"producerTraceId": "roll_real"}).to_string()
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let err = paid_preflight(&core, "ctr_owned", Some("sess"), &request, &estimate)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<StructuredFailure>().unwrap().code,
+            "annotation_trace_unknown"
+        );
+
+        let sealed_digest = normalized.clone();
+        core.storage()
+            .database()
+            .run_transaction(move |conn| {
+                conn.execute(
+                    "INSERT INTO annotation_campaigns(campaign_id,container_id,status,created_at,updated_at)
+                     VALUES('acmp_existing','ctr_owned','sealed','2026-01-03','2026-01-03')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO annotation_jobs(job_id,campaign_id,container_id,trace_id,trace_digest,annotator_id,state,created_at,updated_at)
+                     VALUES('ajob_existing','acmp_existing','ctr_owned','roll_real',?1,'craftax.belief_facts','sealed','2026-01-03','2026-01-03')",
+                    rusqlite::params![sealed_digest],
+                )?;
+                conn.execute(
+                    "INSERT INTO annotation_evidence_heads(digest,trace_digest,campaign_id,summary_json,created_at,updated_at)
+                     VALUES(?1,?2,'acmp_existing','{}','2026-01-03','2026-01-03')",
+                    rusqlite::params![
+                        format!("sha256:{}", "c".repeat(64)),
+                        sealed_digest
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let ok = paid_preflight(&core, "ctr_owned", Some("sess"), &request, &estimate)
+            .await
+            .unwrap();
+        assert_eq!(ok.trace_row_id, "tracev5_archive");
+        assert_eq!(ok.container_id, "ctr_owned");
+        assert_eq!(ok.binding.trace_digest, normalized);
     }
 
     #[tokio::test]
