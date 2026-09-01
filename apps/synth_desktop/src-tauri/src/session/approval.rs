@@ -263,6 +263,9 @@ impl ApprovalKind {
     /// commits a new digest-bound spend, and credential access creates a new
     /// run-scoped provider capability. Consent is about that exact payload — a
     /// permissive shell policy is not a substitute for any of these grants.
+    /// Container lifecycle remains policy-controlled: an operator who selects
+    /// `never` has explicitly trusted bounded local workload replacement and
+    /// should not be interrupted by a modal for every restart.
     ///
     /// This is the single owner of that judgment. Both policy engines and the
     /// remembered-grant path consult it rather than re-deriving it.
@@ -272,7 +275,6 @@ impl ApprovalKind {
             Self::ComputerUse { hazard: true, .. }
                 | Self::PaidCompute { .. }
                 | Self::CredentialAccess { .. }
-                | Self::ContainerLifecycle { .. }
         )
     }
 

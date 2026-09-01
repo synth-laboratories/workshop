@@ -29,7 +29,10 @@ pub fn classify(kind: &ApprovalKind, active_runs: u64) -> PluginRisk {
             "start" | "stop" if active_runs == 0 => PluginRisk::Low,
             _ => PluginRisk::High,
         },
-        ApprovalKind::ContainerLifecycle { .. } => PluginRisk::HandOff,
+        // A validated container declaration is a bounded local mutation. It
+        // remains modal under on-request/untrusted, but `never` is an explicit
+        // operator choice to let trusted lifecycle recovery proceed.
+        ApprovalKind::ContainerLifecycle { .. } => PluginRisk::High,
         ApprovalKind::PaidCompute { .. } => PluginRisk::High,
         ApprovalKind::CredentialAccess { .. } => PluginRisk::High,
         ApprovalKind::ShellCommand { .. } => PluginRisk::High,
