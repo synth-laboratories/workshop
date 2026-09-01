@@ -57,6 +57,9 @@ export type Lane = {
   rolloutEvents: number;
   // --- annotation layer
   protocol?: { revisionId?: string; protocolId?: string; model?: string | null };
+  /** Consumer -> annotator history: acknowledged controls and hot-swaps, in stream order. */
+  controls: Array<{ sequence: number; op?: string; controlId?: string; accepted: boolean; reason?: string; sourceSequence?: number }>;
+  rebinds: number;
   findings: Finding[];
   markers: Marker[];
   metrics: Record<string, number>;
@@ -135,6 +138,9 @@ export function eventDetail(event: LiveEvalEvent): string {
   if (kind === "annotation.model.failed") return `judge failed · ${str(p.reason) ?? ""}`.trim();
   if (kind === "annotation.protocol.error") return `protocol error · ${str(p.stage) ?? ""}`.trim();
   if (kind === "annotation.closed") return `annotations closed · ${str(p.outcome) ?? ""}`.trim();
+  if (kind === "annotation.control.received") return `control ${str(p.op) ?? ""} accepted · ${str(p.control_id) ?? ""}`.trim();
+  if (kind === "annotation.control.refused") return `control refused · ${str(p.reason) ?? ""}`.trim();
+  if (kind === "annotation.protocol.rebound") return `protocol rebound → ${str(p.protocol_revision_id) ?? ""}${p.state_carried ? " (state carried)" : ""}`;
   if (kind === "action") return `action · ${str(p.action) ?? ""}`.trim();
   if (kind === "reward_signal") return `reward ${num(p.value) ?? "unavailable"} @ step ${num(p.step) ?? "?"}`;
   if (kind === "observation") return `observation · step ${num(p.step) ?? "?"}`;
@@ -146,7 +152,7 @@ export function eventDetail(event: LiveEvalEvent): string {
 function newLane(name: string): Lane {
   return {
     name, status: "starting", done: 0, achievements: [], calls: 0, last: "opening rollout", rolloutEvents: 0,
-    findings: [], markers: [], metrics: {}, metricSeries: {}, model: { requested: 0, completed: 0, failed: 0 },
+    findings: [], markers: [], metrics: {}, metricSeries: {}, model: { requested: 0, completed: 0, failed: 0 }, controls: [], rebinds: 0,
     protocolErrors: 0, annotationClosed: false, annotationEvents: 0, lastAnnotation: "waiting for the protocol",
   };
 }
@@ -248,6 +254,12 @@ function applyAnnotation(lane: Lane, event: LiveEvalEvent): void {
   else if (kind === "annotation.model.completed") lane.model.completed += 1;
   else if (kind === "annotation.model.failed") lane.model.failed += 1;
   else if (kind === "annotation.protocol.error") lane.protocolErrors += 1;
+  else if (kind === "annotation.control.received" || kind === "annotation.control.refused") {
+    lane.controls.push({ sequence, op: str(p.op), controlId: str(p.control_id), accepted: kind === "annotation.control.received", reason: str(p.reason), sourceSequence: num(p.source_sequence) });
+  } else if (kind === "annotation.protocol.rebound") {
+    lane.rebinds += 1;
+    lane.protocol = { ...(lane.protocol ?? {}), revisionId: str(p.protocol_revision_id), protocolId: str(p.protocol_id) ?? lane.protocol?.protocolId, model: (p.model as string | null | undefined) ?? null };
+  }
   else if (kind === "annotation.closed") { lane.annotationOutcome = str(p.outcome); lane.annotationClosed = true; }
   else if (kind === "capture.closed") lane.annotationClosed = true;
   lane.lastAnnotation = eventDetail(event);

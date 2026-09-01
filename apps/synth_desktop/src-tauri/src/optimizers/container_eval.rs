@@ -15,8 +15,8 @@ use super::{
     OptimizerManager, OptimizerService,
 };
 use crate::container_stream::{
-    authoritative_poll_telemetry, declared_annotation_poll_url, declared_poll_url,
-    declared_reward_poll_url,
+    authoritative_poll_telemetry, declared_annotation_poll_url, declared_annotation_sse_url,
+    declared_poll_url, declared_reward_poll_url, declared_sse_url,
     declared_stream_descriptor, refuse_auto_transport, resolve_declared_url,
     wait_for_stream_subscribed, StreamDiagnostics, SUBSCRIBE_READY_TIMEOUT,
 };
@@ -35,6 +35,12 @@ const EXPERIMENT_SCHEMA: &str = "synth.experiment.overview.v1";
 /// what a seed row opens, and it is bound to the same run rather than to a
 /// snapshot, so it keeps filling in while the campaign runs.
 const WORKBENCH_TEMPLATE: &str = "trace.workbench.v1";
+/// The live superset viewer minted beside the experiment pane when a recipe
+/// declares `[live_annotation]`: each rollout's declared stream and its
+/// annotation sibling are appended to its one multi-stream input as rollouts
+/// are prepared, so the pane shows the summary layer over the underlying events.
+const LIVE_ANNOTATION_TEMPLATE: &str = "live.annotated_rollouts.v1";
+const LIVE_ANNOTATION_VISUAL_ROLE: &str = "live_annotation";
 const EVAL_ALGORITHM_ID: &str = "eval";
 const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
@@ -646,6 +652,7 @@ async fn start_eval(
     // appears only after there is something to see cannot show a rollout
     // starting, which is the thing it exists to show.
     let workbench_id = mint_workbench_visual(service, &run, &spec).await?;
+    let live_annotation_visual_id = mint_live_annotation_visual(service, &run, &spec).await?;
     let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run.id.clone(), cancel_tx)
@@ -655,6 +662,7 @@ async fn start_eval(
     let planned_trials = examples.len();
     let worker_visual_id = visual_id.clone();
     let worker_workbench_id = workbench_id.clone();
+    let worker_live_visual_id = live_annotation_visual_id.clone();
     let worker_spec = spec.clone();
     tokio::spawn(async move {
         if let Err(error) = run_eval_worker(
@@ -665,10 +673,12 @@ async fn start_eval(
             examples,
             worker_visual_id.clone(),
             worker_workbench_id.clone(),
+            worker_live_visual_id.clone(),
             cancel_rx,
         )
         .await
         {
+            let _ = settle_live_annotation_visual(&worker, worker_live_visual_id.as_deref(), "failed").await;
             // A worker can fail before its first progress projection (for
             // example when Workshop refuses to mint a secrets proxy).  Its
             // durable run is terminal in that case, so its chat-owned visual
@@ -993,6 +1003,173 @@ async fn mint_workbench_visual(
         })
         .await?;
     Ok(visual_id)
+}
+
+/// Lane C's pane. Minted honestly empty (`pending_stream_bindings`) with the
+/// run, then bound per rollout after prepare; absent when the recipe does not
+/// declare a live annotation protocol.
+async fn mint_live_annotation_visual(
+    service: &OptimizerService,
+    run: &OptimizerRunRecord,
+    spec: &EvalSpec,
+) -> Result<Option<String>> {
+    if spec.live_annotation.is_none() {
+        return Ok(None);
+    }
+    let (visual_id, _event) = service
+        .publish_chat_owned_visual(ChatVisualPublication {
+            run_id: run.id.clone(),
+            session_ref: run.session_ref.clone(),
+            template_id: LIVE_ANNOTATION_TEMPLATE.into(),
+            title: format!("{} · live annotations", spec.title),
+            bindings: crate::visuals::pending_stream_bindings(),
+            metadata: json!({
+                "optimizerRunId": run.id,
+                "recipeId": spec.recipe_id,
+                "semantics": "live_annotation_provisional",
+                "protocolId": spec.live_annotation.as_ref().map(|source| source.spec.protocol_id.clone()),
+            }),
+            status: VisualStatus::Live,
+            role: LIVE_ANNOTATION_VISUAL_ROLE.into(),
+        })
+        .await?;
+    Ok(Some(visual_id))
+}
+
+/// Merge per-rollout stream descriptors into a live visual's bindings.
+///
+/// There is no host-side append mode, so this is the read-modify-write the
+/// MCP shim performs client-side: keep existing `live_sse` descriptors, drop
+/// the honest-empty placeholder, de-duplicate by source, and re-emit the
+/// canonical envelope. Pure, so the merge rule is testable without a registry.
+pub(crate) fn merge_live_stream_bindings(existing: &Value, incoming: &[Value]) -> Result<Value> {
+    let mut descriptors: Vec<Value> = crate::visuals::binding_descriptors(existing)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|row| row.get("kind").and_then(Value::as_str) != Some("inline"))
+        .collect();
+    for row in incoming {
+        let source = row.get("source").and_then(Value::as_str);
+        if source.is_some()
+            && descriptors
+                .iter()
+                .any(|known| known.get("source").and_then(Value::as_str) == source)
+        {
+            continue;
+        }
+        descriptors.push(row.clone());
+    }
+    Ok(json!({
+        "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+        "inputs": descriptors,
+    }))
+}
+
+fn live_stream_descriptor(sse_url: &str, poll_url: &str) -> Value {
+    json!({
+        "input": "stream",
+        "kind": "live_sse",
+        "source": sse_url,
+        "poll_url": poll_url,
+        "schema": "synth.trace-stream-event.v1",
+    })
+}
+
+/// Append one rollout's declared streams (its own and its annotation sibling)
+/// to the live annotation visual. Serialized per run: concurrent rollouts
+/// would otherwise lose descriptors to last-writer-wins.
+async fn append_live_annotation_bindings(
+    service: &OptimizerService,
+    visual_id: &str,
+    lock: &tokio::sync::Mutex<()>,
+    rollout_id: &str,
+    rollout_sse_url: &str,
+    rollout_poll_url: &str,
+    annotation_sse_url: Option<&str>,
+    annotation_poll_url: Option<&str>,
+) -> Result<()> {
+    crate::visuals::assert_declared_stream_source(rollout_sse_url)?;
+    let mut incoming = vec![live_stream_descriptor(rollout_sse_url, rollout_poll_url)];
+    if let (Some(sse), Some(poll)) = (annotation_sse_url, annotation_poll_url) {
+        crate::visuals::assert_declared_stream_source(sse)?;
+        incoming.push(live_stream_descriptor(sse, poll));
+    }
+    let _guard = lock.lock().await;
+    let visual = service.visuals().get(visual_id.to_string()).await?;
+    let bindings = merge_live_stream_bindings(&visual.bindings, &incoming)?;
+    let (_, event) = service
+        .visuals()
+        .update(
+            visual_id.to_string(),
+            VisualUpdateRequest {
+                title: None,
+                bindings: Some(bindings),
+                status: None,
+                renderer_kind: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                content: None,
+                metadata: Some(json!({ "lastBoundRolloutId": rollout_id, "streamState": "bound_before_start" })),
+                bump_revision: Some(true),
+            },
+        )
+        .await?;
+    service.publish_visual_event(event)?;
+    Ok(())
+}
+
+async fn settle_live_annotation_visual(
+    service: &OptimizerService,
+    visual_id: Option<&str>,
+    status: &str,
+) -> Result<()> {
+    let Some(visual_id) = visual_id else {
+        return Ok(());
+    };
+    let visual_status = match status {
+        "completed" | "cancelled" | "degraded" => VisualStatus::Saved,
+        _ => VisualStatus::Failed,
+    };
+    let (_, event) = service
+        .visuals()
+        .update(
+            visual_id.to_string(),
+            VisualUpdateRequest {
+                title: None,
+                bindings: None,
+                status: Some(visual_status),
+                renderer_kind: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                content: None,
+                metadata: None,
+                bump_revision: Some(true),
+            },
+        )
+        .await?;
+    service.publish_visual_event(event)?;
+    Ok(())
+}
+
+/// The protocol pin a dispatch should use: the run summary's current
+/// `liveAnnotationPin`, which `annotation_protocol_update` may have advanced
+/// since the worker started, falling back to the pin taken at start.
+async fn current_annotation_pin(
+    service: &OptimizerService,
+    run_id: &str,
+    fallback: Option<&Value>,
+) -> Option<Value> {
+    match service.get(run_id.to_string()).await {
+        Ok(run) => run
+            .summary
+            .get("liveAnnotationPin")
+            .cloned()
+            .filter(|pin| pin.get("protocolRevisionId").and_then(Value::as_str).is_some())
+            .or_else(|| fallback.cloned()),
+        Err(_) => fallback.cloned(),
+    }
 }
 
 async fn mint_experiment_visual(
@@ -1488,9 +1665,12 @@ async fn run_eval_worker(
     examples: Vec<EvalExample>,
     visual_id: String,
     workbench_id: String,
+    live_visual_id: Option<String>,
     cancel: super::CancelObserver,
 ) -> Result<()> {
     let _revoke_capabilities = crate::secrets::RevokeRunOnDrop(run_id.clone());
+    // Binding appends on the live annotation visual are read-modify-write.
+    let binding_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let _ownership = service.hold_run_ownership(&run_id)?;
     evidence(
         "run_started",
@@ -1635,7 +1815,11 @@ async fn run_eval_worker(
             let media_client = media_client.clone();
             let base = media_origin.clone();
             let pin = policy_pin.clone();
-            let annotation_pin = annotation_pin.clone();
+            // Re-read per dispatch: a mid-run `annotation_protocol_update`
+            // advances the run's pin, and the next rollout should use it.
+            let annotation_pin = current_annotation_pin(&service, &run_id, annotation_pin.as_ref()).await;
+            let live_visual_id = live_visual_id.clone();
+            let binding_lock = binding_lock.clone();
             let spec = spec.clone();
             let service = service.clone();
             let run_id = run_id.clone();
@@ -1652,6 +1836,8 @@ async fn run_eval_worker(
                     spec: &spec,
                     policy_pin: &pin,
                     annotation_pin: annotation_pin.as_ref(),
+                    live_visual_id: live_visual_id.as_deref(),
+                    binding_lock: &binding_lock,
                 };
                 let result =
                     run_one_example(&trial, index as u32, example, &mut trial_cancel).await;
@@ -1770,6 +1956,11 @@ async fn run_eval_worker(
             total,
             status,
         ),
+    )
+    .await?;
+    evidence(
+        "live_annotation_visual",
+        settle_live_annotation_visual(&service, live_visual_id.as_deref(), status),
     )
     .await?;
     // This is the final mutable summary/visual projection. `append_terminal`
@@ -3893,6 +4084,9 @@ struct TrialContext<'a> {
     policy_pin: &'a Value,
     /// Live annotation protocol pin for this run, when the recipe declares one.
     annotation_pin: Option<&'a Value>,
+    /// The run's live annotated-rollouts visual, bound per rollout after prepare.
+    live_visual_id: Option<&'a str>,
+    binding_lock: &'a tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4168,6 +4362,12 @@ async fn run_one_example(
         let mut telemetry = authoritative_poll_telemetry();
         if let Some(object) = telemetry.as_object_mut() {
             object.insert("retention".into(), json!("run"));
+            if spec.live_annotation.is_some() {
+                // The live pane binds declared SSE sources for both streams
+                // (the relay keeps polling); SSE is a declared, non-auto
+                // transport, so the authoritative-run refusal does not apply.
+                object.insert("transport".into(), json!("sse"));
+            }
             // Frames are asked for when the recipe retains them. The eval lane
             // used to pin `frame.enabled: false` and then report "0 native
             // frames", which was true and entirely self-inflicted.
@@ -4226,6 +4426,26 @@ async fn run_one_example(
         bail!(
             "live_annotation_channel_missing: the container accepted a protocol pin but declared no annotation stream"
         );
+    }
+    if let Some(live_visual_id) = ctx.live_visual_id {
+        // Bind the pane before start, like every live visual: a viewer
+        // opened now sees `stream.subscribed` and then the first event.
+        let rollout_sse_url = resolve_declared_url(ctx.base, &declared_sse_url(&stream)?)?;
+        let annotation_sse_url = declared_annotation_sse_url(&stream)
+            .map(|url| resolve_declared_url(ctx.base, &url))
+            .transpose()?;
+        append_live_annotation_bindings(
+            ctx.service,
+            live_visual_id,
+            ctx.binding_lock,
+            &rollout_id,
+            &rollout_sse_url,
+            &poll_url,
+            annotation_sse_url.as_deref(),
+            annotation_poll_url.as_deref(),
+        )
+        .await
+        .context("bind the live annotation visual before start")?;
     }
     wait_for_stream_subscribed(
         ctx.client,
@@ -9147,5 +9367,42 @@ max_total_rollouts = 1
             missing["reportedFacts"]["frames"]["unavailableReason"],
             json!("frames_not_retained")
         );
+    }
+}
+
+
+#[cfg(test)]
+mod live_annotation_binding_tests {
+    use super::*;
+
+    #[test]
+    fn merge_replaces_the_placeholder_keeps_streams_and_dedupes_by_source() {
+        let placeholder = crate::visuals::pending_stream_bindings();
+        let first = vec![
+            live_stream_descriptor("http://127.0.0.1:1/rollouts/a/stream", "http://127.0.0.1:1/rollouts/a/events"),
+            live_stream_descriptor(
+                "http://127.0.0.1:1/rollouts/a/annotations/stream",
+                "http://127.0.0.1:1/rollouts/a/annotations/events",
+            ),
+        ];
+        let merged = merge_live_stream_bindings(&placeholder, &first).unwrap();
+        assert_eq!(merged["schemaVersion"], VISUAL_BINDINGS_SCHEMA_VERSION);
+        let inputs = merged["inputs"].as_array().unwrap();
+        assert_eq!(inputs.len(), 2, "the honest-empty inline placeholder is dropped");
+        assert!(inputs.iter().all(|row| row["kind"] == "live_sse" && row["input"] == "stream"));
+        // The renderer's poll allowlist needs poll_url on every descriptor.
+        assert_eq!(
+            crate::visuals::declared_poll_urls(&merged),
+            vec![
+                "http://127.0.0.1:1/rollouts/a/events".to_string(),
+                "http://127.0.0.1:1/rollouts/a/annotations/events".to_string(),
+            ]
+        );
+        let second = vec![
+            live_stream_descriptor("http://127.0.0.1:1/rollouts/a/stream", "http://127.0.0.1:1/rollouts/a/events"),
+            live_stream_descriptor("http://127.0.0.1:1/rollouts/b/stream", "http://127.0.0.1:1/rollouts/b/events"),
+        ];
+        let merged = merge_live_stream_bindings(&merged, &second).unwrap();
+        assert_eq!(merged["inputs"].as_array().unwrap().len(), 3, "a re-offered source is not duplicated");
     }
 }

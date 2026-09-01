@@ -1921,7 +1921,13 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
                 .build()?;
-            let prepare_body = json!({"rollout_id": rollout_id, "telemetry": telemetry});
+            let mut prepare_body = json!({"rollout_id": rollout_id, "telemetry": telemetry});
+            // A live annotation protocol pin is part of rollout identity; the
+            // caller names an installed anprev_ revision and the container
+            // declares the sibling channel in the descriptor.
+            if let Some(revision) = body.get("annotation_protocol_revision_id").and_then(Value::as_str) {
+                prepare_body["annotation_protocol_revision_id"] = json!(revision);
+            }
             let mut response = client
                 .post(format!("{base}/rollouts/prepare"))
                 .json(&prepare_body)
@@ -1972,10 +1978,25 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let poll_url = resolve_declared_url(&base, &declared_poll_url(&stream)?)?;
             let sse_url = resolve_declared_url(&base, &declared_sse_url(&stream)?)?;
             crate::visuals::assert_declared_stream_source(&sse_url)?;
+            // A pinned live annotation protocol declares a sibling channel;
+            // bind it beside the rollout stream on live.annotated_rollouts.v1.
+            let annotation_visual_binding = match (
+                crate::container_stream::declared_annotation_sse_url(&stream),
+                crate::container_stream::declared_annotation_poll_url(&stream),
+            ) {
+                (Some(annotation_sse), Some(annotation_poll)) => {
+                    let annotation_sse = resolve_declared_url(&base, &annotation_sse)?;
+                    let annotation_poll = resolve_declared_url(&base, &annotation_poll)?;
+                    crate::visuals::assert_declared_stream_source(&annotation_sse)?;
+                    json!({"input":"stream","kind":"live_sse","source":annotation_sse,"poll_url":annotation_poll,"schema":"synth.trace-stream-event.v1"})
+                }
+                _ => Value::Null,
+            };
             Ok(json!({
                 "container_id": id, "rollout_id": rollout_id, "prepared": prepared, "stream": stream,
                 "resolved": {"poll_url": poll_url, "sse_url": sse_url},
                 "visual_binding": {"input":"stream","kind":"live_sse","source":sse_url,"poll_url":poll_url,"schema":"synth.trace-stream-event.v1"},
+                "annotation_visual_binding": annotation_visual_binding,
                 "start_blocked_until": "stream.subscribed"
             }))
         }
@@ -2166,6 +2187,14 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             });
             if let Some(max_steps) = stream.get("max_steps").and_then(Value::as_u64) {
                 start_body["max_steps"] = json!(max_steps);
+            }
+            if let Some(revision) = body
+                .get("annotation_protocol_revision_id")
+                .and_then(Value::as_str)
+            {
+                // Same pin as prepare, or the container answers 409
+                // rollout_identity_conflict: the observer is part of identity.
+                start_body["annotation_protocol_revision_id"] = json!(revision);
             }
             if let Some(environment_ref) = body
                 .get("environment_ref")

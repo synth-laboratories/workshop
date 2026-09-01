@@ -208,3 +208,31 @@ test("the bundled fixture, produced by the real craftax.live.v1 protocol, projec
     "safety_survival.low_health",
   ]);
 });
+
+
+test("consumer controls and protocol rebinds are shown as history, and the lane follows the new revision", () => {
+  const events = [
+    rollout("roll_c", 1, "trace.opened", { rollout_id: "roll_c" }),
+    annotation("roll_c", 1, "annotation.protocol.bound", { rollout_id: "roll_c", protocol_revision_id: "anprev_a", protocol_id: "craftax.live.v1", model: null }),
+    annotation("roll_c", 2, "annotation.control.received", { op: "message", control_id: "human-1", applied: true, handled: true, source_sequence: 5 }),
+    annotation("roll_c", 3, "annotation.finding", { finding_id: "note:1", kind: "note", label: "operator note", status: "provisional", evidence: { sequences: [] }, source_sequence: 5, detail: { basis: "consumer" }, protocol_revision_id: "anprev_a" }),
+    annotation("roll_c", 4, "annotation.control.refused", { control_id: "ctl:2", reason: "annotation_protocol_unknown", source_sequence: 6 }),
+    annotation("roll_c", 5, "annotation.control.received", { op: "protocol.update", control_id: "swap", applied: true, protocol_revision_id: "anprev_b", source_sequence: 7 }),
+    annotation("roll_c", 6, "annotation.protocol.rebound", { previous_protocol_revision_id: "anprev_a", protocol_revision_id: "anprev_b", protocol_id: "craftax.live.v1", state_carried: true, model: "judge", source_sequence: 7 }),
+    annotation("roll_c", 7, "annotation.control.received", { op: "stop", control_id: "stop", applied: true, source_sequence: 9 }),
+    annotation("roll_c", 8, "annotation.closed", { rollout_id: "roll_c", outcome: "stopped_by_consumer" }),
+  ];
+  const [lane] = projectLanes(events);
+  assert.equal(lane.rebinds, 1);
+  assert.deepEqual(lane.protocol, { revisionId: "anprev_b", protocolId: "craftax.live.v1", model: "judge" });
+  assert.deepEqual(lane.controls.map((row) => [row.op, row.accepted, row.reason]), [
+    ["message", true, undefined],
+    [undefined, false, "annotation_protocol_unknown"],
+    ["protocol.update", true, undefined],
+    ["stop", true, undefined],
+  ]);
+  assert.equal(lane.annotationOutcome, "stopped_by_consumer");
+  assert.equal(activeFindings(lane)[0].basis, "consumer");
+  assert.equal(eventDetail(events[6]), "protocol rebound → anprev_b (state carried)");
+  assert.equal(eventDetail(events[4]), "control refused · annotation_protocol_unknown");
+});

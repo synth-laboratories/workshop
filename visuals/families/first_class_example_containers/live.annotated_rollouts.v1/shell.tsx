@@ -103,6 +103,7 @@ function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: 
       <span>{lane.findings.filter((row) => row.status === "retracted").length} retracted</span>
       {lane.model.requested ? <span>judge {lane.model.completed}/{lane.model.requested}{lane.model.failed ? ` (${lane.model.failed} failed)` : ""}</span> : null}
       {lane.protocolErrors ? <span style={{ color: "#c2553f" }}>{lane.protocolErrors} protocol errors</span> : null}
+      {lane.controls.length ? <span title={lane.controls.map((row) => `${row.accepted ? "✓" : "✗"} ${row.op ?? "?"} ${row.controlId ?? ""} ${row.reason ?? ""}`.trim()).join("\n")}>{lane.controls.filter((row) => row.accepted).length} controls{lane.controls.some((row) => !row.accepted) ? ` (${lane.controls.filter((row) => !row.accepted).length} refused)` : ""}{lane.rebinds ? ` · ${lane.rebinds} rebinds` : ""}</span> : null}
     </div>
     <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }} aria-label={`Findings for ${lane.name}`}>
       {ordered.map((finding) => <FindingChip key={finding.findingId} finding={finding} showHistory={showHistory} />)}

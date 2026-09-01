@@ -189,6 +189,16 @@ pub fn declared_annotation_poll_url(stream: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// SSE URL for the live annotation stream, declared beside `annotation.events`
+/// when the rollout bound an SSE or WebSocket transport. Never guessed.
+pub fn declared_annotation_sse_url(stream: &Value) -> Option<String> {
+    stream
+        .pointer("/annotation/stream")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .map(str::to_string)
+}
+
 pub fn resolve_declared_url(base: &str, declared: &str) -> Result<String> {
     let base_url = reqwest::Url::parse(base).context("invalid container base URL")?;
     Ok(base_url

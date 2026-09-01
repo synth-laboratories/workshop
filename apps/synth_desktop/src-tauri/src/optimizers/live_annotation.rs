@@ -180,7 +180,7 @@ fn json_object(table: &toml::value::Table) -> Result<Map<String, Value>> {
 
 /// Same refusal shape as `PUT /policy` and `PUT /annotation-protocol`: identity
 /// and configuration travel, credentials never do.
-fn contains_secret_key(value: &Value) -> bool {
+pub(crate) fn contains_secret_key(value: &Value) -> bool {
     match value {
         Value::Object(map) => map.iter().any(|(key, child)| {
             let normalized = key.replace(['_', '-'], "").to_ascii_lowercase();
@@ -395,6 +395,27 @@ pub(crate) async fn register_protocol_pin(
         "immutable": true,
         "mode": "observe_only",
         "authority": PROTOCOL_STATE_SCHEMA,
+    }))
+}
+
+/// Pin JSON from an installed container state, for a mid-run update that has
+/// no workspace spec behind it (the caller supplied the source directly).
+pub(crate) fn pin_from_state(state: &ContainerProtocolState, protocol_source: Option<&str>) -> Result<Value> {
+    let revision = state
+        .protocol_revision_id
+        .clone()
+        .context("installed annotation protocol omitted protocol_revision_id")?;
+    Ok(json!({
+        "protocolId": state.protocol_id,
+        "protocolRevisionId": revision,
+        "sourceRevision": state.source_revision,
+        "configurationDigest": state.configuration_digest,
+        "protocolSource": protocol_source,
+        "installedByThisRun": true,
+        "immutable": true,
+        "mode": "observe_only",
+        "authority": PROTOCOL_STATE_SCHEMA,
+        "updatedMidRun": true,
     }))
 }
 

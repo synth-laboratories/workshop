@@ -20,6 +20,7 @@ use crate::limits;
 use crate::session::annotation_reservation::{self as reservations, ReservationBinding};
 use crate::session::approval::{ApprovalBroker, ApprovalDecision, ApprovalKind, PaidComputeCap};
 use crate::session::paid_compute_budget::{micros_from_reported_cost, SettlementOutcome};
+use sha2::Digest;
 
 /// Mirrors `bin/synth_annotations_mcp.rs::OPERATIONS`; a contract test keeps them equal.
 pub const OPERATIONS: &[(&str, bool, bool)] = &[
@@ -36,6 +37,10 @@ pub const OPERATIONS: &[(&str, bool, bool)] = &[
     ("annotation_review", false, false),
     ("annotation_consensus", false, false),
     ("annotation_campaign", false, true),
+    // Lane C: live annotation protocols beside running rollouts.
+    ("annotation_protocol_get", true, false),
+    ("annotation_protocol_update", false, false),
+    ("annotation_control_send", false, false),
 ];
 
 const ALLOWED_ARGUMENTS: &[&str] = &[
@@ -64,6 +69,18 @@ const ALLOWED_ARGUMENTS: &[&str] = &[
     "repeats",
     "after",
     "limit",
+    // live annotation protocol + control
+    "rollout_id",
+    "rollout_ids",
+    "protocol_id",
+    "protocol_revision_id",
+    "code",
+    "configuration",
+    "source_revision",
+    "op",
+    "message",
+    "carry_state",
+    "reason",
 ];
 
 const RESERVATION_TTL_SECONDS: i64 = 900;
@@ -142,6 +159,143 @@ fn client() -> Result<reqwest::Client> {
         .build()?)
 }
 
+/// `annotation_protocol_update`: install (or re-install) a live annotation
+/// protocol revision on the container, optionally advance a run's pin so its
+/// next rollouts use it, and optionally hot-swap rollouts that are running now.
+///
+/// The container is the authority: it boots the code in isolation before it
+/// counts as installed and returns the digest-pinned `protocol_revision_id`.
+async fn protocol_update(body: &Value, core: &CoreRuntime, base: &str) -> Result<Value> {
+    let code = body
+        .get("code")
+        .and_then(Value::as_str)
+        .filter(|code| !code.trim().is_empty())
+        .ok_or_else(|| failure("annotation_argument_missing", "code required", "pass the protocol source"))?;
+    let protocol_id = body
+        .get("protocol_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| failure("annotation_argument_missing", "protocol_id required", "pass the protocol id the file declares"))?;
+    let configuration = match body.get("configuration") {
+        None | Some(Value::Null) => json!({}),
+        Some(Value::Object(map)) => Value::Object(map.clone()),
+        Some(_) => return Err(failure("annotation_argument_invalid", "configuration must be an object", "pass a JSON object")),
+    };
+    if crate::optimizers::live_annotation::contains_secret_key(&configuration) {
+        return Err(failure(
+            "protocol_credential_forbidden",
+            "configuration must not carry credentials",
+            "the container reads its own provider key; pass model and limits only",
+        ));
+    }
+    let source_revision = body
+        .get("source_revision")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("sha256:{:x}", sha2::Sha256::digest(code.as_bytes())));
+    let installed = forward(
+        "PUT",
+        &format!("{base}/annotation-protocol"),
+        Some(&json!({
+            "code": code,
+            "protocol_id": protocol_id,
+            "configuration": configuration,
+            "source_revision": source_revision,
+        })),
+    )
+    .await?;
+    let revision = installed
+        .get("protocol_revision_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| failure("annotation_container_error", "install omitted protocol_revision_id", "inspect the container"))?
+        .to_string();
+    let mut result = json!({
+        "protocol": installed,
+        "protocol_revision_id": revision,
+        "idempotent": installed.get("idempotent").cloned().unwrap_or(Value::Bool(false)),
+    });
+    if let Some(run_id) = body.get("run_id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+        let client = client()?;
+        let state = crate::optimizers::live_annotation::read_protocol_state(&client, base).await?;
+        let pin = crate::optimizers::live_annotation::pin_from_state(&state, None)?;
+        crate::optimizers::live_annotation::persist_protocol_pin(core.optimizers(), run_id, &pin).await?;
+        result["run_pin"] = pin;
+    }
+    let mut rebinds = Vec::new();
+    if let Some(rollouts) = body.get("rollout_ids").and_then(Value::as_array) {
+        let carry_state = body.get("carry_state").and_then(Value::as_bool).unwrap_or(true);
+        for rollout in rollouts.iter().filter_map(Value::as_str) {
+            let ack = forward(
+                "POST",
+                &format!("{base}/rollouts/{rollout}/annotations/control"),
+                Some(&json!({
+                    "schema": "synth.live-annotation-control.v1",
+                    "op": "protocol.update",
+                    "protocol_revision_id": revision,
+                    "carry_state": carry_state,
+                })),
+            )
+            .await;
+            rebinds.push(match ack {
+                Ok(ack) => json!({"rollout_id": rollout, "ack": ack}),
+                Err(error) => json!({"rollout_id": rollout, "error": format!("{error:#}")}),
+            });
+        }
+    }
+    result["rebinds"] = Value::Array(rebinds);
+    Ok(result)
+}
+
+/// `annotation_control_send`: one consumer control message to one running
+/// rollout's annotator. The container answers the sender immediately and
+/// publishes the durable acknowledgement on the annotation stream.
+async fn control_send(body: &Value, base: &str) -> Result<Value> {
+    let rollout_id = string_field(body, "rollout_id", "rolloutId").ok_or_else(|| {
+        failure("annotation_argument_missing", "rollout_id required", "pass the rollout id")
+    })?;
+    if rollout_id.contains('/') || rollout_id.is_empty() {
+        return Err(failure("annotation_argument_invalid", "rollout_id is malformed", "pass the rollout id from the run"));
+    }
+    let op = body
+        .get("op")
+        .and_then(Value::as_str)
+        .ok_or_else(|| failure("annotation_argument_missing", "op required", "one of message, protocol.update, stop"))?;
+    let mut control = json!({"schema": "synth.live-annotation-control.v1", "op": op});
+    match op {
+        "message" => {
+            let message = body.get("message").cloned().unwrap_or(Value::Null);
+            if !message.is_object() {
+                return Err(failure("annotation_argument_invalid", "message must be an object with a type", "pass {type: note|judge_now|set, ...}"));
+            }
+            if crate::optimizers::live_annotation::contains_secret_key(&message) {
+                return Err(failure("protocol_credential_forbidden", "message must not carry credentials", "messages are evidence, never secrets"));
+            }
+            control["message"] = message;
+        }
+        "protocol.update" => {
+            let revision = body
+                .get("protocol_revision_id")
+                .and_then(Value::as_str)
+                .filter(|id| id.starts_with("anprev_"))
+                .ok_or_else(|| failure("annotation_argument_missing", "protocol_revision_id required", "install the revision first (annotation_protocol_update) and pass its anprev_ id"))?;
+            control["protocol_revision_id"] = json!(revision);
+            control["carry_state"] = json!(body.get("carry_state").and_then(Value::as_bool).unwrap_or(true));
+        }
+        "stop" => {
+            if let Some(reason) = body.get("reason").and_then(Value::as_str) {
+                control["reason"] = json!(reason);
+            }
+        }
+        other => {
+            return Err(failure("annotation_argument_invalid", format!("unknown control op `{other}`"), "one of message, protocol.update, stop"));
+        }
+    }
+    if let Some(control_id) = body.get("control_id").and_then(Value::as_str) {
+        control["control_id"] = json!(control_id);
+    }
+    forward("POST", &format!("{base}/rollouts/{rollout_id}/annotations/control"), Some(&control)).await
+}
+
 /// Known container error codes keep their identity through the proxy.
 fn container_code(code: &str) -> &'static str {
     match code {
@@ -156,6 +310,12 @@ fn container_code(code: &str) -> &'static str {
         "unsupported_finding" => "unsupported_finding",
         "job_not_found" => "job_not_found",
         "annotation_not_found" => "annotation_not_found",
+        "annotation_runner_not_active" => "annotation_runner_not_active",
+        "annotation_stream_not_found" => "annotation_stream_not_found",
+        "annotation_protocol_unknown" => "annotation_protocol_unknown",
+        "protocol_boot_failed" => "protocol_boot_failed",
+        "protocol_identity_mismatch" => "protocol_identity_mismatch",
+        "protocol_credential_forbidden" => "protocol_credential_forbidden",
         _ => "annotation_container_error",
     }
 }
@@ -164,6 +324,7 @@ async fn forward(method: &str, url: &str, body: Option<&Value>) -> Result<Value>
     let client = client()?;
     let request = match method {
         "GET" => client.get(url),
+        "PUT" => client.put(url).json(body.unwrap_or(&Value::Null)),
         _ => client.post(url).json(body.unwrap_or(&Value::Null)),
     };
     let response = request.send().await.map_err(|error| {
@@ -180,12 +341,19 @@ async fn forward(method: &str, url: &str, body: Option<&Value>) -> Result<Value>
         return Ok(payload);
     }
     let detail = payload.get("detail").cloned().unwrap_or(payload.clone());
+    // The compat façade answers `{error, status_code, ...}`; the annotation
+    // router answers `{detail: {code, message}}`; a refused control answers
+    // `{accepted: false, reason}`. Keep whichever identity the producer gave.
     let code = detail
         .get("code")
+        .or_else(|| detail.get("error"))
+        .or_else(|| detail.get("reason"))
         .and_then(Value::as_str)
         .unwrap_or("annotation_container_error");
     let message = detail
         .get("message")
+        .or_else(|| detail.get("reason"))
+        .or_else(|| detail.get("detail"))
         .and_then(Value::as_str)
         .unwrap_or(&text)
         .to_string();
@@ -1532,6 +1700,9 @@ pub(crate) async fn dispatch_free(
     base: &str,
 ) -> Result<Value> {
     match operation {
+        "annotation_protocol_get" => forward("GET", &format!("{base}/annotation-protocol"), None).await,
+        "annotation_protocol_update" => protocol_update(body, core, base).await,
+        "annotation_control_send" => control_send(body, base).await,
         "annotation_list_definitions" => {
             let trace_id = trace_id_of(body)?;
             let query = query_string(body.get("domain").map(|d| json!({"domain": d})).as_ref());
@@ -1743,6 +1914,28 @@ mod tests {
                         ),
                         (_, p) if p.contains("/annotations?") || p.ends_with("/annotations") => {
                             (200, json!({"count": 0, "annotations": []}))
+                        }
+                        ("GET", "/annotation-protocol") | ("PUT", "/annotation-protocol") => (
+                            200,
+                            json!({
+                                "schema_version": "synth.container-annotation-protocol.v1",
+                                "status": "installed",
+                                "protocol_id": "craftax.live.v1",
+                                "protocol_revision_id": "anprev_1234567890abcdef",
+                                "source_revision": "sha256:abc",
+                                "configuration_digest": "sha256:cfg",
+                                "credential_state": "not_exposed",
+                                "idempotent": method == "GET"
+                            }),
+                        ),
+                        ("POST", p) if p.ends_with("/annotations/control") => {
+                            if text.contains("\"op\":\"stop\"") {
+                                (202, json!({"accepted": true, "control_id": "ctl:1", "op": "stop", "queued": true}))
+                            } else if text.contains("anprev_0000000000000000") {
+                                (422, json!({"accepted": false, "control_id": "ctl:2", "reason": "annotation_protocol_unknown"}))
+                            } else {
+                                (202, json!({"accepted": true, "control_id": "ctl:3", "queued": true}))
+                            }
                         }
                         _ => (
                             404,
@@ -2184,6 +2377,88 @@ mod tests {
             err.downcast_ref::<StructuredFailure>().unwrap().code,
             "annotation_container_unknown"
         );
+    }
+
+    #[tokio::test]
+    async fn live_annotation_control_and_protocol_ops_proxy_to_the_container() {
+        let (base, _jobs, seen) = fake_container(false).await;
+        let dir = tempfile::tempdir().unwrap();
+        let core = CoreRuntime::open(dir.path()).unwrap();
+        let container_id = registered(&core, &base).await;
+
+        let state = dispatch_free("annotation_protocol_get", &json!({}), &core, &container_id, &base)
+            .await
+            .unwrap();
+        assert_eq!(state["protocol_revision_id"], "anprev_1234567890abcdef");
+
+        let installed = dispatch_free(
+            "annotation_protocol_update",
+            &json!({
+                "code": "PROTOCOL = 'synth.live-annotation-protocol.v1'\nclass Protocol: pass\n",
+                "protocol_id": "craftax.live.v1",
+                "configuration": {"judge_every_calls": 2},
+                "rollout_ids": ["roll_a"],
+            }),
+            &core,
+            &container_id,
+            &base,
+        )
+        .await
+        .unwrap();
+        assert_eq!(installed["protocol_revision_id"], "anprev_1234567890abcdef");
+        assert_eq!(installed["rebinds"][0]["rollout_id"], "roll_a");
+        assert_eq!(installed["rebinds"][0]["ack"]["accepted"], true);
+
+        let secret = dispatch_free(
+            "annotation_protocol_update",
+            &json!({"code": "x", "protocol_id": "p", "configuration": {"model": {"model": "m", "api_key": "sk"}}}),
+            &core,
+            &container_id,
+            &base,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            secret.downcast_ref::<StructuredFailure>().unwrap().code,
+            "protocol_credential_forbidden"
+        );
+
+        let stopped = dispatch_free(
+            "annotation_control_send",
+            &json!({"rollout_id": "roll_a", "op": "stop", "reason": "done"}),
+            &core,
+            &container_id,
+            &base,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stopped["accepted"], true);
+        let refused = dispatch_free(
+            "annotation_control_send",
+            &json!({"rollout_id": "roll_a", "op": "protocol.update", "protocol_revision_id": "anprev_0000000000000000"}),
+            &core,
+            &container_id,
+            &base,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refused.downcast_ref::<StructuredFailure>().unwrap().code,
+            "annotation_protocol_unknown"
+        );
+        let bad_op = dispatch_free(
+            "annotation_control_send",
+            &json!({"rollout_id": "roll_a", "op": "steer"}),
+            &core,
+            &container_id,
+            &base,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(bad_op.downcast_ref::<StructuredFailure>().unwrap().code, "annotation_argument_invalid");
+        let lines = seen.lock().unwrap().clone();
+        assert!(lines.iter().any(|line| line == "PUT /annotation-protocol"), "{lines:?}");
+        assert!(lines.iter().filter(|line| *line == "POST /rollouts/roll_a/annotations/control").count() >= 3, "{lines:?}");
     }
 
     #[test]
