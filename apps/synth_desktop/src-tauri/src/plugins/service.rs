@@ -330,6 +330,20 @@ impl PluginService {
                 rejected: false,
             });
         }
+        if let Some(session_id) = session_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if let Some((approval_id, decision)) = broker
+                .try_auto_authorize_paid_compute(app, session_id, &kind)
+                .await?
+            {
+                return Ok(Authorization {
+                    approval_id,
+                    rejected: matches!(decision, ApprovalDecision::Reject),
+                });
+            }
+        }
         let session_id = session_id
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -366,6 +380,7 @@ impl PluginService {
         preparation_digest: &str,
         max_cost_usd: f64,
         max_rollouts: u64,
+        provider: &str,
         proposer_model: &str,
         timeout_seconds: u64,
     ) -> Result<Authorization> {
@@ -374,6 +389,7 @@ impl PluginService {
             preparation_digest,
             max_cost_usd,
             max_rollouts,
+            provider,
             proposer_model,
             timeout_seconds,
         );

@@ -130,6 +130,7 @@ pub fn compute_kind(
     preparation_digest: &str,
     max_cost_usd: f64,
     max_rollouts: u64,
+    provider: &str,
     proposer_model: &str,
     timeout_seconds: u64,
 ) -> ApprovalKind {
@@ -139,6 +140,10 @@ pub fn compute_kind(
         parameters: json!({
             "recipeId": recipe_id,
             "preparationDigest": preparation_digest,
+            "model": {
+                "provider": provider,
+                "model": proposer_model,
+            },
         }),
         estimated_cost_usd_micros: Some(micros),
         requested_cap: PaidComputeCap {
@@ -151,7 +156,7 @@ pub fn compute_kind(
         proposer_model: Some(proposer_model.into()),
         evaluator_model: Some(recipe_id.into()),
         timeout_seconds: Some(timeout_seconds),
-        credential_names: vec!["OPENAI_API_KEY".into()],
+        credential_names: vec![format!("{provider}:workshop_secrets_proxy")],
         preparation_digest: Some(preparation_digest.into()),
     }
 }
@@ -300,6 +305,7 @@ mod tests {
             "sha256:prep",
             1.50,
             6,
+            "openrouter",
             "gpt-5.6-luna",
             300,
         );
@@ -309,6 +315,8 @@ mod tests {
                 evaluator_model,
                 requested_cap,
                 preparation_digest,
+                parameters,
+                credential_names,
                 ..
             } => {
                 assert_eq!(dataset.as_deref(), Some("gepa.workspace.v1"));
@@ -316,6 +324,8 @@ mod tests {
                 assert_eq!(requested_cap.max_cost_usd_micros, Some(1_500_000));
                 assert_eq!(requested_cap.max_rollouts, Some(6));
                 assert_eq!(preparation_digest.as_deref(), Some("sha256:prep"));
+                assert_eq!(parameters.pointer("/model/provider").and_then(serde_json::Value::as_str), Some("openrouter"));
+                assert_eq!(credential_names, vec!["openrouter:workshop_secrets_proxy"]);
             }
             other => panic!("expected paid compute approval, got {other:?}"),
         }
