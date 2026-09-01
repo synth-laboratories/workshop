@@ -127,15 +127,19 @@ export function useLiveEvalStreams(
           throw new Error(`replay cursor regressed from ${after} to ${next} on ${stream.streamId}`);
         }
         cursors.set(stream.streamId, next);
-        if (streamClosed) {
-          closedStreams.add(stream.streamId);
-          return;
+        // `closed` describes the producer, not this page. A terminal producer
+        // can still have several pages of durable history. Drain those pages
+        // before marking the stream closed or a reopened visual will freeze at
+        // the first page and render completed rollouts as still running.
+        if (hasMore) {
+          if (next === after) {
+            throw new Error(`replay made no progress after sequence ${after} on ${stream.streamId}`);
+          }
+          after = next;
+          continue;
         }
-        if (!hasMore) return;
-        if (next === after) {
-          throw new Error(`replay made no progress after sequence ${after} on ${stream.streamId}`);
-        }
-        after = next;
+        if (streamClosed) closedStreams.add(stream.streamId);
+        return;
       }
       throw new Error(`replay exceeded ${REPLAY_PAGE_LIMIT_MAX} pages on ${stream.streamId}`);
     };

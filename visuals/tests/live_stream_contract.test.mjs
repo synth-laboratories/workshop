@@ -248,6 +248,18 @@ test("a template cannot rest in an unexplained pending state", async () => {
   assert.doesNotMatch(hook, /fetch\(/);
 });
 
+test("terminal replay streams drain every durable page before closing", () => {
+  const hook = readFileSync(join(root, "chrome/useLiveEvalStreams.ts"), "utf8");
+  // Producers report `closed: true` on every page once a rollout is terminal.
+  // `hasMore` must win until history is drained; otherwise a reopened visual
+  // renders only the first page and makes completed lanes look live forever.
+  const hasMoreBranch = hook.indexOf("if (hasMore)");
+  const closeBranch = hook.indexOf("if (streamClosed) closedStreams.add");
+  assert.ok(hasMoreBranch >= 0, "replay hook must branch on remaining history");
+  assert.ok(closeBranch > hasMoreBranch, "remaining history must be drained before terminal close");
+  assert.match(hook, /after = next;\s+continue;/);
+});
+
 test("ingest de-dupes, ignores heartbeats, and treats stream.subscribed as ready", () => {
   const state = ingestLiveEnvelopes([
     { kind: "stream.subscribed", event_id: "sub", run_id: "run", payload: { ready: true } },
