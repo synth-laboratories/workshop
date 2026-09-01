@@ -374,13 +374,13 @@ export function Shell(props: ShellProps) {
       ) : null}
 
       {view === "trace" ? (
-        <section aria-label="Trace spans">
-          <ol style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 6 }}>
+        <section aria-label="Trace spans" style={{ minWidth: 0 }}>
+          <ol style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 6, minWidth: 0 }}>
             {spans.map((span) => {
               const active = focusedSpan === span.id;
               const marks = findings.filter((row) => selectorKey(row.target) === span.id || row.target?.id === span.id);
               return (
-                <li key={span.id}>
+                <li key={span.id} style={{ minWidth: 0 }}>
                   <button
                     type="button"
                     data-testid={`analysis-span-${span.id}`}
@@ -391,10 +391,12 @@ export function Shell(props: ShellProps) {
                       border: active ? "1px solid var(--sv-accent)" : "1px solid var(--sv-border)",
                       borderRadius: 10,
                       padding: 10,
-                      background: active ? "var(--sv-accent-soft)" : "var(--sv-surface)"
+                      background: active ? "var(--sv-accent-soft)" : "var(--sv-surface)",
+                      minWidth: 0,
+                      overflow: "hidden"
                     }}
                   >
-                    <strong>
+                    <strong style={{ display: "block", minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }}>
                       {span.sequence != null ? `${span.sequence}. ` : ""}
                       {span.title}
                     </strong>

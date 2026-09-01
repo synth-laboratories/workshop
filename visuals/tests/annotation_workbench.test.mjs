@@ -11,6 +11,10 @@ const template = JSON.parse(
   readFileSync(join(root, "families/analysis/analysis.annotation_workbench.v1/template.json"), "utf8")
 );
 const craftax = JSON.parse(readFileSync(join(root, "fixtures/annotation_workbench_craftax.json"), "utf8"));
+const shellSource = readFileSync(
+  join(root, "families/analysis/analysis.annotation_workbench.v1/shell.tsx"),
+  "utf8"
+);
 
 test("annotation workbench binds a fixture evidence projection", async () => {
   const result = await bindTemplateSlots(template, [{
@@ -60,4 +64,10 @@ test("a workbench without a verifier result still binds and does not invent a sc
   assert.equal(result.slots.rubric, undefined);
   assert.equal(result.slots.evidence.data.rubric.available, false);
   assert.equal(result.slots.evidence.data.rubric.digest, null);
+});
+
+test("trace cards allow long content-addressed identifiers to wrap in narrow panels", () => {
+  assert.match(shellSource, /overflowWrap:\s*"anywhere"/);
+  assert.match(shellSource, /wordBreak:\s*"break-word"/);
+  assert.match(shellSource, /aria-label="Trace spans" style=\{\{ minWidth: 0 \}\}/);
 });
