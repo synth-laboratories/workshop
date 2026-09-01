@@ -9576,12 +9576,17 @@ html.visual-expanded .sidebar {
 	gap: 10px;
 	padding-left: 18px;
 }
-/* v0.8 experiment workspace: warm parchment and copper, with green reserved
-   for semantic success states. */
-.experiments-page { height:100%; overflow:auto; padding:28px; color:#332b26; background:linear-gradient(145deg,#f5efe2,#eadfce); }
+/* Experiments uses the same neutral application surfaces as every other
+   first-class plugin. Color inside the graph is reserved for semantic state. */
+.experiments-page { height:100%; overflow:auto; padding:28px; color:var(--color-text); background:var(--color-bg); }
 .experiments-page > header { display:flex; gap:18px; align-items:flex-start; margin-bottom:24px; }
 .experiments-page h1 { margin:2px 0 4px; font-size:28px; }
-.experiments-page p { margin:0; color:#76675c; }
+.experiments-page p { margin:0; color:var(--color-text-muted); }
+.experiments-empty { display:grid; justify-items:center; align-content:center; min-height:min(520px,calc(100% - 100px)); padding:56px 24px; border:1px solid var(--color-border); border-radius:var(--radius-lg); background:var(--color-surface); text-align:center; }
+.experiments-empty-icon { display:grid; place-items:center; width:42px; height:42px; margin-bottom:16px; border:1px solid var(--color-border); border-radius:12px; background:var(--color-bg-subtle); color:var(--color-text-muted); font-size:20px; }
+.experiments-empty h2 { margin:0 0 8px; font-size:var(--fs-h2); }
+.experiments-empty p { max-width:520px; line-height:1.55; }
+.experiments-empty .experiments-empty-note { margin-top:8px; color:var(--color-text-muted); font-size:var(--fs-small); }
 .experiments-workbench { display:grid; grid-template-columns:minmax(220px,280px) minmax(0,1fr); gap:16px; min-height:0; height:calc(100% - 92px); }
 .experiment-index { min-width:0; overflow:auto; }
 .experiment-index-meta { grid-column:1 / -1; color:var(--lineage-meta); font-size:var(--fs-micro); }
@@ -9602,9 +9607,9 @@ html.visual-expanded .sidebar {
 .experiment-task-disclosure p { margin: 6px 0 0; overflow-wrap: anywhere; color: var(--lineage-meta); font-size:var(--fs-micro); font-weight: 500; }
 .eyebrow { color:var(--lineage-ink-muted); font-size:var(--fs-micro); font-weight:800; letter-spacing:.12em; }
 .experiment-search { display:grid; gap:7px; font-size:var(--fs-micro); font-weight:700; }
-.experiment-search input { border:1px solid var(--lineage-paper-edge); border-radius:var(--radius-md); padding:11px 13px; background:var(--lineage-action); color:var(--lineage-ink); }
-.experiment-table { margin-top:18px; border:1px solid var(--lineage-paper-edge); border-radius:var(--radius-lg); overflow:hidden; background:var(--lineage-action); }
-.experiment-row { display:grid; grid-template-columns:minmax(170px,2fr) minmax(130px,1.5fr) 90px minmax(100px,1fr) 55px 145px; gap:12px; width:100%; padding:13px 15px; align-items:center; text-align:left; border:0; border-bottom:1px solid #e4d6c3; background:transparent; color:inherit; }
+.experiment-search input { border:1px solid var(--color-border); border-radius:var(--radius-md); padding:11px 13px; background:var(--color-surface); color:var(--color-text); }
+.experiment-table { margin-top:18px; border:1px solid var(--color-border); border-radius:var(--radius-lg); overflow:hidden; background:var(--color-surface); }
+.experiment-row { display:grid; grid-template-columns:minmax(170px,2fr) minmax(130px,1.5fr) 90px minmax(100px,1fr) 55px 145px; gap:12px; width:100%; padding:13px 15px; align-items:center; text-align:left; border:0; border-bottom:1px solid var(--color-border); background:transparent; color:inherit; }
 button.experiment-row:hover,
 .experiment-row:hover { background:var(--lineage-hover); }
 .experiment-result-summary { min-width:0; overflow:hidden; text-overflow:ellipsis; font-variant-numeric:tabular-nums; color:var(--lineage-ink-muted); white-space:nowrap; }
@@ -9615,9 +9620,9 @@ button.experiment-row:hover,
 .lineage-workspace-header { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
 .lineage-workspace-header h2 { margin:2px 0 4px; font-size:var(--fs-h2); }
 .lineage-workspace-actions { display:flex; gap:8px; flex:none; align-items:center; }
-.lineage-workspace-actions button { border:1px solid var(--lineage-paper-edge); border-radius:var(--radius-sm); padding:8px 12px; background:var(--lineage-action); color:var(--lineage-action-fg); }
+.lineage-workspace-actions button { border:1px solid var(--color-border); border-radius:var(--radius-sm); padding:8px 12px; background:var(--color-surface); color:var(--color-text); }
 .experiment-child-button { border-color:var(--lineage-accent-edge); background:var(--lineage-accent-fill); }
-.lineage-canvas { position:relative; min-height:360px; overflow:hidden; padding:0; border:1px solid var(--lineage-paper-edge); border-radius:var(--radius-lg); background:var(--lineage-paper); touch-action:none; }
+.lineage-canvas { position:relative; min-height:360px; overflow:hidden; padding:0; border:1px solid var(--color-border); border-radius:var(--radius-lg); background:var(--color-surface); touch-action:none; }
 .lineage-canvas-world { position:relative; transform-origin:0 0; }
 .lineage-links { position:absolute; inset:0; pointer-events:none; }
 .lineage-link path { stroke:var(--lineage-link); stroke-width:1.6; }
@@ -9632,7 +9637,7 @@ button.experiment-row:hover,
 .lineage-node.direct_evaluation, .lineage-node.experiment { background:var(--lineage-node-eval); }
 .lineage-node[aria-selected="true"] { border-color:var(--lineage-accent-edge); outline:3px solid var(--color-selection-ring); }
 .lineage-node > span { font-size:var(--fs-micro); text-transform:uppercase; letter-spacing:.1em; }
-.experiment-inspector { border:1px solid var(--lineage-paper-edge); border-radius:var(--radius-lg); padding:20px; background:var(--lineage-inspector); color:var(--lineage-inspector-fg); overflow:auto; }
+.experiment-inspector { border:1px solid var(--color-border); border-radius:var(--radius-lg); padding:20px; background:var(--color-surface); color:var(--color-text); overflow:auto; }
 .experiment-inspector h2 { margin:6px 0 18px; }
 .experiment-inspector dl div { padding:9px 0; border-top:1px solid var(--lineage-rule); }
 .experiment-inspector dt { font-size:var(--fs-micro); color:var(--lineage-muted); text-transform:uppercase; }

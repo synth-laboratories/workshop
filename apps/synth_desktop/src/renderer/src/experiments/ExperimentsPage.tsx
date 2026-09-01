@@ -14,17 +14,23 @@ export function ExperimentsPage({ initialId, onBack }: { initialId?: string; onB
 	const [nodeId, setNodeId] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
+	const [loaded, setLoaded] = useState(false);
 
 	const refresh = (keepId?: string | null) =>
 		fromGenerated(commands.experimentsList(n(query)))
 			.then((next) => {
 				setRows(next);
+				setError(null);
+				setLoaded(true);
 				const preferred = keepId ?? selectedId;
 				if (preferred && next.some((row) => row.id === preferred)) {
 					setSelectedId(preferred);
 				}
 			})
-			.catch((e) => setError(String(e)));
+			.catch((e) => {
+				setError(String(e));
+				setLoaded(true);
+			});
 
 	useEffect(() => {
 		void refresh();
@@ -146,7 +152,14 @@ export function ExperimentsPage({ initialId, onBack }: { initialId?: string; onB
 					<p>Saved comparisons and explicit lineage. Nothing is uploaded.</p>
 				</div>
 			</header>
-			<div className="experiments-workbench">
+			{loaded && !error && rows.length === 0 && !query.trim() ? (
+				<div className="experiments-empty" data-testid="experiments-empty">
+					<div className="experiments-empty-icon" aria-hidden>↗</div>
+					<h2>No experiments yet</h2>
+					<p>Comparisons created from evaluation runs will appear here with their results and lineage.</p>
+					<p className="experiments-empty-note">Start from a conversation and ask Workshop to compare models, policies, or prompts.</p>
+				</div>
+			) : <div className="experiments-workbench">
 				<ExperimentIndex
 					query={query}
 					rows={rows}
@@ -171,7 +184,7 @@ export function ExperimentsPage({ initialId, onBack }: { initialId?: string; onB
 					}}
 					busy={busy}
 				/>
-			</div>
+			</div>}
 		</section>
 	);
 }
