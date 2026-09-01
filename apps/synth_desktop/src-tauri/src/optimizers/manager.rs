@@ -71,6 +71,7 @@ const TEST_REAL_CHILD_SENTINEL: &str = ".test-real-child";
 thread_local! {
     static TEST_FORCE_DIGEST_MISMATCH: Cell<bool> = const { Cell::new(false) };
     static TEST_INTERRUPT_INSTALL: Cell<bool> = const { Cell::new(false) };
+    static TEST_CACHE_EMPTY_DURING_INSTALL: Cell<bool> = const { Cell::new(false) };
 }
 
 fn force_digest_mismatch() -> bool {
@@ -729,6 +730,20 @@ impl OptimizerManager {
         }
         fs::rename(&staging, &dest)
             .with_context(|| format!("activate optimizer version {}", dest.display()))?;
+        #[cfg(test)]
+        TEST_CACHE_EMPTY_DURING_INSTALL.with(|flag| {
+            if flag.get() {
+                if let Ok(mut cache) = self.discovery_cache.lock() {
+                    *cache = Some(Vec::new());
+                }
+            }
+        });
+        // A status refresh may have populated discovery_cache while the verified
+        // distribution was still under its hidden staging name. Invalidate once
+        // more after activation so selection observes the newly installed path.
+        if let Ok(mut cache) = self.discovery_cache.lock() {
+            *cache = None;
+        }
         for template_id in &spec.template_ids {
             retain_template_package(&self.home, template_id, &spec.version, &installed.digest)?;
         }
@@ -4348,6 +4363,17 @@ mod tests {
             Some(DEFAULT_SIDECAR_VERSION)
         );
         assert!(mgr.has_offline_runtime(DEFAULT_SIDECAR_VERSION));
+    }
+
+    #[test]
+    fn install_invalidates_a_discovery_refresh_racing_with_activation() {
+        let (mgr, _home) = manager();
+        TEST_CACHE_EMPTY_DURING_INSTALL.with(|flag| flag.set(true));
+        let installed = mgr.install(None);
+        TEST_CACHE_EMPTY_DURING_INSTALL.with(|flag| flag.set(false));
+        let installed = installed.unwrap();
+        assert_eq!(installed.version, DEFAULT_SIDECAR_VERSION);
+        assert!(installed.selected);
     }
 
     #[tokio::test]
