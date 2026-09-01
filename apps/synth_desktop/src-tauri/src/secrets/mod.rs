@@ -808,7 +808,7 @@ impl SecretsService {
         actor: &str,
     ) -> Result<UseRequestResult> {
         self.persist_expired_capabilities()?;
-        if let Some(live) = self.capabilities.find_active(secret_id, run_id) {
+        if let Some(live) = self.capabilities.find_reusable(secret_id, run_id) {
             ensure_capability_covers(&live, &policy)?;
             return self.live_result(live);
         }
@@ -867,7 +867,7 @@ impl SecretsService {
         remember_recipe: bool,
     ) -> Result<UseRequestResult> {
         self.persist_expired_capabilities()?;
-        if let Some(live) = self.capabilities.find_active(secret_id, run_id) {
+        if let Some(live) = self.capabilities.find_reusable(secret_id, run_id) {
             ensure_capability_covers(&live, &policy)?;
             return self.live_result(live);
         }
