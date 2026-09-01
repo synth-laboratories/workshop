@@ -2,7 +2,7 @@ import type { GepaState } from "../../components/projectEvents.ts";
 import { formatDurationMs } from "./model.ts";
 
 function label(value?: string): string {
-  return value ? value.replaceAll("_", " ") : "unavailable";
+  return value ? value.replaceAll("_", " ") : "pending";
 }
 
 function limitLabel(kind: string): string {
@@ -24,8 +24,8 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
         <div style={{ border: "1px solid var(--sv-border)", borderRadius: 9, padding: 11 }}>
           <strong style={{ fontSize: 12 }}>Task & objective</strong>
           <dl style={{ display: "grid", gridTemplateColumns: "90px 1fr", gap: "5px 9px", margin: "8px 0 0", fontSize: 11 }}>
-            <dt style={{ color: "var(--sv-text-faint)" }}>Task</dt><dd style={{ margin: 0 }}>{contract.task?.name ?? contract.task?.id ?? "unavailable"}</dd>
-            <dt style={{ color: "var(--sv-text-faint)" }}>Select on</dt><dd style={{ margin: 0 }}>{objective?.selectionObjective ?? objective?.objectives[0]?.name ?? "unavailable"}</dd>
+            <dt style={{ color: "var(--sv-text-faint)" }}>Task</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}>{contract.task?.name ?? contract.task?.id ?? "pending"}</dd>
+            <dt style={{ color: "var(--sv-text-faint)" }}>Select on</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}>{objective?.selectionObjective ?? objective?.objectives[0]?.name ?? "pending"}</dd>
             <dt style={{ color: "var(--sv-text-faint)" }}>Frontier</dt><dd style={{ margin: 0 }}>{label(objective?.frontierType)}</dd>
             <dt style={{ color: "var(--sv-text-faint)" }}>Reward owner</dt><dd style={{ margin: 0 }}>{label(contract.container?.rewardAuthority)}</dd>
           </dl>
@@ -33,9 +33,9 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
         <div style={{ border: "1px solid var(--sv-border)", borderRadius: 9, padding: 11 }}>
           <strong style={{ fontSize: 12 }}>Search space & evidence</strong>
           <dl style={{ display: "grid", gridTemplateColumns: "90px 1fr", gap: "5px 9px", margin: "8px 0 0", fontSize: 11 }}>
-            <dt style={{ color: "var(--sv-text-faint)" }}>Mutable</dt><dd style={{ margin: 0 }}>{contract.program?.mutableFields.join(", ") || "unavailable"}</dd>
-            <dt style={{ color: "var(--sv-text-faint)" }}>Policy</dt><dd style={{ margin: 0 }}>{gepa.models.policy ?? contract.container?.policyConfig ?? "unavailable"}</dd>
-            <dt style={{ color: "var(--sv-text-faint)" }}>Proposer</dt><dd style={{ margin: 0 }}>{gepa.models.proposer ?? "unavailable"}</dd>
+            <dt style={{ color: "var(--sv-text-faint)" }}>Mutable</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}>{contract.program?.mutableFields.join(", ") || "pending"}</dd>
+            <dt style={{ color: "var(--sv-text-faint)" }}>Policy</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}>{gepa.models.policy ?? contract.container?.policyConfig ?? "pending"}</dd>
+            <dt style={{ color: "var(--sv-text-faint)" }}>Proposer</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}>{gepa.models.proposer ?? "pending"}</dd>
             <dt style={{ color: "var(--sv-text-faint)" }}>Splits</dt><dd style={{ margin: 0 }}>mini {contract.splits?.minibatch ?? "—"} · reflect {contract.splits?.reflection ?? "—"} · Pareto {contract.splits?.pareto ?? "—"} · heldout {contract.splits?.heldout ?? "—"}</dd>
           </dl>
         </div>

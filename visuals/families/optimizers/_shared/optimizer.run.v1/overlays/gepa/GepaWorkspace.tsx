@@ -367,10 +367,24 @@ export function GepaWorkspace({
 
   const metrics: WorkspaceMetric[] = [
     ...(!terminal ? [{ label: "Job", value: "Running" }] : []),
+    {
+      label: "Candidates",
+      value: `${gepa.candidates.length}`,
+      title: `${gepa.candidates.length} candidate${gepa.candidates.length === 1 ? "" : "s"} registered in this run`,
+      testId: "gepa-candidate-count"
+    },
+    {
+      label: "Rollouts",
+      value: `${Math.round(gepa.rolloutsCompleted)}${rolloutLimit?.max != null ? ` / ${Math.round(rolloutLimit.max)}` : ""}`,
+      title: rolloutLimit?.max != null
+        ? `${Math.round(gepa.rolloutsCompleted)} completed against the ${Math.round(rolloutLimit.max)}-rollout run ceiling`
+        : `${Math.round(gepa.rolloutsCompleted)} completed rollouts`,
+      testId: "gepa-rollout-count"
+    },
     { label: "Best train", value: bestScore != null ? bestScore.toFixed(2) : "—" },
     { label: "Heldout", value: heldoutValue },
     {
-      label: "Evaluation results",
+      label: "Scored results",
       value: rolloutSpent != null
         ? `${Math.round(rolloutSpent)}${rolloutLimit?.max != null ? ` / ${Math.round(rolloutLimit.max)}` : ""}`
         : "—"

@@ -78,6 +78,7 @@ export function FrontierPanel({
   }).sort((a, b) => Number(b.onFrontier) - Number(a.onFrontier) || b.wins - a.wins);
   const pending = gepa.candidates.filter((candidate) => !isTrainSelectable(candidate));
   const frontierRows = rows.filter((row) => row.onFrontier);
+  const frontierPending = frontierIds.size === 0 && !gepa.activity.terminal;
   const frontierCoverage = new Set(frontierRows.flatMap((row) =>
     [...row.scores].filter(([, reward]) => reward > 0).map(([exampleId]) => exampleId)
   )).size;
@@ -141,7 +142,7 @@ export function FrontierPanel({
             <span>
               <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <strong style={{ fontSize: 11.5 }}>{candidateName(row.candidate)}</strong>
-                <span className="sv-chip" data-tone={row.onFrontier ? "ok" : undefined}>{row.onFrontier ? "frontier" : "dominated"}</span>
+                <span className="sv-chip" data-tone={row.onFrontier ? "ok" : frontierPending ? "live" : undefined}>{row.onFrontier ? "frontier" : frontierPending ? "scoring" : "dominated"}</span>
               </span>
               <span className="sv-mono" style={{ display: "block", marginTop: 4, color: "var(--sv-text-muted)", fontSize: 9.5 }}>
                 {row.wins} best cells · mean {row.mean?.toFixed(3) ?? "—"}
