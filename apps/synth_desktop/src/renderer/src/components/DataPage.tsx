@@ -8,8 +8,6 @@ import type {
 	VisualRecord
 } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
-import { formatVisualAdmissionIdentity } from "../types/landing";
-import { VisualOpsLine } from "./VisualOpsLine";
 
 import { CONTAINER_POLL_MS } from "../limits";
 import { bridges } from "../runtime/desktopBridge";
@@ -22,7 +20,7 @@ import {
 	TRACE_INSPECTOR_TEMPLATE
 } from "../runtime/traceInspector";
 
-export type DataTab = "containers" | "traces" | "visuals" | "usage";
+export type DataTab = "containers" | "traces" | "usage";
 
 const CONTAINER_GONE_GRACE_MS = 30_000;
 
@@ -95,7 +93,6 @@ export function DataPage({
 		} catch { return new Set(); }
 	});
 	const [traces, setTraces] = useState<TraceV5Record[]>([]);
-	const [visuals, setVisuals] = useState<VisualRecord[]>([]);
 	const [usage, setUsage] = useState<UsageLedgerEntry[]>([]);
 	const [counts, setCounts] = useState({ containers: 0, traces: 0, usage: 0 });
 	const [error, setError] = useState<string | null>(null);
@@ -157,19 +154,17 @@ export function DataPage({
 	const refresh = useCallback(async () => {
 		setError(null);
 		try {
-			if (!bridges.inventory || !bridges.visuals) {
+			if (!bridges.inventory) {
 				throw new Error("Rust Data store is unavailable");
 			}
-			const [nextContainers, nextTraces, nextVisuals, nextUsage, nextCounts] = await Promise.all([
+			const [nextContainers, nextTraces, nextUsage, nextCounts] = await Promise.all([
 				bridges.inventory.listContainers(),
 				bridges.inventory.listTraces(),
-				bridges.visuals.list({ limit: 500 }),
 				bridges.inventory.listUsage(100),
 				bridges.inventory.counts()
 			]);
 			setContainers(nextContainers);
 			setTraces(nextTraces);
-			setVisuals(nextVisuals);
 			setUsage(nextUsage);
 			setCounts(nextCounts);
 		} catch (reason) {
@@ -310,10 +305,6 @@ export function DataPage({
 				}
 			}
 			const shown = await bridges.visuals.show(visual.id).catch(() => visual!);
-			setVisuals((current) => {
-				const without = current.filter((candidate) => candidate.id !== shown.id);
-				return [shown, ...without];
-			});
 			onOpenVisual(shown);
 		} catch (reason) {
 			setError(publicError(reason));
@@ -331,7 +322,7 @@ export function DataPage({
 				<div className="ws-page-head-text">
 					<h1 className="ws-title">Data</h1>
 					<p className="ws-lede">
-						Local containers, Trace V5 records, and visual instances from the runtime vault.
+						Local containers, Trace V5 records, and usage receipts from the runtime vault.
 					</p>
 				</div>
 				<button type="button" className="ws-btn ws-btn-secondary ws-page-head-actions" onClick={() => void refresh()}>
@@ -350,8 +341,7 @@ export function DataPage({
 					[
 						["containers", "Containers", activeContainers.length],
 						["traces", "Traces", traces.length],
-						["visuals", "Visuals", visuals.length]
-						,["usage", "Usage", usage.length]
+						["usage", "Usage", usage.length]
 					] as const
 				).map(([id, label, count]) => (
 					<button
@@ -505,49 +495,6 @@ export function DataPage({
 							})}
 						</ul>
 						</div>
-					)}
-				</div>
-			) : null}
-
-			{tab === "visuals" ? (
-				<div data-testid="inventory-visuals">
-					{visuals.length === 0 ? (
-						<div className="ws-empty"><p>No visuals yet.</p></div>
-					) : (
-						<ul className="ws-list">
-							{visuals.map((v) => (
-								<li key={v.id} className="ws-item" data-testid={`inventory-visual-${v.id}`}>
-									<div className="ws-item-main">
-										<strong className="ws-item-title">{v.title}</strong>
-										<span className="ws-item-meta" data-testid={`inventory-visual-identity-${v.id}`}>
-											{formatVisualAdmissionIdentity({
-												visualId: v.id,
-												revision: v.currentRevision,
-												contentDigest: v.contentDigest,
-												receiptDigest: typeof v.receiptDigest === "string" ? v.receiptDigest : undefined
-											})}
-										</span>
-										<VisualOpsLine
-											sessionId={v.sessionId}
-											runId={v.runId}
-											traceId={v.traceId}
-											testId={`visual-ops-${v.id}`}
-											compact
-										/>
-										<span className="ws-item-meta">{v.templateId}</span>
-										<span className="ws-item-meta ws-faint">{formatWhen(v.updatedAt)}</span>
-									</div>
-									<button
-										type="button"
-										className="ws-btn ws-btn-secondary ws-btn-small"
-										onClick={() => onOpenVisual(v)}
-										data-testid={`open-visual-${v.id}`}
-									>
-										Open
-									</button>
-								</li>
-							))}
-						</ul>
 					)}
 				</div>
 			) : null}
