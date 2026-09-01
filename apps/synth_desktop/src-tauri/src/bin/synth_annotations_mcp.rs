@@ -9,6 +9,8 @@
 //! The host side lives in `annotations_ipc.rs`; `OPERATIONS` there mirrors this
 //! table and a test keeps them equal.
 
+#![recursion_limit = "256"]
+
 #[path = "../ipc/mcp_stdio.rs"]
 mod mcp_stdio;
 
