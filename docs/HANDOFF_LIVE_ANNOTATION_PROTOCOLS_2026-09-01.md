@@ -2,6 +2,7 @@
 
 **Date:** 2026-09-01
 **Status:** implemented and proven on all three repos. Container lane proven on the real Craftax Rust engine in both directions (three parallel rollouts, annotation SSE tailed while running; consumer controls applied mid-rollout: note, hot-swap with state, live threshold change, stop, two refusals). Workshop configure / pin / relay / auto-bound viewer / control IPC / post-seal reconciliation are unit-proven; a Workshop-driven run against a rebuilt image is the one thing not yet executed.
+**Run it:** `docs/RUNBOOK_LIVE_ANNOTATION_GLM_CRAFTAX_2026-09-01.md` (GLM 5.3 flash policy + GLM judge, live viewer, validity checklist).
 **Builds on:** `docs/HANDOFF_ANNOTATIONS_POSTHOC_ARCHITECTURE_2026-09-01.md` (this is the "observe-only provisional lane" that document recommended).
 
 ---
@@ -99,7 +100,7 @@ Findings were incremental (over 90 % of annotation events arrived before the rol
 ## What is not done
 
 1. **Workshop-driven run against a real container.** The container lane is proven from the host in both directions; the Workshop path (recipe → pin → relay → auto-bound pane → control → reconciliation) is unit-proven with mock containers only. Driving it needs a running desktop (the MCP shims talk to `visuals-ipc.json`; there is no headless eval binary) and a Craftax image rebuilt from a tree that carries `live_annotation` (the image lives on containers `main`, the lane on the annotation branch), with a provider key in the container env for the judge.
-2. **Judge on a real run.** The LLM path is proven with a fake caller and the protocol's `judge_now` control; no real provider call has been made.
+2. **Judge on a real run: done.** GLM 5.3 flash as policy and judge, 2026-09-01, judge 5/5 parsed (see the runbook). Remaining: a real judge through the Workshop proxy rather than a host env key.
 3. **Reconciliation semantics beyond citations.** Corroboration matches labels between the live taxonomy (`criterion.mode`, milestone ids) and sealed post-hoc labels; a Craftax post-hoc annotator that confirms provisional findings explicitly would make `corroborated` precise.
 4. **Vocabulary ownership.** Annotation rows ride `eval.trial.event`; readers of that carrier must check `delta.stream` (the viewer does). If Optimizers ever grows an emitter for a dedicated type, switch the relay.
 5. Skills (`trace-v5-annotate`, `run-live-container-evals`) mention the lane; the MCP tool descriptions carry the rest.
