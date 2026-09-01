@@ -260,6 +260,7 @@ pub struct CapabilityStore {
 }
 
 impl CapabilityStore {
+    const REUSE_MIN_REMAINING_MS: i64 = 30_000;
     pub fn new() -> Self {
         Self::default()
     }
@@ -355,6 +356,21 @@ impl CapabilityStore {
         self.list_active()
             .into_iter()
             .find(|live| live.secret_id == secret_id && live.run_id == run_id)
+    }
+
+    /// Return a live capability only when it has enough lifetime left to be
+    /// safely rebound into a worker. This closes the approval-boundary race
+    /// where a capability is technically live during selection but expires
+    /// between config binding and the first provider call.
+    pub fn find_reusable(&self, secret_id: &str, run_id: &str) -> Option<LiveCapability> {
+        let reuse_deadline = Utc::now()
+            .timestamp_millis()
+            .saturating_add(Self::REUSE_MIN_REMAINING_MS);
+        self.list_active().into_iter().find(|live| {
+            live.secret_id == secret_id
+                && live.run_id == run_id
+                && live.expires_at_ms > reuse_deadline
+        })
     }
 
     /// Reserve one call. Fail closed at the call ceiling.
@@ -831,5 +847,17 @@ mod tests {
 
         assert!(store.find_active("secret-1", "run-1").is_none());
         assert_eq!(store.lookup("handle-1").unwrap().status, "expired");
+    }
+
+    #[test]
+    fn capability_near_expiry_is_not_reused_for_a_worker() {
+        let store = CapabilityStore::new();
+        let mut expiring = live();
+        expiring.expires_at_ms = Utc::now().timestamp_millis() + 1_000;
+        store.insert(expiring);
+
+        assert!(store.find_active("secret-1", "run-1").is_some());
+        assert!(store.find_reusable("secret-1", "run-1").is_none());
+        assert_eq!(store.lookup("handle-1").unwrap().status, "granted");
     }
 }
