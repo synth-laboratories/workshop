@@ -18,7 +18,23 @@ type InspectorPayload = {
     summary?: Record<string, unknown>; usage?: Record<string, unknown>;
   };
 };
-export type ShellProps = { title?: string; lede?: string; projection?: InspectorPayload; data?: InspectorPayload };
+
+type AnalysisFinding = {
+  id: string;
+  label?: string;
+  status?: string;
+  target?: { id?: string; selector?: string };
+  targetSelector?: string;
+  summary?: string;
+};
+
+export type ShellProps = {
+  title?: string;
+  lede?: string;
+  projection?: InspectorPayload;
+  data?: InspectorPayload;
+  analysisFindings?: AnalysisFinding[];
+};
 
 type CraftaxAction = { step?: number; action?: string; transition?: string; reason?: string };
 type CraftaxAchievement = { step?: number; name?: string };
@@ -181,9 +197,14 @@ function EvidenceReviewSummary({ evidence, digestBound }: { evidence: InspectorI
   </section>;
 }
 
-function EventCard({ item, expanded, onToggle }: { item: InspectorItem; expanded: boolean; onToggle: () => void }) {
+function EventCard({ item, expanded, onToggle, findings = [] }: { item: InspectorItem; expanded: boolean; onToggle: () => void; findings?: AnalysisFinding[] }) {
   const meta = FAMILY_META[family(item)]; const body = primary(item); const toolOutput = output(item);
   const command = family(item) === "tool"; const isLong = body.length > 360 || toolOutput.length > 260;
+  const cited = findings.filter((finding) => {
+    const targetId = finding.target?.id ?? "";
+    const selector = finding.targetSelector ?? finding.target?.selector ?? "";
+    return targetId === item.item_id || selector.includes(item.item_id) || String(item.source_selector?.entity_id ?? "") === targetId;
+  });
   return <article id={`trace-${item.item_id}`} data-testid={`trace-item-${item.item_id}`} style={{ display: "grid", gridTemplateColumns: "48px minmax(0,1fr)", gap: 10, scrollMarginTop: 12 }}>
     <aside style={{ textAlign: "right", paddingTop: 12, color: "var(--sv-text-faint)" }}>
       <div className="sv-mono" style={{ fontSize: 10 }}>#{item.sequence ?? "·"}</div>
@@ -195,6 +216,7 @@ function EventCard({ item, expanded, onToggle }: { item: InspectorItem; expanded
         <strong style={{ fontSize: 11 }}>{meta.label}</strong>
         <span className="sv-mono" style={{ fontSize: 9, color: "var(--sv-text-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.kind}</span>
         {item.status ? <span style={{ marginLeft: "auto", fontSize: 9, color: statusColor(item.status), fontWeight: 700 }}>{item.status}</span> : null}
+        {cited.length ? <span data-testid={`trace-item-findings-${item.item_id}`} style={{ fontSize: 9, fontWeight: 700, color: "var(--sv-accent)" }}>{cited.length} finding{cited.length === 1 ? "" : "s"}</span> : null}
       </header>
       <div style={{ padding: 11 }}>
         <div className={command ? "sv-mono" : undefined} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: command ? 11 : 12, lineHeight: 1.5, maxHeight: expanded ? "none" : 150, overflow: "hidden" }}>{body}</div>
@@ -208,7 +230,7 @@ function EventCard({ item, expanded, onToggle }: { item: InspectorItem; expanded
   </article>;
 }
 
-export function Shell({ title, lede, projection, data }: ShellProps) {
+export function Shell({ title, lede, projection, data, analysisFindings = [] }: ShellProps) {
   const payload = projection ?? data; const visual = payload?.visual; const items = visual?.items ?? [];
   const [tab, setTab] = useState<"trace" | "evidence" | "metadata">("trace");
   const [density, setDensity] = useState<"focus" | "full">("focus");
@@ -282,7 +304,8 @@ export function Shell({ title, lede, projection, data }: ShellProps) {
       { label: "Events", value: String(summary.visual_item_count ?? items.length) },
       { label: "Duration", value: duration(items) },
       { label: "Tool calls", value: String(tools.length) },
-      { label: "Evidence", value: String(evidence.length) }
+      { label: "Evidence", value: String(evidence.length) },
+      { label: "Findings", value: String(analysisFindings.length) }
     ]} />
     <CraftaxComparison summary={craftax} />
     <EvidenceReviewSummary evidence={evidence} digestBound={Boolean(payload.evidence_digest)} />
@@ -311,7 +334,7 @@ export function Shell({ title, lede, projection, data }: ShellProps) {
       </section>
       <div className="sv-mono" style={{ fontSize: 10, color: "var(--sv-text-faint)", margin: "4px 0 10px" }}>{filtered.length} of {items.length} projected items · {density === "focus" ? "operational signal" : "complete projection"}</div>
       <div ref={listRef} aria-live="polite" style={{ display: "grid", gap: 9, maxHeight: "min(62vh, 640px)", overflow: "auto", padding: 10, border: "1px solid var(--sv-border)", borderRadius: 12, background: "var(--sv-wash, #fafaf9)" }}>
-        {filtered.map((item) => <EventCard key={item.item_id} item={item} expanded={expanded.has(item.item_id)} onToggle={() => setExpanded((current) => { const next = new Set(current); next.has(item.item_id) ? next.delete(item.item_id) : next.add(item.item_id); return next; })} />)}
+        {filtered.map((item) => <EventCard key={item.item_id} item={item} findings={analysisFindings} expanded={expanded.has(item.item_id)} onToggle={() => setExpanded((current) => { const next = new Set(current); next.has(item.item_id) ? next.delete(item.item_id) : next.add(item.item_id); return next; })} />)}
         {!filtered.length ? <p style={{ color: "var(--sv-text-faint)" }}>No projected items match these filters.</p> : null}
       </div>
     </> : null}

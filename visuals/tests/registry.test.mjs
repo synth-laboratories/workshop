@@ -30,6 +30,7 @@ function discoverTemplates(directory = familiesDir, found = new Map()) {
 }
 
 const EXPECTED_IDS = [
+  "analysis.annotation_workbench.v1",
   "analysis.chart.v1",
   "analysis.visual.v1",
   "annotation.overlay.v1",
@@ -96,6 +97,15 @@ test("visuals package exposes the registered templates", () => {
         (meta.components ?? []).map((row) => row.id).sort(),
         ["detail_modal.v1", "event_stream.v1", "metrics.v1", "scrubber.v1"]
       );
+    }
+    if (id === "analysis.annotation_workbench.v1") {
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["evidence", "trace", "rubric"]);
+      assert.equal(declaredInputs(meta)[0].required, true);
+      assert.equal(declaredInputs(meta)[1].required, false);
+      assert.equal(declaredInputs(meta)[2].required, false);
+      assert.ok(declaredInputs(meta)[0].accepts.includes("annotation_evidence_head"));
+      assert.ok(declaredInputs(meta)[2].accepts.includes("verifier_result_v2"));
+      assert.equal(meta.genre, "analysis");
     }
     if (id === "trace.workbench.v1") {
       // The family-agnostic workstation reads a run like the Craftax one, but
@@ -193,6 +203,9 @@ test("fixtures exist for matrix/rollout/live", () => {
     "reward_breakdown.json",
     "model_compare.json",
     "annotation_markers.json",
+    "annotation_workbench_craftax.json",
+    "annotation_workbench_deepswe.json",
+    "annotation_workbench_rogue_deo.json",
   ]) {
     assert.ok(existsSync(join(root, "fixtures", name)), name);
   }

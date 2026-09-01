@@ -71,6 +71,7 @@ const ANNOTATOR_KEYS: &[&str] = &[
     "model",
     "rubric_id",
     "reasoning_effort",
+    "runner_kind",
 ];
 
 fn failure(
@@ -95,6 +96,8 @@ pub(crate) struct AnnotatorSpec {
     pub rubric_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner_kind: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -147,6 +150,7 @@ impl AnnotationStageSpec {
                     model: None,
                     rubric_id: None,
                     reasoning_effort: None,
+                    runner_kind: None,
                 },
                 toml::Value::Table(entry) => {
                     for key in entry.keys() {
@@ -173,6 +177,7 @@ impl AnnotationStageSpec {
                         model: optional_string(recipe_id, entry, "model")?,
                         rubric_id: optional_string(recipe_id, entry, "rubric_id")?,
                         reasoning_effort: optional_string(recipe_id, entry, "reasoning_effort")?,
+                        runner_kind: optional_string(recipe_id, entry, "runner_kind")?,
                     }
                 }
                 _ => bail!("recipe `{recipe_id}` annotation.annotators entries must be ids or tables"),
@@ -256,6 +261,9 @@ impl AnnotationStageSpec {
                 }
                 if let Some(effort) = &annotator.reasoning_effort {
                     plan["reasoning_effort"] = json!(effort);
+                }
+                if let Some(runner_kind) = &annotator.runner_kind {
+                    plan["runner_kind"] = json!(runner_kind);
                 }
                 plan
             })
@@ -1136,6 +1144,21 @@ pub(crate) async fn record(
     service
         .append_event_payloads(run_id.to_string(), vec![draft])
         .await?;
+    if let Ok(stage) = serde_json::to_value(report) {
+        let eval_run_id = run_id.to_string();
+        let label = spec.label.clone();
+        let _ = service
+            .database()
+            .run_transaction(move |conn| {
+                crate::session::annotation_projection::seed_from_stage_payload(
+                    conn,
+                    &eval_run_id,
+                    Some(&label),
+                    &stage,
+                )
+            })
+            .await;
+    }
     Ok(())
 }
 
@@ -1426,6 +1449,24 @@ mod tests {
             .unwrap();
         assert_eq!(jobs.len(), 6);
         assert!(jobs.iter().any(|(id, digest)| id == "ajob_4" && digest.as_deref() == Some("sha256:2222")));
+        let seeded = svc
+            .database()
+            .with_conn(|conn| {
+                let campaign: String = conn.query_row(
+                    "SELECT status FROM annotation_campaigns WHERE campaign_id='acmp_1'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let n: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM annotation_jobs WHERE campaign_id='acmp_1'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok((campaign, n))
+            })
+            .unwrap();
+        assert_eq!(seeded.0, "submitted");
+        assert_eq!(seeded.1, 6);
         let evidence = svc
             .get_state(run_id.clone(), "run.evidence".into(), None)
             .await

@@ -673,6 +673,9 @@ async fn dispatch_request(
     if path.starts_with("/v1/traces") {
         return dispatch_traces(method, path, json_body, core).await;
     }
+    if path.starts_with("/v1/analysis") {
+        return dispatch_analysis(method, path, json_body, core).await;
+    }
     if path.starts_with("/v1/annotations") {
         return crate::annotations_ipc::dispatch_annotations(method, path, json_body, core, app)
             .await;
@@ -4664,6 +4667,177 @@ async fn dispatch_experiments(
             Ok(json!({"experiment": core.data().experiment_finalize(request).await?}))
         }
         _ => anyhow::bail!("unknown experiments route {method} {path}"),
+    }
+}
+
+async fn dispatch_analysis(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+) -> Result<Value> {
+    match (method, path) {
+        ("POST", "/v1/analysis/projection") => {
+            let kind = body
+                .get("kind")
+                .and_then(Value::as_str)
+                .context("kind required")?;
+            let digest = body
+                .get("digest")
+                .or_else(|| body.get("source"))
+                .and_then(Value::as_str)
+                .context("digest required")?;
+            let kind = kind.to_string();
+            let digest = digest.to_string();
+            core.storage()
+                .database()
+                .run_read(move |conn| {
+                    crate::session::annotation_projection::projection_payload(conn, &kind, &digest)
+                })
+                .await
+        }
+        ("POST", "/v1/analysis/open") => {
+            let trace_id = body
+                .get("trace_id")
+                .or_else(|| body.get("traceId"))
+                .and_then(Value::as_str)
+                .context("trace_id required")?;
+            let evidence_digest = body
+                .get("evidence_digest")
+                .or_else(|| body.get("evidenceDigest"))
+                .and_then(Value::as_str)
+                .context("evidence_digest required")?;
+            let rubric_digest = body
+                .get("rubric_digest")
+                .or_else(|| body.get("rubricDigest"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let campaign_id = body
+                .get("campaign_id")
+                .or_else(|| body.get("campaignId"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let title = body
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let session_id = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
+            let trace = core.data().get_trace(trace_id.to_string()).await?;
+            let visual = crate::presentation::ensure_annotation_workbench(
+                core,
+                crate::presentation::AnnotationWorkbenchRequest {
+                    trace,
+                    evidence_digest: evidence_digest.to_string(),
+                    rubric_digest,
+                    campaign_id,
+                    title,
+                    session_id: session_id.clone(),
+                },
+            )
+            .await?;
+            let (shown, event) = core.visuals().show(visual.id.clone(), session_id).await?;
+            core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
+            Ok(json!({
+                "opened": true,
+                "visualId": shown.id,
+                "templateId": shown.template_id,
+                "revision": shown.current_revision,
+                "visual": shown,
+            }))
+        }
+        ("POST", "/v1/analysis/campaigns") => {
+            let eval_run_id = body
+                .get("eval_run_id")
+                .or_else(|| body.get("evalRunId"))
+                .or_else(|| body.get("runId"))
+                .and_then(Value::as_str)
+                .context("evalRunId required")?;
+            let eval_run_id = eval_run_id.to_string();
+            core.storage()
+                .database()
+                .run_read(move |conn| {
+                    let campaigns =
+                        crate::session::annotation_projection::list_campaigns_for_eval(
+                            conn,
+                            &eval_run_id,
+                        )?;
+                    Ok(json!({ "campaigns": campaigns }))
+                })
+                .await
+        }
+        ("POST", "/v1/analysis/findings") => {
+            let digest = body
+                .get("trace_digest")
+                .or_else(|| body.get("traceDigest"))
+                .and_then(Value::as_str)
+                .context("traceDigest required")?;
+            let digest = digest.to_string();
+            core.storage()
+                .database()
+                .run_read(move |conn| {
+                    let findings =
+                        crate::session::annotation_projection::list_findings_for_trace(conn, &digest)?;
+                    Ok(json!({ "findings": findings }))
+                })
+                .await
+        }
+        ("POST", "/v1/analysis/review") => {
+            let finding_id = body
+                .get("finding_id")
+                .or_else(|| body.get("findingId"))
+                .and_then(Value::as_str)
+                .context("findingId required")?
+                .to_string();
+            let decision = body
+                .get("decision")
+                .and_then(Value::as_str)
+                .unwrap_or("flag")
+                .to_string();
+            let reviewer = body
+                .get("reviewer")
+                .and_then(Value::as_str)
+                .unwrap_or("workshop")
+                .to_string();
+            let rationale = body
+                .get("rationale")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let evidence_head = body
+                .get("evidence_head_digest")
+                .or_else(|| body.get("evidenceHeadDigest"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let review_id = core
+                .storage()
+                .database()
+                .run_transaction({
+                    let finding_id = finding_id.clone();
+                    let evidence_head = evidence_head.clone();
+                    let decision = decision.clone();
+                    let reviewer = reviewer.clone();
+                    let rationale = rationale.clone();
+                    move |conn| {
+                        crate::session::annotation_projection::record_local_review(
+                            conn,
+                            &finding_id,
+                            &evidence_head,
+                            &decision,
+                            &reviewer,
+                            &rationale,
+                        )
+                    }
+                })
+                .await?;
+            Ok(json!({ "reviewId": review_id, "findingId": finding_id, "decision": decision }))
+        }
+        _ => anyhow::bail!("unsupported analysis IPC route {method} {path}"),
     }
 }
 

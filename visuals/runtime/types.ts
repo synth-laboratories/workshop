@@ -13,7 +13,9 @@ export type VisualBindingKind =
   | "live_sse"
   | "fixture"
   | "optimizer_run"
-  | "query_snapshot";
+  | "query_snapshot"
+  | "annotation_evidence_head"
+  | "verifier_result_v2";
 
 /**
  * Bind-point name: canonical `input`; `slot` still binds on stored envelopes.
@@ -74,6 +76,8 @@ export type VisualBinding = {
    * - optimizer_run → cloud/local optimizer_run_id
    * - query_snapshot → immutable trace query snapshot id
    * - run_ref → run identity resolved by the host
+   * - annotation_evidence_head → sealed annotation evidence-head digest
+   * - verifier_result_v2 → VerifierResultV2 content digest
    */
   source?: string;
   /** Declared sibling poll endpoint for a normalized live stream. Never inferred. */

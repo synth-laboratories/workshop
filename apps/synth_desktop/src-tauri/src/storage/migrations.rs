@@ -65,6 +65,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_60,
     MIGRATION_61,
     MIGRATION_62,
+    MIGRATION_63,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -232,6 +233,12 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("paid_compute_reservations", PAID_COMPUTE_BUDGET_CREATE_ONLY),
     ("annotation_reservations", MIGRATION_62),
     ("annotation_broker_secrets", MIGRATION_62),
+    ("annotation_campaigns", MIGRATION_63),
+    ("annotation_jobs", MIGRATION_63),
+    ("annotation_evidence_heads", MIGRATION_63),
+    ("annotation_findings", MIGRATION_63),
+    ("rubric_results", MIGRATION_63),
+    ("annotation_reviews", MIGRATION_63),
 ];
 
 const PROJECTION_OUTBOX_CREATE_ONLY: &str = r#"
@@ -4991,6 +4998,69 @@ mod tests {
             assert!(present, "migration 58 must create {index}");
         }
     }
+
+    #[test]
+    fn migration_63_creates_annotation_projection_tables() {
+        let conn = seed_at_version(62);
+        apply_migrations(&conn).unwrap();
+        for table in [
+            "annotation_campaigns",
+            "annotation_jobs",
+            "annotation_evidence_heads",
+            "annotation_findings",
+            "rubric_results",
+            "annotation_reviews",
+        ] {
+            let present: bool = conn
+                .query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1
+                     )",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(present, "migration 63 must create {table}");
+        }
+        conn.execute(
+            "INSERT INTO annotation_campaigns(
+                campaign_id, status, created_at, updated_at
+             ) VALUES('acmp_1','sealed','now','now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO annotation_evidence_heads(
+                digest, trace_digest, annotation_count, verifier_result_count,
+                summary_json, created_at, updated_at
+             ) VALUES('sha256:head','sha256:trace',2,0,'{\"schemaVersion\":\"synth.annotation-workbench.v1\"}','now','now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO annotation_findings(
+                finding_id, evidence_head_digest, annotator_id, taxonomy_label,
+                status, target_selector, created_at
+             ) VALUES('ann_1','sha256:head','craftax.recovery_facts','recovery.failure_not_detected','applied','span:span_42','now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO rubric_results(
+                digest, available, unavailable_reason, summary_json, created_at, updated_at
+             ) VALUES('sha256:missing',0,'verifier_result_missing','{\"available\":false}','now','now')",
+            [],
+        )
+        .unwrap();
+        let available: i64 = conn
+            .query_row(
+                "SELECT available FROM rubric_results WHERE digest='sha256:missing'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(available, 0, "missing verifier evidence must not store a score");
+    }
 }
 
 /// Backfill admitted specs for runs that predate kernel admission.
@@ -5105,4 +5175,113 @@ CREATE TABLE IF NOT EXISTS annotation_broker_secrets (
     secret TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+"#;
+
+/// Local Workshop projections of container-authoritative Trace V5 annotation
+/// artifacts. The visual family `analysis.annotation_workbench.v1` reads these
+/// bounded summaries; full evidence bundles stay in the owning container.
+const MIGRATION_63: &str = r#"
+CREATE TABLE IF NOT EXISTS annotation_campaigns (
+    campaign_id TEXT PRIMARY KEY,
+    container_id TEXT,
+    eval_run_id TEXT,
+    session_id TEXT,
+    label TEXT,
+    domain TEXT,
+    status TEXT NOT NULL CHECK (status IN (
+        'not_requested','preparing','approval_required','submitted',
+        'running','sealed','partially_sealed','abstained','failed','cancelled'
+    )),
+    traces_json TEXT NOT NULL DEFAULT '[]',
+    annotators_json TEXT NOT NULL DEFAULT '[]',
+    coverage_json TEXT NOT NULL DEFAULT '{}',
+    cost_json TEXT NOT NULL DEFAULT '{}',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS annotation_campaigns_eval ON annotation_campaigns(eval_run_id);
+CREATE INDEX IF NOT EXISTS annotation_campaigns_session ON annotation_campaigns(session_id, status);
+
+CREATE TABLE IF NOT EXISTS annotation_jobs (
+    job_id TEXT PRIMARY KEY,
+    campaign_id TEXT REFERENCES annotation_campaigns(campaign_id) ON DELETE CASCADE,
+    container_id TEXT,
+    trace_id TEXT,
+    trace_digest TEXT NOT NULL,
+    annotator_id TEXT NOT NULL,
+    annotator_digest TEXT,
+    repeat_index INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL,
+    reservation_id TEXT,
+    evidence_head_digest TEXT,
+    verifier_result_digest TEXT,
+    applied_count INTEGER,
+    abstained_count INTEGER,
+    rejected_count INTEGER,
+    cost_usd_micros INTEGER,
+    failure_reason TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS annotation_jobs_campaign ON annotation_jobs(campaign_id, state);
+CREATE INDEX IF NOT EXISTS annotation_jobs_trace ON annotation_jobs(trace_digest, annotator_id);
+
+CREATE TABLE IF NOT EXISTS annotation_evidence_heads (
+    digest TEXT PRIMARY KEY,
+    bundle_id TEXT,
+    trace_digest TEXT NOT NULL,
+    campaign_id TEXT,
+    annotation_count INTEGER NOT NULL DEFAULT 0,
+    verifier_result_count INTEGER NOT NULL DEFAULT 0,
+    summary_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS annotation_evidence_heads_trace ON annotation_evidence_heads(trace_digest);
+CREATE INDEX IF NOT EXISTS annotation_evidence_heads_campaign ON annotation_evidence_heads(campaign_id);
+
+CREATE TABLE IF NOT EXISTS annotation_findings (
+    finding_id TEXT PRIMARY KEY,
+    evidence_head_digest TEXT NOT NULL REFERENCES annotation_evidence_heads(digest) ON DELETE CASCADE,
+    job_id TEXT,
+    annotator_id TEXT NOT NULL,
+    annotation_type TEXT,
+    taxonomy_label TEXT,
+    severity TEXT,
+    status TEXT NOT NULL CHECK (status IN ('applied','abstained','rejected')),
+    target_selector TEXT,
+    target_selector_json TEXT NOT NULL DEFAULT '{}',
+    evidence_selectors_json TEXT NOT NULL DEFAULT '[]',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS annotation_findings_head ON annotation_findings(evidence_head_digest, taxonomy_label);
+CREATE INDEX IF NOT EXISTS annotation_findings_target ON annotation_findings(target_selector);
+
+CREATE TABLE IF NOT EXISTS rubric_results (
+    digest TEXT PRIMARY KEY,
+    verifier_result_id TEXT,
+    evidence_head_digest TEXT,
+    rubric_id TEXT,
+    rubric_digest TEXT,
+    available INTEGER NOT NULL DEFAULT 0,
+    unavailable_reason TEXT,
+    summary_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS rubric_results_head ON rubric_results(evidence_head_digest);
+
+CREATE TABLE IF NOT EXISTS annotation_reviews (
+    review_id TEXT PRIMARY KEY,
+    finding_id TEXT,
+    evidence_head_digest TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    reviewer TEXT,
+    rationale TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS annotation_reviews_head ON annotation_reviews(evidence_head_digest);
 "#;

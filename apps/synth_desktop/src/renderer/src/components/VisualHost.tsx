@@ -664,6 +664,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		digest: string;
 		projection: unknown;
 	}>>([]);
+	const [analysisFindings, setAnalysisFindings] = useState<unknown[]>([]);
+	const [analysisCampaigns, setAnalysisCampaigns] = useState<unknown[]>([]);
 
 	const visualIdentity = useMemo(
 		() => ({
@@ -677,6 +679,52 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			(entry) => bindingInputName(entry) === "optimizer_run" && entry.kind === "optimizer_run"
 		)?.source
 		: undefined;
+	const inspectorTraceDigest = resolvedBindings.status !== "rejected"
+		? resolvedBindings.slots.find((entry) => entry.kind === "trace_v5")?.source
+			?? (typeof artifact.metadata?.traceDigest === "string" ? artifact.metadata.traceDigest : undefined)
+		: (typeof artifact.metadata?.traceDigest === "string" ? artifact.metadata.traceDigest : undefined);
+	const evidenceHeadDigest = resolvedBindings.status !== "rejected"
+		? resolvedBindings.slots.find((entry) => entry.kind === "annotation_evidence_head")?.source
+		: undefined;
+	useEffect(() => {
+		if (artifact.templateId !== "trace.rollout_inspector.v1" || !inspectorTraceDigest || !bridges.runtime) {
+			setAnalysisFindings([]);
+			return;
+		}
+		let cancelled = false;
+		void bridges.runtime.request<{ findings?: unknown[] }>("/v1/analysis/findings", {
+			method: "POST",
+			body: { traceDigest: inspectorTraceDigest }
+		}).then((row) => {
+			if (!cancelled) setAnalysisFindings(Array.isArray(row?.findings) ? row.findings : []);
+		}).catch(() => {
+			if (!cancelled) setAnalysisFindings([]);
+		});
+		return () => { cancelled = true; };
+	}, [artifact.templateId, inspectorTraceDigest]);
+	useEffect(() => {
+		if (artifact.templateId !== "optimizer.eval.live.v1" || !optimizerRunId || !bridges.runtime) {
+			setAnalysisCampaigns([]);
+			return;
+		}
+		let cancelled = false;
+		const pull = () => {
+			void bridges.runtime!.request<{ campaigns?: unknown[] }>("/v1/analysis/campaigns", {
+				method: "POST",
+				body: { evalRunId: optimizerRunId }
+			}).then((row) => {
+				if (!cancelled) setAnalysisCampaigns(Array.isArray(row?.campaigns) ? row.campaigns : []);
+			}).catch(() => {
+				if (!cancelled) setAnalysisCampaigns([]);
+			});
+		};
+		pull();
+		const timer = globalThis.setInterval(pull, 10_000);
+		return () => {
+			cancelled = true;
+			globalThis.clearInterval(timer);
+		};
+	}, [artifact.templateId, optimizerRunId]);
 	const evidenceClient = useMemo(
 		() =>
 			// Lazy raw-journal access for the detail surfaces — Replay, the
@@ -905,7 +953,29 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			if (!bridges.optimizers) throw new Error(`No run loader for ${source}`);
 			return bridges.optimizers.get(source);
 		};
-		void bindTemplateSlots(template, bindings, { loadTraceV5, loadLocalCas, loadQuerySnapshot, loadRun, skipOptional: true })
+		const loadAnnotationEvidenceHead = (source: string) => {
+			if (!bridges.runtime) throw new Error(`No annotation evidence-head loader for ${source}`);
+			return bridges.runtime.request<{ payload?: unknown }>("/v1/analysis/projection", {
+				method: "POST",
+				body: { kind: "annotation_evidence_head", digest: source }
+			}).then((row) => row?.payload ?? row);
+		};
+		const loadVerifierResult = (source: string) => {
+			if (!bridges.runtime) throw new Error(`No verifier-result loader for ${source}`);
+			return bridges.runtime.request<{ payload?: unknown }>("/v1/analysis/projection", {
+				method: "POST",
+				body: { kind: "verifier_result_v2", digest: source }
+			}).then((row) => row?.payload ?? row);
+		};
+		void bindTemplateSlots(template, bindings, {
+			loadTraceV5,
+			loadLocalCas,
+			loadQuerySnapshot,
+			loadRun,
+			loadAnnotationEvidenceHead,
+			loadVerifierResult,
+			skipOptional: true
+		})
 			.then((result) => {
 				if (cancelled) return;
 				if (result.errors.length > 0) {
@@ -1323,6 +1393,22 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				replay={replayClient}
 				media={mediaClient}
 				sealedTraceProjections={sealedTraceProjections}
+				analysisFindings={analysisFindings}
+				analysisCampaigns={analysisCampaigns}
+				onReviewFinding={
+					artifact.templateId === "analysis.annotation_workbench.v1" && bridges.runtime
+						? (input: { findingId: string; decision: string; rationale: string; evidenceHeadDigest?: string }) =>
+							bridges.runtime!.request("/v1/analysis/review", {
+								method: "POST",
+								body: {
+									findingId: input.findingId,
+									decision: input.decision,
+									rationale: input.rationale,
+									evidenceHeadDigest: input.evidenceHeadDigest ?? evidenceHeadDigest ?? ""
+								}
+							})
+						: undefined
+				}
 				evidence={evidenceClient}
 				runLifecycle={runLifecycle}
 				replayMissingTransport={replay.missingTransport}

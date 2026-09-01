@@ -657,6 +657,7 @@ pub(crate) fn spawn_reconciler(core: Arc<CoreRuntime>) {
                     let _ = pull_reconciliations(&core, &container_id, &base).await;
                 }
             }
+            let _ = pull_campaign_jobs(&core).await;
             let _ = core
                 .storage()
                 .database()
@@ -664,6 +665,204 @@ pub(crate) fn spawn_reconciler(core: Arc<CoreRuntime>) {
                 .await;
         }
     });
+}
+
+async fn pull_campaign_jobs(core: &CoreRuntime) -> Result<usize> {
+    let _ = core
+        .storage()
+        .database()
+        .run_transaction(crate::session::annotation_projection::seed_from_amendments)
+        .await;
+    let jobs = core
+        .storage()
+        .database()
+        .run_read(crate::session::annotation_projection::list_jobs_needing_reconcile)
+        .await
+        .unwrap_or_default();
+    let mut projected = 0usize;
+    for job in jobs {
+        let Some(container_id) = job.container_id.clone() else {
+            continue;
+        };
+        let Ok(base) = container_base(core, &container_id).await else {
+            continue;
+        };
+        let url = format!("{base}/annotation-jobs/{}", job.job_id);
+        let Ok(payload) = forward("GET", &url, None).await else {
+            continue;
+        };
+        let campaign_id = job.campaign_id.clone();
+        let outcome = core
+            .storage()
+            .database()
+            .run_transaction({
+                let campaign_id = campaign_id.clone();
+                let container_id = container_id.clone();
+                move |conn| {
+                    crate::session::annotation_projection::apply_job_snapshot(
+                        conn,
+                        campaign_id.as_deref(),
+                        &container_id,
+                        &payload,
+                    )
+                }
+            })
+            .await;
+        let Ok(outcome) = outcome else {
+            continue;
+        };
+        if outcome.already_projected {
+            continue;
+        }
+        if !outcome.terminal || matches!(outcome.state.as_str(), "failed" | "cancelled") {
+            let job_id = outcome.job_id.clone();
+            let campaign_id = outcome.campaign_id.clone();
+            let mark_projected = outcome.terminal;
+            let _ = core
+                .storage()
+                .database()
+                .run_transaction(move |conn| {
+                    if mark_projected {
+                        crate::session::annotation_projection::mark_job_projected(
+                            conn, &job_id, None,
+                        )?;
+                    }
+                    if let Some(campaign_id) = campaign_id {
+                        crate::session::annotation_projection::refresh_campaign_coverage(
+                            conn,
+                            &campaign_id,
+                        )?;
+                    }
+                    Ok(())
+                })
+                .await;
+            continue;
+        }
+        let Some(trace_id) = outcome.trace_id.clone() else {
+            let job_id = outcome.job_id.clone();
+            let campaign_id = outcome.campaign_id.clone();
+            let _ = core
+                .storage()
+                .database()
+                .run_transaction(move |conn| {
+                    crate::session::annotation_projection::mark_job_projected(conn, &job_id, None)?;
+                    if let Some(campaign_id) = campaign_id {
+                        crate::session::annotation_projection::refresh_campaign_coverage(
+                            conn,
+                            &campaign_id,
+                        )?;
+                    }
+                    Ok(())
+                })
+                .await;
+            continue;
+        };
+        let Some(campaign_id) = outcome.campaign_id.clone() else {
+            continue;
+        };
+        let annotations = forward(
+            "GET",
+            &format!("{base}/traces/{trace_id}/annotations"),
+            None,
+        )
+        .await
+        .ok();
+        let head_payload = forward(
+            "GET",
+            &format!("{base}/traces/{trace_id}/evidence-head"),
+            None,
+        )
+        .await
+        .ok();
+        let bundles = if let Some(head_payload) = head_payload {
+            Some(json!({
+                "bundles": [head_payload.get("head").cloned().unwrap_or(head_payload)]
+            }))
+        } else {
+            forward(
+                "GET",
+                &format!("{base}/traces/{trace_id}/evidence-bundles"),
+                None,
+            )
+            .await
+            .ok()
+        };
+        let (Some(annotations), Some(bundles)) = (annotations, bundles) else {
+            continue;
+        };
+        let trace_digest = outcome.trace_digest.clone();
+        let head = core
+            .storage()
+            .database()
+            .run_transaction(move |conn| {
+                crate::session::annotation_projection::project_trace_head(
+                    conn,
+                    &campaign_id,
+                    &trace_id,
+                    &trace_digest,
+                    &annotations,
+                    &bundles,
+                )
+            })
+            .await
+            .ok()
+            .flatten();
+        if let Some(head) = head {
+            let _ = open_annotation_workbench(core, &head).await;
+            projected += 1;
+        } else {
+            let job_id = outcome.job_id.clone();
+            let campaign_id = outcome.campaign_id.clone();
+            let _ = core
+                .storage()
+                .database()
+                .run_transaction(move |conn| {
+                    crate::session::annotation_projection::mark_job_projected(conn, &job_id, None)?;
+                    if let Some(campaign_id) = campaign_id {
+                        crate::session::annotation_projection::refresh_campaign_coverage(
+                            conn,
+                            &campaign_id,
+                        )?;
+                    }
+                    Ok(())
+                })
+                .await;
+        }
+    }
+    Ok(projected)
+}
+
+async fn open_annotation_workbench(
+    core: &CoreRuntime,
+    head: &crate::session::annotation_projection::ProjectedHead,
+) -> Result<()> {
+    let mut trace = match core.data().get_trace(head.trace_digest.clone()).await {
+        Ok(trace) => trace,
+        Err(_) => core.data().get_trace(head.trace_id.clone()).await?,
+    };
+    if trace.run_id.is_none() {
+        trace.run_id = head.eval_run_id.clone();
+    }
+    let visual = crate::presentation::ensure_annotation_workbench(
+        core,
+        crate::presentation::AnnotationWorkbenchRequest {
+            trace,
+            evidence_digest: head.digest.clone(),
+            rubric_digest: head.rubric_digest.clone(),
+            campaign_id: head.campaign_id.clone(),
+            title: None,
+            session_id: head.session_id.clone(),
+        },
+    )
+    .await?;
+    let (_shown, event) = core
+        .visuals()
+        .show(visual.id.clone(), head.session_id.clone())
+        .await?;
+    if let Ok(event) = serde_json::from_value(event) {
+        core.broadcast_committed(Some(event));
+    }
+    Ok(())
 }
 
 pub(crate) async fn dispatch_annotations(

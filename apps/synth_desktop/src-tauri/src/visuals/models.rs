@@ -290,6 +290,8 @@ pub const VISUAL_BINDING_KINDS: &[&str] = &[
     "fixture",
     "optimizer_run",
     "query_snapshot",
+    "annotation_evidence_head",
+    "verifier_result_v2",
 ];
 
 /// How an authored bindings value reached the canonical envelope.

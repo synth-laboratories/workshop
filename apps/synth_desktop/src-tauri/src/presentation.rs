@@ -13,6 +13,7 @@ use crate::core_runtime::CoreRuntime;
 use crate::data::TraceRecord;
 use crate::visuals::{
     binding_descriptors, descriptor_input_name, VisualCreateRequest, VisualQuery, VisualRecord,
+    VisualUpdateRequest,
 };
 
 pub const TRACE_INSPECTOR_TEMPLATE: &str = "trace.rollout_inspector.v1";
@@ -272,6 +273,184 @@ pub async fn ensure_query_catalog(core: &CoreRuntime, snapshot_id: &str) -> Resu
     }
 }
 
+pub const ANNOTATION_WORKBENCH_TEMPLATE: &str = "analysis.annotation_workbench.v1";
+pub const ANNOTATION_WORKBENCH_SCHEMA: &str = "synth.annotation-workbench.v1";
+
+#[derive(Clone, Debug)]
+pub struct AnnotationWorkbenchRequest {
+    pub trace: TraceRecord,
+    pub evidence_digest: String,
+    pub rubric_digest: Option<String>,
+    pub campaign_id: Option<String>,
+    pub title: Option<String>,
+    pub session_id: Option<String>,
+}
+
+fn sanitize_id_part(value: &str, take: usize) -> String {
+    value
+        .trim_start_matches("sha256:")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.' || *c == '-')
+        .take(take)
+        .collect()
+}
+
+/// Deterministic per (trace digest, campaign) identity. A new evidence-head
+/// digest revises this visual rather than minting a sibling.
+pub fn annotation_workbench_visual_id(trace_digest: &str, campaign_id: Option<&str>) -> String {
+    let digest = sanitize_id_part(trace_digest, 48);
+    let campaign = campaign_id
+        .map(|value| sanitize_id_part(value, 24))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "campaign".into());
+    if digest.is_empty() {
+        format!("vis_analysis_unknown_{campaign}")
+    } else {
+        format!("vis_analysis_{digest}_{campaign}")
+    }
+}
+
+fn annotation_workbench_bindings(
+    trace_digest: &str,
+    evidence_digest: &str,
+    rubric_digest: Option<&str>,
+) -> Value {
+    let mut inputs = vec![
+        json!({
+            "input": "trace",
+            "kind": "trace_v5",
+            "source": trace_digest,
+        }),
+        json!({
+            "input": "evidence",
+            "kind": "annotation_evidence_head",
+            "source": evidence_digest,
+            "schema": ANNOTATION_WORKBENCH_SCHEMA,
+        }),
+    ];
+    if let Some(rubric) = rubric_digest.filter(|value| !value.is_empty()) {
+        inputs.push(json!({
+            "input": "rubric",
+            "kind": "verifier_result_v2",
+            "source": rubric,
+            "schema": "synth.verifier-result.v2",
+        }));
+    }
+    json!({
+        "schemaVersion": "synth.visual-bindings.v1",
+        "inputs": inputs,
+    })
+}
+
+fn evidence_digest_binding(visual: &VisualRecord) -> Option<String> {
+    if visual.template_id != ANNOTATION_WORKBENCH_TEMPLATE {
+        return None;
+    }
+    binding_descriptors(&visual.bindings)
+        .ok()?
+        .into_iter()
+        .find_map(|slot| {
+            if descriptor_input_name(&slot).ok().as_deref() == Some("evidence")
+                && slot.get("kind").and_then(Value::as_str) == Some("annotation_evidence_head")
+            {
+                slot.get("source").and_then(Value::as_str).map(str::to_owned)
+            } else {
+                None
+            }
+        })
+}
+
+/// Resolve, or create, the analysis workbench visual for one sealed evidence head.
+///
+/// Reuse is the (trace digest, campaign) pair. A new evidence-head digest
+/// bumps the visual revision; the previous head remains in revision history.
+pub async fn ensure_annotation_workbench(
+    core: &CoreRuntime,
+    request: AnnotationWorkbenchRequest,
+) -> Result<VisualRecord> {
+    let inspectability = trace_inspectability(&request.trace);
+    if !inspectability.eligible() {
+        bail!(
+            "trace `{}` cannot be analysed: {}",
+            request.trace.id,
+            inspectability.label()
+        );
+    }
+    let visual_id =
+        annotation_workbench_visual_id(&request.trace.digest, request.campaign_id.as_deref());
+    let bindings = annotation_workbench_bindings(
+        &request.trace.digest,
+        &request.evidence_digest,
+        request.rubric_digest.as_deref(),
+    );
+    let title = request.title.clone().unwrap_or_else(|| {
+        format!(
+            "{} analysis",
+            if request.trace.title.trim().is_empty() {
+                "Trace"
+            } else {
+                request.trace.title.as_str()
+            }
+        )
+    });
+    let metadata = json!({
+        "traceRecordId": request.trace.id,
+        "traceDigest": request.trace.digest,
+        "evidenceHeadDigest": request.evidence_digest,
+        "rubricDigest": request.rubric_digest,
+        "campaignId": request.campaign_id,
+        "projectionSchema": ANNOTATION_WORKBENCH_SCHEMA,
+        "visualFamily": ANNOTATION_WORKBENCH_TEMPLATE,
+    });
+    let registry = core.visuals();
+    if let Ok(existing) = registry.get(visual_id.clone()).await {
+        if evidence_digest_binding(&existing).as_deref() == Some(request.evidence_digest.as_str()) {
+            return Ok(existing);
+        }
+        let (updated, _event) = registry
+            .update(
+                visual_id,
+                VisualUpdateRequest {
+                    title: Some(title),
+                    bindings: Some(bindings),
+                    status: None,
+                    renderer_kind: None,
+                    message_id: None,
+                    run_id: request.trace.run_id.clone(),
+                    trace_id: Some(request.trace.id.clone()),
+                    content: None,
+                    metadata: Some(metadata),
+                    bump_revision: Some(true),
+                },
+            )
+            .await?;
+        return Ok(updated);
+    }
+    match registry
+        .create(VisualCreateRequest {
+            template_id: ANNOTATION_WORKBENCH_TEMPLATE.into(),
+            title: Some(title),
+            bindings: Some(bindings),
+            id: Some(visual_id.clone()),
+            status: None,
+            renderer_kind: None,
+            session_id: request.session_id,
+            message_id: None,
+            run_id: request.trace.run_id.clone(),
+            trace_id: Some(request.trace.id.clone()),
+            parent_visual_id: None,
+            source_agent_id: None,
+            source_model: None,
+            content: None,
+            metadata: Some(metadata),
+        })
+        .await
+    {
+        Ok((visual, _event)) => Ok(visual),
+        Err(error) => registry.get(visual_id).await.map_err(|_| error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +542,62 @@ mod tests {
             Some("sha256:aaaa1111")
         );
         assert_eq!(trace_digest_binding(&visual("analysis.visual.v1")), None);
+    }
+
+    #[test]
+    fn annotation_workbench_identity_follows_trace_and_campaign() {
+        assert_eq!(
+            annotation_workbench_visual_id("sha256:aaaa1111", Some("acmp_craftax_glm53")),
+            "vis_analysis_aaaa1111_acmp_craftax_glm53"
+        );
+        assert_ne!(
+            annotation_workbench_visual_id("sha256:aaaa1111", Some("acmp_a")),
+            annotation_workbench_visual_id("sha256:bbbb2222", Some("acmp_a"))
+        );
+    }
+
+    #[test]
+    fn annotation_workbench_bindings_are_peer_identities() {
+        let bindings = annotation_workbench_bindings(
+            "sha256:trace",
+            "sha256:head",
+            Some("sha256:rubric"),
+        );
+        let inputs = bindings["inputs"].as_array().expect("inputs");
+        assert_eq!(inputs[0]["input"], json!("trace"));
+        assert_eq!(inputs[0]["kind"], json!("trace_v5"));
+        assert_eq!(inputs[1]["kind"], json!("annotation_evidence_head"));
+        assert_eq!(inputs[1]["schema"], json!(ANNOTATION_WORKBENCH_SCHEMA));
+        assert_eq!(inputs[2]["kind"], json!("verifier_result_v2"));
+        let visual: VisualRecord = serde_json::from_value(json!({
+            "schemaVersion": "synth.visual.v1",
+            "id": "vis_analysis_trace_acmp",
+            "currentRevision": 1,
+            "title": "t",
+            "templateId": ANNOTATION_WORKBENCH_TEMPLATE,
+            "status": "draft",
+            "rendererKind": "template",
+            "bindings": bindings,
+            "metadata": {},
+            "createdAt": "2026-09-01T00:00:00Z",
+            "updatedAt": "2026-09-01T00:00:00Z"
+        }))
+        .expect("visual");
+        assert_eq!(
+            evidence_digest_binding(&visual).as_deref(),
+            Some("sha256:head")
+        );
+    }
+
+    #[test]
+    fn annotation_workbench_omits_rubric_when_verifier_evidence_is_missing() {
+        let bindings = annotation_workbench_bindings("sha256:trace", "sha256:head", None);
+        let kinds: Vec<&str> = bindings["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row.get("kind").and_then(Value::as_str))
+            .collect();
+        assert_eq!(kinds, vec!["trace_v5", "annotation_evidence_head"]);
     }
 }

@@ -17,6 +17,14 @@ import { EvalWorkspace } from "../../_shared/optimizer.run.v1/overlays/eval/Eval
 import type { VisualBinding } from "../../../../runtime/types.ts";
 import type { OptimizerEvent, OptimizerRun } from "../../_shared/optimizer.run.v1/components/projectEvents.ts";
 
+export type AnalysisCampaign = {
+  campaignId?: string;
+  status?: string;
+  label?: string;
+  domain?: string;
+  coverage?: { jobs?: number; sealed?: number; abstained?: number; failed?: number };
+};
+
 export type ShellProps = {
   title?: string;
   lede?: string;
@@ -26,6 +34,7 @@ export type ShellProps = {
   events?: OptimizerEvent[];
   run?: OptimizerRun;
   loadError?: string;
+  analysisCampaigns?: AnalysisCampaign[];
 };
 
 export function Shell(props: ShellProps) {
@@ -41,6 +50,7 @@ export function Shell(props: ShellProps) {
         <EvalWorkspace
           projected={projected}
           run={run}
+          analysisCampaigns={props.analysisCampaigns}
           debug={
             <>
               <GlobalTimeline

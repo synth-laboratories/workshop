@@ -30,8 +30,13 @@ on stored envelopes and `template.json`. If both names are present and disagree,
 fail closed.
 
 `kind` is drawn from a closed vocabulary: `inline`, `trace_v5`, `local_cas`,
-`run_ref`, `live_sse`, `fixture`, `optimizer_run`, `query_snapshot`. An unknown
-kind fails the write.
+`run_ref`, `live_sse`, `fixture`, `optimizer_run`, `query_snapshot`,
+`annotation_evidence_head`, `verifier_result_v2`. An unknown kind fails the write.
+
+`annotation_evidence_head` addresses a sealed Trace V5 annotation evidence bundle
+by content digest. `verifier_result_v2` addresses a `VerifierResultV2` by content
+digest. Both are Workshop local projections of container-authoritative artifacts.
+Missing verifier evidence is unavailable, never a zero score.
 
 `query_snapshot` addresses an immutable result set by snapshot id. A visual must
 never bind to a live query: it would return different rows on every render, and

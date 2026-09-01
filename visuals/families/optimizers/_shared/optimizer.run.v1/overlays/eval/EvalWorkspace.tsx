@@ -474,14 +474,54 @@ function EvidencePanel({ state }: { state: EvalState }) {
 
 /* ── Shell ──────────────────────────────────────────────────────────────── */
 
+export type AnalysisCampaign = {
+  campaignId?: string;
+  status?: string;
+  label?: string;
+  domain?: string;
+  coverage?: { jobs?: number; sealed?: number; abstained?: number; failed?: number };
+};
+
+function AnnotationCampaignPanel({ campaigns }: { campaigns: AnalysisCampaign[] }) {
+  if (campaigns.length === 0) return null;
+  return (
+    <Panel title="Annotation campaigns" aside={`${campaigns.length} campaign${campaigns.length === 1 ? "" : "s"}`} testId="eval-annotation-campaigns">
+      <ul className="sv-stack" style={{ listStyle: "none", margin: 0, padding: 0, gap: 8 }}>
+        {campaigns.map((campaign) => {
+          const jobs = campaign.coverage?.jobs ?? 0;
+          const sealed = campaign.coverage?.sealed ?? 0;
+          const status = campaign.status ?? "submitted";
+          const progress =
+            status === "running" && jobs > 0
+              ? `annotating ${sealed}/${jobs}`
+              : status === "submitted"
+                ? jobs > 0
+                  ? `submitted ${jobs}`
+                  : "submitted"
+                : `${status} · ${sealed}/${jobs} sealed`;
+          return (
+            <li key={campaign.campaignId ?? campaign.label ?? "campaign"} data-testid={`eval-annotation-campaign-${campaign.campaignId ?? "unknown"}`}>
+              <strong>{campaign.label ?? campaign.domain ?? campaign.campaignId ?? "campaign"}</strong>
+              {" · "}
+              <span className="sv-mono">{progress}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </Panel>
+  );
+}
+
 export function EvalWorkspace({
   projected,
   run,
-  debug
+  debug,
+  analysisCampaigns = []
 }: {
   projected: ProjectedState;
   run: OptimizerRun;
   debug?: ReactNode;
+  analysisCampaigns?: AnalysisCampaign[];
 }) {
   const state = projected.eval;
   const status = String(projected.summary.status ?? run.status ?? "running");
@@ -527,6 +567,7 @@ export function EvalWorkspace({
         testId="eval-workspace-header"
       />
       <StageTimeline stages={evalStages(state, status)} testId="eval-stages" />
+      <AnnotationCampaignPanel campaigns={analysisCampaigns} />
       {state ? (
         <>
           <LiveRolloutsPanel state={state} />

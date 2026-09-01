@@ -51,6 +51,9 @@ export type LiveSseSubscribe = (
   onError?: (err: Error) => void
 ) => () => void;
 
+export type AnnotationEvidenceHeadLoader = (digest: string) => Promise<unknown> | unknown;
+export type VerifierResultLoader = (digest: string) => Promise<unknown> | unknown;
+
 export type BindContext = {
   loadFixture?: FixtureLoader;
   loadTraceV5?: TraceV5Loader;
@@ -58,6 +61,8 @@ export type BindContext = {
   loadQuerySnapshot?: QuerySnapshotLoader;
   loadRun?: (runId: string) => Promise<unknown> | unknown;
   loadOptimizerRun?: (optimizerRunId: string) => Promise<unknown> | unknown;
+  loadAnnotationEvidenceHead?: AnnotationEvidenceHeadLoader;
+  loadVerifierResult?: VerifierResultLoader;
   /** Declared create-rollout stream descriptor; required to bind guessed-looking URLs. */
   declaredStream?: import("./liveStream.ts").DeclaredStreamDescriptor | null;
   /** When true, missing optional inputs are ignored. */
@@ -138,6 +143,26 @@ async function resolveBinding(
         ...(binding.poll_url ? { poll_url: binding.poll_url } : {}),
         schema: binding.schema ?? "synth.live_eval.v1"
       };
+    }
+    case "annotation_evidence_head": {
+      if (binding.data !== undefined) return dig(binding.data, binding.path);
+      if (!binding.source) {
+        throw new Error(`annotation_evidence_head binding for input "${bindingInputName(binding) ?? "?"}" requires an evidence-head digest`);
+      }
+      if (!ctx.loadAnnotationEvidenceHead) {
+        throw new Error(`No annotation evidence-head loader for input "${bindingInputName(binding) ?? "?"}"`);
+      }
+      return dig(await ctx.loadAnnotationEvidenceHead(binding.source), binding.path);
+    }
+    case "verifier_result_v2": {
+      if (binding.data !== undefined) return dig(binding.data, binding.path);
+      if (!binding.source) {
+        throw new Error(`verifier_result_v2 binding for input "${bindingInputName(binding) ?? "?"}" requires a verifier-result digest`);
+      }
+      if (!ctx.loadVerifierResult) {
+        throw new Error(`No verifier-result loader for input "${bindingInputName(binding) ?? "?"}"`);
+      }
+      return dig(await ctx.loadVerifierResult(binding.source), binding.path);
     }
     default: {
       const _exhaustive: never = binding.kind;
@@ -256,7 +281,9 @@ const BINDING_KINDS: readonly string[] = [
   "live_sse",
   "fixture",
   "optimizer_run",
-  "query_snapshot"
+  "query_snapshot",
+  "annotation_evidence_head",
+  "verifier_result_v2"
 ];
 
 export type VisualBindingsStatus = "canonical" | "upgraded" | "rejected";
