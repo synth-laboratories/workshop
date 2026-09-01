@@ -1263,6 +1263,29 @@ pub fn list_campaigns_for_eval(conn: &Connection, eval_run_id: &str) -> Result<V
 }
 
 pub fn list_findings_for_trace(conn: &Connection, trace_digest: &str) -> Result<Vec<Value>> {
+    // The annotation container retains its own trace-content digest, whereas a
+    // Workshop Trace V5 import has the archive digest.  The local import's
+    // producerTraceId is the owner-bound identity that joins those namespaces;
+    // use it only as a fallback after an exact evidence-head digest lookup.
+    let (container_id, producer_trace_id) = conn
+        .query_row(
+            "SELECT container_id, metadata_json FROM traces WHERE digest=?1",
+            [trace_digest],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?
+        .map(|(container_id, metadata_json)| {
+            let metadata: Value = serde_json::from_str(&metadata_json).unwrap_or(Value::Null);
+            let producer_trace_id = metadata
+                .get("producerTraceId")
+                .or_else(|| metadata.get("rolloutId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            (container_id, producer_trace_id)
+        })
+        .unwrap_or((None, None));
     let mut statement = conn.prepare(
         "SELECT f.finding_id, f.annotator_id, f.annotation_type, f.taxonomy_label,
                 f.severity, f.status, f.target_selector, f.target_selector_json,
@@ -1270,10 +1293,16 @@ pub fn list_findings_for_trace(conn: &Connection, trace_digest: &str) -> Result<
          FROM annotation_findings f
          JOIN annotation_evidence_heads h ON h.digest = f.evidence_head_digest
          WHERE h.trace_digest=?1
+            OR (?2 IS NOT NULL AND h.campaign_id IN (
+                SELECT j.campaign_id
+                FROM annotation_jobs j
+                WHERE j.trace_id=?2
+                  AND (?3 IS NULL OR j.container_id=?3)
+            ))
          ORDER BY f.created_at, f.finding_id",
     )?;
     let rows = statement
-        .query_map([trace_digest], |row| {
+        .query_map((trace_digest, producer_trace_id, container_id), |row| {
             let target_json: String = row.get(7)?;
             let payload_json: String = row.get(8)?;
             Ok(json!({

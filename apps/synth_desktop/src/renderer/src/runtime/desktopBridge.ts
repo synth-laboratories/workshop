@@ -254,7 +254,9 @@ export function installDesktopBridge(): void {
 	if (!isTauri && import.meta.env.DEV) window.synthRuntime ??= browserRuntimeBridge();
 	window.synthAnalysis ??= isTauri
 		? {
-			projection: (kind, digest) => bridgeResult<unknown>(fromGenerated(spectaCommands.analysisProjectionGet(kind, digest))),
+			projection: (kind, digest) => bridgeResult<{ payload?: unknown }>(
+				fromGenerated(spectaCommands.analysisProjectionGet(kind, digest))
+			).then((row) => row?.payload ?? row),
 			findings: (traceDigest) => bridgeResult<{ findings: unknown[] }>(fromGenerated(spectaCommands.analysisFindingsList(traceDigest))),
 			campaigns: (evalRunId) => bridgeResult<{ campaigns: unknown[] }>(fromGenerated(spectaCommands.analysisCampaignsList(evalRunId))),
 			review: (input) => bridgeResult<unknown>(fromGenerated(spectaCommands.analysisReviewRecord(
