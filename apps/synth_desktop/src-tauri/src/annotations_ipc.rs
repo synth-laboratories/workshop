@@ -278,15 +278,21 @@ async fn resolve_container_trace_id(
         .run_read(move |conn| {
             use rusqlite::OptionalExtension;
             conn.query_row(
-                "SELECT container_id, metadata_json FROM traces WHERE id=?1",
+                "SELECT container_id, digest, metadata_json FROM traces WHERE id=?1",
                 [local_id_for_lookup],
-                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
             )
             .optional()
             .map_err(Into::into)
         })
         .await?;
-    let Some((owner, metadata_json)) = owned else {
+    let Some((owner, trace_digest, metadata_json)) = owned else {
         return Ok(body);
     };
     if owner.as_deref() != Some(container_id) {
@@ -308,6 +314,7 @@ async fn resolve_container_trace_id(
         object.insert("trace_id".into(), json!(producer_id));
         if let Some(request) = object.get_mut("request").and_then(Value::as_object_mut) {
             request.insert("source_trace_id".into(), json!(producer_id));
+            request.insert("source_trace_digest".into(), json!(trace_digest));
         }
     }
     Ok(resolved)
@@ -1842,6 +1849,7 @@ mod tests {
         .unwrap();
         assert_eq!(resolved["trace_id"], "roll_real");
         assert_eq!(resolved["request"]["source_trace_id"], "roll_real");
+        assert_eq!(resolved["request"]["source_trace_digest"], "sha256:trace");
 
         let untouched =
             resolve_container_trace_id(&core, "ctr_other", json!({"trace_id": "tracev5_local"}))
