@@ -497,7 +497,10 @@ async fn trace_owner(core: &CoreRuntime, trace_digest: &str) -> Result<Option<Tr
 /// Resolve the owner of a paid annotation binding. The container's normalized
 /// trace digest is allowed to differ from Workshop's imported archive digest,
 /// but only when an existing evidence head and job already seal the join from
-/// that normalized digest to the same producer rollout and container.
+/// that normalized digest to the same producer rollout. Current container
+/// ownership is proven separately by its unique imported Trace V5 row; this
+/// permits a broker-capable replacement registration to extend evidence made
+/// under an earlier registration of the same producer.
 async fn trace_owner_for_binding(
     core: &CoreRuntime,
     container_id: &str,
@@ -526,9 +529,9 @@ async fn trace_owner_for_binding(
                     "SELECT 1
                      FROM annotation_evidence_heads h
                      JOIN annotation_jobs j ON j.campaign_id=h.campaign_id
-                     WHERE h.trace_digest=?1 AND j.trace_id=?2 AND j.container_id=?3
+                     WHERE h.trace_digest=?1 AND j.trace_id=?2
                      LIMIT 1",
-                    rusqlite::params![trace_digest, producer_trace_id, container_id],
+                    rusqlite::params![trace_digest, producer_trace_id],
                     |_| Ok(()),
                 )
                 .optional()?
@@ -1943,7 +1946,7 @@ mod tests {
                 )?;
                 conn.execute(
                     "INSERT INTO annotation_jobs(job_id,campaign_id,container_id,trace_id,trace_digest,annotator_id,state,created_at,updated_at)
-                     VALUES('ajob_existing','acmp_existing','ctr_owned','roll_real',?1,'craftax.belief_facts','sealed','2026-01-03','2026-01-03')",
+                     VALUES('ajob_existing','acmp_existing','ctr_previous','roll_real',?1,'craftax.belief_facts','sealed','2026-01-03','2026-01-03')",
                     rusqlite::params![sealed_digest],
                 )?;
                 conn.execute(
