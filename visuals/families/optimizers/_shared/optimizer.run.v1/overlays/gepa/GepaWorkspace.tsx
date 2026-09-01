@@ -370,7 +370,7 @@ export function GepaWorkspace({
     { label: "Best train", value: bestScore != null ? bestScore.toFixed(2) : "—" },
     { label: "Heldout", value: heldoutValue },
     {
-      label: "Rollouts",
+      label: "Evaluation results",
       value: rolloutSpent != null
         ? `${Math.round(rolloutSpent)}${rolloutLimit?.max != null ? ` / ${Math.round(rolloutLimit.max)}` : ""}`
         : "—"
@@ -514,6 +514,7 @@ export function GepaWorkspace({
       <RolloutBrowser
         groups={evaluationData.groups}
         rows={evaluationData.rows}
+        itemLabel="evaluation results"
         emptyText={stageFilter
           ? "No rollouts for the selected stage yet. Clear the stage filter to see everything."
           : "Evaluation rollouts appear as candidates are scored."}

@@ -80,6 +80,7 @@ export function RolloutBrowser({
   groups,
   rows,
   emptyText,
+  itemLabel = "rollouts",
   testId,
   selectedId,
   onInspect
@@ -87,6 +88,7 @@ export function RolloutBrowser({
   groups: RolloutGroup[];
   rows: RolloutRow[];
   emptyText: string;
+  itemLabel?: string;
   testId?: string;
   selectedId?: string | null;
   onInspect?: (row: RolloutRow | null) => void;
@@ -131,7 +133,7 @@ export function RolloutBrowser({
     <section className="sv-section" aria-label="Evaluation rollouts" data-testid={testId}>
       <div className="sv-section-head">
         <h3>Evaluations</h3>
-        <span className="sv-mono">{totalShown} of {rows.length} rollouts</span>
+        <span className="sv-mono">{totalShown} of {rows.length} {itemLabel}</span>
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
         {(["all", "failures", "passes", "active"] as const).map((option) => (
