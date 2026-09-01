@@ -111,6 +111,38 @@ fn kernel_work_counts(summary: &crate::optimizers::kernel::WorkSummary) -> WorkC
     }
 }
 
+fn lane_calls(lanes: &Value, name: &str) -> u64 {
+    lanes
+        .get(name)
+        .and_then(|lane| lane.get("calls"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+/// Optimizer rollouts, policy calls, proposer calls, and provider requests are
+/// four different counts. A GEPA search that scored 80 rollouts while
+/// `usage.calls` stayed 0 was billed work reported as zero calls.
+fn annotate_call_accounting(usage: &mut Value) {
+    let Some(object) = usage.as_object_mut() else {
+        return;
+    };
+    let lanes = object.get("lanes").cloned().unwrap_or(Value::Null);
+    let policy_calls = lane_calls(&lanes, "policy");
+    let proposer_calls = lane_calls(&lanes, "proposer");
+    let receipt_calls = object
+        .get("providerReceipt")
+        .and_then(|receipt| receipt.get("calls"))
+        .and_then(Value::as_u64);
+    let recorded_calls = object.get("calls").and_then(Value::as_u64).unwrap_or(0);
+    let provider_requests = receipt_calls
+        .filter(|calls| *calls > 0)
+        .or_else(|| (recorded_calls > 0).then_some(recorded_calls))
+        .unwrap_or(policy_calls.saturating_add(proposer_calls));
+    object.insert("policyCalls".into(), json!(policy_calls));
+    object.insert("proposerCalls".into(), json!(proposer_calls));
+    object.insert("providerRequests".into(), json!(provider_requests));
+}
+
 /// Usage as the manifest records it: lanes preserved, unknowns preserved.
 fn usage_value(run: &OptimizerRunRecord) -> Value {
     // The durable run row is the canonical usage accumulator. Event deltas
@@ -120,7 +152,7 @@ fn usage_value(run: &OptimizerRunRecord) -> Value {
         .get("usageLanes")
         .cloned()
         .unwrap_or(Value::Null);
-    json!({
+    let mut usage = json!({
         "costUsd": run.usage.cost_usd,
         "calls": run.usage.calls,
         "promptTokens": run.usage.prompt_tokens,
@@ -142,7 +174,9 @@ fn usage_value(run: &OptimizerRunRecord) -> Value {
             .extra
             .get("costTelemetryComplete")
             .and_then(Value::as_bool),
-    })
+    });
+    annotate_call_accounting(&mut usage);
+    usage
 }
 
 fn selection_value(run: &OptimizerRunRecord, events: &[OptimizerEventEnvelope]) -> Value {
@@ -212,6 +246,7 @@ pub(super) fn derive(
             object.insert("lanes".into(), lanes);
         }
     }
+    annotate_call_accounting(&mut usage);
     let artifact_refs: Vec<Value> = run
         .output_refs
         .iter()
@@ -447,25 +482,32 @@ fn populate_canonical_usage(conn: &Connection, run_id: &str, manifest: &mut Valu
     let object = manifest
         .as_object_mut()
         .context("optimizer terminal manifest must be an object")?;
-    let terminal_usage = object
-        .get_mut("usage")
-        .and_then(Value::as_object_mut)
-        .context("optimizer terminal manifest is missing typed usage")?;
-    terminal_usage.insert("costUsd".into(), json!(usage.cost_usd));
-    terminal_usage.insert("calls".into(), json!(usage.calls));
-    terminal_usage.insert("promptTokens".into(), json!(usage.prompt_tokens));
-    terminal_usage.insert("completionTokens".into(), json!(usage.completion_tokens));
-    terminal_usage.insert("rollouts".into(), json!(usage.rollouts));
-    terminal_usage.insert("wallTimeMs".into(), json!(usage.wall_time_ms));
-    terminal_usage.insert(
-        "providerReceipt".into(),
-        usage
-            .extra
-            .get("providerUsageReceipt")
-            .cloned()
-            .unwrap_or(Value::Null),
+    {
+        let terminal_usage = object
+            .get_mut("usage")
+            .and_then(Value::as_object_mut)
+            .context("optimizer terminal manifest is missing typed usage")?;
+        terminal_usage.insert("costUsd".into(), json!(usage.cost_usd));
+        terminal_usage.insert("calls".into(), json!(usage.calls));
+        terminal_usage.insert("promptTokens".into(), json!(usage.prompt_tokens));
+        terminal_usage.insert("completionTokens".into(), json!(usage.completion_tokens));
+        terminal_usage.insert("rollouts".into(), json!(usage.rollouts));
+        terminal_usage.insert("wallTimeMs".into(), json!(usage.wall_time_ms));
+        terminal_usage.insert(
+            "providerReceipt".into(),
+            usage
+                .extra
+                .get("providerUsageReceipt")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        terminal_usage.insert("completeness".into(), json!(completeness));
+    }
+    annotate_call_accounting(
+        object
+            .get_mut("usage")
+            .context("optimizer terminal manifest is missing typed usage")?,
     );
-    terminal_usage.insert("completeness".into(), json!(completeness));
     let approval = usage.extra.get("paidComputeApproval").cloned();
     if let Some(approval) = approval.as_ref() {
         validate_paid_compute_approval(approval)?;
@@ -676,6 +718,46 @@ mod tests {
         assert_eq!(counts.succeeded, Some(10));
         assert_eq!(counts.failed, Some(0));
         assert_eq!(counts.skipped, Some(0));
+    }
+
+    #[test]
+    fn gepa_usage_reports_policy_proposer_rollouts_and_provider_requests() {
+        let mut canonical = run("gepa");
+        canonical.usage.calls = 0;
+        canonical.usage.rollouts = 80;
+        canonical.usage.cost_usd = Some(1.051);
+        let mut finished = event(1, "gepa.run.finished", None, None);
+        finished.delta = json!({
+            "runtime_summary": {
+                "policy": { "model": "openai/gpt-5.6-luna", "calls": 80 },
+                "proposer": { "model": "openai/gpt-5.6-luna", "calls": 1 }
+            }
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        let manifest = derive(&canonical, &[finished.clone()], "completed", None);
+        assert_eq!(manifest.pointer("/usage/calls"), Some(&json!(0)));
+        assert_eq!(manifest.pointer("/usage/rollouts"), Some(&json!(80)));
+        assert_eq!(manifest.pointer("/usage/policyCalls"), Some(&json!(80)));
+        assert_eq!(manifest.pointer("/usage/proposerCalls"), Some(&json!(1)));
+        assert_eq!(manifest.pointer("/usage/providerRequests"), Some(&json!(81)));
+        assert_eq!(
+            manifest.pointer("/gepaEvidence/positiveHeldoutUplift"),
+            Some(&json!(false))
+        );
+
+        canonical.usage.extra.insert(
+            "providerUsageReceipt".into(),
+            json!({ "schemaVersion": "workshop.provider-usage-receipt.v1", "calls": 8_013 }),
+        );
+        let with_receipt = derive(&canonical, &[finished], "completed", None);
+        assert_eq!(
+            with_receipt.pointer("/usage/providerRequests"),
+            Some(&json!(8_013))
+        );
+        assert_eq!(with_receipt.pointer("/usage/policyCalls"), Some(&json!(80)));
+        assert_eq!(with_receipt.pointer("/usage/proposerCalls"), Some(&json!(1)));
     }
 
     #[test]
