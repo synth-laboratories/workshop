@@ -322,8 +322,14 @@ pub(crate) fn sealed_trace_refs(records: &[Value]) -> Vec<Value> {
             continue;
         };
         for trace in traces {
+            // The imported Workshop trace id is host-local. The annotation
+            // router still owns the producer bundle, so address that bundle
+            // by its original trace id while preserving the verified digest.
             let (Some(id), Some(digest)) = (
-                trace.get("traceId").and_then(Value::as_str),
+                trace
+                    .get("producerTraceId")
+                    .or_else(|| trace.get("traceId"))
+                    .and_then(Value::as_str),
                 trace
                     .get("digest")
                     .and_then(Value::as_str)
@@ -1265,9 +1271,9 @@ mod tests {
     #[test]
     fn sealed_trace_refs_skip_partial_and_duplicate_traces() {
         let records = vec![
-            json!({"sealedTrace": {"traces": [{"traceId": "t1", "digest": "sha256:aaa"}]}}),
+            json!({"sealedTrace": {"traces": [{"traceId": "host-t1", "producerTraceId": "t1", "digest": "sha256:aaa"}]}}),
             json!({"evidenceState": "sealed_partial", "sealedTrace": {"traces": [{"traceId": "t2", "digest": "sha256:bbb"}]}}),
-            json!({"sealedTrace": {"traces": [{"traceId": "t1", "digest": "sha256:aaa"}]}}),
+            json!({"sealedTrace": {"traces": [{"traceId": "host-t1", "producerTraceId": "t1", "digest": "sha256:aaa"}]}}),
             json!({"reward": 1.0}),
         ];
         assert_eq!(
