@@ -319,7 +319,29 @@ impl CapabilityStore {
         handles
     }
 
+    /// Mark time-expired capabilities before any caller treats them as live.
+    ///
+    /// Prepared runs may wait at the paid-compute approval boundary longer
+    /// than the capability lifetime. Returning such a capability from
+    /// `find_active` makes the worker bind a dead proxy route and fail every
+    /// rollout. Keep expiry enforcement at both selection and call time.
+    pub fn expire_stale(&self) -> Vec<LiveCapability> {
+        let now = Utc::now().timestamp_millis();
+        let mut store = self.by_handle.lock().expect("capability store");
+        let mut expired = Vec::new();
+        for live in store.values_mut() {
+            if (live.status == "granted" || live.status == "active")
+                && now >= live.expires_at_ms
+            {
+                live.status = "expired".into();
+                expired.push(live.clone());
+            }
+        }
+        expired
+    }
+
     pub fn list_active(&self) -> Vec<LiveCapability> {
+        self.expire_stale();
         self.by_handle
             .lock()
             .expect("capability store")
@@ -798,5 +820,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(summary_from_live(&still_unknown, None).used_cost_usd, None);
+    }
+
+    #[test]
+    fn expired_capability_is_never_selected_as_active() {
+        let store = CapabilityStore::new();
+        let mut expired = live();
+        expired.expires_at_ms = Utc::now().timestamp_millis() - 1;
+        store.insert(expired);
+
+        assert!(store.find_active("secret-1", "run-1").is_none());
+        assert_eq!(store.lookup("handle-1").unwrap().status, "expired");
     }
 }

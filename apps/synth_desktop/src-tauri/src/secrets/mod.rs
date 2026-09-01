@@ -807,6 +807,7 @@ impl SecretsService {
         policy: ProviderUsePolicy,
         actor: &str,
     ) -> Result<UseRequestResult> {
+        self.persist_expired_capabilities()?;
         if let Some(live) = self.capabilities.find_active(secret_id, run_id) {
             ensure_capability_covers(&live, &policy)?;
             return self.live_result(live);
@@ -865,6 +866,7 @@ impl SecretsService {
         actor: &str,
         remember_recipe: bool,
     ) -> Result<UseRequestResult> {
+        self.persist_expired_capabilities()?;
         if let Some(live) = self.capabilities.find_active(secret_id, run_id) {
             ensure_capability_covers(&live, &policy)?;
             return self.live_result(live);
@@ -890,6 +892,19 @@ impl SecretsService {
             )
         })?;
         Ok(self.issued_result(issued, &record.display_suffix))
+    }
+
+    fn persist_expired_capabilities(&self) -> Result<()> {
+        let expired = self.capabilities.expire_stale();
+        if expired.is_empty() {
+            return Ok(());
+        }
+        self.db.transaction(|conn| {
+            for live in &expired {
+                capability::persist_status(conn, live)?;
+            }
+            Ok(())
+        })
     }
 
     pub fn grant_pending(
