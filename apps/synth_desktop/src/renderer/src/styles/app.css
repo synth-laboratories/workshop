@@ -7390,6 +7390,7 @@ html.visual-expanded .titlebar {
 }
 
 .visuals-card {
+	min-width: 0;
 	align-self: start;
 	border: 1px solid var(--color-border);
 	border-radius: 12px;
@@ -7433,11 +7434,20 @@ html.visual-expanded .titlebar {
 
 .visuals-card-actions {
 	display: flex;
+	flex-wrap: wrap;
 	gap: 8px;
 	padding: 0 14px 14px;
 }
 
+.visuals-card-actions button {
+	flex: 0 0 auto;
+	min-width: 44px;
+	white-space: nowrap;
+}
+
 .visuals-preview {
+	container-type: inline-size;
+	container-name: visuals-preview;
 	border: 1px solid var(--color-border);
 	border-radius: 12px;
 	padding: 16px;
@@ -7445,11 +7455,53 @@ html.visual-expanded .titlebar {
 	background: var(--color-surface);
 }
 
-.visuals-preview > header {
+.visuals-preview > header,
+.visuals-preview-header {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: start;
+	gap: 8px 16px;
+	min-width: 0;
+}
+
+.visuals-preview-heading {
+	min-width: 0;
+}
+
+.visuals-preview-heading h2,
+.visuals-preview-heading p {
+	overflow-wrap: anywhere;
+}
+
+.visuals-preview-toolbar {
 	display: flex;
-	align-items: flex-start;
-	justify-content: space-between;
-	gap: 12px;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.visuals-preview-toolbar button,
+.visuals-preview-toolbar select {
+	flex: 0 0 auto;
+	max-width: 100%;
+	white-space: nowrap;
+}
+
+.visuals-preview-context {
+	display: grid;
+	grid-column: 1 / -1;
+	gap: 4px;
+	min-width: 0;
+}
+
+.visuals-preview-context > *,
+.visuals-preview-context .visual-ops-line {
+	min-width: 0;
+	margin: 0;
+	overflow-wrap: anywhere;
+	word-break: break-word;
 }
 
 .visuals-layout.focus .visuals-preview {
@@ -7470,6 +7522,18 @@ html.visual-expanded .titlebar {
 	border: 1px solid var(--color-border);
 	background: color-mix(in srgb, var(--color-card) 94%, transparent);
 	backdrop-filter: blur(12px);
+}
+
+@container visuals-preview (max-width: 620px) {
+	.visuals-preview-header {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.visuals-preview-toolbar,
+	.visuals-preview-context {
+		grid-column: 1;
+		justify-content: flex-start;
+	}
 }
 
 .visuals-preview header h2 {

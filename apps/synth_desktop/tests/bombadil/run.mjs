@@ -114,6 +114,11 @@ const timeLimitMatch = /^(\d+(?:\.\d+)?)(ms|s|m)$/.exec(timeLimit);
 if (!timeLimitMatch) throw new Error(`Unsupported BOMBADIL_TIME_LIMIT: ${timeLimit}`);
 const timeLimitMs = Number(timeLimitMatch[1]) * ({ ms: 1, s: 1_000, m: 60_000 })[timeLimitMatch[2]];
 const watchdogMs = timeLimitMs + 35_000;
+const viewportWidth = Number.parseInt(process.env.BOMBADIL_VIEWPORT_WIDTH ?? "1280", 10);
+const viewportHeight = Number.parseInt(process.env.BOMBADIL_VIEWPORT_HEIGHT ?? "840", 10);
+if (!Number.isFinite(viewportWidth) || viewportWidth < 320 || !Number.isFinite(viewportHeight) || viewportHeight < 320) {
+	throw new Error(`Unsupported Bombadil viewport: ${viewportWidth}x${viewportHeight}`);
+}
 const contentTypes = {
 	".css": "text/css",
 	".html": "text/html",
@@ -780,7 +785,10 @@ const cuaAnalysisVisual = {
     { type: "metrics", items: [{ label: "Visual schemas before", value: "13" }, { label: "Advertised tools after", value: "1" }] },
     { type: "note", text: "Compact visual operations load only when needed." }
   ] } },
-  sessionId: null, messageId: null, runId: null, traceId: null, parentVisualId: null,
+  sessionId: "session_373954a2-4f5b-48b7-a088-e9c2b1024627", messageId: null,
+  runId: "gepa_gepa_banking77_workspace_v1_f7902156",
+  traceId: "trace_6fcb4183b7ad4ac8a8a804b5ec3e1c77",
+  parentVisualId: null,
   sourceAgentId: "laguna", sourceModel: "laguna-xs-2.1", contentDigest: null, previewDigest: null,
   metadata: {}, createdAt: "2026-08-09T13:24:48.000Z", updatedAt: "2026-08-09T13:24:48.000Z"
 };
@@ -950,8 +958,8 @@ try {
 		origin,
 		specificationPath,
 		...(remoteDebugger ? [] : ["--headless"]),
-		"--width", "1280",
-		"--height", "840",
+		"--width", String(viewportWidth),
+		"--height", String(viewportHeight),
 		"--chrome-grant-permissions", "",
 		"--instrument-javascript", "",
 		"--time-limit", timeLimit,

@@ -391,53 +391,57 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 				{selected && !focusVisualId ? <PaneResizeHandle value={listWidth} onChange={updateListWidth} minPrimary={280} minSecondary={320} ariaLabel="Resize visual list and preview" direction="primary" resetValue={560} /> : null}
 				{selected ? (
 					<div className="visuals-preview" data-testid="visuals-preview">
-						<header>
-							<div>
+						<header className="visuals-preview-header" data-testid="visuals-preview-header">
+							<div className="visuals-preview-heading">
 								<h2>{selected.title}</h2>
 								<p>{selected.templateId} · {statusLabel(selected.status)}</p>
 							</div>
-							<div className="reports-inline-form">
-								<select value={reportTarget} onChange={(event) => setReportTarget(event.target.value)} aria-label="Report destination"><option value="new">New report</option>{reports.map((report) => <option key={report.id} value={report.id}>{report.title}</option>)}</select>
+							<div className="visuals-preview-toolbar" data-testid="visuals-preview-toolbar">
+								<div className="reports-inline-form">
+									<select value={reportTarget} onChange={(event) => setReportTarget(event.target.value)} aria-label="Report destination"><option value="new">New report</option>{reports.map((report) => <option key={report.id} value={report.id}>{report.title}</option>)}</select>
+									<button
+										type="button"
+										data-testid="visual-add-to-report"
+										disabled={addDisabled}
+										title={admissionIdentity(selected)}
+										onClick={() => void addSelectedToReport()}
+									>
+										{alreadyAdded ? "Already added" : "Add to report"}
+									</button>
+									{alreadyAdded && onOpenReport ? (
+										<button type="button" data-testid="visuals-open-in-report" onClick={() => onOpenReport(reportTarget)}>
+											Open in report
+										</button>
+									) : null}
+								</div>
+								<button type="button" className="ghost-button" onClick={() => void renameVisual(selected)}>Rename</button>
+								<button type="button" className="ghost-button" onClick={() => void archiveVisual(selected)}>Archive</button>
 								<button
 									type="button"
-									data-testid="visual-add-to-report"
-									disabled={addDisabled}
-									title={admissionIdentity(selected)}
-									onClick={() => void addSelectedToReport()}
+									className="ghost-button"
+									aria-pressed={Boolean(focusVisualId)}
+									title={focusVisualId ? "Show the visual library" : "Focus this visual and hide the library"}
+									onClick={() => setFocusVisualId(focusVisualId ? null : selected.id)}
 								>
-									{alreadyAdded ? "Already added" : "Add to report"}
+									{focusVisualId ? "Show library" : "Focus visual"}
 								</button>
-								{alreadyAdded && onOpenReport ? (
-									<button type="button" data-testid="visuals-open-in-report" onClick={() => onOpenReport(reportTarget)}>
-										Open in report
-									</button>
-								) : null}
 							</div>
-							<p className="reports-provenance" data-testid="visual-add-to-report-identity">
-								{admissionIdentity(selected)}
-							</p>
-							{alreadyAdded && !onOpenReport ? (
-								<p className="reports-provenance" role="status">This visual is already on the selected report.</p>
-							) : null}
-							<VisualOpsLine
-								sessionId={selected.sessionId}
-								runId={visualRunId(selected)}
-								traceId={visualTraceId(selected)}
-								traceSetCount={visualTraceSetCount(selected)}
-								testId={`visual-ops-preview-${selected.id}`}
-								compact
-							/>
-							<button type="button" className="ghost-button" onClick={() => void renameVisual(selected)}>Rename</button>
-							<button type="button" className="ghost-button" onClick={() => void archiveVisual(selected)}>Archive</button>
-							<button
-								type="button"
-								className="ghost-button"
-								aria-pressed={Boolean(focusVisualId)}
-								title={focusVisualId ? "Show the visual library" : "Focus this visual and hide the library"}
-								onClick={() => setFocusVisualId(focusVisualId ? null : selected.id)}
-							>
-								{focusVisualId ? "Show library" : "Focus visual"}
-							</button>
+							<div className="visuals-preview-context" data-testid="visuals-preview-context">
+								<p className="reports-provenance" data-testid="visual-add-to-report-identity">
+									{admissionIdentity(selected)}
+								</p>
+								{alreadyAdded && !onOpenReport ? (
+									<p className="reports-provenance" role="status">This visual is already on the selected report.</p>
+								) : null}
+								<VisualOpsLine
+									sessionId={selected.sessionId}
+									runId={visualRunId(selected)}
+									traceId={visualTraceId(selected)}
+									traceSetCount={visualTraceSetCount(selected)}
+									testId={`visual-ops-preview-${selected.id}`}
+									compact
+								/>
+							</div>
 						</header>
 						{reportNotice ? <p className="reports-provenance" role="status">{reportNotice}</p> : null}
 						{seals.some((seal) => seal.visualId === selected.id) ? (
