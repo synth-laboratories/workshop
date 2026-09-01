@@ -789,6 +789,7 @@ impl OptimizerService {
             if let Ok(Some(workspace)) =
                 super::workspace_recipe::session_workspace(&self.db, session)
             {
+                let _ = super::workspace_recipe::ensure_bundled_annotation_eval_recipes(&workspace);
                 if let Ok(declared) = super::workspace_recipe::load_recipes(&workspace) {
                     recipes.extend(declared.iter().map(super::workspace_recipe::catalog_entry));
                 }

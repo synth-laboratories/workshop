@@ -24,6 +24,31 @@ const RECIPE_FILE: &str = "workshop.recipe.toml";
 const RECIPES_DIR: &str = "workshop.recipes";
 const CONTAINERS_FILE: &str = "workshop.containers.toml";
 
+/// Shipped annotated eval recipes. Written into a session workspace on first
+/// catalog list so a fresh session can run them without copying fixtures.
+const BUNDLED_ANNOTATION_EVAL_RECIPES: &[(&str, &str)] = &[
+    (
+        "eval.craftax.gold.annotated.v1.toml",
+        include_str!("../../recipes/annotation_eval/eval.craftax.gold.annotated.v1.toml"),
+    ),
+    (
+        "eval.banking77.annotated.v1.toml",
+        include_str!("../../recipes/annotation_eval/eval.banking77.annotated.v1.toml"),
+    ),
+    (
+        "eval.deepswe.annotated.v1.toml",
+        include_str!("../../recipes/annotation_eval/eval.deepswe.annotated.v1.toml"),
+    ),
+    (
+        "eval.code_policy.annotated.v1.toml",
+        include_str!("../../recipes/annotation_eval/eval.code_policy.annotated.v1.toml"),
+    ),
+    (
+        "eval.healthbench.annotated.v1.toml",
+        include_str!("../../recipes/annotation_eval/eval.healthbench.annotated.v1.toml"),
+    ),
+];
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AlgorithmKind {
@@ -556,6 +581,24 @@ pub fn require_session_workspace(
     })
 }
 
+/// Copy shipped annotated eval recipes into `workshop.recipes/` when missing.
+/// Existing files win so an operator override is never overwritten.
+pub fn ensure_bundled_annotation_eval_recipes(workspace: &Path) -> Result<usize> {
+    let recipes_dir = workspace.join(RECIPES_DIR);
+    fs::create_dir_all(&recipes_dir)
+        .with_context(|| format!("create {}", recipes_dir.display()))?;
+    let mut written = 0usize;
+    for (name, contents) in BUNDLED_ANNOTATION_EVAL_RECIPES {
+        let dest = recipes_dir.join(name);
+        if dest.exists() {
+            continue;
+        }
+        fs::write(&dest, contents).with_context(|| format!("write {}", dest.display()))?;
+        written += 1;
+    }
+    Ok(written)
+}
+
 pub fn load_recipes(workspace: &Path) -> Result<Vec<WorkspaceRecipe>> {
     let mut recipes = Vec::new();
     let root_file = workspace.join(RECIPE_FILE);
@@ -860,6 +903,11 @@ pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
             AlgorithmKind::Gepa => "optimizer.gepa.v1",
             AlgorithmKind::Eval => "experiment.overview.v1",
         },
+        "annotation": recipe.annotation.as_ref().map(|stage| json!({
+            "label": stage.label,
+            "annotatorCount": stage.annotators.len(),
+            "annotators": stage.annotators.iter().map(|item| item.annotator_id.clone()).collect::<Vec<_>>(),
+        })),
     })
 }
 
@@ -1954,6 +2002,63 @@ paid = 2
                     && annotator.rubric_id.as_deref() == Some("craftax.execution_quality")
             })
         }));
+    }
+
+    #[test]
+    fn bundled_annotation_eval_recipes_seed_a_fresh_workspace() {
+        let (_dir, workspace) = write_workspace();
+        assert_eq!(
+            ensure_bundled_annotation_eval_recipes(&workspace).unwrap(),
+            5
+        );
+        assert_eq!(
+            ensure_bundled_annotation_eval_recipes(&workspace).unwrap(),
+            0,
+            "existing files are not overwritten"
+        );
+        let recipes = load_recipes(&workspace).unwrap();
+        assert_eq!(recipes.len(), 5);
+        let mut ids: Vec<_> = recipes.iter().map(|recipe| recipe.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec![
+                "eval.banking77.annotated.v1",
+                "eval.code_policy.annotated.v1",
+                "eval.craftax.gold.annotated.v1",
+                "eval.deepswe.annotated.v1",
+                "eval.healthbench.annotated.v1",
+            ]
+        );
+        let craftax = recipes
+            .iter()
+            .find(|recipe| recipe.id == "eval.craftax.gold.annotated.v1")
+            .unwrap();
+        assert!(craftax.annotation.as_ref().is_some_and(|stage| {
+            stage
+                .annotators
+                .iter()
+                .any(|annotator| annotator.annotator_id == "craftax.rubric_verifier")
+        }));
+        let banking = recipes
+            .iter()
+            .find(|recipe| recipe.id == "eval.banking77.annotated.v1")
+            .unwrap();
+        assert!(banking.annotation.is_some());
+        for id in [
+            "eval.deepswe.annotated.v1",
+            "eval.code_policy.annotated.v1",
+            "eval.healthbench.annotated.v1",
+        ] {
+            let recipe = recipes.iter().find(|recipe| recipe.id == id).unwrap();
+            assert!(
+                recipe.annotation.is_none(),
+                "{id} keeps [annotation] enabled = false so paid evals do not auto-spend"
+            );
+        }
+        let entry = catalog_entry(craftax);
+        assert_eq!(entry["annotation"]["label"], json!("post_rollout"));
+        assert_eq!(entry["annotation"]["annotatorCount"], json!(5));
     }
 
     #[test]

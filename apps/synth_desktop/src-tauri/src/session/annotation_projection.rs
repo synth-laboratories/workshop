@@ -1643,6 +1643,112 @@ mod tests {
     }
 
     #[test]
+    fn luna_verifier_result_projects_criterion_scorecard() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        apply_migrations(&conn).unwrap();
+        let stage = json!({
+            "status": "submitted",
+            "containerId": "ctr_18082",
+            "campaignId": "acmp_luna",
+            "jobs": [{
+                "job_id": "ajob_a0d742cc7ce34e3a",
+                "trace_id": "roll_ab9de205861d",
+                "trace_digest": "sha256:6e47e52c30126d3f360d74576569a7358230b0255d646e8465a57693fdb48d69",
+                "annotator_id": "craftax.rubric_verifier"
+            }]
+        });
+        seed_from_stage_payload(&conn, "opt_eval_luna", Some("post_rollout"), &stage).unwrap();
+        apply_job_snapshot(
+            &conn,
+            Some("acmp_luna"),
+            "ctr_18082",
+            &json!({
+                "terminal": true,
+                "job": {
+                    "job_id": "ajob_a0d742cc7ce34e3a",
+                    "state": "sealed",
+                    "bundle_digest": "sha256:668f85a4825bf96cb25476eecd96736e5f6cb430948fac18134b5207b780db7e",
+                    "request": {
+                        "source_trace_id": "roll_ab9de205861d",
+                        "source_trace_digest": "sha256:6e47e52c30126d3f360d74576569a7358230b0255d646e8465a57693fdb48d69",
+                        "annotator_id": "craftax.rubric_verifier"
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        let projected = project_trace_head(
+            &conn,
+            "acmp_luna",
+            "roll_ab9de205861d",
+            "sha256:6e47e52c30126d3f360d74576569a7358230b0255d646e8465a57693fdb48d69",
+            &json!({
+                "trace_id": "roll_ab9de205861d",
+                "bundle_digest": "sha256:668f85a4825bf96cb25476eecd96736e5f6cb430948fac18134b5207b780db7e",
+                "annotations": []
+            }),
+            &json!({
+                "bundles": [{
+                    "bundle_id": "evb_de36e1a0ba95d45b",
+                    "bundle_digest": "sha256:668f85a4825bf96cb25476eecd96736e5f6cb430948fac18134b5207b780db7e",
+                    "is_head": true,
+                    "annotation_count": 0,
+                    "verifier_result_count": 1,
+                    "verifier_results": [{
+                        "verifier_result_id": "vres_2a294bcd197fd15c",
+                        "content_digest": "sha256:f3b1f77bfb50067ac860cf551277fd038c73ac9fa3d8379ea6b57dddea3fe56d",
+                        "verifier_id": "craftax.rubric_verifier.verifier",
+                        "rubric_id": "craftax.execution_quality",
+                        "rubric_digest": "sha256:6f6ffade02247deb3614c1f693dc37507aff4cccd4ead17bbfe17350bac815e1",
+                        "score": 0.4722222222222222,
+                        "passed": false,
+                        "verdict": "fail",
+                        "verification_status": "valid",
+                        "pass_threshold": 0.5,
+                        "criterion_results": [
+                            {
+                                "criterion_id": "state_grounding",
+                                "score": 2.0,
+                                "verdict": "pass",
+                                "passed": true,
+                                "status": "decisive",
+                                "rationale": "The policy correctly identified the initial map."
+                            },
+                            {
+                                "criterion_id": "belief_calibration",
+                                "score": 3.0,
+                                "verdict": "pass",
+                                "passed": true,
+                                "status": "decisive"
+                            }
+                        ]
+                    }]
+                }]
+            }),
+        )
+        .unwrap()
+        .expect("head digest");
+        let head = get_evidence_head(&conn, &projected.digest).unwrap().unwrap();
+        assert_eq!(head.summary["rubric"]["available"], json!(true));
+        assert_eq!(head.summary["rubric"]["score"], json!(0.4722222222222222));
+        assert_eq!(head.summary["rubric"]["passed"], json!(false));
+        assert_eq!(
+            head.summary["rubric"]["verifierResultId"],
+            json!("vres_2a294bcd197fd15c")
+        );
+        assert_eq!(head.summary["rubric"]["criteria"].as_array().unwrap().len(), 2);
+        let rubric = get_rubric_result(
+            &conn,
+            "sha256:f3b1f77bfb50067ac860cf551277fd038c73ac9fa3d8379ea6b57dddea3fe56d",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(rubric.available);
+        assert_eq!(rubric.summary.get("score"), Some(&json!(0.4722222222222222)));
+        assert_ne!(rubric.summary.get("score"), Some(&json!(0.0)));
+    }
+
+    #[test]
     fn seed_from_amendments_reads_camel_case_stage_reports() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         apply_migrations(&conn).unwrap();

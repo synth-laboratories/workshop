@@ -406,6 +406,40 @@ fn micros_of(value: Option<&Value>) -> Option<u64> {
         .and_then(micros_from_reported_cost)
 }
 
+/// openai-2026-08 gpt-5.6-luna rates. Used when the container left
+/// `usage.cost_usd` null (`cost_status: unavailable`) so the ledger can still
+/// close to metered spend instead of the reservation cap.
+const LUNA_INPUT_USD_PER_MILLION: f64 = 1.25;
+const LUNA_CACHED_INPUT_USD_PER_MILLION: f64 = 0.125;
+const LUNA_OUTPUT_USD_PER_MILLION: f64 = 10.0;
+
+fn luna_cost_micros(usage: &Value) -> Option<u64> {
+    let input = usage.get("input_tokens").and_then(Value::as_f64)?;
+    let output = usage.get("output_tokens").and_then(Value::as_f64).unwrap_or(0.0);
+    let cached = usage
+        .get("cached_input_tokens")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0)
+        .min(input)
+        .max(0.0);
+    let uncached = (input - cached).max(0.0);
+    let usd = (uncached * LUNA_INPUT_USD_PER_MILLION
+        + cached * LUNA_CACHED_INPUT_USD_PER_MILLION
+        + output.max(0.0) * LUNA_OUTPUT_USD_PER_MILLION)
+        / 1_000_000.0;
+    micros_from_reported_cost(usd)
+}
+
+fn settlement_from_usage(usage: Option<&Value>) -> SettlementOutcome {
+    let Some(usage) = usage else {
+        return SettlementOutcome::Unknown;
+    };
+    match micros_of(usage.get("cost_usd")).or_else(|| luna_cost_micros(usage)) {
+        Some(cost_usd_micros) => SettlementOutcome::Exact { cost_usd_micros },
+        None => SettlementOutcome::Unknown,
+    }
+}
+
 struct PaidGrant {
     approval_id: String,
     cap_usd_micros: u64,
@@ -816,17 +850,11 @@ async fn settle_if_terminal(core: &CoreRuntime, container_id: &str, payload: &Va
     else {
         return Ok(());
     };
-    let cost = payload
-        .get("job")
-        .and_then(|job| job.get("usage"))
-        .and_then(|usage| usage.get("cost_usd"))
-        .cloned();
-    let outcome = match micros_of(cost.as_ref()) {
-        Some(micros) => SettlementOutcome::Exact {
-            cost_usd_micros: micros,
-        },
-        None => SettlementOutcome::Unknown,
-    };
+    let outcome = settlement_from_usage(
+        payload
+            .get("job")
+            .and_then(|job| job.get("usage")),
+    );
     let container_id = container_id.to_string();
     core.storage()
         .database()
@@ -1597,6 +1625,34 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn luna_token_usage_settles_to_metered_micros_when_cost_usd_is_null() {
+        let usage = json!({
+            "input_tokens": 119275.0,
+            "output_tokens": 3438.0,
+            "cached_input_tokens": 79104.0,
+            "cost_usd": null,
+            "cost_status": "unavailable"
+        });
+        match settlement_from_usage(Some(&usage)) {
+            SettlementOutcome::Exact { cost_usd_micros } => {
+                assert!(cost_usd_micros > 0);
+                // 40171 uncached * $1.25 + 79104 cached * $0.125 + 3438 * $10 per million
+                assert_eq!(cost_usd_micros, 94_482);
+            }
+            other => panic!("expected Exact, got {other:?}"),
+        }
+        let pinned = json!({
+            "input_tokens": 10.0,
+            "output_tokens": 10.0,
+            "cost_usd": 0.25
+        });
+        match settlement_from_usage(Some(&pinned)) {
+            SettlementOutcome::Exact { cost_usd_micros } => assert_eq!(cost_usd_micros, 250_000),
+            other => panic!("expected Exact from cost_usd, got {other:?}"),
+        }
+    }
 
     /// Minimal loopback container: health/info for registration plus the annotation router shape.
     async fn fake_container(

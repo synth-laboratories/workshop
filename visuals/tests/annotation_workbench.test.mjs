@@ -78,3 +78,24 @@ test("sealed verifier snake-case criteria render human labels and judgments", ()
   });
   assert.equal(rubricScore(0.4722222222), "47.2%");
 });
+
+test("a sealed luna verifier result is available and is not rendered as zero", () => {
+  const luna = {
+    schemaVersion: "synth.annotation-workbench.v1",
+    rubric: {
+      available: true,
+      digest: "sha256:f3b1f77bfb50067ac860cf551277fd038c73ac9fa3d8379ea6b57dddea3fe56d",
+      verifierResultId: "vres_2a294bcd197fd15c",
+      score: 0.4722222222222222,
+      passed: false,
+      verdict: "fail",
+      criteria: [
+        { criterion_id: "state_grounding", verdict: "pass", score: 2, passed: true }
+      ]
+    }
+  };
+  assert.equal(luna.rubric.available, true);
+  assert.notEqual(luna.rubric.score, 0);
+  assert.equal(rubricScore(luna.rubric.score), "47.2%");
+  assert.equal(rubricCriterionView(luna.rubric.criteria[0], 0).judgment, "pass");
+});
