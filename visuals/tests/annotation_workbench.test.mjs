@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { bindTemplateSlots } from "../runtime/bind.ts";
+import { rubricCriterionView, rubricScore } from "../families/analysis/analysis.annotation_workbench.v1/rubric.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const template = JSON.parse(
@@ -60,4 +61,20 @@ test("a workbench without a verifier result still binds and does not invent a sc
   assert.equal(result.slots.rubric, undefined);
   assert.equal(result.slots.evidence.data.rubric.available, false);
   assert.equal(result.slots.evidence.data.rubric.digest, null);
+});
+
+test("sealed verifier snake-case criteria render human labels and judgments", () => {
+  assert.deepEqual(rubricCriterionView({
+    criterion_id: "state_grounding",
+    verdict: "pass",
+    rationale: "The trace supports the judgment.",
+    score: 2
+  }, 0), {
+    id: "state_grounding",
+    label: "State grounding",
+    judgment: "pass",
+    rationale: "The trace supports the judgment.",
+    score: 2
+  });
+  assert.equal(rubricScore(0.4722222222), "47.2%");
 });
