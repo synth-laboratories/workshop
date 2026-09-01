@@ -424,6 +424,43 @@ struct TraceOwner {
     container_id: Option<String>,
 }
 
+/// Resolve a producer rollout back to the unique imported Trace V5 row owned
+/// by the campaign container.  Producer and Workshop identities intentionally
+/// occupy different namespaces, so an evidence head cannot open by producer
+/// id alone.  Ambiguous imports fail closed rather than selecting a trace from
+/// another import history.
+fn owned_imported_trace_id_for_producer(
+    conn: &rusqlite::Connection,
+    container_id: &str,
+    producer_trace_id: &str,
+) -> Result<Option<String>> {
+    let mut statement = conn.prepare(
+        "SELECT id, metadata_json FROM traces WHERE container_id=?1 ORDER BY created_at DESC, id",
+    )?;
+    let rows = statement.query_map([container_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut candidate = None;
+    for row in rows {
+        let (id, metadata_json) = row?;
+        let metadata: Value = serde_json::from_str(&metadata_json).unwrap_or(Value::Null);
+        let matches_producer = metadata
+            .get("producerTraceId")
+            .or_else(|| metadata.get("rolloutId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            == Some(producer_trace_id);
+        if matches_producer {
+            if let Some(previous) = candidate.replace(id.clone()) {
+                anyhow::bail!(
+                    "ambiguous imported trace ownership for producer {producer_trace_id}: {previous}, {id}"
+                );
+            }
+        }
+    }
+    Ok(candidate)
+}
+
 /// Look a sealed trace up by digest in `traces`. `None` when the digest was
 /// never imported into this Workshop.
 async fn trace_owner(core: &CoreRuntime, trace_digest: &str) -> Result<Option<TraceOwner>> {
@@ -979,7 +1016,29 @@ async fn open_annotation_workbench(
 ) -> Result<()> {
     let mut trace = match core.data().get_trace(head.trace_digest.clone()).await {
         Ok(trace) => trace,
-        Err(_) => core.data().get_trace(head.trace_id.clone()).await?,
+        Err(_) => match core.data().get_trace(head.trace_id.clone()).await {
+            Ok(trace) => trace,
+            Err(_) => {
+                let Some(container_id) = head.container_id.as_deref() else {
+                    anyhow::bail!("annotation workbench head has no owning container");
+                };
+                let producer_trace_id = head.trace_id.clone();
+                let container_id = container_id.to_string();
+                let local_trace_id = core
+                    .storage()
+                    .database()
+                    .run_read(move |conn| {
+                        owned_imported_trace_id_for_producer(
+                            conn,
+                            &container_id,
+                            &producer_trace_id,
+                        )
+                    })
+                    .await?
+                    .context("annotation workbench trace was not imported by its owning container")?;
+                core.data().get_trace(local_trace_id).await?
+            }
+        },
     };
     if trace.run_id.is_none() {
         trace.run_id = head.eval_run_id.clone();
@@ -1789,6 +1848,40 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(untouched["trace_id"], "tracev5_local");
+    }
+
+    #[test]
+    fn workbench_lookup_uses_the_container_owned_import_for_a_producer_trace() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE traces(
+                id TEXT PRIMARY KEY,
+                container_id TEXT,
+                metadata_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO traces VALUES('tracev5_foreign', 'ctr_other', ?1, '2026-01-01')",
+            [json!({"producerTraceId": "roll_real"}).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO traces VALUES('tracev5_owned', 'ctr_owned', ?1, '2026-01-02')",
+            [json!({"producerTraceId": "roll_real"}).to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            owned_imported_trace_id_for_producer(&conn, "ctr_owned", "roll_real").unwrap(),
+            Some("tracev5_owned".into())
+        );
+        conn.execute(
+            "INSERT INTO traces VALUES('tracev5_duplicate', 'ctr_owned', ?1, '2026-01-03')",
+            [json!({"producerTraceId": "roll_real"}).to_string()],
+        )
+        .unwrap();
+        assert!(owned_imported_trace_id_for_producer(&conn, "ctr_owned", "roll_real").is_err());
     }
 
     #[tokio::test]
