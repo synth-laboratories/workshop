@@ -79,7 +79,8 @@ export function OutputsPanel({
 	const newestFirst = <T extends { updatedAt?: string | null; createdAt?: string | null }>(rows: T[]) =>
 		[...rows].sort((left, right) => Date.parse(right.updatedAt ?? right.createdAt ?? "") - Date.parse(left.updatedAt ?? left.createdAt ?? ""));
 	const subagents = newestFirst(artifacts.filter((artifact) => artifact.templateId === "synth.subagents.v1"));
-	const visuals = newestFirst(artifacts.filter((artifact) => artifact.templateId !== "synth.subagents.v1"));
+	const analysis = newestFirst(artifacts.filter((artifact) => artifact.templateId === "analysis.annotation_workbench.v1"));
+	const visuals = newestFirst(artifacts.filter((artifact) => artifact.templateId !== "synth.subagents.v1" && artifact.templateId !== "analysis.annotation_workbench.v1"));
 	const reports = newestFirst(outputs.reports);
 	const runs = newestFirst(outputs.runs);
 	return <div id="chat-resource-shelf" className="resource-shelf resource-shelf-docked" aria-label="Outputs" data-testid="resource-shelf">
@@ -120,6 +121,19 @@ export function OutputsPanel({
 				<span className="resource-shelf-icon"><FileTypeIcon path="checkpoint.bin" /></span><span><strong>{ref.title ?? ref.id}</strong><code>{ref.id} · {ref.kind}</code></span><span aria-hidden>›</span>
 			</button>
 		))}</section> : null}
+		{analysis.length > 0 ? <section className="analysis-rail" data-testid="analysis-rail"><h3>Analysis</h3>{analysis.map((artifact) => {
+			const active = openArtifactId === artifact.id;
+			const identity = formatVisualAdmissionIdentity({
+				visualId: artifact.visualId ?? artifact.id,
+				revision: artifact.revision,
+				receiptDigest: artifact.receiptDigest,
+				contentDigest: artifact.contentDigest
+			});
+			const displayName = artifact.displayName?.trim() || artifact.title;
+			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${displayName}` : `Show ${displayName}`} aria-pressed={active} aria-label={active ? `Hide analysis ${displayName}` : `Show analysis ${displayName}`} data-testid={`analysis-icon-${artifact.id}`}>
+				<span className="resource-shelf-icon"><IconAnalysis /></span><span><strong>{displayName}</strong><code data-testid={`outputs-analysis-identity-${artifact.id}`}>{identity}</code></span><span aria-hidden>›</span>
+			</button>;
+		})}</section> : null}
 		{visuals.length > 0 ? <section className="visuals-rail" data-testid="visuals-rail"><h3>Visuals</h3>{visuals.map((artifact) => {
 			const active = openArtifactId === artifact.id;
 			const identity = formatVisualAdmissionIdentity({
@@ -134,6 +148,16 @@ export function OutputsPanel({
 			</button>;
 		})}</section> : null}
 	</div>;
+}
+
+function IconAnalysis() {
+	return (
+		<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="2.5" y="2.5" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M5 10.2l2.1-2.4 1.6 1.5L12 6.4" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+			<circle cx="5.4" cy="5.4" r="0.9" fill="currentColor" />
+		</svg>
+	);
 }
 
 function IconVisual() {
@@ -450,6 +474,7 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 	// trace, the annotator and the resolved model so the person can see who is
 	// charging and for what before approving.
 	const annotation = payload?.operation?.startsWith("annotation.") ? payload.parameters : undefined;
+	const text = (value: unknown) => typeof value === "string" ? value : undefined;
 	const inlineContainer = inline?.container && typeof inline.container === "object" && !Array.isArray(inline.container)
 		? inline.container as Record<string, unknown> : undefined;
 	const inlineEvaluator = inline?.evaluator && typeof inline.evaluator === "object" && !Array.isArray(inline.evaluator)
@@ -460,7 +485,13 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 		? inline.model as Record<string, unknown> : undefined;
 	const inlineCredential = inline?.credentialRoute && typeof inline.credentialRoute === "object" && !Array.isArray(inline.credentialRoute)
 		? inline.credentialRoute as Record<string, unknown> : undefined;
-	const text = (value: unknown) => typeof value === "string" ? value : undefined;
+	const paidJobCount = Array.isArray(annotation?.jobs)
+		? annotation.jobs.length
+		: typeof annotation?.jobs === "number"
+			? annotation.jobs
+			: undefined;
+	const estimate = annotation?.estimate && typeof annotation.estimate === "object" && !Array.isArray(annotation.estimate)
+		? annotation.estimate as Record<string, unknown> : undefined;
 	const formatUsd = (micros: number) => `$${(micros / 1_000_000).toFixed(2)}`;
 	const rolloutLimit = cap?.maxRollouts;
 	const callLimit = typeof inline?.maximumModelCallsPerRollout === "number" ? inline.maximumModelCallsPerRollout : undefined;
@@ -490,7 +521,8 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 						{text(annotation.traceDigest) ? <div><dt>Trace</dt><dd><code>{text(annotation.traceRowId) ?? text(annotation.traceId) ?? "?"}</code> · <code>{text(annotation.traceDigest)}</code></dd></div> : null}
 						{text(annotation.annotatorId) ? <div><dt>Annotator</dt><dd><code>{text(annotation.annotatorId)}</code></dd></div> : null}
 						{text(annotation.model) ? <div><dt>Model</dt><dd><code>{text(annotation.model)}</code></dd></div> : null}
-						{typeof annotation.jobs === "number" ? <div><dt>Paid jobs</dt><dd>{annotation.jobs.toLocaleString()}</dd></div> : null}
+						{paidJobCount != null ? <div><dt>Paid jobs</dt><dd>{paidJobCount.toLocaleString()}</dd></div> : null}
+						{typeof estimate?.max_cost_usd === "number" ? <div><dt>Estimate</dt><dd>${estimate.max_cost_usd.toFixed(2)}</dd></div> : null}
 					</> : null}
 					{estimated != null ? <div><dt>Predicted spend</dt><dd>{formatUsd(estimated)}</dd></div> : null}
 				</>}
