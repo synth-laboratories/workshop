@@ -763,6 +763,19 @@ fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::Sec
         .and_then(|value| u64::try_from(value).ok())
         .filter(|value| *value > 0)
         .unwrap_or(16);
+    // The provider capability must cover the entire admitted execution plus
+    // terminal settlement. A fixed desktop TTL can expire in the middle of a
+    // longer, otherwise valid optimizer run.
+    let capability_lifetime_seconds = config
+        .get("bounds")
+        .and_then(toml::Value::as_table)
+        .and_then(|section| section.get("max_seconds"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.saturating_add(300))
+        .unwrap_or_else(|| crate::limits::SECRETS_CAPABILITY_TTL.as_secs())
+        .max(crate::limits::SECRETS_CAPABILITY_TTL.as_secs());
     let declared_output_tokens =
         rollout_output_limit.map(|limit| rollout_limit.saturating_mul(limit));
     Ok(super::admission::provider_use_policy_from_bounds(
@@ -773,7 +786,7 @@ fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::Sec
             .saturating_mul(calls_per_rollout)
             .min(u64::from(u32::MAX)) as u32,
         (max_cost_usd * 1_000_000.0).round() as u64,
-        crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
+        capability_lifetime_seconds,
         declared_output_tokens.map(|tokens| tokens.saturating_mul(4)),
         declared_output_tokens,
     ))
@@ -1468,6 +1481,24 @@ max_calls = 128
         assert_eq!(policy.max_input_tokens, 384_000);
         assert_eq!(policy.max_calls, 768);
         assert_eq!(policy.max_cost_usd, 0.90);
+    }
+
+    #[test]
+    fn provider_policy_outlives_the_admitted_run_for_settlement() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("workshop.recipe.toml");
+        fs::write(
+            &config,
+            r#"
+[bounds]
+max_total_rollouts = 240
+max_cost_usd = 2.45
+max_seconds = 3600
+"#,
+        )
+        .unwrap();
+        let policy = provider_use_policy(Some(&config)).unwrap();
+        assert_eq!(policy.lifetime_seconds, 3900);
     }
 
     #[test]
