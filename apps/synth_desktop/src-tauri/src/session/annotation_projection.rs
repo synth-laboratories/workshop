@@ -1434,7 +1434,7 @@ mod tests {
             }
         });
         let first = apply_job_snapshot(&conn, Some("acmp_1"), "ctr_1", &payload).unwrap();
-        assert!(first.terminal);
+        assert!(first.terminal, "Workshop polls GET /annotation-jobs until terminal");
         assert!(!first.already_projected);
         assert_eq!(first.bundle_digest.as_deref(), Some("sha256:head"));
         let second = apply_job_snapshot(&conn, Some("acmp_1"), "ctr_1", &payload).unwrap();

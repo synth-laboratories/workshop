@@ -1904,6 +1904,46 @@ paid = 2
     }
 
     #[test]
+    fn five_domain_eval_recipes_opt_into_post_rollout_annotation() {
+        let (_dir, workspace) = write_workspace();
+        let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/annotation_eval_recipes");
+        fs::create_dir_all(workspace.join(RECIPES_DIR)).unwrap();
+        let mut expected = Vec::new();
+        for entry in fs::read_dir(&fixture_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+                continue;
+            }
+            expected.push(path.file_stem().unwrap().to_string_lossy().into_owned());
+            fs::copy(&path, workspace.join(RECIPES_DIR).join(path.file_name().unwrap())).unwrap();
+        }
+        expected.sort();
+        assert_eq!(
+            expected,
+            vec![
+                "eval.banking77.annotated.v1",
+                "eval.code_policy.annotated.v1",
+                "eval.craftax.gold.annotated.v1",
+                "eval.deepswe.annotated.v1",
+                "eval.healthbench.annotated.v1",
+            ]
+        );
+        let recipes = load_recipes(&workspace).unwrap();
+        assert_eq!(recipes.len(), 5);
+        for recipe in &recipes {
+            let stage = recipe
+                .annotation
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} missing [annotation]", recipe.id));
+            assert_eq!(stage.label, "post_rollout");
+            assert!(!stage.annotators.is_empty());
+            assert!(recipe.bounds.max_cost_usd <= PRODUCT_MAX_COST_USD);
+            assert_eq!(recipe.bounds.max_total_rollouts, 1);
+        }
+    }
+
+    #[test]
     fn catalog_uses_the_declared_provider_credential() {
         let (_dir, workspace) = write_workspace();
         fs::write(
