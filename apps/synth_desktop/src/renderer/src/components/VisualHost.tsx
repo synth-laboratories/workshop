@@ -892,8 +892,12 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			setTraceResolution({ status: "error", props: {}, error: "Trace projection resolver is unavailable" });
 			return () => { cancelled = true; };
 		}
+		const acceptedTraceBindingSchemas = new Set([
+			"synth.trace.v5",
+			"synth.trace-projection.rollout-inspector.v1"
+		]);
 		const unsupportedBinding = traceBindings.find((binding) =>
-			binding.schema && binding.schema !== "synth.trace-projection.rollout-inspector.v1"
+			binding.schema && !acceptedTraceBindingSchemas.has(binding.schema)
 		);
 		if (unsupportedBinding) {
 			setTraceResolution({ status: "error", props: {}, error: `Unsupported trace projection schema: ${unsupportedBinding.schema}` });
@@ -910,7 +914,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				message: `Unsupported trace projection schema: ${unsupportedBinding.schema}`,
 				details: {
 					receivedSchema: unsupportedBinding.schema ?? null,
-					expectedSchemas: ["synth.trace-projection.rollout-inspector.v1"],
+					expectedSchemas: [...acceptedTraceBindingSchemas],
 					templateId: artifact.templateId ?? null,
 					slot: bindingInputName(unsupportedBinding) ?? null,
 					input: bindingInputName(unsupportedBinding) ?? null,
