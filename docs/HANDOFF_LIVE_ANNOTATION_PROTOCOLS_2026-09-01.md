@@ -1,7 +1,7 @@
 # Handoff: live incremental annotation protocols (lane C)
 
 **Date:** 2026-09-01
-**Status:** container core, first Craftax protocol, and Workshop configure/relay/view lane implemented and unit-proven on all three repos; no real container run yet.
+**Status:** container core, first Craftax protocol, and Workshop configure/relay/view lane implemented and unit-proven on all three repos. The container half is proven on the real Craftax Rust engine (three parallel rollouts, both streams tailed over real SSE while running; see "Proof run" below). The Workshop half has not driven a real container yet.
 **Builds on:** `docs/HANDOFF_ANNOTATIONS_POSTHOC_ARCHITECTURE_2026-09-01.md` (this is the "observe-only provisional lane" that document recommended).
 
 ---
@@ -65,9 +65,21 @@ Tests: Rust unit tests in `live_annotation.rs`, recipe seeding/parse, relay/capa
 
 ---
 
+## Proof run (2026-09-01)
+
+`containers-live-annotation/scripts/live_annotation_craftax_e2e.py` ran the compat façade in-process on the host (target `craftax_code_policy` from `main`'s image tree, heuristic code policy, no model key) against the live engine on `127.0.0.1:18098`, with `craftax.live.v1` installed (`anprev_e06808dc5480009e`) and three rollouts prepared, subscribed on both declared SSE streams, then started concurrently.
+
+| rollout | steps | reward | rollout events | annotation events | findings | first annotation after start | annotation stream sealed after rollout's last event | poll page == SSE |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| seed 0 | 60 | 1.0 | 765 | 205 | 15 | ~0.1 s | +0.26 s | yes |
+| seed 1 | 60 | 2.1 | 579 | 157 | 16 | ~0.1 s | +0.26 s | yes |
+| seed 2 | 60 | 0.1 | 415 | 111 | 11 | ~0.1 s | +0.13 s | yes |
+
+Findings were incremental (over 90 % of annotation events arrived before the rollout's last event), ordered by source sequence, superseded at escalation thresholds, with zero protocol errors, `outcome: completed` on every stream, and the poll authority reproducing the SSE digests exactly. The protocol correctly diagnosed the heuristic policy: `collect_sapling` achievements, `feedback_incorporation.repeated_blocked_action` for `do` with engine reason `no_sapling` (57 of 60 steps), and `safety_survival.low_health` on seed 2. The run also caught one contract bug, now fixed and tested: the annotation stream must exist from prepare so a viewer can subscribe before start.
+
 ## What is not done
 
-1. **No real run.** Everything is unit-proven; the end-to-end (Craftax gold image on the containers branch → Workshop recipe → live visual) has not been executed. The image lives on containers `main` (`images/`), not on the annotation branch; a rebuild must include `live_annotation` and, for the judge, an `OPENAI_API_KEY`-style env var the container reads at call time.
+1. **No Workshop-driven run.** The container lane is proven on the real engine from the host; the Workshop path (recipe → pin → relay → live visual) has not driven a real container. The Craftax image lives on containers `main` (`images/`), not on the annotation branch; a rebuild must include `live_annotation` and, for the judge, an `OPENAI_API_KEY`-style env var the container reads at call time.
 2. **Automatic binding of the live visual.** The eval worker relays annotation events into the run journal, but nothing yet mints `live.annotated_rollouts.v1` for a run and binds both declared streams per rollout. The MCP `container_prepare_rollout` response should add a second `visual_binding` for `stream.annotation.stream` when present, and `experiment_bindings` should surface provisional counts per seed row.
 3. **Mid-run protocol updates.** The pin is taken once per run (parity with policy). An IPC/MCP `annotation_protocol_update` (PUT + re-read) plus per-dispatch re-pin would let the protocol change between rollouts of one run.
 4. **Post-hoc reconciliation.** Provisional findings cite `(stream_id, sequences)`; a post-hoc annotator that confirms them against the sealed trace (and a projection table `annotation_provisional_findings` in Workshop keyed by `(rollout_id, sequence)`) is the next evidence step.
