@@ -117,6 +117,16 @@
 .usage-ledger[open] > summary { border-bottom: 1px solid var(--border-subtle); }
 .usage-ledger .ws-list, .usage-ledger .ws-empty { padding: var(--sp-3) var(--sp-4); }
 
+.codex-traces-panel { gap: var(--sp-4); }
+.codex-traces-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-4); }
+.codex-traces-head h2 { margin: 0; font-size: var(--fs-h2); font-weight: var(--fw-semi); letter-spacing: var(--tracking-tight); }
+.codex-traces-head p { margin: var(--sp-1) 0 0; color: var(--color-text-muted); font-size: var(--fs-meta); }
+.codex-session-picker { width: min(360px, 42vw); }
+.codex-trace-meta { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-raised); }
+.codex-trace-meta span { color: var(--color-text-faint); font-size: var(--fs-meta); }
+
 @media (max-width: 900px) {
 	.usage-hero, .usage-lower { grid-template-columns: minmax(0, 1fr); }
+	.codex-traces-head { align-items: stretch; flex-direction: column; }
+	.codex-session-picker { width: 100%; }
 }

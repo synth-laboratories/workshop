@@ -2,8 +2,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UsagePanel } from "./UsagePanel";
 import { InferencePanel } from "./InferencePanel";
+import { CodexTracesPanel } from "./CodexTracesPanel";
 import type {
 	ContainerDeployment,
+	Session,
 	TraceV5Record,
 	UsageLedgerEntry,
 	VisualRecord
@@ -37,6 +39,8 @@ type Props = {
 	onOpenVisual: (visual: VisualRecord) => void;
 	onOpenContainer: (containerId: string) => void;
 	openContainerId?: string | null;
+	sessions?: Session[];
+	activeSessionId?: string | null;
 	onBack: () => void;
 };
 
@@ -83,6 +87,8 @@ export function DataPage({
 	onOpenVisual,
 	onOpenContainer,
 	openContainerId = null,
+	sessions = [],
+	activeSessionId = null,
 	onBack
 }: Props) {
 	const [tab, setTab] = useState<DataTab>(initialTab ?? (surface === "inference" ? "runtime" : "containers"));
@@ -98,6 +104,7 @@ export function DataPage({
 	const [traces, setTraces] = useState<TraceV5Record[]>([]);
 	const [usage, setUsage] = useState<UsageLedgerEntry[]>([]);
 	const [counts, setCounts] = useState({ containers: 0, traces: 0, usage: 0 });
+	const codexSessionCount = useMemo(() => sessions.filter((session) => session.metadata?.runtime === "codex-app-server").length, [sessions]);
 	const [error, setError] = useState<string | null>(null);
 	const [busyId, setBusyId] = useState<string | null>(null);
 	const [attachOpen, setAttachOpen] = useState(false);
@@ -164,14 +171,13 @@ export function DataPage({
 				setContainers(await bridges.inventory.listContainers());
 				return;
 			}
-			const [nextContainers, nextTraces, nextUsage, nextCounts] = await Promise.all([
+			const [nextContainers, nextUsage, nextCounts] = await Promise.all([
 				bridges.inventory.listContainers(),
-				bridges.inventory.listTraces(),
 				bridges.inventory.listUsage(100),
 				bridges.inventory.counts()
 			]);
 			setContainers(nextContainers);
-			setTraces(nextTraces);
+			setTraces([]);
 			setUsage(nextUsage);
 			setCounts(nextCounts);
 		} catch (reason) {
@@ -335,9 +341,9 @@ export function DataPage({
 							: "Local containers available to Workshop."}
 					</p>
 				</div>
-				<button type="button" className="ws-btn ws-btn-secondary ws-page-head-actions" onClick={() => void refresh()}>
+				{surface === "data" ? <button type="button" className="ws-btn ws-btn-secondary ws-page-head-actions" onClick={() => void refresh()}>
 					Refresh
-				</button>
+				</button> : null}
 			</header>
 
 			{error ? (
@@ -349,7 +355,7 @@ export function DataPage({
 			<div className="ws-tabs" role="tablist" aria-label={surface === "inference" ? "Inference sections" : "Data sections"}>
 				{(
 					(surface === "inference"
-						? [["runtime", "Runtime", null], ["traces", "Codex traces", traces.length], ["usage", "Usage", usage.length]]
+						? [["runtime", "Runtime", null], ["traces", "Codex traces", codexSessionCount], ["usage", "Usage", usage.length]]
 						: [["containers", "Containers", activeContainers.length]]) as readonly (readonly [DataTab, string, number | null])[]
 				).map(([id, label, count]) => (
 					<button
@@ -368,6 +374,7 @@ export function DataPage({
 			</div>
 
 			{surface === "inference" && tab === "runtime" ? <InferencePanel visible /> : null}
+			{surface === "inference" && tab === "traces" ? <CodexTracesPanel sessions={sessions} activeSessionId={activeSessionId} /> : null}
 
 			{surface === "data" && tab === "containers" ? (
 				<div className="ws-stack" data-testid="inventory-containers">
@@ -422,7 +429,7 @@ export function DataPage({
 				</div>
 			) : null}
 
-			{surface === "inference" && tab === "traces" ? (
+			{false ? (
 				<div className="ws-stack ws-stack-loose" data-testid="inventory-traces">
 					<section className="ws-card ws-card-split" aria-label="Trace catalog summary">
 						<div className="ws-card-body">

@@ -665,6 +665,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							onOpenVisual={openVisualRecord}
 							onOpenContainer={(id) => void toggleContainer(id)}
 							openContainerId={openContainer?.id ?? null}
+							sessions={sessions}
+							activeSessionId={activeChatSession?.id ?? null}
 							onBack={() => leaveInventory(inventoryOriginRef.current)}
 						/>
 					) : null}
