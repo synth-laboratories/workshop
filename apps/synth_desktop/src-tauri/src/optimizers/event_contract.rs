@@ -330,15 +330,11 @@ mod tests {
         })
     }
 
-    /// The vendored owner schema is byte-pinned. The current pin carries one
-    /// Workshop-side vocabulary addition, `eval.trial.annotation`, which the
-    /// Optimizers repo must adopt in `contracts/event_vocabulary.json` before
-    /// the next re-vendor; until then this pin is the declaration of intent.
     #[test]
     fn vendored_owner_artifacts_are_pinned() {
         assert_eq!(
             format!("{:x}", Sha256::digest(OWNER_SCHEMA_JSON.as_bytes())),
-            "98c2f0104a0b7216881884584f37267fe249d3c9aeeebf817f453eeb9ab69716"
+            "52d37ceda9a1c37045af3417314bc2be3709c8588a007d511ed85b53a2d5430e"
         );
         assert_eq!(
             format!("{:x}", Sha256::digest(OWNER_CORPUS.as_bytes())),

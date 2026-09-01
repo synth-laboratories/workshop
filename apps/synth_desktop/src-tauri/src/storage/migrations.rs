@@ -66,6 +66,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_61,
     MIGRATION_62,
     MIGRATION_63,
+    MIGRATION_64,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -239,7 +240,44 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("annotation_findings", MIGRATION_63),
     ("rubric_results", MIGRATION_63),
     ("annotation_reviews", MIGRATION_63),
+    ("annotation_provisional_findings", LIVE_ANNOTATION_CREATE_ONLY),
 ];
+
+/// Lane C: provisional findings relayed from a rollout's live annotation
+/// stream, folded per rollout with their supersede/retract history and
+/// reconciled against the verified journal after the seal. Their own table and
+/// status vocabulary: never joined with sealed `annotation_findings`.
+/// Create-only so installations that already carry versions 64-66 from the
+/// briefly-shipped lineage still gain the table through `heal_missing_tables`.
+const LIVE_ANNOTATION_CREATE_ONLY: &str = r#"
+CREATE TABLE IF NOT EXISTS annotation_provisional_findings (
+    run_id TEXT NOT NULL,
+    rollout_id TEXT NOT NULL,
+    trial_id TEXT,
+    sequence INTEGER NOT NULL,
+    finding_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('provisional','superseded','retracted')),
+    step INTEGER,
+    confidence REAL,
+    protocol_revision_id TEXT,
+    cited_sequences_json TEXT NOT NULL DEFAULT '[]',
+    supersedes TEXT,
+    superseded_by TEXT,
+    retracted_reason TEXT,
+    basis TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    occurred_at TEXT,
+    reconciliation TEXT NOT NULL CHECK (reconciliation IN ('resolved','corroborated','unresolved','unsealed')),
+    reconciled_trace_digest TEXT,
+    reconciled_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, rollout_id, finding_id)
+);
+CREATE INDEX IF NOT EXISTS annotation_provisional_findings_run ON annotation_provisional_findings(run_id, rollout_id, sequence);
+CREATE INDEX IF NOT EXISTS annotation_provisional_findings_label ON annotation_provisional_findings(run_id, kind, label);
+"#;
+const MIGRATION_64: &str = LIVE_ANNOTATION_CREATE_ONLY;
 
 const PROJECTION_OUTBOX_CREATE_ONLY: &str = r#"
 CREATE TABLE IF NOT EXISTS optimizer_projection_outbox (

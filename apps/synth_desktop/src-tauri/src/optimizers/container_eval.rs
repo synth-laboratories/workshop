@@ -2035,6 +2035,58 @@ async fn run_eval_worker(
         )
         .await;
     }
+    // Lane C reconciliation: after the seal (and after lane B, so sealed
+    // labels can corroborate), fold the relayed provisional findings and check
+    // their citations against the verified journal. Recorded as an evidence
+    // amendment; never a worker failure and never a sealed finding.
+    if spec.live_annotation.is_some() {
+        match crate::session::live_annotation_projection::reconcile_run(&service, service.database(), &run_id, &records).await {
+            Ok(summary) => {
+                if let Err(error) = record_live_annotation_reconciliation(&service, &run_id, &summary).await {
+                    crate::platform::logging::report(
+                        "container_eval",
+                        "live_annotation",
+                        format!("could not record live annotation reconciliation for {run_id}: {error:#}"),
+                    );
+                }
+            }
+            Err(error) => crate::platform::logging::report(
+                "container_eval",
+                "live_annotation",
+                format!("live annotation reconciliation failed for {run_id}: {error:#}"),
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// Record the lane C reconciliation summary as an evidence amendment on the
+/// sealed run, the way lane B records its stage report.
+async fn record_live_annotation_reconciliation(
+    service: &OptimizerService,
+    run_id: &str,
+    summary: &Value,
+) -> Result<()> {
+    let owned = run_id.to_string();
+    let terminal_sequence = service
+        .database()
+        .run_read(move |conn| {
+            let state = super::kernel::persist::load_state(conn, &owned)?
+                .context("evaluation run has no saved kernel projection")?;
+            Ok(state.terminal.as_ref().map(|terminal| terminal.final_sequence))
+        })
+        .await?
+        .context("live annotation reconciliation may record only after a sealed terminal state")?;
+    let draft = super::events::OptimizerEventDraft::new("optimizer.evidence.amended", EVAL_ALGORITHM_ID)
+        .idempotency_key(format!("eval:live-annotation-reconciliation:{terminal_sequence}"))
+        .delta(Map::from_iter([
+            ("terminalSequence".into(), json!(terminal_sequence)),
+            ("liveAnnotationReconciliation".into(), summary.clone()),
+        ]))
+        .raw(json!({ "source": "live_annotation_projection" }));
+    service
+        .append_event_payloads(run_id.to_string(), vec![draft])
+        .await?;
     Ok(())
 }
 

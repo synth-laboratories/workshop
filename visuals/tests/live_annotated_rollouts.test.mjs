@@ -117,14 +117,15 @@ test("rollout and annotation streams fold into one lane with a summary layer ove
 test("relayed optimizer envelopes unwrap to the same reducer inputs", () => {
   const relayed = {
     run_id: "opt_eval_1",
-    kind: "eval.trial.annotation",
-    type: "eval.trial.annotation",
+    kind: "eval.trial.event",
+    type: "eval.trial.event",
     sequence: 40,
     payload: {
       delta: {
         trial_id: "trial:craftax:0",
         message: "annotation.finding",
-        annotation_event: { rollout_id: "roll_z", sequence: 2, kind: "annotation.finding", occurred_at: "2026-09-01T00:00:02Z", payload: { finding_id: "ach:collect_wood", kind: "achievement", label: "collect_wood", status: "provisional", step: 2, evidence: { sequences: [10] } } },
+        stream: "annotation",
+        container_event: { rollout_id: "roll_z", stream_id: "stream:roll_z:annotations", sequence: 2, kind: "annotation.finding", occurred_at: "2026-09-01T00:00:02Z", payload: { finding_id: "ach:collect_wood", kind: "achievement", label: "collect_wood", status: "provisional", step: 2, evidence: { sequences: [10] } } },
       },
     },
   };

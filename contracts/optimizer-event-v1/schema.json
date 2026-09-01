@@ -42,7 +42,6 @@
         "eval.run.terminal",
         "eval.seed_ledger.sealed",
         "eval.selection.completed",
-        "eval.trial.annotation",
         "eval.trial.event",
         "eval.trial.evidence_incomplete",
         "eval.trial.queued",

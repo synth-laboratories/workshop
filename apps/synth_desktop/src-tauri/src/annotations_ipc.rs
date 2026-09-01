@@ -41,6 +41,7 @@ pub const OPERATIONS: &[(&str, bool, bool)] = &[
     ("annotation_protocol_get", true, false),
     ("annotation_protocol_update", false, false),
     ("annotation_control_send", false, false),
+    ("annotation_provisional_list", true, false),
 ];
 
 const ALLOWED_ARGUMENTS: &[&str] = &[
@@ -1701,6 +1702,30 @@ pub(crate) async fn dispatch_free(
 ) -> Result<Value> {
     match operation {
         "annotation_protocol_get" => forward("GET", &format!("{base}/annotation-protocol"), None).await,
+        "annotation_provisional_list" => {
+            let run_id = string_field(body, "run_id", "runId").ok_or_else(|| {
+                failure("annotation_argument_missing", "run_id required", "pass the eval run id")
+            })?;
+            let rollout_id = string_field(body, "rollout_id", "rolloutId");
+            core.storage()
+                .database()
+                .run_read(move |conn| {
+                    let rows = crate::session::live_annotation_projection::list_run_rows(
+                        conn,
+                        &run_id,
+                        rollout_id.as_deref(),
+                    )?;
+                    let summary = crate::session::live_annotation_projection::run_summary(conn, &run_id)?;
+                    Ok(json!({
+                        "schema": crate::session::live_annotation_projection::PROVISIONAL_SCHEMA,
+                        "run_id": run_id,
+                        "count": rows.len(),
+                        "summary": summary,
+                        "findings": rows,
+                    }))
+                })
+                .await
+        }
         "annotation_protocol_update" => protocol_update(body, core, base).await,
         "annotation_control_send" => control_send(body, base).await,
         "annotation_list_definitions" => {

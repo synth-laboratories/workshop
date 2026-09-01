@@ -1008,17 +1008,23 @@ async fn drain_annotation(
     Ok(count)
 }
 
-/// One relayed annotation-stream envelope. Correlated like `eval.trial.event`
-/// but under its own declared type, so a reader can separate the summary
-/// layer from the underlying rollout events without inspecting kinds.
+/// One relayed annotation-stream envelope.
+///
+/// It rides the owner's `eval.trial.event` carrier -- the vocabulary belongs
+/// to Optimizers and is the union of what that repo emits, so Workshop cannot
+/// honestly declare a type of its own -- and is distinguished by
+/// `delta.stream = "annotation"` plus the envelope's own `stream_id`. Its
+/// idempotency key lives in a separate namespace from the rollout journal so
+/// equal sequence numbers on the two streams never collide.
 fn relay_annotation_event(
     ctx: &RelayContext<'_>,
     event: &Value,
     sequence: u64,
     kind: &str,
 ) -> OptimizerEventDraft {
-    let annotation_event = json!({
+    let container_event = json!({
         "rollout_id": ctx.rollout_id,
+        "stream_id": event.get("stream_id").cloned().unwrap_or_else(|| json!(format!("stream:{}:annotations", ctx.rollout_id))),
         "sequence": sequence,
         "kind": kind,
         "occurred_at": event.get("ts").cloned().unwrap_or(Value::Null),
@@ -1031,9 +1037,10 @@ fn relay_annotation_event(
         ("pool".into(), json!(ctx.pool)),
         ("scenario".into(), json!(ctx.scenario)),
         ("message".into(), json!(kind)),
-        ("annotation_event".into(), annotation_event.clone()),
+        ("stream".into(), json!("annotation")),
+        ("container_event".into(), container_event.clone()),
     ]);
-    OptimizerEventDraft::new("eval.trial.annotation", EVAL_ALGORITHM_ID)
+    OptimizerEventDraft::new("eval.trial.event", EVAL_ALGORITHM_ID)
         // One relay of one producer sequence on the annotation stream.
         .idempotency_key(format!("eval:annotation:{}:{sequence}", ctx.rollout_id))
         .level("debug")
@@ -1041,8 +1048,9 @@ fn relay_annotation_event(
         .delta(delta)
         .raw(json!({
             "source": "container_eval",
+            "stream": "annotation",
             "trial_id": ctx.trial_id,
-            "annotation_event": annotation_event,
+            "container_event": container_event,
         }))
 }
 

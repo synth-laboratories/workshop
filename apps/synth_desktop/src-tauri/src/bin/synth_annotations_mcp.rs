@@ -99,6 +99,7 @@ const OPERATIONS: &[(&str, bool, bool, &str)] = &[
     ("annotation_protocol_get", true, false, "Installed live annotation protocol identity on a container (protocol_revision_id, digests, judge model); never source or credentials."),
     ("annotation_protocol_update", false, false, "Install a live annotation protocol revision (code + protocol_id + configuration) on a container; with run_id, advance that run's pin so its next rollouts use it; with rollout_ids, hot-swap rollouts running now (carry_state carries snapshot state). Findings stay provisional and never touch reward."),
     ("annotation_control_send", false, false, "Send one consumer -> annotator control to a running rollout: op message ({type: note|judge_now|set, ...}), protocol.update (protocol_revision_id, carry_state), or stop (reason). The durable acknowledgement lands on the rollout's annotation stream."),
+    ("annotation_provisional_list", true, false, "Provisional live findings relayed for an eval run (optionally one rollout_id), with supersede/retract history and post-seal reconciliation (resolved | corroborated | unresolved | unsealed). Never sealed evidence."),
 ];
 
 fn tools() -> Value {

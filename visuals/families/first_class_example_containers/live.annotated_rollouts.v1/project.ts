@@ -99,11 +99,14 @@ export function laneName(event: LiveEvalEvent): string {
  */
 export function unwrapRelayed(event: LiveEvalEvent): LiveEvalEvent {
   const type = event.type ?? (typeof event.payload.type === "string" ? (event.payload.type as string) : undefined);
-  if (type !== "eval.trial.event" && type !== "eval.trial.annotation") return event;
+  if (type !== "eval.trial.event") return event;
   const delta = obj(event.payload.delta);
-  const inner = obj(delta.container_event ?? delta.annotation_event);
+  const inner = obj(delta.container_event);
   if (!Object.keys(inner).length) return event;
   const kind = str(inner.kind) ?? event.kind;
+  // Annotation rows ride the same carrier, tagged by `delta.stream` and the
+  // envelope's own stream identity (`stream:<rollout>:annotations`).
+  const streamId = str(inner.stream_id) ?? (delta.stream === "annotation" && str(inner.rollout_id) ? `stream:${inner.rollout_id}:annotations` : undefined);
   return {
     ...event,
     kind,
@@ -112,6 +115,7 @@ export function unwrapRelayed(event: LiveEvalEvent): LiveEvalEvent {
     payload: obj(inner.payload),
     lane: str(inner.rollout_id) ?? event.lane,
     ...(str(inner.rollout_id) ? { rollout_id: inner.rollout_id as string } : {}),
+    ...(streamId ? { stream_id: streamId } : {}),
   } as LiveEvalEvent;
 }
 
@@ -123,7 +127,6 @@ export function unwrapRelayed(event: LiveEvalEvent): LiveEvalEvent {
 export function isAnnotationEvent(event: LiveEvalEvent): boolean {
   const streamId = (event as LiveEvalEvent & { stream_id?: string }).stream_id;
   return event.kind.startsWith("annotation.")
-    || event.type === "eval.trial.annotation"
     || (typeof streamId === "string" && streamId.endsWith(":annotations"));
 }
 
