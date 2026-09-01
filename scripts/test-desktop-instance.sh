@@ -137,8 +137,8 @@ fi
 
 jq -e '
   .identifier == "com.synth.desktop.v09.dev.alpha" and
-  .productName == "Synth Workshop v0.9.0 · alpha" and
-  .version == "0.9.0" and
+  .productName == "Synth Workshop v0.9 · alpha" and
+  .version == "0.9.3" and
   (.bundle.icon | length) == 2 and
   .bundle.targets == ["app"] and
   .bundle.resources == {} and
