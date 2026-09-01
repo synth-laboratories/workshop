@@ -1,0 +1,23 @@
+.plugins-page {
+	align-items: center;
+}
+
+.plugins-catalog {
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-md);
+	background: var(--surface-raised);
+	overflow: hidden;
+}
+
+.plugins-catalog > .ws-item + .ws-item {
+	border-top: 1px solid var(--border-subtle);
+}
+
+.plugins-catalog .ws-item-title {
+	margin: 0;
+}
+
+.plugins-catalog .ws-item-meta {
+	display: block;
+	color: var(--color-text-muted);
+}
