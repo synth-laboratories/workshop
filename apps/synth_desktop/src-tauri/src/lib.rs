@@ -813,6 +813,101 @@ async fn data_trace_projection_resolve(
         .map_err(AppError::from)
 }
 
+/// Read a bounded local annotation projection without exposing the authenticated
+/// loopback Visuals IPC token to the renderer.
+#[tauri::command]
+#[specta::specta]
+async fn analysis_projection_get(
+    state: State<'_, Arc<CoreRuntime>>,
+    kind: String,
+    digest: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .storage()
+        .database()
+        .run_read(move |conn| {
+            crate::session::annotation_projection::projection_payload(conn, &kind, &digest)
+        })
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn analysis_findings_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    trace_digest: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .storage()
+        .database()
+        .run_read(move |conn| {
+            let findings = crate::session::annotation_projection::list_findings_for_trace(
+                conn,
+                &trace_digest,
+            )?;
+            Ok(serde_json::json!({ "findings": findings }))
+        })
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn analysis_campaigns_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    eval_run_id: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .storage()
+        .database()
+        .run_read(move |conn| {
+            let campaigns =
+                crate::session::annotation_projection::list_campaigns_for_eval(conn, &eval_run_id)?;
+            Ok(serde_json::json!({ "campaigns": campaigns }))
+        })
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn analysis_review_record(
+    state: State<'_, Arc<CoreRuntime>>,
+    finding_id: String,
+    evidence_head_digest: String,
+    decision: String,
+    rationale: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let persisted_finding_id = finding_id.clone();
+    let persisted_evidence_head_digest = evidence_head_digest.clone();
+    let persisted_decision = decision.clone();
+    let persisted_rationale = rationale.clone();
+    let review_id = state
+        .storage()
+        .database()
+        .run_transaction(move |conn| {
+            crate::session::annotation_projection::record_local_review(
+                conn,
+                &persisted_finding_id,
+                &persisted_evidence_head_digest,
+                &persisted_decision,
+                "workshop",
+                &persisted_rationale,
+            )
+        })
+        .await
+        .map_err(AppError::from)?;
+    Ok(contract::specta::OpaqueJson(serde_json::json!({
+        "reviewId": review_id,
+        "findingId": finding_id,
+        "decision": decision,
+    })))
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn data_usage_list(

@@ -7,6 +7,7 @@
 
 import type {
 	CodexBridge,
+	AnalysisBridge,
 	CodexOauthBridge,
 	ContextBridge,
 	CoreBridge,
@@ -53,6 +54,7 @@ declare global {
 		};
 		/** Browser fixture/explicit compatibility bridge; not installed by Tauri. */
 		synthRuntime?: RuntimeBridge;
+		synthAnalysis?: AnalysisBridge;
 		synthLaguna?: LagunaBridge;
 		synthTrainingModels?: TrainingModelsBridge;
 		synthTrainingArtifacts?: TrainingArtifactsBridge;

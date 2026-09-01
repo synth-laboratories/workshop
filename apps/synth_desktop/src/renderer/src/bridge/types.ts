@@ -244,6 +244,16 @@ export type RuntimeBridge = {
 	): Promise<EventSubscription>;
 };
 
+/** Annotation projections have a narrow native bridge; generic runtime HTTP is
+ * intentionally browser-only so its authenticated loopback capability never
+ * reaches a Desktop renderer. */
+export type AnalysisBridge = {
+	projection(kind: string, digest: string): Promise<unknown>;
+	findings(traceDigest: string): Promise<{ findings: unknown[] }>;
+	campaigns(evalRunId: string): Promise<{ campaigns: unknown[] }>;
+	review(input: { findingId: string; evidenceHeadDigest: string; decision: string; rationale: string }): Promise<unknown>;
+};
+
 export type LagunaPhase =
 	| "unknown"
 	| "starting"

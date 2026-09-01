@@ -38,6 +38,14 @@ export const commands = {
 	dataTraceMaterialize: (containerId: string, rolloutId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("data_trace_materialize", { containerId, rolloutId })),
 	dataTracesIngest: (request: TraceBundleIngestRequest) => typedError<TraceBundleIngestResult, AppError_Serialize>(__TAURI_INVOKE("data_traces_ingest", { request })),
 	dataTraceProjectionResolve: (traceDigest: string, projectionKind: string) => typedError<ResolvedTraceProjection, AppError_Serialize>(__TAURI_INVOKE("data_trace_projection_resolve", { traceDigest, projectionKind })),
+	/**
+	 *  Read a bounded local annotation projection without exposing the authenticated
+	 *  loopback Visuals IPC token to the renderer.
+	 */
+	analysisProjectionGet: (kind: string, digest: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("analysis_projection_get", { kind, digest })),
+	analysisFindingsList: (traceDigest: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("analysis_findings_list", { traceDigest })),
+	analysisCampaignsList: (evalRunId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("analysis_campaigns_list", { evalRunId })),
+	analysisReviewRecord: (findingId: string, evidenceHeadDigest: string, decision: string, rationale: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("analysis_review_record", { findingId, evidenceHeadDigest, decision, rationale })),
 	dataUsageList: (limit: number | null) => typedError<UsageEntry[], AppError_Serialize>(__TAURI_INVOKE("data_usage_list", { limit })),
 	modelPerformanceSummary: () => typedError<ModelPerformanceSummary[], AppError_Serialize>(__TAURI_INVOKE("model_performance_summary")),
 	modelPerformanceTurnSamples: (sessionId: string) => typedError<ModelPerformanceTurnSample[], AppError_Serialize>(__TAURI_INVOKE("model_performance_turn_samples", { sessionId })),
