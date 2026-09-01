@@ -34,6 +34,14 @@ async function assertNoHorizontalOverflow(page: Page, label: string) {
 test("GEPA QA surface preserves compact evidence without horizontal scrolling", async ({ page }) => {
   await page.goto(new URL("gepa-qa.html", page.url()).toString());
   await expect(page.getByTestId("gepa-workspace")).toBeVisible();
+  const headerGeometry = await page.evaluate(() => {
+    const root = document.querySelector<HTMLElement>(".synth-visual-root")?.getBoundingClientRect();
+    const header = document.querySelector<HTMLElement>('[data-testid="gepa-run-header"]')?.getBoundingClientRect();
+    if (!root || !header) throw new Error("GEPA workspace header geometry is unavailable");
+    return { rootTop: root.top, headerTop: header.top, headerHeight: header.height };
+  });
+  expect(headerGeometry.headerTop).toBeGreaterThanOrEqual(headerGeometry.rootTop);
+  expect(headerGeometry.headerHeight).toBeGreaterThan(40);
 
   for (const width of VIEWPORTS) {
     await page.setViewportSize({ width, height: 900 });

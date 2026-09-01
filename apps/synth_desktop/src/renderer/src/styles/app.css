@@ -203,10 +203,6 @@ a,
 .terminal-viewport .xterm { height: 100%; }
 .terminal-empty { display: grid; place-items: center; flex: 1; color: #949ba7; font-size: 13px; }
 
-.main-pane:has(.terminal-panel) .composer-dock {
-	bottom: calc(var(--bottom-panel-height) + 20px);
-}
-
 /* RP-CUA-033: Outputs + composer + terminal share one column. Cap the
    terminal so the three surfaces do not independently consume the transcript. */
 .workbench.with-side-panel .main-pane:has(.terminal-panel) .terminal-panel {
@@ -1611,6 +1607,7 @@ html.visual-expanded .titlebar {
 .landing {
 	flex: 1;
 	min-height: 0;
+	position: relative;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
@@ -1958,37 +1955,24 @@ html.visual-expanded .titlebar {
 }
 
 /* ── Composer ── */
-/*
- * The dock is an overlay, so it cannot inherit the transcript column's width
- * from the grid. Composer.tsx measures the transcript scroller's content box
- * and publishes these offsets; the fallbacks cover the landing page and any
- * surface without a transcript. Never re-derive these from column guesses
- * (`50%`, `min(380px, 33vw)`) — every pane combination resolves differently
- * and the composer then overlaps the visual/container/inference panes and
- * loses its shared centerline with the transcript.
- */
+.composer-layout-host {
+	position: absolute;
+	inset: 0;
+	z-index: 50;
+	pointer-events: none;
+}
+
 .composer-dock {
 	position: absolute;
-	left: var(--composer-dock-left, 24px);
-	right: var(--composer-dock-right, 24px);
+	left: 24px;
+	right: 24px;
 	bottom: 20px;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	justify-content: center;
 	pointer-events: none;
-	z-index: 50;
-}
-
-/* The output splitter publishes its width on the composer's containing block
-   before React commits each pointer move. This makes the input follow the
-   transcript in the same frame instead of trailing ResizeObserver by one drag
-   sample. */
-.main-pane:has(.workbench.with-side-panel) .composer-dock {
-	left: calc(var(--live-transcript-width, calc(100% - var(--side-panel-width, 420px) - 7px)) / 2);
-	right: auto;
-	width: max(0px, calc(var(--live-transcript-width, calc(100% - var(--side-panel-width, 420px) - 7px)) - 48px));
-	transform: translateX(-50%);
+	z-index: 1;
 }
 
 .composer {
@@ -9104,9 +9088,8 @@ html.visual-expanded .sidebar {
 .resource-shelf-empty-icon path { stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
 .resource-shelf-empty-copy { display: grid; gap: 3px; min-width: 0; font-size: 11px; line-height: 1.4; }
 .resource-shelf-empty-copy strong { color: var(--color-text); font-size: 12px; font-weight: 600; }
-/* The composer stays inside the transcript column while the inspector is open;
-   the rail owns the right edge. That inset is measured in Composer.tsx and
-   published as --composer-dock-left/right, so no rail-width guess lives here. */
+/* ComposerLayoutHost makes the dock a child of the active transcript or landing
+   surface. Split panes therefore constrain it through normal layout ownership. */
 
 .inference-panel {
 	width: 100%;
@@ -9942,11 +9925,6 @@ html.compact-workbench .experiment-task-disclosure {
 	html.compact-workbench .chat-transcript-scroll,
 	html.compact-workbench .workbench.with-side-panel.with-container .chat-transcript-scroll {
 		padding-bottom: var(--sp-6);
-	}
-
-	.main-pane:has(.terminal-panel) .composer-dock,
-	html.compact-workbench .main-pane:has(.terminal-panel) .composer-dock {
-		bottom: calc(var(--bottom-panel-height) + var(--sp-5));
 	}
 
 	.experiment-row.heading {

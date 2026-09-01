@@ -154,6 +154,22 @@ test.describe("coverage gaps", () => {
 		await expect(visualPane).toBeVisible();
 		await expect(visualPane).toContainText("Originating chat visual");
 		await expect(visualPane.getByTestId("visual-craftax-eval-matrix")).toBeVisible();
+		for (const width of [1440, 1024, 860]) {
+			await page.setViewportSize({ width, height: 840 });
+			const geometry = await page.evaluate(() => {
+				const transcript = document.querySelector<HTMLElement>('[data-testid="chat-transcript"]')?.getBoundingClientRect();
+				const composer = document.querySelector<HTMLElement>('[data-testid="composer"]')?.getBoundingClientRect();
+				if (!transcript || !composer) throw new Error("Composer split geometry is unavailable");
+				return {
+					inside: composer.left >= transcript.left - 1 && composer.right <= transcript.right + 1,
+					centerDelta: Math.abs((composer.left + composer.width / 2) - (transcript.left + transcript.width / 2)),
+					overflow: document.documentElement.scrollWidth - window.innerWidth
+				};
+			});
+			expect(geometry.inside).toBe(true);
+			expect(geometry.centerDelta).toBeLessThanOrEqual(2);
+			expect(geometry.overflow).toBeLessThanOrEqual(1);
+		}
 	});
 
 	test("Intern is absent from every v0.1 navigation and setup surface", async ({ page }) => {

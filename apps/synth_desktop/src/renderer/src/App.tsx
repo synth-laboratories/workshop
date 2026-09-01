@@ -3,6 +3,7 @@ import { formatTps } from "./components/InferencePanel";
 import { AppTitlebar, type TabCopyItem } from "./components/AppTitlebar";
 import { AppOverlays } from "./components/AppOverlays";
 import { ComposerDock } from "./components/ComposerDock";
+import { ComposerLayoutProvider } from "./components/ComposerLayout";
 import { ManderLabGate } from "./components/mander";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalPanel } from "./components/TerminalPanel";
@@ -135,6 +136,7 @@ export default function App() {
 				) : null}
 
 				<main className="main-pane">
+					<ComposerLayoutProvider>
 					<AppTitlebar
 						tabLabel={c.tabLabel}
 						appVersion={c.appVersion}
@@ -324,6 +326,7 @@ export default function App() {
 						}}
 						onHeightChange={(height) => c.persistLayoutSnapshot({ bottomPanelHeight: height })}
 					/>
+					</ComposerLayoutProvider>
 				</main>
 			</div>
 

@@ -16,6 +16,7 @@ import { bridges } from "../runtime/desktopBridge";
 import { useTurnPerformanceLabels } from "../hooks/useTurnPerformanceLabels";
 import { outputContainerIds as chatOutputContainerIds, primaryVisualId, useChatOutputs } from "../hooks/useChatOutputs";
 import { RunProgressCard } from "./runProgress/RunProgressCard";
+import { ComposerLayoutHost } from "./ComposerLayout";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import "./PaidComputeApprovalModal.css";
 
@@ -1134,6 +1135,7 @@ export function ChatTranscript({
 						) : null}
 					</div>
 			</div>
+			<ComposerLayoutHost />
 			{paidComputeApproval ? <PaidComputeApprovalModal line={paidComputeApproval} onApprove={onApprove} onReject={onReject} /> : null}
 			{!paidComputeApproval && credentialAccessApproval ? <CredentialAccessApprovalModal line={credentialAccessApproval} onApprove={onApprove} onReject={onReject} /> : null}
 		</div>
