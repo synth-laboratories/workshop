@@ -535,6 +535,44 @@ fn ensure_campaign_stub(conn: &Connection, campaign_id: &str, container_id: &str
     Ok(())
 }
 
+/// Register a deterministic local campaign for a sealed annotation head that
+/// was produced by the container outside Workshop's campaign ledger (for
+/// example, post-rollout annotation during recovery). This is projection
+/// metadata only; it never starts or mutates annotation work.
+pub fn ensure_import_campaign(
+    conn: &Connection,
+    campaign_id: &str,
+    container_id: &str,
+    trace_id: &str,
+    session_id: Option<&str>,
+) -> Result<()> {
+    ensure_campaign_stub(conn, campaign_id, container_id)?;
+    let now = now_rfc3339();
+    conn.execute(
+        "UPDATE annotation_campaigns SET
+            session_id=COALESCE(session_id, ?2),
+            label='Imported sealed annotations',
+            status='sealed',
+            traces_json=?3,
+            metadata_json=?4,
+            updated_at=?5
+         WHERE campaign_id=?1",
+        params![
+            campaign_id,
+            session_id,
+            serde_json::to_string(&json!([{ "trace_id": trace_id }]))?,
+            serde_json::to_string(&json!({
+                "containerId": container_id,
+                "traceId": trace_id,
+                "sessionId": session_id,
+                "source": "sealed_container_evidence_head"
+            }))?,
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
 pub fn mark_job_projected(
     conn: &Connection,
     job_id: &str,

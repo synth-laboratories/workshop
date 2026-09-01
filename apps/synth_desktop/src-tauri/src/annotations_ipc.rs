@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
 use crate::core_runtime::CoreRuntime;
@@ -865,6 +866,73 @@ async fn open_annotation_workbench(
     Ok(())
 }
 
+async fn project_imported_trace_head(
+    core: &CoreRuntime,
+    container_id: &str,
+    base: &str,
+    trace_id: &str,
+    session_id: Option<&str>,
+    annotations: &Value,
+) -> Result<()> {
+    let head_payload = forward(
+        "GET",
+        &format!("{base}/traces/{trace_id}/evidence-head"),
+        None,
+    )
+    .await?;
+    let head = head_payload.get("head").unwrap_or(&head_payload);
+    let trace_digest = head
+        .get("trace_digest")
+        .or_else(|| head.get("traceDigest"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .context("sealed evidence head has no trace_digest")?
+        .to_string();
+    let evidence_digest = head
+        .get("bundle_digest")
+        .or_else(|| head.get("bundleDigest"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .context("sealed evidence head has no bundle_digest")?;
+    let identity = format!("{container_id}\0{trace_id}\0{evidence_digest}");
+    let campaign_id = format!("acmp_import_{:x}", Sha256::digest(identity.as_bytes()));
+    let campaign_id = campaign_id[.."acmp_import_".len() + 16].to_string();
+    let bundles = json!({ "bundles": [head.clone()] });
+    let session_id = session_id.map(str::to_owned);
+    let projected = core
+        .storage()
+        .database()
+        .run_transaction({
+            let campaign_id = campaign_id.clone();
+            let container_id = container_id.to_string();
+            let trace_id = trace_id.to_string();
+            let trace_digest = trace_digest.clone();
+            let annotations = annotations.clone();
+            move |conn| {
+                crate::session::annotation_projection::ensure_import_campaign(
+                    conn,
+                    &campaign_id,
+                    &container_id,
+                    &trace_id,
+                    session_id.as_deref(),
+                )?;
+                crate::session::annotation_projection::project_trace_head(
+                    conn,
+                    &campaign_id,
+                    &trace_id,
+                    &trace_digest,
+                    &annotations,
+                    &bundles,
+                )
+            }
+        })
+        .await?;
+    if let Some(projected) = projected {
+        open_annotation_workbench(core, &projected).await?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn dispatch_annotations(
     method: &str,
     path: &str,
@@ -1246,7 +1314,7 @@ pub(crate) async fn dispatch_free(
         }
         "annotation_list" => {
             let trace_id = trace_id_of(body)?;
-            forward(
+            let payload = forward(
                 "GET",
                 &format!(
                     "{base}/traces/{trace_id}/annotations{}",
@@ -1254,7 +1322,30 @@ pub(crate) async fn dispatch_free(
                 ),
                 None,
             )
-            .await
+            .await?;
+            // A sealed head is useful even when the annotations were created
+            // by a container-native post-rollout stage rather than a Workshop
+            // campaign. Import it into the same durable projection used by
+            // first-class annotation workbenches. The read itself remains
+            // successful if the trace has not yet been imported locally.
+            if payload
+                .get("bundle_digest")
+                .or_else(|| payload.get("bundleDigest"))
+                .and_then(Value::as_str)
+                .is_some()
+            {
+                let session_id = string_field(body, "session_id", "sessionRef");
+                let _ = project_imported_trace_head(
+                    core,
+                    container_id,
+                    base,
+                    &trace_id,
+                    session_id.as_deref(),
+                    &payload,
+                )
+                .await;
+            }
+            Ok(payload)
         }
         "annotation_get_evidence" => {
             let annotation_id =

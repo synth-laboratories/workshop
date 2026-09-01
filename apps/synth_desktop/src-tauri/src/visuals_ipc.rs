@@ -2164,6 +2164,16 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "rollout_id": rollout_id, "seed": body.get("seed"), "task_instance_id": task_instance_id,
                 "policy_ref": policy_ref, "telemetry": telemetry, "slot": LIVE_EVAL_SLOT
             });
+            // Prepared NanoHorizon rollouts are pinned to an immutable policy
+            // revision. Preserve that pin across the host bridge instead of
+            // silently degrading the request to a mutable policy reference.
+            if let Some(policy_revision_id) = body
+                .get("policy_revision_id")
+                .or_else(|| body.get("policyRevisionId"))
+                .cloned()
+            {
+                start_body["policy_revision_id"] = policy_revision_id;
+            }
             if let Some(max_steps) = stream.get("max_steps").and_then(Value::as_u64) {
                 start_body["max_steps"] = json!(max_steps);
             }
