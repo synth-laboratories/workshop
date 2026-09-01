@@ -880,14 +880,14 @@ impl OptimizerService {
         if ready.is_none() {
             bail!("visual readiness receipt is required before starting paid compute");
         }
-        if approval_receipt_id
+        let approval_id = approval_receipt_id
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .is_none()
-        {
-            bail!("compute approval receipt is required before starting paid compute");
-        }
+            .ok_or_else(|| {
+                anyhow!("compute approval receipt is required before starting paid compute")
+            })?
+            .to_string();
         // Both digests must be present and equal. Treating either absence as
         // "nothing to compare" fails open: a run prepared without a proven
         // handshake would start unguarded, which is the case the pin exists for.
@@ -919,6 +919,25 @@ impl OptimizerService {
         // advertising a wholly unrelated algorithm, so check the one claim that
         // matters before paying for rollouts.
         require_advertised_algorithm(&current_caps, &run.algorithm_id)?;
+        let max_cost_usd_micros = run
+            .summary
+            .pointer("/limits/maxCostUsd")
+            .and_then(Value::as_f64)
+            .and_then(crate::session::paid_compute_budget::micros_from_reported_cost);
+        let max_rollouts = run
+            .summary
+            .pointer("/limits/maxTotalRollouts")
+            .and_then(Value::as_u64);
+        // Prepared GEPA start authorizes before the worker. The receipt must
+        // land on the durable run before any usage fold, or terminal settlement
+        // cannot find the reservation and the conversation ceiling leaks.
+        self.attach_paid_compute_approval(
+            optimizer_run_id.clone(),
+            &approval_id,
+            max_cost_usd_micros,
+            max_rollouts,
+        )
+        .await?;
         super::recipes::start_prepared(self, &optimizer_run_id).await
     }
 
@@ -5021,6 +5040,7 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
         super::experiment_bind::settle_run(conn, &run)?;
         recovered.push(run);
     }
+    reconcile_orphaned_paid_compute_reservations(conn)?;
     Ok(recovered)
 }
 
@@ -5432,7 +5452,56 @@ fn settle_paid_compute_conversation(conn: &Connection, run: &OptimizerRunRecord)
     else {
         return Ok(());
     };
-    let Some(approval_id) = run
+    let approval_ids = paid_compute_approval_ids(conn, run)?;
+    if approval_ids.is_empty() {
+        return Ok(());
+    }
+    let outcome = paid_compute_settlement_outcome(conn, run)?;
+    let mut snapshot = None;
+    for (index, approval_id) in approval_ids.iter().enumerate() {
+        let this_outcome = if index == 0 {
+            outcome
+        } else {
+            // Extra reserved rows for the same preparation are unused start
+            // retries. Release them without double-counting spend.
+            crate::session::paid_compute_budget::SettlementOutcome::Exact { cost_usd_micros: 0 }
+        };
+        snapshot = crate::session::paid_compute_budget::settle(
+            conn,
+            session_id,
+            approval_id,
+            this_outcome,
+        )?;
+        if let Some(snapshot) = snapshot.as_ref() {
+            if run
+                .usage
+                .extra
+                .get("paidComputeApproval")
+                .and_then(|value| value.get("receiptViolation"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                crate::session::paid_compute_budget::disable_auto(conn, session_id)?;
+            }
+            crate::session::paid_compute_budget::append_settlement_receipt(
+                conn,
+                session_id,
+                approval_id,
+                this_outcome,
+                snapshot,
+            )?;
+        }
+    }
+    let _ = snapshot;
+    Ok(())
+}
+
+fn paid_compute_approval_ids(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+) -> Result<Vec<String>> {
+    let mut ids = Vec::new();
+    if let Some(approval_id) = run
         .usage
         .extra
         .get("paidComputeApproval")
@@ -5440,32 +5509,77 @@ fn settle_paid_compute_conversation(conn: &Connection, run: &OptimizerRunRecord)
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    else {
-        return Ok(());
-    };
-    let outcome = paid_compute_settlement_outcome(conn, run)?;
-    let Some(snapshot) =
-        crate::session::paid_compute_budget::settle(conn, session_id, approval_id, outcome)?
-    else {
-        return Ok(());
-    };
-    if run
-        .usage
-        .extra
-        .get("paidComputeApproval")
-        .and_then(|value| value.get("receiptViolation"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
     {
-        crate::session::paid_compute_budget::disable_auto(conn, session_id)?;
+        ids.push(approval_id.to_string());
     }
-    crate::session::paid_compute_budget::append_settlement_receipt(
-        conn,
-        session_id,
-        approval_id,
-        outcome,
-        &snapshot,
-    )?;
+    let Some(session_id) = run
+        .session_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(ids);
+    };
+    if let Some(digest) = run
+        .summary
+        .get("preparationDigest")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        for extra_id in crate::session::paid_compute_budget::reserved_approval_ids_for_digest(
+            conn,
+            session_id,
+            digest,
+        )?
+        {
+            if !ids.iter().any(|id| id == &extra_id) {
+                ids.push(extra_id);
+            }
+        }
+    }
+    Ok(ids)
+}
+
+fn reconcile_orphaned_paid_compute_reservations(conn: &Connection) -> Result<()> {
+    let reserved = crate::session::paid_compute_budget::list_reserved(conn)?;
+    if reserved.is_empty() {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare("SELECT payload_json FROM optimizer_runs")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut runs = Vec::new();
+    for row in rows {
+        runs.push(serde_json::from_str::<OptimizerRunRecord>(&row?)?);
+    }
+    drop(stmt);
+    for (approval_id, session_id, digest) in reserved {
+        let matched = digest.as_deref().and_then(|digest| {
+            runs.iter().find(|run| {
+                run.summary
+                    .get("preparationDigest")
+                    .and_then(Value::as_str)
+                    == Some(digest)
+            })
+        });
+        match matched {
+            Some(run) if is_terminal_status(&run.status) => {
+                settle_paid_compute_conversation(conn, run)?;
+            }
+            Some(run)
+                if matches!(
+                    run.status.as_str(),
+                    "running" | "queued" | "cancelling" | "paused"
+                ) =>
+            {
+                // Live work still holds the ceiling.
+            }
+            Some(_) | None => {
+                crate::session::paid_compute_budget::release_reservation(conn, &approval_id)?;
+                let _ = session_id;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -9489,6 +9603,270 @@ pub(in crate::optimizers) mod tests {
             .await
             .unwrap_err();
         assert!(missing_approval.to_string().contains("approval"));
+    }
+
+    fn paid_policy(
+        request: u64,
+        conversation: u64,
+    ) -> crate::synth_config::PaidComputeAutoApprovalPolicy {
+        crate::synth_config::PaidComputeAutoApprovalPolicy {
+            enabled: true,
+            max_request_usd_micros: request,
+            max_conversation_usd_micros: conversation,
+            providers: vec!["openrouter".into()],
+        }
+    }
+
+    #[tokio::test]
+    async fn start_prepared_attaches_paid_compute_approval_before_the_worker() {
+        let (svc, _dir, _) = service().await;
+        std::fs::write(
+            svc.manager.home().join("capabilities.json"),
+            serde_json::to_vec(&json!({
+                "algorithms": ["gepa"],
+                "replay": true,
+                "cancellation": true,
+                "digest": "sha256:caps"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "banking77_attach_approval",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = run.clone();
+        stored.status = "waiting_for_viewer".into();
+        stored.summary = json!({
+            "recipeId": "gepa.banking77.workspace.v1",
+            "preparationDigest": "sha256:prepare",
+            "capabilitiesDigest": "sha256:caps",
+            "limits": { "maxCostUsd": 8.0, "maxTotalRollouts": 400 }
+        });
+        svc.persist_run(stored).await.unwrap();
+        svc.record_visual_ready(
+            run.id.clone(),
+            json!({
+                "schemaVersion": "synth.visual-subscription-receipt.v1",
+                "visualId": "visual_attach_approval",
+                "optimizerRunId": run.id,
+                "templateId": "optimizer.gepa.live.v1",
+                "replayedThrough": 0,
+                "subscribedFrom": 1
+            }),
+        )
+        .await
+        .unwrap();
+        let _ = svc
+            .start_prepared(
+                run.id.clone(),
+                Some("sha256:prepare".into()),
+                Some("approval-auto-1".into()),
+            )
+            .await;
+        let stored = svc.get(run.id).await.unwrap();
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["approvalId"],
+            "approval-auto-1"
+        );
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["cap"]["maxCostUsdMicros"],
+            8_000_000
+        );
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["cap"]["maxRollouts"],
+            400
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_run_settles_digest_reservation_without_usage_extra() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_settle_digest",
+                    "sessionRef": "sess-settle",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = svc.get(run.id.clone()).await.unwrap();
+        stored.session_ref = Some("sess-settle".into());
+        stored.status = "completed".into();
+        stored.summary = json!({
+            "recipeId": "gepa.banking77.workspace.v1",
+            "preparationDigest": "sha256:prep"
+        });
+        stored.usage.cost_usd = Some(0.785);
+        stored
+            .usage
+            .extra
+            .insert("costTelemetryComplete".into(), json!(true));
+        svc.persist_run(stored).await.unwrap();
+        svc.database()
+            .run_transaction(|conn| {
+                crate::session::paid_compute_budget::seed_conversation_budget(
+                    conn,
+                    "sess-settle",
+                    &paid_policy(2_450_000, 50_000_000),
+                )?;
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-settle",
+                    "approval-auto-1",
+                    Some("sha256:prep"),
+                    2_450_000,
+                )?
+                .expect("reserve");
+                Ok(())
+            })
+            .await
+            .unwrap();
+        svc.database()
+            .run_transaction(|conn| {
+                let run = load_run(conn, "gepa_settle_digest")?;
+                settle_paid_compute_conversation(conn, &run)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let (status, settled, remaining): (String, i64, u64) = svc
+            .database()
+            .run(|conn| {
+                let status = conn.query_row(
+                    "SELECT status FROM paid_compute_reservations WHERE approval_id=?1",
+                    ["approval-auto-1"],
+                    |row| row.get(0),
+                )?;
+                let settled = conn.query_row(
+                    "SELECT settled_usd_micros FROM paid_compute_reservations WHERE approval_id=?1",
+                    ["approval-auto-1"],
+                    |row| row.get(0),
+                )?;
+                let snap = crate::session::paid_compute_budget::snapshot(conn, "sess-settle")?
+                    .expect("budget");
+                Ok((status, settled, snap.remaining_usd_micros))
+            })
+            .await
+            .unwrap();
+        assert_eq!(status, "settled");
+        assert_eq!(settled, 785_000);
+        assert_eq!(remaining, 50_000_000 - 785_000);
+    }
+
+    #[tokio::test]
+    async fn startup_reconcile_settles_completed_and_releases_waiting_reservations() {
+        let (svc, _dir, _) = service().await;
+        let (completed, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_orphan_completed",
+                    "sessionRef": "sess-orphan",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = svc.get(completed.id.clone()).await.unwrap();
+        stored.session_ref = Some("sess-orphan".into());
+        stored.status = "completed".into();
+        stored.summary = json!({ "preparationDigest": "sha256:done" });
+        stored.usage.cost_usd = Some(0.10);
+        stored
+            .usage
+            .extra
+            .insert("costTelemetryComplete".into(), json!(true));
+        svc.persist_run(stored).await.unwrap();
+
+        let (waiting, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_orphan_waiting",
+                    "sessionRef": "sess-orphan",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = svc.get(waiting.id.clone()).await.unwrap();
+        stored.session_ref = Some("sess-orphan".into());
+        stored.status = "waiting_for_viewer".into();
+        stored.summary = json!({ "preparationDigest": "sha256:wait" });
+        svc.persist_run(stored).await.unwrap();
+
+        svc.database()
+            .run_transaction(|conn| {
+                crate::session::paid_compute_budget::seed_conversation_budget(
+                    conn,
+                    "sess-orphan",
+                    &paid_policy(2_450_000, 50_000_000),
+                )?;
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-orphan",
+                    "approval-done",
+                    Some("sha256:done"),
+                    2_450_000,
+                )?
+                .expect("completed reserve");
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-orphan",
+                    "approval-wait",
+                    Some("sha256:wait"),
+                    2_450_000,
+                )?
+                .expect("waiting reserve");
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        svc.database()
+            .run_transaction(|conn| {
+                reconcile_orphaned_paid_compute_reservations(conn)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let (done_status, wait_count, remaining): (String, i64, u64) = svc
+            .database()
+            .run(|conn| {
+                let done_status = conn.query_row(
+                    "SELECT status FROM paid_compute_reservations WHERE approval_id=?1",
+                    ["approval-done"],
+                    |row| row.get(0),
+                )?;
+                let wait_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM paid_compute_reservations WHERE approval_id=?1",
+                    ["approval-wait"],
+                    |row| row.get(0),
+                )?;
+                let snap = crate::session::paid_compute_budget::snapshot(conn, "sess-orphan")?
+                    .expect("budget");
+                Ok((done_status, wait_count, snap.remaining_usd_micros))
+            })
+            .await
+            .unwrap();
+        assert_eq!(done_status, "settled");
+        assert_eq!(wait_count, 0, "unused waiting reservation is released");
+        assert_eq!(remaining, 50_000_000 - 100_000);
     }
 
     /// A4. Absent capabilities must refuse, not skip.

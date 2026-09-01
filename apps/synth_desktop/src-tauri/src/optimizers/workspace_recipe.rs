@@ -17,8 +17,10 @@ use std::{
 use crate::error::StructuredFailure;
 
 /// Product ceiling. Workspace `[bounds]` may be stricter, never looser.
-pub const PRODUCT_MAX_COST_USD: f64 = 2.45;
-pub const PRODUCT_MAX_TOTAL_ROLLOUTS: i64 = 240;
+/// $10 leaves room for a multi-generation Banking77 GEPA under Workshop B's
+/// $50 auto-approval policy without removing the hard recipe rail.
+pub const PRODUCT_MAX_COST_USD: f64 = 10.00;
+pub const PRODUCT_MAX_TOTAL_ROLLOUTS: i64 = 480;
 
 const RECIPE_FILE: &str = "workshop.recipe.toml";
 const RECIPES_DIR: &str = "workshop.recipes";
