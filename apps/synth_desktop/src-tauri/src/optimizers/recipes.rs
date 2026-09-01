@@ -51,7 +51,10 @@ async fn start_inner(
     let recipe = super::workspace_recipe::find_recipe(&workspace, &request.recipe_id)?;
     match recipe.algorithm {
         super::workspace_recipe::AlgorithmKind::Eval => {
-            return super::container_eval::start(service, request).await;
+            // The container evaluator owns a large debug-build future. Box it
+            // at the algorithm boundary so admission does not duplicate that
+            // state on the Tokio worker stack.
+            return Box::pin(super::container_eval::start(service, request)).await;
         }
         super::workspace_recipe::AlgorithmKind::Gepa => {}
     }

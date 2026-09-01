@@ -142,7 +142,13 @@ fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, 
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("visual-template-index".into())
-            .stack_size(8 * 1024 * 1024)
+            // Debug desktop builds retain substantially larger serde/path
+            // frames than release builds.  Recipe admission resolves several
+            // templates while its async state is live, and 8 MiB has proven
+            // insufficient on macOS (the process aborts instead of returning
+            // an ordinary template error).  Keep that work isolated and give
+            // the bounded registry scan enough headroom.
+            .stack_size(32 * 1024 * 1024)
             .spawn_scoped(scope, || build_template_index_inner(visuals_root))
             .map_err(|error| anyhow::anyhow!("failed to start visual template indexer: {error}"))?
             .join()

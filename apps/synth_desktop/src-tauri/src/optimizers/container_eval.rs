@@ -413,14 +413,18 @@ pub(super) async fn start(
     let spec = EvalSpec::from_workspace(&recipe, &workspace)?;
     let container =
         find_ready_container(service, &spec.family, request.container_id.as_deref()).await?;
-    start_eval(
+    // `start_eval` carries the state for the complete rollout/evidence
+    // pipeline. In debug builds that future is large enough that embedding it
+    // directly in each caller's state can overflow a Tokio worker before the
+    // first request is dispatched. Keep the large state on the heap.
+    Box::pin(start_eval(
         service,
         request.session_ref.clone(),
         spec,
         container,
         None,
         None,
-    )
+    ))
     .await
 }
 
@@ -489,14 +493,14 @@ pub(super) async fn start_inline(
             spec.policy_code = Some(bytes);
         }
     }
-    start_eval(
+    Box::pin(start_eval(
         service,
         session_ref,
         spec,
         container,
         Some(approved),
         run_id,
-    )
+    ))
     .await
 }
 
