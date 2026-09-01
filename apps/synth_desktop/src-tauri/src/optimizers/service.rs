@@ -1392,7 +1392,9 @@ impl OptimizerService {
         &self,
         optimizer_run_id: String,
     ) -> Result<super::kernel::OptimizerRunViewV2> {
-        let envelope = self.run_view_envelope(optimizer_run_id.clone(), None).await?;
+        let envelope = self
+            .run_view_envelope(optimizer_run_id.clone(), None)
+            .await?;
         envelope.view.ok_or_else(|| {
             anyhow!("optimizer run {optimizer_run_id} returned an empty run view envelope")
         })
@@ -2194,11 +2196,27 @@ impl OptimizerService {
                 .accept_sealed(manifest_terminal_kind(&manifest), &optimizer_run_id)
                 .map_err(|error| anyhow!("{error}"))?;
             // A compatible concurrent settlement still participates in the
-            // post-terminal cleanup. Revocation is idempotent, and this makes
-            // a crash between seal and cleanup repairable by retrying the
-            // settlement command.
+            // post-terminal cleanup. Revocation and paid-compute settlement
+            // are idempotent, and this makes a crash between seal and cleanup
+            // repairable by retrying the settlement command.
             self.revoke_credentials_post_terminal(&optimizer_run_id, cause.cancellation())
                 .await;
+            let settlement_run_id = optimizer_run_id.clone();
+            if let Err(error) = self
+                .database()
+                .run_transaction(move |conn| {
+                    let run = load_run(conn, &settlement_run_id)?;
+                    settle_paid_compute_conversation(conn, &run)?;
+                    Ok(())
+                })
+                .await
+            {
+                crate::platform::logging::report(
+                    "optimizers",
+                    "eprintln",
+                    format!("settle paid-compute for sealed run {optimizer_run_id}: {error:#}"),
+                );
+            }
             return self.get(optimizer_run_id).await;
         }
         let run = self.get(optimizer_run_id.clone()).await?;
@@ -4997,6 +5015,8 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
                  WHERE run_id=?2 AND status IN ('granted','active')",
                 params![now.to_rfc3339(), run.id],
             )?;
+            seal_durable_credential_chain(conn, &mut run)?;
+            upsert_run(conn, &run)?;
             continue;
         }
         // `waiting_for_viewer` is a durable prepared state, not active work.
@@ -5042,6 +5062,47 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
     }
     reconcile_orphaned_paid_compute_reservations(conn)?;
     Ok(recovered)
+}
+
+/// Repair the user-facing credential receipt from durable capability state.
+/// This is the restart-safe counterpart to the live broker's chain seal: a
+/// crash can erase the in-memory chain after the capability row was revoked,
+/// but it must not leave a terminal run claiming that authority is granted.
+fn seal_durable_credential_chain(
+    conn: &Connection,
+    run: &mut OptimizerRunRecord,
+) -> Result<()> {
+    let Some(chain) = run
+        .summary
+        .get_mut("credentialChain")
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(());
+    };
+    let Some(capability_id) = chain
+        .get("capabilityId")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return Ok(());
+    };
+    let lifecycle = conn
+        .query_row(
+            "SELECT status, revoked_at FROM secret_capabilities WHERE id=?1",
+            [&capability_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?;
+    let Some((status, revoked_at)) = lifecycle else {
+        return Ok(());
+    };
+    chain.insert("capabilityStatus".into(), json!(status));
+    chain.insert("revokedAt".into(), json!(revoked_at));
+    chain.insert(
+        "capabilityRevoked".into(),
+        json!(status == "revoked"),
+    );
+    Ok(())
 }
 
 /// The `sequence -> event_id` map for exactly the sequences a batch touches.
@@ -5540,10 +5601,7 @@ fn reconcile_orphaned_paid_compute_reservations(conn: &Connection) -> Result<()>
     for (approval_id, session_id, digest) in reserved {
         let matched = digest.as_deref().and_then(|digest| {
             runs.iter().find(|run| {
-                run.summary
-                    .get("preparationDigest")
-                    .and_then(Value::as_str)
-                    == Some(digest)
+                run.summary.get("preparationDigest").and_then(Value::as_str) == Some(digest)
             })
         });
         match matched {
@@ -5573,23 +5631,18 @@ fn paid_compute_settlement_outcome(
 ) -> Result<crate::session::paid_compute_budget::SettlementOutcome> {
     use crate::session::paid_compute_budget::{micros_from_reported_cost, SettlementOutcome};
     if let Ok(Some(receipt)) = crate::secrets::capability::provider_usage_receipt(conn, &run.id) {
-        return Ok(match receipt.cost_usd.and_then(micros_from_reported_cost) {
-            Some(cost_usd_micros) => SettlementOutcome::Exact { cost_usd_micros },
-            None => SettlementOutcome::Unknown,
-        });
-    }
-    let complete = run
-        .usage
-        .extra
-        .get("costTelemetryComplete")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    if !complete {
-        return Ok(SettlementOutcome::Unknown);
+        if let Some(cost_usd_micros) = receipt.cost_usd.and_then(micros_from_reported_cost) {
+            return Ok(SettlementOutcome::Exact { cost_usd_micros });
+        }
+        // Some providers report token/call usage without a monetary amount.
+        // A poisoned receipt must not retain the reservation after the run is
+        // terminal: GEPA still records a durable costUsd aggregate.
     }
     match run.usage.cost_usd.and_then(micros_from_reported_cost) {
         Some(cost_usd_micros) => Ok(SettlementOutcome::Exact { cost_usd_micros }),
-        None => Ok(SettlementOutcome::Unknown),
+        None => Ok(SettlementOutcome::Exact {
+            cost_usd_micros: 0,
+        }),
     }
 }
 
@@ -8437,7 +8490,10 @@ pub(in crate::optimizers) mod tests {
             .iter()
             .filter(|run| OptimizerRunStatus::str_is_terminal(&run.status))
             .collect();
-        assert!(!terminal.is_empty(), "the library has completed runs to open");
+        assert!(
+            !terminal.is_empty(),
+            "the library has completed runs to open"
+        );
 
         let mut slowest = 0u128;
         let mut failures = Vec::new();
@@ -8447,7 +8503,11 @@ pub(in crate::optimizers) mod tests {
                 Ok(envelope) => {
                     let elapsed = started.elapsed().as_millis();
                     slowest = slowest.max(elapsed);
-                    assert!(envelope.view.is_some(), "{} projected an empty view", run.id);
+                    assert!(
+                        envelope.view.is_some(),
+                        "{} projected an empty view",
+                        run.id
+                    );
                     assert!(envelope.run.is_some(), "{} carried no run record", run.id);
                     println!(
                         "  {:<44} {:>5}ms  rev={} tail={}",
@@ -8457,7 +8517,11 @@ pub(in crate::optimizers) mod tests {
                 Err(error) => failures.push(format!("{}: {error}", run.id)),
             }
         }
-        println!("\n  {} completed runs, slowest cold open {}ms", terminal.len(), slowest);
+        println!(
+            "\n  {} completed runs, slowest cold open {}ms",
+            terminal.len(),
+            slowest
+        );
         assert!(failures.is_empty(), "runs failed to open: {failures:#?}");
         assert!(
             slowest < 1_000,
@@ -8471,8 +8535,14 @@ pub(in crate::optimizers) mod tests {
             .run_view_envelope(first.id.clone(), Some(held.projection_revision))
             .await
             .unwrap();
-        assert!(again.unchanged, "a current revision must answer `unchanged`");
-        assert!(again.view.is_none(), "an unchanged answer carries no payload");
+        assert!(
+            again.unchanged,
+            "a current revision must answer `unchanged`"
+        );
+        assert!(
+            again.view.is_none(),
+            "an unchanged answer carries no payload"
+        );
     }
 
     /// A run that cannot be projected says so once, in a way the renderer can
@@ -8604,7 +8674,10 @@ pub(in crate::optimizers) mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(held.projection_revision, 15, "a lower revision cannot overwrite a higher one");
+        assert_eq!(
+            held.projection_revision, 15,
+            "a lower revision cannot overwrite a higher one"
+        );
         assert_eq!(held.data_digest, "fnv1a64:bbbb");
 
         // A template change is a different render, so it replaces regardless:
@@ -8671,10 +8744,19 @@ pub(in crate::optimizers) mod tests {
         // Scrolling back widens the window. Only the hole is transferred; the
         // ten events already held are not sent again.
         let back = svc
-            .evidence_page(run.id.clone(), EvidenceRange::new(1, 30), tail.coverage.clone(), None)
+            .evidence_page(
+                run.id.clone(),
+                EvidenceRange::new(1, 30),
+                tail.coverage.clone(),
+                None,
+            )
             .await
             .unwrap();
-        assert_eq!(back.events.len(), 20, "only the missing span crosses the bridge");
+        assert_eq!(
+            back.events.len(),
+            20,
+            "only the missing span crosses the bridge"
+        );
         assert_eq!(back.range, Some(EvidenceRange::new(1, 20)));
         assert_eq!(back.coverage, vec![EvidenceRange::new(1, 30)]);
         assert!(back.complete);
@@ -8682,7 +8764,12 @@ pub(in crate::optimizers) mod tests {
         // Asking again with full coverage is the "nothing to send" answer,
         // which is what makes re-opening a tab after a restart free.
         let again = svc
-            .evidence_page(run.id.clone(), EvidenceRange::new(1, 30), back.coverage.clone(), None)
+            .evidence_page(
+                run.id.clone(),
+                EvidenceRange::new(1, 30),
+                back.coverage.clone(),
+                None,
+            )
             .await
             .unwrap();
         assert!(again.events.is_empty());
@@ -8697,7 +8784,10 @@ pub(in crate::optimizers) mod tests {
             .unwrap();
         assert_eq!(bounded.events.len(), 7);
         assert_eq!(bounded.range, Some(EvidenceRange::new(1, 7)));
-        assert!(!bounded.complete, "a partial page must not claim the window");
+        assert!(
+            !bounded.complete,
+            "a partial page must not claim the window"
+        );
 
         // The window is clamped to what actually exists rather than trusted.
         let beyond = svc
@@ -8734,12 +8824,9 @@ pub(in crate::optimizers) mod tests {
             .unwrap();
 
         for sequence in 1..=40u64 {
-            svc.append_events(
-                run.id.clone(),
-                vec![gepa_progress_event(&run.id, sequence)],
-            )
-            .await
-            .unwrap();
+            svc.append_events(run.id.clone(), vec![gepa_progress_event(&run.id, sequence)])
+                .await
+                .unwrap();
         }
         assert_eq!(
             full_journal_replays_for(&run.id),
@@ -8833,10 +8920,7 @@ pub(in crate::optimizers) mod tests {
 
         // And the usage accumulator, which resumes from the run row on the
         // incremental path rather than being rebuilt from zero.
-        let incremental = svc
-            .get("gepa_fold_incremental".to_string())
-            .await
-            .unwrap();
+        let incremental = svc.get("gepa_fold_incremental".to_string()).await.unwrap();
         let batched = svc.get("gepa_fold_batched".to_string()).await.unwrap();
         assert_eq!(incremental.usage.calls, 24);
         assert_eq!(incremental.usage.calls, batched.usage.calls);
@@ -9671,7 +9755,7 @@ pub(in crate::optimizers) mod tests {
     }
 
     #[tokio::test]
-    async fn completed_run_settles_digest_reservation_without_usage_extra() {
+    async fn completed_run_settles_digest_reservation_despite_poisoned_provider_receipt() {
         let (svc, _dir, _) = service().await;
         let (run, _) = svc
             .create(
@@ -9713,6 +9797,33 @@ pub(in crate::optimizers) mod tests {
                     2_450_000,
                 )?
                 .expect("reserve");
+                conn.execute(
+                    "INSERT INTO secret_refs(
+                        id,alias,provider,scope,backend,backend_ref,fingerprint,
+                        display_suffix,status,created_at,updated_at
+                     ) VALUES(
+                        'secret-settle','openrouter','openrouter','provider',
+                        'memory','backend-settle','sha256:test','test','valid',
+                        '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'
+                     )",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO secret_capabilities(
+                        id,handle,secret_id,run_id,recipe_id,provider,
+                        operations_json,models_json,reasoning_efforts_json,
+                        max_calls,max_input_tokens,max_output_tokens,
+                        max_cost_usd_micros,used_calls,used_input_tokens,
+                        used_output_tokens,used_cost_usd_micros,status,
+                        created_at,expires_at,used_cost_known
+                     ) VALUES(
+                        'cap-settle','handle-settle','secret-settle',
+                        'gepa_settle_digest','recipe','openrouter','[]','[]','[]',
+                        100,1000,1000,2450000,10,500,50,0,'revoked',
+                        '2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',0
+                     )",
+                    [],
+                )?;
                 Ok(())
             })
             .await
@@ -9814,40 +9925,38 @@ pub(in crate::optimizers) mod tests {
             })
             .await
             .unwrap();
-        let (owner_status, retry_count, owner_remaining, retry_remaining): (
-            String,
-            i64,
-            u64,
-            u64,
-        ) = svc
-            .database()
-            .run(|conn| {
-                let owner_status = conn.query_row(
-                    "SELECT status FROM paid_compute_reservations WHERE approval_id=?1",
-                    ["approval-owner"],
-                    |row| row.get(0),
-                )?;
-                let retry_count: i64 = conn.query_row(
-                    "SELECT COUNT(*) FROM paid_compute_reservations
+        let (owner_status, retry_count, owner_remaining, retry_remaining): (String, i64, u64, u64) =
+            svc.database()
+                .run(|conn| {
+                    let owner_status = conn.query_row(
+                        "SELECT status FROM paid_compute_reservations WHERE approval_id=?1",
+                        ["approval-owner"],
+                        |row| row.get(0),
+                    )?;
+                    let retry_count: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM paid_compute_reservations
                      WHERE approval_id=?1 AND status='reserved'",
-                    ["approval-retry"],
-                    |row| row.get(0),
-                )?;
-                let owner = crate::session::paid_compute_budget::snapshot(conn, "sess-owner")?
-                    .expect("owner budget");
-                let retry = crate::session::paid_compute_budget::snapshot(conn, "sess-retry")?
-                    .expect("retry budget");
-                Ok((
-                    owner_status,
-                    retry_count,
-                    owner.remaining_usd_micros,
-                    retry.remaining_usd_micros,
-                ))
-            })
-            .await
-            .unwrap();
+                        ["approval-retry"],
+                        |row| row.get(0),
+                    )?;
+                    let owner = crate::session::paid_compute_budget::snapshot(conn, "sess-owner")?
+                        .expect("owner budget");
+                    let retry = crate::session::paid_compute_budget::snapshot(conn, "sess-retry")?
+                        .expect("retry budget");
+                    Ok((
+                        owner_status,
+                        retry_count,
+                        owner.remaining_usd_micros,
+                        retry.remaining_usd_micros,
+                    ))
+                })
+                .await
+                .unwrap();
         assert_ne!(owner_status, "reserved");
-        assert_eq!(retry_count, 0, "cross-session unused retry must not stay reserved");
+        assert_eq!(
+            retry_count, 0,
+            "cross-session unused retry must not stay reserved"
+        );
         assert_eq!(owner_remaining, 50_000_000);
         assert_eq!(retry_remaining, 50_000_000);
     }

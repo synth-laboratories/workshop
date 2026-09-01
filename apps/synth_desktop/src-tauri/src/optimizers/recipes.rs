@@ -1252,13 +1252,13 @@ async fn append_terminal_event(
     detail: String,
 ) -> Result<()> {
     let run = service.get(run_id.to_string()).await?;
-    if service
-        .terminal_manifest(run_id.to_string())
-        .await?
-        .is_some()
-    {
-        return Ok(());
-    }
+    // Final ingestion can seal the producer's terminal event before the
+    // recipe supervisor gets here. Still route that compatible terminal
+    // through `settle_run`: its idempotent sealed-manifest branch performs
+    // the Workshop-owned post-terminal cleanup (capability revocation,
+    // durable credential-chain sealing, and paid-compute settlement). An
+    // early return here left completed GEPA runs with a revoked capability in
+    // the capability table but a stale `granted` summary and reservation.
     let error = if failed {
         let run_directory = run
             .summary
