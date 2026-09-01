@@ -66,7 +66,9 @@ pub struct GepaProjection {
     pub rollout_budget: Option<u64>,
     /// Durable, bounded summaries used by the live visual. These are not raw
     /// traces; the journal remains the authority for full inspection.
+    #[serde(default)]
     pub evaluations: Vec<GepaEvaluationSummary>,
+    #[serde(default)]
     pub proposer_calls: Vec<GepaProposerCallSummary>,
     #[serde(skip)]
     #[specta(skip)]
@@ -700,5 +702,22 @@ mod tests {
         assert_eq!(projection.candidates["child"].gate_accepted, Some(false));
         assert_eq!(projection.candidates["seed"].train_reward, Some(0.8025));
         assert_eq!(projection.candidates["seed"].heldout_reward, Some(0.7985));
+    }
+
+    #[test]
+    fn pre_summary_projection_deserializes_with_empty_durable_summaries() {
+        let projection: GepaProjection = serde_json::from_value(json!({
+            "workItems": [],
+            "usage": {},
+            "candidates": {},
+            "candidateOrder": [],
+            "frontierHistory": [],
+            "rolloutsAllocated": 0,
+            "rolloutsScored": 0,
+            "rolloutsFailed": 0
+        }))
+        .unwrap();
+        assert!(projection.evaluations.is_empty());
+        assert!(projection.proposer_calls.is_empty());
     }
 }
