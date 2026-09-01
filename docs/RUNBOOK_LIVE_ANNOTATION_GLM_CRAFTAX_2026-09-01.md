@@ -85,7 +85,7 @@ The protocol is one stdlib-only file: `~/GitHub/evals/domains/craftax/annotation
 
 - Edit it and re-run the script: the façade installs a new `anprev_…` revision (content-addressed) and the next rollouts use it. Nothing is rebuilt.
 - To hot-swap rollouts already running: install the new revision, then send `{"op":"protocol.update","protocol_revision_id":"anprev_…"}` to `POST {façade}/rollouts/{id}/annotations/control`. `craftax.live.v1` implements `snapshot`/`restore`, so streaks, milestones and ids carry over; the stream records `annotation.protocol.rebound` with `state_carried: true`.
-- Judge model and limits live in the install body (`configuration.model`: `model`, `base_url`, `api_key_env`, `effort`, `max_calls`, `max_output_tokens`, `drain_timeout_seconds`). No key is ever in the body.
+- Judge model and limits live in the install body (`configuration.model`: `model`, `base_url`, `credential_mode`, `effort`, `max_calls`, `max_output_tokens`, `drain_timeout_seconds`). Standalone runs use `credential_mode=environment` and an `api_key_env`; Workshop replaces recipe routing with `credential_mode=workshop_proxy` and its scoped, container-reachable capability URL. No provider key is ever in the body.
 
 Reproduce the mid-rollout control proof without a model: `scripts/live_annotation_craftax_control_e2e.py <out_dir>`.
 
@@ -97,7 +97,7 @@ Reproduce the mid-rollout control proof without a model: `scripts/live_annotatio
 
 ## 6. The Workshop pane (built, not yet driven)
 
-Workshop has the same lane end to end: `[live_annotation]` in a recipe (`recipes/annotation_eval/eval.craftax.gold.live_annotated.v1.toml`), a per-run protocol pin, relay of the annotation stream into the run journal, an auto-minted `live.annotated_rollouts.v1` pane bound to both streams per rollout, `annotation_manage` operations for control and protocol updates, and post-seal reconciliation. It is unit-proven against mock containers only. To drive it you need a running desktop built from `~/GitHub/workshop-live-annotation` and a Craftax image rebuilt from a tree that carries `synth_containers.live_annotation` (the image lives on containers `main`, the lane on the annotation branch), with `OPENROUTER_API_KEY` in the container environment for the judge. The viewer above is the fallback surface until then; it shows the same data from the same streams.
+Workshop has the same lane end to end: `[live_annotation]` in a recipe (`recipes/annotation_eval/eval.craftax.gold.live_annotated.v1.toml`), a per-run protocol pin, relay of the annotation stream into the run journal, an auto-minted `live.annotated_rollouts.v1` pane bound to both streams per rollout, `annotation_manage` operations for control and protocol updates, and post-seal reconciliation. The judge request is executed by the container platform through Workshop's run-scoped provider proxy. The provider key remains in Workshop; the container receives only the capability URL and public `workshop-proxy` sentinel. To drive it you need a running desktop built from `~/GitHub/workshop-live-annotation` and a Craftax image rebuilt from a tree that carries `synth_containers.live_annotation` (the image lives on containers `main`, the lane on the annotation branch). The viewer above remains the standalone fallback surface; it shows the same data from the same streams.
 
 ## 7. Known gaps
 

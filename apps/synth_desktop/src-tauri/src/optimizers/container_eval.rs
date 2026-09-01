@@ -1726,10 +1726,19 @@ async fn run_eval_worker(
     let annotation_pin = match spec.live_annotation.as_ref() {
         Some(source) => {
             super::live_annotation::require_advertised(&info)?;
+            // Model requests are executed by the container platform, not by
+            // Workshop and not by the isolated protocol child. Bind that
+            // caller to the same run-scoped proxy capability as the policy.
+            let source = if source.model_name().is_some() {
+                let proxy_base = container_openai_proxy_base(&run_id, spec)?;
+                source.with_workshop_proxy(&proxy_base)?
+            } else {
+                source.clone()
+            };
             let pin = super::live_annotation::register_protocol_pin(
                 &client,
                 &container.base_url,
-                source,
+                &source,
             )
             .await?;
             super::live_annotation::persist_protocol_pin(&service, &run_id, &pin).await?;
@@ -2582,7 +2591,14 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
         return policy.clone();
     }
     let trials = spec.examples().len() as u64;
-    let calls_per_trial = spec.maximum_model_calls_per_rollout.max(1) as u64;
+    let annotation_calls_per_trial = spec
+        .live_annotation
+        .as_ref()
+        .map(|source| source.maximum_model_calls_per_rollout())
+        .unwrap_or(0);
+    let calls_per_trial = (spec.maximum_model_calls_per_rollout as u64)
+        .saturating_add(annotation_calls_per_trial)
+        .max(1);
     let total_calls = trials.saturating_mul(calls_per_trial).max(1);
     let input_tokens = spec
         .policy
@@ -2599,23 +2615,51 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
         .get("thinking_budget")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let output_per_call = answer_tokens.saturating_add(thinking_tokens);
+    let policy_output_per_trial = (spec.maximum_model_calls_per_rollout as u64)
+        .saturating_mul(answer_tokens.saturating_add(thinking_tokens));
+    let annotation_output_per_trial = spec
+        .live_annotation
+        .as_ref()
+        .map(|source| source.maximum_model_output_tokens_per_rollout())
+        .unwrap_or(0);
+    let mut models = Vec::new();
+    if !spec.model.is_empty() {
+        models.push(spec.model.clone());
+    }
+    if let Some(model) = spec.live_annotation.as_ref().and_then(|source| source.model_name()) {
+        if !models.iter().any(|candidate| candidate == model) {
+            models.push(model.to_string());
+        }
+    }
+    let mut reasoning_efforts = spec
+        .policy
+        .get("reasoning_effort")
+        .or_else(|| spec.policy.get("effort"))
+        .and_then(Value::as_str)
+        .map(|value| vec![value.to_string()])
+        .unwrap_or_default();
+    if let Some(effort) = spec
+        .live_annotation
+        .as_ref()
+        .and_then(|source| source.reasoning_effort())
+    {
+        if !reasoning_efforts.iter().any(|candidate| candidate == effort) {
+            reasoning_efforts.push(effort.to_string());
+        }
+    }
     super::admission::provider_use_policy_from_bounds(
         vec!["chat.completions.create".into()],
-        (!spec.model.is_empty())
-            .then(|| spec.model.clone())
-            .into_iter()
-            .collect(),
-        spec.policy
-            .get("reasoning_effort")
-            .and_then(Value::as_str)
-            .map(|value| vec![value.to_string()])
-            .unwrap_or_default(),
+        models,
+        reasoning_efforts,
         total_calls.min(u32::MAX as u64) as u32,
         (spec.cost_ceiling_usd * 1_000_000.0).round().max(0.0) as u64,
         crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
         input_tokens,
-        (output_per_call > 0).then(|| total_calls.saturating_mul(output_per_call)),
+        (policy_output_per_trial > 0 || annotation_output_per_trial > 0).then(|| {
+            trials.saturating_mul(
+                policy_output_per_trial.saturating_add(annotation_output_per_trial),
+            )
+        }),
     )
 }
 

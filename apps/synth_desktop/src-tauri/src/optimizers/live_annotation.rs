@@ -74,7 +74,8 @@ pub(crate) struct LiveAnnotationSpec {
     /// Protocol configuration handed to the child's `Protocol(config)`.
     pub configuration: Map<String, Value>,
     /// Optional judge settings the container uses for `model_request`
-    /// emissions. Never a credential: the container reads its own key.
+    /// emissions. Never a credential. Workshop replaces recipe-owned routing
+    /// with a scoped, container-reachable provider capability at run time.
     pub model: Option<Map<String, Value>>,
 }
 
@@ -260,6 +261,63 @@ impl LiveAnnotationSource {
             source_revision,
             configuration_digest,
         })
+    }
+
+    /// Bind the in-container judge to Workshop's run-scoped provider route.
+    /// The public sentinel is selected by `credential_mode`; neither it nor a
+    /// provider secret is serialized as protocol configuration.
+    pub(crate) fn with_workshop_proxy(&self, base_url: &str) -> Result<Self> {
+        let mut spec = self.spec.clone();
+        if let Some(model) = spec.model.as_mut() {
+            model.insert("base_url".into(), Value::String(base_url.to_string()));
+            model.insert(
+                "credential_mode".into(),
+                Value::String("workshop_proxy".into()),
+            );
+            model.remove("api_key_env");
+        }
+        Self::from_code(spec, self.code.clone())
+    }
+
+    pub(crate) fn model_name(&self) -> Option<&str> {
+        self.spec
+            .model
+            .as_ref()?
+            .get("model")?
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    pub(crate) fn maximum_model_calls_per_rollout(&self) -> u64 {
+        self.spec
+            .model
+            .as_ref()
+            .and_then(|model| model.get("max_calls"))
+            .and_then(Value::as_u64)
+            .unwrap_or(20)
+    }
+
+    pub(crate) fn maximum_model_output_tokens_per_rollout(&self) -> u64 {
+        let Some(model) = self.spec.model.as_ref() else {
+            return 0;
+        };
+        let calls = self.maximum_model_calls_per_rollout();
+        let per_call = model
+            .get("max_output_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(800);
+        calls.saturating_mul(per_call)
+    }
+
+    pub(crate) fn reasoning_effort(&self) -> Option<&str> {
+        self.spec
+            .model
+            .as_ref()?
+            .get("effort")?
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
     }
 
     /// Body for `PUT /annotation-protocol`.
@@ -479,6 +537,49 @@ max_calls = 10
         assert_eq!(merged["model"]["model"], json!("gpt-5.6-luna"));
         assert_eq!(merged["model"]["max_calls"], json!(10));
         assert_eq!(spec.summary_json()["model"], json!("gpt-5.6-luna"));
+    }
+
+    #[test]
+    fn workshop_proxy_binding_routes_the_container_caller_without_a_key_name() {
+        let spec = LiveAnnotationSpec::parse(
+            "r",
+            &table(
+                r#"
+[live_annotation]
+protocol_id = "craftax.live.v1"
+protocol_source = "live_protocol.py"
+
+[live_annotation.model]
+model = "z-ai/glm-5.3-flash"
+api_key_env = "OPENROUTER_API_KEY"
+max_calls = 8
+max_output_tokens = 600
+"#,
+            ),
+        )
+        .unwrap()
+        .unwrap();
+        let source = LiveAnnotationSource::from_code(
+            spec,
+            format!("PROTOCOL = {PROTOCOL_CODE_SCHEMA:?}\n"),
+        )
+        .unwrap();
+        let bound = source
+            .with_workshop_proxy(
+                "http://host.docker.internal:18110/cap/wcap_test/v1/providers/openrouter",
+            )
+            .unwrap();
+        let model = &bound.install_body()["configuration"]["model"];
+
+        assert_eq!(model["credential_mode"], json!("workshop_proxy"));
+        assert!(model.get("api_key_env").is_none());
+        assert!(model["base_url"]
+            .as_str()
+            .unwrap()
+            .contains("/cap/wcap_test/"));
+        assert_ne!(bound.configuration_digest, source.configuration_digest);
+        assert_eq!(bound.maximum_model_calls_per_rollout(), 8);
+        assert_eq!(bound.maximum_model_output_tokens_per_rollout(), 4_800);
     }
 
     #[test]
