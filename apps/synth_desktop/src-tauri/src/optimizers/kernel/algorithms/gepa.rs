@@ -33,6 +33,8 @@ pub struct GepaCandidate {
     #[serde(default)]
     pub train_reward: Option<f64>,
     #[serde(default)]
+    pub minibatch_reward: Option<f64>,
+    #[serde(default)]
     pub gate_accepted: Option<bool>,
 }
 
@@ -62,9 +64,46 @@ pub struct GepaProjection {
     pub max_active_workers: Option<u64>,
     #[specta(type = specta_typescript::Number)]
     pub rollout_budget: Option<u64>,
+    /// Durable, bounded summaries used by the live visual. These are not raw
+    /// traces; the journal remains the authority for full inspection.
+    pub evaluations: Vec<GepaEvaluationSummary>,
+    pub proposer_calls: Vec<GepaProposerCallSummary>,
     #[serde(skip)]
     #[specta(skip)]
     seen_evaluations: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GepaEvaluationSummary {
+    pub id: String,
+    #[serde(default)]
+    pub candidate_id: Option<String>,
+    #[serde(default)]
+    pub stage: Option<String>,
+    #[serde(default)]
+    pub example_id: Option<String>,
+    #[serde(default)]
+    pub rollout_id: Option<String>,
+    #[serde(default)]
+    pub reward: Option<f64>,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GepaProposerCallSummary {
+    #[specta(type = specta_typescript::Number)]
+    pub generation: u64,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[specta(type = specta_typescript::Number)]
+    pub proposal_count: u64,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
 }
 
 impl GepaProjection {
@@ -157,6 +196,32 @@ impl GepaProjection {
                     Some(_) => self.rollouts_scored += 1,
                     None => self.rollouts_failed += 1,
                 }
+                let evaluation_id = payload
+                    .get("evaluation_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("evaluation:{}", event.aggregate_sequence));
+                self.evaluations.push(GepaEvaluationSummary {
+                    id: evaluation_id,
+                    candidate_id: payload
+                        .get("candidate_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    stage: payload
+                        .get("stage")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    example_id: payload
+                        .get("example_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    rollout_id: payload
+                        .get("rollout_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    reward: payload.get("reward").and_then(|v| v.as_f64()),
+                    cost_usd: payload.get("cost_usd").and_then(|v| v.as_f64()),
+                });
                 if let Some(active) = payload.get("active_workers").and_then(|v| v.as_u64()) {
                     self.max_active_workers =
                         Some(self.max_active_workers.unwrap_or(0).max(active));
@@ -193,10 +258,28 @@ impl GepaProjection {
                 }
             }
             "proposer.completed" => {
-                self.proposals_returned = payload
+                let returned = payload
                     .get("count")
                     .or_else(|| payload.get("proposal_count"))
-                    .and_then(|v| v.as_u64());
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                self.proposals_returned = Some(self.proposals_returned.unwrap_or(0) + returned);
+                self.proposer_calls.push(GepaProposerCallSummary {
+                    generation: payload
+                        .get("generation")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0),
+                    model: payload
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    provider: payload
+                        .get("provider")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    proposal_count: returned,
+                    cost_usd: payload.get("cost_usd").and_then(|v| v.as_f64()),
+                });
                 let work_id = format!("proposer:{}", event.aggregate_sequence);
                 let mut item = WorkItem::planned(work_id, WorkItemKind::ProposerJob)?;
                 item.transition(WorkItemLifecycle::Queued)?;
@@ -229,6 +312,30 @@ impl GepaProjection {
                     }
                 }
             }
+            "candidate.minibatch_evaluated" | "candidate.rejected" => {
+                if let Some(id) = observed_candidate_id(payload).map(str::to_string) {
+                    let candidate = self.candidates.entry(id.clone()).or_insert_with(|| {
+                        self.candidate_order.push(id.clone());
+                        GepaCandidate {
+                            id,
+                            ..GepaCandidate::default()
+                        }
+                    });
+                    if candidate.parent_id.is_none() {
+                        candidate.parent_id = observed_parent_id(payload).map(str::to_string);
+                    }
+                    candidate.minibatch_reward = payload
+                        .get("minibatch_reward")
+                        .or_else(|| payload.get("candidate_minibatch_reward"))
+                        .and_then(|value| value.as_f64())
+                        .or(candidate.minibatch_reward);
+                    candidate.gate_accepted = payload
+                        .get("accepted_minibatch")
+                        .or_else(|| payload.get("accepted"))
+                        .and_then(|value| value.as_bool())
+                        .or(candidate.gate_accepted);
+                }
+            }
             "candidate.accepted" => {
                 if let Some(id) = observed_candidate_id(payload).map(str::to_string) {
                     let candidate = self.candidates.entry(id.clone()).or_insert_with(|| {
@@ -255,12 +362,21 @@ impl GepaProjection {
             "heldout.completed" => {
                 self.phase = Some(RunPhase::HeldoutEvaluation);
                 if let Some(id) = payload.get("candidate_id").and_then(|v| v.as_str()) {
-                    if let Some(candidate) = self.candidates.get_mut(id) {
-                        candidate.heldout_reward = payload
-                            .get("heldout_reward")
-                            .or_else(|| payload.get("reward"))
-                            .and_then(|v| v.as_f64());
-                    }
+                    let candidate = self.candidates.entry(id.to_string()).or_insert_with(|| {
+                        self.candidate_order.push(id.to_string());
+                        GepaCandidate {
+                            id: id.to_string(),
+                            ..GepaCandidate::default()
+                        }
+                    });
+                    candidate.heldout_reward = payload
+                        .get("heldout_reward")
+                        .or_else(|| payload.get("reward"))
+                        .and_then(|v| v.as_f64());
+                    candidate.train_reward = payload
+                        .get("train_reward")
+                        .and_then(|v| v.as_f64())
+                        .or(candidate.train_reward);
                 }
             }
             "gepa.run.finished" => {
@@ -535,5 +651,54 @@ mod tests {
         assert_eq!(summary.succeeded, Some(2));
         assert!(!summary.fixed_denominator);
         assert_eq!(summary.unit.as_deref(), Some("rollouts"));
+    }
+
+    #[test]
+    fn current_gepa_events_preserve_minibatch_proposer_and_heldout_evidence() {
+        let mut projection = GepaProjection::default();
+        let events = [
+            (
+                "candidate.registered",
+                json!({"candidate_id":"seed","source":"seed"}),
+            ),
+            (
+                "candidate.evaluated",
+                json!({"candidate_id":"seed","train_reward":0.8025}),
+            ),
+            (
+                "candidate.registered",
+                json!({"candidate_id":"child","source":"reflector:parent_variation","parent_id":"seed","generation":0}),
+            ),
+            (
+                "proposer.completed",
+                json!({"generation":0,"proposal_count":1,"model":"openai/gpt-5.6-luna","provider":"openrouter","cost_usd":0.01}),
+            ),
+            (
+                "candidate.minibatch_evaluated",
+                json!({"candidate_id":"child","parent_id":"seed","minibatch_reward":0.7845,"accepted_minibatch":false}),
+            ),
+            (
+                "candidate.rejected",
+                json!({"candidate_id":"child","parent_id":"seed","candidate_minibatch_reward":0.7845,"accepted_minibatch":false}),
+            ),
+            (
+                "heldout.completed",
+                json!({"candidate_id":"seed","heldout_reward":0.7985,"train_reward":0.8025}),
+            ),
+        ];
+        for (index, (kind, payload)) in events.into_iter().enumerate() {
+            projection
+                .apply(&committed(kind, payload, index as u64 + 1))
+                .unwrap();
+        }
+        assert_eq!(projection.proposals_returned, Some(1));
+        assert_eq!(projection.proposer_calls.len(), 1);
+        assert_eq!(
+            projection.candidates["child"].minibatch_reward,
+            Some(0.7845)
+        );
+        assert_eq!(projection.candidates["child"].gate_accepted, Some(false));
+        assert_eq!(projection.candidates["seed"].train_reward, Some(0.8025));
+        assert_eq!(projection.candidates["seed"].heldout_reward, Some(0.7985));
     }
 }
