@@ -2185,7 +2185,11 @@ async fn append_provider_usage_receipt(
         );
     }
     if let (Some(receipt_cost), Some(committed_cost)) = (receipt.cost_usd, current.cost_usd) {
-        if receipt_cost + f64::EPSILON < committed_cost {
+        // Per-request costs and the aggregate proxy receipt can differ by a
+        // final decimal-rounding micro-dollar. The proxy remains authoritative;
+        // reject only a material deficit.
+        const COST_TOLERANCE_USD: f64 = 0.000_001;
+        if receipt_cost + COST_TOLERANCE_USD < committed_cost {
             bail!(
                 "provider_usage_reconciliation_conflict: receipt cost ${receipt_cost:.6} is below committed cost ${committed_cost:.6}"
             );
@@ -5774,6 +5778,38 @@ mod tests {
             manifest["usage"]["providerReceipt"]["receiptDigest"],
             json!(format!("sha256:{}", "a".repeat(64)))
         );
+    }
+
+    #[tokio::test]
+    async fn provider_receipt_accepts_sub_microdollar_rounding_difference() {
+        let (svc, _dir, _) = service().await;
+        let run = empty_eval_run(&svc, "opt_eval_provider_usage_rounding").await;
+        append_status(&svc, &run.id, "optimizer.run.started", "running")
+            .await
+            .unwrap();
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![OptimizerEventDraft::new("optimizer.usage", EVAL_ALGORITHM_ID).usage_delta(
+                Map::from_iter([
+                    ("calls".into(), json!(1)),
+                    ("prompt_tokens".into(), json!(10)),
+                    ("completion_tokens".into(), json!(2)),
+                    ("cost_usd".into(), json!(0.001_047_8)),
+                ]),
+            )],
+        )
+        .await
+        .unwrap();
+
+        append_provider_usage_receipt(
+            &svc,
+            &run.id,
+            provider_usage_receipt(&run.id, 1, 10, 2, Some(0.001_047_4), 'c'),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(svc.get(run.id).await.unwrap().usage.cost_usd, Some(0.001_047_4));
     }
 
     #[test]
