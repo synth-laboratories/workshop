@@ -262,6 +262,8 @@ Do not reuse `sealed`, `applied`, or final rubric terminology for provisional on
 
 ## Recommended next architectural decision
 
+> **2026-09-01 follow-up:** the observe-only provisional lane below is now implemented across Containers, Evals, and Workshop. See `docs/HANDOFF_LIVE_ANNOTATION_PROTOCOLS_2026-09-01.md`.
+
 Keep the current post-hoc path as the authoritative evaluation layer.
 
 If live behavior visibility is wanted, add an **observe-only provisional annotation lane** first:

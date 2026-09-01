@@ -1,0 +1,43 @@
+# Craftax gold with both annotation lanes: provisional findings streamed beside
+# each rollout while it runs (lane C, observe-only), then the sealed post-hoc
+# annotators over the immutable Trace V5 (lane B, evidence authority).
+#
+# `protocol_source` is workspace-relative. In an evals checkout it is the
+# domain pack's own protocol file; the run refuses to start if it is missing.
+id = "eval.craftax.gold.live_annotated.v1"
+title = "Craftax gold · live + post-hoc annotated"
+algorithm = "eval"
+container = "craftax-gamebench-rust"
+provider = "none"
+model = "scripted_react"
+locality = "container"
+train_seeds = [0, 1, 2, 3]
+concurrency = 4
+environment_ref = "env:craftax_gold"
+
+[bounds]
+max_cost_usd = 2.00
+max_total_rollouts = 4
+
+[live_annotation]
+protocol_id = "craftax.live.v1"
+protocol_source = "domains/craftax/annotations/live_protocol.py"
+
+[live_annotation.configuration]
+judge_every_calls = 3
+blocked_streak_threshold = 3
+passivity_threshold = 4
+dither_window = 8
+low_health_threshold = 3
+
+[annotation]
+annotators = [
+  "craftax.belief_facts",
+  "craftax.plan_action_fidelity",
+  "craftax.recovery_facts",
+  "craftax.milestone_progress",
+]
+label = "post_rollout"
+
+[annotation.throughput]
+deterministic = 4

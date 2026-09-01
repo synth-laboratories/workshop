@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "live.annotated_rollouts.v1",
+  "title": "Live annotated rollouts",
+  "genre": "live",
+  "family": "craftax",
+  "version": "1.0.0",
+  "description": "Many concurrent rollouts folded with the live annotation stream a bound protocol publishes beside each one: provisional achievements, milestones, failure modes and judge metrics as a summary layer, with the underlying step, reward, vitals and policy events still one click away.",
+  "accent": "#FF5C00",
+  "shell": "shell.tsx",
+  "tags": [
+    "live",
+    "sse",
+    "container",
+    "eval",
+    "rollout",
+    "annotation",
+    "craftax"
+  ],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": [
+        "idle",
+        "declared",
+        "error"
+      ],
+      "minimumRolloutCount": 1,
+      "minimumSemanticEventCount": 1,
+      "requireTerminal": false
+    }
+  },
+  "inputs": [
+    {
+      "name": "stream",
+      "description": "Declared rollout streams and their annotation sibling streams (synth.trace-stream-event.v1). Bind both per rollout; rows fold by rollout_id and de-duplicate by stream_id.",
+      "accepts": [
+        "live_sse",
+        "fixture",
+        "inline"
+      ],
+      "required": true,
+      "multiple": true,
+      "schema": "synth.trace-stream-event.v1"
+    }
+  ]
+}

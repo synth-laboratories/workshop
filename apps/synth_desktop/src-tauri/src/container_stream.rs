@@ -178,6 +178,17 @@ pub fn declared_reward_poll_url(stream: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Poll URL for the live annotation stream a bound protocol publishes beside the
+/// rollout (`annotation.*` kinds). Absent when no protocol is bound to the
+/// rollout; never guess `/annotations/events`.
+pub fn declared_annotation_poll_url(stream: &Value) -> Option<String> {
+    stream
+        .pointer("/annotation/events")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .map(str::to_string)
+}
+
 pub fn resolve_declared_url(base: &str, declared: &str) -> Result<String> {
     let base_url = reqwest::Url::parse(base).context("invalid container base URL")?;
     Ok(base_url

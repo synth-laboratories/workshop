@@ -15,7 +15,8 @@ use super::{
     OptimizerManager, OptimizerService,
 };
 use crate::container_stream::{
-    authoritative_poll_telemetry, declared_poll_url, declared_reward_poll_url,
+    authoritative_poll_telemetry, declared_annotation_poll_url, declared_poll_url,
+    declared_reward_poll_url,
     declared_stream_descriptor, refuse_auto_transport, resolve_declared_url,
     wait_for_stream_subscribed, StreamDiagnostics, SUBSCRIBE_READY_TIMEOUT,
 };
@@ -103,6 +104,10 @@ struct EvalSpec {
     /// Optional post-rollout annotation stage (lane B). Off unless the
     /// workspace recipe declares `[annotation]`; runs only after the seal.
     annotation: Option<super::annotation_stage::AnnotationStageSpec>,
+    /// Optional live annotation protocol (lane C): observe-only provisional
+    /// findings streamed beside each rollout while it runs. Off unless the
+    /// workspace recipe declares `[live_annotation]`.
+    live_annotation: Option<super::live_annotation::LiveAnnotationSource>,
 }
 
 impl EvalSpec {
@@ -164,6 +169,7 @@ impl EvalSpec {
             requires_credential_advertisement: false,
             relay: RelaySettings::default(),
             annotation: None,
+            live_annotation: None,
         })
     }
 
@@ -217,6 +223,11 @@ impl EvalSpec {
                 .digest()
                 .as_str()
                 .to_string();
+        let live_annotation = recipe
+            .live_annotation
+            .as_ref()
+            .map(|spec| super::live_annotation::LiveAnnotationSource::resolve(spec, workspace))
+            .transpose()?;
         Ok(Self {
             recipe_id: recipe.id.clone(),
             family: recipe.family.clone(),
@@ -257,6 +268,7 @@ impl EvalSpec {
             requires_credential_advertisement: recipe.requires_credential_advertisement,
             relay: recipe.relay,
             annotation: recipe.annotation.clone(),
+            live_annotation,
         })
     }
 
@@ -288,6 +300,7 @@ impl EvalSpec {
             requires_credential_advertisement: false,
             relay: RelaySettings::default(),
             annotation: None,
+            live_annotation: None,
         }
     }
 
@@ -319,6 +332,7 @@ impl EvalSpec {
             requires_credential_advertisement: true,
             relay: RelaySettings::default(),
             annotation: None,
+            live_annotation: None,
         }
     }
 
@@ -1522,6 +1536,23 @@ async fn run_eval_worker(
     let policy_pin =
         register_policy_pin(&client, &container.base_url, spec, &info, &run_id).await?;
     persist_policy_pin(&service, &run_id, &policy_pin).await?;
+    // Lane C: the live annotation protocol is pinned once per run, exactly like
+    // the policy. The gate reads the refreshed declaration, so a container
+    // that cannot host the lane refuses before any rollout is prepared.
+    let annotation_pin = match spec.live_annotation.as_ref() {
+        Some(source) => {
+            super::live_annotation::require_advertised(&info)?;
+            let pin = super::live_annotation::register_protocol_pin(
+                &client,
+                &container.base_url,
+                source,
+            )
+            .await?;
+            super::live_annotation::persist_protocol_pin(&service, &run_id, &pin).await?;
+            Some(pin)
+        }
+        None => None,
+    };
     // Frame bodies get their own client: it refuses redirects, so a container
     // event's `url` cannot steer Workshop's fetch off the container's origin.
     let media_client = eval_relay::frame_media_client()?;
@@ -1604,6 +1635,7 @@ async fn run_eval_worker(
             let media_client = media_client.clone();
             let base = media_origin.clone();
             let pin = policy_pin.clone();
+            let annotation_pin = annotation_pin.clone();
             let spec = spec.clone();
             let service = service.clone();
             let run_id = run_id.clone();
@@ -1619,6 +1651,7 @@ async fn run_eval_worker(
                     container_id: &container_id,
                     spec: &spec,
                     policy_pin: &pin,
+                    annotation_pin: annotation_pin.as_ref(),
                 };
                 let result =
                     run_one_example(&trial, index as u32, example, &mut trial_cancel).await;
@@ -3858,6 +3891,8 @@ struct TrialContext<'a> {
     container_id: &'a str,
     spec: &'a EvalSpec,
     policy_pin: &'a Value,
+    /// Live annotation protocol pin for this run, when the recipe declares one.
+    annotation_pin: Option<&'a Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4122,6 +4157,13 @@ async fn run_one_example(
     if spec.harness == "nanohorizon" && policy_revision_id.is_none() {
         bail!("policy_revision_unbound: refusing NanoHorizon rollout before prepare");
     }
+    let annotation_protocol_revision_id = ctx
+        .annotation_pin
+        .and_then(|pin| pin.get("protocolRevisionId"))
+        .and_then(Value::as_str);
+    if spec.live_annotation.is_some() && annotation_protocol_revision_id.is_none() {
+        bail!("live_annotation_unbound: refusing rollout before the protocol pin");
+    }
     let telemetry = {
         let mut telemetry = authoritative_poll_telemetry();
         if let Some(object) = telemetry.as_object_mut() {
@@ -4144,14 +4186,21 @@ async fn run_one_example(
     let task_instance_id = format!("{}:seed:{}", spec.family, example.seed);
     let trial_id = format!("trial:{}:{}", spec.family, example.seed);
     let work_item_id = format!("eval:trial:{work_index}");
+    let mut prepare_body = json!({
+        "rollout_id": rollout_id,
+        "task_instance_id": task_instance_id,
+        "telemetry": telemetry
+    });
+    if let Some(revision) = annotation_protocol_revision_id {
+        prepare_body
+            .as_object_mut()
+            .expect("rollout prepare body is an object")
+            .insert("annotation_protocol_revision_id".into(), json!(revision));
+    }
     let prepare = ctx
         .client
         .post(format!("{}/rollouts/prepare", ctx.base))
-        .json(&json!({
-            "rollout_id": rollout_id,
-            "task_instance_id": task_instance_id,
-            "telemetry": telemetry
-        }))
+        .json(&prepare_body)
         .send()
         .await
         .context("POST /rollouts/prepare")?;
@@ -4170,6 +4219,14 @@ async fn run_one_example(
     let reward_poll_url = declared_reward_poll_url(&stream)
         .map(|url| resolve_declared_url(ctx.base, &url))
         .transpose()?;
+    let annotation_poll_url = declared_annotation_poll_url(&stream)
+        .map(|url| resolve_declared_url(ctx.base, &url))
+        .transpose()?;
+    if annotation_protocol_revision_id.is_some() && annotation_poll_url.is_none() {
+        bail!(
+            "live_annotation_channel_missing: the container accepted a protocol pin but declared no annotation stream"
+        );
+    }
     wait_for_stream_subscribed(
         ctx.client,
         &poll_url,
@@ -4212,6 +4269,12 @@ async fn run_one_example(
             .expect("rollout start body is an object")
             .insert("policy_revision_id".into(), json!(revision));
     }
+    if let Some(revision) = annotation_protocol_revision_id {
+        start_body
+            .as_object_mut()
+            .expect("rollout start body is an object")
+            .insert("annotation_protocol_revision_id".into(), json!(revision));
+    }
     let relay_ctx = RelayContext {
         service: ctx.service,
         run_id: ctx.run_id,
@@ -4223,6 +4286,7 @@ async fn run_one_example(
         base: ctx.base,
         poll_url: &poll_url,
         reward_poll_url: reward_poll_url.as_deref(),
+        annotation_poll_url: annotation_poll_url.as_deref(),
         client: ctx.client,
         media_client: ctx.media_client,
         settings: spec.relay,

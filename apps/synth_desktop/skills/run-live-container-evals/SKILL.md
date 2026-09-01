@@ -224,3 +224,19 @@ authorities, and a trace that exists in one is not automatically in the other.
 
 Use bounded polling as the recovery authority even when SSE or WebSocket is the
 live delivery path, and label a sustained polling-only mode visibly.
+
+
+## Live annotation protocols (lane C)
+
+A recipe may declare `[live_annotation]` (`protocol_id`, `protocol_source`, optional
+`[live_annotation.configuration]` and `[live_annotation.model]`). At run start Workshop pins
+the protocol on the container (`GET`/`PUT /annotation-protocol`, refuses without a
+`protocol_revision_id`), stamps `annotation_protocol_revision_id` on every prepare/start,
+and relays the declared `stream.annotation.events` channel into the run journal as
+`eval.trial.annotation`. Findings are provisional and observe-only; the sealed
+`[annotation]` stage stays the evidence authority.
+
+To watch it, create `live.annotated_rollouts.v1` and bind, per rollout, both the
+declared rollout stream and its annotation sibling (`stream.annotation.stream` /
+`stream.annotation.events` from the prepare descriptor) on the one `stream` input.
+Never guess `/annotations/events`. Bundled example: `eval.craftax.gold.live_annotated.v1`.

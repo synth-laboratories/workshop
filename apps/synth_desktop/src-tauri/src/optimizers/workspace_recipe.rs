@@ -47,6 +47,10 @@ const BUNDLED_ANNOTATION_EVAL_RECIPES: &[(&str, &str)] = &[
         "eval.healthbench.annotated.v1.toml",
         include_str!("../../recipes/annotation_eval/eval.healthbench.annotated.v1.toml"),
     ),
+    (
+        "eval.craftax.gold.live_annotated.v1.toml",
+        include_str!("../../recipes/annotation_eval/eval.craftax.gold.live_annotated.v1.toml"),
+    ),
 ];
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -110,6 +114,9 @@ pub struct WorkspaceRecipe {
     pub relay: super::eval_relay::RelaySettings,
     /// Optional post-rollout annotation stage; `None` means off (the default).
     pub annotation: Option<super::annotation_stage::AnnotationStageSpec>,
+    /// Optional live annotation protocol streamed beside each rollout while
+    /// it runs (observe-only, provisional); `None` means off.
+    pub live_annotation: Option<super::live_annotation::LiveAnnotationSpec>,
     pub source_path: PathBuf,
     pub source_hash: String,
 }
@@ -457,6 +464,8 @@ struct RecipeFile {
     media: Option<MediaFile>,
     #[serde(default)]
     annotation: Option<toml::value::Table>,
+    #[serde(default)]
+    live_annotation: Option<toml::value::Table>,
 }
 
 #[derive(Deserialize, Default)]
@@ -903,6 +912,7 @@ pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
             AlgorithmKind::Gepa => "optimizer.gepa.v1",
             AlgorithmKind::Eval => "experiment.overview.v1",
         },
+        "liveAnnotation": recipe.live_annotation.as_ref().map(|spec| spec.summary_json()),
         "annotation": recipe.annotation.as_ref().map(|stage| json!({
             "label": stage.label,
             "annotatorCount": stage.annotators.len(),
@@ -1227,6 +1237,12 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         .map(|table| super::annotation_stage::AnnotationStageSpec::parse(&parsed.id, table))
         .transpose()?
         .flatten();
+    let live_annotation = parsed
+        .live_annotation
+        .as_ref()
+        .map(|table| super::live_annotation::LiveAnnotationSpec::parse(&parsed.id, table))
+        .transpose()?
+        .flatten();
     let train_seeds = parsed
         .train_seeds
         .unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -1271,6 +1287,7 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         requires_credential_advertisement: parsed.requires_credential_advertisement,
         relay,
         annotation,
+        live_annotation,
         source_path: path.to_path_buf(),
         source_hash: content_hash(&text),
         id: parsed.id,
@@ -2009,7 +2026,7 @@ paid = 2
         let (_dir, workspace) = write_workspace();
         assert_eq!(
             ensure_bundled_annotation_eval_recipes(&workspace).unwrap(),
-            5
+            6
         );
         assert_eq!(
             ensure_bundled_annotation_eval_recipes(&workspace).unwrap(),
@@ -2017,7 +2034,7 @@ paid = 2
             "existing files are not overwritten"
         );
         let recipes = load_recipes(&workspace).unwrap();
-        assert_eq!(recipes.len(), 5);
+        assert_eq!(recipes.len(), 6);
         let mut ids: Vec<_> = recipes.iter().map(|recipe| recipe.id.as_str()).collect();
         ids.sort();
         assert_eq!(
@@ -2026,10 +2043,21 @@ paid = 2
                 "eval.banking77.annotated.v1",
                 "eval.code_policy.annotated.v1",
                 "eval.craftax.gold.annotated.v1",
+                "eval.craftax.gold.live_annotated.v1",
                 "eval.deepswe.annotated.v1",
                 "eval.healthbench.annotated.v1",
             ]
         );
+        let live = recipes
+            .iter()
+            .find(|recipe| recipe.id == "eval.craftax.gold.live_annotated.v1")
+            .unwrap();
+        let protocol = live.live_annotation.as_ref().expect("live lane declared");
+        assert_eq!(protocol.protocol_id, "craftax.live.v1");
+        assert_eq!(protocol.protocol_source, "domains/craftax/annotations/live_protocol.py");
+        assert_eq!(protocol.configuration.get("judge_every_calls"), Some(&serde_json::json!(3)));
+        assert!(protocol.model.is_none(), "the bundled recipe does not pick a judge model");
+        assert!(live.annotation.is_some(), "live findings never replace the sealed post-hoc lane");
         let craftax = recipes
             .iter()
             .find(|recipe| recipe.id == "eval.craftax.gold.annotated.v1")

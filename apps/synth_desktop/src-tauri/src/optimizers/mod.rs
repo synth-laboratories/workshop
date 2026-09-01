@@ -2,6 +2,7 @@
 
 pub mod admission;
 pub(crate) mod annotation_stage;
+pub(crate) mod live_annotation;
 mod artifacts;
 mod cispo;
 pub(crate) mod cloud;

@@ -43,6 +43,7 @@ const EXPECTED_IDS = [
   "diagram.systems.dynamic.v1",
   "diagram.systems.v1",
   "experiment.overview.v1",
+  "live.annotated_rollouts.v1",
   "live.container_rollouts.v1",
   "live.craftax.v1",
   "live.eval_stream.v1",
@@ -82,6 +83,13 @@ test("visuals package exposes the registered templates", () => {
     }
     if (id === "live.harbor_eval.v1" || id === "live.container_rollouts.v1") {
       assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream"]);
+    }
+    if (id === "live.annotated_rollouts.v1") {
+      // The superset viewer folds each rollout's stream with its annotation
+      // sibling; both are declared per rollout on the one multi-stream input.
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream"]);
+      assert.equal(meta.inputs[0].multiple, true);
+      assert.equal(meta.observationContract.readiness.requireTerminal, false);
     }
     if (id === "live.craftax.v1") {
       assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream", "optimizer_run"]);
