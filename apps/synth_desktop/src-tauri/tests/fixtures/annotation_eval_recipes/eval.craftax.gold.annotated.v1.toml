@@ -17,6 +17,7 @@ annotators = [
   "craftax.plan_action_fidelity",
   "craftax.recovery_facts",
   "craftax.milestone_progress",
+  { id = "craftax.rubric_verifier", rubric_id = "craftax.execution_quality" },
 ]
 label = "post_rollout"
 

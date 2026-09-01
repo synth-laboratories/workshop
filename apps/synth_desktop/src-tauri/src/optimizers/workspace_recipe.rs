@@ -1941,6 +1941,16 @@ paid = 2
             assert!(recipe.bounds.max_cost_usd <= PRODUCT_MAX_COST_USD);
             assert_eq!(recipe.bounds.max_total_rollouts, 1);
         }
+        let craftax = recipes
+            .iter()
+            .find(|recipe| recipe.id == "eval.craftax.gold.annotated.v1")
+            .expect("Craftax recipe is loaded");
+        assert!(craftax.annotation.as_ref().is_some_and(|stage| {
+            stage.annotators.iter().any(|annotator| {
+                annotator.annotator_id == "craftax.rubric_verifier"
+                    && annotator.rubric_id.as_deref() == Some("craftax.execution_quality")
+            })
+        }));
     }
 
     #[test]
