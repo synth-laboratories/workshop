@@ -165,6 +165,13 @@ async fn start_inner(
             "locality": recipe.locality.as_str(),
             "sourceHash": recipe.source_hash,
             "proposerModel": recipe.proposer_model,
+            // Paid admission runs before the worker can mint and persist its
+            // run-scoped credential lease. Preserve the recipe's declared
+            // provider now so admission can authorize the correct route; the
+            // full receipt chain replaces this stub once the lease exists.
+            "credentialChain": {
+                "provider": recipe.provider,
+            },
             "limits": {
                 "maxCostUsd": recipe.bounds.max_cost_usd,
                 "maxTotalRollouts": recipe.bounds.max_total_rollouts,
