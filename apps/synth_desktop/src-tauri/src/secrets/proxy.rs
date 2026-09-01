@@ -19,7 +19,9 @@ pub const API_KEY_SENTINEL: &str = "workshop-proxy";
 use super::audit::{self, SecretAuditEvent};
 use super::backend::SecretBackend;
 use super::capability::{self, CapabilityStore, MeasuredUsage};
-use super::providers::{self, inject_auth, parse_usage, request_effort, request_model, route_for};
+use super::providers::{
+    self, inject_auth, parse_sse_usage, parse_usage, request_effort, request_model, route_for,
+};
 use super::vault;
 use crate::ipc::constant_time_eq;
 use crate::storage::Database;
@@ -696,12 +698,21 @@ async fn handle(
         .contains("json")
         .then(|| serde_json::from_slice::<Value>(&bytes).ok())
         .flatten();
+    let (sse_response_id, sse_usage) = if content_type.contains("text/event-stream") {
+        let (id, usage) = parse_sse_usage(&bytes);
+        (id, Some(usage))
+    } else {
+        (None, None)
+    };
     let provider_response_id = response_body
         .as_ref()
         .and_then(providers::response_id)
-        .map(str::to_owned);
+        .map(str::to_owned)
+        .or(sse_response_id);
     let mut usage = if let Some(body) = response_body.as_ref() {
         parse_usage(body)
+    } else if let Some(usage) = sse_usage {
+        usage
     } else {
         MeasuredUsage {
             calls: 1,
