@@ -1,6 +1,5 @@
 // @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { InferencePanel } from "./InferencePanel";
 import { UsagePanel } from "./UsagePanel";
 import type {
 	ContainerDeployment,
@@ -23,7 +22,7 @@ import {
 	TRACE_INSPECTOR_TEMPLATE
 } from "../runtime/traceInspector";
 
-export type DataTab = "containers" | "traces" | "visuals" | "usage" | "inference";
+export type DataTab = "containers" | "traces" | "visuals" | "usage";
 
 const CONTAINER_GONE_GRACE_MS = 30_000;
 
@@ -353,7 +352,6 @@ export function DataPage({
 						["traces", "Traces", traces.length],
 						["visuals", "Visuals", visuals.length]
 						,["usage", "Usage", usage.length]
-						,["inference", "Inference", null]
 					] as const
 				).map(([id, label, count]) => (
 					<button
@@ -370,14 +368,6 @@ export function DataPage({
 					</button>
 				))}
 			</div>
-
-			{tab === "inference" ? (
-				<div data-testid="inventory-inference">
-					{/* The panel owns its own subscription and only runs while it
-					    is the selected tab. */}
-					<InferencePanel visible />
-				</div>
-			) : null}
 
 			{tab === "containers" ? (
 				<div className="ws-stack" data-testid="inventory-containers">

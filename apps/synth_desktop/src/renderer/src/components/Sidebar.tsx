@@ -35,6 +35,7 @@ type Props = {
 	lagunaStatus?: LagunaStatus | null;
 	activeChatId?: string | null;
 	inventoryActive?: boolean;
+	inferenceActive?: boolean;
 	visualsActive?: boolean;
 	reportsActive?: boolean;
 	experimentsActive?: boolean;
@@ -54,6 +55,7 @@ type Props = {
 	onNewConversation: () => void;
 	onOpenChat: (id: string) => void;
 	onOpenInventory: () => void;
+	onOpenInference: () => void;
 	onOpenVisuals: () => void;
 	onOpenReports: () => void;
 	onOpenExperiments: () => void;
@@ -198,6 +200,15 @@ function IconOptimizers() {
 	);
 }
 
+function IconInference() {
+	return (
+		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="2.2" y="2.2" width="11.6" height="11.6" rx="2.2" stroke="currentColor" strokeWidth="1.2" />
+			<path d="M4.5 8h1.4l1-2.4L8.5 11l1.2-3h1.8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+		</svg>
+	);
+}
+
 /** A pointer over a window: the plugin drives another app's interface. */
 function IconComputerUse(): ReactElement {
 	return (
@@ -215,6 +226,7 @@ const PLUGIN_NAV_ICONS: Record<PluginNavEntry["id"], () => ReactElement> = {
 	experiments: IconOptimizers,
 	optimizers: IconOptimizers,
 	inventory: IconInventory,
+	inference: IconInference,
 	"computer-use": IconComputerUse
 };
 
@@ -223,6 +235,7 @@ export function Sidebar({
 	lagunaStatus = null,
 	activeChatId = null,
 	inventoryActive = false,
+	inferenceActive = false,
 	visualsActive = false,
 	reportsActive = false,
 	experimentsActive = false,
@@ -237,6 +250,7 @@ export function Sidebar({
 	onNewConversation,
 	onOpenChat,
 	onOpenInventory,
+	onOpenInference,
 	onOpenVisuals,
 	onOpenReports,
 	onOpenExperiments,
@@ -359,6 +373,7 @@ export function Sidebar({
 		experiments: experimentsActive,
 		optimizers: optimizersActive,
 		inventory: inventoryActive,
+		inference: inferenceActive,
 		"computer-use": computerUseActive
 	};
 	const pluginRowOpen: Record<PluginNavEntry["id"], () => void> = {
@@ -367,6 +382,7 @@ export function Sidebar({
 		experiments: onOpenExperiments,
 		optimizers: onOpenOptimizers,
 		inventory: onOpenInventory,
+		inference: onOpenInference,
 		"computer-use": onOpenComputerUse
 	};
 

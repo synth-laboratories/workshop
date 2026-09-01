@@ -10,7 +10,7 @@
 export type PluginNavKind = "builtin" | "managed";
 
 export type PluginNavEntry = {
-	id: "visuals" | "reports" | "experiments" | "optimizers" | "inventory" | "computer-use";
+	id: "visuals" | "reports" | "experiments" | "optimizers" | "inventory" | "inference" | "computer-use";
 	/** Sidebar destination name. Short: a place, not a description of contents. */
 	label: string;
 	testId: string;
@@ -24,6 +24,7 @@ export const PLUGIN_NAV: readonly PluginNavEntry[] = [
 	{ id: "experiments", label: "Experiments", testId: "open-experiments", kind: "builtin" },
 	{ id: "optimizers", label: "Optimizers", testId: "open-optimizers", kind: "managed", pluginId: "optimizers" },
 	{ id: "inventory", label: "Data", testId: "open-inventory", kind: "builtin" },
+	{ id: "inference", label: "Local Inference", testId: "open-inference", kind: "builtin" },
 	// Managed like Optimizers, but its lifecycle is human-only: the agent can
 	// read this plugin's status and nothing else. See docs/COMPUTER_USE.md §4.
 	{

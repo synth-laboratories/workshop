@@ -58,6 +58,7 @@ export default function App() {
 						lagunaStatus={c.laguna}
 						activeChatId={c.view.kind === "chat" ? c.view.chatId : null}
 						inventoryActive={c.view.kind === "inventory"}
+						inferenceActive={c.view.kind === "inference"}
 						visualsActive={c.view.kind === "visuals"}
 						reportsActive={c.view.kind === "reports"}
 						experimentsActive={c.view.kind === "experiments"}
@@ -102,6 +103,7 @@ export default function App() {
 						}}
 						pluginStatuses={c.pluginStatuses}
 						onOpenInventory={() => c.setView({ kind: "inventory" })}
+						onOpenInference={() => c.setView({ kind: "inference" })}
 						onOpenVisuals={() => c.setView({ kind: "visuals" })}
 						onOpenReports={() => c.setView({ kind: "reports" })}
 						onOpenExperiments={() => c.setView({ kind: "experiments" })}

@@ -2181,6 +2181,8 @@ export function useAppController() {
 				? "Optimizers"
 			: view.kind === "inventory"
 				? "Data"
+			: view.kind === "inference"
+				? "Local Inference"
 				: view.kind === "async"
 					? "Intern · Background"
 					: view.kind === "sync"

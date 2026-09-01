@@ -24,6 +24,7 @@ import { primaryVisualId, useChatOutputs } from "./hooks/useChatOutputs";
 import { ContainerPane } from "./components/ContainerPane";
 import { ConnectorsPage } from "./components/ConnectorsPage";
 import { InferencePanel } from "./components/InferencePanel";
+import { LocalInferencePage } from "./components/LocalInferencePage";
 import { DataPage } from "./components/DataPage";
 import { LandingPage } from "./components/LandingPage";
 import { ComputerUsePage } from "./components/ComputerUsePage";
@@ -58,6 +59,7 @@ export type MainView =
 	| { kind: "settings"; section?: "general" | "models" | "inference" | "context" | "voice" | "account" | "secrets" | "about" }
 	| { kind: "connectors" }
 	| { kind: "inventory" }
+	| { kind: "inference" }
 	| { kind: "visuals" }
 	| { kind: "reports"; reportId?: string }
 	| { kind: "experiments"; experimentId?: string }
@@ -69,6 +71,7 @@ const INVENTORY_ORIGIN_KINDS = new Set<MainView["kind"]>([
 	"experiments",
 	"optimizers",
 	"inventory",
+	"inference",
 	"settings",
 	"reports"
 ]);
@@ -390,6 +393,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		view.kind === "experiments" ||
 		view.kind === "optimizers" ||
 		view.kind === "inventory" ||
+		view.kind === "inference" ||
 		view.kind === "reports";
 	const paneHost = inventoryHost || chatRoute || settingsWithPane;
 	const inventoryOriginRef = useRef<MainView | null>(null);
@@ -651,6 +655,9 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							openContainerId={openContainer?.id ?? null}
 							onBack={() => leaveInventory(inventoryOriginRef.current)}
 						/>
+					) : null}
+					{view.kind === "inference" ? (
+						<LocalInferencePage onBack={() => leaveInventory(inventoryOriginRef.current)} />
 					) : null}
 					{view.kind === "reports" ? (
 						<ReportsPage initialReportId={view.reportId} onBack={leaveReports} />
