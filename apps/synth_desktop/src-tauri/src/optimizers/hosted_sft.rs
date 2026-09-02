@@ -521,7 +521,7 @@ checkpoint_every_steps = 25
 eval_every_steps = 25
 
 [evaluation]
-max_tokens = 64
+max_tokens = 1024
 confidence = 0.95
 bootstrap_resamples = 4000
 minimum_claim_uplift = 0.01
@@ -1136,6 +1136,7 @@ mod tests {
         assert_eq!(parsed["dataset"]["heldout_size"].as_integer(), Some(400));
         assert_eq!(parsed["training"]["steps"].as_integer(), Some(100));
         assert_eq!(parsed["training"]["batch_size"].as_integer(), Some(64));
+        assert_eq!(parsed["evaluation"]["max_tokens"].as_integer(), Some(1024));
     }
 
     #[test]
