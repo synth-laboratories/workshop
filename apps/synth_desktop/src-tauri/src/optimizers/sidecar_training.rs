@@ -6,6 +6,7 @@
 //! fail-closed until the slime clip
 //! canary admits it.
 
+use super::cispo_client::CispoOptimizerClient;
 use super::events::OptimizerEventDraft;
 use super::mlx_runtime::{MlxLoopback, PolicySnapshotMissing};
 use super::models::{
@@ -14,7 +15,6 @@ use super::models::{
     SavedLoraCheckpoint, TrainingJobStatus,
 };
 use super::sft_client::SftOptimizerClient;
-use super::cispo_client::CispoOptimizerClient;
 use super::training_adapter::{adapt_source_fact, TerminalMapping};
 use super::OptimizerService;
 use crate::error::error_is;
@@ -41,10 +41,8 @@ pub const LOCAL_SFT_LEARNING_RATE: f64 = 0.00001;
 pub const LOCAL_MLX_CISPO_RECIPE: &str = "cispo.mlx.v1";
 pub const HOSTED_CISPO_RECIPE: &str = "cispo.hosted.tinker.v1";
 pub const HOSTED_BANKING77_CISPO_RECIPE: &str = "cispo.banking77.tinker.v1";
-const HOSTED_CISPO_LEGACY_IDS: &[&str] = &[
-    "cispo.slime.hosted.v1",
-    "cispo.banking77.slime.tinker.v1",
-];
+const HOSTED_CISPO_LEGACY_IDS: &[&str] =
+    &["cispo.slime.hosted.v1", "cispo.banking77.slime.tinker.v1"];
 
 pub fn is_hosted_cispo_recipe(recipe_id: &str) -> bool {
     recipe_id == HOSTED_CISPO_RECIPE
@@ -805,7 +803,9 @@ async fn watch_job(
                 .or_else(|| event.get("event_type"))
                 .or_else(|| event.get("kind"))
                 .and_then(Value::as_str)
-                .is_some_and(|kind| kind == "checkpoint.created" || kind.ends_with("checkpoint.created"))
+                .is_some_and(|kind| {
+                    kind == "checkpoint.created" || kind.ends_with("checkpoint.created")
+                })
             {
                 let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
                 let _ = service
@@ -1059,26 +1059,28 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
                 .item(normalized_sidecar_evaluation(kind, algorithm, detail))
         }
         "training.clip" | "cispo.clip.identity" => {
-            OptimizerEventDraft::new("cispo.clip.identity", algorithm)
-                .delta(Map::from_iter([
-                    ("clip".into(), payload.get("clip").cloned().unwrap_or_else(|| payload.clone())),
-                    (
-                        "identity".into(),
-                        payload
-                            .get("identity")
-                            .cloned()
-                            .unwrap_or_else(|| json!("cispo.slime.v1")),
-                    ),
-                ]))
+            OptimizerEventDraft::new("cispo.clip.identity", algorithm).delta(Map::from_iter([
+                (
+                    "clip".into(),
+                    payload
+                        .get("clip")
+                        .cloned()
+                        .unwrap_or_else(|| payload.clone()),
+                ),
+                (
+                    "identity".into(),
+                    payload
+                        .get("identity")
+                        .cloned()
+                        .unwrap_or_else(|| json!("cispo.slime.v1")),
+                ),
+            ]))
         }
         "sft.step.metrics" | "sft.training.metrics" => {
             OptimizerEventDraft::new("sft.training.metrics", algorithm).delta(Map::from_iter([
                 (
                     "step".into(),
-                    payload
-                        .get("step")
-                        .cloned()
-                        .unwrap_or(Value::Null),
+                    payload.get("step").cloned().unwrap_or(Value::Null),
                 ),
                 (
                     "train_loss".into(),
@@ -1111,15 +1113,16 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
                         .cloned()
                         .unwrap_or(Value::Null),
                 ),
+                ("reward_variance".into(), payload["reward_variance"].clone()),
+                // A group count is the number of groups in this update, not
+                // the number of sampled rollouts in a group. Keep the latter
+                // absent unless the producer reports it explicitly; the
+                // CISPO reducer can derive it from rollout-group rewards.
                 (
-                    "reward_variance".into(),
-                    payload["reward_variance"].clone(),
+                    "group_size".into(),
+                    payload.get("group_size").cloned().unwrap_or(Value::Null),
                 ),
-                ("group_size".into(), payload.get("group_count").or_else(|| payload.get("group_size")).cloned().unwrap_or(Value::Null)),
-                (
-                    "mean_reward".into(),
-                    payload["reward_mean"].clone(),
-                ),
+                ("mean_reward".into(), payload["reward_mean"].clone()),
                 (
                     "optimizer_step".into(),
                     payload
@@ -2549,6 +2552,23 @@ mod tests {
     }
 
     #[test]
+    fn cispo_group_count_is_not_relabelled_as_group_size() {
+        let draft = mapped_event_draft(
+            "cispo.update.completed",
+            "cispo",
+            &json!({"update": 1, "group_count": 1, "reward_variance": 0.0}),
+        );
+        assert!(draft.delta["group_size"].is_null());
+
+        let draft = mapped_event_draft(
+            "cispo.update.completed",
+            "cispo",
+            &json!({"update": 1, "group_count": 1, "group_size": 2}),
+        );
+        assert_eq!(draft.delta["group_size"], 2);
+    }
+
+    #[test]
     fn maps_all_training_evaluations_to_shared_comparison_evidence() {
         for (kind, phase) in [
             ("baseline_eval.completed", "baseline"),
@@ -2729,10 +2749,8 @@ mod tests {
         let draft = mapped_training_draft("cispo", &event);
         assert_eq!(draft.event_type, "training.metrics");
         assert_eq!(draft.delta["sourceSequence"], 4);
-        let fallback = mapped_training_draft(
-            "sft",
-            &json!({ "type": "job.started", "payload": {} }),
-        );
+        let fallback =
+            mapped_training_draft("sft", &json!({ "type": "job.started", "payload": {} }));
         assert_eq!(fallback.event_type, "optimizer.run.started");
     }
 

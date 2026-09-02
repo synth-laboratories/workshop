@@ -71,6 +71,7 @@ test("SFT V2 projection marks durable checkpoints ready and selected", () => {
   );
   assert.equal(projected.sft.checkpoints.filter((row) => row.ready).length, 2);
   assert.equal(projected.sft.checkpoints.find((row) => row.id === "ckpt_10").selected, true);
+  assert.equal(projected.sft.lineage.selectedCheckpointId, "ckpt_10");
 });
 
 test("SFT V2 projection keeps bounded evaluation summaries in first paint", () => {

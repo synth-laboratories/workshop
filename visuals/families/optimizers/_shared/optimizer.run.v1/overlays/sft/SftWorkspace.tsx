@@ -709,7 +709,11 @@ export function SftWorkspace({
   const costUsd = projected.usage.costUsd;
   const activeStage = stages.find((stage) => stage.status === "active");
   const upliftClaimed = sft.checkpoints.some((ckpt) => ckpt.promoted === true) || improvementVerdict === "improvement_demonstrated";
-  const selectedId = typeof nested.selectedCheckpointId === "string" ? nested.selectedCheckpointId : promotedCheckpointId;
+  const selectedId = typeof nested.selectedCheckpointId === "string"
+    ? nested.selectedCheckpointId
+    : typeof sft.lineage?.selectedCheckpointId === "string"
+      ? sft.lineage.selectedCheckpointId
+      : promotedCheckpointId;
   const headline = terminal
     ? status === "failed"
       ? "Training failed"
