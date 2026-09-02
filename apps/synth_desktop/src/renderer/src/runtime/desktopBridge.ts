@@ -669,6 +669,11 @@ window.synthWorkspaceScope ??= isTauri
 			snapshot: (terminalId, afterSequence = 0) => fromGenerated(spectaCommands.terminalSnapshot(terminalId, afterSequence)),
 			write: (terminalId, data) => fromGenerated(spectaCommands.terminalWrite(terminalId, data)),
 			resize: (terminalId, cols, rows) => fromGenerated(spectaCommands.terminalResize(terminalId, cols, rows)),
+			mountNative: (request) => fromGenerated(spectaCommands.terminalGhosttyMount(request)),
+			setNativeFrame: (terminalId, frame) => fromGenerated(spectaCommands.terminalGhosttySetFrame(terminalId, frame)),
+			setNativeVisible: (terminalId, visible) => fromGenerated(spectaCommands.terminalGhosttySetVisible(terminalId, visible)),
+			focusNative: (terminalId) => fromGenerated(spectaCommands.terminalGhosttyFocus(terminalId)),
+			unmountNative: (terminalId) => fromGenerated(spectaCommands.terminalGhosttyUnmount(terminalId)),
 			close: (terminalId) => fromGenerated(spectaCommands.terminalClose(terminalId)),
 			onEvent(listener) {
 				let unlisten: (() => void) | undefined;
@@ -684,6 +689,11 @@ window.synthWorkspaceScope ??= isTauri
 			snapshot: async () => [],
 			write: async () => undefined,
 			resize: async () => undefined,
+			mountNative: async () => false,
+			setNativeFrame: async () => undefined,
+			setNativeVisible: async () => undefined,
+			focusNative: async () => undefined,
+			unmountNative: async () => undefined,
 			close: async () => undefined,
 			onEvent: () => () => undefined
 		};

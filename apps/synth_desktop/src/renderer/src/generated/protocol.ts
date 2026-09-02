@@ -576,6 +576,11 @@ export const commands = {
 	terminalSnapshot: (terminalId: string, afterSequence: number | null) => typedError<TerminalEvent[], AppError_Serialize>(__TAURI_INVOKE("terminal_snapshot", { terminalId, afterSequence })),
 	terminalWrite: (terminalId: string, data: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_write", { terminalId, data })),
 	terminalResize: (terminalId: string, cols: number, rows: number) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_resize", { terminalId, cols, rows })),
+	terminalGhosttyMount: (request: NativeTerminalMountRequest) => typedError<boolean, AppError_Serialize>(__TAURI_INVOKE("terminal_ghostty_mount", { request })),
+	terminalGhosttySetFrame: (terminalId: string, frame: NativeTerminalFrame) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_ghostty_set_frame", { terminalId, frame })),
+	terminalGhosttySetVisible: (terminalId: string, visible: boolean) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_ghostty_set_visible", { terminalId, visible })),
+	terminalGhosttyFocus: (terminalId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_ghostty_focus", { terminalId })),
+	terminalGhosttyUnmount: (terminalId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_ghostty_unmount", { terminalId })),
 	terminalClose: (terminalId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_close", { terminalId })),
 	secretsWorkspaceRootsList: () => typedError<WorkspaceRootSummary[], AppError_Serialize>(__TAURI_INVOKE("secrets_workspace_roots_list")),
 	secretsBindingsList: () => typedError<CredentialBindingSummary[], AppError_Serialize>(__TAURI_INVOKE("secrets_bindings_list")),
@@ -2431,6 +2436,20 @@ export type ModelPerformanceTurnSample = {
 };
 
 export type MultiAgentVersion = "none" | "v1" | "v2";
+
+export type NativeTerminalFrame = {
+	x: number | null,
+	top: number | null,
+	width: number | null,
+	height: number | null,
+};
+
+export type NativeTerminalMountRequest = {
+	terminalId: string,
+	frame: NativeTerminalFrame,
+	fontFamily: string,
+	fontSize: number | null,
+};
 
 export type ObservabilityStatus = {
 	mode: string,

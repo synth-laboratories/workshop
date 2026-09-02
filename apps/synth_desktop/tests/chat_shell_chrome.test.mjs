@@ -48,9 +48,10 @@ test("chat, terminal, and right panel each use one soft frame with ergonomic tog
 	assert.match(mitten, /const first = start <= left \+ 1\.5/);
 	assert.match(mitten, /const leftJoin = first \? 0/);
 	assert.match(mitten, /const rightJoin =/);
-	assert.match(terminal, /<MittenFrame thumbSelector="\.terminal-head \.terminal-tab\.is-active"/);
+	assert.match(terminal, /<MittenFrame thumbSelector="\.terminal-head \.terminal-tab-shell\.is-active"/);
 	assert.match(sidePanel, /<MittenFrame thumbSelector="\.workbench-side-panel-header \.workbench-side-panel-tab-shell\.is-selected"/);
 	assert.doesNotMatch(css, /data:image\/svg\+xml/);
 	assert.match(css, /\.workbench\.with-side-panel > \.pane-resize-handle::after \{[^}]*background: transparent;/);
+	assert.doesNotMatch(css, /\.workbench\.with-side-panel > \.pane-resize-handle:(?:hover|focus-visible|active)::after/);
 	assert.match(css, /\.titlebar-icon-btn\.active/);
 });

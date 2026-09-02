@@ -96,6 +96,11 @@ impl Commands {
     pub const TERMINAL_SNAPSHOT: &'static str = "terminal_snapshot";
     pub const TERMINAL_WRITE: &'static str = "terminal_write";
     pub const TERMINAL_RESIZE: &'static str = "terminal_resize";
+    pub const TERMINAL_GHOSTTY_MOUNT: &'static str = "terminal_ghostty_mount";
+    pub const TERMINAL_GHOSTTY_SET_FRAME: &'static str = "terminal_ghostty_set_frame";
+    pub const TERMINAL_GHOSTTY_SET_VISIBLE: &'static str = "terminal_ghostty_set_visible";
+    pub const TERMINAL_GHOSTTY_FOCUS: &'static str = "terminal_ghostty_focus";
+    pub const TERMINAL_GHOSTTY_UNMOUNT: &'static str = "terminal_ghostty_unmount";
     pub const TERMINAL_CLOSE: &'static str = "terminal_close";
     pub const DATA_CONTAINERS_LIST: &'static str = "data_containers_list";
     pub const DATA_CONTAINERS_GET: &'static str = "data_containers_get";

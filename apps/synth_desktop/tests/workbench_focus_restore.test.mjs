@@ -22,20 +22,17 @@ test("closing the side panel restores its persistent titlebar toggle", () => {
 	assert.match(helper, /isConnected/);
 });
 
-test("hide-terminal restores toggle-terminal", () => {
+test("the persistent titlebar control owns terminal visibility", () => {
 	const layout = read("hooks/useShellLayout.ts");
 	const titlebar = read("components/AppTitlebar.tsx");
 	const terminal = read("components/TerminalPanel.tsx");
 	const helper = read("runtime/restoreFocus.ts");
-	const hide = terminal.match(/aria-label="Hide terminal"[\s\S]*?<\/button>/)?.[0] ?? "";
 	assert.match(titlebar, /data-testid="toggle-terminal"/);
 	assert.match(titlebar, /Show terminal/);
-	assert.match(hide, /restoreFocusIfLost/);
-	assert.match(hide, /toggle-terminal/);
+	assert.doesNotMatch(terminal, /aria-label="Hide terminal"/);
 	assert.match(layout, /restoreFocusIfLost\('\[data-testid="toggle-terminal"\]'\)/);
 	assert.match(helper, /queueMicrotask/);
 	assert.match(helper, /requestAnimationFrame/);
-	assert.doesNotMatch(hide, /restoreFocusAfterVisualPaneClose/);
 });
 
 test("composer is owned by the active transcript layout instead of global pane geometry", () => {

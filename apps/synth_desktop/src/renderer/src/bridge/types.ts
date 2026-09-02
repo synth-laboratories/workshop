@@ -113,6 +113,8 @@ import type {
 	Status,
 	TariffCard,
 	TemplateMeta,
+	NativeTerminalFrame,
+	NativeTerminalMountRequest,
 	TerminalCreateRequest,
 	TerminalEvent,
 	TerminalInfo,
@@ -211,6 +213,8 @@ export type {
 	SecretsInbox,
 	SkillHit,
 	TariffCard,
+	NativeTerminalFrame,
+	NativeTerminalMountRequest,
 	TerminalCreateRequest,
 	TerminalEvent,
 	TerminalInfo,
@@ -1091,6 +1095,11 @@ export type TerminalBridge = {
 	snapshot(terminalId: string, afterSequence?: number): Promise<TerminalEvent[]>;
 	write(terminalId: string, data: string): Promise<void>;
 	resize(terminalId: string, cols: number, rows: number): Promise<void>;
+	mountNative(request: NativeTerminalMountRequest): Promise<boolean>;
+	setNativeFrame(terminalId: string, frame: NativeTerminalFrame): Promise<void>;
+	setNativeVisible(terminalId: string, visible: boolean): Promise<void>;
+	focusNative(terminalId: string): Promise<void>;
+	unmountNative(terminalId: string): Promise<void>;
 	close(terminalId: string): Promise<void>;
 	onEvent(listener: (event: TerminalEvent) => void): () => void;
 };

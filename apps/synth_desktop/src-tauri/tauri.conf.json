@@ -43,6 +43,9 @@
     ],
     "macOS": {
       "minimumSystemVersion": "14.0",
+      "frameworks": [
+        "generated-frameworks/libSynthGhosttyHost.dylib"
+      ],
       "infoPlist": "Info.plist"
     }
   }

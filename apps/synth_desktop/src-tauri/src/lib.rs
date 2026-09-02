@@ -123,7 +123,10 @@ use synth_config::{
 use tauri::{Emitter, Manager, RunEvent, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
-use terminal::{TerminalCreateRequest, TerminalEvent, TerminalInfo, TerminalManager};
+use terminal::{
+    NativeTerminalFrame, NativeTerminalMountRequest, TerminalCreateRequest, TerminalEvent,
+    TerminalInfo, TerminalManager,
+};
 use trace_ingest::{TraceBundleIngestRequest, TraceBundleIngestResult};
 use visuals::{
     TemplateMeta, VisualAnnotation, VisualAnnotationCreate, VisualAsset, VisualCreateRequest,
@@ -5295,6 +5298,83 @@ fn terminal_resize(
     state
         .resize(&terminal_id, cols, rows)
         .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn terminal_ghostty_mount(
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<TerminalManager>>,
+    request: NativeTerminalMountRequest,
+) -> Result<bool, AppError> {
+    #[cfg(target_os = "macos")]
+    {
+        let manager = state.inner().clone();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        window
+            .with_webview(move |platform| {
+                let result = manager.mount_native(
+                    request.terminal_id.as_str(),
+                    platform.inner().cast(),
+                    &request.frame,
+                    &request.font_family,
+                    request.font_size,
+                );
+                let _ = sender.send(result);
+            })
+            .map_err(|error| AppError::untyped(format!("Cannot mount libghostty: {error}")))?;
+        return receiver
+            .await
+            .map_err(|_| AppError::untyped("libghostty mount was cancelled"))?
+            .map_err(AppError::from);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, state, request);
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+fn terminal_ghostty_set_frame(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+    frame: NativeTerminalFrame,
+) -> Result<(), AppError> {
+    state
+        .set_native_frame(&terminal_id, &frame)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn terminal_ghostty_set_visible(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+    visible: bool,
+) -> Result<(), AppError> {
+    state
+        .set_native_visible(&terminal_id, visible)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn terminal_ghostty_focus(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+) -> Result<(), AppError> {
+    state.focus_native(&terminal_id).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn terminal_ghostty_unmount(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+) -> Result<(), AppError> {
+    state.unmount_native(&terminal_id).map_err(AppError::from)
 }
 
 #[tauri::command]

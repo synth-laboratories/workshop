@@ -197,15 +197,24 @@ a,
 }
 
 .terminal-identity { display: none; }
-.terminal-tabs { display: flex; align-self: stretch; align-items: flex-end; gap: 3px; flex: 1; min-width: 0; overflow: visible; }
-.terminal-tab { height: 27px; padding: 0 10px; border-radius: 6px; color: var(--color-text-muted); font-size: 12px; white-space: nowrap; }
-.terminal-tab.is-active { height: 34px; background: #fff; color: var(--color-text); box-shadow: none; }
+.terminal-tab-strip { display: flex; align-self: stretch; align-items: flex-end; flex: 1; min-width: 0; overflow: hidden; }
+.terminal-tabs { display: flex; align-self: stretch; align-items: flex-end; gap: 3px; flex: 0 1 auto; min-width: 0; overflow: hidden; }
+.terminal-tab-shell { height: 27px; display: flex; align-items: center; min-width: 0; border-radius: 6px; color: var(--color-text-muted); }
+.terminal-tab-shell.is-active { height: 34px; background: #fff; color: var(--color-text); }
+.terminal-tab { height: 100%; min-width: 0; padding: 0 10px; display: flex; align-items: center; border-radius: inherit; color: inherit; font-size: 12px; white-space: nowrap; }
+.terminal-tab-shell.is-active .terminal-tab { padding-right: 3px; }
 .terminal-tab-icon { margin-right: 7px; color: var(--color-text-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }
 .terminal-dot { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: #2ba84a; }
 .terminal-dot.exited, .terminal-dot.failed { background: #999; }
-.terminal-action { width: 27px; height: 27px; border-radius: 6px; color: var(--color-text-muted); font-size: 17px; line-height: 1; }
-.terminal-action:hover { background: rgba(83, 68, 56, .07); color: var(--color-text); }
+.terminal-tab-title { overflow: hidden; text-overflow: ellipsis; }
+.terminal-tab-close, .terminal-tab-add { width: 32px; height: 34px; flex: 0 0 32px; display: grid; place-items: center; color: var(--color-text-muted); }
+.terminal-tab-close { width: 27px; flex-basis: 27px; padding: 0 7px 0 4px; border-radius: 0 6px 6px 0; }
+.terminal-tab-add { margin-left: 3px; border-radius: 0 0 6px 6px; }
+.terminal-tab-close:hover, .terminal-tab-add:hover { color: var(--color-text); background: rgba(83, 68, 56, .07); }
+.terminal-tab-action-icon { display: block; width: 12px; height: 12px; }
 .terminal-viewport { position: relative; z-index: 1; flex: 1; min-height: 0; margin-top: 0; padding: 10px 12px 8px; user-select: text; overflow: hidden; border: 0; border-radius: 0 14px 14px 14px; background: transparent; box-shadow: none; }
+.terminal-viewport.is-ghostty { padding: 0; }
+.terminal-renderer-status { position: absolute; inset: 0; display: grid; place-items: center; color: var(--color-text-muted); font-size: 12px; }
 .terminal-viewport .xterm { height: 100%; }
 .terminal-empty { position: relative; z-index: 1; display: grid; place-items: center; flex: 1; margin-top: 0; border: 0; border-radius: 0 14px 14px 14px; background: transparent; box-shadow: none; color: var(--color-text-muted); font-size: 13px; }
 
@@ -9449,15 +9458,11 @@ html.visual-expanded .sidebar {
 }
 
 /* Keep the seven-pixel resize target without drawing a third divider between
-   the two already-framed panes. Reveal the handle only during interaction. */
+   the two already-framed panes. The cursor communicates drag state; painting
+   the handle itself produces a full-height accent seam across the chat and
+   terminal stack while the pointer is captured. */
 .workbench.with-side-panel > .pane-resize-handle::after {
 	background: transparent;
-}
-
-.workbench.with-side-panel > .pane-resize-handle:hover::after,
-.workbench.with-side-panel > .pane-resize-handle:focus-visible::after,
-.workbench.with-side-panel > .pane-resize-handle:active::after {
-	background: var(--color-accent);
 }
 
 /* A visual hosted in the unified side panel still participates in the outer
