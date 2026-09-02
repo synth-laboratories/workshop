@@ -11,7 +11,7 @@ import { TrainingEvaluationCurve } from "./TrainingEvaluationCurve";
 type View = "setup" | "train" | "artifacts" | "run" | "inference" | "eval";
 type Artifact = { id: string; kind: string; algorithm: string; baseModel: string; runId: string; datasetDigest: string; configDigest: string; sha256: string; size: string; integrity: string; backends: string[] };
 type TrainingTarget = { id: string; title: string; taskFamily: string };
-type Evaluation = { phase?: string; step?: number | null; score?: number | null; loss?: number | null; delta?: number | null; checkpoint_id?: string | null; artifact_digest?: string | null; evaluator?: string | null; sample_count?: number | null; status?: string; detail?: unknown };
+type Evaluation = { phase?: string; step?: number | null; score?: number | null; loss?: number | null; delta?: number | null; macro_f1?: number | null; ci_low?: number | null; ci_high?: number | null; confidence?: number | null; paired_n?: number | null; verdict?: string | null; claim_ready?: boolean | null; checkpoint_id?: string | null; artifact_digest?: string | null; evaluator?: string | null; sample_count?: number | null; status?: string; detail?: unknown };
 /**
  * The launch record this view owns. Everything durable about the run —
  * status, evaluations, loss — is read through the shared run read model
@@ -66,12 +66,19 @@ function evaluationFromRow(details: unknown): Evaluation | null {
 		score: number(row.score),
 		loss: number(row.loss),
 		delta: number(row.delta),
+		macro_f1: number(row.macroF1),
+		ci_low: number(row.ciLow),
+		ci_high: number(row.ciHigh),
+		confidence: number(row.confidence),
+		paired_n: number(row.pairedN),
+		verdict: string(row.verdict),
+		claim_ready: typeof row.claimReady === "boolean" ? row.claimReady : null,
 		checkpoint_id: string(row.checkpointId),
 		artifact_digest: string(row.artifactDigest),
 		evaluator: string(row.evaluator),
 		sample_count: number(row.sampleCount),
 		status: string(row.status) ?? undefined,
-		detail: { sequence: row.sequence, childRunId: row.childRunId }
+		detail: { sequence: row.sequence, childRunId: row.childRunId, pairedN: row.pairedN, confidence: row.confidence, ciLow: row.ciLow, ciHigh: row.ciHigh, verdict: row.verdict, claimReady: row.claimReady }
 	};
 }
 

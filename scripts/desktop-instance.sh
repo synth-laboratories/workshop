@@ -927,6 +927,7 @@ write_host_launchd_plist() {
   local optimizer_project_root optimizer_wheel_file mlx_rl_url containers_root
   local sft_service_url sft_service_token cispo_service_url cispo_service_token
   local sft_fixture cispo_fixture banking77_train_jsonl cispo_receipt
+  local banking77_train_csv banking77_heldout_csv banking77_heldout_indices cispo_parent_json
   local home_dir user_name logname temp_dir log_dir
   program="$(host_launchd_program)"
   [[ -x "$program" ]] || {
@@ -948,6 +949,10 @@ write_host_launchd_plist() {
   sft_fixture="${SYNTH_OPTIMIZERS_SFT_FIXTURE:-}"
   cispo_fixture="${SYNTH_OPTIMIZERS_CISPO_FIXTURE:-}"
   banking77_train_jsonl="${SYNTH_SFT_BANKING77_TRAIN_JSONL:-}"
+  banking77_train_csv="${SYNTH_BANKING77_TRAIN_CSV:-}"
+  banking77_heldout_csv="${SYNTH_BANKING77_HELDOUT_CSV:-}"
+  banking77_heldout_indices="${SYNTH_BANKING77_HELDOUT_INDICES_JSON:-}"
+  cispo_parent_json="${SYNTH_BANKING77_CISPO_PARENT_JSON:-}"
   cispo_receipt="${TINKER_CISPO_VALIDATION_RECEIPT:-}"
   home_dir="${HOME:?HOME must be set to launch a CUA bundle}"
   user_name="${USER:-$(id -un)}"
@@ -964,7 +969,8 @@ write_host_launchd_plist() {
     "$optimizer_project_root" "$optimizer_wheel_file" "$mlx_rl_url" \
     "$containers_root" "$log_dir" "$sft_service_url" "$sft_service_token" \
     "$cispo_service_url" "$cispo_service_token" "$sft_fixture" "$cispo_fixture" \
-    "$banking77_train_jsonl" "$cispo_receipt" <<'PY'
+    "$banking77_train_jsonl" "$banking77_train_csv" "$banking77_heldout_csv" \
+    "$banking77_heldout_indices" "$cispo_parent_json" "$cispo_receipt" <<'PY'
 import plistlib
 import sys
 from pathlib import Path
@@ -1005,6 +1011,10 @@ from pathlib import Path
     sft_fixture,
     cispo_fixture,
     banking77_train_jsonl,
+    banking77_train_csv,
+    banking77_heldout_csv,
+    banking77_heldout_indices,
+    cispo_parent_json,
     cispo_receipt,
 ) = sys.argv[1:]
 
@@ -1043,6 +1053,10 @@ env = {
     "SYNTH_OPTIMIZERS_SFT_FIXTURE": sft_fixture,
     "SYNTH_OPTIMIZERS_CISPO_FIXTURE": cispo_fixture,
     "SYNTH_SFT_BANKING77_TRAIN_JSONL": banking77_train_jsonl,
+    "SYNTH_BANKING77_TRAIN_CSV": banking77_train_csv,
+    "SYNTH_BANKING77_HELDOUT_CSV": banking77_heldout_csv,
+    "SYNTH_BANKING77_HELDOUT_INDICES_JSON": banking77_heldout_indices,
+    "SYNTH_BANKING77_CISPO_PARENT_JSON": cispo_parent_json,
     "TINKER_CISPO_VALIDATION_RECEIPT": cispo_receipt,
 }
 # launchd rejects empty EnvironmentVariables values. Credentials never

@@ -43,6 +43,21 @@ pub struct TrainingEvaluationSummary {
     #[serde(default)]
     pub delta: Option<f64>,
     #[serde(default)]
+    pub macro_f1: Option<f64>,
+    #[serde(default)]
+    pub ci_low: Option<f64>,
+    #[serde(default)]
+    pub ci_high: Option<f64>,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
+    pub paired_n: Option<u64>,
+    #[serde(default)]
+    pub verdict: Option<String>,
+    #[serde(default)]
+    pub claim_ready: Option<bool>,
+    #[serde(default)]
     pub checkpoint_id: Option<String>,
     #[serde(default)]
     pub artifact_digest: Option<String>,
@@ -106,14 +121,33 @@ impl TrainingEvaluationSummary {
                         .sum()
                 })
         });
-        let id = checkpoint_id.clone().unwrap_or_else(|| {
-            format!(
-                "{}:{}",
-                phase.as_deref().unwrap_or("checkpoint"),
-                step.map(|value| value.to_string())
-                    .unwrap_or_else(|| format!("seq{sequence}"))
-            )
-        });
+        let paired = evaluation.get("paired_uplift").and_then(Value::as_object);
+        let paired_number = |key: &str| {
+            paired
+                .and_then(|value| value.get(key))
+                .and_then(Value::as_f64)
+        };
+        let paired_integer = |key: &str| {
+            paired
+                .and_then(|value| value.get(key))
+                .and_then(Value::as_u64)
+        };
+        let paired_string = |key: &str| {
+            paired
+                .and_then(|value| value.get(key))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        let id = string(&["evaluation_id", "evaluationId"])
+            .or_else(|| checkpoint_id.clone())
+            .unwrap_or_else(|| {
+                format!(
+                    "{}:{}",
+                    phase.as_deref().unwrap_or("checkpoint"),
+                    step.map(|value| value.to_string())
+                        .unwrap_or_else(|| format!("seq{sequence}"))
+                )
+            });
         Some(Self {
             id,
             phase,
@@ -129,7 +163,22 @@ impl TrainingEvaluationSummary {
                 }
             }),
             loss: number(&["loss"]),
-            delta: number(&["delta"]),
+            delta: number(&["delta", "uplift"]).or_else(|| paired_number("uplift")),
+            macro_f1: number(&["macro_f1", "macroF1"]),
+            ci_low: number(&["ci_low", "ciLow"]).or_else(|| paired_number("ci_low")),
+            ci_high: number(&["ci_high", "ciHigh"]).or_else(|| paired_number("ci_high")),
+            confidence: number(&["confidence"]).or_else(|| paired_number("confidence")),
+            paired_n: integer(&["paired_n", "pairedN"]).or_else(|| paired_integer("paired_n")),
+            verdict: string(&["verdict"]).or_else(|| paired_string("verdict")),
+            claim_ready: evaluation
+                .get("claim_ready")
+                .or_else(|| evaluation.get("claimReady"))
+                .and_then(Value::as_bool)
+                .or_else(|| {
+                    paired
+                        .and_then(|value| value.get("claim_ready"))
+                        .and_then(Value::as_bool)
+                }),
             checkpoint_id,
             artifact_digest: string(&["artifact_digest", "artifactDigest", "digest"]),
             evaluator: string(&["evaluator"]),
@@ -173,6 +222,16 @@ impl TrainingEvaluationSummary {
             metric: string(&["metric"]),
             loss: number(&["loss"]),
             delta: number(&["delta", "lift"]),
+            macro_f1: number(&["macro_f1", "macroF1"]),
+            ci_low: number(&["ci_low", "ciLow"]),
+            ci_high: number(&["ci_high", "ciHigh"]),
+            confidence: number(&["confidence"]),
+            paired_n: integer(&["paired_n", "pairedN"]),
+            verdict: string(&["verdict"]),
+            claim_ready: payload
+                .get("claim_ready")
+                .or_else(|| payload.get("claimReady"))
+                .and_then(Value::as_bool),
             checkpoint_id: string(&["checkpointId", "checkpoint_id"]),
             artifact_digest: string(&[
                 "traceDigest",
@@ -354,17 +413,30 @@ mod tests {
                 "optimizerRunId": "eval_child_1",
                 "evaluation": {
                     "phase": "checkpoint", "step": 40, "score": 0.81, "loss": 0.42,
+                    "evaluation_id": "selection:ckpt-40",
                     "checkpoint_id": "ckpt-40", "evaluator": "banking77", "sample_count": 200,
-                    "status": "completed"
+                    "macro_f1": 0.79, "status": "completed",
+                    "paired_uplift": {
+                        "uplift": 0.06, "ci_low": 0.02, "ci_high": 0.10,
+                        "confidence": 0.95, "paired_n": 200,
+                        "verdict": "material_uplift", "claim_ready": true
+                    }
                 }
             }),
             77,
         )
         .unwrap();
-        assert_eq!(summary.id, "ckpt-40");
+        assert_eq!(summary.id, "selection:ckpt-40");
         assert_eq!(summary.metric.as_deref(), None);
         assert_eq!(summary.step, Some(40));
         assert_eq!(summary.score, Some(0.81));
+        assert_eq!(summary.macro_f1, Some(0.79));
+        assert_eq!(summary.delta, Some(0.06));
+        assert_eq!(summary.ci_low, Some(0.02));
+        assert_eq!(summary.ci_high, Some(0.10));
+        assert_eq!(summary.paired_n, Some(200));
+        assert_eq!(summary.verdict.as_deref(), Some("material_uplift"));
+        assert_eq!(summary.claim_ready, Some(true));
         assert_eq!(summary.child_run_id.as_deref(), Some("eval_child_1"));
         assert_eq!(summary.sequence, 77);
         assert!(TrainingEvaluationSummary::from_payload(&json!({}), 1).is_none());

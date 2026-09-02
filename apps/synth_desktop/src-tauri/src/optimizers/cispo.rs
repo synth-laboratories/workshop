@@ -12,15 +12,92 @@ use super::sidecar_training::{
 use super::OptimizerService;
 use anyhow::Result;
 use serde_json::{json, Value};
+
+const BANKING77_LABEL_TAXONOMY: &[&str] = &[
+    "Refund_not_showing_up",
+    "activate_my_card",
+    "age_limit",
+    "apple_pay_or_google_pay",
+    "atm_support",
+    "automatic_top_up",
+    "balance_not_updated_after_bank_transfer",
+    "balance_not_updated_after_cheque_or_cash_deposit",
+    "beneficiary_not_allowed",
+    "cancel_transfer",
+    "card_about_to_expire",
+    "card_acceptance",
+    "card_arrival",
+    "card_delivery_estimate",
+    "card_linking",
+    "card_not_working",
+    "card_payment_fee_charged",
+    "card_payment_not_recognised",
+    "card_payment_wrong_exchange_rate",
+    "card_swallowed",
+    "cash_withdrawal_charge",
+    "cash_withdrawal_not_recognised",
+    "change_pin",
+    "compromised_card",
+    "contactless_not_working",
+    "country_support",
+    "declined_card_payment",
+    "declined_cash_withdrawal",
+    "declined_transfer",
+    "direct_debit_payment_not_recognised",
+    "disposable_card_limits",
+    "edit_personal_details",
+    "exchange_charge",
+    "exchange_rate",
+    "exchange_via_app",
+    "extra_charge_on_statement",
+    "failed_transfer",
+    "fiat_currency_support",
+    "get_disposable_virtual_card",
+    "get_physical_card",
+    "getting_spare_card",
+    "getting_virtual_card",
+    "lost_or_stolen_card",
+    "lost_or_stolen_phone",
+    "order_physical_card",
+    "passcode_forgotten",
+    "pending_card_payment",
+    "pending_cash_withdrawal",
+    "pending_top_up",
+    "pending_transfer",
+    "pin_blocked",
+    "receiving_money",
+    "request_refund",
+    "reverted_card_payment?",
+    "supported_cards_and_currencies",
+    "terminate_account",
+    "top_up_by_bank_transfer_charge",
+    "top_up_by_card_charge",
+    "top_up_by_cash_or_cheque",
+    "top_up_failed",
+    "top_up_limits",
+    "top_up_reverted",
+    "topping_up_by_card",
+    "transaction_charged_twice",
+    "transfer_fee_charged",
+    "transfer_into_account",
+    "transfer_not_received_by_recipient",
+    "transfer_timing",
+    "unable_to_verify_identity",
+    "verify_my_identity",
+    "verify_source_of_funds",
+    "verify_top_up",
+    "virtual_card_not_working",
+    "visa_or_mastercard",
+    "why_verify_identity",
+    "wrong_amount_of_cash_received",
+    "wrong_exchange_rate_for_cash_withdrawal",
+];
 use std::collections::HashSet;
 
 pub fn recipe_catalog() -> Vec<Value> {
     vec![
         local_mlx_recipe(),
-        hosted_cispo_recipe(
-            HOSTED_BANKING77_CISPO_RECIPE,
-            "Banking77 Tinker CISPO",
-        ),
+        hosted_cispo_recipe(HOSTED_BANKING77_CISPO_RECIPE, "Banking77 Tinker CISPO"),
         hosted_cispo_recipe(HOSTED_CISPO_RECIPE, "Hosted CISPO · Tinker"),
     ]
 }
@@ -69,8 +146,13 @@ fn hosted_cispo_recipe(id: &str, title: &str) -> Value {
             "backend": "cispo.slime.v1",
             "implementation": "slime-reference",
             "implementationVersion": "cispo.slime.v1",
-            "maxSteps": 2,
-            "costCeilingUsd": 10.0,
+            "maxSteps": 50,
+            "groupSize": 64,
+            "promptsPerUpdate": 3,
+            "estimatedRollouts": 9600,
+            "selectionExamples": 400,
+            "heldoutExamples": 400,
+            "costCeilingUsd": 35.0,
             "costNotice": "Hosted Tinker via the public CISPO service. Receipt-gated; unpaid fixture with SYNTH_OPTIMIZERS_CISPO_FIXTURE=1."
         },
         "credentialInputs": [],
@@ -84,6 +166,8 @@ fn hosted_cispo_prerequisites() -> Vec<&'static str> {
         "SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN",
         "SYNTH_OPTIMIZERS_CISPO_SERVICE_URL (default http://127.0.0.1:8880)",
         "TINKER_CISPO_VALIDATION_RECEIPT",
+        "SYNTH_BANKING77_TRAIN_CSV + SYNTH_BANKING77_HELDOUT_CSV",
+        "SYNTH_BANKING77_CISPO_PARENT_JSON (Tinker SFT state + sampler receipt)",
         "SYNTH_OPTIMIZERS_CISPO_FIXTURE=1 for unpaid",
     ]
 }
@@ -94,7 +178,9 @@ fn hosted_cispo_availability() -> (bool, Value) {
         PLACEMENT_TRAINING_CISPO_HOSTED,
     );
     let client_ok = super::cispo_client::CispoOptimizerClient::from_env().is_ok();
-    if admitted && client_ok {
+    let reference_ok = super::hosted_sft::banking77_reference_sources().is_ok()
+        && banking77_cispo_parent().is_ok();
+    if admitted && client_ok && reference_ok {
         return (true, Value::Null);
     }
     if !admitted {
@@ -123,22 +209,44 @@ fn hosted_cispo_availability() -> (bool, Value) {
             json!("SYNTH_OPTIMIZERS_CISPO_SERVICE_URL is empty; default is http://127.0.0.1:8880."),
         );
     }
+    if !reference_ok {
+        return (
+            false,
+            json!("Hosted Banking77 CISPO requires the NanoClassify train/heldout CSVs and SYNTH_BANKING77_CISPO_PARENT_JSON."),
+        );
+    }
     (
         false,
         json!("Public CISPO service client is not configured."),
     )
 }
 
-fn hosted_cispo_config_json() -> Value {
-    let labels = [
-        "activate_my_card",
-        "balance_not_updated_after_cheque_or_cash_deposit",
-        "card_swallowed",
-        "get_physical_card",
-        "lost_or_stolen_card",
-        "order_physical_card",
-    ];
-    json!({
+fn banking77_cispo_parent() -> Result<Value> {
+    let raw = std::env::var("SYNTH_BANKING77_CISPO_PARENT_JSON")?;
+    let path = std::path::PathBuf::from(raw.trim());
+    let receipt: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    let state = receipt
+        .get("state_checkpoint")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("CISPO parent receipt omitted state_checkpoint"))?;
+    Ok(json!({
+        "checkpoint_id": "nanoclassify-sft-parent",
+        "provider_reference": state,
+        "resume_token": state,
+        "step": receipt.get("updates").and_then(Value::as_u64).unwrap_or(100),
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "kind": "training"
+    }))
+}
+
+fn hosted_cispo_config_json() -> Result<Value> {
+    let sources = super::hosted_sft::banking77_reference_sources()?;
+    let labels = BANKING77_LABEL_TAXONOMY;
+    let heldout_indices = sources
+        .heldout_indices_json
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string());
+    Ok(json!({
         "schema_version": "cispo.request.v1",
         "algorithm_id": "cispo",
         "implementation": "slime-reference",
@@ -150,14 +258,21 @@ fn hosted_cispo_config_json() -> Value {
         "runner_version": "synth-optimizers.training.v1",
         "seed": 20260902,
         "repeat_index": 0,
-        "mode": "learning_signal",
-        "rank": 8,
+        "mode": "canonical",
+        "rank": 16,
+        "parent_checkpoint": banking77_cispo_parent()?,
         "dataset": {
-            "recipe_id": "banking77.cispo.v1",
-            "examples": [],
-            "train_indexes": [0, 1],
-            "calibration_indexes": [4],
-            "heldout_indexes": [5],
+            "recipe_id": "banking77.cispo.nanoclassify.v1",
+            "split_strategy": "banking77.nanoclassify.v1",
+            "train_csv": sources.train_csv,
+            "heldout_csv": sources.heldout_csv,
+            "heldout_indices_json": heldout_indices,
+            "split_seed": 20260907,
+            "selection_seed": 20260908,
+            "heldout_seed": 20260906,
+            "dev_per_class": 10,
+            "selection_size": 400,
+            "heldout_size": 400,
             "label_taxonomy": labels,
             "system_prompt": format!(
                 "Classify the customer banking message. Return exactly one label from this list, with no explanation or punctuation:\n{}",
@@ -167,24 +282,29 @@ fn hosted_cispo_config_json() -> Value {
             "heldout_locked": true
         },
         "training": {
-            "updates": 1,
-            "group_size": 2,
-            "prompts_per_update": 1,
-            "max_sample_tokens": 8,
+            "updates": 50,
+            "group_size": 64,
+            "prompts_per_update": 3,
+            "max_sample_tokens": 24,
             "temperature": 1.0,
-            "learning_rate": 0.000005,
+            "learning_rate": 0.000001,
             "eps_clip": 1.0,
             "eps_clip_high": 4.0,
             "normalize_group_rewards": true,
-            "checkpoint_every_updates": 1
+            "checkpoint_every_updates": 10
         },
         "reward": { "version": "banking77.exact_label.v1", "task": "banking77" },
         "evaluation": {
             "scorer_version": "banking77.exact_label.v1",
             "heldout_locked": true,
-            "mode": "learning_signal"
+            "mode": "canonical",
+            "max_tokens": 64,
+            "confidence": 0.95,
+            "bootstrap_resamples": 4000,
+            "minimum_claim_uplift": 0.01,
+            "minimum_paired_examples": 400
         }
-    })
+    }))
 }
 
 pub async fn start(
@@ -355,7 +475,7 @@ async fn start_hosted(
     let recipe_id = request.recipe_id.clone();
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("cispo_hosted_{}", &suffix[..12]);
-    let config_json = hosted_cispo_config_json();
+    let config_json = hosted_cispo_config_json()?;
     let create = training_create_request(
         &run_id,
         "cispo",
@@ -481,6 +601,22 @@ mod tests {
         (dir, path)
     }
 
+    fn reference_paths() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let train = dir.path().join("train.csv");
+        let heldout = dir.path().join("heldout.csv");
+        let parent = dir.path().join("sft.json");
+        std::fs::write(&train, "text,category\nhello,a\nworld,b\n").unwrap();
+        std::fs::write(&heldout, "text,category\nheld,a\nout,b\n").unwrap();
+        std::fs::write(&parent, r#"{"state_checkpoint":"tinker://state","sampler_checkpoint":"tinker://sampler","updates":100}"#).unwrap();
+        (dir, train, heldout, parent)
+    }
+
     #[test]
     fn hosted_recipe_catalog_is_available_only_with_receipt_and_cispo_token() {
         let previous_receipt = std::env::var("TINKER_CISPO_VALIDATION_RECEIPT").ok();
@@ -510,8 +646,7 @@ mod tests {
             );
             let prerequisites = recipe["prerequisites"].as_array().unwrap();
             assert!(prerequisites.iter().any(|item| {
-                item.as_str()
-                    == Some("synth-optimizers-cispo service --db … --bind 127.0.0.1:8880")
+                item.as_str() == Some("synth-optimizers-cispo service --db … --bind 127.0.0.1:8880")
             }));
             assert!(prerequisites
                 .iter()
@@ -539,12 +674,13 @@ mod tests {
         );
 
         std::env::set_var("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN", "local-qa-token");
+        let (_reference_dir, train, heldout, parent) = reference_paths();
+        std::env::set_var("SYNTH_BANKING77_TRAIN_CSV", train);
+        std::env::set_var("SYNTH_BANKING77_HELDOUT_CSV", heldout);
+        std::env::set_var("SYNTH_BANKING77_CISPO_PARENT_JSON", parent);
         let admitted = recipe_catalog();
         for id in [HOSTED_CISPO_RECIPE, HOSTED_BANKING77_CISPO_RECIPE] {
-            let recipe = admitted
-                .iter()
-                .find(|recipe| recipe["id"] == id)
-                .unwrap();
+            let recipe = admitted.iter().find(|recipe| recipe["id"] == id).unwrap();
             assert_eq!(recipe["availability"], "available", "{id}");
             assert!(recipe["availabilityReason"].is_null());
         }
@@ -557,28 +693,52 @@ mod tests {
             Some(value) => std::env::set_var("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN", value),
             None => std::env::remove_var("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN"),
         }
+        std::env::remove_var("SYNTH_BANKING77_TRAIN_CSV");
+        std::env::remove_var("SYNTH_BANKING77_HELDOUT_CSV");
+        std::env::remove_var("SYNTH_BANKING77_CISPO_PARENT_JSON");
     }
 
     #[test]
     fn hosted_cispo_config_json_is_cispo_request_v1() {
-        let request = hosted_cispo_config_json();
+        let (_dir, train, heldout, parent) = reference_paths();
+        std::env::set_var("SYNTH_BANKING77_TRAIN_CSV", train);
+        std::env::set_var("SYNTH_BANKING77_HELDOUT_CSV", heldout);
+        std::env::set_var("SYNTH_BANKING77_CISPO_PARENT_JSON", parent);
+        let request = hosted_cispo_config_json().unwrap();
         assert_eq!(request["schema_version"], "cispo.request.v1");
         assert_eq!(request["algorithm_id"], "cispo");
         assert_eq!(request["implementation"], "slime-reference");
         assert_eq!(request["implementation_version"], "cispo.slime.v1");
         assert_eq!(request["provider"], "tinker");
         assert_eq!(request["model_id"], "openai/gpt-oss-20b");
-        assert_eq!(request["mode"], "learning_signal");
+        assert_eq!(request["mode"], "canonical");
         assert_eq!(request["renderer_version"], "renderers.gpt-oss.low.v1");
-        assert_eq!(request["dataset"]["recipe_id"], "banking77.cispo.v1");
+        assert_eq!(
+            request["dataset"]["recipe_id"],
+            "banking77.cispo.nanoclassify.v1"
+        );
+        assert_eq!(
+            request["dataset"]["split_strategy"],
+            "banking77.nanoclassify.v1"
+        );
         assert_eq!(request["dataset"]["heldout_locked"], true);
-        assert!(request["dataset"]["examples"].is_array());
-        assert_eq!(request["training"]["updates"], 1);
-        assert_eq!(request["training"]["group_size"], 2);
-        assert_eq!(request["training"]["prompts_per_update"], 1);
+        assert_eq!(
+            request["dataset"]["label_taxonomy"]
+                .as_array()
+                .unwrap()
+                .len(),
+            77
+        );
+        assert!(request["dataset"]["system_prompt"]
+            .as_str()
+            .unwrap()
+            .contains("card_arrival"));
+        assert_eq!(request["training"]["updates"], 50);
+        assert_eq!(request["training"]["group_size"], 64);
+        assert_eq!(request["training"]["prompts_per_update"], 3);
         assert_eq!(request["training"]["eps_clip"], 1.0);
         assert_eq!(request["training"]["eps_clip_high"], 4.0);
-        assert_eq!(request["training"]["checkpoint_every_updates"], 1);
+        assert_eq!(request["training"]["checkpoint_every_updates"], 10);
         assert_eq!(request["reward"]["version"], "banking77.exact_label.v1");
         assert_eq!(request["reward"]["task"], "banking77");
         assert_eq!(
@@ -586,9 +746,13 @@ mod tests {
             "banking77.exact_label.v1"
         );
         assert_eq!(request["evaluation"]["heldout_locked"], true);
-        assert_eq!(request["evaluation"]["mode"], "learning_signal");
+        assert_eq!(request["evaluation"]["mode"], "canonical");
+        assert_eq!(request["evaluation"]["minimum_paired_examples"], 400);
         assert!(request["evaluation"].get("transport").is_none());
         assert!(request["evaluation"].get("container").is_none());
+        std::env::remove_var("SYNTH_BANKING77_TRAIN_CSV");
+        std::env::remove_var("SYNTH_BANKING77_HELDOUT_CSV");
+        std::env::remove_var("SYNTH_BANKING77_CISPO_PARENT_JSON");
     }
 
     #[test]

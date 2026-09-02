@@ -26,11 +26,11 @@ const LOCAL_BANKING77_SLOT: &str = "http://127.0.0.1:8110";
 /// plan and world are the container's, not something this recipe invents.
 const BANKING77_PLAN_REF: &str = "banking77_eval.v1";
 const BANKING77_WORLD_REF: &str = "world:banking77@heldout";
-const BANKING77_CHECKPOINT_STEPS: [u32; 3] = [10, 20, 30];
+const BANKING77_CHECKPOINT_STEPS: [u32; 4] = [25, 50, 75, 100];
 /// Length of training. `optimizers-beta` used to infer this as
 /// `max(checkpoint_steps)`, so the checkpoint list silently decided how long a
 /// run trained. It is now named separately and required.
-const BANKING77_TRAINING_STEPS: u32 = 30;
+const BANKING77_TRAINING_STEPS: u32 = 100;
 const CRAFTAX_CHECKPOINT_STEPS: [u32; 3] = [16, 33, 66];
 /// One pass over the proven 131-row corpus at batch size 2. Tinker samples
 /// with replacement, so this is a named optimizer-step budget, not an epoch.
@@ -52,13 +52,18 @@ const CHECKPOINT_EVALUATION_TIMEOUT_S: u32 = 3600;
 /// counts are product-owned), so cap each paid launch at one fifth of the
 /// five-run acceptance budget. The public service remains the execution
 /// authority and Workshop reconciles actual usage from its event stream.
-const HOSTED_SFT_COST_CEILING_USD: f64 = 10.0;
+const HOSTED_SFT_COST_CEILING_USD: f64 = 15.0;
 /// Allowlisted dataset shards. A caller selects one; it cannot supply a path.
 const BANKING77_SHARDS: [&str; 2] = ["train_a", "train_b"];
 /// Torn-tail reads while the producer appends are transient. Give up only
 /// after the upstream stays unreadable across this many consecutive polls.
 const MAX_CONSECUTIVE_PAGE_ERRORS: u32 = 20;
-const HOSTED_SFT_LORA_RANK: u64 = 8;
+const HOSTED_SFT_LORA_RANK: u64 = 16;
+const BANKING77_SPLIT_SEED: u64 = 20260907;
+const BANKING77_SELECTION_SEED: u64 = 20260908;
+const BANKING77_HELDOUT_SEED: u64 = 20260906;
+const BANKING77_SELECTION_SIZE: u32 = 400;
+const BANKING77_HELDOUT_SIZE: u32 = 400;
 
 pub fn recipe_catalog() -> Vec<Value> {
     vec![craftax_nemotron_recipe(), banking77_recipe()]
@@ -106,14 +111,14 @@ fn craftax_nemotron_recipe() -> Value {
 fn banking77_recipe() -> Value {
     let catalog_ok = super::tinker_catalog::TinkerBaseModelCatalog::load().is_ok();
     let service_reason = public_sft_service_reason();
-    let jsonl_ok = banking77_source().is_ok();
+    let jsonl_ok = banking77_source().is_ok() || banking77_reference_sources().is_ok();
     let available = catalog_ok && service_reason.is_none() && jsonl_ok;
     let availability_reason = if available {
         Value::Null
     } else if let Some(reason) = service_reason {
         json!(reason)
     } else if !jsonl_ok {
-        json!("SYNTH_SFT_BANKING77_TRAIN_JSONL must point at a real Banking77 JSONL file")
+        json!("Set SYNTH_BANKING77_TRAIN_CSV and SYNTH_BANKING77_HELDOUT_CSV for the NanoClassify reference split, or SYNTH_SFT_BANKING77_TRAIN_JSONL for a smoke corpus")
     } else {
         json!("Hosted Tinker base-model catalog is unavailable")
     };
@@ -127,6 +132,11 @@ fn banking77_recipe() -> Value {
         "limits": {
             "backend": "tinker",
             "checkpointSteps": BANKING77_CHECKPOINT_STEPS,
+            "trainingSteps": BANKING77_TRAINING_STEPS,
+            "batchSize": 64,
+            "rank": HOSTED_SFT_LORA_RANK,
+            "selectionExamples": BANKING77_SELECTION_SIZE,
+            "heldoutExamples": BANKING77_HELDOUT_SIZE,
             "evaluationPlan": { "phases": ["baseline", "checkpoint", "final"], "checkpointSteps": BANKING77_CHECKPOINT_STEPS, "transport": "tunnel", "metric": "reward" },
             "campaignRolloutsPerCheckpoint": BANKING77_CAMPAIGN_ROLLOUTS,
             "datasetShards": BANKING77_SHARDS,
@@ -141,7 +151,8 @@ fn banking77_recipe() -> Value {
             "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN",
             "SYNTH_OPTIMIZERS_SFT_SERVICE_URL",
             "SYNTH_OPTIMIZERS_SFT_FIXTURE=1 for unpaid",
-            "SYNTH_SFT_BANKING77_TRAIN_JSONL",
+            "SYNTH_BANKING77_TRAIN_CSV + SYNTH_BANKING77_HELDOUT_CSV (reference)",
+            "optional SYNTH_BANKING77_HELDOUT_INDICES_JSON for sealed membership",
             "banking77_classify container on 127.0.0.1:8110"
         ],
     })
@@ -207,6 +218,33 @@ fn banking77_source() -> Result<std::path::PathBuf> {
         bail!("Banking77 SFT corpus is not a file: {}", path.display());
     }
     Ok(path)
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Banking77ReferenceSources {
+    pub(crate) train_csv: std::path::PathBuf,
+    pub(crate) heldout_csv: std::path::PathBuf,
+    pub(crate) heldout_indices_json: Option<std::path::PathBuf>,
+}
+
+pub(crate) fn banking77_reference_sources() -> Result<Banking77ReferenceSources> {
+    let required = |name: &str| -> Result<std::path::PathBuf> {
+        let raw = std::env::var(name).with_context(|| format!("{name} is required"))?;
+        let path = std::path::PathBuf::from(raw.trim());
+        if !path.is_file() {
+            bail!("{name} is not a file: {}", path.display());
+        }
+        Ok(path)
+    };
+    let heldout_indices_json = std::env::var("SYNTH_BANKING77_HELDOUT_INDICES_JSON")
+        .ok()
+        .map(|raw| std::path::PathBuf::from(raw.trim()))
+        .filter(|path| path.is_file());
+    Ok(Banking77ReferenceSources {
+        train_csv: required("SYNTH_BANKING77_TRAIN_CSV")?,
+        heldout_csv: required("SYNTH_BANKING77_HELDOUT_CSV")?,
+        heldout_indices_json,
+    })
 }
 
 fn banking77_slot_url() -> String {
@@ -293,16 +331,28 @@ async fn start_banking77(
 )> {
     let catalog = super::tinker_catalog::TinkerBaseModelCatalog::load()?;
     let model_id = catalog.resolve(request.base_model.as_deref())?;
-    let shard = request
-        .dataset_shard
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(BANKING77_SHARDS[0])
-        .to_string();
-    let shard_path = materialize_banking77_shard(&shard)?;
-    let dataset_digest = dataset_digest_for_path(&shard_path)?;
-    super::sft_result::validate_dataset_digest(&shard_path, &dataset_digest)?;
+    let reference = banking77_reference_sources().ok();
+    let (shard, shard_path, dataset_digest) = if let Some(sources) = reference.as_ref() {
+        let train_digest = dataset_digest_for_path(&sources.train_csv)?;
+        let heldout_digest = dataset_digest_for_path(&sources.heldout_csv)?;
+        (
+            "nanoclassify_reference".to_string(),
+            sources.train_csv.clone(),
+            content_sha256(format!("{train_digest}\n{heldout_digest}\n").as_bytes()),
+        )
+    } else {
+        let shard = request
+            .dataset_shard
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(BANKING77_SHARDS[0])
+            .to_string();
+        let path = materialize_banking77_shard(&shard)?;
+        let digest = dataset_digest_for_path(&path)?;
+        super::sft_result::validate_dataset_digest(&path, &digest)?;
+        (shard, path, digest)
+    };
     let container_url = banking77_slot_url();
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_banking77_{}_{}", shard, &suffix[..8]);
@@ -314,6 +364,7 @@ async fn start_banking77(
         &container_url,
         &shard_path.to_string_lossy(),
         &dataset_digest,
+        reference.as_ref(),
     );
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
@@ -366,8 +417,8 @@ async fn start_banking77(
                 id: training_file.clone(),
                 digest: Some(dataset_digest.clone()),
                 role: Some("train".into()),
-                title: Some(format!("Banking77 SFT corpus · shard {shard}")),
-                metadata: json!({"shard": shard, "shards": BANKING77_SHARDS, "datasetDigest": dataset_digest}),
+                title: Some(format!("Banking77 SFT corpus · {shard}")),
+                metadata: json!({"shard": shard, "shards": BANKING77_SHARDS, "datasetDigest": dataset_digest, "splitStrategy": reference.as_ref().map(|_| "banking77.nanoclassify.v1")}),
             },
         ]),
         capabilities: Some(OptimizerCapabilities::for_algorithm("sft")),
@@ -382,6 +433,11 @@ async fn start_banking77(
             "rank": HOSTED_SFT_LORA_RANK,
             "localSlot": container_url,
             "checkpointSteps": BANKING77_CHECKPOINT_STEPS,
+            "trainingSteps": BANKING77_TRAINING_STEPS,
+            "batchSize": 64,
+            "selectionExamples": BANKING77_SELECTION_SIZE,
+            "heldoutExamples": BANKING77_HELDOUT_SIZE,
+            "heldoutSealed": reference.as_ref().is_some_and(|sources| sources.heldout_indices_json.is_some()),
         })),
         open_visual: request.open_visual.or(Some(true)),
         seed_fixture: None,
@@ -398,6 +454,7 @@ fn banking77_config_toml(
     container_url: &str,
     training_jsonl: &str,
     dataset_digest: &str,
+    reference: Option<&Banking77ReferenceSources>,
 ) -> String {
     let steps = BANKING77_CHECKPOINT_STEPS
         .iter()
@@ -405,6 +462,32 @@ fn banking77_config_toml(
         .collect::<Vec<_>>()
         .join(", ");
     let adapter = lora_adapter_label(HOSTED_SFT_LORA_RANK);
+    let reference_dataset = reference
+        .map(|sources| {
+            let heldout_indices = sources
+                .heldout_indices_json
+                .as_ref()
+                .map(|path| format!("heldout_indices_json = {:?}\n", path.to_string_lossy()))
+                .unwrap_or_default();
+            format!(
+                r#"
+[dataset]
+recipe_id = "banking77.sft.nanoclassify.v1"
+split_strategy = "banking77.nanoclassify.v1"
+train_csv = {:?}
+heldout_csv = {:?}
+{heldout_indices}split_seed = {BANKING77_SPLIT_SEED}
+selection_seed = {BANKING77_SELECTION_SEED}
+heldout_seed = {BANKING77_HELDOUT_SEED}
+dev_per_class = 10
+selection_size = {BANKING77_SELECTION_SIZE}
+heldout_size = {BANKING77_HELDOUT_SIZE}
+"#,
+                sources.train_csv.to_string_lossy(),
+                sources.heldout_csv.to_string_lossy(),
+            )
+        })
+        .unwrap_or_default();
     format!(
         r#"run_id = "{run_id}"
 backend = "tinker"
@@ -416,6 +499,7 @@ dataset_digest = "{dataset_digest}"
 selection_file_id = "file_selection"
 heldout_file_id = "file_heldout"
 accelerator_slots = 1
+rank = {HOSTED_SFT_LORA_RANK}
 checkpoint_steps = [{steps}]
 training_steps = {BANKING77_TRAINING_STEPS}
 max_seq_len = {BANKING77_MAX_SEQ_LEN}
@@ -428,6 +512,21 @@ checkpoint_evaluation_policy_harness = "classify"
 checkpoint_evaluation_plan_ref = "{BANKING77_PLAN_REF}"
 checkpoint_evaluation_world_ref = "{BANKING77_WORLD_REF}"
 checkpoint_evaluation_timeout_s = {CHECKPOINT_EVALUATION_TIMEOUT_S}
+
+[training]
+steps = {BANKING77_TRAINING_STEPS}
+batch_size = 64
+learning_rate = 0.00002
+checkpoint_every_steps = 25
+eval_every_steps = 25
+
+[evaluation]
+max_tokens = 64
+confidence = 0.95
+bootstrap_resamples = 4000
+minimum_claim_uplift = 0.01
+minimum_paired_examples = 400
+{reference_dataset}
 
 [metadata]
 evaluation_schema = "training.evaluation.plan.v1"
@@ -451,9 +550,9 @@ evaluation_timeout_s = {CHECKPOINT_EVALUATION_TIMEOUT_S}
 api_key_env = "TINKER_API_KEY"
 
 [hyperparameters]
-rank = 8
-batch_size = 2
-lr = 0.001
+rank = 16
+batch_size = 64
+lr = 0.00002
 "#
     )
 }
@@ -956,6 +1055,7 @@ mod tests {
                     "http://127.0.0.1:8110",
                     "/tmp/train_a.jsonl",
                     "sha256:deadbeef",
+                    None,
                 ),
             ),
             (
@@ -992,9 +1092,12 @@ mod tests {
             "http://127.0.0.1:8110",
             "/tmp/train_a.jsonl",
             "sha256:content",
+            None,
         );
         assert!(toml.contains("backend = \"tinker\""));
-        assert!(toml.contains("checkpoint_steps = [10, 20, 30]"));
+        assert!(toml.contains("checkpoint_steps = [25, 50, 75, 100]"));
+        assert!(toml.contains("batch_size = 64"));
+        assert!(toml.contains("minimum_paired_examples = 400"));
         assert!(toml.contains("campaign_rollouts_per_checkpoint = 2"));
         assert!(toml.contains("checkpoint_evaluation_plan_ref = \"banking77_eval.v1\""));
         assert!(toml.contains("checkpoint_evaluation_world_ref = \"world:banking77@heldout\""));
@@ -1006,6 +1109,33 @@ mod tests {
         assert!(toml.contains("evaluation_sample_count = 16"));
         assert!(toml.contains("container_url = \"http://127.0.0.1:8110\""));
         assert!(!toml.contains("goex.sft"));
+    }
+
+    #[test]
+    fn banking77_reference_toml_is_valid_and_pins_nanoclassify_split() {
+        let sources = Banking77ReferenceSources {
+            train_csv: std::path::PathBuf::from("/tmp/banking77-train.csv"),
+            heldout_csv: std::path::PathBuf::from("/tmp/banking77-heldout.csv"),
+            heldout_indices_json: Some(std::path::PathBuf::from("/tmp/heldout-indices.json")),
+        };
+        let raw = banking77_config_toml(
+            "sft_banking77_reference_ab12cd34",
+            "banking77.sft.nanoclassify.v1",
+            "openai/gpt-oss-20b",
+            "http://127.0.0.1:8110",
+            "/tmp/banking77-train.csv",
+            "sha256:content",
+            Some(&sources),
+        );
+        let parsed: toml::Value = toml::from_str(&raw).unwrap();
+        assert_eq!(
+            parsed["dataset"]["split_strategy"].as_str(),
+            Some("banking77.nanoclassify.v1")
+        );
+        assert_eq!(parsed["dataset"]["selection_size"].as_integer(), Some(400));
+        assert_eq!(parsed["dataset"]["heldout_size"].as_integer(), Some(400));
+        assert_eq!(parsed["training"]["steps"].as_integer(), Some(100));
+        assert_eq!(parsed["training"]["batch_size"].as_integer(), Some(64));
     }
 
     #[test]
@@ -1049,18 +1179,14 @@ mod tests {
             banking77["limits"]["costCeilingUsd"],
             HOSTED_SFT_COST_CEILING_USD
         );
-        assert_eq!(HOSTED_SFT_COST_CEILING_USD, 10.0);
+        assert_eq!(HOSTED_SFT_COST_CEILING_USD, 15.0);
     }
 
     #[test]
     fn hosted_sft_prerequisites_name_the_public_sft_service() {
         for recipe in [craftax_nemotron_recipe(), banking77_recipe()] {
             let text = serde_json::to_string(&recipe).unwrap();
-            assert!(
-                !text.contains("Optimizers-beta"),
-                "{}",
-                recipe["id"]
-            );
+            assert!(!text.contains("Optimizers-beta"), "{}", recipe["id"]);
             let prerequisites = recipe["prerequisites"].as_array().unwrap();
             assert!(prerequisites.iter().any(|item| {
                 item.as_str() == Some("synth-optimizers sft service --db … --bind 127.0.0.1:8878")
@@ -1141,6 +1267,7 @@ mod tests {
             "http://127.0.0.1:8110",
             &first.to_string_lossy(),
             &left,
+            None,
         );
         assert!(toml.contains(&format!("dataset_digest = \"{left}\"")));
         assert!(!toml.contains("file_train_run_a") || toml.contains("training_file_id"));
@@ -1155,6 +1282,7 @@ mod tests {
             "http://127.0.0.1:8110",
             "/tmp/train_a.jsonl",
             "sha256:abc",
+            None,
         );
         let craftax = craftax_nemotron_config_toml(
             "sft_c",
@@ -1164,14 +1292,10 @@ mod tests {
             None,
             "sha256:abc",
         );
-        for toml in [banking, craftax] {
-            assert!(toml.contains("adapter = \"lora_r8\""), "{toml}");
-            assert!(
-                toml.contains("rank = 8") || toml.contains("[hyperparameters]\nrank = 8"),
-                "{toml}"
-            );
-            assert!(!toml.contains("lora_r16"), "{toml}");
-        }
+        assert!(banking.contains("adapter = \"lora_r16\""), "{banking}");
+        assert!(banking.contains("rank = 16"), "{banking}");
+        assert!(craftax.contains("adapter = \"lora_r8\""), "{craftax}");
+        assert!(craftax.contains("rank = 8"), "{craftax}");
     }
 
     #[test]

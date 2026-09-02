@@ -293,6 +293,9 @@ fn training_vocabulary(kind: &str) -> &'static str {
         "checkpoint.created" => "training.checkpoint.created",
         "checkpoint.ready" => "training.checkpoint.ready",
         "evaluation.completed" | "heldout_eval.completed" => "training.evaluation.completed",
+        "sft.evaluation.example.completed" | "cispo.evaluation.example.completed" => {
+            "training.evaluation.progress"
+        }
         "training.dataset.validated" | "dataset.validated" => "training.dataset.validated",
         "sft.dataset.validated" => "training.dataset.validated",
         "cispo.rollout_group.completed" => "training.rollout_group.completed",
@@ -355,6 +358,14 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
         "checkpoint.created" | "checkpoint.ready" => checkpoint_ready_draft(algorithm, payload),
         "evaluation.completed" | "heldout_eval.completed" => {
             OptimizerEventDraft::new("sft.heldout_evaluation.completed", algorithm)
+                .delta(Map::from_iter([
+                    ("kind".into(), json!(kind)),
+                    ("evaluation".into(), payload.clone()),
+                ]))
+                .item(payload.clone())
+        }
+        "sft.evaluation.example.completed" | "cispo.evaluation.example.completed" => {
+            OptimizerEventDraft::new("training.evaluation.completed", algorithm)
                 .delta(Map::from_iter([
                     ("kind".into(), json!(kind)),
                     ("evaluation".into(), payload.clone()),
@@ -427,7 +438,9 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
             // checkpoint without treating selection as an uplift claim.
             OptimizerEventDraft::new("sft.checkpoint.promoted", algorithm).delta(delta)
         }
-        "sft.checkpoint_eval.completed"
+        "sft.baseline_eval.completed"
+        | "cispo.baseline_eval.completed"
+        | "sft.checkpoint_eval.completed"
         | "sft.heldout_eval.completed"
         | "cispo.checkpoint_eval.completed"
         | "cispo.heldout_eval.completed"
