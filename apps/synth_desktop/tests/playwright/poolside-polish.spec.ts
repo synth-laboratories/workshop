@@ -63,7 +63,7 @@ test.describe("preferences persistence", () => {
 		expect(["steer", "enqueue"]).toContain(normalized.submission.activeEnterAction);
 		expect(normalized.appearance.chatFontSize).toBeLessThanOrEqual(22);
 		expect(normalized.layout.last.sidebarWidth).toBeGreaterThanOrEqual(180);
-		expect(normalized.layout.last.outputPaneWidth).toBeLessThanOrEqual(720);
+		expect(normalized.layout.last.outputPaneWidth).toBeLessThanOrEqual(2400);
 	});
 
 	test("invalid font size is rejected with feedback", async ({ page }) => {

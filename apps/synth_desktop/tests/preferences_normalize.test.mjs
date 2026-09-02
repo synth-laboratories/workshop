@@ -38,10 +38,17 @@ const {
 	DEFAULT_PREFERENCES,
 	PREFERENCES_SCHEMA_VERSION,
 	clampNumber,
+	normalizeLayoutSnapshot,
 	normalizePreferences
 } = await import(compile("src/renderer/src/preferences/schema.ts", "PreferencesSchema.mjs"));
 
 const DEFAULT_LIMITS = { ...DEFAULT_AUTO_COMPACT_TOKEN_LIMITS };
+
+test("visual pane defaults wide and retains user-selected widths on large displays", () => {
+	assert.equal(DEFAULT_PREFERENCES.layout.last.outputPaneWidth, 720);
+	assert.equal(normalizeLayoutSnapshot({ outputPaneWidth: 2_000 }, 2_560, 1_440).outputPaneWidth, 2_000);
+	assert.equal(normalizeLayoutSnapshot({ outputPaneWidth: 9_999 }, 2_560, 1_440).outputPaneWidth, 2_400);
+});
 
 test("clampNumber treats unset as fallback, never as zero clamped to the floor", () => {
 	assert.equal(clampNumber(null, 16_000, 945_000, 250_000), 250_000);

@@ -6,7 +6,7 @@
  */
 
 export const PREFERENCES_STORAGE_KEY = "synth.preferences.v1";
-export const PREFERENCES_SCHEMA_VERSION = 5 as const;
+export const PREFERENCES_SCHEMA_VERSION = 6 as const;
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ToolActivityMode = "detailed" | "grouped" | "compact";
@@ -93,7 +93,7 @@ export const DEFAULT_LAYOUT: LayoutSnapshot = {
 	sidebarVisible: true,
 	sidebarWidth: 260,
 	outputPaneVisible: false,
-	outputPaneWidth: 420,
+	outputPaneWidth: 720,
 	visualsListWidth: 560,
 	bottomPanelVisible: false,
 	bottomPanelHeight: 220,
@@ -175,7 +175,10 @@ export function normalizeLayoutSnapshot(
 	const minSidebar = 180;
 	const maxSidebar = Math.max(minSidebar, Math.min(420, viewportWidth - 480));
 	const minOutput = 280;
-	const maxOutput = Math.max(minOutput, Math.min(720, viewportWidth - 520));
+	// A visual can consume nearly the full workbench. The live splitter still
+	// preserves a narrow primary rail, but persisted widths must not re-clamp a
+	// wide visual to the historical 720px ceiling.
+	const maxOutput = Math.max(minOutput, Math.min(2400, viewportWidth - 160));
 	const minVisualsList = 280;
 	// Preserve the desktop preference while compact layouts are stacked; the
 	// live separator clamps against its actual parent content box.
@@ -360,6 +363,17 @@ export function migrateLegacyPreferences(storage: Storage): DesktopPreferences {
 		parsed = null;
 	}
 	const base = normalizePreferences(parsed);
+	const parsedVersion = parsed && typeof parsed === "object"
+		? Number((parsed as Record<string, unknown>).schemaVersion)
+		: 0;
+	// Version 5 shipped a 420px output-pane default. Give untouched installs the
+	// roomier visual default while preserving every explicitly resized width.
+	if (parsedVersion > 0 && parsedVersion < 6
+		&& base.layout.last.outputPaneWidth === 420
+		&& base.layout.default.outputPaneWidth === 420) {
+		base.layout.last.outputPaneWidth = 720;
+		base.layout.default.outputPaneWidth = 720;
+	}
 
 	const approval = storage.getItem("synth.approvalMode");
 	if (APPROVAL_MODES.has(approval as string) && (!parsed || typeof parsed !== "object")) {
@@ -375,7 +389,7 @@ export function migrateLegacyPreferences(storage: Storage): DesktopPreferences {
 
 	const inventoryWidth = Number(storage.getItem("synth.inventoryContainerPaneWidth"));
 	if (Number.isFinite(inventoryWidth) && inventoryWidth >= 280 && (!parsed || typeof parsed !== "object")) {
-		base.layout.last.outputPaneWidth = clampNumber(inventoryWidth, 280, 720, base.layout.last.outputPaneWidth);
+		base.layout.last.outputPaneWidth = clampNumber(inventoryWidth, 280, 2400, base.layout.last.outputPaneWidth);
 		base.layout.default.outputPaneWidth = base.layout.last.outputPaneWidth;
 	}
 

@@ -660,7 +660,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						<>
 							<PaneResizeHandle
 								value={inventoryContainerWidth}
-								minPrimary={chatRoute ? (showSidePanel ? 680 : 380) : 360}
+								minPrimary={chatRoute ? (showSidePanel ? 680 : 260) : 160}
 								minSecondary={chatRoute ? 260 : 340}
 								onChange={resizeInventoryPane}
 								ariaLabel="Resize visual pane"
