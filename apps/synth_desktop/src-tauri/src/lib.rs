@@ -1080,6 +1080,21 @@ pub(crate) async fn authorize_optimizer_recipe_start(
                 request.recipe_id
             ))
         })?;
+    // A workspace eval whose provider is explicitly `none` cannot issue a
+    // billable model call. Treat it like the other local no-provider paths:
+    // requiring a PaidCompute/CredentialAccess grant here both misrepresents
+    // the run and deadlocks sessions whose allowlist intentionally names only
+    // real providers. The recipe's rollout/step bounds remain enforced by the
+    // container evaluator.
+    if recipe.get("provider").and_then(Value::as_str) == Some("none") {
+        let (run, event) = state
+            .optimizers()
+            .start_recipe(request)
+            .await
+            .map_err(AppError::from)?;
+        publish_optimizer_event(app, state, event).await?;
+        return Ok(run);
+    }
     // Local MLX recipes do not incur provider charges. The click itself is the
     // operator's explicit instruction.
     if matches!(

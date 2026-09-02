@@ -959,6 +959,7 @@ pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
         },
         "locality": recipe.locality.as_str(),
         "container": recipe.container,
+        "provider": recipe.provider,
         "sourceHash": recipe.source_hash,
         "limits": {
             "maxCostUsd": recipe.bounds.max_cost_usd,
