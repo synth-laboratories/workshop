@@ -265,12 +265,26 @@ pub fn collection_rows(
             .filter_map(|index| {
                 let id = p.candidate_order.get(index)?;
                 let candidate = p.candidates.get(id)?;
-                let mut seed = RowSeed::new(
-                    id.clone(),
-                    "gepa_candidate",
-                    "gepa_candidate.v1",
-                    serde_json::to_value(candidate).unwrap_or(Value::Null),
-                );
+                let mut details = serde_json::to_value(candidate).unwrap_or(Value::Null);
+                if let Some(object) = details.as_object_mut() {
+                    let reward_vector = p
+                        .evaluations
+                        .iter()
+                        .filter(|evaluation| {
+                            evaluation.candidate_id.as_deref() == Some(id.as_str())
+                                && matches!(
+                                    evaluation.stage.as_deref(),
+                                    Some("seed_full_train" | "candidate_full_train")
+                                )
+                        })
+                        .filter_map(|evaluation| {
+                            Some((evaluation.example_id.clone()?, json!(evaluation.reward?)))
+                        })
+                        .collect::<serde_json::Map<_, _>>();
+                    object.insert("rewardVector".into(), Value::Object(reward_vector));
+                }
+                let mut seed =
+                    RowSeed::new(id.clone(), "gepa_candidate", "gepa_candidate.v2", details);
                 seed.label = candidate.source.clone();
                 seed.parent_id = candidate.parent_id.clone();
                 seed.score = candidate
@@ -2231,6 +2245,11 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("variant 3"));
+        let reward_vector = candidate.details["rewardVector"].as_object().unwrap();
+        assert!(
+            !reward_vector.is_empty(),
+            "candidate pages retain the bounded Pareto vector without exposing the rollout collection"
+        );
     }
 
     #[test]

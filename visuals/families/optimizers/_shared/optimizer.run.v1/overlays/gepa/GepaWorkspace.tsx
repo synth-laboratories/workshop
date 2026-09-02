@@ -169,6 +169,9 @@ export function GepaWorkspace({
   visualId,
   visualRevision,
   sourceDigest,
+  evaluationTotal,
+  evaluationPageState,
+  proposerCallTotal,
   embedded = false
 }: {
   projected: ProjectedState;
@@ -180,6 +183,9 @@ export function GepaWorkspace({
   visualId?: string;
   visualRevision?: number;
   sourceDigest?: string;
+  evaluationTotal?: number;
+  evaluationPageState?: "idle" | "loading" | "ready" | "stale" | "error";
+  proposerCallTotal?: number;
   embedded?: boolean;
 }) {
   const gepa = projected.gepa;
@@ -346,7 +352,7 @@ export function GepaWorkspace({
   const proposerLimit = limitOf(gepa, "proposer_calls");
   const rolloutSpentValue = Math.max(rolloutLimit?.spent ?? 0, gepa.rolloutsCompleted);
   const rolloutSpent = rolloutSpentValue > 0 ? rolloutSpentValue : undefined;
-  const proposerSpent = proposerLimit?.spent ??
+  const proposerSpent = proposerLimit?.spent ?? proposerCallTotal ??
     (gepa.proposerTraces.filter((trace) => trace.status === "completed").length || undefined);
   const costSpent = costLimit?.spent ??
     (gepa.runtime.costTelemetryComplete ? gepa.runtime.reportedCostUsd : undefined) ??
@@ -381,6 +387,41 @@ export function GepaWorkspace({
         : `${Math.round(gepa.rolloutsCompleted)} completed rollouts`,
       testId: "gepa-rollout-count"
     },
+    {
+      label: "Configured concurrency",
+      value: gepa.runtime.configuredRolloutWorkers != null
+        ? `${Math.round(gepa.runtime.configuredRolloutWorkers)}`
+        : "unavailable",
+      title: [
+        gepa.runtime.staticRolloutWorkers != null
+          ? `Static rollout pool: ${Math.round(gepa.runtime.staticRolloutWorkers)}`
+          : null,
+        gepa.runtime.rolloutSubmissionMode
+          ? `Submission: ${gepa.runtime.rolloutSubmissionMode}`
+          : null
+      ].filter(Boolean).join(" · ") || "The runtime has not reported configured rollout workers",
+      testId: "gepa-configured-concurrency"
+    },
+    {
+      label: "Rollouts / min",
+      value: gepa.runtime.rolloutsPerMinute != null
+        ? gepa.runtime.rolloutsPerMinute.toFixed(1)
+        : gepa.rolloutsCompleted === 1 ? "warming" : "—",
+      title: "Observed uncached rollout throughput from the latest completed dispatch batch",
+      testId: "gepa-rollout-throughput"
+    },
+    {
+      label: "Effective concurrency",
+      value: gepa.runtime.estimatedEffectiveConcurrency != null
+        ? gepa.runtime.estimatedEffectiveConcurrency.toFixed(1)
+        : gepa.runtime.semaphoreSize != null
+          ? `${Math.round(gepa.runtime.activeWorkers ?? 0)} / ${Math.round(gepa.runtime.semaphoreSize)}`
+          : "unavailable",
+      title: gepa.runtime.queuedRollouts != null
+        ? `${Math.round(gepa.runtime.queuedRollouts)} queued rollouts`
+        : "Observed parallelism has not been reported yet",
+      testId: "gepa-effective-concurrency"
+    },
     { label: "Best train", value: bestScore != null ? bestScore.toFixed(2) : "—" },
     { label: "Heldout", value: heldoutValue },
     {
@@ -392,26 +433,6 @@ export function GepaWorkspace({
     {
       label: "Proposer calls",
       value: proposerSpent != null ? `${Math.round(proposerSpent)}` : "—"
-    },
-    {
-      label: "Concurrency",
-      value: terminal
-        ? "stopped"
-        : gepa.runtime.semaphoreSize != null
-        ? `${Math.round(gepa.runtime.activeWorkers ?? 0)} / ${Math.round(gepa.runtime.semaphoreSize)}`
-        : "unavailable",
-      title: gepa.runtime.queuedRollouts != null
-        ? `${Math.round(gepa.runtime.queuedRollouts)} queued rollouts`
-        : "The runtime has not reported its semaphore yet"
-    },
-    {
-      label: "Rollouts / min",
-      value: terminal
-        ? "—"
-        : gepa.runtime.rolloutsPerMinute != null
-        ? gepa.runtime.rolloutsPerMinute.toFixed(1)
-        : gepa.rolloutsCompleted === 1 ? "warming" : "—",
-      title: "Rolling observed completion rate over the most recent minute"
     },
     {
       label: "Cost",
@@ -528,6 +549,9 @@ export function GepaWorkspace({
       <RolloutBrowser
         groups={evaluationData.groups}
         rows={evaluationData.rows}
+        totalRows={evaluationTotal}
+        loading={evaluationPageState === "loading"}
+        stale={evaluationPageState === "stale"}
         itemLabel="evaluation results"
         emptyText={stageFilter
           ? "No rollouts for the selected stage yet. Clear the stage filter to see everything."

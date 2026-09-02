@@ -25,12 +25,32 @@ function isTrainSelectable(candidate: CandidateRecord): boolean {
 
 function fullTrainScores(gepa: GepaState, candidateId: string): Map<string, number> {
   const scores = new Map<string, number>();
+  const candidate = gepa.candidates.find((row) => String(row.id ?? "") === candidateId);
+  const durable = candidate?.rewardVector;
+  if (durable && typeof durable === "object" && !Array.isArray(durable)) {
+    for (const [exampleId, reward] of Object.entries(durable as Record<string, unknown>)) {
+      if (typeof reward === "number" && Number.isFinite(reward)) scores.set(exampleId, reward);
+    }
+  }
+  if (scores.size > 0) return scores;
   for (const evaluation of gepa.evaluations) {
     if (evaluation.candidateId !== candidateId || evaluation.reward == null || !evaluation.exampleId) continue;
     if (!["seed_full_train", "candidate_full_train"].includes(evaluation.stage ?? "")) continue;
     scores.set(evaluation.exampleId, evaluation.reward);
   }
   return scores;
+}
+
+function dominates(left: Map<string, number>, right: Map<string, number>, dimensions: string[]): boolean {
+  if (left.size === 0 || right.size === 0) return false;
+  let strictlyBetter = false;
+  for (const dimension of dimensions) {
+    const a = left.get(dimension);
+    const b = right.get(dimension);
+    if (a == null || b == null || a < b) return false;
+    if (a > b) strictlyBetter = true;
+  }
+  return strictlyBetter;
 }
 
 function cellColor(reward: number, winner: boolean): string {
@@ -60,9 +80,13 @@ export function FrontierPanel({
       .filter((value): value is number => value != null);
     if (values.length) bestByExample.set(exampleId, Math.max(...values));
   }
-  const rows: CandidateRow[] = selectable.map((candidate) => {
-    const id = String(candidate.id ?? "");
-    const scores = fullTrainScores(gepa, id);
+  const scoreRows = selectable.map((candidate) => ({
+    candidate,
+    id: String(candidate.id ?? ""),
+    scores: fullTrainScores(gepa, String(candidate.id ?? ""))
+  }));
+  const hasDurableVectors = scoreRows.some((row) => row.scores.size > 0);
+  const rows: CandidateRow[] = scoreRows.map(({ candidate, id, scores }) => {
     const values = [...scores.values()];
     const wins = [...scores].filter(([exampleId, reward]) =>
       Math.abs(reward - (bestByExample.get(exampleId) ?? Number.POSITIVE_INFINITY)) <= Number.EPSILON
@@ -73,7 +97,9 @@ export function FrontierPanel({
       scores,
       mean: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined,
       wins,
-      onFrontier: frontierIds.has(id)
+      onFrontier: hasDurableVectors
+        ? scores.size > 0 && !scoreRows.some((other) => other.id !== id && dominates(other.scores, scores, allExamples))
+        : frontierIds.has(id)
     };
   }).sort((a, b) => Number(b.onFrontier) - Number(a.onFrontier) || b.wins - a.wins);
   const pending = gepa.candidates.filter((candidate) => !isTrainSelectable(candidate));
