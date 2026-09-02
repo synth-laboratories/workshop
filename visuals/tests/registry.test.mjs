@@ -87,8 +87,11 @@ test("visuals package exposes the registered templates", () => {
     if (id === "live.annotated_rollouts.v1") {
       // The superset viewer folds each rollout's stream with its annotation
       // sibling; both are declared per rollout on the one multi-stream input.
-      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream"]);
+      // The optional optimizer_run input carries the authoritative eval
+      // runtime configuration (container, policy, provider, model pins).
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream", "optimizer_run"]);
       assert.equal(meta.inputs[0].multiple, true);
+      assert.equal(meta.inputs[1].required, false);
       assert.equal(meta.observationContract.readiness.requireTerminal, false);
     }
     if (id === "live.craftax.v1") {
