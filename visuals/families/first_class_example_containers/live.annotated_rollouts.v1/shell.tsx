@@ -4,6 +4,7 @@ import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber } from "../../../runtime/liveStream.ts";
 import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
 import type { LiveEvalEvent } from "../../../runtime/types.ts";
+import { TraceV5EventList } from "../../../components/TraceV5EventList.tsx";
 import {
   FINDING_KIND_ORDER,
   activeFindings,
@@ -18,6 +19,7 @@ import {
   type LaneEvent,
 } from "./project.ts";
 import { TaskDetails, familyLabel, outcomeLabel, progressLabel, taskFamily } from "./adapters.tsx";
+import { laneTraceV5Items } from "./traceV5.ts";
 
 type StreamPayload = { run_id?: string; events?: LiveEvalEvent[]; sse_url?: string };
 type Feed = "all" | "annotations" | "rollout";
@@ -181,6 +183,16 @@ function LlmCallCards({ lane, showHistory }: { lane: Lane; showHistory: boolean 
   </section>;
 }
 
+function StandardTraceV5Viewer({ lane }: { lane: Lane }) {
+  const projection = useMemo(() => laneTraceV5Items(lane), [lane]);
+  return <section aria-label="Trace V5 viewer" data-testid={`trace-v5-viewer-${lane.name}`} style={{ marginTop: 4, paddingTop: 12, borderTop: "1px solid var(--sv-border)" }}>
+    <div className="sv-section-head"><div><h4 style={{ margin: 0, fontSize: 11 }}>Trace V5 viewer</h4><span style={{ fontSize: 9, color: "var(--sv-text-faint)" }}>Policy-visible inputs, retained reasoning, tool calls, results, and outputs for each model step.</span></div><span className="sv-mono">{projection.callCount} policy call{projection.callCount === 1 ? "" : "s"}</span></div>
+    {projection.missingPolicyEnvelopeCount ? <p style={{ margin: "0 0 8px", color: "#c2553f", fontSize: 10 }}>{projection.missingPolicyEnvelopeCount} call{projection.missingPolicyEnvelopeCount === 1 ? " is" : "s are"} missing a policy-open envelope; the viewer preserves the surviving evidence.</p> : null}
+    <TraceV5EventList items={projection.items} defaultView="focus" emptyToolText="No structured tool calls were retained for this rollout." />
+    {!projection.callCount ? <p style={{ margin: 0, color: "var(--sv-text-faint)", fontSize: 10 }}>No Trace V5 policy-call envelopes have arrived for this rollout yet.</p> : null}
+  </section>;
+}
+
 function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: boolean; streamBase: URL | null }) {
   const [tab, setTab] = useState<DetailTab>("rollout");
   const pct = lane.total ? Math.min(100, lane.done / lane.total * 100) : 0;
@@ -210,6 +222,7 @@ function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: 
       <div className="sv-section-head" style={{ marginBottom: 0 }}><h4 style={{ margin: 0, fontSize: 11 }}>Rollout information</h4><span className="sv-mono">{familyLabel(lane)} · {outcomeLabel(lane)}</span></div>
       <MarkerStrip lane={lane} />
       <TaskDetails lane={lane} streamBase={streamBase} />
+      <StandardTraceV5Viewer lane={lane} />
       <div style={{ display: "flex", gap: 10, fontSize: 10, color: "var(--sv-text-faint)", flexWrap: "wrap" }} className="sv-mono">
         {FINDING_KIND_ORDER.map((kind) => <span key={kind} style={{ color: counts[kind] ? KIND_COLOR[kind] : undefined }}>{counts[kind] ?? 0} {kind.replace("_", " ")}</span>)}
         <span>{lane.findings.filter((row) => row.status === "retracted").length} retracted</span>
