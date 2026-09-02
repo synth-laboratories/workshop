@@ -29,6 +29,8 @@ import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
 import type { LagunaPolicy } from "../bridge/types";
 import { orderedLagunaPolicies, policyLabel } from "../runtime/lagunaPolicies";
 import { bridges } from "../runtime/desktopBridge";
+import type { PaidComputeAutoApprovalSettings } from "../generated/protocol";
+import { parseUsdAmount } from "../runtime/paidComputeUsd";
 import {
 	armedPromptId,
 	IDLE_STEER_STATE,
@@ -148,6 +150,99 @@ const SANDBOX_OPTIONS: Array<{ id: SandboxMode; label: string; description: stri
 const APPROVAL_CHIP_LABEL: Record<ApprovalPolicy, string> = { untrusted: "Ask", "on-request": "Risky", never: "Auto" };
 const SANDBOX_CHIP_LABEL: Record<SandboxMode, string> = { "read-only": "Read", "workspace-write": "Workspace", "danger-full-access": "Full" };
 
+const DEFAULT_PAID_COMPUTE: PaidComputeAutoApprovalSettings = {
+	enabled: false,
+	maxRequestUsd: "0.10",
+	maxConversationUsd: "1.00",
+	providers: []
+};
+const PAID_COMPUTE_PROVIDERS = [
+	{ id: "openrouter", label: "OpenRouter" },
+	{ id: "openai", label: "OpenAI" },
+	{ id: "anthropic", label: "Anthropic" }
+];
+
+function PaidComputeMenuSection({ approvalPolicy, sandboxMode }: {
+	approvalPolicy: ApprovalPolicy;
+	sandboxMode: SandboxMode;
+}) {
+	const [settings, setSettings] = useState<PaidComputeAutoApprovalSettings>(DEFAULT_PAID_COMPUTE);
+	const [requestLimit, setRequestLimit] = useState(DEFAULT_PAID_COMPUTE.maxRequestUsd);
+	const [conversationLimit, setConversationLimit] = useState(DEFAULT_PAID_COMPUTE.maxConversationUsd);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	useEffect(() => {
+		void bridges.config?.getDesktopPermissions().then((current) => {
+			const paid = current.paidCompute ?? DEFAULT_PAID_COMPUTE;
+			setSettings(paid);
+			setRequestLimit(paid.maxRequestUsd);
+			setConversationLimit(paid.maxConversationUsd);
+		}).catch((reason) => setError(publicError(reason)));
+	}, []);
+
+	const persist = async (next: PaidComputeAutoApprovalSettings) => {
+		if (!bridges.config?.updateDesktopPermissions) return;
+		setBusy(true);
+		try {
+			const stored = await bridges.config.updateDesktopPermissions({
+				approvalPolicy,
+				sandboxMode,
+				paidCompute: next
+			});
+			const paid = stored.paidCompute ?? DEFAULT_PAID_COMPUTE;
+			setSettings(paid);
+			setRequestLimit(paid.maxRequestUsd);
+			setConversationLimit(paid.maxConversationUsd);
+			setError(null);
+		} catch (reason) {
+			setError(publicError(reason));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const persistLimit = (kind: "request" | "conversation") => {
+		const value = kind === "request" ? requestLimit : conversationLimit;
+		const validation = parseUsdAmount(value).error;
+		if (validation) {
+			setError(validation);
+			return;
+		}
+		void persist(kind === "request"
+			? { ...settings, maxRequestUsd: value }
+			: { ...settings, maxConversationUsd: value });
+	};
+
+	return <div className="permission-section permission-paid-compute" aria-label="Paid compute">
+		<p>Paid compute</p>
+		<label className="permission-paid-toggle">
+			<span><strong>Auto-approve within limits</strong><small>Applies to new conversations.</small></span>
+			<input type="checkbox" checked={settings.enabled} disabled={busy} data-testid="composer-paid-compute-auto-approve" onChange={(event) => void persist({
+				...settings,
+				enabled: event.target.checked,
+				providers: event.target.checked && settings.providers.length === 0 ? ["openrouter"] : settings.providers
+			})} />
+		</label>
+		<div className="permission-paid-limits">
+			<label><span>Per request</span><span className="permission-money-input"><b>$</b><input aria-label="Maximum paid compute per request" inputMode="decimal" value={requestLimit} disabled={busy} onChange={(event) => setRequestLimit(event.target.value)} onBlur={() => persistLimit("request")} /></span></label>
+			<label><span>Per conversation</span><span className="permission-money-input"><b>$</b><input aria-label="Maximum paid compute per conversation" inputMode="decimal" value={conversationLimit} disabled={busy} onChange={(event) => setConversationLimit(event.target.value)} onBlur={() => persistLimit("conversation")} /></span></label>
+		</div>
+		<div className="permission-paid-providers" aria-label="Allowed paid compute providers">
+			{PAID_COMPUTE_PROVIDERS.map((provider) => <label key={provider.id}>
+				<input type="checkbox" checked={settings.providers.includes(provider.id)} disabled={busy} onChange={(event) => void persist({
+					...settings,
+					providers: event.target.checked
+						? [...new Set([...settings.providers, provider.id])]
+						: settings.providers.filter((id) => id !== provider.id)
+				})} />
+				<span>{provider.label}</span>
+			</label>)}
+		</div>
+		{error ? <small className="permission-paid-error" role="alert">{error}</small> : null}
+	</div>;
+}
+
 function PermissionMenu({ approvalPolicy, sandboxMode, onSelect, disabled, open, onOpenChange }: {
 	approvalPolicy: ApprovalPolicy;
 	sandboxMode: SandboxMode;
@@ -179,6 +274,7 @@ function PermissionMenu({ approvalPolicy, sandboxMode, onSelect, disabled, open,
 			<div className="permission-section" role="listbox" aria-label="Runtime permissions"><p>Runtime permissions</p>
 				{SANDBOX_OPTIONS.map((option) => <button key={option.id} type="button" role="option" aria-selected={option.id === sandboxMode} className={`permission-option${option.id === sandboxMode ? " selected" : ""}`} onClick={() => onSelect(approvalPolicy, option.id)}><span><strong>{option.label}</strong><small>{option.description}</small></span>{option.id === sandboxMode ? <b aria-hidden>✓</b> : null}</button>)}
 			</div>
+			<PaidComputeMenuSection approvalPolicy={approvalPolicy} sandboxMode={sandboxMode} />
 		</div> : null}
 	</div>;
 }
