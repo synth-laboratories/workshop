@@ -198,18 +198,12 @@ function IconContextCompaction() {
 	);
 }
 
-function ToolActivityIcon({ label }: { label: string }) {
-	const name = label.toLowerCase();
-	if (/command|shell|exec|terminal/.test(name)) {
-		return <svg viewBox="0 0 20 20" fill="none"><rect x="2.75" y="3.25" width="14.5" height="13.5" rx="2.5"/><path d="m6.25 7 2.25 2-2.25 2M10.75 12h3"/></svg>;
-	}
-	if (/write|edit|patch|update|create|present/.test(name)) {
-		return <svg viewBox="0 0 20 20" fill="none"><path d="m4 14.75.65-3.3L12.9 3.2a1.8 1.8 0 0 1 2.55 0l1.35 1.35a1.8 1.8 0 0 1 0 2.55l-8.25 8.25-3.3.65zM11.75 4.35l3.9 3.9"/></svg>;
-	}
-	if (/search|find|list|read|get|inspect|view/.test(name)) {
-		return <svg viewBox="0 0 20 20" fill="none"><circle cx="8.75" cy="8.75" r="5.75"/><path d="m13 13 4 4"/></svg>;
-	}
-	return <svg viewBox="0 0 20 20" fill="none"><path d="M3.25 4.25c2.3 0 4.1.45 5.75 1.75v10.25c-1.65-1.3-3.45-1.75-5.75-1.75zM16.75 4.25C14.45 4.25 12.65 4.7 11 6v10.25c1.65-1.3 3.45-1.75 5.75-1.75zM10 6v10.25"/></svg>;
+function McpToolIcon() {
+	return (
+		<svg viewBox="0 0 20 20" fill="none" data-icon="mcp-wrench">
+			<path d="M11.75 3.1a4.15 4.15 0 0 0-4.9 5.4l-4.5 4.5a1.9 1.9 0 0 0 2.65 2.65l4.5-4.5a4.15 4.15 0 0 0 5.4-4.9l-2.55 2.5-2.1-.45-.45-2.1 2.5-2.55a4 4 0 0 0-.55-.55Z" />
+		</svg>
+	);
 }
 
 function ActivityLine({
@@ -385,7 +379,7 @@ function ActivityLine({
 		return (
 			<div className="local-activity tool-activity mcp-activity" data-testid={`activity-${line.id}`}>
 				{runningIndicator}
-				<span className="tool-activity-icon" aria-hidden><ToolActivityIcon label={line.label} /></span>
+				<span className="tool-activity-icon" aria-hidden><McpToolIcon /></span>
 				<span className="tool-activity-body">
 					<code className="mcp-activity-name">{line.label}</code>
 					{line.detail ? <span className="tool-activity-detail">{line.detail}</span> : null}

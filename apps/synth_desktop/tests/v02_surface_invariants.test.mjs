@@ -68,10 +68,11 @@ test("finished tool calls show duration only after fifteen seconds", () => {
 	assert.match(projection, /durationMs: safeTool\.durationMs/);
 });
 
-test("MCP activity uses semantic Codex-style icons instead of a decorative diamond", () => {
+test("MCP activity uses a wrench icon instead of a decorative diamond", () => {
 	const transcript = read("components/ChatTranscript.tsx");
-	assert.match(transcript, /function ToolActivityIcon/);
-	assert.match(transcript, /<ToolActivityIcon label=\{line\.label\}/);
+	assert.match(transcript, /function McpToolIcon/);
+	assert.match(transcript, /data-icon="mcp-wrench"/);
+	assert.match(transcript, /<McpToolIcon \/>/);
 	assert.doesNotMatch(transcript, />◆</);
 });
 
