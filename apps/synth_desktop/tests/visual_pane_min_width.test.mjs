@@ -89,6 +89,10 @@ test("narrow windows cap the visual pane at min(40vw, persisted) then overlay vi
   assert.match(css, /html\.sidebar-hidden is the existing sidebar toggle/);
   assert.match(css, /html\.visual-expanded is Expand visual/);
   assert.match(css, /html\.visual-expanded \.sidebar/);
+  assert.match(
+    css,
+    /html\.visual-expanded \.composer-dock\s*\{[^}]*display:\s*none/s
+  );
   assert.doesNotMatch(css, /html\.compact-workbench\.sidebar-hidden/);
   assert.match(shell, /classList\.toggle\("compact-workbench"/);
   assert.match(shell, /matchMedia\("\(max-width: 860px\)"\)/);
