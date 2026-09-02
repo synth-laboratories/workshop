@@ -13,7 +13,7 @@ use super::OptimizerService;
 use anyhow::Result;
 use serde_json::{json, Value};
 
-const BANKING77_LABEL_TAXONOMY: &[&str] = &[
+pub(crate) const BANKING77_LABEL_TAXONOMY: &[&str] = &[
     "Refund_not_showing_up",
     "activate_my_card",
     "age_limit",

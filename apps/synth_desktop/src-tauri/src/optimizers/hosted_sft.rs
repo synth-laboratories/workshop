@@ -122,9 +122,10 @@ fn banking77_recipe() -> Value {
     } else {
         json!("Hosted Tinker base-model catalog is unavailable")
     };
+    let reference_mode = banking77_reference_sources().is_ok();
     json!({
         "id": HOSTED_SFT_BANKING77_RECIPE,
-        "title": "Banking77 Nemotron Lightning Tinker SFT",
+        "title": if reference_mode { "Banking77 GPT-OSS 20B Tinker SFT" } else { "Banking77 Nemotron Lightning Tinker SFT" },
         "algorithmId": "sft",
         "task": "banking77",
         "availability": if available { "available" } else { "unavailable" },
@@ -329,9 +330,22 @@ async fn start_banking77(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
-    let catalog = super::tinker_catalog::TinkerBaseModelCatalog::load()?;
-    let model_id = catalog.resolve(request.base_model.as_deref())?;
     let reference = banking77_reference_sources().ok();
+    let model_id = if reference.is_some() {
+        // NanoClassify's public reference result is a GPT-OSS 20B result. A
+        // different catalog default makes both its prompt renderer and uplift
+        // comparison invalid, even when the CSV split is identical.
+        "openai/gpt-oss-20b".to_string()
+    } else {
+        let catalog = super::tinker_catalog::TinkerBaseModelCatalog::load()?;
+        catalog.resolve(request.base_model.as_deref())?
+    };
+    let reference_mode = reference.is_some();
+    let model_title = if reference_mode {
+        "Banking77 GPT-OSS 20B Tinker SFT"
+    } else {
+        "Banking77 Nemotron Lightning Tinker SFT"
+    };
     let (shard, shard_path, dataset_digest) = if let Some(sources) = reference.as_ref() {
         let train_digest = dataset_digest_for_path(&sources.train_csv)?;
         let heldout_digest = dataset_digest_for_path(&sources.heldout_csv)?;
@@ -368,12 +382,20 @@ async fn start_banking77(
     );
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
-        algorithm_version: Some("banking77-nemotron-lightning-tinker-v1".into()),
+        algorithm_version: Some(if reference_mode {
+            "banking77-gpt-oss-20b-tinker-v1".into()
+        } else {
+            "banking77-nemotron-lightning-tinker-v1".into()
+        }),
         objective: Some(
             "Banking77 intent SFT · hosted Tinker · banking77_classify checkpoint campaigns".into(),
         ),
         source: Some("hosted".into()),
-        project_ref: Some("banking77@nemotron-lightning-tinker".into()),
+        project_ref: Some(if reference_mode {
+            "banking77@gpt-oss-20b-tinker".into()
+        } else {
+            "banking77@nemotron-lightning-tinker".into()
+        }),
         session_ref: request.session_ref.clone(),
         id: Some(run_id.clone()),
         execution_bindings: Some(vec![
@@ -409,7 +431,7 @@ async fn start_banking77(
                 id: HOSTED_SFT_BANKING77_RECIPE.into(),
                 digest: None,
                 role: Some("configuration".into()),
-                title: Some("Banking77 Nemotron Lightning Tinker SFT".into()),
+                title: Some(model_title.into()),
                 metadata: json!({"backend": "tinker", "baseModel": model_id}),
             },
             OptimizerResourceRef {
@@ -462,6 +484,22 @@ fn banking77_config_toml(
         .collect::<Vec<_>>()
         .join(", ");
     let adapter = lora_adapter_label(HOSTED_SFT_LORA_RANK);
+    let label_taxonomy = super::cispo::BANKING77_LABEL_TAXONOMY
+        .iter()
+        .map(|label| format!("{label:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let reference_contract = reference
+        .map(|_| {
+            let system_prompt = format!(
+                "Classify the customer banking message. Return exactly one label from this list, with no explanation or punctuation:\n{}",
+                super::cispo::BANKING77_LABEL_TAXONOMY.join(", ")
+            );
+            format!(
+                "renderer_version = \"renderers.gpt-oss.low.v1\"\nsystem_prompt = {system_prompt:?}\n"
+            )
+        })
+        .unwrap_or_default();
     let reference_dataset = reference
         .map(|sources| {
             let heldout_indices = sources
@@ -482,6 +520,7 @@ heldout_seed = {BANKING77_HELDOUT_SEED}
 dev_per_class = 10
 selection_size = {BANKING77_SELECTION_SIZE}
 heldout_size = {BANKING77_HELDOUT_SIZE}
+label_taxonomy = [{label_taxonomy}]
 "#,
                 sources.train_csv.to_string_lossy(),
                 sources.heldout_csv.to_string_lossy(),
@@ -491,7 +530,7 @@ heldout_size = {BANKING77_HELDOUT_SIZE}
     format!(
         r#"run_id = "{run_id}"
 backend = "tinker"
-base_model = "{model_id}"
+{reference_contract}base_model = "{model_id}"
 adapter = "{adapter}"
 training_file_id = "{training_file}"
 training_jsonl = "{training_jsonl}"
@@ -1128,12 +1167,23 @@ mod tests {
             Some(&sources),
         );
         let parsed: toml::Value = toml::from_str(&raw).unwrap();
+        assert_eq!(parsed["base_model"].as_str(), Some("openai/gpt-oss-20b"));
+        assert_eq!(
+            parsed["renderer_version"].as_str(),
+            Some("renderers.gpt-oss.low.v1")
+        );
+        assert!(parsed["system_prompt"].as_str().is_some_and(|value| value
+            .starts_with("Classify the customer banking message. Return exactly one label")));
         assert_eq!(
             parsed["dataset"]["split_strategy"].as_str(),
             Some("banking77.nanoclassify.v1")
         );
         assert_eq!(parsed["dataset"]["selection_size"].as_integer(), Some(400));
         assert_eq!(parsed["dataset"]["heldout_size"].as_integer(), Some(400));
+        assert_eq!(
+            parsed["dataset"]["label_taxonomy"].as_array().map(Vec::len),
+            Some(77)
+        );
         assert_eq!(parsed["training"]["steps"].as_integer(), Some(100));
         assert_eq!(parsed["training"]["batch_size"].as_integer(), Some(64));
         assert_eq!(parsed["evaluation"]["max_tokens"].as_integer(), Some(1024));
