@@ -655,6 +655,49 @@ pub fn find_recipe(workspace: &Path, recipe_id: &str) -> Result<WorkspaceRecipe>
         })
 }
 
+/// Resolve a workspace recipe from every repository the conversation has
+/// explicitly approved. The working workspace remains first, followed by
+/// user-attached folders. Container declarations already use this authority;
+/// recipe discovery must not silently apply a narrower boundary.
+pub fn find_session_recipe(
+    db: &crate::storage::Database,
+    session_id: &str,
+    recipe_id: &str,
+) -> Result<(PathBuf, WorkspaceRecipe)> {
+    let roots = session_search_roots(db, session_id)?;
+    let mut matches = Vec::new();
+    for root in roots {
+        for recipe in load_recipes(&root)? {
+            if recipe.id == recipe_id {
+                matches.push((root.clone(), recipe));
+            }
+        }
+    }
+    match matches.len() {
+        0 => Err(anyhow!(
+            "workspace recipe `{recipe_id}` is not declared in any approved workspace or attached folder"
+        )),
+        1 => Ok(matches.remove(0)),
+        _ => Err(anyhow!(
+            "workspace recipe `{recipe_id}` is declared in more than one approved workspace or attached folder"
+        )),
+    }
+}
+
+/// Catalog recipes from the same approved roots used by execution. Duplicate
+/// ids are retained here so start can reject the ambiguity instead of the
+/// catalog silently choosing one source.
+pub fn load_session_recipes(
+    db: &crate::storage::Database,
+    session_id: &str,
+) -> Result<Vec<WorkspaceRecipe>> {
+    let mut recipes = Vec::new();
+    for root in session_search_roots(db, session_id)? {
+        recipes.extend(load_recipes(&root)?);
+    }
+    Ok(recipes)
+}
+
 pub fn load_container_specs(workspace: &Path) -> Result<Vec<ContainerSpec>> {
     load_container_specs_from_root(workspace)
 }
@@ -1922,6 +1965,70 @@ max_total_rollouts = 10
         assert_eq!(recipe.bounds.max_total_rollouts, 10);
         assert_eq!(recipe.train_seeds, vec![0, 1]);
         assert!(recipe.annotation.is_none(), "annotation stage is off by default");
+    }
+
+    #[tokio::test]
+    async fn attached_repository_recipes_are_cataloged_and_resolved_for_execution() {
+        let root = tempdir().unwrap();
+        let primary = root.path().join("primary");
+        let attached = root.path().join("attached");
+        fs::create_dir_all(&primary).unwrap();
+        fs::create_dir_all(&attached).unwrap();
+        fs::write(
+            attached.join(RECIPE_FILE),
+            r#"
+id = "eval.attached.v1"
+algorithm = "eval"
+container = "attached"
+provider = "openai"
+model = "gpt-4.1-nano"
+locality = "container"
+family = "classify"
+harness = "desktop_eval"
+policy_config = "classify_default"
+train_seeds = [0]
+[bounds]
+max_cost_usd = 0.01
+max_total_rollouts = 1
+"#,
+        )
+        .unwrap();
+
+        let data = tempdir().unwrap();
+        let storage = crate::storage::Storage::open(data.path()).unwrap();
+        storage
+            .database()
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO sessions(id,title,target_json,status,metadata_json,created_at,updated_at) VALUES('attached-session','Attached','{}','ready',?1,'now','now')",
+                    [serde_json::json!({"workspace": primary}).to_string()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        crate::workspace_scope::get(storage.database(), "attached-session")
+            .await
+            .unwrap();
+        crate::workspace_scope::attach(
+            storage.database(),
+            "attached-session",
+            attached.to_str().unwrap(),
+            crate::workspace_scope::WorkspaceAccessMode::ReadWrite,
+            crate::workspace_scope::AttachmentSource::UserPicker,
+        )
+        .await
+        .unwrap();
+
+        let catalog = load_session_recipes(storage.database(), "attached-session").unwrap();
+        assert!(catalog.iter().any(|recipe| recipe.id == "eval.attached.v1"));
+        let (source_root, recipe) = find_session_recipe(
+            storage.database(),
+            "attached-session",
+            "eval.attached.v1",
+        )
+        .unwrap();
+        assert_eq!(source_root, attached.canonicalize().unwrap());
+        assert_eq!(recipe.id, "eval.attached.v1");
     }
 
     #[test]

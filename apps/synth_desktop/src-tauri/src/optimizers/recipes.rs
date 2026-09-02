@@ -46,9 +46,11 @@ async fn start_inner(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("workspace recipes require session_ref"))?;
-    let workspace =
-        super::workspace_recipe::require_session_workspace(service.database(), session)?;
-    let recipe = super::workspace_recipe::find_recipe(&workspace, &request.recipe_id)?;
+    let (workspace, recipe) = super::workspace_recipe::find_session_recipe(
+        service.database(),
+        session,
+        &request.recipe_id,
+    )?;
     match recipe.algorithm {
         super::workspace_recipe::AlgorithmKind::Eval => {
             // The container evaluator owns a large debug-build future. Box it

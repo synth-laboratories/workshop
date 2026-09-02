@@ -405,8 +405,8 @@ pub(super) async fn start(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow::anyhow!("workspace eval recipes require session_ref"))?;
-    let workspace = workspace_recipe::require_session_workspace(service.database(), session)?;
-    let recipe = workspace_recipe::find_recipe(&workspace, &request.recipe_id)?;
+    let (workspace, recipe) =
+        workspace_recipe::find_session_recipe(service.database(), session, &request.recipe_id)?;
     if recipe.algorithm != workspace_recipe::AlgorithmKind::Eval {
         bail!("recipe `{}` is not an eval recipe", recipe.id);
     }
