@@ -990,6 +990,28 @@ window.synthWorkspaceScope ??= isTauri
 					optimizerRunId,
 					ifNewerThan ?? null
 				)) as Promise<import("../bridge").OptimizerRunViewEnvelope>,
+			runSummary: (optimizerRunId, ifNewerThan) =>
+				fromGenerated(spectaCommands.optimizersRunSummary(
+					optimizerRunId,
+					ifNewerThan ?? null
+				)) as Promise<import("../bridge").OptimizerRunSummaryEnvelope>,
+			runCollection: (optimizerRunId, collection, query) =>
+				fromGenerated(spectaCommands.optimizersRunCollection(
+					optimizerRunId,
+					collection,
+					query ?? null
+				)) as Promise<import("../bridge").RunCollectionPage>,
+			runCollectionItem: (optimizerRunId, collection, itemId) =>
+				fromGenerated(spectaCommands.optimizersRunCollectionItem(
+					optimizerRunId,
+					collection,
+					itemId
+				)) as Promise<import("../bridge").RunCollectionRow | null>,
+			projectionAt: (optimizerRunId, sequence) =>
+				fromGenerated(spectaCommands.optimizersProjectionAt(
+					optimizerRunId,
+					sequence
+				)) as Promise<import("../bridge").HistoricalProjection>,
 			create: (request) => fromGenerated(spectaCommands.optimizersCreate(request)),
 			refresh: (optimizerRunId) => fromGenerated(spectaCommands.optimizersRefresh(optimizerRunId)),
 			eventsAfter: (optimizerRunId, afterSeq = 0, limit) =>

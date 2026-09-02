@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { VisualChrome } from "../../../../../chrome/VisualChrome.tsx";
 import { formatMissingNumber, formatMissingUsd } from "../../../../../runtime/liveStream.ts";
 import type { VisualBinding } from "../../../../../runtime/types.ts";
@@ -6,16 +6,19 @@ import { bindingInputName } from "../../../../../runtime/types.ts";
 import { GlobalTimeline, RunHeader } from "./RunChrome.tsx";
 import { algorithmLabel } from "./algorithmLabel.ts";
 import {
-  projectAtCursor,
   type OptimizerEvent,
   type OptimizerRun,
   type ProjectedState
 } from "./projectEvents.ts";
-import {
-  projectRunViewV2,
-  type OptimizerRunViewV2Like
-} from "./projectRunViewV2.ts";
+import { type OptimizerRunViewV2Like } from "./projectRunViewV2.ts";
 import { normalizeOptimizerEvents } from "./normalizeEvents.ts";
+import {
+  useHistoricalCursor,
+  type EvidenceHydrationState,
+  type EvidenceIntentClient,
+  type HistoryClient
+} from "./useHistoricalCursor.ts";
+import type { RunCollectionsClient } from "./workspace/CollectionBrowser.tsx";
 
 type FixturePayload = {
   run?: OptimizerRun;
@@ -43,10 +46,24 @@ export type FamilyShellProps = {
   data?: unknown;
   optimizer_run?: unknown;
   bindings?: VisualBinding[] | { inputs?: VisualBinding[]; slots?: VisualBinding[] };
+  /**
+   * Events the host injected up front. Projection-first hosts inject none;
+   * the historical cursor reads a bounded window on intent instead.
+   */
   events?: OptimizerEvent[];
   run?: OptimizerRun;
   runViewV2?: OptimizerRunViewV2Like;
   runProgress?: RunProgressAgreementLike;
+  /** Where raw-evidence hydration has got to, from the host. */
+  evidenceState?: EvidenceHydrationState;
+  /** Lazy, range-addressed journal access. Absent in fixtures. */
+  evidence?: EvidenceIntentClient;
+  /** Backend checkpointed historical projections. Absent in fixtures. */
+  history?: HistoryClient;
+  /** Keyset-paged durable collections bound to this run. Absent in fixtures. */
+  collections?: RunCollectionsClient;
+  /** Durable journal tail when the host knows it. */
+  tailCursor?: number;
   loadError?: string;
   showTimeline?: boolean;
   /** "workspace" hides the legacy run header/timeline; children own the chrome. */
@@ -54,14 +71,21 @@ export type FamilyShellProps = {
   extraMetrics?: Array<{ label: string; value: string }>;
   children: (ctx: {
     run: OptimizerRun;
+    /** The bounded timeline window; never the whole journal by default. */
     events: OptimizerEvent[];
     projected: ProjectedState;
+    /** Durable collections client, when the host provides one. */
+    collections?: RunCollectionsClient;
     selectedCandidate: string | null;
     setSelectedCandidate: (id: string | null) => void;
     cursor: {
       index: number;
       followLive: boolean;
       terminal: boolean;
+      loading: boolean;
+      historySource: "backend" | "local" | "none";
+      canLoadEarlier: boolean;
+      loadEarlier: () => void;
       onScrub: (index: number) => void;
       onFollowLive: () => void;
     };
@@ -126,31 +150,23 @@ export function OptimizerFamilyShell(props: FamilyShellProps) {
     algorithmId: hintAlgorithm ?? "unknown",
     status: "loading"
   }) as Record<string, unknown>);
-  const events = normalizeOptimizerEvents(
+  const injectedEvents = normalizeOptimizerEvents(
     (props.events ?? payload?.events ?? []) as unknown[]
   );
   const runViewV2 = props.runViewV2 ?? payload?.runViewV2;
   const runProgress = props.runProgress ?? payload?.runProgress;
 
-  const [followLive, setFollowLive] = useState(true);
-  const [cursorIndex, setCursorIndex] = useState(Math.max(0, events.length - 1));
   const [selectedCandidate, setSelectedCandidate] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (followLive) setCursorIndex(Math.max(0, events.length - 1));
-  }, [events.length, followLive]);
-
-  const atSeq = events[cursorIndex]?.sequenceNumber;
-  const projected = useMemo(
-    () => (followLive ? null : projectAtCursor(run, events, atSeq)),
-    [followLive, run, events, atSeq]
-  );
-  // The raw reducer is retained only for explicit timeline/time-travel. The
-  // live algorithm workspace formats the backend-owned projection directly.
-  const displayed = useMemo<ProjectedState | null>(() => {
-    if (!followLive) return projected;
-    return runViewV2 ? projectRunViewV2(run, runViewV2) : null;
-  }, [followLive, projected, run, runViewV2]);
+  const cursor = useHistoricalCursor({
+    run,
+    injectedEvents,
+    runViewV2,
+    evidence: props.evidence,
+    history: props.history,
+    evidenceState: props.evidenceState,
+    tailCursor: props.tailCursor ?? run.cursorSeq
+  });
+  const { followLive, timelineEvents, displayed } = cursor;
   const kicker = run.algorithmId && run.algorithmId !== "unknown"
     ? algorithmLabel(run.algorithmId)
     : props.kicker;
@@ -178,6 +194,7 @@ export function OptimizerFamilyShell(props: FamilyShellProps) {
     );
   }
   if (!displayed) {
+    const historical = !followLive && (cursor.loading || cursor.hydrating);
     return (
       <VisualChrome
         kicker={kicker}
@@ -187,10 +204,18 @@ export function OptimizerFamilyShell(props: FamilyShellProps) {
         testId={props.testId}
         footer={props.templateId}
       >
-        <section className="sv-section" role="alert" data-testid="optimizer-run-view-v2-unavailable">
-          <div className="sv-section-head"><h3>Canonical run view unavailable</h3></div>
-          <p className="sv-lede">Live optimizer state requires OptimizerRunViewV2. Raw events are available only after selecting a historical cursor.</p>
-        </section>
+        {historical ? (
+          <section className="sv-section" role="status" data-testid="optimizer-history-loading">
+            <div className="sv-section-head"><h3>Loading run history</h3></div>
+            <p className="sv-lede">The projection at this point is being folded from the durable journal. Live metrics remain current.</p>
+            <button type="button" className="sv-button" onClick={cursor.onFollowLive}>Back to live</button>
+          </section>
+        ) : (
+          <section className="sv-section" role="alert" data-testid="optimizer-run-view-v2-unavailable">
+            <div className="sv-section-head"><h3>Canonical run view unavailable</h3></div>
+            <p className="sv-lede">Live optimizer state requires OptimizerRunViewV2. Raw events are available only after selecting a historical cursor.</p>
+          </section>
+        )}
       </VisualChrome>
     );
   }
@@ -204,18 +229,16 @@ export function OptimizerFamilyShell(props: FamilyShellProps) {
     : ["completed", "failed", "canceled", "cancelled", "succeeded"].includes(
         String(summary.status ?? run.status)
       );
-  const cursor = {
-    index: cursorIndex,
+  const cursorContext = {
+    index: cursor.cursorIndex,
     followLive,
     terminal,
-    onScrub: (index: number) => {
-      setFollowLive(false);
-      setCursorIndex(index);
-    },
-    onFollowLive: () => {
-      setFollowLive(true);
-      setCursorIndex(Math.max(0, events.length - 1));
-    }
+    loading: cursor.loading,
+    historySource: cursor.historySource,
+    canLoadEarlier: cursor.canLoadEarlier,
+    loadEarlier: cursor.loadEarlier,
+    onScrub: cursor.onScrub,
+    onFollowLive: cursor.onFollowLive
   };
 
   return (
@@ -248,26 +271,53 @@ export function OptimizerFamilyShell(props: FamilyShellProps) {
         />
       ) : null}
       {props.chrome !== "workspace" && props.showTimeline !== false ? (
-        <GlobalTimeline
-          events={displayed.timeline.map((e) => ({
-            sequence: Number(e.sequence),
-            type: String(e.type),
-            occurredAt: String(e.occurredAt)
-          }))}
-          cursorIndex={cursorIndex}
-          onScrub={cursor.onScrub}
-          followLive={followLive}
-          terminal={terminal}
-          onFollowLive={cursor.onFollowLive}
-        />
+        cursor.hydrating && timelineEvents.length === 0 ? (
+          <p className="sv-lede" role="status" data-testid="optimizer-evidence-hydrating">
+            Loading run history for time travel. Metrics above are already current.
+          </p>
+        ) : (
+          <GlobalTimeline
+            events={(followLive ? displayed.timeline : timelineEvents.map((e) => ({
+              sequence: e.sequenceNumber,
+              type: e.type,
+              occurredAt: e.occurredAt
+            }))).map((e) => ({
+              sequence: Number(e.sequence),
+              type: String(e.type),
+              occurredAt: String(e.occurredAt)
+            }))}
+            cursorIndex={cursor.cursorIndex}
+            onScrub={cursor.onScrub}
+            followLive={followLive}
+            terminal={terminal}
+            onFollowLive={cursor.onFollowLive}
+          />
+        )
+      ) : null}
+      {!followLive && cursor.historySource === "backend" ? (
+        <p className="sv-mono" role="status" data-testid="optimizer-history-source">
+          history · backend checkpoint fold{cursor.loading ? " · loading" : ""}
+          {cursor.canLoadEarlier ? (
+            <>
+              {" · "}
+              <button type="button" className="sv-link" onClick={cursor.loadEarlier} disabled={cursor.loading}>
+                load earlier events
+              </button>
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      {cursor.error ? (
+        <p className="sv-lede" role="alert" data-testid="optimizer-history-error">{cursor.error}</p>
       ) : null}
       {props.children({
         run,
-        events,
+        events: timelineEvents,
         projected: displayed,
+        collections: props.collections,
         selectedCandidate,
         setSelectedCandidate,
-        cursor
+        cursor: cursorContext
       })}
     </VisualChrome>
   );

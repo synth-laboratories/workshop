@@ -101,6 +101,13 @@ export type RunProgressSnapshot = {
 	revision: number;
 };
 
+/** Raw-journal demand for one subscriber. */
+export type RunProgressEvidenceMode = "projection" | "auto" | "full";
+
+export type RunProgressSubscriptionOptions = {
+	evidence?: RunProgressEvidenceMode;
+};
+
 /** The transport the store reads through. Injectable so the rules are testable. */
 export type RunProgressTransport = {
 	get(runId: string): Promise<RunRecord>;
@@ -148,13 +155,38 @@ const MAX_PARKED_ENTRIES = 32;
  * durable projection and evidence hydrates behind it rather than blocking it.
  */
 const MAX_PARKED_EVENTS = 20_000;
+/**
+ * Ceiling on raw events an *active* full-evidence consumer may retain.
+ *
+ * The parked budget above only applies once every listener has gone. A
+ * mounted `full` consumer used to retain the whole journal — and pay one
+ * array copy of it per publication — however long the run ran. Beyond this
+ * ceiling the store keeps the newest window, publishes `gap: true` with
+ * `evidence: "partial"`, and reports it: a consumer that needs the older
+ * span pages it explicitly through the evidence client. Missing evidence
+ * stays visibly missing; it is never rendered as an empty history.
+ */
+const MAX_ACTIVE_EVENTS = 50_000;
+/**
+ * Algorithms whose durable projection is a complete product read model, so
+ * an `auto` consumer opens projection-only and raw evidence is read on
+ * intent. Eval and GoEx still eagerly hydrate under `auto` until their
+ * projections carry scorecards, trial results, and candidate content
+ * (handoff phases 3 and 5).
+ */
+export const PROJECTION_FIRST_ALGORITHMS: ReadonlySet<string> = new Set(["gepa", "sft", "cispo"]);
 
 type Entry = {
 	runId: string;
 	snapshot: RunProgressSnapshot;
 	listeners: Set<(snapshot: RunProgressSnapshot) => void>;
+	evidenceModes: Map<(snapshot: RunProgressSnapshot) => void, RunProgressEvidenceMode>;
 	cursorState: OptimizerEventCursorState;
 	pending: Promise<void>;
+	/** One active refresh plus one coalesced newest-state refresh. */
+	drainActive: boolean;
+	refreshQueued: boolean;
+	snapshotQueued: boolean;
 	/** Invalidates work still attached to an abandoned promise chain. */
 	queueEpoch: number;
 	/** Invalidates a transport result after its watchdog has unwedged the queue. */
@@ -405,11 +437,57 @@ function clearRetry(entry: Entry): void {
 }
 
 function enqueue(entry: Entry, api: RunProgressTransport, snapshot: boolean): void {
+	if (entry.disposed) return;
+	entry.refreshQueued = true;
+	entry.snapshotQueued ||= snapshot;
+	if (entry.drainActive) return;
+
 	const queueEpoch = entry.queueEpoch;
-	entry.pending = entry.pending.then(async () => {
-		if (entry.disposed || queueEpoch !== entry.queueEpoch) return;
-		await load(entry, api, snapshot);
+	entry.drainActive = true;
+	entry.pending = (async () => {
+		while (!entry.disposed && queueEpoch === entry.queueEpoch && entry.refreshQueued) {
+			// Wakeups are hints, not work items. Notifications received during a
+			// load collapse into one newest-state read instead of an unbounded
+			// promise chain that replays obsolete intermediate revisions.
+			entry.refreshQueued = false;
+			const requestSnapshot = entry.snapshotQueued;
+			entry.snapshotQueued = false;
+			await load(entry, api, requestSnapshot);
+		}
+	})().finally(() => {
+		if (queueEpoch !== entry.queueEpoch) return;
+		entry.drainActive = false;
+		if (entry.refreshQueued && !entry.disposed) enqueue(entry, api, false);
 	});
+}
+
+function shouldHydrateEvidence(entry: Entry, viewV2?: OptimizerRunViewV2): boolean {
+	for (const mode of entry.evidenceModes.values()) {
+		if (mode === "full") return true;
+		if (mode === "auto" && (!viewV2 || !PROJECTION_FIRST_ALGORITHMS.has(viewV2.algorithm))) return true;
+	}
+	return false;
+}
+
+/**
+ * Bound what an active full-evidence consumer retains. Returns whether the
+ * journal was trimmed, so the publication can carry the partial marker.
+ */
+function boundActiveRetention(entry: Entry, state: OptimizerEventCursorState): boolean {
+	if (state.events.length <= MAX_ACTIVE_EVENTS) return false;
+	const dropped = state.events.length - MAX_ACTIVE_EVENTS;
+	state.events = state.events.slice(dropped);
+	state.index = undefined;
+	state.gap = true;
+	report({
+		runId: entry.runId,
+		severity: "warn",
+		event: "run_progress.evidence.bounded",
+		code: "stream_replay_gap",
+		message: `Retained raw evidence was bounded to the newest ${MAX_ACTIVE_EVENTS} events; ${dropped} older events are available through the evidence client`,
+		details: { retained: MAX_ACTIVE_EVENTS, dropped, cursor: state.cursor }
+	});
+	return true;
 }
 
 function scheduleRetry(entry: Entry, api: RunProgressTransport): void {
@@ -478,6 +556,9 @@ function armStall(entry: Entry, api: RunProgressTransport, epoch: number): void 
 		entry.loadEpoch += 1;
 		entry.queueEpoch += 1;
 		entry.pending = Promise.resolve();
+		entry.drainActive = false;
+		entry.refreshQueued = false;
+		entry.snapshotQueued = false;
 		report({
 			runId: entry.runId,
 			severity: "error",
@@ -616,6 +697,31 @@ async function load(entry: Entry, api: RunProgressTransport, requestSnapshot: bo
 		clearRetry(entry);
 		entry.consecutiveFailures = 0;
 
+		if (!shouldHydrateEvidence(entry, viewV2)) {
+			// Projection-only consumers never deserialize, retain, or clone the
+			// raw journal. Lifecycle, counts, usage, candidates, and result truth
+			// already live in the durable V2 projection; explicit detail readers
+			// can still page evidence through the evidence client.
+			entry.cursorState = emptyOptimizerEventCursor();
+			entry.needsSnapshot = false;
+			const durableCursor = typeof run.cursorSeq === "number"
+				? run.cursorSeq
+				: viewV2?.header.asOfSequence ?? 0;
+			publish(entry, {
+				state: terminal ? "terminal" : "subscribed",
+				run,
+				viewV2,
+				events: [],
+				cursor: durableCursor,
+				gap: false,
+				evidence: "ready",
+				error: undefined
+			});
+			recordInteractive(entry.runId, Date.now());
+			if (terminal) flushReadPathTelemetry(entry.runId);
+			return;
+		}
+
 		// Evidence hydration continues under its own deadline. A failure from
 		// here degrades the evidence lane; it never blanks the aggregate view
 		// that has already been published above.
@@ -636,8 +742,11 @@ async function load(entry: Entry, api: RunProgressTransport, requestSnapshot: bo
 		disarmStall(entry, epoch);
 		clearRetry(entry);
 		entry.consecutiveFailures = 0;
+		const bounded = boundActiveRetention(entry, next);
 		entry.cursorState = next;
-		entry.needsSnapshot = next.gap || next.cursor < runCursor;
+		// A bounded window is a known, reported shortfall, not a hole to
+		// heal: reloading from zero would only rebuild what was trimmed.
+		entry.needsSnapshot = !bounded && (next.gap || next.cursor < runCursor);
 
 		const incomplete = next.gap || next.cursor < runCursor;
 		if (incomplete && !viewV2) {
@@ -770,6 +879,9 @@ function park(entry: Entry): void {
 	entry.queueEpoch += 1;
 	entry.loadEpoch += 1;
 	entry.pending = Promise.resolve();
+	entry.drainActive = false;
+	entry.refreshQueued = false;
+	entry.snapshotQueued = false;
 	disarmStall(entry);
 	clearRetry(entry);
 	if (entry.poll != null) globalThis.clearInterval(entry.poll);
@@ -873,7 +985,8 @@ export async function resolveOwnedRun(runId: string, sessionRef?: string): Promi
  */
 export function subscribeToRun(
 	runId: string,
-	listener: (snapshot: RunProgressSnapshot) => void
+	listener: (snapshot: RunProgressSnapshot) => void,
+	options: RunProgressSubscriptionOptions = {}
 ): () => void {
 	const api = transport();
 	if (!api) {
@@ -886,8 +999,12 @@ export function subscribeToRun(
 			runId,
 			snapshot: emptySnapshot(runId, "loading"),
 			listeners: new Set(),
+			evidenceModes: new Map(),
 			cursorState: emptyOptimizerEventCursor(),
 			pending: Promise.resolve(),
+			drainActive: false,
+			refreshQueued: false,
+			snapshotQueued: false,
 			queueEpoch: 0,
 			loadEpoch: 0,
 			poll: null,
@@ -905,6 +1022,7 @@ export function subscribeToRun(
 	}
 	const wasIdle = entry.listeners.size === 0;
 	entry.listeners.add(listener);
+	entry.evidenceModes.set(listener, options.evidence ?? "full");
 	entry.lastTouchedAt = Date.now();
 	deliver(entry, listener);
 	if (wasIdle) {
@@ -917,6 +1035,7 @@ export function subscribeToRun(
 		const current = entries.get(runId);
 		if (!current) return;
 		current.listeners.delete(listener);
+		current.evidenceModes.delete(listener);
 		current.lastTouchedAt = Date.now();
 		if (current.listeners.size === 0) {
 			park(current);

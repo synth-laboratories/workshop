@@ -14,6 +14,7 @@ import {
   UsageCards
 } from "../../_shared/optimizer.run.v1/components/RunChrome.tsx";
 import { GepaWorkspace, type GepaComparisonPayload } from "../../_shared/optimizer.run.v1/overlays/gepa/GepaWorkspace.tsx";
+import { CollectionBrowser } from "../../_shared/optimizer.run.v1/components/workspace/CollectionBrowser.tsx";
 import type { VisualBinding } from "../../../../runtime/types.ts";
 import type { OptimizerEvent, OptimizerRun } from "../../_shared/optimizer.run.v1/components/projectEvents.ts";
 
@@ -42,7 +43,7 @@ export function Shell(props: ShellProps) {
       testId="visual-optimizer-gepa-live"
       chrome="workspace"
     >
-      {({ run, projected, selectedCandidate, setSelectedCandidate, cursor }) => (
+      {({ run, projected, collections, selectedCandidate, setSelectedCandidate, cursor }) => (
         <GepaWorkspace
           projected={projected}
           run={run}
@@ -70,6 +71,15 @@ export function Shell(props: ShellProps) {
               <EventLog entries={projected.logs} />
               <ArtifactList artifacts={projected.artifacts} />
               <ExecutionBindings bindings={projected.execution.bindings} />
+              {/*
+                The durable read model, paged on intent. These read the
+                backend collections for the bound run — one explicit page at a
+                time, one item on selection — and never the projection arrays
+                or the raw journal.
+              */}
+              <CollectionBrowser client={collections} collection="candidates" title="Durable candidates" testId="gepa-durable-candidates" />
+              <CollectionBrowser client={collections} collection="rollouts" title="Durable rollouts" descending testId="gepa-durable-rollouts" />
+              <CollectionBrowser client={collections} collection="proposer_calls" title="Durable proposer calls" testId="gepa-durable-proposer-calls" />
             </>
           }
         />

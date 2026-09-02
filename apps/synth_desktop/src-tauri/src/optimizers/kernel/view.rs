@@ -162,6 +162,30 @@ pub struct CispoRunView {
     pub result: Option<super::algorithms::cispo::CispoResult>,
 }
 
+impl OptimizerRunViewV2 {
+    pub fn header(&self) -> &OptimizerRunHeader {
+        match self {
+            Self::Eval(view) => &view.header,
+            Self::Gepa(view) => &view.header,
+            Self::GoEx(view) => &view.header,
+            Self::Sft(view) => &view.header,
+            Self::Cispo(view) => &view.header,
+        }
+    }
+
+    /// The algorithm projection as canonical JSON, for equality checks that
+    /// must not depend on which variant carries it.
+    pub fn projection_json(&self) -> serde_json::Value {
+        match self {
+            Self::Eval(view) => serde_json::to_value(&view.projection).unwrap_or_default(),
+            Self::Gepa(view) => serde_json::to_value(&view.projection).unwrap_or_default(),
+            Self::GoEx(view) => serde_json::to_value(&view.projection).unwrap_or_default(),
+            Self::Sft(view) => serde_json::to_value(&view.projection).unwrap_or_default(),
+            Self::Cispo(view) => serde_json::to_value(&view.projection).unwrap_or_default(),
+        }
+    }
+}
+
 pub fn project_view(state: &RunKernelState) -> OptimizerRunViewV2 {
     project_view_with_context(state, &RunViewContext::default())
 }

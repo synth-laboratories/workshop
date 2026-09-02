@@ -26,6 +26,7 @@ import { subscribeToRun } from "../runtime/runProgress/subscription";
 import { createEvidenceClient } from "../runtime/runProgress/evidence";
 import { verifyAgainstReceipt, visualDataDigest, type ReceiptVerdict } from "../runtime/runProgress/receipt";
 import { progressAgreement, projectRunProgress, splitSnapshotEvents } from "../runtime/runProgress/project";
+import { semanticCountsFromRunView } from "../runtime/runProgress/semanticCounts";
 import type { ProgressAgreement } from "../runtime/runProgress/project";
 import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
 import { MermaidVisual } from "./MermaidVisual";
@@ -38,6 +39,8 @@ import { openTraceReference, VISUAL_REFERENCE_ERROR_EVENT, VISUAL_REFERENCE_OPEN
 import { previewVariantForTemplate, SEALED_TRACE_WORKBENCH_TEMPLATES } from "../runtime/templatePresentation";
 import { optimizerRunIdFromBindings } from "../runtime/visualBindings";
 import { projectVisualRunLifecycle } from "../runtime/visualRunLifecycle";
+import { isTerminalRunStatus } from "../runtime/runProgress/types";
+import { runFacets } from "./optimizers/runPresentation";
 import { VisualPaneChrome, type VisualPaneDebugState } from "./VisualPaneChrome";
 
 type ShellProps = {
@@ -693,6 +696,32 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				: undefined,
 		[optimizerRunId]
 	);
+	const collectionsClient = useMemo(
+		() =>
+			// Keyset-paged durable collections for the bound run. Templates page
+			// candidates, rollouts, and proposer calls through this on intent.
+			optimizerRunId && typeof bridges.optimizers?.runCollection === "function"
+				? {
+					page: (collection: Parameters<NonNullable<typeof bridges.optimizers>["runCollection"]>[1], query: Parameters<NonNullable<typeof bridges.optimizers>["runCollection"]>[2]) =>
+						bridges.optimizers!.runCollection(optimizerRunId, collection, query),
+					item: (collection: Parameters<NonNullable<typeof bridges.optimizers>["runCollectionItem"]>[1], itemId: string) =>
+						bridges.optimizers!.runCollectionItem(optimizerRunId, collection, itemId)
+				}
+				: undefined,
+		[optimizerRunId]
+	);
+	const historyClient = useMemo(
+		() =>
+			// Backend checkpointed projections for the historical scrubber. The
+			// shell reads the state at a sequence through this instead of
+			// reducing the journal in the renderer.
+			optimizerRunId && typeof bridges.optimizers?.projectionAt === "function"
+				? {
+					projectionAt: (sequence: number) => bridges.optimizers!.projectionAt(optimizerRunId, sequence)
+				}
+				: undefined,
+		[optimizerRunId]
+	);
 	const templateDigest = typeof artifact.metadata?.templateDigest === "string"
 		? artifact.metadata.templateDigest
 		: undefined;
@@ -1104,7 +1133,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					dataDigest: visualDataDigest(snapshot.viewV2)
 				}).catch(() => undefined);
 			}
-		});
+		}, { evidence: "auto" });
 	}, [artifact.id, artifact.templateId, optimizerRunId, templateDigest, visualIdentity]);
 
 	// A container eval imports one sealed Trace V5 bundle per terminal trial.
@@ -1260,6 +1289,13 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const resolvedProps = selected.projection ?? { ...synchronouslyResolved.props, ...traceResolution.props };
 	const degradedConnection = ["reconnecting", "failed", "interrupted"].includes(connectionState);
 	const boundEvents = Array.isArray(optimizerPayload?.events) ? optimizerPayload.events as unknown[] : [];
+	// Readiness describes the run, not the renderer's hydration. A
+	// projection-only visual proves its candidates and rollouts from the
+	// durable view; raw event length is the floor only when no view exists.
+	const semanticCounts = semanticCountsFromRunView(
+		optimizerPayload?.runViewV2 as Parameters<typeof semanticCountsFromRunView>[0],
+		boundEvents.length
+	);
 	const optimizerEvidenceState = typeof optimizerPayload?.evidenceState === "string"
 		? optimizerPayload.evidenceState
 		: undefined;
@@ -1281,8 +1317,10 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			data-visual-terminal={transportTerminal ? "true" : "false"}
 			data-visual-evidence={optimizerEvidenceState}
 			data-visual-receipt={receiptVerdict.kind}
-			data-visual-semantic-event-count={String(boundEvents.length)}
-			data-visual-rollout-count={String(boundEvents.length)}
+			data-visual-semantic-event-count={String(semanticCounts.semanticEvents)}
+			data-visual-rollout-count={String(semanticCounts.rollouts)}
+			data-visual-semantic-source={semanticCounts.source}
+			data-visual-raw-event-count={String(boundEvents.length)}
 			data-visual-error={optimizerLoadError ?? (liveFailed ? traceResolution.error : undefined)}
 			data-visual-projection-source={selected.source ?? "live"}
 			data-visual-projection-stale={selected.stale ? "true" : undefined}
@@ -1324,6 +1362,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				media={mediaClient}
 				sealedTraceProjections={sealedTraceProjections}
 				evidence={evidenceClient}
+				history={historyClient}
+				collections={collectionsClient}
+				tailCursor={typeof optimizerPayload?.terminalCursor === "number" ? optimizerPayload.terminalCursor : undefined}
 				runLifecycle={runLifecycle}
 				replayMissingTransport={replay.missingTransport}
 				visualId={artifact.visualId ?? artifact.id}
@@ -1617,6 +1658,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const [labelPoint, setLabelPoint] = useState<{ x: number; y: number; selector?: Record<string, unknown>; targetLabel?: string } | null>(null);
 	const [labelBody, setLabelBody] = useState("");
 	const [artifactError, setArtifactError] = useState<string | null>(null);
+	const [artifactActionStatus, setArtifactActionStatus] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [inspectorOpen, setInspectorOpen] = useState(false);
 	const [debugState, setDebugState] = useState<VisualPaneDebugState>({
@@ -1777,6 +1819,60 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 		}
 	}
 
+	async function rerenderWithCurrentTemplate() {
+		if (!visualId || !bridges.visuals) return;
+		setBusy(true);
+		setArtifactError(null);
+		setArtifactActionStatus(null);
+		try {
+			const updated = await bridges.visuals.update(visualId, {
+				metadata: {
+					...(artifact.metadata ?? {}),
+					templateRerender: {
+						requestedAt: new Date().toISOString(),
+						fromRevision: revision ?? null,
+						templateId: artifact.templateId ?? null
+					}
+				},
+				bumpRevision: true
+			});
+			setArtifactActionStatus(`Rendered revision ${updated.currentRevision} with the current ${updated.templateId} template.`);
+		} catch (reason) {
+			setArtifactError(publicError(reason, "Could not re-render this visual."));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function restartEvaluator() {
+		if (!primaryOptimizerRunId || !bridges.optimizers || !bridges.inventory) return;
+		const sessionId = artifact.sessionId ?? artifact.ownerSessionId;
+		if (!sessionId) {
+			setArtifactError("Evaluator restart requires the visual's owning Workshop session.");
+			return;
+		}
+		setBusy(true);
+		setArtifactError(null);
+		setArtifactActionStatus(null);
+		try {
+			const run = await bridges.optimizers.get(primaryOptimizerRunId);
+			if (!isTerminalRunStatus(run.status)) {
+				throw new Error(`Finish or cancel optimizer run ${run.id} before restarting its evaluator.`);
+			}
+			const containerId = runFacets(run).containerId;
+			if (!containerId) throw new Error(`Optimizer run ${run.id} has no recorded evaluator container.`);
+			const container = await bridges.inventory.restartContainer(containerId, sessionId);
+			if (container.status !== "ready") {
+				throw new Error(`Evaluator ${containerId} restarted but reported ${container.status}.`);
+			}
+			setArtifactActionStatus(`Evaluator ${container.name} restarted and is ready; durable run evidence was retained.`);
+		} catch (reason) {
+			setArtifactError(publicError(reason, "Could not safely restart the evaluator."));
+		} finally {
+			setBusy(false);
+		}
+	}
+
 	async function reopenSeal(receiptDigest: string) {
 		if (!bridges.visuals) return;
 		setBusy(true);
@@ -1871,6 +1967,8 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 				moreButtonRef={moreButtonRef}
 				busy={busy}
 				artifactOperationsEnabled={!isSubagents}
+				evaluatorRestartAvailable={!isSubagents && Boolean(primaryOptimizerRunId)}
+				actionStatus={artifactActionStatus}
 				annotationsCount={annotations.length}
 				sealEligible={!isSubagents && sealEligible}
 				sealDisabledReason={isSubagents ? null : sealDisabledReason}
@@ -1884,6 +1982,8 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 				debugState={debugState}
 				onToggleInspector={toggleInspector}
 				onBeginLabeling={() => { closeInspector(false); setLabeling(true); setLabelPoint(null); }}
+				onRerender={() => void rerenderWithCurrentTemplate()}
+				onRestartEvaluator={() => void restartEvaluator()}
 				onSeal={() => void sealCurrentRevision()}
 				onLiveRevision={() => { setSealedBundle(null); setCompareBundle(null); setShareUpload(null); }}
 				onCloseComparison={() => setCompareBundle(null)}
