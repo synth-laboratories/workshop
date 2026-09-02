@@ -77,6 +77,12 @@ test("rollout and annotation streams fold into one lane with a summary layer ove
   assert.equal(a.health, 8);
   assert.equal(a.calls, 1);
   assert.equal(a.rolloutEvents, 12);
+  assert.equal(a.trace.length, 26);
+  assert.deepEqual(a.trace.filter((row) => row.verifier).map((row) => row.kind), [
+    "annotation.model.requested",
+    "annotation.model.completed",
+  ]);
+  assert.equal(a.trace.find((row) => row.kind === "action").detail, "action · up");
 
   // Annotation layer.
   assert.equal(a.protocol.revisionId, "anprev_abc");
@@ -113,6 +119,31 @@ test("rollout and annotation streams fold into one lane with a summary layer ove
   const tally = labelTally(lanes, "failure_mode");
   assert.deepEqual(tally, [{ label: "feedback_incorporation.repeated_blocked_action", lanes: 1, count: 1 }]);
   assert.deepEqual(labelTally(lanes, "milestone"), [{ label: "resources.collect_first_wood", lanes: 1, count: 1 }]);
+});
+
+test("rubric and verifier events remain inspectable beside the rollout trace", () => {
+  const id = "roll_healthbench";
+  const events = logicalTimeline([
+    rollout(id, 1, "trace.opened", { family: "healthbench", prompt: "What should the patient do?" }),
+    rollout(id, 2, "action", { response: "Seek urgent care." }),
+    rollout(id, 3, "span.verifier.opened", { role: "grader" }),
+    rollout(id, 4, "rubric.grade", { rubric_id: "safety", rubric_text: "Escalates urgent symptoms", criteria_met: true, points: 2 }),
+    rollout(id, 5, "reward_signal", { value: 1, authority: "verifier" }),
+    rollout(id, 6, "span.verifier.closed", { status: "completed" }),
+  ]).map((row) => row.event);
+  const [lane] = projectLanes(events);
+  assert.equal(lane.trace.length, 6);
+  assert.deepEqual(lane.trace.filter((row) => row.verifier).map((row) => row.kind), [
+    "span.verifier.opened",
+    "rubric.grade",
+    "reward_signal",
+    "span.verifier.closed",
+  ]);
+  assert.equal(lane.task.rubric_grades.length, 1);
+  assert.equal(lane.task.rubric_grades[0].logical_time, 4);
+  assert.equal(lane.trace[3].logicalTime, 4);
+  assert.equal(lane.task.prompt, "What should the patient do?");
+  assert.equal(lane.task.response, "Seek urgent care.");
 });
 
 test("relayed optimizer envelopes unwrap to the same reducer inputs", () => {
@@ -184,6 +215,23 @@ test("rollout and annotation streams receive one deterministic logical clock", (
   const [laneAtT4] = projectLanes(timeline.map((row) => row.event));
   assert.equal(laneAtT4.findings[0].logicalTime, 4);
   assert.equal(laneAtT4.markers[0].logicalTime, 4);
+});
+
+test("ingest logical time preserves arrival order even when producer timestamps arrive late", () => {
+  const events = [
+    rollout("roll_a", 2, "action", { step: 1, action: "up" }),
+    rollout("roll_a", 1, "observation", { step: 0 }),
+    annotation("roll_a", 1, "annotation.finding", { finding_id: "late:1", kind: "note", label: "late", source_sequence: 1 }),
+  ];
+  events[0].logical_time = 1;
+  events[1].logical_time = 2;
+  events[2].logical_time = 3;
+  events[0].ts = "2026-09-01T00:00:03.000Z";
+  events[1].ts = "2026-09-01T00:00:01.000Z";
+  events[2].ts = "2026-09-01T00:00:02.000Z";
+  const timeline = logicalTimeline(events);
+  assert.deepEqual(timeline.map((row) => row.event.kind), ["action", "observation", "annotation.finding"]);
+  assert.deepEqual(timeline.map((row) => row.logicalTime), [1, 2, 3]);
 });
 
 test("a rollout without a bound protocol projects an empty annotation layer, never a fabricated one", () => {

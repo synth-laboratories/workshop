@@ -14,11 +14,13 @@ import {
   projectLanes,
   type Finding,
   type Lane,
+  type LaneEvent,
 } from "./project.ts";
 import { TaskDetails, familyLabel, outcomeLabel, progressLabel, taskFamily } from "./adapters.tsx";
 
 type StreamPayload = { run_id?: string; events?: LiveEvalEvent[]; sse_url?: string };
 type Feed = "all" | "annotations" | "rollout";
+type DetailTab = "rollout" | "trace" | "verifier";
 
 const KIND_COLOR: Record<string, string> = {
   achievement: "#39a46b",
@@ -80,13 +82,56 @@ function RolloutBar({ lane, selected, onClick }: { lane: Lane; selected: boolean
   </button>;
 }
 
+function EvidencePayload({ payload }: { payload: Record<string, unknown> }) {
+  const rendered = JSON.stringify(payload, (_key, value) => {
+    if (typeof value === "string" && value.length > 800) return `${value.slice(0, 800)}…`;
+    if (Array.isArray(value) && value.length > 30) return [...value.slice(0, 30), `… ${value.length - 30} more`];
+    return value;
+  }, 2);
+  return <details style={{ marginTop: 5 }}><summary className="sv-mono" style={{ cursor: "pointer", color: "var(--sv-text-faint)", fontSize: 9 }}>Inspect event evidence</summary><pre style={{ margin: "6px 0 0", padding: 8, maxHeight: 260, overflow: "auto", borderRadius: 6, background: "var(--sv-canvas)", border: "1px solid var(--sv-border)", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 9 }}>{rendered}</pre></details>;
+}
+
+function TraceList({ rows, empty }: { rows: LaneEvent[]; empty: string }) {
+  const visible = rows.slice(-80);
+  return <div>
+    {rows.length > visible.length ? <p className="sv-mono" style={{ margin: "0 0 7px", color: "var(--sv-text-faint)", fontSize: 9 }}>Showing the latest {visible.length} of {rows.length} events.</p> : null}
+    <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 0 }}>
+      {visible.map((row, index) => <li key={`${row.stream}-${row.sequence ?? index}-${row.kind}`} style={{ display: "grid", gridTemplateColumns: "68px minmax(0, 1fr)", gap: 10, padding: "9px 0", borderTop: "1px solid var(--sv-border)" }}>
+        <div className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 9, lineHeight: 1.45 }}><strong style={{ color: "var(--sv-text)" }}>{row.logicalTime != null ? `t=${row.logicalTime}` : "t=—"}</strong><br />seq {row.sequence ?? "—"}<br />{row.occurredAt ? row.occurredAt.slice(11, 19) : "—"}</div>
+        <div style={{ minWidth: 0 }}><div style={{ display: "flex", gap: 7, alignItems: "baseline", flexWrap: "wrap" }}><strong className="sv-mono" style={{ fontSize: 10 }}>{row.kind}</strong><span style={{ fontSize: 10, color: "var(--sv-text-muted)" }}>{row.detail}</span>{row.stream === "annotation" && row.sourceSequence != null ? <span className="sv-mono" style={{ fontSize: 9, color: "var(--sv-text-faint)" }}>observed rollout seq {row.sourceSequence}</span> : null}</div><EvidencePayload payload={row.payload} /></div>
+      </li>)}
+      {!rows.length ? <li style={{ padding: "14px 0", color: "var(--sv-text-faint)", fontSize: 10 }}>{empty}</li> : null}
+    </ol>
+  </div>;
+}
+
+function RubricEvidence({ lane }: { lane: Lane }) {
+  const grades = Array.isArray(lane.task.rubric_grades) ? lane.task.rubric_grades as Record<string, unknown>[] : [];
+  return <div style={{ display: "grid", gap: 8 }}>
+    <div className="sv-section-head" style={{ marginBottom: 0 }}><h4 style={{ margin: 0, fontSize: 11 }}>Rubric evidence</h4><span className="sv-mono">{grades.length ? `${grades.filter((row) => row.criteria_met === true).length}/${grades.length} met` : "no rubric rows"}</span></div>
+    {grades.length ? <ol style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 6 }}>{grades.map((grade, index) => {
+      const criterion = String(grade.rubric_text ?? grade.criterion ?? grade.rubric_id ?? `Rubric ${index + 1}`);
+      const explanation = grade.explanation ?? grade.rationale ?? grade.reason ?? grade.grader_feedback;
+      const points = typeof grade.points === "number" ? grade.points : typeof grade.score === "number" ? grade.score : null;
+      return <li key={`${String(grade.rubric_id ?? "rubric")}-${index}`} style={{ padding: "9px 10px", border: "1px solid var(--sv-border)", borderLeft: `3px solid ${grade.criteria_met ? "#39a46b" : "#d84b3f"}`, borderRadius: 7, background: "var(--sv-surface)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "60px minmax(0, 1fr) auto", gap: 8, alignItems: "start", fontSize: 10 }}><strong style={{ color: grade.criteria_met ? "#238a57" : "#c2553f" }}>{grade.criteria_met ? "MET" : "UNMET"}</strong><span>{criterion}</span><span className="sv-mono">{points == null ? "—" : `${points} pts`}</span></div>
+        {explanation != null ? <p style={{ margin: "6px 0 0 68px", color: "var(--sv-text-muted)", fontSize: 10 }}>{String(explanation)}</p> : null}
+        <div className="sv-mono" style={{ margin: "5px 0 0 68px", color: "var(--sv-text-faint)", fontSize: 9 }}>{grade.logical_time != null ? `t=${String(grade.logical_time)} · ` : ""}{grade.rubric_id != null ? `rubric ${String(grade.rubric_id)}` : `rubric ${index + 1}`}</div>
+      </li>;
+    })}</ol> : <p style={{ margin: 0, color: "var(--sv-text-faint)", fontSize: 10 }}>This rollout did not emit structured rubric grades. Verifier events and reward authority are still shown below when available.</p>}
+  </div>;
+}
+
 function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: boolean; streamBase: URL | null }) {
+  const [tab, setTab] = useState<DetailTab>("rollout");
   const pct = lane.total ? Math.min(100, lane.done / lane.total * 100) : 0;
   const active = activeFindings(lane);
   const counts = countByKind(active);
   const ordered = [...lane.findings].sort((a, b) => (a.sourceSequence ?? 0) - (b.sourceSequence ?? 0));
   const reward = lane.metrics.cumulative_reward ?? lane.reward;
   const judge = lane.metrics.judge_progress;
+  const rolloutTrace = lane.trace.filter((row) => row.stream === "rollout" && !row.verifier);
+  const verifierTrace = lane.trace.filter((row) => row.verifier);
   return <article data-testid={`lane-${lane.name}`} style={{ border: "1px solid var(--sv-border)", borderRadius: 10, padding: 12, background: lane.status === "running" ? "#fffaf7" : "var(--sv-surface)", display: "grid", gap: 8 }}>
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
       <strong style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis" }}>{lane.name}</strong>
@@ -101,20 +146,22 @@ function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: 
       {judge != null ? <span title="latest judge progress: 1 advancing, 0 stalled, -1 regressing">judge {judge > 0 ? "advancing" : judge < 0 ? "regressing" : "stalled"}</span> : null}
     </div>
     <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "end" }}><span className="sv-mono" style={{ fontSize: 10, color: "var(--sv-text-faint)" }}>{familyLabel(lane)} · {taskFamily(lane)}</span><span className="sv-mono" style={{ maxWidth: "68%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10, color: "var(--sv-text-faint)" }}>› {lane.last}</span></div>
-    <MarkerStrip lane={lane} />
-    <div style={{ display: "flex", gap: 10, fontSize: 10, color: "var(--sv-text-faint)", flexWrap: "wrap" }} className="sv-mono">
-      {FINDING_KIND_ORDER.map((kind) => <span key={kind} style={{ color: counts[kind] ? KIND_COLOR[kind] : undefined }}>{counts[kind] ?? 0} {kind.replace("_", " ")}</span>)}
-      <span>{lane.findings.filter((row) => row.status === "retracted").length} retracted</span>
-      {lane.model.requested ? <span>judge {lane.model.completed}/{lane.model.requested}{lane.model.failed ? ` (${lane.model.failed} failed)` : ""}</span> : null}
-      {lane.protocolErrors ? <span style={{ color: "#c2553f" }}>{lane.protocolErrors} protocol errors</span> : null}
-      {lane.controls.length ? <span title={lane.controls.map((row) => `${row.accepted ? "✓" : "✗"} ${row.op ?? "?"} ${row.controlId ?? ""} ${row.reason ?? ""}`.trim()).join("\n")}>{lane.controls.filter((row) => row.accepted).length} controls{lane.controls.some((row) => !row.accepted) ? ` (${lane.controls.filter((row) => !row.accepted).length} refused)` : ""}{lane.rebinds ? ` · ${lane.rebinds} rebinds` : ""}</span> : null}
-    </div>
-    <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }} aria-label={`Findings for ${lane.name}`}>
-      {ordered.map((finding) => <FindingChip key={finding.findingId} finding={finding} showHistory={showHistory} />)}
-      {!lane.findings.length ? <span style={{ fontSize: 10, color: "var(--sv-text-faint)" }}>{lane.protocol ? "no findings yet" : "no protocol bound"}</span> : null}
-    </div>
-    <span className="sv-mono" style={{ fontSize: 10, color: "var(--sv-text-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>◌ {lane.lastAnnotation}{lane.protocol?.revisionId ? ` · ${lane.protocol.protocolId ?? "protocol"} ${lane.protocol.revisionId}` : ""}</span>
-    <TaskDetails lane={lane} streamBase={streamBase} />
+    <nav aria-label="Rollout detail sections" style={{ display: "flex", gap: 6, padding: 4, borderRadius: 8, background: "var(--sv-canvas)", border: "1px solid var(--sv-border)" }}>{(["rollout", "trace", "verifier"] as DetailTab[]).map((option) => <button key={option} type="button" aria-pressed={tab === option} onClick={() => setTab(option)} style={{ flex: 1, border: tab === option ? "1px solid var(--sv-border)" : "1px solid transparent", borderRadius: 6, padding: "6px 8px", background: tab === option ? "var(--sv-surface)" : "transparent", color: tab === option ? "var(--sv-text)" : "var(--sv-text-muted)", boxShadow: tab === option ? "0 1px 2px rgba(0,0,0,.05)" : "none", cursor: "pointer", fontSize: 10, fontWeight: 700 }}>{option === "rollout" ? "Rollout" : option === "trace" ? `Trace · ${rolloutTrace.length}` : `Verifier & rubric · ${verifierTrace.length}`}</button>)}</nav>
+    {tab === "rollout" ? <section aria-label="Rollout information" style={{ display: "grid", gap: 10 }}>
+      <div className="sv-section-head" style={{ marginBottom: 0 }}><h4 style={{ margin: 0, fontSize: 11 }}>Rollout information</h4><span className="sv-mono">{familyLabel(lane)} · {outcomeLabel(lane)}</span></div>
+      <MarkerStrip lane={lane} />
+      <TaskDetails lane={lane} streamBase={streamBase} />
+      <div style={{ display: "flex", gap: 10, fontSize: 10, color: "var(--sv-text-faint)", flexWrap: "wrap" }} className="sv-mono">
+        {FINDING_KIND_ORDER.map((kind) => <span key={kind} style={{ color: counts[kind] ? KIND_COLOR[kind] : undefined }}>{counts[kind] ?? 0} {kind.replace("_", " ")}</span>)}
+        <span>{lane.findings.filter((row) => row.status === "retracted").length} retracted</span>
+        {lane.model.requested ? <span>judge {lane.model.completed}/{lane.model.requested}{lane.model.failed ? ` (${lane.model.failed} failed)` : ""}</span> : null}
+        {lane.protocolErrors ? <span style={{ color: "#c2553f" }}>{lane.protocolErrors} protocol errors</span> : null}
+      </div>
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }} aria-label={`Findings for ${lane.name}`}>{ordered.map((finding) => <FindingChip key={finding.findingId} finding={finding} showHistory={showHistory} />)}{!lane.findings.length ? <span style={{ fontSize: 10, color: "var(--sv-text-faint)" }}>{lane.protocol ? "no findings yet" : "no protocol bound"}</span> : null}</div>
+      <span className="sv-mono" style={{ fontSize: 10, color: "var(--sv-text-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>◌ {lane.lastAnnotation}{lane.protocol?.revisionId ? ` · ${lane.protocol.protocolId ?? "protocol"} ${lane.protocol.revisionId}` : ""}</span>
+    </section> : null}
+    {tab === "trace" ? <section aria-label="Rollout trace"><div className="sv-section-head"><div><h4 style={{ margin: 0, fontSize: 11 }}>Rollout trace</h4><span style={{ fontSize: 9, color: "var(--sv-text-faint)" }}>Policy, environment, action, observation, and lifecycle evidence in logical order.</span></div><span className="sv-mono">{rolloutTrace.length} events</span></div><TraceList rows={rolloutTrace} empty="No rollout trace events have arrived." /></section> : null}
+    {tab === "verifier" ? <section aria-label="Verifier and rubric information" style={{ display: "grid", gap: 14 }}><div className="sv-section-head" style={{ marginBottom: 0 }}><div><h4 style={{ margin: 0, fontSize: 11 }}>Verifier & rubric</h4><span style={{ fontSize: 9, color: "var(--sv-text-faint)" }}>Structured criteria first; verifier and grader calls remain inspectable below.</span></div><span className="sv-mono">{outcomeLabel(lane)}</span></div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 8, padding: 9, border: "1px solid var(--sv-border)", borderRadius: 7 }}><span><strong style={{ display: "block", fontSize: 9, color: "var(--sv-text-faint)" }}>PROTOCOL</strong><span className="sv-mono" style={{ fontSize: 10 }}>{lane.protocol?.protocolId ?? "not bound"}</span></span><span><strong style={{ display: "block", fontSize: 9, color: "var(--sv-text-faint)" }}>REVISION</strong><span className="sv-mono" style={{ fontSize: 10 }}>{lane.protocol?.revisionId ?? "—"}</span></span><span><strong style={{ display: "block", fontSize: 9, color: "var(--sv-text-faint)" }}>MODEL</strong><span className="sv-mono" style={{ fontSize: 10 }}>{lane.protocol?.model ?? "deterministic / unspecified"}</span></span><span><strong style={{ display: "block", fontSize: 9, color: "var(--sv-text-faint)" }}>CALLS</strong><span className="sv-mono" style={{ fontSize: 10 }}>{lane.model.completed}/{lane.model.requested} complete</span></span></div><RubricEvidence lane={lane} /><div><div className="sv-section-head"><h4 style={{ margin: 0, fontSize: 11 }}>Verifier trace</h4><span className="sv-mono">{verifierTrace.length} events</span></div><TraceList rows={verifierTrace} empty="No separate verifier or grader trace was emitted for this rollout." /></div></section> : null}
   </article>;
 }
 
@@ -220,7 +267,7 @@ export function Shell(props: ShellProps) {
     <section className="sv-section" aria-label="Rollout lanes" aria-live="polite">
       <div className="sv-section-head"><div style={{ display: "flex", gap: 9, alignItems: "center" }}><h3>{selectedLane ? selectedLane.name : "All rollouts"}</h3>{selectedLane ? <button type="button" onClick={() => setSelectedRollout(null)}>← All rollouts</button> : null}</div><label className="sv-mono" style={{ fontSize: 10, display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={showHistory} onChange={(event) => setShowHistory(event.currentTarget.checked)} /> show superseded and retracted</label></div>
       {selectedLane ? <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(260px, .85fr)", gap: 12, alignItems: "start" }}>
-        <LaneCard lane={selectedLane} showHistory={showHistory} streamBase={streamBase} />
+        <LaneCard key={selectedLane.name} lane={selectedLane} showHistory={showHistory} streamBase={streamBase} />
         <aside aria-label="Related rollout information" style={{ display: "grid", gap: 7, position: "sticky", top: 8 }}><strong style={{ fontSize: 11 }}>Related info</strong>{lanes.map((lane) => <RolloutBar key={lane.name} lane={lane} selected={lane.name === selectedLane.name} onClick={() => setSelectedRollout(lane.name)} />)}</aside>
       </div> : <div style={{ display: "grid", gap: 7 }}>
         {lanes.map((lane) => <RolloutBar key={lane.name} lane={lane} selected={false} onClick={() => setSelectedRollout(lane.name)} />)}

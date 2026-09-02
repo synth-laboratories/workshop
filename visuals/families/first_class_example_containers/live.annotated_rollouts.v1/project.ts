@@ -53,6 +53,18 @@ export type LogicalEvent = {
   occurredAt: string;
 };
 
+export type LaneEvent = {
+  kind: string;
+  stream: "rollout" | "annotation";
+  sequence?: number;
+  sourceSequence?: number;
+  logicalTime?: number;
+  occurredAt: string;
+  detail: string;
+  payload: Record<string, unknown>;
+  verifier: boolean;
+};
+
 export type Lane = {
   name: string;
   /** Task family is advisory presentation metadata, never evidence. */
@@ -71,6 +83,8 @@ export type Lane = {
   frameUrl?: string;
   last: string;
   rolloutEvents: number;
+  /** Evidence-preserving event rows used by the per-rollout trace views. */
+  trace: LaneEvent[];
   // --- annotation layer
   protocol?: { revisionId?: string; protocolId?: string; model?: string | null };
   /** Consumer -> annotator history: acknowledged controls and hot-swaps, in stream order. */
@@ -143,10 +157,10 @@ export function unwrapRelayed(event: LiveEvalEvent): LiveEvalEvent {
 /**
  * Give all producer streams one deterministic replay clock.
  *
- * Producer timestamps establish the cross-stream order because each stream's
- * sequence is only locally monotonic. Stable identity fields break equal-time
- * ties; the original observed index is the final fallback. Wall time remains
- * provenance, while consumers scrub and play using the one-based logical tick.
+ * The ingest-assigned logical clock is authoritative because it records what
+ * the viewer actually saw. Producer timestamps remain provenance and only
+ * order legacy events that predate logical-time stamping. This means a late
+ * backfill cannot jump into the past and renumber an already-visible replay.
  */
 export function logicalTimeline(events: LiveEvalEvent[]): LogicalEvent[] {
   const ordered = events.map((raw, observedIndex) => {
@@ -155,9 +169,11 @@ export function logicalTimeline(events: LiveEvalEvent[]): LogicalEvent[] {
     const parsed = Date.parse(occurredAt);
     const annotation = isAnnotationEvent(event);
     const ownSequence = num(event.sequence);
+    const acceptedLogicalTime = eventLogicalTime(event);
     return {
       event,
       observedIndex,
+      acceptedLogicalTime,
       occurredAt,
       physicalTime: Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY,
       lane: laneName(event),
@@ -166,7 +182,14 @@ export function logicalTimeline(events: LiveEvalEvent[]): LogicalEvent[] {
       sourceSequence: annotation ? num(event.payload.source_sequence) : ownSequence,
     };
   }).sort((left, right) =>
-    left.physicalTime - right.physicalTime
+    (left.acceptedLogicalTime != null && right.acceptedLogicalTime != null
+      ? left.acceptedLogicalTime - right.acceptedLogicalTime
+      : left.acceptedLogicalTime != null
+        ? -1
+        : right.acceptedLogicalTime != null
+          ? 1
+          : 0)
+    || left.physicalTime - right.physicalTime
     || left.occurredAt.localeCompare(right.occurredAt)
     || left.lane.localeCompare(right.lane)
     || (left.sourceSequence ?? Number.MAX_SAFE_INTEGER) - (right.sourceSequence ?? Number.MAX_SAFE_INTEGER)
@@ -175,7 +198,7 @@ export function logicalTimeline(events: LiveEvalEvent[]): LogicalEvent[] {
     || left.observedIndex - right.observedIndex
   );
   return ordered.map((row, index) => {
-    const logicalTime = index + 1;
+    const logicalTime = row.acceptedLogicalTime ?? index + 1;
     return {
       logicalTime,
       event: { ...row.event, logical_time: logicalTime } as LiveEvalEvent,
@@ -224,9 +247,37 @@ export function eventDetail(event: LiveEvalEvent): string {
 function newLane(name: string): Lane {
   return {
     name, status: "starting", done: 0, achievements: [], calls: 0, last: "opening rollout", rolloutEvents: 0,
+    trace: [],
     findings: [], markers: [], metrics: {}, metricSeries: {}, model: { requested: 0, completed: 0, failed: 0 }, controls: [], rebinds: 0,
     protocolErrors: 0, annotationClosed: false, annotationEvents: 0, lastAnnotation: "waiting for the protocol", task: {},
   };
+}
+
+function isVerifierEvent(event: LiveEvalEvent): boolean {
+  const kind = event.kind;
+  const authority = str(event.payload.authority)?.toLowerCase();
+  return kind === "rubric.grade"
+    || kind.startsWith("span.verifier.")
+    || kind.startsWith("span.evaluator.")
+    || kind.startsWith("annotation.model.")
+    || authority === "verifier"
+    || authority === "grader"
+    || authority === "evaluator";
+}
+
+function rememberTrace(lane: Lane, event: LiveEvalEvent): void {
+  const annotation = isAnnotationEvent(event);
+  lane.trace.push({
+    kind: event.kind,
+    stream: annotation ? "annotation" : "rollout",
+    sequence: num(event.sequence),
+    sourceSequence: annotation ? num(event.payload.source_sequence) : num(event.sequence),
+    logicalTime: eventLogicalTime(event),
+    occurredAt: timestamp(event),
+    detail: eventDetail(event),
+    payload: event.payload,
+    verifier: isVerifierEvent(event),
+  });
 }
 
 function rememberTaskFacts(lane: Lane, payload: Record<string, unknown>): void {
@@ -374,6 +425,7 @@ export function projectLanes(events: LiveEvalEvent[]): Lane[] {
     const event = unwrapRelayed(raw);
     const name = laneName(event);
     const lane = lanes.get(name) ?? newLane(name);
+    rememberTrace(lane, event);
     if (isAnnotationEvent(event)) {
       applyAnnotation(lane, event);
     } else {

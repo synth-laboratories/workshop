@@ -87,9 +87,12 @@ function BankingDetails({ lane }: { lane: Lane }) {
 function HealthBenchDetails({ lane }: { lane: Lane }) {
   const grades = Array.isArray(lane.task.rubric_grades) ? lane.task.rubric_grades as Record<string, unknown>[] : [];
   const met = grades.filter((row) => row.criteria_met === true).length;
+  const prompt = text(lane.task.prompt) ?? text(lane.task.query);
+  const response = text(lane.task.response) ?? text(lane.task.answer);
   return <div style={{ display: "grid", gap: 10 }}>
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}><Fact label="Rubric items">{grades.length || number(lane.task.items) || "waiting"}</Fact><Fact label="Criteria met">{grades.length ? `${met}/${grades.length}` : number(lane.task.met) ?? "—"}</Fact><Fact label="Outcome">{outcomeLabel(lane)}</Fact><Fact label="Finish reason">{text(lane.task.finish_reason) ?? "—"}</Fact></div>
-    {grades.length ? <ol style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 5 }}>{grades.map((grade, index) => <li key={`${String(grade.rubric_id ?? "rubric")}-${index}`} style={{ display: "grid", gridTemplateColumns: "70px minmax(0, 1fr) auto", gap: 8, padding: "7px 9px", border: "1px solid var(--sv-border)", borderRadius: 7, fontSize: 10 }}><strong style={{ color: grade.criteria_met ? "#238a57" : "#c2553f" }}>{grade.criteria_met ? "MET" : "UNMET"}</strong><span>{text(grade.rubric_text) ?? text(grade.criterion) ?? text(grade.rubric_id) ?? `rubric ${index + 1}`}</span><span className="sv-mono">{number(grade.points) ?? "—"} pts</span></li>)}</ol> : null}
+    {prompt ? <Fact label="Clinical prompt">{prompt}</Fact> : null}
+    {response ? <Fact label="Model response">{response}</Fact> : null}
   </div>;
 }
 
