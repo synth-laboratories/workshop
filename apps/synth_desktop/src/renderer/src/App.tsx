@@ -226,6 +226,8 @@ export default function App() {
 						setContainerPaneExpanded={c.setContainerPaneExpanded}
 						inventoryContainerWidth={c.inventoryContainerWidth}
 						setInventoryContainerWidth={c.setInventoryContainerWidth}
+						sidePanelWidth={c.sidePanelWidth}
+						setSidePanelWidth={c.setSidePanelWidth}
 						persistLayoutSnapshot={c.persistLayoutSnapshot}
 						showSidePanel={c.showSidePanel}
 						sidePanelCanSharePane={c.sidePanelCanSharePane}

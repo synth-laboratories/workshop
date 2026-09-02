@@ -7,6 +7,7 @@ import {
 	type DesktopPreferences
 } from "../preferences";
 import { restoreFocusIfLost } from "../runtime/restoreFocus";
+import { fitPaneWidth } from "../runtime/layoutGeometry";
 
 export type SidePanelTab = "visual" | "outputs" | "inference" | "trace" | "diagnostics" | "errors";
 
@@ -16,6 +17,7 @@ export type ShellLayoutState = {
 	terminalOpen: boolean;
 	viewportWidth: number;
 	inventoryContainerWidth: number;
+	sidePanelWidth: number;
 	sidePanelOpen: boolean;
 	sidePanelTab: SidePanelTab;
 	containerPaneExpanded: boolean;
@@ -23,6 +25,7 @@ export type ShellLayoutState = {
 	setSidebarWidth: (width: number) => void;
 	setTerminalOpen: (open: boolean | ((current: boolean) => boolean)) => void;
 	setInventoryContainerWidth: (width: number) => void;
+	setSidePanelWidth: (width: number) => void;
 	setSidePanelOpen: (open: boolean | ((current: boolean) => boolean)) => void;
 	setSidePanelTab: (tab: SidePanelTab) => void;
 	setContainerPaneExpanded: (expanded: boolean) => void;
@@ -48,6 +51,11 @@ export function useShellLayout(
 	const [inventoryContainerWidth, setInventoryContainerWidth] = useState(
 		() => loadPreferences().layout.last.outputPaneWidth
 	);
+	const [sidePanelWidth, setSidePanelWidthState] = useState(() => {
+		const raw = window.localStorage.getItem("synth.workbenchSidePanelWidth");
+		const stored = raw === null ? Number.NaN : Number(raw);
+		return Number.isFinite(stored) ? stored : 420;
+	});
 	const [terminalOpen, setTerminalOpen] = useState(
 		() => loadPreferences().layout.last.bottomPanelVisible
 	);
@@ -59,12 +67,41 @@ export function useShellLayout(
 		() => loadPreferences().layout.last.sidebarWidth
 	);
 	const [containerPaneExpanded, setContainerPaneExpanded] = useState(false);
+	const fitInventoryWidth = useCallback((width: number) => fitPaneWidth({
+		requested: width,
+		viewportWidth,
+		sidebarVisible,
+		sidebarWidth,
+		minPrimary: 260,
+		minPane: 280,
+		maxPane: 2400
+	}), [sidebarVisible, sidebarWidth, viewportWidth]);
+	const fitSidePanelWidth = useCallback((width: number) => fitPaneWidth({
+		requested: width,
+		viewportWidth,
+		sidebarVisible,
+		sidebarWidth,
+		minPrimary: 380,
+		minPane: 320,
+		maxPane: 720,
+		maxShare: 0.46
+	}), [sidebarVisible, sidebarWidth, viewportWidth]);
+	const setSidePanelWidth = useCallback((width: number) => {
+		const next = fitSidePanelWidth(width);
+		setSidePanelWidthState(next);
+		window.localStorage.setItem("synth.workbenchSidePanelWidth", String(next));
+	}, [fitSidePanelWidth]);
 
 	useEffect(() => {
 		const onResize = () => setViewportWidth(window.innerWidth);
 		window.addEventListener("resize", onResize);
 		return () => window.removeEventListener("resize", onResize);
 	}, []);
+
+	useEffect(() => {
+		setInventoryContainerWidth((current) => fitInventoryWidth(current));
+		setSidePanelWidthState((current) => fitSidePanelWidth(current));
+	}, [fitInventoryWidth, fitSidePanelWidth]);
 
 	useEffect(() => {
 		const root = document.documentElement;
@@ -114,6 +151,7 @@ export function useShellLayout(
 		terminalOpen,
 		viewportWidth,
 		inventoryContainerWidth,
+		sidePanelWidth,
 		sidePanelOpen,
 		sidePanelTab,
 		containerPaneExpanded,
@@ -121,6 +159,7 @@ export function useShellLayout(
 		setSidebarWidth,
 		setTerminalOpen,
 		setInventoryContainerWidth,
+		setSidePanelWidth,
 		setSidePanelOpen,
 		setSidePanelTab,
 		setContainerPaneExpanded,

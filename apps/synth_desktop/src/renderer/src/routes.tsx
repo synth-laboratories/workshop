@@ -150,6 +150,8 @@ export type MainRoutesProps = {
 	setContainerPaneExpanded: (expanded: boolean) => void;
 	inventoryContainerWidth: number;
 	setInventoryContainerWidth: (width: number) => void;
+	sidePanelWidth: number;
+	setSidePanelWidth: (width: number) => void;
 	persistLayoutSnapshot: (patch: Partial<DesktopPreferences["layout"]["last"]>) => void;
 	showSidePanel: boolean;
 	sidePanelCanSharePane: boolean;
@@ -224,6 +226,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		refreshPluginStatuses,
 		inventoryContainerWidth,
 		setInventoryContainerWidth,
+		sidePanelWidth,
+		setSidePanelWidth,
 		persistLayoutSnapshot,
 		showSidePanel,
 		sidePanelCanSharePane,
@@ -496,6 +500,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		setInventoryContainerWidth(width);
 		persistLayoutSnapshot({ outputPaneWidth: width });
 	};
+	const resizeSidePanel = (width: number) => setSidePanelWidth(width);
 	const paneClassName = chatRoute
 		? `workbench${visualPaneVisible ? " with-visual" : ""}${chatContainerVisible ? " with-container" : ""}${chatContainerVisible && containerPaneExpanded ? " container-expanded" : ""}${showSidePanel ? " with-side-panel" : ""}${transcriptCollapsed ? " transcript-collapsed" : ""}`
 		: `inventory-workbench${visualPaneVisible ? " with-visual" : ""}${inventoryContainerVisible ? " with-container" : ""}${inventoryContainerVisible && containerPaneExpanded ? " container-expanded" : ""}`;
@@ -554,7 +559,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 				<div
 					key="window-pane-host"
 					className={paneClassName}
-					style={{ "--visual-pane-width": `${inventoryContainerWidth}px`, "--container-pane-width": `${inventoryContainerWidth}px`, "--side-panel-width": `${inventoryContainerWidth}px` } as CSSProperties}
+					style={{ "--visual-pane-width": `${inventoryContainerWidth}px`, "--container-pane-width": `${inventoryContainerWidth}px`, "--side-panel-width": `${sidePanelWidth}px` } as CSSProperties}
 				>
 					{chatRoute && activeChat ? (
 					<ChatTranscript
@@ -733,10 +738,10 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					{chatRoute && showSidePanel && activeChat ? (
 						<>
 							<PaneResizeHandle
-								value={inventoryContainerWidth}
+								value={sidePanelWidth}
 								minPrimary={380}
 								minSecondary={260}
-								onChange={resizeInventoryPane}
+								onChange={resizeSidePanel}
 								allowPrimaryCollapse
 								primaryCollapsed={transcriptCollapsed}
 								onPrimaryCollapsedChange={setTranscriptCollapsed}
