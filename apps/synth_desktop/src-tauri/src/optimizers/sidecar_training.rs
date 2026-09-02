@@ -769,6 +769,12 @@ async fn watch_job(
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        // A job can become terminal after this page was read but before the
+        // status request below.  Seeing a terminal status therefore does not
+        // prove that this was the final event page.  Require one subsequent
+        // empty read after terminal so events appended during that race are
+        // drained before the Workshop run is settled.
+        let terminal_page_drained = training_event_page_drained(&events);
         if let Some(sequence) = events
             .first()
             .and_then(|event| {
@@ -822,6 +828,9 @@ async fn watch_job(
             .unwrap_or("running")
         {
             "succeeded" => {
+                if !terminal_page_drained {
+                    continue;
+                }
                 if algorithm == "sft" {
                     append_paired_sft_evaluation(&service, &run_id, &job).await?;
                 }
@@ -833,6 +842,9 @@ async fn watch_job(
                 return Ok(());
             }
             "failed" => {
+                if !terminal_page_drained {
+                    continue;
+                }
                 let detail = job
                     .get("error")
                     .and_then(|value| {
@@ -850,6 +862,9 @@ async fn watch_job(
                 return Err(anyhow!("training job failed: {detail}"));
             }
             "cancelled" => {
+                if !terminal_page_drained {
+                    continue;
+                }
                 service
                     .settle_run(
                         run_id.clone(),
@@ -1968,6 +1983,10 @@ async fn drive_hosted_cispo_job(
 
 const HOSTED_EVENT_PAGE_LIMIT: usize = 500;
 
+fn training_event_page_drained(events: &[Value]) -> bool {
+    events.is_empty()
+}
+
 fn hosted_event_page_drained(page: &Value, limit: usize) -> bool {
     page.get("terminal").and_then(Value::as_bool) == Some(true)
         && page
@@ -2541,6 +2560,12 @@ mod tests {
             &json!({"terminal": false, "events": []}),
             HOSTED_EVENT_PAGE_LIMIT
         ));
+    }
+
+    #[test]
+    fn terminal_training_jobs_require_an_empty_followup_page() {
+        assert!(!training_event_page_drained(&[json!({"sequence": 500})]));
+        assert!(training_event_page_drained(&[]));
     }
 
     #[test]
