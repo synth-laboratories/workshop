@@ -131,12 +131,61 @@ pub fn resolve_template(template_id: &str) -> anyhow::Result<TemplateMeta> {
     if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
         anyhow::bail!("invalid template id");
     }
-    let id = id.to_owned();
-    with_template_index(&visuals_root(), move |mut templates| {
-        templates
-            .remove(&id)
-            .ok_or_else(|| anyhow::anyhow!("unknown visual template: {id}"))
-    })
+    resolve_template_inner(&visuals_root(), id)
+}
+
+fn resolve_template_inner(visuals_root: &Path, id: &str) -> anyhow::Result<TemplateMeta> {
+    // Launch-time template resolution is intentionally a bounded direct lookup.
+    // Building and then dropping the complete TemplateMeta index from the
+    // optimizer admission future has repeatedly exhausted native worker stacks,
+    // even when delegated to a generously sized scoped thread. Directory names
+    // are already required to equal template IDs by load_template_meta, so scan
+    // paths iteratively and decode only the requested manifest.
+    let families_root = visuals_root.join("families");
+    let mut resolved = None;
+    if families_root.exists() {
+        let canonical_root = fs::canonicalize(&families_root)?;
+        let mut directories = Vec::new();
+        discover_template_directories(&families_root, &canonical_root, &mut directories)?;
+        directories.sort();
+        if let Some(path) = directories
+            .into_iter()
+            .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(id))
+        {
+            resolved = Some(load_template_meta(&path).map(|mut meta| {
+                meta.path = Some(path.display().to_string());
+                meta
+            })?);
+        }
+    }
+
+    for extra_root_name in ["templates", "templates-internal"] {
+        if resolved.is_some() {
+            break;
+        }
+        let path = visuals_root.join(extra_root_name).join(id);
+        if path.join("template.json").is_file() {
+            resolved = Some(load_template_meta(&path).map(|mut meta| {
+                meta.path = Some(path.display().to_string());
+                meta
+            })?);
+        }
+    }
+
+    let managed_path = managed_templates_root().join(id);
+    if managed_path.join("template.json").is_file() && managed_path.join("renderer.html").is_file()
+    {
+        if resolved.is_some() {
+            anyhow::bail!("managed visual template id collides with bundled template: {id}");
+        }
+        let mut meta = load_template_meta(&managed_path)?;
+        meta.path = Some(managed_path.display().to_string());
+        meta.renderer_path = Some(managed_path.join("renderer.html").display().to_string());
+        meta.source_kind = Some("managed".into());
+        resolved = Some(meta);
+    }
+
+    resolved.ok_or_else(|| anyhow::anyhow!("unknown visual template: {id}"))
 }
 
 fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, TemplateMeta>> {
@@ -625,6 +674,32 @@ mod tests {
             .unwrap()
             .contains("families/analysis/example.v1"));
         assert!(indexed["example.v1"].components.is_empty());
+    }
+
+    #[test]
+    fn resolves_requested_template_without_decoding_the_complete_index() {
+        let temp = tempfile::tempdir().unwrap();
+        write_template(
+            &temp
+                .path()
+                .join("families/optimizers/optimizer.gepa.live.v1"),
+            "optimizer.gepa.live.v1",
+        );
+        let unrelated = temp.path().join("families/unrelated/broken.v1");
+        fs::create_dir_all(&unrelated).unwrap();
+        fs::write(
+            unrelated.join("template.json"),
+            r#"{"schemaVersion":"unsupported","id":"broken.v1","version":"1.0.0"}"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_template_inner(temp.path(), "optimizer.gepa.live.v1").unwrap();
+        assert_eq!(resolved.id, "optimizer.gepa.live.v1");
+        assert!(resolved
+            .path
+            .as_deref()
+            .unwrap()
+            .ends_with("families/optimizers/optimizer.gepa.live.v1"));
     }
 
     #[test]
