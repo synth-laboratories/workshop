@@ -28,6 +28,7 @@ import { DagOverlay } from "./overlays/dag.tsx";
 import { GepaOverlay } from "./overlays/gepa.tsx";
 import { GoExOverlay } from "./overlays/go-ex.tsx";
 import { SftOverlay } from "./overlays/sft.tsx";
+import { CollectionBrowser, type RunCollectionsClient } from "./components/workspace/CollectionBrowser.tsx";
 
 type FixturePayload = {
   run?: OptimizerRun;
@@ -72,6 +73,7 @@ export type ShellProps = {
   evidence?: EvidenceIntentClient;
   /** Backend checkpointed historical projections. Present in the desktop host. */
   history?: HistoryClient;
+  collections?: RunCollectionsClient;
   tailCursor?: number;
   run?: OptimizerRun;
   runViewV2?: OptimizerRunViewV2Like;
@@ -299,6 +301,18 @@ export function Shell(props: ShellProps) {
 
       <ExecutionBindings bindings={displayed.execution.bindings} />
       <UsageCards usage={displayed.usage} />
+      {props.collections ? (
+        <details data-testid="optimizer-durable-collections">
+          <summary className="sv-micro-label">Durable paged run data</summary>
+          <CollectionBrowser client={props.collections} collection="candidates" title="Candidates / checkpoints" />
+          <CollectionBrowser client={props.collections} collection="rollouts" title="Rollouts" descending />
+          <CollectionBrowser client={props.collections} collection="evaluations" title="Evaluations" descending />
+          <CollectionBrowser client={props.collections} collection="metric_points" title="Metric points" descending />
+          <CollectionBrowser client={props.collections} collection="proposer_calls" title="Proposer calls" descending />
+          <CollectionBrowser client={props.collections} collection="artifacts" title="Artifacts" descending />
+          <CollectionBrowser client={props.collections} collection="evidence_refs" title="Evidence references" descending />
+        </details>
+      ) : null}
       <EventLog entries={displayed.logs} />
       <ArtifactList artifacts={displayed.artifacts} />
     </VisualChrome>

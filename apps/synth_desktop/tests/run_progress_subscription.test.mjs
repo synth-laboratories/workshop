@@ -999,8 +999,8 @@ test("a probe that changes nothing is counted as carrying nothing", async () => 
 	setRunProgressPollInterval(3_600_000);
 });
 
-test("projection-first runs open under auto without reading the raw journal: GEPA, SFT, CISPO", async () => {
-	for (const algorithm of ["gepa", "sft", "cispo"]) {
+test("every first-class optimizer opens under auto without reading the raw journal", async () => {
+	for (const algorithm of ["eval", "gepa", "go-ex", "sft", "cispo"]) {
 		resetRunProgressStore();
 		const transport = fakeTransport({
 			runs: { "run-a": runRecord({ algorithmId: algorithm, cursorSeq: 900 }) },
@@ -1017,18 +1017,6 @@ test("projection-first runs open under auto without reading the raw journal: GEP
 		assert.equal(seen.at(-1).cursor, 900, "the durable cursor is still reported for evidence readers");
 		unsubscribe();
 	}
-	// Eval still hydrates under auto until its projection is complete.
-	resetRunProgressStore();
-	const evalTransport = fakeTransport({
-		runs: { "run-a": runRecord({ algorithmId: "eval", cursorSeq: 3 }) },
-		pages: { "run-a": [event(1), event(2), event(3)] },
-		views: { "run-a": { algorithm: "eval", header: { lifecycle: "running", projectionRevision: 1, asOfSequence: 3 }, projection: {} } }
-	});
-	setRunProgressTransport(evalTransport);
-	const unsubscribeEval = subscribeToRun("run-a", () => undefined, { evidence: "auto" });
-	await settle();
-	assert.ok(evalTransport.calls.eventsAfter > 0);
-	unsubscribeEval();
 });
 
 test("an active full-evidence consumer retains a bounded window and reports the shortfall", async () => {

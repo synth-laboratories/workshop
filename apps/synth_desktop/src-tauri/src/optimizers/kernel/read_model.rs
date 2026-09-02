@@ -33,8 +33,8 @@ use super::algorithm::{AlgorithmProjection, AlgorithmResult};
 use super::commit::RunKernelState;
 use super::evidence::{EvidenceRef, UsageCompleteness};
 use super::types::{
-    AlgorithmKind, EvidenceCompleteness, ExecutionPlacement, RunCondition, RunLifecycle,
-    RunPhase, TerminalKind, TerminalReason, WorkItemLifecycle,
+    AlgorithmKind, EvidenceCompleteness, ExecutionPlacement, RunCondition, RunLifecycle, RunPhase,
+    TerminalKind, TerminalReason, WorkItemLifecycle,
 };
 use super::view::RunViewContext;
 use super::work::WorkSummary;
@@ -63,7 +63,9 @@ pub const MAX_CHECKPOINTS_PER_RUN: usize = 64;
 // Collections
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, specta::Type)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, specta::Type,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RunCollection {
     Candidates,
@@ -110,13 +112,33 @@ impl RunCollection {
     pub fn parse(value: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|item| item.as_str() == value)
     }
+}
 
-    /// Whether rows may change after they are written. Append-only
-    /// collections are synced by ordinal; mutable ones are compared row by
-    /// row within their (small) bound.
-    const fn is_mutable(self) -> bool {
-        matches!(self, Self::Candidates)
-    }
+/// Whether an algorithm updates existing rows in this collection. This is a
+/// property of the projection/collection pair, not of the collection name:
+/// GEPA evaluations are terminal append-only facts, while Eval work items and
+/// training checkpoint evaluations advance in place.
+fn collection_is_mutable(projection: &AlgorithmProjection, collection: RunCollection) -> bool {
+    matches!(
+        (projection, collection),
+        (_, RunCollection::Candidates)
+            | (
+                AlgorithmProjection::Eval(_),
+                RunCollection::Rollouts | RunCollection::Evaluations
+            )
+            | (
+                AlgorithmProjection::Sft(_),
+                RunCollection::Evaluations | RunCollection::MetricPoints
+            )
+            | (
+                AlgorithmProjection::Cispo(_),
+                RunCollection::Rollouts | RunCollection::Evaluations | RunCollection::MetricPoints
+            )
+            | (
+                AlgorithmProjection::GoEx(_),
+                RunCollection::Rollouts | RunCollection::ProposerCalls
+            )
+    )
 }
 
 /// One row of a durable collection. The common envelope is deliberately
@@ -152,6 +174,13 @@ pub struct RunCollectionRow {
     #[serde(default)]
     pub status: Option<String>,
     pub details_version: String,
+    /// True only on a collection page when this row's detail alone exceeds
+    /// the page byte budget. The common envelope remains visible; callers
+    /// fetch the full detail through `run_collection_item` on selection.
+    #[serde(default)]
+    pub details_deferred: bool,
+    #[specta(type = specta_typescript::Number)]
+    pub details_bytes: u64,
     #[specta(type = specta_typescript::Unknown)]
     pub details: Value,
 }
@@ -197,12 +226,18 @@ pub fn collection_len(projection: &AlgorithmProjection, collection: RunCollectio
         (AlgorithmProjection::Gepa(p), RunCollection::ProposerCalls) => p.proposer_calls.len(),
         (AlgorithmProjection::Eval(p), RunCollection::Candidates) => p.candidates.len(),
         (AlgorithmProjection::Eval(p), RunCollection::Rollouts) => p.evidence_ledger.len(),
-        (AlgorithmProjection::Eval(p), RunCollection::Evaluations) => p.work_items.len(),
-        (AlgorithmProjection::GoEx(p), RunCollection::Candidates) => p.candidate_ids.len(),
+        (AlgorithmProjection::Eval(p), RunCollection::Evaluations) => {
+            p.trials.len() + p.scorecards.len()
+        }
+        (AlgorithmProjection::GoEx(p), RunCollection::Candidates) => p.candidates.len(),
+        (AlgorithmProjection::GoEx(p), RunCollection::Rollouts) => p.child_rollouts.len(),
         (AlgorithmProjection::GoEx(p), RunCollection::Evaluations) => p.child_eval_run_ids.len(),
+        (AlgorithmProjection::GoEx(p), RunCollection::ProposerCalls) => p.proposer_calls.len(),
         (AlgorithmProjection::Sft(p), RunCollection::Evaluations) => p.evaluations.len(),
         (AlgorithmProjection::Sft(p), RunCollection::MetricPoints) => p.metrics.points.len(),
-        (AlgorithmProjection::Sft(p), RunCollection::Candidates) => p.checkpoints.len(),
+        (AlgorithmProjection::Sft(p), RunCollection::Candidates) => {
+            p.checkpoints.len() + p.curation_candidates.len()
+        }
         (AlgorithmProjection::Cispo(p), RunCollection::Evaluations) => p.evaluations.len(),
         (AlgorithmProjection::Cispo(p), RunCollection::MetricPoints) => p.metrics.points.len(),
         (AlgorithmProjection::Cispo(p), RunCollection::Candidates) => p.checkpoints.len(),
@@ -242,9 +277,9 @@ pub fn collection_rows(
                     .heldout_reward
                     .or(candidate.train_reward)
                     .or(candidate.minibatch_reward);
-                seed.status = candidate.gate_accepted.map(|accepted| {
-                    if accepted { "accepted" } else { "rejected" }.to_string()
-                });
+                seed.status = candidate
+                    .gate_accepted
+                    .map(|accepted| if accepted { "accepted" } else { "rejected" }.to_string());
                 Some(seed)
             })
             .collect(),
@@ -262,7 +297,14 @@ pub fn collection_rows(
                     seed.parent_id = evaluation.candidate_id.clone();
                     seed.score = evaluation.reward;
                     seed.cost_usd = evaluation.cost_usd;
-                    seed.status = Some(if evaluation.reward.is_some() { "scored" } else { "failed" }.into());
+                    seed.status = Some(
+                        if evaluation.reward.is_some() {
+                            "scored"
+                        } else {
+                            "failed"
+                        }
+                        .into(),
+                    );
                     Some(seed)
                 })
                 .collect()
@@ -285,37 +327,131 @@ pub fn collection_rows(
         (AlgorithmProjection::Eval(p), RunCollection::Candidates) => range
             .filter_map(|index| {
                 let id = p.candidates.get(index)?;
-                Some(RowSeed::new(id.clone(), "eval_candidate", "eval_candidate.v1", json!({ "id": id })))
+                let scorecards = p
+                    .scorecards
+                    .iter()
+                    .filter(|scorecard| scorecard.candidate_id == *id)
+                    .collect::<Vec<_>>();
+                let latest = scorecards.last().copied();
+                let mut seed = RowSeed::new(
+                    id.clone(),
+                    "eval_candidate",
+                    "eval_candidate.v2",
+                    json!({ "id": id, "scorecards": scorecards }),
+                );
+                seed.label = latest.and_then(|row| row.label.clone());
+                seed.score = latest.and_then(|row| row.score);
+                seed.cost_usd = latest.and_then(|row| row.cost_usd);
+                seed.status = latest.and_then(|row| row.status.clone());
+                Some(seed)
             })
             .collect(),
         (AlgorithmProjection::Eval(p), RunCollection::Rollouts) => range
             .filter_map(|index| {
                 let entry = p.evidence_ledger.get(index)?;
+                let trial = p.trials.iter().find(|trial| trial.id == entry.work_item_id);
                 let mut seed = RowSeed::new(
                     entry.work_item_id.clone(),
                     "eval_rollout",
-                    "eval_rollout_evidence.v1",
-                    serde_json::to_value(entry).unwrap_or(Value::Null),
+                    "eval_rollout_evidence.v2",
+                    json!({ "evidence": entry, "trial": trial }),
                 );
-                seed.label = entry.rollout_id.clone();
-                seed.parent_id = entry.trial_id.clone();
+                seed.label = trial
+                    .and_then(|row| row.stage.clone())
+                    .or_else(|| entry.rollout_id.clone());
+                seed.parent_id = trial
+                    .and_then(|row| row.candidate_id.clone())
+                    .or_else(|| entry.trial_id.clone());
+                seed.score = trial.and_then(|row| row.reward);
                 seed.status = Some(format!("{:?}", entry.state).to_lowercase());
                 Some(seed)
             })
             .collect(),
         (AlgorithmProjection::Eval(p), RunCollection::Evaluations) => range
-            .filter_map(|index| work_item_row(p.work_items.get(index)?, "eval_trial"))
+            .filter_map(|index| {
+                if let Some(trial) = p.trials.get(index) {
+                    let mut seed = RowSeed::new(
+                        trial.id.clone(),
+                        "eval_trial",
+                        "eval_trial.v2",
+                        serde_json::to_value(trial).unwrap_or(Value::Null),
+                    );
+                    seed.label = trial.stage.clone();
+                    seed.parent_id = trial.candidate_id.clone();
+                    seed.score = trial.reward;
+                    seed.status = Some(trial.status.clone());
+                    return Some(seed);
+                }
+                let scorecard = p.scorecards.get(index.checked_sub(p.trials.len())?)?;
+                let mut seed = RowSeed::new(
+                    scorecard.id.clone(),
+                    "eval_scorecard",
+                    "eval_scorecard.v1",
+                    serde_json::to_value(scorecard).unwrap_or(Value::Null),
+                );
+                seed.label = scorecard.stage.clone();
+                seed.parent_id = Some(scorecard.candidate_id.clone());
+                seed.score = scorecard.score;
+                seed.cost_usd = scorecard.cost_usd;
+                seed.status = scorecard.status.clone();
+                Some(seed)
+            })
             .collect(),
         (AlgorithmProjection::GoEx(p), RunCollection::Candidates) => range
             .filter_map(|index| {
-                let id = p.candidate_ids.get(index)?;
-                Some(RowSeed::new(id.clone(), "go_ex_candidate", "go_ex_candidate.v1", json!({ "id": id })))
+                let candidate = p.candidates.get(index)?;
+                let mut seed = RowSeed::new(
+                    candidate.id.clone(),
+                    "go_ex_candidate",
+                    "go_ex_candidate.v2",
+                    serde_json::to_value(candidate).unwrap_or(Value::Null),
+                );
+                seed.parent_id = candidate.parent_id.clone();
+                seed.score = candidate.score;
+                seed.status = candidate.status.clone();
+                Some(seed)
+            })
+            .collect(),
+        (AlgorithmProjection::GoEx(p), RunCollection::Rollouts) => range
+            .filter_map(|index| {
+                let rollout = p.child_rollouts.get(index)?;
+                let mut seed = RowSeed::new(
+                    rollout.id.clone(),
+                    "go_ex_child_rollout",
+                    "go_ex_child_rollout.v1",
+                    serde_json::to_value(rollout).unwrap_or(Value::Null),
+                );
+                seed.parent_id = rollout.candidate_id.clone();
+                seed.score = rollout.reward;
+                seed.cost_usd = rollout.cost_usd;
+                seed.status = rollout.status.clone();
+                Some(seed)
             })
             .collect(),
         (AlgorithmProjection::GoEx(p), RunCollection::Evaluations) => range
             .filter_map(|index| {
                 let id = p.child_eval_run_ids.get(index)?;
-                Some(RowSeed::new(id.clone(), "go_ex_child_eval", "child_eval_run.v1", json!({ "optimizerRunId": id })))
+                Some(RowSeed::new(
+                    id.clone(),
+                    "go_ex_child_eval",
+                    "child_eval_run.v1",
+                    json!({ "optimizerRunId": id }),
+                ))
+            })
+            .collect(),
+        (AlgorithmProjection::GoEx(p), RunCollection::ProposerCalls) => range
+            .filter_map(|index| {
+                let call = p.proposer_calls.get(index)?;
+                let mut seed = RowSeed::new(
+                    call.id.clone(),
+                    "go_ex_proposer_call",
+                    "go_ex_proposer_call.v1",
+                    serde_json::to_value(call).unwrap_or(Value::Null),
+                );
+                seed.label = call.model.clone();
+                seed.cost_usd = call.cost_usd;
+                seed.status = Some(call.status.clone());
+                Some(seed)
             })
             .collect(),
         (AlgorithmProjection::Sft(p), RunCollection::Evaluations) => range
@@ -325,7 +461,37 @@ pub fn collection_rows(
             .filter_map(|index| metric_point_row(p.metrics.points.get(index)?))
             .collect(),
         (AlgorithmProjection::Sft(p), RunCollection::Candidates) => range
-            .filter_map(|index| checkpoint_row(p.checkpoints.get(index)?, p.selected_checkpoint_id.as_deref()))
+            .filter_map(|index| {
+                if let Some(checkpoint) = p.checkpoints.get(index) {
+                    return checkpoint_row(checkpoint, p.selected_checkpoint_id.as_deref());
+                }
+                let curation_index = index.checked_sub(p.checkpoints.len())?;
+                let candidate = p.curation_candidates.get(curation_index)?;
+                let id = candidate
+                    .get("id")
+                    .or_else(|| candidate.get("candidate_id"))
+                    .or_else(|| candidate.get("rollout_id"))
+                    .or_else(|| candidate.get("trace_id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("curation:{curation_index}"));
+                let mut seed = RowSeed::new(
+                    id,
+                    "sft_curation_candidate",
+                    "sft_curation_candidate.v1",
+                    candidate.clone(),
+                );
+                seed.score = candidate
+                    .get("score")
+                    .or_else(|| candidate.get("reward"))
+                    .and_then(Value::as_f64);
+                seed.status = candidate
+                    .get("status")
+                    .or_else(|| candidate.get("decision"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                Some(seed)
+            })
             .collect(),
         (AlgorithmProjection::Cispo(p), RunCollection::Evaluations) => range
             .filter_map(|index| training_evaluation_row(p.evaluations.get(index)?))
@@ -334,7 +500,9 @@ pub fn collection_rows(
             .filter_map(|index| metric_point_row(p.metrics.points.get(index)?))
             .collect(),
         (AlgorithmProjection::Cispo(p), RunCollection::Candidates) => range
-            .filter_map(|index| checkpoint_row(p.checkpoints.get(index)?, p.policy_checkpoint_id.as_deref()))
+            .filter_map(|index| {
+                checkpoint_row(p.checkpoints.get(index)?, p.policy_checkpoint_id.as_deref())
+            })
             .collect(),
         (AlgorithmProjection::Cispo(p), RunCollection::Rollouts) => range
             .filter_map(|index| work_item_row(p.work_items.get(index)?, "cispo_rollout_group"))
@@ -392,8 +560,20 @@ fn metric_point_row(point: &super::algorithms::training::TrainingMetricPoint) ->
 }
 
 fn checkpoint_row(id: &str, selected: Option<&str>) -> Option<RowSeed> {
-    let mut seed = RowSeed::new(id, "training_checkpoint", "training_checkpoint.v1", json!({ "checkpointId": id }));
-    seed.status = Some(if selected == Some(id) { "selected" } else { "ready" }.into());
+    let mut seed = RowSeed::new(
+        id,
+        "training_checkpoint",
+        "training_checkpoint.v1",
+        json!({ "checkpointId": id }),
+    );
+    seed.status = Some(
+        if selected == Some(id) {
+            "selected"
+        } else {
+            "ready"
+        }
+        .into(),
+    );
     Some(seed)
 }
 
@@ -485,14 +665,27 @@ pub fn sync_collection_rows(conn: &Connection, state: &RunKernelState) -> Result
     for collection in RunCollection::PROJECTED {
         let len = collection_len(&state.projection, collection) as u64;
         let stored = stored_row_count(conn, &state.run_id, collection)?;
-        if collection.is_mutable() {
+        if collection_is_mutable(&state.projection, collection) {
             if stored > len {
                 clear_rows(conn, &state.run_id, collection)?;
             }
             let seeds = collection_rows(&state.projection, collection, 0, len as usize);
-            let mut existing: BTreeMap<String, (u64, String)> = BTreeMap::new();
+            type StoredSeed = (
+                u64,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<f64>,
+                Option<f64>,
+                Option<String>,
+                String,
+                String,
+            );
+            let mut existing: BTreeMap<String, StoredSeed> = BTreeMap::new();
             let mut statement = conn.prepare(
-                "SELECT item_id, ordinal, details_json FROM optimizer_run_collection_rows
+                "SELECT item_id, ordinal, kind, label, parent_id, score, cost_usd,
+                        status, details_version, details_json
+                 FROM optimizer_run_collection_rows
                  WHERE optimizer_run_id = ?1 AND collection = ?2",
             )?;
             let rows = statement.query_map(params![state.run_id, collection.as_str()], |row| {
@@ -500,20 +693,71 @@ pub fn sync_collection_rows(conn: &Connection, state: &RunKernelState) -> Result
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?.max(0) as u64,
                     row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<f64>>(5)?,
+                    row.get::<_, Option<f64>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
                 ))
             })?;
             for row in rows {
-                let (item_id, ordinal, details) = row?;
-                existing.insert(item_id, (ordinal, details));
+                let (
+                    item_id,
+                    ordinal,
+                    kind,
+                    label,
+                    parent_id,
+                    score,
+                    cost_usd,
+                    status,
+                    details_version,
+                    details,
+                ) = row?;
+                existing.insert(
+                    item_id,
+                    (
+                        ordinal,
+                        kind,
+                        label,
+                        parent_id,
+                        score,
+                        cost_usd,
+                        status,
+                        details_version,
+                        details,
+                    ),
+                );
             }
             drop(statement);
+            let live_ids = seeds
+                .iter()
+                .map(|seed| seed.item_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            for stale_id in existing
+                .keys()
+                .filter(|item_id| !live_ids.contains(item_id.as_str()))
+            {
+                conn.execute(
+                    "DELETE FROM optimizer_run_collection_rows
+                     WHERE optimizer_run_id = ?1 AND collection = ?2 AND item_id = ?3",
+                    params![state.run_id, collection.as_str(), stale_id],
+                )?;
+            }
             for (ordinal, seed) in seeds.iter().enumerate() {
                 let details = serde_json::to_string(&seed.details)?;
-                let unchanged = existing
-                    .get(&seed.item_id)
-                    .is_some_and(|(stored_ordinal, stored_details)| {
-                        *stored_ordinal == ordinal as u64 && *stored_details == details
-                    });
+                let unchanged = existing.get(&seed.item_id).is_some_and(|stored| {
+                    stored.0 == ordinal as u64
+                        && stored.1 == seed.kind
+                        && stored.2 == seed.label
+                        && stored.3 == seed.parent_id
+                        && stored.4 == seed.score
+                        && stored.5 == seed.cost_usd
+                        && stored.6 == seed.status
+                        && stored.7 == seed.details_version
+                        && stored.8 == details
+                });
                 if !unchanged {
                     insert_row(conn, state, collection, ordinal as u64, seed)?;
                 }
@@ -732,16 +976,23 @@ pub fn query_collection_rows(
             has_more = true;
             break;
         }
-        // Budget on the stored detail bytes plus a fixed envelope estimate;
-        // the first row always lands so a single oversized row is still
-        // reachable rather than an infinite empty page.
+        // Budget on the stored detail bytes plus a fixed envelope estimate.
+        // A single oversized detail is represented by its envelope and must
+        // be fetched explicitly through the item endpoint; pages themselves
+        // never exceed the advertised byte ceiling.
         let row_bytes = details_json.len() + 256;
         if !page_rows.is_empty() && bytes + row_bytes > COLLECTION_PAGE_MAX_BYTES {
             truncated_by_bytes = true;
             has_more = true;
             break;
         }
-        bytes += row_bytes;
+        let details_deferred = row_bytes > COLLECTION_PAGE_MAX_BYTES;
+        if details_deferred {
+            truncated_by_bytes = true;
+            bytes += 256;
+        } else {
+            bytes += row_bytes;
+        }
         page_rows.push(RunCollectionRow {
             schema_version: COLLECTION_ROW_SCHEMA_VERSION.into(),
             run_id: run_id.to_string(),
@@ -758,7 +1009,13 @@ pub fn query_collection_rows(
             cost_usd,
             status,
             details_version,
-            details: serde_json::from_str(&details_json).unwrap_or(Value::Null),
+            details_deferred,
+            details_bytes: details_json.len() as u64,
+            details: if details_deferred {
+                Value::Null
+            } else {
+                serde_json::from_str(&details_json).unwrap_or(Value::Null)
+            },
         });
     }
     let next_cursor = if has_more {
@@ -793,6 +1050,7 @@ pub fn load_collection_row(
          WHERE optimizer_run_id = ?1 AND collection = ?2 AND item_id = ?3",
         params![run_id, collection.as_str(), item_id],
         |row| {
+            let details_json = row.get::<_, String>(10)?;
             Ok(RunCollectionRow {
                 schema_version: COLLECTION_ROW_SCHEMA_VERSION.into(),
                 run_id: run_id.to_string(),
@@ -809,8 +1067,9 @@ pub fn load_collection_row(
                 cost_usd: row.get(7)?,
                 status: row.get(8)?,
                 details_version: row.get(9)?,
-                details: serde_json::from_str::<Value>(&row.get::<_, String>(10)?)
-                    .unwrap_or(Value::Null),
+                details_deferred: false,
+                details_bytes: details_json.len() as u64,
+                details: serde_json::from_str::<Value>(&details_json).unwrap_or(Value::Null),
             })
         },
     )
@@ -838,9 +1097,18 @@ pub fn page_rows_in_memory(
     let mut matching: Vec<RunCollectionRow> = rows
         .into_iter()
         .filter(|row| {
-            filter.parent_id.as_ref().is_none_or(|value| row.parent_id.as_ref() == Some(value))
-                && filter.label.as_ref().is_none_or(|value| row.label.as_ref() == Some(value))
-                && filter.status.as_ref().is_none_or(|value| row.status.as_ref() == Some(value))
+            filter
+                .parent_id
+                .as_ref()
+                .is_none_or(|value| row.parent_id.as_ref() == Some(value))
+                && filter
+                    .label
+                    .as_ref()
+                    .is_none_or(|value| row.label.as_ref() == Some(value))
+                && filter
+                    .status
+                    .as_ref()
+                    .is_none_or(|value| row.status.as_ref() == Some(value))
                 && filter.kind.as_ref().is_none_or(|value| &row.kind == value)
                 && filter
                     .changed_after_revision
@@ -869,14 +1137,31 @@ pub fn page_rows_in_memory(
             has_more = true;
             break;
         }
-        let row_bytes = serde_json::to_string(&row.details).map(|s| s.len()).unwrap_or(0) + 256;
+        let details_bytes = serde_json::to_string(&row.details)
+            .map(|s| s.len())
+            .unwrap_or(0);
+        let row_bytes = details_bytes + 256;
         if !page_rows.is_empty() && bytes + row_bytes > COLLECTION_PAGE_MAX_BYTES {
             truncated_by_bytes = true;
             has_more = true;
             break;
         }
-        bytes += row_bytes;
-        page_rows.push(row);
+        if row_bytes > COLLECTION_PAGE_MAX_BYTES {
+            truncated_by_bytes = true;
+            bytes += 256;
+            page_rows.push(RunCollectionRow {
+                details: Value::Null,
+                details_deferred: true,
+                details_bytes: details_bytes as u64,
+                ..row
+            });
+        } else {
+            bytes += row_bytes;
+            page_rows.push(RunCollectionRow {
+                details_bytes: details_bytes as u64,
+                ..row
+            });
+        }
     }
     let next_cursor = if has_more {
         page_rows.last().map(|row| encode_cursor(row.ordinal))
@@ -907,7 +1192,11 @@ pub fn evidence_ref_rows(state: &RunKernelState) -> Vec<RunCollectionRow> {
         .collect()
 }
 
-fn evidence_ref_row(state: &RunKernelState, ordinal: u64, reference: &EvidenceRef) -> RunCollectionRow {
+fn evidence_ref_row(
+    state: &RunKernelState,
+    ordinal: u64,
+    reference: &EvidenceRef,
+) -> RunCollectionRow {
     RunCollectionRow {
         schema_version: COLLECTION_ROW_SCHEMA_VERSION.into(),
         run_id: state.run_id.clone(),
@@ -924,6 +1213,8 @@ fn evidence_ref_row(state: &RunKernelState, ordinal: u64, reference: &EvidenceRe
         cost_usd: None,
         status: None,
         details_version: "evidence_ref.v1".into(),
+        details_deferred: false,
+        details_bytes: 0,
         details: serde_json::to_value(reference).unwrap_or(Value::Null),
     }
 }
@@ -952,6 +1243,8 @@ pub fn artifact_rows(
             cost_usd: None,
             status: None,
             details_version: artifact.schema_version.clone(),
+            details_deferred: false,
+            details_bytes: 0,
             details: serde_json::to_value(artifact).unwrap_or(Value::Null),
         })
         .collect()
@@ -1135,10 +1428,27 @@ fn evidence_summary(state: &super::evidence::EvidenceState) -> RunEvidenceSummar
 
 fn number_at(value: &Value, keys: &[&str]) -> Option<u64> {
     keys.iter().find_map(|key| {
-        value
-            .get(key)
-            .and_then(|found| found.as_u64().or_else(|| found.as_f64().map(|f| f.max(0.0) as u64)))
+        value.get(key).and_then(|found| {
+            found
+                .as_u64()
+                .or_else(|| found.as_f64().map(|f| f.max(0.0) as u64))
+        })
     })
+}
+
+fn compact_fields(value: &Value, keys: &[&str]) -> Value {
+    let Some(source) = value.as_object() else {
+        return Value::Null;
+    };
+    Value::Object(
+        keys.iter()
+            .filter_map(|key| {
+                source
+                    .get(*key)
+                    .map(|value| ((*key).to_string(), value.clone()))
+            })
+            .collect(),
+    )
 }
 
 fn parse_rfc3339_ms(value: &str) -> Option<i64> {
@@ -1157,22 +1467,95 @@ pub fn summarize(
     now_ms: i64,
 ) -> OptimizerRunSummary {
     let (setup, runtime, observed_max) = match &state.projection {
-        AlgorithmProjection::Gepa(p) => (p.contract.clone(), p.runtime.clone(), p.max_active_workers),
+        AlgorithmProjection::Gepa(p) => {
+            (p.contract.clone(), p.runtime.clone(), p.max_active_workers)
+        }
         AlgorithmProjection::Cispo(p) => (
-            json!({ "clipIdentity": p.clip_identity, "clipConfig": p.clip_config, "warmStartId": p.warm_start_id }),
+            json!({
+                "clipIdentity": p.clip_identity,
+                "clipConfig": p.clip_config,
+                "warmStartId": p.warm_start_id,
+                "groupSize": p.group_size,
+                "rewardVariance": p.reward_variance,
+                "advantageMean": p.mean_advantage,
+                "advantageStd": p.advantage_std,
+                "optimizerSteps": p.optimizer_steps
+            }),
             Value::Null,
             None,
         ),
         AlgorithmProjection::Sft(p) => (
-            json!({ "datasetDigest": p.dataset_digest, "configDigest": p.config_digest }),
-            Value::Null,
+            json!({
+                "datasetDigest": p.dataset_digest,
+                "configDigest": p.config_digest,
+                "dataset": compact_fields(&p.dataset_summary, &["source", "config", "revision", "digest", "dataset_digest", "row_count", "label_count", "splits"]),
+                "curation": compact_fields(&p.curation_summary, &["collected", "considered", "accepted", "rejected", "rejections_by_reason", "seeds_covered", "achievements_covered"]),
+                "comparison": compact_fields(&p.comparison_summary, &["split_digest", "seed_manifest_digest", "base_label", "trained_label", "status", "score", "delta"])
+            }),
+            compact_fields(
+                &p.compute_summary,
+                &[
+                    "backend",
+                    "device",
+                    "model",
+                    "status",
+                    "workers",
+                    "tokens_per_second",
+                ],
+            ),
             None,
         ),
-        _ => (Value::Null, Value::Null, None),
+        AlgorithmProjection::Eval(p) => (
+            compact_fields(
+                &p.setup,
+                &[
+                    "plannedTrials",
+                    "planned_trials",
+                    "parallelism",
+                    "globalCapacity",
+                    "global_capacity",
+                    "manifestDigest",
+                    "manifest_digest",
+                    "candidateSetId",
+                    "candidate_set_id",
+                    "dataset",
+                    "container",
+                ],
+            ),
+            json!({ "seedLedger": p.seed_ledger, "selection": p.selection }),
+            None,
+        ),
+        AlgorithmProjection::GoEx(p) => (
+            json!({
+                "dataEngine": compact_fields(&p.data_engine, &["status", "dataset", "counts", "childEvalRunIds"]),
+                "frontier": compact_fields(&p.frontier, &["bestCandidateId", "best_candidate_id", "candidate_frontier"])
+            }),
+            json!({
+                "board": compact_fields(&p.board, &["phase", "previousPhase", "tick", "tick_index", "reason", "status"]),
+                "agents": compact_fields(&p.agents, &["status", "counts"]),
+                "remoteStatus": p.remote_status
+            }),
+            None,
+        ),
     };
-    let configured = number_at(&setup, &["scale_leases", "scaleLeases", "maxConcurrency", "max_concurrency", "concurrency"])
-        .or_else(|| number_at(&runtime, &["maxWorkers", "max_workers", "configuredWorkers"]));
-    let observed_max = observed_max.or_else(|| number_at(&runtime, &["activeWorkers", "active_workers"]));
+    let configured = number_at(
+        &setup,
+        &[
+            "scale_leases",
+            "scaleLeases",
+            "maxConcurrency",
+            "max_concurrency",
+            "concurrency",
+        ],
+    )
+    .or_else(|| {
+        number_at(
+            &runtime,
+            &["maxWorkers", "max_workers", "configuredWorkers"],
+        )
+    });
+    let observed_max =
+        observed_max.or_else(|| number_at(&runtime, &["activeWorkers", "active_workers"]));
 
     let started_ms = run.started_at.as_deref().and_then(parse_rfc3339_ms);
     let finished_ms = run.finished_at.as_deref().and_then(parse_rfc3339_ms);
@@ -1204,10 +1587,22 @@ pub fn summarize(
                     _ => None,
                 },
             ),
-            AlgorithmResult::Eval(result) => (Some(format!("{:?}", result.selection)), None, result.mean_reward),
+            AlgorithmResult::Eval(result) => (
+                Some(format!("{:?}", result.selection)),
+                None,
+                result.mean_reward,
+            ),
             AlgorithmResult::GoEx(result) => (None, result.selected_candidate_id.clone(), None),
-            AlgorithmResult::Sft(result) => (None, result.selected_checkpoint_id.clone(), result.train_loss),
-            AlgorithmResult::Cispo(result) => (None, result.policy_checkpoint_id.clone(), result.mean_advantage),
+            AlgorithmResult::Sft(result) => (
+                None,
+                result.selected_checkpoint_id.clone(),
+                result.train_loss,
+            ),
+            AlgorithmResult::Cispo(result) => (
+                None,
+                result.policy_checkpoint_id.clone(),
+                result.mean_advantage,
+            ),
         };
         RunResultSummary {
             schema: state.algorithm.result_schema().into(),
@@ -1257,7 +1652,10 @@ pub fn summarize(
         started_at: run.started_at.clone(),
         finished_at: run.finished_at.clone(),
         elapsed_ms,
-        concurrency: RunConcurrencySummary { configured, observed_max },
+        concurrency: RunConcurrencySummary {
+            configured,
+            observed_max,
+        },
         work,
         usage: state.usage(),
         cost_complete,
@@ -1278,7 +1676,9 @@ pub fn summarize(
             within: true,
         },
     };
-    let bytes = serde_json::to_vec(&summary).map(|body| body.len()).unwrap_or(0);
+    let bytes = serde_json::to_vec(&summary)
+        .map(|body| body.len())
+        .unwrap_or(0);
     summary.budget = RunSummaryBudget {
         bytes: bytes as u64,
         limit: SUMMARY_BYTE_BUDGET as u64,
@@ -1336,7 +1736,11 @@ pub fn collection_counts(
 // Checkpoints and historical projections
 // ---------------------------------------------------------------------------
 
-fn latest_checkpoint_sequence(conn: &Connection, run_id: &str, reducer_version: &str) -> Result<Option<u64>> {
+fn latest_checkpoint_sequence(
+    conn: &Connection,
+    run_id: &str,
+    reducer_version: &str,
+) -> Result<Option<u64>> {
     let value: Option<i64> = conn
         .query_row(
             "SELECT MAX(as_of_sequence) FROM optimizer_projection_checkpoints
@@ -1407,7 +1811,11 @@ fn thin_checkpoints(conn: &Connection, run_id: &str) -> Result<()> {
 /// Checkpoint when enough events have elapsed since the last one, or at the
 /// terminal boundary. The interval stretches with serialized state size so a
 /// multi-megabyte projection is not rewritten every few hundred events.
-pub fn maybe_checkpoint(conn: &Connection, state: &RunKernelState, projection_bytes: usize) -> Result<bool> {
+pub fn maybe_checkpoint(
+    conn: &Connection,
+    state: &RunKernelState,
+    projection_bytes: usize,
+) -> Result<bool> {
     if state.aggregate_sequence == 0 {
         return Ok(false);
     }
@@ -1502,8 +1910,12 @@ pub fn work_state_counts(state: &RunKernelState) -> BTreeMap<&'static str, u64> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizers::kernel::algorithms::gepa::{GepaCandidate, GepaEvaluationSummary, GepaProposerCallSummary};
-    use crate::optimizers::kernel::algorithms::training::{TrainingMetricPoint, TrainingEvaluationSummary};
+    use crate::optimizers::kernel::algorithms::gepa::{
+        GepaCandidate, GepaEvaluationSummary, GepaProposerCallSummary,
+    };
+    use crate::optimizers::kernel::algorithms::training::{
+        TrainingEvaluationSummary, TrainingMetricPoint,
+    };
     use crate::optimizers::kernel::types::ExecutionPlacement;
 
     fn schema(conn: &Connection) {
@@ -1556,7 +1968,9 @@ mod tests {
             projection.evaluations.push(GepaEvaluationSummary {
                 id: format!("eval_{index}"),
                 candidate_id: Some(format!("cand_{}", index % candidates.max(1))),
-                stage: Some(["candidate_minibatch", "candidate_full_train", "heldout"][index % 3].into()),
+                stage: Some(
+                    ["candidate_minibatch", "candidate_full_train", "heldout"][index % 3].into(),
+                ),
                 example_id: Some(format!("train:{}", index % 50)),
                 rollout_id: Some(format!("rollout_{index}")),
                 reward: Some((index % 7) as f64 / 7.0),
@@ -1603,23 +2017,54 @@ mod tests {
     #[test]
     fn summary_stays_within_budget_at_ten_candidates_and_a_thousand_rollouts() {
         let state = gepa_state(10, 1_080);
-        let summary = summarize(&state, &run_record(&state), &RunViewContext::default(), vec![], state.aggregate_sequence, 1_756_600_000_000);
+        let summary = summarize(
+            &state,
+            &run_record(&state),
+            &RunViewContext::default(),
+            vec![],
+            state.aggregate_sequence,
+            1_756_600_000_000,
+        );
         let bytes = serde_json::to_vec(&summary).unwrap().len();
         assert!(bytes <= SUMMARY_BYTE_BUDGET, "summary is {bytes} bytes");
         assert!(summary.budget.within);
-        assert!(bytes < 8 * 1024, "summary should be far under the ceiling; got {bytes}");
+        assert!(
+            bytes < 8 * 1024,
+            "summary should be far under the ceiling; got {bytes}"
+        );
         assert_eq!(summary.concurrency.configured, Some(4));
         assert_eq!(summary.concurrency.observed_max, Some(4));
         assert!(summary.elapsed_ms.is_some());
-        assert!(summary.throughput.is_none(), "no succeeded work items means no throughput claim");
+        assert!(
+            summary.throughput.is_none(),
+            "no succeeded work items means no throughput claim"
+        );
     }
 
     #[test]
     fn summary_size_is_flat_as_collections_grow() {
         let small = gepa_state(10, 1_000);
         let large = gepa_state(50, 10_000);
-        let small_bytes = serde_json::to_vec(&summarize(&small, &run_record(&small), &RunViewContext::default(), vec![], 0, 0)).unwrap().len();
-        let large_bytes = serde_json::to_vec(&summarize(&large, &run_record(&large), &RunViewContext::default(), vec![], 0, 0)).unwrap().len();
+        let small_bytes = serde_json::to_vec(&summarize(
+            &small,
+            &run_record(&small),
+            &RunViewContext::default(),
+            vec![],
+            0,
+            0,
+        ))
+        .unwrap()
+        .len();
+        let large_bytes = serde_json::to_vec(&summarize(
+            &large,
+            &run_record(&large),
+            &RunViewContext::default(),
+            vec![],
+            0,
+            0,
+        ))
+        .unwrap()
+        .len();
         assert!(large_bytes <= SUMMARY_BYTE_BUDGET);
         assert!(
             large_bytes < small_bytes + 1024,
@@ -1635,8 +2080,14 @@ mod tests {
         schema(&conn);
         let mut state = gepa_state(10, 250);
         sync_collection_rows(&conn, &state).unwrap();
-        assert_eq!(stored_row_count(&conn, &state.run_id, RunCollection::Rollouts).unwrap(), 250);
-        assert_eq!(stored_row_count(&conn, &state.run_id, RunCollection::Candidates).unwrap(), 10);
+        assert_eq!(
+            stored_row_count(&conn, &state.run_id, RunCollection::Rollouts).unwrap(),
+            250
+        );
+        assert_eq!(
+            stored_row_count(&conn, &state.run_id, RunCollection::Candidates).unwrap(),
+            10
+        );
 
         // Append 30 more evaluations at a later revision: only the tail is written.
         let first_revision = state.projection_revision;
@@ -1655,7 +2106,11 @@ mod tests {
                 });
             }
             // A candidate changes (heldout reward lands); the others do not.
-            projection.candidates.get_mut("cand_3").unwrap().heldout_reward = Some(0.99);
+            projection
+                .candidates
+                .get_mut("cand_3")
+                .unwrap()
+                .heldout_reward = Some(0.99);
         }
         sync_collection_rows(&conn, &state).unwrap();
         let changed = query_collection_rows(
@@ -1663,7 +2118,14 @@ mod tests {
             &state.run_id,
             state.algorithm,
             RunCollection::Rollouts,
-            &RunCollectionQuery { filter: Some(RunCollectionFilter { changed_after_revision: Some(first_revision), ..Default::default() }), limit: Some(100), ..Default::default() },
+            &RunCollectionQuery {
+                filter: Some(RunCollectionFilter {
+                    changed_after_revision: Some(first_revision),
+                    ..Default::default()
+                }),
+                limit: Some(100),
+                ..Default::default()
+            },
             state.projection_revision,
             state.aggregate_sequence,
         )
@@ -1676,12 +2138,21 @@ mod tests {
             &state.run_id,
             state.algorithm,
             RunCollection::Candidates,
-            &RunCollectionQuery { filter: Some(RunCollectionFilter { changed_after_revision: Some(first_revision), ..Default::default() }), ..Default::default() },
+            &RunCollectionQuery {
+                filter: Some(RunCollectionFilter {
+                    changed_after_revision: Some(first_revision),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
             state.projection_revision,
             state.aggregate_sequence,
         )
         .unwrap();
-        assert_eq!(candidates_changed.total, 1, "an unchanged candidate keeps its original revision");
+        assert_eq!(
+            candidates_changed.total, 1,
+            "an unchanged candidate keeps its original revision"
+        );
         assert_eq!(candidates_changed.rows[0].item_id, "cand_3");
 
         // Keyset paging walks every row exactly once, at most 100 per page.
@@ -1693,13 +2164,20 @@ mod tests {
                 &state.run_id,
                 state.algorithm,
                 RunCollection::Rollouts,
-                &RunCollectionQuery { cursor: cursor.clone(), limit: Some(1_000), ..Default::default() },
+                &RunCollectionQuery {
+                    cursor: cursor.clone(),
+                    limit: Some(1_000),
+                    ..Default::default()
+                },
                 state.projection_revision,
                 state.aggregate_sequence,
             )
             .unwrap();
             assert!(page.rows.len() as u32 <= COLLECTION_PAGE_MAX_ROWS);
-            assert_eq!(page.limit, COLLECTION_PAGE_MAX_ROWS, "a limit over the ceiling is clamped, not honoured");
+            assert_eq!(
+                page.limit, COLLECTION_PAGE_MAX_ROWS,
+                "a limit over the ceiling is clamped, not honoured"
+            );
             assert_eq!(page.total, 280);
             let bytes = serde_json::to_vec(&page).unwrap().len();
             assert!(bytes <= COLLECTION_PAGE_MAX_BYTES, "page is {bytes} bytes");
@@ -1718,7 +2196,11 @@ mod tests {
             state.algorithm,
             RunCollection::Evaluations,
             &RunCollectionQuery {
-                filter: Some(RunCollectionFilter { parent_id: Some("cand_1".into()), label: Some("heldout".into()), ..Default::default() }),
+                filter: Some(RunCollectionFilter {
+                    parent_id: Some("cand_1".into()),
+                    label: Some("heldout".into()),
+                    ..Default::default()
+                }),
                 limit: Some(10),
                 ..Default::default()
             },
@@ -1727,13 +2209,28 @@ mod tests {
         )
         .unwrap();
         assert!(filtered.total >= 30);
-        assert!(filtered.rows.iter().all(|row| row.parent_id.as_deref() == Some("cand_1") && row.label.as_deref() == Some("heldout")));
+        assert!(filtered
+            .rows
+            .iter()
+            .all(|row| row.parent_id.as_deref() == Some("cand_1")
+                && row.label.as_deref() == Some("heldout")));
         assert!(filtered.next_cursor.is_some());
 
         // Item lookup returns the durable candidate content.
-        let candidate = load_collection_row(&conn, &state.run_id, state.algorithm, RunCollection::Candidates, "cand_3").unwrap().unwrap();
+        let candidate = load_collection_row(
+            &conn,
+            &state.run_id,
+            state.algorithm,
+            RunCollection::Candidates,
+            "cand_3",
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(candidate.score, Some(0.99));
-        assert!(candidate.details["values"]["prompt"].as_str().unwrap().contains("variant 3"));
+        assert!(candidate.details["values"]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("variant 3"));
     }
 
     #[test]
@@ -1744,8 +2241,14 @@ mod tests {
         sync_collection_rows(&conn, &state).unwrap();
         let smaller = gepa_state(4, 40);
         sync_collection_rows(&conn, &smaller).unwrap();
-        assert_eq!(stored_row_count(&conn, &smaller.run_id, RunCollection::Rollouts).unwrap(), 40);
-        assert_eq!(stored_row_count(&conn, &smaller.run_id, RunCollection::Candidates).unwrap(), 4);
+        assert_eq!(
+            stored_row_count(&conn, &smaller.run_id, RunCollection::Rollouts).unwrap(),
+            40
+        );
+        assert_eq!(
+            stored_row_count(&conn, &smaller.run_id, RunCollection::Candidates).unwrap(),
+            4
+        );
     }
 
     #[test]
@@ -1758,38 +2261,180 @@ mod tests {
             for index in 0..6 {
                 let id = format!("big_{index}");
                 projection.candidate_order.push(id.clone());
-                projection.candidates.insert(id.clone(), GepaCandidate { id, values: json!({ "prompt": huge.clone() }), ..GepaCandidate::default() });
+                projection.candidates.insert(
+                    id.clone(),
+                    GepaCandidate {
+                        id,
+                        values: json!({ "prompt": huge.clone() }),
+                        ..GepaCandidate::default()
+                    },
+                );
             }
         }
         sync_collection_rows(&conn, &state).unwrap();
-        let page = query_collection_rows(&conn, &state.run_id, state.algorithm, RunCollection::Candidates, &RunCollectionQuery { limit: Some(6), ..Default::default() }, 1, 1).unwrap();
+        let page = query_collection_rows(
+            &conn,
+            &state.run_id,
+            state.algorithm,
+            RunCollection::Candidates,
+            &RunCollectionQuery {
+                limit: Some(6),
+                ..Default::default()
+            },
+            1,
+            1,
+        )
+        .unwrap();
         assert!(page.truncated_by_bytes);
         assert!(page.rows.len() < 6 && !page.rows.is_empty());
         assert!(page.next_cursor.is_some());
+        assert!(serde_json::to_vec(&page).unwrap().len() <= COLLECTION_PAGE_MAX_BYTES);
+    }
+
+    #[test]
+    fn a_single_oversized_detail_is_deferred_to_the_item_endpoint() {
+        let conn = Connection::open_in_memory().unwrap();
+        schema(&conn);
+        let mut state = gepa_state(0, 0);
+        if let AlgorithmProjection::Gepa(projection) = &mut state.projection {
+            projection.candidate_order.push("oversized".into());
+            projection.candidates.insert(
+                "oversized".into(),
+                GepaCandidate {
+                    id: "oversized".into(),
+                    values: json!({ "prompt": "x".repeat(COLLECTION_PAGE_MAX_BYTES + 32_000) }),
+                    ..Default::default()
+                },
+            );
+        }
+        sync_collection_rows(&conn, &state).unwrap();
+        let page = query_collection_rows(
+            &conn,
+            &state.run_id,
+            state.algorithm,
+            RunCollection::Candidates,
+            &RunCollectionQuery::default(),
+            1,
+            1,
+        )
+        .unwrap();
+        assert_eq!(page.rows.len(), 1);
+        assert!(page.rows[0].details_deferred);
+        assert!(page.rows[0].details.is_null());
+        assert!(serde_json::to_vec(&page).unwrap().len() < 8 * 1024);
+        let item = load_collection_row(
+            &conn,
+            &state.run_id,
+            state.algorithm,
+            RunCollection::Candidates,
+            "oversized",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(!item.details_deferred);
+        assert!(
+            item.details["values"]["prompt"].as_str().unwrap().len() > COLLECTION_PAGE_MAX_BYTES
+        );
     }
 
     #[test]
     fn training_series_project_into_metric_and_evaluation_collections() {
         let conn = Connection::open_in_memory().unwrap();
         schema(&conn);
-        let mut state = RunKernelState::new("sft_fixture", AlgorithmKind::Sft, ExecutionPlacement::LocalPythonProcess, "sha256:spec");
+        let mut state = RunKernelState::new(
+            "sft_fixture",
+            AlgorithmKind::Sft,
+            ExecutionPlacement::LocalPythonProcess,
+            "sha256:spec",
+        );
         if let AlgorithmProjection::Sft(projection) = &mut state.projection {
             for step in 0..100_000u64 {
-                projection.metrics.push(TrainingMetricPoint { step, loss: Some(1.0 / (step + 1) as f64), sequence: step + 1, ..Default::default() });
+                projection.metrics.push(TrainingMetricPoint {
+                    step,
+                    loss: Some(1.0 / (step + 1) as f64),
+                    sequence: step + 1,
+                    ..Default::default()
+                });
             }
-            projection.evaluations.push(TrainingEvaluationSummary { id: "ckpt-40".into(), step: Some(40), score: Some(0.8), sequence: 41, ..Default::default() });
+            projection.evaluations.push(TrainingEvaluationSummary {
+                id: "ckpt-40".into(),
+                step: Some(40),
+                score: Some(0.8),
+                sequence: 41,
+                ..Default::default()
+            });
         }
         state.aggregate_sequence = 100_001;
         state.projection_revision = 7;
         sync_collection_rows(&conn, &state).unwrap();
-        let page = query_collection_rows(&conn, &state.run_id, state.algorithm, RunCollection::MetricPoints, &RunCollectionQuery { limit: Some(100), descending: true, ..Default::default() }, 7, 100_001).unwrap();
-        assert!(page.total <= 2_001, "metric series is bounded: {}", page.total);
-        assert_eq!(page.rows[0].item_id, "step:99999", "newest first when descending");
-        let evaluations = query_collection_rows(&conn, &state.run_id, state.algorithm, RunCollection::Evaluations, &RunCollectionQuery::default(), 7, 100_001).unwrap();
+        let page = query_collection_rows(
+            &conn,
+            &state.run_id,
+            state.algorithm,
+            RunCollection::MetricPoints,
+            &RunCollectionQuery {
+                limit: Some(100),
+                descending: true,
+                ..Default::default()
+            },
+            7,
+            100_001,
+        )
+        .unwrap();
+        assert!(
+            page.total <= 2_001,
+            "metric series is bounded: {}",
+            page.total
+        );
+        assert_eq!(
+            page.rows[0].item_id, "step:99999",
+            "newest first when descending"
+        );
+        let evaluations = query_collection_rows(
+            &conn,
+            &state.run_id,
+            state.algorithm,
+            RunCollection::Evaluations,
+            &RunCollectionQuery::default(),
+            7,
+            100_001,
+        )
+        .unwrap();
         assert_eq!(evaluations.rows.len(), 1);
         assert_eq!(evaluations.rows[0].score, Some(0.8));
+        let first_revision = evaluations.rows[0].revision;
+        if let AlgorithmProjection::Sft(projection) = &mut state.projection {
+            projection.evaluations[0].score = Some(0.93);
+            projection.evaluations[0].status = Some("completed".into());
+        }
+        state.projection_revision += 1;
+        sync_collection_rows(&conn, &state).unwrap();
+        let changed = query_collection_rows(
+            &conn,
+            &state.run_id,
+            state.algorithm,
+            RunCollection::Evaluations,
+            &RunCollectionQuery {
+                filter: Some(RunCollectionFilter {
+                    changed_after_revision: Some(first_revision),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            state.projection_revision,
+            state.aggregate_sequence,
+        )
+        .unwrap();
+        assert_eq!(
+            changed.total, 1,
+            "an in-place score update must not leave a stale collection row"
+        );
+        assert_eq!(changed.rows[0].score, Some(0.93));
         let projection_bytes = serde_json::to_vec(&state.projection).unwrap().len();
-        assert!(projection_bytes < 512 * 1024, "a 100k-step run keeps a bounded projection: {projection_bytes}");
+        assert!(
+            projection_bytes < 512 * 1024,
+            "a 100k-step run keeps a bounded projection: {projection_bytes}"
+        );
     }
 
     #[test]
@@ -1798,21 +2443,39 @@ mod tests {
         schema(&conn);
         let mut state = gepa_state(2, 0);
         state.aggregate_sequence = 0;
-        assert!(!maybe_checkpoint(&conn, &state, 1_000).unwrap(), "nothing to checkpoint at sequence 0");
+        assert!(
+            !maybe_checkpoint(&conn, &state, 1_000).unwrap(),
+            "nothing to checkpoint at sequence 0"
+        );
         state.aggregate_sequence = 1;
-        assert!(maybe_checkpoint(&conn, &state, 1_000).unwrap(), "the first checkpoint lands immediately");
+        assert!(
+            maybe_checkpoint(&conn, &state, 1_000).unwrap(),
+            "the first checkpoint lands immediately"
+        );
         state.aggregate_sequence = 400;
-        assert!(!maybe_checkpoint(&conn, &state, 1_000).unwrap(), "inside the interval");
+        assert!(
+            !maybe_checkpoint(&conn, &state, 1_000).unwrap(),
+            "inside the interval"
+        );
         state.aggregate_sequence = 501;
         assert!(maybe_checkpoint(&conn, &state, 1_000).unwrap());
         state.aggregate_sequence = 1_100;
-        assert!(!maybe_checkpoint(&conn, &state, 2 * CHECKPOINT_BYTE_BAND).unwrap(), "a large state stretches the interval");
+        assert!(
+            !maybe_checkpoint(&conn, &state, 2 * CHECKPOINT_BYTE_BAND).unwrap(),
+            "a large state stretches the interval"
+        );
         state.aggregate_sequence = 2_100;
         assert!(maybe_checkpoint(&conn, &state, 2 * CHECKPOINT_BYTE_BAND).unwrap());
         state.aggregate_sequence = 2_105;
         state.lifecycle = RunLifecycle::Terminal;
-        assert!(maybe_checkpoint(&conn, &state, 1_000).unwrap(), "the terminal boundary always checkpoints");
-        assert_eq!(checkpoint_sequences(&conn, &state.run_id).unwrap(), vec![1, 501, 2_100, 2_105]);
+        assert!(
+            maybe_checkpoint(&conn, &state, 1_000).unwrap(),
+            "the terminal boundary always checkpoints"
+        );
+        assert_eq!(
+            checkpoint_sequences(&conn, &state.run_id).unwrap(),
+            vec![1, 501, 2_100, 2_105]
+        );
 
         let mut many = gepa_state(2, 0);
         many.run_id = "many".into();
@@ -1822,13 +2485,30 @@ mod tests {
         }
         let retained = checkpoint_sequences(&conn, "many").unwrap();
         assert!(retained.len() <= MAX_CHECKPOINTS_PER_RUN);
-        assert_eq!(*retained.last().unwrap(), MAX_CHECKPOINTS_PER_RUN as u64 * 3, "the newest checkpoint survives thinning");
+        assert_eq!(
+            *retained.last().unwrap(),
+            MAX_CHECKPOINTS_PER_RUN as u64 * 3,
+            "the newest checkpoint survives thinning"
+        );
         assert!(retained[0] < 10, "early history keeps some coverage");
         assert_eq!(
-            load_checkpoint_at_or_before(&conn, "many", AlgorithmKind::Gepa.reducer_version(), 1_000).unwrap().unwrap().aggregate_sequence,
+            load_checkpoint_at_or_before(
+                &conn,
+                "many",
+                AlgorithmKind::Gepa.reducer_version(),
+                1_000
+            )
+            .unwrap()
+            .unwrap()
+            .aggregate_sequence,
             MAX_CHECKPOINTS_PER_RUN as u64 * 3
         );
-        assert!(load_checkpoint_at_or_before(&conn, "many", "gepa.projection.v99", 1_000).unwrap().is_none(), "a stale reducer's checkpoints are never folded from");
+        assert!(
+            load_checkpoint_at_or_before(&conn, "many", "gepa.projection.v99", 1_000)
+                .unwrap()
+                .is_none(),
+            "a stale reducer's checkpoints are never folded from"
+        );
     }
 
     #[test]
@@ -1851,13 +2531,34 @@ mod tests {
                 cost_usd: None,
                 status: None,
                 details_version: "evidence_ref.v1".into(),
+                details_deferred: false,
+                details_bytes: 0,
                 details: json!({ "id": ordinal }),
             })
             .collect();
-        let first = page_rows_in_memory(&state.run_id, RunCollection::EvidenceRefs, rows.clone(), &RunCollectionQuery::default(), 1, 1).unwrap();
+        let first = page_rows_in_memory(
+            &state.run_id,
+            RunCollection::EvidenceRefs,
+            rows.clone(),
+            &RunCollectionQuery::default(),
+            1,
+            1,
+        )
+        .unwrap();
         assert_eq!(first.rows.len(), COLLECTION_PAGE_DEFAULT_ROWS as usize);
         assert_eq!(first.total, 250);
-        let second = page_rows_in_memory(&state.run_id, RunCollection::EvidenceRefs, rows, &RunCollectionQuery { cursor: first.next_cursor.clone(), ..Default::default() }, 1, 1).unwrap();
+        let second = page_rows_in_memory(
+            &state.run_id,
+            RunCollection::EvidenceRefs,
+            rows,
+            &RunCollectionQuery {
+                cursor: first.next_cursor.clone(),
+                ..Default::default()
+            },
+            1,
+            1,
+        )
+        .unwrap();
         assert_eq!(second.rows[0].ordinal, COLLECTION_PAGE_DEFAULT_ROWS as u64);
     }
 }

@@ -57,11 +57,11 @@ impl AlgorithmKind {
     // projection. v1 rows replay through the same reducer and heal on load.
     pub const fn reducer_version(self) -> &'static str {
         match self {
-            Self::Eval => "eval.projection.v2",
+            Self::Eval => "eval.projection.v3",
             // v3 persists bounded candidate lever values in the projection so
             // GEPA visuals do not replay the raw journal to render prompt diffs.
             Self::Gepa => "gepa.projection.v3",
-            Self::GoEx => "go_ex.projection.v2",
+            Self::GoEx => "go_ex.projection.v3",
             // v3 persists the bounded metric series and checkpoint evaluation
             // summaries so training surfaces read the projection instead of
             // re-reading the event prefix on a timer.

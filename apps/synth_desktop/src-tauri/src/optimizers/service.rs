@@ -1455,7 +1455,8 @@ impl OptimizerService {
                     return Ok(None);
                 };
                 let context = run_view_context(conn, &run)?;
-                let view = super::kernel::project_view_with_context(&state, &context);
+                let view =
+                    super::kernel::project_view_with_context(&state, &context).into_bounded_wire();
                 let tail_cursor = durable_tail_cursor(conn, &run_id)?;
                 Ok(Some(super::kernel::OptimizerRunViewEnvelope {
                     unchanged: false,
@@ -1482,7 +1483,8 @@ impl OptimizerService {
                 anyhow!("optimizer run {run_id} did not produce a saved kernel projection")
             })?;
             let context = run_view_context(conn, &run)?;
-            let view = super::kernel::project_view_with_context(&state, &context);
+            let view =
+                super::kernel::project_view_with_context(&state, &context).into_bounded_wire();
             let tail_cursor = durable_tail_cursor(conn, &run_id)?;
             Ok(super::kernel::OptimizerRunViewEnvelope {
                 unchanged: false,
@@ -1518,7 +1520,9 @@ impl OptimizerService {
         let db = self.db.clone();
         db.run_read(move |conn| {
             read_run_summary(conn, &optimizer_run_id, None)?.ok_or_else(|| {
-                anyhow!("optimizer run {optimizer_run_id} did not produce a saved kernel projection")
+                anyhow!(
+                    "optimizer run {optimizer_run_id} did not produce a saved kernel projection"
+                )
             })
         })
         .await
@@ -1543,7 +1547,9 @@ impl OptimizerService {
             match collection {
                 read_model::RunCollection::Artifacts => {
                     let state = super::kernel::persist::load_state(conn, &optimizer_run_id)?
-                        .ok_or_else(|| anyhow!("optimizer run {optimizer_run_id} has no projection"))?;
+                        .ok_or_else(|| {
+                            anyhow!("optimizer run {optimizer_run_id} has no projection")
+                        })?;
                     let artifacts = super::artifacts::list_all(conn, &optimizer_run_id)?;
                     read_model::page_rows_in_memory(
                         &optimizer_run_id,
@@ -1556,7 +1562,9 @@ impl OptimizerService {
                 }
                 read_model::RunCollection::EvidenceRefs => {
                     let state = super::kernel::persist::load_state(conn, &optimizer_run_id)?
-                        .ok_or_else(|| anyhow!("optimizer run {optimizer_run_id} has no projection"))?;
+                        .ok_or_else(|| {
+                            anyhow!("optimizer run {optimizer_run_id} has no projection")
+                        })?;
                     read_model::page_rows_in_memory(
                         &optimizer_run_id,
                         collection,
@@ -1597,7 +1605,9 @@ impl OptimizerService {
             match collection {
                 read_model::RunCollection::Artifacts | read_model::RunCollection::EvidenceRefs => {
                     let state = super::kernel::persist::load_state(conn, &optimizer_run_id)?
-                        .ok_or_else(|| anyhow!("optimizer run {optimizer_run_id} has no projection"))?;
+                        .ok_or_else(|| {
+                            anyhow!("optimizer run {optimizer_run_id} has no projection")
+                        })?;
                     let rows = if collection == read_model::RunCollection::Artifacts {
                         let artifacts = super::artifacts::list_all(conn, &optimizer_run_id)?;
                         read_model::artifact_rows(&state, &artifacts)
@@ -1648,7 +1658,9 @@ impl OptimizerService {
                     )
                     .optional()?
                     .filter(|value: &String| !value.trim().is_empty())
-                    .ok_or_else(|| anyhow!("optimizer run {} is missing its admitted spec", run.id))?;
+                    .ok_or_else(|| {
+                        anyhow!("optimizer run {} is missing its admitted spec", run.id)
+                    })?;
                 let tail = durable_tail_cursor(conn, &run_id)?;
                 let requested = sequence;
                 let sequence = sequence.min(tail);
@@ -1695,11 +1707,18 @@ impl OptimizerService {
                     .map_err(|error| anyhow!("historical replay failed for {run_id}: {error}"))?
                 } else {
                     let mut state = base.unwrap_or_else(|| {
-                        super::kernel::RunKernelState::new(&run_id, algorithm, placement, &spec_digest)
+                        super::kernel::RunKernelState::new(
+                            &run_id,
+                            algorithm,
+                            placement,
+                            &spec_digest,
+                        )
                     });
                     for chunk in events.chunks(interval) {
                         state = super::kernel::bridge::fold_envelopes(state, &run_id, chunk)
-                            .map_err(|error| anyhow!("historical fold failed for {run_id}: {error}"))?;
+                            .map_err(|error| {
+                                anyhow!("historical fold failed for {run_id}: {error}")
+                            })?;
                         if chunk.len() == interval {
                             backfill.push(state.clone());
                         }
@@ -1707,7 +1726,8 @@ impl OptimizerService {
                     state
                 };
                 let context = run_view_context(conn, &run)?;
-                let view = super::kernel::project_view_with_context(&state, &context);
+                let view =
+                    super::kernel::project_view_with_context(&state, &context).into_bounded_wire();
                 Ok((
                     super::kernel::HistoricalProjection {
                         schema_version: read_model::HISTORICAL_PROJECTION_SCHEMA_VERSION.into(),
@@ -5731,6 +5751,13 @@ fn read_run_summary(
         tail_cursor,
         Utc::now().timestamp_millis(),
     );
+    if !summary.budget.within {
+        bail!(
+            "optimizer run summary exceeded its byte budget: {} > {} bytes",
+            summary.budget.bytes,
+            summary.budget.limit
+        );
+    }
     Ok(Some(super::kernel::OptimizerRunSummaryEnvelope {
         unchanged: false,
         projection_revision: state.projection_revision,
@@ -9070,7 +9097,8 @@ pub(in crate::optimizers) mod tests {
         }
         for index in 0..1_200u64 {
             let candidate = format!("cand_{}", index % 10);
-            let stage = ["candidate_minibatch", "candidate_full_train", "heldout"][(index % 3) as usize];
+            let stage =
+                ["candidate_minibatch", "candidate_full_train", "heldout"][(index % 3) as usize];
             events.push(gepa_draft(
                 "optimizer.evaluation_result.received",
                 json!({
@@ -9085,8 +9113,13 @@ pub(in crate::optimizers) mod tests {
                 }),
             ));
         }
-        events.push(gepa_draft("proposer.completed", json!({ "proposal_count": 3, "generation": 1, "model": "gpt-5.6-luna" })));
-        svc.append_event_payloads(run.id.clone(), events).await.unwrap();
+        events.push(gepa_draft(
+            "proposer.completed",
+            json!({ "proposal_count": 3, "generation": 1, "model": "gpt-5.6-luna" }),
+        ));
+        svc.append_event_payloads(run.id.clone(), events)
+            .await
+            .unwrap();
 
         // Summary: bounded, counted, conditional.
         let envelope = svc.run_summary(run.id.clone(), None).await.unwrap();
@@ -9095,7 +9128,10 @@ pub(in crate::optimizers) mod tests {
         let bytes = serde_json::to_vec(&summary).unwrap().len();
         assert!(bytes <= SUMMARY_BYTE_BUDGET, "summary is {bytes} bytes");
         assert!(summary.budget.within);
-        assert_eq!(summary.lifecycle, super::super::kernel::RunLifecycle::Running);
+        assert_eq!(
+            summary.lifecycle,
+            super::super::kernel::RunLifecycle::Running
+        );
         let count_of = |collection: RunCollection| {
             summary
                 .collections
@@ -9125,13 +9161,20 @@ pub(in crate::optimizers) mod tests {
                 .run_collection(
                     run.id.clone(),
                     RunCollection::Rollouts,
-                    RunCollectionQuery { cursor: cursor.clone(), limit: Some(1_000), ..Default::default() },
+                    RunCollectionQuery {
+                        cursor: cursor.clone(),
+                        limit: Some(1_000),
+                        ..Default::default()
+                    },
                 )
                 .await
                 .unwrap();
             assert_eq!(page.limit, COLLECTION_PAGE_MAX_ROWS);
             assert!(page.rows.len() as u32 <= COLLECTION_PAGE_MAX_ROWS);
-            assert_eq!(page.projection_revision, envelope.projection_revision, "rows describe the revision the summary reported");
+            assert_eq!(
+                page.projection_revision, envelope.projection_revision,
+                "rows describe the revision the summary reported"
+            );
             seen.extend(page.rows.iter().map(|row| row.item_id.clone()));
             match page.next_cursor {
                 Some(next) => cursor = Some(next),
@@ -9147,7 +9190,11 @@ pub(in crate::optimizers) mod tests {
                 run.id.clone(),
                 RunCollection::Evaluations,
                 RunCollectionQuery {
-                    filter: Some(RunCollectionFilter { parent_id: Some("cand_3".into()), label: Some("heldout".into()), ..Default::default() }),
+                    filter: Some(RunCollectionFilter {
+                        parent_id: Some("cand_3".into()),
+                        label: Some("heldout".into()),
+                        ..Default::default()
+                    }),
                     limit: Some(50),
                     ..Default::default()
                 },
@@ -9155,7 +9202,11 @@ pub(in crate::optimizers) mod tests {
             .await
             .unwrap();
         assert!(filtered.total > 0);
-        assert!(filtered.rows.iter().all(|row| row.parent_id.as_deref() == Some("cand_3") && row.label.as_deref() == Some("heldout")));
+        assert!(filtered
+            .rows
+            .iter()
+            .all(|row| row.parent_id.as_deref() == Some("cand_3")
+                && row.label.as_deref() == Some("heldout")));
 
         let candidate = svc
             .run_collection_item(run.id.clone(), RunCollection::Candidates, "cand_4".into())
@@ -9163,58 +9214,126 @@ pub(in crate::optimizers) mod tests {
             .unwrap()
             .expect("candidate row");
         assert_eq!(candidate.parent_id.as_deref(), Some("cand_0"));
-        assert!(candidate.details["values"]["prompt"].as_str().unwrap_or("").contains("Variant 4"), "candidate content is durable: {}", candidate.details);
+        assert!(
+            candidate.details["values"]["prompt"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Variant 4"),
+            "candidate content is durable: {}",
+            candidate.details
+        );
 
         // History: the checkpoint fold equals a from-zero replay, and once
         // checkpoints exist no scrub replays more than one interval.
-        let all = svc.events_after(run.id.clone(), 0, Some(2000)).await.unwrap();
+        let all = svc
+            .events_after(run.id.clone(), 0, Some(2000))
+            .await
+            .unwrap();
         let tail = all.len() as u64;
         assert!(tail > 2 * CHECKPOINT_EVENT_INTERVAL);
-        let placement = super::super::kernel::bridge::placement_from_run_source(super::super::kernel::AlgorithmKind::Gepa, &run.source);
+        let placement = super::super::kernel::bridge::placement_from_run_source(
+            super::super::kernel::AlgorithmKind::Gepa,
+            &run.source,
+        );
         // The journal arrived as one bulk batch, so the only checkpoint is
         // the batch's tail. The first scrub into the prefix pays once and
         // leaves a checkpoint at every interval behind it.
         let first = svc.projection_at(run.id.clone(), tail - 1).await.unwrap();
-        assert!(first.replayed_events > CHECKPOINT_EVENT_INTERVAL, "a legacy prefix replays once");
+        assert!(
+            first.replayed_events > CHECKPOINT_EVENT_INTERVAL,
+            "a legacy prefix replays once"
+        );
         for probe_sequence in [1u64, 250, CHECKPOINT_EVENT_INTERVAL + 7, tail - 3, tail] {
-            let historical = svc.projection_at(run.id.clone(), probe_sequence).await.unwrap();
+            let historical = svc
+                .projection_at(run.id.clone(), probe_sequence)
+                .await
+                .unwrap();
             assert_eq!(historical.as_of_sequence, probe_sequence);
-            assert!(historical.replayed_events <= CHECKPOINT_EVENT_INTERVAL, "scrub to {probe_sequence} replayed {} events", historical.replayed_events);
+            assert!(
+                historical.replayed_events <= CHECKPOINT_EVENT_INTERVAL,
+                "scrub to {probe_sequence} replayed {} events",
+                historical.replayed_events
+            );
             let prefix: Vec<_> = all.iter().take(probe_sequence as usize).cloned().collect();
-            let expected = super::super::kernel::bridge::reduce_envelopes(&run.id, super::super::kernel::AlgorithmKind::Gepa, placement, &historical.view.header().spec_digest, &prefix).unwrap();
-            let expected_view = super::super::kernel::project_view(&expected);
-            assert_eq!(historical.view.projection_json(), expected_view.projection_json(), "checkpoint fold diverged from replay at {probe_sequence}");
+            let expected = super::super::kernel::bridge::reduce_envelopes(
+                &run.id,
+                super::super::kernel::AlgorithmKind::Gepa,
+                placement,
+                &historical.view.header().spec_digest,
+                &prefix,
+            )
+            .unwrap();
+            // Historical projections cross the same bounded IPC contract as
+            // live run views. Compare like with like: the durable collection
+            // rows retain the growing evidence while both wire views omit it.
+            let expected_view =
+                super::super::kernel::project_view(&expected).into_bounded_wire();
+            assert_eq!(
+                historical.view.projection_json(),
+                expected_view.projection_json(),
+                "checkpoint fold diverged from replay at {probe_sequence}"
+            );
             assert_eq!(historical.view.header().work, expected_view.header().work);
         }
         let beyond = svc.projection_at(run.id.clone(), tail + 500).await.unwrap();
-        assert_eq!(beyond.as_of_sequence, tail, "a sequence past the tail clamps to the tail");
+        assert_eq!(
+            beyond.as_of_sequence, tail,
+            "a sequence past the tail clamps to the tail"
+        );
 
         // Terminal: the seal checkpoints, the summary turns terminal, and the
         // collections remain consistent with the sealed revision.
         svc.append_event_payloads(
             run.id.clone(),
             vec![
-                gepa_draft("frontier.snapshot", json!({ "best_candidate_id": "cand_4" })),
+                gepa_draft(
+                    "frontier.snapshot",
+                    json!({ "best_candidate_id": "cand_4" }),
+                ),
                 gepa_draft("gepa.run.finished", json!({ "state": "completed" })),
                 gepa_draft("optimizer.run.completed", json!({})),
             ],
         )
         .await
         .unwrap();
-        let sealed = svc.run_summary(run.id.clone(), None).await.unwrap().summary.unwrap();
-        assert_eq!(sealed.lifecycle, super::super::kernel::RunLifecycle::Terminal);
+        let sealed = svc
+            .run_summary(run.id.clone(), None)
+            .await
+            .unwrap()
+            .summary
+            .unwrap();
+        assert_eq!(
+            sealed.lifecycle,
+            super::super::kernel::RunLifecycle::Terminal
+        );
         assert!(sealed.terminal.is_some());
-        assert!(sealed.result.is_some(), "a sealed run settles a bounded result");
+        assert!(
+            sealed.result.is_some(),
+            "a sealed run settles a bounded result"
+        );
         assert!(serde_json::to_vec(&sealed).unwrap().len() <= SUMMARY_BYTE_BUDGET);
         let final_page = svc
-            .run_collection(run.id.clone(), RunCollection::Candidates, RunCollectionQuery::default())
+            .run_collection(
+                run.id.clone(),
+                RunCollection::Candidates,
+                RunCollectionQuery::default(),
+            )
             .await
             .unwrap();
         assert_eq!(final_page.total, 10);
         assert_eq!(final_page.projection_revision, sealed.projection_revision);
-        let at_seal = svc.projection_at(run.id.clone(), sealed.as_of_sequence).await.unwrap();
-        assert_eq!(at_seal.replayed_events, 0, "the terminal boundary always leaves a checkpoint");
-        assert_eq!(at_seal.view.header().lifecycle, super::super::kernel::RunLifecycle::Terminal);
+        let at_seal = svc
+            .projection_at(run.id.clone(), sealed.as_of_sequence)
+            .await
+            .unwrap();
+        assert_eq!(
+            at_seal.replayed_events, 0,
+            "the terminal boundary always leaves a checkpoint"
+        );
+        assert_eq!(
+            at_seal.view.header().lifecycle,
+            super::super::kernel::RunLifecycle::Terminal
+        );
     }
 
     /// Evidence is fetched by range, and nothing is sent twice.

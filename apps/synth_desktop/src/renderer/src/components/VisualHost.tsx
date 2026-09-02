@@ -23,6 +23,11 @@ import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } fro
 import { loadVisualShell } from "../runtime/visualsLoader";
 import { bridges } from "../runtime/desktopBridge";
 import { subscribeToRun } from "../runtime/runProgress/subscription";
+import { useOptimizerRun } from "../hooks/useRunRead";
+import {
+	subscribeRunCollection,
+	subscribeRunCollectionItem
+} from "../runtime/runRead/store";
 import { createEvidenceClient } from "../runtime/runProgress/evidence";
 import { verifyAgainstReceipt, visualDataDigest, type ReceiptVerdict } from "../runtime/runProgress/receipt";
 import { progressAgreement, projectRunProgress, splitSnapshotEvents } from "../runtime/runProgress/project";
@@ -680,6 +685,10 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			(entry) => bindingInputName(entry) === "optimizer_run" && entry.kind === "optimizer_run"
 		)?.source
 		: undefined;
+	// Keep the bounded read-model summary live for the visual. Besides making
+	// config/runtime/count facts available without the journal, this is the
+	// invalidation source for any mounted collection pages below.
+	const optimizerSummaryState = useOptimizerRun(optimizerRunId);
 	const evidenceClient = useMemo(
 		() =>
 			// Lazy raw-journal access for the detail surfaces — Replay, the
@@ -705,7 +714,11 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					page: (collection: Parameters<NonNullable<typeof bridges.optimizers>["runCollection"]>[1], query: Parameters<NonNullable<typeof bridges.optimizers>["runCollection"]>[2]) =>
 						bridges.optimizers!.runCollection(optimizerRunId, collection, query),
 					item: (collection: Parameters<NonNullable<typeof bridges.optimizers>["runCollectionItem"]>[1], itemId: string) =>
-						bridges.optimizers!.runCollectionItem(optimizerRunId, collection, itemId)
+						bridges.optimizers!.runCollectionItem(optimizerRunId, collection, itemId),
+					subscribePage: (collection: Parameters<NonNullable<typeof bridges.optimizers>["runCollection"]>[1], query: Parameters<NonNullable<typeof bridges.optimizers>["runCollection"]>[2], listener: (state: unknown) => void) =>
+						subscribeRunCollection(optimizerRunId, collection, query, listener as Parameters<typeof subscribeRunCollection>[3]),
+					subscribeItem: (collection: Parameters<NonNullable<typeof bridges.optimizers>["runCollectionItem"]>[1], itemId: string, listener: (state: unknown) => void) =>
+						subscribeRunCollectionItem(optimizerRunId, collection, itemId, listener as Parameters<typeof subscribeRunCollectionItem>[3])
 				}
 				: undefined,
 		[optimizerRunId]
@@ -1364,6 +1377,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				evidence={evidenceClient}
 				history={historyClient}
 				collections={collectionsClient}
+				runSummary={optimizerSummaryState.summary ?? undefined}
+				runSummaryStatus={optimizerSummaryState.status}
 				tailCursor={typeof optimizerPayload?.terminalCursor === "number" ? optimizerPayload.terminalCursor : undefined}
 				runLifecycle={runLifecycle}
 				replayMissingTransport={replay.missingTransport}

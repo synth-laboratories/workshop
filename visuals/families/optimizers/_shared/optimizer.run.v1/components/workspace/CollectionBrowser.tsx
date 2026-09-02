@@ -47,6 +47,8 @@ export type RunCollectionRowLike = {
   costUsd?: number | null;
   status?: string | null;
   detailsVersion: string;
+  detailsDeferred?: boolean;
+  detailsBytes?: number;
   details: unknown;
 };
 
@@ -60,18 +62,94 @@ export type RunCollectionPageLike = {
   limit: number;
 };
 
+export type RunCollectionPageStateLike = {
+  status: "loading" | "ready" | "stale" | "error" | "unavailable";
+  page: RunCollectionPageLike | null;
+  stale: boolean;
+  error?: string;
+};
+
+export type RunCollectionItemStateLike = {
+  status: "loading" | "ready" | "stale" | "error" | "unavailable";
+  row: RunCollectionRowLike | null;
+  stale: boolean;
+  error?: string;
+};
+
 export type RunCollectionsClient = {
   page(collection: RunCollectionName, query: RunCollectionQueryLike): Promise<RunCollectionPageLike>;
   item(collection: RunCollectionName, itemId: string): Promise<RunCollectionRowLike | null>;
+  /** Shared host-store subscriptions. Older fixture hosts may omit these. */
+  subscribePage?(
+    collection: RunCollectionName,
+    query: RunCollectionQueryLike,
+    listener: (state: RunCollectionPageStateLike) => void
+  ): () => void;
+  subscribeItem?(
+    collection: RunCollectionName,
+    itemId: string,
+    listener: (state: RunCollectionItemStateLike) => void
+  ): () => void;
 };
 
 export const COLLECTION_BROWSER_PAGE_SIZE = 25;
 
 type PageState = {
-  status: "idle" | "loading" | "ready" | "error";
+  status: "idle" | "loading" | "ready" | "stale" | "error";
   page: RunCollectionPageLike | null;
   error?: string;
 };
+
+/** One bounded, live page for a product view. Transport, coalescing, and the
+ * byte-bounded cache remain host-owned; this hook only maps their state into
+ * the visual runtime. */
+export function useCollectionPage(
+  client: RunCollectionsClient | undefined,
+  collection: RunCollectionName,
+  query: RunCollectionQueryLike,
+  enabled = true
+): PageState {
+  const key = JSON.stringify(query);
+  const stableQuery = useMemo<RunCollectionQueryLike>(() => query, [key]);
+  const [state, setState] = useState<PageState>({ status: "idle", page: null });
+
+  useEffect(() => {
+    if (!client || !enabled) {
+      setState({ status: "idle", page: null });
+      return;
+    }
+    if (client.subscribePage) {
+      return client.subscribePage(collection, stableQuery, (next) => {
+        setState({
+          status: next.status === "unavailable" ? "error" : next.status,
+          page: next.page,
+          error: next.error
+        });
+      });
+    }
+    let cancelled = false;
+    setState((current) => ({ ...current, status: "loading" }));
+    void client.page(collection, stableQuery).then(
+      (page) => {
+        if (!cancelled) setState({ status: "ready", page });
+      },
+      (reason) => {
+        if (!cancelled) {
+          setState((current) => ({
+            status: "error",
+            page: current.page,
+            error: reason instanceof Error ? reason.message : String(reason)
+          }));
+        }
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [client, collection, enabled, stableQuery]);
+
+  return state;
+}
 
 function filterKey(filter: RunCollectionFilterLike | null | undefined): string {
   if (!filter) return "";
@@ -103,6 +181,7 @@ export function CollectionBrowser({
   renderDetail?: (row: RunCollectionRowLike) => ReactNode;
 }) {
   const [cursorTrail, setCursorTrail] = useState<Array<string | null>>([null]);
+  const [active, setActive] = useState(false);
   const [state, setState] = useState<PageState>({ status: "idle", page: null });
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<{ itemId: string; row: RunCollectionRowLike | null; error?: string } | null>(null);
@@ -118,17 +197,26 @@ export function CollectionBrowser({
     setCursorTrail([null]);
     setSelected(null);
     setDetail(null);
+    setActive(false);
   }, [collection, key, descending]);
 
   useEffect(() => {
-    if (!client) {
+    if (!client || !active) {
       setState({ status: "idle", page: null });
       return;
     }
+    if (client.subscribePage) {
+      return client.subscribePage(collection, query, (next) => {
+        setState({
+          status: next.status === "unavailable" ? "error" : next.status,
+          page: next.page,
+          error: next.error
+        });
+      });
+    }
     let cancelled = false;
     setState((current) => ({ ...current, status: "loading" }));
-    void client
-      .page(collection, query)
+    void client.page(collection, query)
       .then((page) => {
         if (!cancelled) setState({ status: "ready", page });
       })
@@ -138,12 +226,17 @@ export function CollectionBrowser({
     return () => {
       cancelled = true;
     };
-  }, [client, collection, query]);
+  }, [active, client, collection, query]);
 
   useEffect(() => {
     if (!client || !selected) {
       setDetail(null);
       return;
+    }
+    if (client.subscribeItem) {
+      return client.subscribeItem(collection, selected, (next) => {
+        setDetail({ itemId: selected, row: next.row, error: next.error });
+      });
     }
     let cancelled = false;
     void client
@@ -167,6 +260,25 @@ export function CollectionBrowser({
       <section className="sv-section" data-testid={testId ?? `collection-browser-${collection}`} data-collection={collection} data-state="unavailable">
         <div className="sv-section-head"><h3>{heading}</h3></div>
         <p className="sv-lede">Durable collections are unavailable in this host.</p>
+      </section>
+    );
+  }
+
+  if (!active) {
+    return (
+      <section
+        className="sv-section"
+        data-testid={testId ?? `collection-browser-${collection}`}
+        data-collection={collection}
+        data-state="idle"
+      >
+        <div className="sv-section-head">
+          <h3>{heading}</h3>
+          <button type="button" className="sv-btn" onClick={() => setActive(true)}>
+            Load {heading.toLowerCase()}
+          </button>
+        </div>
+        <p className="sv-lede">Paged durable data loads only when requested.</p>
       </section>
     );
   }

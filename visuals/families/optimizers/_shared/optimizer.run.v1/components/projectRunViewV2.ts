@@ -89,6 +89,16 @@ function numberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 function statusOf(header: RunViewHeader): string {
   if (header.lifecycle === "terminal") return header.terminal?.kind ?? "unknown";
   return header.lifecycle;
@@ -163,7 +173,18 @@ function evalProjection(base: ProjectedState, view: OptimizerRunViewV2Like): voi
   const candidates = strings(projection.candidates);
   const workItems = records(projection.workItems) as WorkItem[];
   const result = view.result ?? {};
-  const selection = typeof result.selection === "string"
+  const projectedSelection = record(projection.selection);
+  const selection = typeof projectedSelection.status === "string"
+    ? {
+        status: projectedSelection.status,
+        winnerId: optionalString(projectedSelection.winner_id ?? projectedSelection.winnerId) ?? null,
+        baselineId: optionalString(projectedSelection.baseline_id ?? projectedSelection.baselineId) ?? candidates[0] ?? null,
+        primaryMetric: optionalString(projectedSelection.primary_metric ?? projectedSelection.primaryMetric) ?? "reward",
+        lift: numberOrNull(projectedSelection.lift),
+        minLift: numberOrNull(projectedSelection.min_lift ?? projectedSelection.minLift) ?? 0,
+        reason: optionalString(projectedSelection.reason) ?? projectedSelection.status
+      } satisfies EvalSelection
+    : typeof result.selection === "string"
     ? {
         status: result.selection,
         winnerId: typeof result.selectedCandidateId === "string" ? result.selectedCandidateId : null,
@@ -174,6 +195,8 @@ function evalProjection(base: ProjectedState, view: OptimizerRunViewV2Like): voi
         reason: result.selection
       } satisfies EvalSelection
     : null;
+  const setup = record(projection.setup);
+  const seedLedger = record(projection.seedLedger);
   base.eval = {
     candidates: candidates.map((id, index) => ({ id, label: id, isBaseline: index === 0 })),
     scorecards: [],
@@ -188,17 +211,18 @@ function evalProjection(base: ProjectedState, view: OptimizerRunViewV2Like): voi
     rollouts: [],
     selection,
     seedLedger: {
-      screening: (Array.isArray(projection.seeds) ? projection.seeds : [])
+      screening: (Array.isArray(seedLedger.screening) ? seedLedger.screening : Array.isArray(projection.seeds) ? projection.seeds : [])
         .filter((value): value is number => typeof value === "number"),
-      confirmation: [],
-      scenarios: strings(projection.scenarios)
+      confirmation: (Array.isArray(seedLedger.confirmation) ? seedLedger.confirmation : [])
+        .filter((value): value is number => typeof value === "number"),
+      scenarios: strings(seedLedger.scenarios ?? projection.scenarios)
     },
     manifestDigest: null,
     candidateSetId: null,
     evidenceDir: null,
-    plannedTrials: workItems.length,
-    parallelism: null,
-    globalCapacity: null,
+    plannedTrials: numberOrNull(setup.plannedTrials ?? setup.planned_trials) ?? workItems.length,
+    parallelism: numberOrNull(setup.parallelism),
+    globalCapacity: numberOrNull(setup.globalCapacity ?? setup.global_capacity),
     paused: view.header.lifecycle === "paused"
   };
 }
@@ -275,13 +299,84 @@ function gepaProjection(base: ProjectedState, view: OptimizerRunViewV2Like): voi
     costUsd: numberOrNull(entry.costUsd) ?? undefined
   }));
   const proposerCalls = records(projection.proposerCalls);
+  const projectedContract = record(projection.contract);
+  const task = record(projectedContract.task);
+  const program = record(projectedContract.program);
+  const objectiveSet = record(projectedContract.objectiveSet);
+  const objectiveRows = records(objectiveSet.objectives);
+  const splitRows = record(projectedContract.splits);
+  const dataset = record(projectedContract.dataset);
+  const datasetSplits = record(dataset.splits);
+  const container = record(projectedContract.container);
+  const projectedRuntime = record(projection.runtime);
   base.gepa = {
     candidates,
     frontier: strings(projection.frontierHistory).map((candidateId) => ({ candidateId })),
     reflections: [],
     budget: projection.rolloutBudget == null ? undefined : { maxTotalRollouts: projection.rolloutBudget },
     limits: [],
-    contract: { program: { mutableFields: [] }, objectiveSet: { objectives: [] } },
+    contract: {
+      task: {
+        id: optionalString(task.id),
+        name: optionalString(task.name),
+        objective: optionalString(task.objective),
+        description: optionalString(task.description),
+        family: optionalString(task.family),
+        version: optionalString(task.version),
+        outputKind: optionalString(task.outputKind)
+      },
+      program: {
+        id: optionalString(program.id),
+        mutableFields: strings(program.mutableFields)
+      },
+      objectiveSet: {
+        id: optionalString(objectiveSet.id),
+        hash: optionalString(objectiveSet.hash),
+        frontierType: optionalString(objectiveSet.frontierType),
+        selectionObjective: optionalString(objectiveSet.selectionObjective),
+        objectives: objectiveRows.map((objective) => ({
+          name: optionalString(objective.name) ?? optionalString(objective.id) ?? "objective",
+          direction: optionalString(objective.direction),
+          aggregation: optionalString(objective.aggregation),
+          splitPolicy: optionalString(objective.splitPolicy ?? objective.split_policy)
+        }))
+      },
+      splits: {
+        train: numberOrNull(splitRows.train) ?? undefined,
+        minibatch: numberOrNull(splitRows.minibatch) ?? undefined,
+        reflection: numberOrNull(splitRows.reflection) ?? undefined,
+        pareto: numberOrNull(splitRows.pareto) ?? undefined,
+        heldout: numberOrNull(splitRows.heldout) ?? undefined
+      },
+      dataset: {
+        source: optionalString(dataset.source),
+        config: optionalString(dataset.config),
+        revision: optionalString(dataset.revision),
+        digest: optionalString(dataset.digest),
+        rowCount: numberOrNull(dataset.rowCount) ?? undefined,
+        labelCount: numberOrNull(dataset.labelCount) ?? undefined,
+        splits: {
+          train: numberOrNull(datasetSplits.train) ?? undefined,
+          selection: numberOrNull(datasetSplits.selection) ?? undefined,
+          heldout: numberOrNull(datasetSplits.heldout) ?? undefined
+        }
+      },
+      container: {
+        verified: container.verified === true,
+        specId: optionalString(container.specId),
+        url: optionalString(container.url),
+        workshopInstance: optionalString(container.workshopInstance),
+        credentialMode: optionalString(container.credentialMode),
+        evaluatorId: optionalString(container.evaluatorId),
+        runtimeFamily: optionalString(container.runtimeFamily),
+        targetId: optionalString(container.targetId),
+        rewardAuthority: optionalString(container.rewardAuthority),
+        policyHarness: optionalString(container.policyHarness),
+        policyConfig: optionalString(container.policyConfig),
+        scaleLeases: numberOrNull(container.scaleLeases) ?? undefined,
+        retention: optionalString(container.retention)
+      }
+    },
     frontierHistory: [],
     stages,
     evaluations,
@@ -315,11 +410,20 @@ function gepaProjection(base: ProjectedState, view: OptimizerRunViewV2Like): voi
     heldout: incumbentId && incumbentHeldout != null
       ? { candidateId: incumbentId, reward: incumbentHeldout }
       : undefined,
-    models: {},
+    models: {
+      policy: optionalString(container.policyModel),
+      proposer: proposerCalls.map((call) => optionalString(call.model)).find(Boolean)
+    },
     timing: {},
     rolloutsCompleted: evaluations.length || (typeof projection.rolloutsScored === "number" ? projection.rolloutsScored : 0),
     runtime: {
       activeWorkers: numberOrNull(projection.maxActiveWorkers) ?? undefined,
+      configuredRolloutWorkers: numberOrNull(projectedRuntime.configuredRolloutWorkers) ?? undefined,
+      staticRolloutWorkers: numberOrNull(projectedRuntime.staticRolloutWorkers) ?? undefined,
+      estimatedEffectiveConcurrency: numberOrNull(projectedRuntime.estimatedEffectiveConcurrency) ?? undefined,
+      rolloutsPerMinute: numberOrNull(projectedRuntime.rolloutsPerMinute) ?? undefined,
+      rolloutSubmissionMode: optionalString(projectedRuntime.rolloutSubmissionMode),
+      maxDispatchChunkSize: numberOrNull(projectedRuntime.maxDispatchChunkSize) ?? undefined,
       reportedCostUsd: view.header.usage.costUsd ?? undefined,
       costTelemetryComplete: view.header.usage.costUsd != null
     }
@@ -354,6 +458,10 @@ function sftProjection(base: ProjectedState, view: OptimizerRunViewV2Like): void
   const step = numberOrNull((projection.usage as Record<string, unknown> | undefined)?.steps);
   const loss = numberOrNull(projection.trainLoss);
   const checkpoints = strings(projection.checkpoints);
+  const dataset = record(projection.datasetSummary);
+  const compute = record(projection.computeSummary);
+  const curation = record(projection.curationSummary);
+  const comparison = record(projection.comparisonSummary);
   base.sft = {
     curves: {
       steps: step == null ? [] : [step],
@@ -373,39 +481,51 @@ function sftProjection(base: ProjectedState, view: OptimizerRunViewV2Like): void
     dataset: {
       digest: projection.datasetDigest ?? null,
       configDigest: projection.configDigest ?? null,
-      splits: {}
+      ...dataset,
+      splits: record(dataset.splits)
     },
-    compute: { producedAdapter: projection.producedAdapter ?? null },
+    compute: { ...compute, producedAdapter: projection.producedAdapter ?? null },
     examples: [],
     lineage: {
       selectedCheckpointId: projection.selectedCheckpointId ?? null,
       producedAdapter: projection.producedAdapter ?? null
     },
     curation: {
-      collected: null,
-      considered: null,
-      accepted: null,
-      rejected: null,
-      rejectionsByReason: {},
-      seedsCovered: null,
-      achievementsCovered: [],
+      collected: numberOrNull(curation.collected),
+      considered: numberOrNull(curation.considered),
+      accepted: numberOrNull(curation.accepted),
+      rejected: numberOrNull(curation.rejected),
+      rejectionsByReason: record(curation.rejectionsByReason ?? curation.rejections_by_reason) as Record<string, number>,
+      seedsCovered: numberOrNull(curation.seedsCovered ?? curation.seeds_covered),
+      achievementsCovered: strings(curation.achievementsCovered ?? curation.achievements_covered),
       candidates: []
-    }
+    },
+    ...(Object.keys(comparison).length > 0
+      ? {
+          comparison: {
+            splitDigest: optionalString(comparison.splitDigest ?? comparison.split_digest),
+            baseLabel: optionalString(comparison.baseLabel ?? comparison.base_label) ?? "base",
+            trainedLabel: optionalString(comparison.trainedLabel ?? comparison.trained_label) ?? "trained",
+            pairs: []
+          }
+        }
+      : {})
   };
 }
 
 function cispoProjection(base: ProjectedState, view: OptimizerRunViewV2Like, run: OptimizerRun): void {
   const projection = view.projection;
   sftProjection(base, view);
+  const clip = record(projection.clipConfig);
   base.cispo = {
     objective: run.objective ?? "CISPO clipped-importance policy optimization",
-    clipLow: null,
-    clipHigh: null,
-    groupSize: null,
-    rewardVariance: null,
+    clipLow: numberOrNull(clip.clipLow ?? clip.clip_low ?? clip.low),
+    clipHigh: numberOrNull(clip.clipHigh ?? clip.clip_high ?? clip.high),
+    groupSize: numberOrNull(projection.groupSize),
+    rewardVariance: numberOrNull(projection.rewardVariance),
     advantageMean: numberOrNull(projection.meanAdvantage),
-    advantageStd: null,
-    optimizerSteps: typeof view.header.usage.steps === "number" ? view.header.usage.steps : 0,
+    advantageStd: numberOrNull(projection.advantageStd),
+    optimizerSteps: numberOrNull(projection.optimizerSteps) ?? (typeof view.header.usage.steps === "number" ? view.header.usage.steps : 0),
     warmStartArtifactId: typeof projection.warmStartId === "string" ? projection.warmStartId : null,
     checkpointIds: strings(projection.checkpoints),
     noLearningSignal: projection.noLearningSignal === true

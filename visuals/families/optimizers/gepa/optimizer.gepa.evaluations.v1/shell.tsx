@@ -2,6 +2,7 @@
 
 import { OptimizerFamilyShell } from "../../_shared/optimizer.run.v1/components/FamilyShell.tsx";
 import { RolloutBrowser, type RolloutGroup, type RolloutRow } from "../../_shared/optimizer.run.v1/components/workspace/RolloutBrowser.tsx";
+import { CollectionBrowser } from "../../_shared/optimizer.run.v1/components/workspace/CollectionBrowser.tsx";
 import { candidateName, stageTitle } from "../../_shared/optimizer.run.v1/overlays/gepa/model.ts";
 import type { VisualBinding } from "../../../../runtime/types.ts";
 import type { OptimizerEvent, OptimizerRun } from "../../_shared/optimizer.run.v1/components/projectEvents.ts";
@@ -26,7 +27,18 @@ export function Shell(props: ShellProps) {
       testId="visual-optimizer-gepa-evaluations"
       showTimeline={false}
     >
-      {({ projected }) => {
+      {({ projected, collections }) => {
+        if (collections) {
+          return (
+            <CollectionBrowser
+              client={collections}
+              collection="evaluations"
+              title="GEPA evaluation results"
+              descending
+              testId="gepa-child-evals"
+            />
+          );
+        }
         const gepa = projected.gepa;
         if (!gepa) return null;
         const candidateById = new Map(gepa.candidates.map((candidate) => [String(candidate.id), candidate]));

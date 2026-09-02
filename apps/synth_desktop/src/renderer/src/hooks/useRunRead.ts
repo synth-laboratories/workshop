@@ -14,7 +14,7 @@
  * changes by `Object.is`.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useSyncExternalStore } from "react";
 import type {
 	OptimizerRunSummary,
 	RunCollection,
@@ -22,6 +22,10 @@ import type {
 } from "../generated/protocol";
 import {
 	refreshRunSummary,
+	projectionAtState,
+	runCollectionItemState,
+	runCollectionState,
+	runSummaryState,
 	subscribeProjectionAt,
 	subscribeRunCollection,
 	subscribeRunCollectionItem,
@@ -37,33 +41,22 @@ export type { HistoryState, RunCollectionState, RunItemState, RunSummaryState };
 /** Subscribe with a selector; re-render only when the selection changes. */
 function useSelected<S, T>(
 	subscribe: (listener: (state: S) => void) => () => void,
+	getSnapshot: () => S,
 	select: (state: S) => T,
 	deps: readonly unknown[]
 ): T {
 	const selectRef = useRef(select);
 	selectRef.current = select;
-	const [selected, setSelected] = useState<T>(() => {
-		let initial: T | undefined;
-		const unsubscribe = subscribe((state) => {
-			initial = selectRef.current(state);
-		});
-		unsubscribe();
-		return initial as T;
-	});
-	const selectedRef = useRef(selected);
-	selectedRef.current = selected;
-	useEffect(() => {
-		const unsubscribe = subscribe((state) => {
-			const next = selectRef.current(state);
-			if (!Object.is(next, selectedRef.current)) {
-				selectedRef.current = next;
-				setSelected(next);
-			}
-		});
-		return unsubscribe;
+	const subscribeExternal = useCallback(
+		(notify: () => void) => subscribe(() => notify()),
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, deps);
-	return selected;
+		deps
+	);
+	const selectedSnapshot = useCallback(() => selectRef.current(getSnapshot()),
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		deps
+	);
+	return useSyncExternalStore(subscribeExternal, selectedSnapshot, selectedSnapshot);
 }
 
 const identity = <T,>(value: T): T => value;
@@ -76,6 +69,10 @@ export function useOptimizerRun<T = RunSummaryState>(
 	runId: string | null | undefined,
 	select: (state: RunSummaryState) => T = identity as (state: RunSummaryState) => T
 ): T {
+	const fallback = useMemo<RunSummaryState>(
+		() => ({ runId: runId ?? "", status: runId ? "loading" : "unavailable", summary: null, revision: 0, tailCursor: 0, version: 0 }),
+		[runId]
+	);
 	return useSelected<RunSummaryState, T>(
 		(listener) => {
 			if (!runId) {
@@ -84,6 +81,7 @@ export function useOptimizerRun<T = RunSummaryState>(
 			}
 			return subscribeRunSummary(runId, listener);
 		},
+		() => (runId ? runSummaryState(runId) ?? fallback : fallback),
 		select,
 		[runId]
 	);
@@ -134,6 +132,10 @@ export function useRunCollection(
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 		[key]
 	);
+	const fallback = useMemo<RunCollectionState>(
+		() => ({ runId: runId ?? "", collection, status: enabled && runId ? "loading" : "unavailable", page: null, stale: false, version: 0 }),
+		[runId, collection, enabled]
+	);
 	return useSelected<RunCollectionState, RunCollectionState>(
 		(listener) => {
 			if (!runId || !enabled) {
@@ -142,6 +144,7 @@ export function useRunCollection(
 			}
 			return subscribeRunCollection(runId, collection, request, listener);
 		},
+		() => (runId && enabled ? runCollectionState(runId, collection, request) ?? fallback : fallback),
 		identity,
 		[runId, collection, key, enabled]
 	);
@@ -152,6 +155,10 @@ export function useRunCollectionItem(
 	collection: RunCollection,
 	itemId: string | null | undefined
 ): RunItemState {
+	const fallback = useMemo<RunItemState>(
+		() => ({ status: runId && itemId ? "loading" : "unavailable", row: null, stale: false, version: 0 }),
+		[runId, itemId]
+	);
 	return useSelected<RunItemState, RunItemState>(
 		(listener) => {
 			if (!runId || !itemId) {
@@ -160,6 +167,7 @@ export function useRunCollectionItem(
 			}
 			return subscribeRunCollectionItem(runId, collection, itemId, listener);
 		},
+		() => (runId && itemId ? runCollectionItemState(runId, collection, itemId) ?? fallback : fallback),
 		identity,
 		[runId, collection, itemId]
 	);
@@ -179,6 +187,10 @@ export function useRunMetricSeries(
 
 /** The backend's projection at `sequence`; `null` sequence means "not scrubbing". */
 export function useProjectionAt(runId: string | null | undefined, sequence: number | null | undefined): HistoryState {
+	const fallback = useMemo<HistoryState>(
+		() => ({ status: runId && sequence != null ? "loading" : "unavailable", projection: null, version: 0 }),
+		[runId, sequence]
+	);
 	return useSelected<HistoryState, HistoryState>(
 		(listener) => {
 			if (!runId || sequence == null) {
@@ -187,6 +199,7 @@ export function useProjectionAt(runId: string | null | undefined, sequence: numb
 			}
 			return subscribeProjectionAt(runId, sequence, listener);
 		},
+		() => (runId && sequence != null ? projectionAtState(runId, sequence) ?? fallback : fallback),
 		identity,
 		[runId, sequence]
 	);
