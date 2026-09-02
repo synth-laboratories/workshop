@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
+import { projectRunViewV2 } from "../families/optimizers/_shared/optimizer.run.v1/components/projectRunViewV2.ts";
 import {
   sftComparison,
   sftCurationFunnel,
@@ -37,6 +38,40 @@ function hostedSftEvents() {
     }
   ];
 }
+
+test("SFT V2 projection marks durable checkpoints ready and selected", () => {
+  const projected = projectRunViewV2(
+    { ...RUN, status: "completed" },
+    {
+      algorithm: "sft",
+      header: {
+        runId: RUN.id,
+        algorithm: "sft",
+        lifecycle: "terminal",
+        condition: "healthy",
+        placement: "hosted",
+        specId: "spec-1",
+        specDigest: "sha256:spec",
+        executionBindings: [],
+        inputRefs: [],
+        outputRefs: [],
+        visualRefs: [],
+        usage: { steps: 30 },
+        evidence: { completeness: "complete", refs: [] },
+        terminal: { kind: "completed", finalSequence: 44, sealedAt: "2026-09-02T17:58:06Z" },
+        projectionSchemaVersion: "sft_projection.v1",
+        asOfSequence: 44,
+        projectionRevision: 44
+      },
+      projection: {
+        checkpoints: ["ckpt_10", "ckpt_20"],
+        selectedCheckpointId: "ckpt_10"
+      }
+    }
+  );
+  assert.equal(projected.sft.checkpoints.filter((row) => row.ready).length, 2);
+  assert.equal(projected.sft.checkpoints.find((row) => row.id === "ckpt_10").selected, true);
+});
 
 test("SFT stages: ready checkpoint is never presented as promoted", () => {
   const projected = projectAtCursor(RUN, hostedSftEvents());
