@@ -85,7 +85,8 @@ use data::{
 use error::AppError;
 use experiments::{
     ExperimentChildCreateRequest, ExperimentCreateRequest, ExperimentEvidenceAttachRequest,
-    ExperimentFinalizeRequest, ExperimentGroup, ExperimentRelateRequest,
+    ExperimentFinalizeRequest, ExperimentGroup, ExperimentRelateRequest, ExperimentUpdateRequest,
+    ResearchJournalAppendRequest, ResearchJournalEntry,
 };
 use intern_api::{
     InternControlResult, InternSendResult, InternSessionControlRequest, InternSessionCreateRequest,
@@ -3777,6 +3778,19 @@ async fn experiments_activate(
 
 #[tauri::command]
 #[specta::specta]
+async fn experiments_update(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ExperimentUpdateRequest,
+) -> Result<ExperimentGroup, AppError> {
+    state
+        .data()
+        .experiment_update(request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn experiments_finalize(
     state: State<'_, Arc<CoreRuntime>>,
     request: ExperimentFinalizeRequest,
@@ -3784,6 +3798,33 @@ async fn experiments_finalize(
     state
         .data()
         .experiment_finalize(request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn research_log_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    query: Option<String>,
+    experiment_id: Option<String>,
+) -> Result<Vec<ResearchJournalEntry>, AppError> {
+    state
+        .data()
+        .research_log_list(query, experiment_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn research_log_append(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ResearchJournalAppendRequest,
+) -> Result<ResearchJournalEntry, AppError> {
+    state
+        .data()
+        .research_log_append(request)
         .await
         .map_err(AppError::from)
 }

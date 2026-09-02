@@ -515,12 +515,18 @@ fn tools() -> Value {
               "data":{"description":"Required when kind is inline"},
               "bindings":{"type":"object","description":"A full synth.visual-bindings.v1 envelope, instead of input/kind/source"},"viewport":{"type":"object","properties":{"width":{"type":"integer","minimum":320,"maximum":2400}},"additionalProperties":false,"description":"Capture width; the height follows the chart so nothing is scaled down"},"capture":{"type":"boolean","description":"Default true; false returns the revision and findings without a PNG"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["spec"],"additionalProperties":false}},
             {"name":"experiment_attach_evidence","description":"Attach a saved trace, visual/plot, artifact, or admitted-container reference to an experiment. `kind: container` requires container_id; `artifact` requires artifact_uri. References are local-first and may be materialized just in time when opened. Replaying the same evidence_id is idempotent.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"},"node_id":{"type":"string","description":"Optional experiment node; defaults to the latest result node"},"evidence_id":{"type":"string","description":"Stable caller-chosen idempotency key"},"kind":{"type":"string","enum":["trace","visual","artifact","container"]},"label":{"type":"string"},"digest":{"type":"string"},"container_id":{"type":"string"},"rollout_id":{"type":"string"},"trace_id":{"type":"string"},"visual_id":{"type":"string"},"artifact_uri":{"type":"string"},"metadata":{"type":"object"}},"required":["experiment_id","evidence_id","kind","label"],"additionalProperties":false}},
-            {"name":"experiment_create","description":"Create or reopen the current task's saved experiment record. request_id is the stable idempotency key.","inputSchema":{"type":"object","properties":{"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"}},"required":["request_id","title"],"additionalProperties":false}},
+            {"name":"experiment_list","description":"List durable experiments. Search matches title, task, model, status, and tags.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"additionalProperties":false}},
+            {"name":"experiment_get","description":"Get one durable experiment with tags, members, lineage, candidates, and evidence.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"}},"required":["experiment_id"],"additionalProperties":false}},
+            {"name":"experiment_update","description":"Update the current task's experiment title, task, model, or replace its tags. Tags are trimmed, deduplicated case-insensitively, and bounded.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"},"tags":{"type":"array","maxItems":24,"items":{"type":"string","minLength":1,"maxLength":48}}},"required":["experiment_id"],"additionalProperties":false}},
+            {"name":"experiment_create","description":"Create or reopen the current task's saved experiment record. request_id is the stable idempotency key; optional tags organize it immediately.","inputSchema":{"type":"object","properties":{"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"},"tags":{"type":"array","maxItems":24,"items":{"type":"string","minLength":1,"maxLength":48}}},"required":["request_id","title"],"additionalProperties":false}},
             {"name":"experiment_create_child","description":"Create a child experiment linked to a parent. relation is follow_up (default), forked_from, or rerun_of. request_id is the stable idempotency key. Subsequent runs in this chat attach to the child.","inputSchema":{"type":"object","properties":{"parent_experiment_id":{"type":"string"},"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"},"relation":{"type":"string","enum":["follow_up","forked_from","rerun_of"]}},"required":["parent_experiment_id","request_id","title"],"additionalProperties":false}},
             {"name":"experiment_fork","description":"Fork a parent experiment (create_child with relation=forked_from). request_id is the stable idempotency key.","inputSchema":{"type":"object","properties":{"parent_experiment_id":{"type":"string"},"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"}},"required":["parent_experiment_id","request_id","title"],"additionalProperties":false}},
             {"name":"experiment_rerun","description":"Rerun a parent experiment (create_child with relation=rerun_of). request_id is the stable idempotency key.","inputSchema":{"type":"object","properties":{"parent_experiment_id":{"type":"string"},"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"}},"required":["parent_experiment_id","request_id","title"],"additionalProperties":false}},
             {"name":"experiment_relate","description":"Relate two members or two candidates in one experiment. relation is compared_with or promoted_to. Mixed member/candidate fails closed. Candidates are not experiment_edges rows.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"},"relation":{"type":"string","enum":["compared_with","promoted_to"]},"source_kind":{"type":"string","enum":["member","candidate"]},"source_id":{"type":"string"},"target_kind":{"type":"string","enum":["member","candidate"]},"target_id":{"type":"string"}},"required":["experiment_id","relation","source_kind","source_id","target_kind","target_id"],"additionalProperties":false}},
             {"name":"experiment_finalize","description":"Finalize a task-owned experiment with authoritative measured results and an honest assessment. Missing measurements must be null, never zero.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"},"status":{"type":"string","enum":["completed","partial","failed"]},"result":{"type":"object"},"assessment":{"type":"object"}},"required":["experiment_id","status","result"],"additionalProperties":false}},
+            {"name":"research_log_list","description":"List append-only research log entries, presented in Workshop by day and linked project. Filter by text or experiment.","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"experiment_id":{"type":"string"}},"additionalProperties":false}},
+            {"name":"research_log_append","description":"Create one focused research log entry. Make multiple entries as work evolves instead of maintaining one monolithic note; link each entry to its experiment/project when possible. Kinds are observation, hypothesis, decision, result, failure, limitation, and follow-up.","inputSchema":{"type":"object","properties":{"entry_kind":{"type":"string","enum":["observation","hypothesis","decision","result","failure","limitation","follow_up"]},"title":{"type":"string","maxLength":200},"body":{"type":"string","maxLength":12000},"author":{"type":"string","maxLength":120},"tags":{"type":"array","maxItems":24,"items":{"type":"string","maxLength":48}},"links":{"type":"array","maxItems":64},"experiment_id":{"type":"string"},"source_digest":{"type":"string"}},"required":["entry_kind","title","body"],"additionalProperties":false}},
+            {"name":"research_log_correct","description":"Append a correction that supersedes an earlier research-log entry without rewriting history.","inputSchema":{"type":"object","properties":{"supersedes_entry_id":{"type":"string"},"entry_kind":{"type":"string","enum":["observation","hypothesis","decision","result","failure","limitation","follow_up"]},"title":{"type":"string","maxLength":200},"body":{"type":"string","maxLength":12000},"author":{"type":"string","maxLength":120},"tags":{"type":"array","maxItems":24,"items":{"type":"string","maxLength":48}},"links":{"type":"array","maxItems":64},"experiment_id":{"type":"string"},"source_digest":{"type":"string"}},"required":["supersedes_entry_id","entry_kind","title","body"],"additionalProperties":false}},
             {"name":"visual_authoring_context","description":"Get the template contract, example evidence, revision, presentation, and outstanding quality gate for one visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_list_annotations","description":"List saved labels for a visual and its current overlay digest","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_annotate","description":"Write a label anchored to one exact visual revision","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer"},"selector":{"type":"object"},"kind":{"type":"string","enum":["note","bug","highlight","reward","acceptance"]},"body":{"type":"string"},"source_digest":{"type":"string"},"supersedes_id":{"type":"string"}},"required":["visual_id","revision","selector","kind"],"additionalProperties":false}},
@@ -1103,15 +1109,58 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 })),
             )
         }
+        "experiment_list" => request(
+            "GET",
+            "/v1/experiments",
+            Some(json!({"query": args.get("query")})),
+        ),
+        "experiment_get" => {
+            let id = args
+                .get("experiment_id")
+                .and_then(Value::as_str)
+                .ok_or("experiment_id required")?;
+            request("GET", &format!("/v1/experiments/{id}"), None)
+        }
+        "experiment_update" => {
+            let session_id = require_session_identity(&session_env, "update an experiment")?;
+            let id = args
+                .get("experiment_id")
+                .and_then(Value::as_str)
+                .ok_or("experiment_id required")?;
+            request(
+                "PATCH",
+                &format!("/v1/experiments/{id}"),
+                Some(json!({
+                    "sessionId": session_id,
+                    "title": args.get("title"),
+                    "task": args.get("task"),
+                    "model": args.get("model"),
+                    "tags": args.get("tags")
+                })),
+            )
+        }
         "experiment_create" => {
             let session_id = require_session_identity(&session_env, "create an experiment")?;
-            request(
+            let created = request(
                 "POST",
                 "/v1/experiments",
                 Some(
                     json!({"sessionId":session_id,"requestId":args.get("request_id"),"title":args.get("title"),"task":args.get("task"),"model":args.get("model")}),
                 ),
-            )
+            )?;
+            if let Some(tags) = args.get("tags") {
+                let id = created
+                    .pointer("/experiment/id")
+                    .and_then(Value::as_str)
+                    .ok_or("created experiment id missing")?;
+                request(
+                    "PATCH",
+                    &format!("/v1/experiments/{id}"),
+                    Some(json!({"sessionId":session_id,"tags":tags})),
+                )
+            } else {
+                Ok(created)
+            }
         }
         "experiment_create_child" | "experiment_fork" | "experiment_rerun" => {
             let session_id = require_session_identity(&session_env, "create a child experiment")?;
@@ -1137,6 +1186,22 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 })),
             )
         }
+        "research_log_list" => request(
+            "GET",
+            "/v1/research-log",
+            Some(json!({"query":args.get("query"),"experimentId":args.get("experiment_id")})),
+        ),
+        "research_log_append" | "research_log_correct" => request(
+            "POST",
+            "/v1/research-log",
+            Some(json!({
+                "entryKind": args.get("entry_kind"), "title": args.get("title"),
+                "body": args.get("body"), "author": args.get("author"), "actorKind":"agent",
+                "tags": args.get("tags"), "links": args.get("links"),
+                "experimentId": args.get("experiment_id"), "sourceDigest": args.get("source_digest"),
+                "supersedesEntryId": args.get("supersedes_entry_id")
+            })),
+        ),
         "experiment_relate" => {
             let _session_id = require_session_identity(&session_env, "relate experiment members")?;
             let experiment_id = args

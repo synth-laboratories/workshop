@@ -376,6 +376,7 @@ export const commands = {
 	status: string,
 	task: string | null,
 	model: string | null,
+	tags?: string[],
 	bestResult: unknown | null,
 	members: ExperimentMember[],
 	nodes: ExperimentNode[],
@@ -387,7 +388,10 @@ export const commands = {
 	experimentsCreateChild: (request: ExperimentChildCreateRequest) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_create_child", { request })),
 	experimentsRelate: (request: ExperimentRelateRequest) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_relate", { request })),
 	experimentsActivate: (sessionId: string, experimentId: string) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_activate", { sessionId, experimentId })),
+	experimentsUpdate: (request: ExperimentUpdateRequest) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_update", { request })),
 	experimentsFinalize: (request: ExperimentFinalizeRequest) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_finalize", { request })),
+	researchLogList: (query: string | null, experimentId: string | null) => typedError<ResearchJournalEntry[], AppError_Serialize>(__TAURI_INVOKE("research_log_list", { query, experimentId })),
+	researchLogAppend: (request: ResearchJournalAppendRequest) => typedError<ResearchJournalEntry, AppError_Serialize>(__TAURI_INVOKE("research_log_append", { request })),
 	reportsLogList: (reportId: string) => typedError<ResearchLogEntry[], AppError_Serialize>(__TAURI_INVOKE("reports_log_list", { reportId })),
 	reportsLogAppend: (reportId: string, request: ResearchLogAppend) => typedError<ResearchLogEntry, AppError_Serialize>(__TAURI_INVOKE("reports_log_append", { reportId, request })),
 	reportsUploadStatus: (receiptDigest: string) => typedError<{
@@ -1543,6 +1547,7 @@ export type ExperimentGroup = {
 	status: string,
 	task: string | null,
 	model: string | null,
+	tags?: string[],
 	bestResult: unknown | null,
 	members: ExperimentMember[],
 	nodes: ExperimentNode[],
@@ -1662,6 +1667,16 @@ export type ExperimentRelateRequest = {
 };
 
 export type ExperimentStatus = "planned" | "running" | "completed" | "failed" | "aborted" | "superseded" | "excluded";
+
+export type ExperimentUpdateRequest = {
+	experimentId: string,
+	sessionId: string,
+	title: string | null,
+	task: string | null,
+	model: string | null,
+	tags: string[] | null,
+	updatedAt: string,
+};
 
 export type FailureContextView = {
 	sessionId: string | null,
@@ -3303,6 +3318,37 @@ export type ReportVisibilityRequestCreate = {
 	slug: string | null,
 	reason: string | null,
 	requestedBy: string | null,
+};
+
+export type ResearchJournalAppendRequest = {
+	occurredAt: string | null,
+	author: string | null,
+	actorKind: string | null,
+	entryKind: string,
+	title: string,
+	body: string,
+	tags: string[] | null,
+	links: unknown,
+	experimentId: string | null,
+	supersedesEntryId: string | null,
+	sourceDigest: string | null,
+};
+
+export type ResearchJournalEntry = {
+	entryId: string,
+	sequence: number,
+	occurredAt: string,
+	recordedAt: string,
+	author: string,
+	actorKind: string,
+	entryKind: string,
+	title: string,
+	body: string,
+	tags: string[],
+	links: unknown,
+	experimentId: string | null,
+	supersedesEntryId: string | null,
+	sourceDigest: string | null,
 };
 
 export type ResearchLogAppend = {

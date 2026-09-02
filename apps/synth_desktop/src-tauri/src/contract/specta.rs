@@ -250,7 +250,10 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::experiments_create_child,
             crate::experiments_relate,
             crate::experiments_activate,
+            crate::experiments_update,
             crate::experiments_finalize,
+            crate::research_log_list,
+            crate::research_log_append,
             crate::reports_log_list,
             crate::reports_log_append,
             crate::reports_upload_status,
@@ -538,8 +541,10 @@ mod tests {
         // 293 → 297: the shared optimizer read model — bounded run summary,
         // keyset-paged collections (page + item), and the checkpoint-backed
         // historical projection the scrubber reads instead of the journal.
+        // 297 → 300: experiment update plus the standalone research-journal
+        // list and append commands.
         assert_eq!(
-            exported, 297,
+            exported, 300,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

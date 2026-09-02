@@ -12,7 +12,7 @@ use super::candidates::{self, load_for_experiment};
 use super::models::{
     ExperimentChildCreateRequest, ExperimentCreateRequest, ExperimentFinalizeRequest,
     ExperimentGroup, ExperimentLineageEdge, ExperimentMember, ExperimentRelateRequest,
-    MEMBER_OPTIMIZER,
+    ExperimentUpdateRequest, ResearchJournalAppendRequest, ResearchJournalEntry, MEMBER_OPTIMIZER,
 };
 
 pub fn create(conn: &Connection, request: ExperimentCreateRequest) -> Result<ExperimentGroup> {
@@ -80,10 +80,11 @@ pub fn create_child(
     let id = format!("exp_{}", Uuid::new_v4().simple());
     let task = request.task.or(parent.task.clone());
     let model = request.model.or(parent.model.clone());
+    let tags_json = serde_json::to_string(&parent.tags)?;
     conn.execute(
         "INSERT INTO experiment_groups(
-            id, session_id, request_id, title, created_at, updated_at, task, model
-         ) VALUES(?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7)",
+            id, session_id, request_id, title, created_at, updated_at, task, model, tags_json
+         ) VALUES(?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7, ?8)",
         params![
             id,
             parent.session_id,
@@ -91,7 +92,8 @@ pub fn create_child(
             request.title,
             request.created_at,
             task,
-            model
+            model,
+            tags_json
         ],
     )?;
     insert_lineage(conn, &parent.id, &id, relation, &request.created_at)?;
@@ -190,6 +192,140 @@ pub fn activate(
     );
     set_active(conn, session_id, experiment_id)?;
     Ok(group)
+}
+
+pub fn update(conn: &Connection, request: ExperimentUpdateRequest) -> Result<ExperimentGroup> {
+    anyhow::ensure!(
+        !request.experiment_id.trim().is_empty(),
+        "experimentId is required"
+    );
+    let current =
+        get(conn, &request.experiment_id)?.ok_or_else(|| anyhow::anyhow!("unknown experiment"))?;
+    anyhow::ensure!(
+        current.session_id == request.session_id,
+        "experiment is owned by another session"
+    );
+    let title = request.title.unwrap_or(current.title).trim().to_owned();
+    anyhow::ensure!(!title.is_empty(), "title is required");
+    let tags = normalize_tags(request.tags.unwrap_or(current.tags))?;
+    conn.execute(
+        "UPDATE experiment_groups SET title=?2, task=?3, model=?4, tags_json=?5, updated_at=?6 WHERE id=?1",
+        params![
+            request.experiment_id,
+            title,
+            request.task.or(current.task),
+            request.model.or(current.model),
+            serde_json::to_string(&tags)?,
+            request.updated_at,
+        ],
+    )?;
+    get(conn, &request.experiment_id)?
+        .ok_or_else(|| anyhow::anyhow!("experiment disappeared after update"))
+}
+
+fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>> {
+    anyhow::ensure!(tags.len() <= 24, "an experiment may have at most 24 tags");
+    let mut normalized = Vec::new();
+    for tag in tags {
+        let tag = tag.trim();
+        anyhow::ensure!(!tag.is_empty(), "experiment tags must not be empty");
+        anyhow::ensure!(
+            tag.chars().count() <= 48,
+            "experiment tags may have at most 48 characters"
+        );
+        if !normalized
+            .iter()
+            .any(|value: &String| value.eq_ignore_ascii_case(tag))
+        {
+            normalized.push(tag.to_owned());
+        }
+    }
+    Ok(normalized)
+}
+
+pub fn research_log_append(
+    conn: &Connection,
+    request: ResearchJournalAppendRequest,
+) -> Result<ResearchJournalEntry> {
+    anyhow::ensure!(!request.body.trim().is_empty(), "research log entry requires a body");
+    anyhow::ensure!(
+        matches!(
+            request.entry_kind.as_str(),
+            "observation" | "hypothesis" | "decision" | "result" | "failure" | "limitation" | "follow_up"
+        ),
+        "unsupported research log entry kind"
+    );
+    let actor_kind = request.actor_kind.unwrap_or_else(|| "agent".into());
+    anyhow::ensure!(matches!(actor_kind.as_str(), "human" | "agent"), "research log actorKind must be human or agent");
+    if let Some(experiment_id) = request.experiment_id.as_deref() {
+        anyhow::ensure!(get(conn, experiment_id)?.is_some(), "unknown linked experiment");
+    }
+    if let Some(parent) = request.supersedes_entry_id.as_deref() {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM research_journal_entries WHERE entry_id=?1)",
+            [parent],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(exists, "research log supersession target is missing");
+    }
+    let tags = normalize_tags(request.tags.unwrap_or_default())?;
+    let sequence: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sequence),0)+1 FROM research_journal_entries",
+        [],
+        |row| row.get(0),
+    )?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let entry = ResearchJournalEntry {
+        entry_id: format!("rlog_{}", Uuid::new_v4().simple()),
+        sequence,
+        occurred_at: request.occurred_at.unwrap_or_else(|| now.clone()),
+        recorded_at: now,
+        author: request.author.unwrap_or_else(|| "Workshop agent".into()),
+        actor_kind,
+        entry_kind: request.entry_kind,
+        title: request.title.trim().to_owned(),
+        body: request.body.trim().to_owned(),
+        tags,
+        links: request.links.unwrap_or_else(|| serde_json::json!([])),
+        experiment_id: request.experiment_id,
+        supersedes_entry_id: request.supersedes_entry_id,
+        source_digest: request.source_digest,
+    };
+    conn.execute(
+        "INSERT INTO research_journal_entries(entry_id,sequence,occurred_at,recorded_at,author,actor_kind,entry_kind,title,body,tags_json,links_json,experiment_id,supersedes_entry_id,source_digest)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        params![entry.entry_id, entry.sequence, entry.occurred_at, entry.recorded_at, entry.author,
+            entry.actor_kind, entry.entry_kind, entry.title, entry.body,
+            serde_json::to_string(&entry.tags)?, serde_json::to_string(&entry.links)?,
+            entry.experiment_id, entry.supersedes_entry_id, entry.source_digest],
+    )?;
+    Ok(entry)
+}
+
+pub fn research_log_list(
+    conn: &Connection,
+    query: Option<&str>,
+    experiment_id: Option<&str>,
+) -> Result<Vec<ResearchJournalEntry>> {
+    let needle = format!("%{}%", query.unwrap_or("").trim().to_lowercase());
+    let mut stmt = conn.prepare(
+        "SELECT entry_id,sequence,occurred_at,recorded_at,author,actor_kind,entry_kind,title,body,tags_json,links_json,experiment_id,supersedes_entry_id,source_digest
+         FROM research_journal_entries
+         WHERE (?1 IS NULL OR experiment_id=?1) AND
+           (lower(title) LIKE ?2 OR lower(body) LIKE ?2 OR lower(entry_kind) LIKE ?2 OR lower(tags_json) LIKE ?2)
+         ORDER BY sequence DESC",
+    )?;
+    let rows = stmt.query_map(params![experiment_id, needle], |row| {
+        Ok(ResearchJournalEntry {
+            entry_id: row.get(0)?, sequence: row.get(1)?, occurred_at: row.get(2)?,
+            recorded_at: row.get(3)?, author: row.get(4)?, actor_kind: row.get(5)?,
+            entry_kind: row.get(6)?, title: row.get(7)?, body: row.get(8)?,
+            tags: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
+            links: serde_json::from_str(&row.get::<_, String>(10)?).unwrap_or_else(|_| serde_json::json!([])),
+            experiment_id: row.get(11)?, supersedes_entry_id: row.get(12)?, source_digest: row.get(13)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
 pub fn finalize(conn: &Connection, request: ExperimentFinalizeRequest) -> Result<ExperimentGroup> {
@@ -328,7 +464,7 @@ pub fn list(conn: &Connection, query: Option<&str>) -> Result<Vec<ExperimentGrou
     let needle = format!("%{}%", query.unwrap_or("").trim().to_lowercase());
     let mut stmt = conn.prepare(
         "SELECT id FROM experiment_groups
-         WHERE lower(title) LIKE ?1 OR lower(COALESCE(task,'')) LIKE ?1 OR lower(COALESCE(model,'')) LIKE ?1 OR lower(status) LIKE ?1
+         WHERE lower(title) LIKE ?1 OR lower(COALESCE(task,'')) LIKE ?1 OR lower(COALESCE(model,'')) LIKE ?1 OR lower(status) LIKE ?1 OR lower(COALESCE(tags_json,'[]')) LIKE ?1
          ORDER BY COALESCE(updated_at, created_at) DESC, id",
     )?;
     let ids = stmt
@@ -342,7 +478,7 @@ pub fn list(conn: &Connection, query: Option<&str>) -> Result<Vec<ExperimentGrou
 fn load_group(conn: &Connection, id: &str) -> Result<Option<ExperimentGroup>> {
     let Some(mut group) = conn
         .query_row(
-            "SELECT id, session_id, title, created_at, COALESCE(updated_at, created_at), status, task, model, best_result_json FROM experiment_groups WHERE id = ?1",
+            "SELECT id, session_id, title, created_at, COALESCE(updated_at, created_at), status, task, model, best_result_json, COALESCE(tags_json,'[]') FROM experiment_groups WHERE id = ?1",
             params![id],
             |row| {
                 Ok(ExperimentGroup {
@@ -355,6 +491,7 @@ fn load_group(conn: &Connection, id: &str) -> Result<Option<ExperimentGroup>> {
                     task: row.get(6)?,
                     model: row.get(7)?,
                     best_result: row.get::<_, Option<String>>(8)?.and_then(|value| serde_json::from_str(&value).ok()).map(OpaqueJson),
+                    tags: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
                     members: Vec::new(),
                     nodes: Vec::new(),
                     edges: Vec::new(),

@@ -343,6 +343,16 @@ impl DataStore {
             .await
     }
 
+    pub async fn experiment_update(
+        &self,
+        request: crate::experiments::ExperimentUpdateRequest,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::update(conn, request))
+            .await
+    }
+
     pub async fn experiment_finalize(
         &self,
         request: crate::experiments::ExperimentFinalizeRequest,
@@ -370,6 +380,33 @@ impl DataStore {
         self.db
             .clone()
             .run(move |conn| crate::experiments::get(conn, &id))
+            .await
+    }
+
+    pub async fn research_log_list(
+        &self,
+        query: Option<String>,
+        experiment_id: Option<String>,
+    ) -> Result<Vec<crate::experiments::ResearchJournalEntry>> {
+        self.db
+            .clone()
+            .run(move |conn| {
+                crate::experiments::research_log_list(
+                    conn,
+                    query.as_deref(),
+                    experiment_id.as_deref(),
+                )
+            })
+            .await
+    }
+
+    pub async fn research_log_append(
+        &self,
+        request: crate::experiments::ResearchJournalAppendRequest,
+    ) -> Result<crate::experiments::ResearchJournalEntry> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::research_log_append(conn, request))
             .await
     }
 

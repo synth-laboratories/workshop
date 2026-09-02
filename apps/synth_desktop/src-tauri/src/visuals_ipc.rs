@@ -673,6 +673,9 @@ async fn dispatch_request(
     if path.starts_with("/v1/experiments") {
         return dispatch_experiments(method, path, json_body, core).await;
     }
+    if path.starts_with("/v1/research-log") {
+        return dispatch_research_log(method, path, json_body, core).await;
+    }
     if path.starts_with("/v1/traces") {
         return dispatch_traces(method, path, json_body, core).await;
     }
@@ -4705,16 +4708,34 @@ async fn dispatch_experiments(
             let session_id = json_field(&body, "sessionId", "session_id")
                 .and_then(Value::as_str)
                 .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .context("experiments list requires sessionId")?;
-            let group = core
-                .data()
-                .experiment_for_session(session_id.to_owned())
-                .await?;
-            Ok(json!({
-                "sessionId": session_id,
-                "experiment": group,
-            }))
+                .filter(|value| !value.is_empty());
+            if let Some(session_id) = session_id {
+                let group = core
+                    .data()
+                    .experiment_for_session(session_id.to_owned())
+                    .await?;
+                Ok(json!({"sessionId": session_id, "experiment": group}))
+            } else {
+                let query = body.get("query").and_then(Value::as_str).map(str::to_owned);
+                Ok(json!({"experiments": core.data().experiments_list(query).await?}))
+            }
+        }
+        ("PATCH", path) if path.starts_with("/v1/experiments/") => {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !experiment_id.is_empty() && !experiment_id.contains('/'),
+                "invalid experiment path"
+            );
+            let mut payload = body;
+            payload["experimentId"] = json!(experiment_id);
+            if payload.get("updatedAt").is_none() && payload.get("updated_at").is_none() {
+                payload["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentUpdateRequest =
+                serde_json::from_value(payload)?;
+            Ok(json!({"experiment": core.data().experiment_update(request).await?}))
         }
         ("GET", path) if path.starts_with("/v1/experiments/") => {
             let experiment_id = path
@@ -4761,6 +4782,31 @@ async fn dispatch_experiments(
             Ok(json!({"experiment": core.data().experiment_finalize(request).await?}))
         }
         _ => anyhow::bail!("unknown experiments route {method} {path}"),
+    }
+}
+
+async fn dispatch_research_log(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+) -> Result<Value> {
+    match (method, path) {
+        ("GET", "/v1/research-log") | ("GET", "/v1/research-log/") => {
+            let query = body.get("query").and_then(Value::as_str).map(str::to_owned);
+            let experiment_id = body
+                .get("experimentId")
+                .or_else(|| body.get("experiment_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            Ok(json!({"entries": core.data().research_log_list(query, experiment_id).await?}))
+        }
+        ("POST", "/v1/research-log") | ("POST", "/v1/research-log/") => {
+            let request: crate::experiments::ResearchJournalAppendRequest =
+                serde_json::from_value(body)?;
+            Ok(json!({"entry": core.data().research_log_append(request).await?}))
+        }
+        _ => anyhow::bail!("unknown research log route {method} {path}"),
     }
 }
 

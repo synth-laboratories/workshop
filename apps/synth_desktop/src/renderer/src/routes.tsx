@@ -271,6 +271,10 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 	} = props;
 	const [transcriptCollapsed, setTranscriptCollapsed] = useState(false);
 	const [openVisualTabs, setOpenVisualTabs] = useState<ArtifactRef[]>([]);
+	const [experimentSectionOwnsVisualPane, setExperimentSectionOwnsVisualPane] = useState(true);
+	useEffect(() => {
+		if (view.kind === "experiments") setExperimentSectionOwnsVisualPane(true);
+	}, [view.kind]);
 	useEffect(() => {
 		if (!showSidePanel) setTranscriptCollapsed(false);
 	}, [showSidePanel]);
@@ -448,10 +452,17 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 	const leaveReports = () => {
 		leaveInventory(inventoryOriginRef.current);
 	};
-	// Chat artifacts live in the same right-hand dock as Outputs and the
-	// inspector tabs.  Keep the legacy standalone pane only as the compact
-	// fallback (where the dock cannot fit) and for non-chat inventory views.
-	const visualPaneVisible = Boolean(openArtifact && (!chatRoute || !showSidePanel));
+	// An open artifact is durable navigation state, but it is only rendered on
+	// surfaces that actually own or inspect visuals. Independent destinations
+	// (Plugins, Reports, Data, Inference, and Settings) must not inherit an
+	// unrelated right-hand pane merely because a visual was previously open.
+	const inventoryOwnsVisualPane = view.kind === "visuals"
+		|| (view.kind === "experiments" && experimentSectionOwnsVisualPane)
+		|| view.kind === "optimizers";
+	const visualPaneVisible = Boolean(openArtifact && (
+		(chatRoute && !showSidePanel)
+		|| inventoryOwnsVisualPane
+	));
 	const openArtifactInDock = (id: string | null) => {
 		if (id == null) {
 			toggleArtifact(null);
@@ -624,7 +635,12 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						/>
 					) : null}
 					{view.kind === "experiments" ? (
-						<ExperimentsPage initialId={view.experimentId} onBack={() => leaveInventory(inventoryOriginRef.current)} />
+						<ExperimentsPage
+							initialId={view.experimentId}
+							onBack={() => leaveInventory(inventoryOriginRef.current)}
+							onOpenReport={(reportId) => setView({ kind: "reports", reportId })}
+							onSectionChange={(section) => setExperimentSectionOwnsVisualPane(section === "experiments")}
+						/>
 					) : null}
 					{view.kind === "optimizers" ? (
 						<OptimizersPage

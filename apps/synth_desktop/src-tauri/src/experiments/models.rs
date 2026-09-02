@@ -55,12 +55,64 @@ pub struct ExperimentGroup {
     pub status: String,
     pub task: Option<String>,
     pub model: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub best_result: Option<OpaqueJson>,
     pub members: Vec<ExperimentMember>,
     pub nodes: Vec<ExperimentNode>,
     pub edges: Vec<ExperimentEdge>,
     #[serde(default)]
     pub lineage: Vec<ExperimentLineageEdge>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExperimentUpdateRequest {
+    pub experiment_id: String,
+    pub session_id: String,
+    pub title: Option<String>,
+    pub task: Option<String>,
+    pub model: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchJournalEntry {
+    pub entry_id: String,
+    #[specta(type = specta_typescript::Number)]
+    pub sequence: i64,
+    pub occurred_at: String,
+    pub recorded_at: String,
+    pub author: String,
+    pub actor_kind: String,
+    pub entry_kind: String,
+    pub title: String,
+    pub body: String,
+    pub tags: Vec<String>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub links: serde_json::Value,
+    pub experiment_id: Option<String>,
+    pub supersedes_entry_id: Option<String>,
+    pub source_digest: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchJournalAppendRequest {
+    pub occurred_at: Option<String>,
+    pub author: Option<String>,
+    pub actor_kind: Option<String>,
+    pub entry_kind: String,
+    pub title: String,
+    pub body: String,
+    pub tags: Option<Vec<String>>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub links: Option<serde_json::Value>,
+    pub experiment_id: Option<String>,
+    pub supersedes_entry_id: Option<String>,
+    pub source_digest: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]

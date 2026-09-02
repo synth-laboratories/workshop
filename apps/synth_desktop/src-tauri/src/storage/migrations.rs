@@ -67,6 +67,8 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_62,
     MIGRATION_63,
     MIGRATION_64,
+    MIGRATION_65,
+    MIGRATION_66,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -251,6 +253,7 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("annotation_provisional_findings", LIVE_ANNOTATION_CREATE_ONLY),
     ("optimizer_run_collection_rows", OPTIMIZER_READ_MODEL_CREATE_ONLY),
     ("optimizer_projection_checkpoints", OPTIMIZER_READ_MODEL_CREATE_ONLY),
+    ("research_journal_entries", MIGRATION_66),
 ];
 
 /// Lane C: provisional findings relayed from a rollout's live annotation
@@ -404,6 +407,17 @@ fn heal_missing_columns(conn: &Connection) -> Result<()> {
              REFERENCES experiment_groups(id);",
         )
         .context("heal missing sessions.active_experiment_id")?;
+    }
+    let experiment_tags_present: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('experiment_groups') WHERE name='tags_json')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !experiment_tags_present {
+        conn.execute_batch(
+            "ALTER TABLE experiment_groups ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';",
+        )
+        .context("heal missing experiment_groups.tags_json")?;
     }
     for (table, column) in [
         ("containers", "current_failure_id"),
@@ -5371,4 +5385,34 @@ CREATE TABLE IF NOT EXISTS annotation_reviews (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS annotation_reviews_head ON annotation_reviews(evidence_head_digest);
+"#;
+
+/// Human-readable experiment organization. Tags are metadata on the durable
+/// experiment identity—not graph nodes or visuals—so every UI and MCP reader
+/// observes one authoritative set.
+const MIGRATION_65: &str = r#"
+ALTER TABLE experiment_groups ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';
+"#;
+
+/// Standalone research notebook. Reports may snapshot entries later, but do
+/// not own the working record. Corrections append a superseding entry.
+const MIGRATION_66: &str = r#"
+CREATE TABLE research_journal_entries (
+    entry_id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL UNIQUE,
+    occurred_at TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    author TEXT NOT NULL,
+    actor_kind TEXT NOT NULL CHECK(actor_kind IN ('human','agent')),
+    entry_kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    links_json TEXT NOT NULL DEFAULT '[]',
+    experiment_id TEXT REFERENCES experiment_groups(id),
+    supersedes_entry_id TEXT REFERENCES research_journal_entries(entry_id),
+    source_digest TEXT
+);
+CREATE INDEX research_journal_entries_experiment ON research_journal_entries(experiment_id, sequence);
+CREATE INDEX research_journal_entries_kind ON research_journal_entries(entry_kind, sequence);
 "#;
