@@ -14,12 +14,11 @@ note() { echo "[browser-bundle] $*"; }
 
 [[ -d "$APP" && "$APP" == *.app ]] || die "application bundle is missing: $APP"
 [[ -f "$SOURCE_RUNTIME/manifest.json" ]] || die "assembled browser runtime is missing"
-[[ -d "$DEST_RUNTIME" ]] || die "Tauri did not bundle the browser runtime"
 
-# Tauri's generic resource copier dereferences versioned framework symlinks.
-# Chromium then has an invalid framework layout even if an initial deep seal
-# appears to pass. Replace only the generated bundle copy with ditto, which
-# preserves the signed framework structure and extended attributes.
+# Tauri's generic resource copier cannot preserve the assembled runtime's
+# executable/framework layout. The runtime is deliberately omitted from the
+# generic resource map and installed here with ditto before the bundle is
+# sealed, which preserves executable modes, symlinks, and extended attributes.
 rm -rf "$DEST_RUNTIME"
 mkdir -p "$(dirname "$DEST_RUNTIME")"
 /usr/bin/ditto "$SOURCE_RUNTIME" "$DEST_RUNTIME"
