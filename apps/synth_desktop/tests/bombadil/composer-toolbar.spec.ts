@@ -132,6 +132,20 @@ const toolbar = extract((state: any) => {
 		&& rect.top >= toolbarRect.top - 1
 		&& rect.bottom <= toolbarRect.bottom + 1
 	));
+	const rightControlSelectors = new Set([
+		'[data-testid="composer-model"]',
+		'[data-testid="reasoning-effort-select"]',
+		'[data-testid="service-tier-select"]',
+		'[data-testid="composer-mic"]',
+		'[data-testid="composer-send"]'
+	]);
+	const rightControls = controls
+		.filter(({ selector }) => rightControlSelectors.has(selector))
+		.sort((a, b) => a.rect.left - b.rect.left);
+	const largestRightControlGap = rightControls.reduce((largest, control, index) => {
+		if (index === 0) return largest;
+		return Math.max(largest, control.rect.left - rightControls[index - 1].rect.right);
+	}, 0);
 
 	return {
 		composerReady: Boolean(document.querySelector('[data-testid="composer"]')),
@@ -153,6 +167,7 @@ const toolbar = extract((state: any) => {
 		totalCount: COMBINATIONS.length,
 		overlapPairs,
 		controlsInsideToolbar,
+		largestRightControlGap,
 		permissionStacksVertically: Boolean(
 			document.querySelector<HTMLElement>('[data-testid="approval-mode-select"]')?.getBoundingClientRect().height! > 36
 		),
@@ -207,6 +222,10 @@ export const composer_controls_never_overlap_for_any_combination = always(() =>
 
 export const composer_controls_never_escape_the_toolbar = always(() =>
 	toolbar.current.controlsInsideToolbar
+);
+
+export const model_and_generation_controls_remain_a_compact_cluster = always(() =>
+	toolbar.current.largestRightControlGap <= 12
 );
 
 export const permission_control_never_stacks = always(() =>

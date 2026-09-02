@@ -2163,11 +2163,14 @@ html:not(.sidebar-hidden):not(.visual-expanded) .titlebar:not(.titlebar-native-i
 
 .composer-model-wrap {
 	display: flex;
-	flex: 1 1 auto;
+	/* The model belongs to the compact generation-control cluster. Letting this
+	 * wrapper grow consumed the unused half of the toolbar and left a large,
+	 * misleading gap between the model and its reasoning/speed controls. */
+	flex: 0 1 auto;
 }
 
 .composer-model-wrap .model-chip {
-	width: 100%;
+	width: auto;
 	max-width: 100%;
 }
 
