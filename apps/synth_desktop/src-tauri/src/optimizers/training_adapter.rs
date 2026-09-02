@@ -294,6 +294,10 @@ fn training_vocabulary(kind: &str) -> &'static str {
         "checkpoint.ready" => "training.checkpoint.ready",
         "evaluation.completed" | "heldout_eval.completed" => "training.evaluation.completed",
         "training.dataset.validated" | "dataset.validated" => "training.dataset.validated",
+        "sft.dataset.validated" => "training.dataset.validated",
+        "cispo.rollout_group.completed" => "training.rollout_group.completed",
+        "cispo.group_advantage.computed" => "training.group_advantage.computed",
+        "cispo.zero_advantage.detected" => "training.no_learning_signal",
         _ => "training.event",
     }
 }
@@ -334,6 +338,19 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
             }
             OptimizerEventDraft::new(event_type, algorithm).delta(delta)
         }
+        "training.dataset.validated" | "dataset.validated" | "sft.dataset.validated" => {
+            let mut delta = payload.as_object().cloned().unwrap_or_default();
+            if !delta.contains_key("dataset_digest") {
+                if let Some(digest) = payload
+                    .get("dataset_sha256")
+                    .or_else(|| payload.get("sha256"))
+                    .or_else(|| payload.get("digest"))
+                {
+                    delta.insert("dataset_digest".into(), digest.clone());
+                }
+            }
+            OptimizerEventDraft::new("sft.dataset.validated", algorithm).delta(delta)
+        }
         "checkpoint.created" | "checkpoint.ready" => checkpoint_ready_draft(algorithm, payload),
         "evaluation.completed" | "heldout_eval.completed" => {
             OptimizerEventDraft::new("sft.heldout_evaluation.completed", algorithm)
@@ -360,6 +377,35 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
         | "cispo.importance_ratio.measured" => {
             OptimizerEventDraft::new("training.metrics", algorithm).delta(cispo_metric_delta(payload))
         }
+        "cispo.rollout_group.completed" => {
+            let mut delta = payload.as_object().cloned().unwrap_or_default();
+            if let Some(group_id) = payload.get("group_id").or_else(|| payload.get("groupId")) {
+                delta.insert("groupId".into(), group_id.clone());
+                delta.insert("workItemId".into(), group_id.clone());
+            }
+            OptimizerEventDraft::new("cispo.rollout_group.completed", algorithm).delta(delta)
+        }
+        "cispo.group_advantage.computed" => {
+            let mut delta = payload.as_object().cloned().unwrap_or_default();
+            if let Some(group_id) = payload.get("group_id").or_else(|| payload.get("groupId")) {
+                delta.insert("groupId".into(), group_id.clone());
+                delta.insert("workItemId".into(), group_id.clone());
+            }
+            if let Some(advantages) = payload.get("advantages").and_then(Value::as_array) {
+                let values = advantages.iter().filter_map(Value::as_f64).collect::<Vec<_>>();
+                if !values.is_empty() {
+                    delta.insert(
+                        "meanAdvantage".into(),
+                        json!(values.iter().sum::<f64>() / values.len() as f64),
+                    );
+                }
+            }
+            OptimizerEventDraft::new("cispo.rollout_group.completed", algorithm).delta(delta)
+        }
+        "cispo.zero_advantage.detected" => {
+            OptimizerEventDraft::new("cispo.no_learning_signal", algorithm)
+                .delta(payload.as_object().cloned().unwrap_or_default())
+        }
         "sft.checkpoint.created" | "sft.checkpoint.ready" | "cispo.checkpoint.created" => {
             checkpoint_ready_draft(algorithm, payload)
         }
@@ -378,6 +424,19 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
         "sft.completed" | "cispo.completed" => {
             OptimizerEventDraft::new(TRAINING_JOB_COMPLETED, algorithm)
                 .delta(Map::from_iter([("status".into(), json!("succeeded"))]))
+        }
+        "sft.model.materialized" | "sft.adapter.materialized" => {
+            let mut delta = payload.as_object().cloned().unwrap_or_default();
+            if !delta.contains_key("adapterId") {
+                if let Some(id) = payload
+                    .get("adapter_id")
+                    .or_else(|| payload.get("artifact_id"))
+                    .or_else(|| payload.get("id"))
+                {
+                    delta.insert("adapterId".into(), id.clone());
+                }
+            }
+            OptimizerEventDraft::new("sft.model.materialized", algorithm).delta(delta)
         }
         "sft.failed" | "cispo.failed" => OptimizerEventDraft::new(TRAINING_JOB_FAILED, algorithm)
             .level("error")
@@ -442,14 +501,28 @@ fn clip_delta(payload: &Value) -> Map<String, Value> {
 }
 
 fn checkpoint_ready_draft(algorithm: &str, payload: &Value) -> OptimizerEventDraft {
+    let checkpoint_id = payload
+        .get("checkpoint_id")
+        .or_else(|| payload.get("checkpointId"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let digest = payload
+        .get("sha256")
+        .or_else(|| payload.get("digest"))
+        .cloned()
+        .unwrap_or(Value::Null);
     OptimizerEventDraft::new("sft.checkpoint.ready", algorithm)
+        .delta(Map::from_iter([
+            ("checkpointId".into(), checkpoint_id.clone()),
+            ("checkpoint_id".into(), checkpoint_id.clone()),
+        ]))
         .item(json!({
-            "id": payload["checkpoint_id"],
+            "id": checkpoint_id,
             "step": payload.get("step").cloned().unwrap_or_else(|| payload["update"].clone()),
             "status": "ready",
             "ready": true,
             "path": payload["path"],
-            "sha256": payload["sha256"],
+            "sha256": digest,
             "bytes": payload["bytes"],
             "kind": payload.get("kind").cloned().unwrap_or_else(|| json!("mlx-lora.v1")),
             "baseModel": payload.get("base_model"),
@@ -457,9 +530,9 @@ fn checkpoint_ready_draft(algorithm: &str, payload: &Value) -> OptimizerEventDra
         }))
         .artifact_refs(vec![json!({
             "kind": "checkpoint",
-            "id": payload["checkpoint_id"],
+            "id": checkpoint_id,
             "uri": payload["path"],
-            "digest": payload["sha256"]
+            "digest": digest
         })])
 }
 
@@ -589,6 +662,54 @@ mod tests {
         .unwrap();
         assert_eq!(adapted.draft.event_type, "training.metrics");
         assert_eq!(adapted.draft.delta["trainingEventType"], "training.metrics");
+    }
+
+    #[test]
+    fn public_cispo_evidence_maps_to_kernel_event_shapes() {
+        let rollout = adapt_source_fact(
+            "cispo",
+            &native_event(
+                2,
+                "cispo.rollout_group.completed",
+                json!({"group_id": "1:0", "rewards": [0.0, 0.0]}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(rollout.draft.event_type, "cispo.rollout_group.completed");
+        assert_eq!(rollout.draft.delta["groupId"], "1:0");
+        assert_eq!(rollout.draft.delta["workItemId"], "1:0");
+
+        let checkpoint = adapt_source_fact(
+            "cispo",
+            &native_event(
+                6,
+                "cispo.checkpoint.created",
+                json!({
+                    "checkpoint_id": "ckpt_1_inference",
+                    "digest": "sha256:abc",
+                    "step": 1
+                }),
+            ),
+        )
+        .unwrap();
+        assert_eq!(checkpoint.draft.event_type, "sft.checkpoint.ready");
+        assert_eq!(checkpoint.draft.delta["checkpointId"], "ckpt_1_inference");
+        assert_eq!(checkpoint.draft.item.as_ref().unwrap()["sha256"], "sha256:abc");
+    }
+
+    #[test]
+    fn public_sft_dataset_digest_maps_to_kernel_event_shape() {
+        let dataset = adapt_source_fact(
+            "sft",
+            &native_event(
+                1,
+                "sft.dataset.validated",
+                json!({"dataset_sha256": "sha256:banking77"}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(dataset.draft.event_type, "sft.dataset.validated");
+        assert_eq!(dataset.draft.delta["dataset_digest"], "sha256:banking77");
     }
 
     #[test]
