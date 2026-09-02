@@ -158,8 +158,8 @@ export function compactModelName(model: string | null): string {
 	const leaf = model.split("/").at(-1) ?? model;
 	return leaf
 		.replace(/-mlx$/i, "")
-		.replace(/-(nvfp4|fp8|int4|q4|4bit|8bit)$/i, "")
 		.replace(/-/g, " ")
+		.replace(/ (NVFP4|FP8|INT4|Q4|4BIT|8BIT)$/i, " · $1")
 		.trim();
 }
 
@@ -627,6 +627,7 @@ export function InferencePanel({
 }: InferencePanelProps) {
 	// The panel is mounted in both the rail and the page, so ids must be local.
 	const reasonId = `${useId()}-free-reason`;
+	const [advancedOpen, setAdvancedOpen] = useState(false);
 	// The hook is always called; it stays inert when the parent owns the feed.
 	const internal = useInferenceMonitor({
 		visible: visible && !monitor,
@@ -719,13 +720,7 @@ export function InferencePanel({
 		>
 			<header className="inference-head">
 				<div className="inference-model-identity">
-					<h2>
-						Inference <span aria-hidden>·</span> {compactModelName(displayedModel)}
-					</h2>
-					<span className="inference-policy-kind" data-finetuned={fineTuned ? "yes" : "no"} data-testid="inference-policy-kind">
-						{fineTuned ? "Fine-tuned model · LoRA attached" : "Base model · No LoRA attached"}
-					</span>
-					<InferenceAuthorityMark observation={observation} />
+					<h2>{compactModelName(displayedModel)}</h2>
 				</div>
 				<span
 					className="inference-residency"
@@ -744,7 +739,6 @@ export function InferencePanel({
 						<>UNLOADED on {authority}</>
 					)}
 				</span>
-				<InferenceSettingsButton onOpen={onOpenSettings} />
 			</header>
 
 			<div className="inference-activity" data-testid="inference-activity" aria-live="polite">
@@ -790,6 +784,13 @@ export function InferencePanel({
 							<Metric label="Load elapsed" value={formatElapsed(warmingElapsedMs)} />
 						</span>
 					</>
+				) : !snapshot.resident ? (
+					<>
+						<span className="inference-activity-state">NOT LOADED</span>
+						<span className="inference-phase" data-phase="unloaded">
+							model weights are not resident
+						</span>
+					</>
 				) : turnRunning ? (
 					<>
 						<span className="inference-activity-state">TURN ACTIVE</span>
@@ -808,6 +809,39 @@ export function InferencePanel({
 					</>
 				)}
 			</div>
+
+			{view.recent.length > 0 ? (
+				<section className="inference-recent inference-recent-compact" data-testid="inference-recent">
+					<h3>Recent requests</h3>
+					<ul>
+						{view.recent.slice(0, 3).map((request) => (
+							<li key={request.id} data-status={request.status}>
+								<span className="inference-recent-status" data-status={request.status}>
+									{STATUS_LABELS[request.status]}
+								</span>
+								<span className="inference-recent-model">{compactModelName(request.model)}</span>
+								<span>ttft <Metric label="TTFT" value={formatMs(request.ttftMs)} /></span>
+								<span><Metric label="Decode throughput" value={formatTps(request.decodeTps)} /> tok/s</span>
+							</li>
+						))}
+					</ul>
+				</section>
+			) : null}
+
+			<details
+				className="inference-advanced"
+				open={advancedOpen}
+				onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
+			>
+				<summary>Advanced</summary>
+				<div className="inference-advanced-body">
+					<div className="inference-advanced-meta">
+						<span className="inference-policy-kind" data-finetuned={fineTuned ? "yes" : "no"} data-testid="inference-policy-kind">
+							{fineTuned ? "Fine-tuned model · LoRA attached" : "Standard model"}
+						</span>
+						<InferenceAuthorityMark observation={observation} />
+					</div>
+					<InferenceSettingsButton onOpen={onOpenSettings} />
 
 			<ul className="inference-chips" data-testid="inference-chips">
 				<li>
@@ -883,39 +917,10 @@ export function InferencePanel({
 			<Sparkline values={view.queue} label="queue" caption="in-flight requests" />
 			</div>
 
-			<section className="inference-recent" data-testid="inference-recent">
-				<h3>Recent requests</h3>
-				{view.recent.length === 0 ? (
-					<p className="inference-note">No completed generations observed yet</p>
-				) : (
-					<ul>
-						{view.recent.map((request) => (
-							<li key={request.id} data-status={request.status}>
-								<span className="inference-recent-status" data-status={request.status}>
-									{STATUS_LABELS[request.status]}
-								</span>
-								<span className="inference-recent-model">{compactModelName(request.model)}</span>
-								<span>
-									<Metric label="Input context tokens" value={formatCount(request.promptTokens)} />
-									<span aria-hidden> → </span>
-									<Metric label="Output tokens" value={formatCount(request.outputTokens)} />
-								</span>
-								<span>
-									cache <Metric label="Cache hit ratio" value={formatRatio(request.cacheHitRatio)} />
-								</span>
-								<span>
-									ttft <Metric label="TTFT" value={formatMs(request.ttftMs)} />
-								</span>
-								<span>
-									<Metric label="Decode throughput" value={formatTps(request.decodeTps)} /> tok/s
-								</span>
-							</li>
-						))}
-					</ul>
-				)}
-			</section>
+				</div>
+			</details>
 
-			<footer className="inference-foot">
+			{snapshot.resident ? <footer className="inference-foot">
 				<button
 					type="button"
 					className="inference-free"
@@ -931,7 +936,7 @@ export function InferencePanel({
 					{view.unloadDetail ??
 						(view.unloadState === "released" ? "Weights released." : freeReason)}
 				</span>
-			</footer>
+			</footer> : null}
 		</section>
 	);
 }

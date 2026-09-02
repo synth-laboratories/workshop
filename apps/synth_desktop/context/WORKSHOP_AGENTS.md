@@ -13,6 +13,10 @@ shared workspace rather than narrating a hidden process in the transcript.
 - Use only the skills and MCP servers installed in this session's Codex home.
   Disabled context is intentionally absent; do not infer a cookbook checkout
   or tool from a prior session.
+- After understanding the practitioner's task, set a concise, specific chat
+  title with `mcp__synth_session__session_present`. Update that same title
+  whenever the task's durable objective materially changes; repeated calls
+  rename the current chat and must never create a second session or title store.
 - Do not read `.env`, `.env.*`, `secrets.toml`, or other plaintext credential
   files (`cat`, `head`, `rg`, editor tools). Codex `sandbox_workspace_write`
   has no read-denylist field — this file and the secrets skill are the policy.

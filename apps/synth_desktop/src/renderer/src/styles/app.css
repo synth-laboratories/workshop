@@ -7762,6 +7762,7 @@ html.visual-expanded .composer-dock {
 	container-type: inline-size;
 	container-name: inference;
 	display: grid;
+	align-content: start;
 	gap: 10px;
 	padding: 12px 14px;
 	border: 1px solid var(--color-border);
@@ -7885,6 +7886,35 @@ html.visual-expanded .composer-dock {
 .inference-activity-rate,
 .inference-activity-elapsed {
 	color: var(--color-text-muted);
+}
+
+.inference-advanced {
+	display: grid;
+	gap: 10px;
+}
+
+.inference-advanced > summary {
+	width: fit-content;
+	color: var(--color-text-muted);
+	cursor: pointer;
+	font-size: 10px;
+	font-weight: 650;
+	list-style-position: outside;
+}
+
+.inference-advanced > summary:hover,
+.inference-advanced > summary:focus-visible {
+	color: var(--color-text);
+}
+
+.inference-advanced-body {
+	display: grid;
+	gap: 10px;
+}
+
+.inference-advanced-meta {
+	display: grid;
+	gap: 3px;
 }
 
 .inference-chips {
@@ -8050,6 +8080,15 @@ html.visual-expanded .composer-dock {
 
 .inference-recent li[data-status="cancelled"] {
 	border-style: dashed;
+}
+
+.inference-recent-compact {
+	padding-top: 0;
+	border-top: 0;
+}
+
+.inference-recent-compact h3 {
+	margin-top: 0;
 }
 
 .inference-recent-model {
@@ -9274,6 +9313,11 @@ html.visual-expanded .sidebar {
 .inventory-page .inference-panel {
 	width: 100%;
 	max-width: none;
+}
+
+.workbench-side-panel-content .inference-panel {
+	height: auto;
+	align-self: flex-start;
 }
 
 .resource-shelf.resource-shelf-docked { position: static; inset: auto; z-index: auto; width: 100%; max-height: none; align-self: stretch; padding: 2px; overflow: visible; border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; }

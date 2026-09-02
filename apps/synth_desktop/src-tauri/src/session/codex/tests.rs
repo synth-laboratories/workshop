@@ -2135,6 +2135,8 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
     let agents = fs::read_to_string(home.join("AGENTS.md")).unwrap();
     assert!(agents.contains(".env"));
     assert!(agents.contains("no read-denylist field"));
+    assert!(agents.contains("mcp__synth_session__session_present"));
+    assert!(agents.contains("repeated calls"));
     let generated = fs::read_to_string(home.join("config.toml")).unwrap();
     assert!(generated.contains("no sandbox read-denylist"));
     assert!(!generated.contains("read_deny"));

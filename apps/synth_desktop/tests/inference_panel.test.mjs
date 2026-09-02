@@ -200,12 +200,39 @@ test("idle state says so and offers a working Free now control", () => {
 	assert.match(html, /data-testid="inference-authority">Local</);
 });
 
+test("idle telemetry is compact by default with diagnostics behind Advanced", () => {
+	const html = render({
+		monitor: monitor({
+			snapshot: snapshot(),
+			recent: [{
+				id: "recent-1",
+				status: "ok",
+				phase: "complete",
+				model: "poolside/Laguna-XS-2.1-NVFP4-mlx",
+				promptTokens: 19734,
+				outputTokens: 17,
+				cachedTokens: 0,
+				cacheHitRatio: 0,
+				ttftMs: 22430,
+				decodeTps: 28.8
+			}]
+		})
+	});
+	assert.match(html, /data-testid="inference-recent"/);
+	assert.match(html, /Recent requests/);
+	assert.match(html, /28\.8 tok\/s/);
+	assert.match(html, /ttft 22\.43 s/);
+	assert.match(html, /<details class="inference-advanced">/);
+	assert.match(html, /<summary>Advanced<\/summary>/);
+	assert.doesNotMatch(html, /<details class="inference-advanced" open/);
+});
+
 test("a pinned finetune is identified as a LoRA model while idle", () => {
 	const html = render({
 		monitor: monitor({ snapshot: snapshot() }),
 		selectedModel: "synth/Laguna-XS-2.1-ft"
 	});
-	assert.match(html, /Inference.*Laguna XS 2\.1 ft/);
+	assert.match(html, /Laguna XS 2\.1 ft/);
 	assert.match(html, /data-testid="inference-policy-kind"/);
 	assert.match(html, /data-finetuned="yes"/);
 	assert.match(html, /Fine-tuned model · LoRA attached/);
@@ -236,15 +263,16 @@ test("a cold local turn reports model warmup before generation telemetry begins"
 	assert.doesNotMatch(html, />IDLE</);
 });
 
-test("unloaded state reports no residency and disables Free now", () => {
+test("unloaded state reports no residency and omits the inapplicable memory action", () => {
 	const html = render({
 		monitor: monitor({ snapshot: snapshot({ resident: false, residentBytes: null }) })
 	});
 	assert.match(html, /data-phase="unloaded"/);
 	assert.match(html, /data-resident="no"/);
 	assert.match(html, /UNLOADED on Local/);
-	assert.match(html, /data-testid="inference-free"[^>]*disabled/);
-	assert.match(html, /No weights are resident/);
+	assert.match(html, /NOT LOADED/);
+	assert.match(html, /model weights are not resident/);
+	assert.doesNotMatch(html, /data-testid="inference-free"/);
 });
 
 test("error state is announced and offers a retry", () => {
@@ -489,7 +517,7 @@ test("formatters answer Unavailable instead of inventing values", () => {
 	assert.equal(formatQueue(null, 8), "Unavailable");
 	assert.equal(formatQueue(2, null), "2");
 	assert.equal(formatQueue(0, 8), "0/8");
-	assert.equal(compactModelName("poolside/Laguna-XS-2.1-NVFP4-mlx"), "Laguna XS 2.1");
+	assert.equal(compactModelName("poolside/Laguna-XS-2.1-NVFP4-mlx"), "Laguna XS 2.1 · NVFP4");
 	assert.equal(compactModelName(null), "Local model");
 });
 
