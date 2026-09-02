@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { LagunaPolicy } from "../bridge/types";
-import { policyLabel, policySpeed } from "../runtime/lagunaPolicies";
+import { LOCAL_BASE_POLICY, orderedLagunaPolicies, policyLabel, policySpeed } from "../runtime/lagunaPolicies";
 
 type Props = {
 	adapters: LagunaPolicy[];
@@ -20,7 +20,7 @@ export function LagunaAdapterPicker({
 	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
 	const selected = adapters.find((adapter) => adapter.modelId === selectedId);
-	const label = selected ? policyLabel(selected) : "Base model";
+	const label = selected ? policyLabel(selected) : policyLabel({ modelId: LOCAL_BASE_POLICY, isBase: true } as LagunaPolicy);
 
 	useEffect(() => {
 		if (!open) return;
@@ -70,7 +70,7 @@ export function LagunaAdapterPicker({
 			</button>
 			{open ? (
 				<div id="laguna-adapter-menu" className={menuClass} role="listbox" data-testid="laguna-adapter-menu">
-					{adapters.map((policy) => {
+					{orderedLagunaPolicies(adapters).map((policy) => {
 						const value = policy.isBase ? null : policy.modelId;
 						const selectedHere = value === selectedId;
 						const { rate, delta } = policySpeed(policy);

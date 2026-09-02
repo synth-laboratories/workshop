@@ -27,7 +27,7 @@ import type { Skill } from "../runtime/skills";
 import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
 import type { LagunaPolicy } from "../bridge/types";
-import { policyLabel } from "../runtime/lagunaPolicies";
+import { orderedLagunaPolicies, policyLabel } from "../runtime/lagunaPolicies";
 import { bridges } from "../runtime/desktopBridge";
 import {
 	armedPromptId,
@@ -541,7 +541,7 @@ function ModelMenu({
 								<div className="composer-model-group-label">{activeAccess === "api" ? apiProviderForTarget(items[0]) : TARGET_GROUP_LABEL[group]}</div>
 								{items.map((target) => {
 									if (target.id === "local-laguna" && lagunaAdapter?.adapters.length) {
-										return lagunaAdapter.adapters.map((policy) => {
+									return orderedLagunaPolicies(lagunaAdapter.adapters).map((policy) => {
 											const policyId = policy.isBase ? null : policy.modelId;
 											const selectedHere = state.selectedTargetId === target.id && lagunaAdapter.selectedId === policyId;
 											return (
@@ -560,7 +560,7 @@ function ModelMenu({
 												>
 													<span className="composer-model-option-main">
 														<span className="composer-model-option-label">{policyLabel(policy)}</span>
-														<span className="composer-model-option-desc">{policy.isBase ? "Base model · This Mac" : "Fine-tuned model · This Mac"}</span>
+														<span className="composer-model-option-desc">{policy.isBase ? "Original model · This Mac" : "SFT variant · This Mac"}</span>
 													</span>
 													{selectedHere ? <span className="composer-model-check" aria-hidden>✓</span> : null}
 												</button>

@@ -37,7 +37,12 @@ async function installLagunaFixture(page: Page, phase: LagunaPhase): Promise<voi
 				selectedPath = path;
 				return hits()[0];
 			},
-			clearModelDirectory: async () => undefined
+			clearModelDirectory: async () => undefined,
+			policies: async () => [
+				{ modelId: "synth/Laguna-XS-2.1-sft-banking", title: "Banking77 SFT", isBase: false, digest: "sha256:banking", tokensPerSecondP10: null, deltaVsBasePct: null, deltaIsResolvable: false, tokenSamples: 0 },
+				{ modelId: "poolside/Laguna-XS-2.1-NVFP4-mlx", title: "Base", isBase: true, digest: null, tokensPerSecondP10: null, deltaVsBasePct: null, deltaIsResolvable: false, tokenSamples: 0 },
+				{ modelId: "synth/Laguna-XS-2.1-sft-math", title: "MATH SFT", isBase: false, digest: "sha256:math", tokensPerSecondP10: null, deltaVsBasePct: null, deltaIsResolvable: false, tokenSamples: 0 }
+			]
 		};
 	}, phase);
 	await page.reload();
@@ -69,6 +74,16 @@ test("native Laguna readiness overrides missing legacy runtime health", async ({
 	await expect(page.getByTestId("composer-input")).toBeEnabled();
 	await expect(page.getByTestId("composer-input")).toHaveAttribute("placeholder", "Ask Laguna something…");
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName(/Laguna XS 2\.1/);
+	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-local").click();
+	const localModels = page.getByTestId("composer-model-menu").getByRole("option");
+	await expect(localModels).toHaveCount(3);
+	await expect(localModels.nth(0)).toContainText("Laguna XS 2.1");
+	await expect(localModels.nth(0)).toContainText("Original model");
+	await expect(localModels.nth(1)).toContainText("Banking77 SFT");
+	await expect(localModels.nth(1)).toContainText("SFT variant");
+	await expect(localModels.nth(2)).toContainText("MATH SFT");
+	await page.getByTestId("composer-model").click();
 	await expect(page.getByTestId("composer-model")).not.toHaveAccessibleName(/offline|starting/i);
 	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
 });

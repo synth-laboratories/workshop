@@ -5,9 +5,29 @@ export const LOCAL_BASE_POLICY = "poolside/Laguna-XS-2.1-NVFP4-mlx";
 /** The model id a registered Laguna finetune is served under. */
 export const LOCAL_FT_POLICY = "synth/Laguna-XS-2.1-ft";
 
+function modelName(modelId: string): string {
+	if (modelId === LOCAL_BASE_POLICY) return "Laguna XS 2.1";
+	return modelId
+		.split("/").pop()!
+		.replace(/-NVFP4-mlx$/i, "")
+		.replace(/-mlx$/i, "")
+		.replace(/-/g, " ")
+		.replace(/\bxs\b/gi, "XS")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
 export function policyLabel(policy: LagunaPolicy): string {
-	if (policy.isBase) return "Base model";
+	if (policy.isBase) return modelName(policy.modelId);
 	return policy.title ?? policy.modelId.split("/").pop() ?? policy.modelId;
+}
+
+/** The actual model leads, followed by every registered SFT variant. */
+export function orderedLagunaPolicies(policies: readonly LagunaPolicy[]): LagunaPolicy[] {
+	return [...policies].sort((left, right) => {
+		if (left.isBase !== right.isBase) return left.isBase ? -1 : 1;
+		return policyLabel(left).localeCompare(policyLabel(right));
+	});
 }
 
 /**
