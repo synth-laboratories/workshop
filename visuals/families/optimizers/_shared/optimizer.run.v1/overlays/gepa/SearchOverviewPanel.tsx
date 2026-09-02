@@ -87,7 +87,7 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
 
         <DetailCard title={`${gepa.candidates.length} candidate${gepa.candidates.length === 1 ? "" : "s"} · ${scored} scored`} eyebrow="Related work" testId="gepa-related-work-card">
           <Detail name="Rollouts">{gepa.rolloutsCompleted.toLocaleString()} completed · {attached.toLocaleString()} attached</Detail>
-          <Detail name="Runtime">{gepa.runtime.activeWorkers ?? 0} active / {gepa.runtime.semaphoreSize ?? "?"} slots · {gepa.runtime.queuedRollouts ?? 0} queued</Detail>
+          <Detail name="Runtime">{gepa.runtime.configuredRolloutWorkers ?? "?"} configured · {gepa.runtime.estimatedEffectiveConcurrency?.toFixed(1) ?? "?"} effective · {gepa.runtime.rolloutsPerMinute?.toFixed(1) ?? "?"} rollouts/min</Detail>
           <Detail name="Proposer">{proposerRunning} running · {proposerCompleted} complete · {proposerFailed} failed</Detail>
           <Detail name="Failures">{gepa.failedAttempts.length.toLocaleString()} exhausted attempts</Detail>
           <Detail name="Current phase">{gepa.activity.label}</Detail>

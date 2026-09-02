@@ -381,6 +381,41 @@ export function GepaWorkspace({
         : `${Math.round(gepa.rolloutsCompleted)} completed rollouts`,
       testId: "gepa-rollout-count"
     },
+    {
+      label: "Configured concurrency",
+      value: gepa.runtime.configuredRolloutWorkers != null
+        ? `${Math.round(gepa.runtime.configuredRolloutWorkers)}`
+        : "unavailable",
+      title: [
+        gepa.runtime.staticRolloutWorkers != null
+          ? `Static rollout pool: ${Math.round(gepa.runtime.staticRolloutWorkers)}`
+          : null,
+        gepa.runtime.rolloutSubmissionMode
+          ? `Submission: ${gepa.runtime.rolloutSubmissionMode}`
+          : null
+      ].filter(Boolean).join(" · ") || "The runtime has not reported configured rollout workers",
+      testId: "gepa-configured-concurrency"
+    },
+    {
+      label: "Rollouts / min",
+      value: gepa.runtime.rolloutsPerMinute != null
+        ? gepa.runtime.rolloutsPerMinute.toFixed(1)
+        : gepa.rolloutsCompleted === 1 ? "warming" : "—",
+      title: "Observed uncached rollout throughput from the latest completed dispatch batch",
+      testId: "gepa-rollout-throughput"
+    },
+    {
+      label: "Effective concurrency",
+      value: gepa.runtime.estimatedEffectiveConcurrency != null
+        ? gepa.runtime.estimatedEffectiveConcurrency.toFixed(1)
+        : gepa.runtime.semaphoreSize != null
+          ? `${Math.round(gepa.runtime.activeWorkers ?? 0)} / ${Math.round(gepa.runtime.semaphoreSize)}`
+          : "unavailable",
+      title: gepa.runtime.queuedRollouts != null
+        ? `${Math.round(gepa.runtime.queuedRollouts)} queued rollouts`
+        : "Observed parallelism has not been reported yet",
+      testId: "gepa-effective-concurrency"
+    },
     { label: "Best train", value: bestScore != null ? bestScore.toFixed(2) : "—" },
     { label: "Heldout", value: heldoutValue },
     {
@@ -392,26 +427,6 @@ export function GepaWorkspace({
     {
       label: "Proposer calls",
       value: proposerSpent != null ? `${Math.round(proposerSpent)}` : "—"
-    },
-    {
-      label: "Concurrency",
-      value: terminal
-        ? "stopped"
-        : gepa.runtime.semaphoreSize != null
-        ? `${Math.round(gepa.runtime.activeWorkers ?? 0)} / ${Math.round(gepa.runtime.semaphoreSize)}`
-        : "unavailable",
-      title: gepa.runtime.queuedRollouts != null
-        ? `${Math.round(gepa.runtime.queuedRollouts)} queued rollouts`
-        : "The runtime has not reported its semaphore yet"
-    },
-    {
-      label: "Rollouts / min",
-      value: terminal
-        ? "—"
-        : gepa.runtime.rolloutsPerMinute != null
-        ? gepa.runtime.rolloutsPerMinute.toFixed(1)
-        : gepa.rolloutsCompleted === 1 ? "warming" : "—",
-      title: "Rolling observed completion rate over the most recent minute"
     },
     {
       label: "Cost",

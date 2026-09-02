@@ -309,6 +309,11 @@ export type GepaState = {
   timing: { startedAt?: string; endedAt?: string; lastEventAt?: string };
   rolloutsCompleted: number;
   runtime: {
+    configuredRolloutWorkers?: number;
+    staticRolloutWorkers?: number;
+    estimatedEffectiveConcurrency?: number;
+    rolloutSubmissionMode?: string;
+    maxDispatchChunkSize?: number;
     activeWorkers?: number;
     semaphoreSize?: number;
     queuedRollouts?: number;
@@ -2098,6 +2103,28 @@ export function projectAtCursor(
       if (semaphoreSize != null) runtime.semaphoreSize = semaphoreSize;
       if (queuedRollouts != null) runtime.queuedRollouts = queuedRollouts;
     }
+    if (event.type === "runtime.job.completed" || event.type === "runtime.throughput.warning") {
+      const configuredRolloutWorkers = missingNumber(event.delta?.configured_rollout_workers);
+      const staticRolloutWorkers = missingNumber(event.delta?.static_rollout_workers);
+      const estimatedEffectiveConcurrency = missingNumber(event.delta?.estimated_effective_concurrency);
+      const rolloutSubmissionMode = optionalString(event.delta?.rollout_submission_mode);
+      if (configuredRolloutWorkers != null) runtime.configuredRolloutWorkers = configuredRolloutWorkers;
+      if (staticRolloutWorkers != null) runtime.staticRolloutWorkers = staticRolloutWorkers;
+      if (estimatedEffectiveConcurrency != null) runtime.estimatedEffectiveConcurrency = estimatedEffectiveConcurrency;
+      if (rolloutSubmissionMode) runtime.rolloutSubmissionMode = rolloutSubmissionMode;
+
+      // Result events arrive in a burst after each dispatch. Use the runtime's
+      // completed-batch measurement so the UI does not manufacture a huge
+      // throughput number from a few nearly simultaneous journal appends.
+      const observedPerSecond = missingNumber(event.delta?.observed_uncached_rollouts_per_second);
+      const cacheMisses = missingNumber(event.delta?.cache_misses);
+      const wallSeconds = missingNumber(event.delta?.wall_seconds);
+      if (observedPerSecond != null) {
+        runtime.rolloutsPerMinute = observedPerSecond * 60;
+      } else if (cacheMisses != null && cacheMisses > 0 && wallSeconds != null && wallSeconds > 0) {
+        runtime.rolloutsPerMinute = cacheMisses * 60 / wallSeconds;
+      }
+    }
     if (event.type === "optimizer.evaluation_result.received") {
       const rolloutId = typeof event.delta?.rollout_id === "string"
         ? event.delta.rollout_id
@@ -2747,7 +2774,7 @@ export function projectAtCursor(
     const recentCompletionTimes = rolloutCompletionTimes.length > 0
       ? rolloutCompletionTimes.filter((time) => time >= rolloutCompletionTimes.at(-1)! - 60_000)
       : [];
-    if (recentCompletionTimes.length >= 2) {
+    if (runtime.rolloutsPerMinute == null && recentCompletionTimes.length >= 2) {
       const elapsedMs = recentCompletionTimes.at(-1)! - recentCompletionTimes[0];
       if (elapsedMs > 0) {
         runtime.rolloutsPerMinute = (recentCompletionTimes.length - 1) * 60_000 / elapsedMs;

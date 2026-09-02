@@ -178,7 +178,7 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 			},
 			projection: {
 				workItems: [], phase: "selection", usage: { promptTokens: 100, completionTokens: 5, steps: 4 },
-				candidates: { cand_seed: { id: "cand_seed", source: "seed", trainReward: 0.5, gateAccepted: true } },
+				candidates: { cand_seed: { id: "cand_seed", source: "seed", trainReward: 0.5, gateAccepted: true, values: { stage2_system: "Return exactly one Banking77 intent label." } } },
 				candidateOrder: ["cand_seed"], seedCandidateId: "cand_seed", selectedCandidateId: "cand_seed",
 				frontierHistory: ["cand_seed"], incumbentId: "cand_seed", rolloutsAllocated: 4, rolloutsScored: 4,
 				rolloutsFailed: 0, proposalsRequested: 0, proposalsReturned: 0, maxActiveWorkers: 1, rolloutBudget: 4
@@ -215,12 +215,11 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 	await page.getByTestId("copy-artifact-path-0").click();
 	await expect(page.getByTestId("copy-artifact-path-0")).toHaveText("Copied");
 	await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("/tmp/result_manifest.json");
-	// OptimizerRunViewV2 owns live product truth and deliberately does not carry
-	// prompt bodies; the visual must say that instead of resurrecting raw-event
-	// content as a live claim.
-	await expect(page.getByTestId("gepa-candidate-content")).toContainText("Candidate content was not persisted");
-	await expect(page.getByTestId("copy-gepa-candidate")).toBeDisabled();
-	await expect(page.getByTestId("download-gepa-candidate")).toBeDisabled();
+	// Candidate levers are bounded durable projection data. The visual can show
+	// and export them without replaying the raw optimizer journal.
+	await expect(page.getByTestId("gepa-candidate-content")).toContainText("Return exactly one Banking77 intent label.");
+	await expect(page.getByTestId("copy-gepa-candidate")).toBeEnabled();
+	await expect(page.getByTestId("download-gepa-candidate")).toBeEnabled();
 	await page.getByRole("button", { name: /^Label/ }).click();
 	await page.getByTestId("optimizer-candidate-cand_seed").click();
 	await page.getByLabel("Label note").fill("Review the accepted seed prompt");

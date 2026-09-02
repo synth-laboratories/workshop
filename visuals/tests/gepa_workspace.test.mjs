@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
+import { projectRunViewV2 } from "../families/optimizers/_shared/optimizer.run.v1/components/projectRunViewV2.ts";
 import { candidatePalette, elapsedLabel, generationPalette, incumbentCandidateIds, orderedScoredCandidates } from "../families/optimizers/_shared/optimizer.run.v1/overlays/gepa/model.ts";
 
 // Condensed from the real banking77_gepa_sol_med_45856f25 run: same event
@@ -71,6 +72,40 @@ test("durable setup events retain task, dataset, container, and selected taskset
     runtimeFamily: "banking77", targetId: undefined, rewardAuthority: "container_evaluator",
     policyHarness: "banking77_classifier", policyConfig: "chatgpt_proxy", scaleLeases: 4, retention: "run"
   });
+});
+
+test("live run view exposes durable setup and measured concurrency", () => {
+  const view = {
+    algorithm: "gepa",
+    header: {
+      runId: RUN.id, algorithm: "gepa", lifecycle: "running", phase: "selection",
+      condition: "healthy", placement: "search.gepa.local", specId: "spec", specDigest: "sha256:spec",
+      executionBindings: [], inputRefs: [], outputRefs: [], visualRefs: [],
+      usage: { costUsd: .06, promptTokens: 100, completionTokens: 10 },
+      evidence: { completeness: "partial", refs: [] }, terminal: null,
+      projectionSchemaVersion: "gepa.projection.v2", asOfSequence: 50, projectionRevision: 50
+    },
+    projection: {
+      candidates: {}, candidateOrder: [], proposerCalls: [], evaluations: [],
+      contract: {
+        task: { id: "banking77-intents-v1", name: "Banking77 intent classification" },
+        program: { id: "banking77-classifier-v1", mutableFields: ["classification_system_prompt"] },
+        objectiveSet: { frontierType: "per_example", selectionObjective: "outcome_reward", objectives: [{ name: "outcome_reward", direction: "maximize" }] },
+        splits: { train: 100, minibatch: 40, reflection: 100, pareto: 100, heldout: 100 },
+        dataset: { source: "PolyAI/banking77", rowCount: 3080, labelCount: 77, splits: { train: 2114, selection: 623, heldout: 343 } },
+        container: { verified: true, specId: "banking77-gepa-b-v6", workshopInstance: "B", url: "http://127.0.0.1:8127", policyModel: "openai/gpt-5.6-luna" }
+      },
+      runtime: { configuredRolloutWorkers: 50, staticRolloutWorkers: 50, estimatedEffectiveConcurrency: 17.5, rolloutsPerMinute: 600, rolloutSubmissionMode: "async", maxDispatchChunkSize: 50 }
+    }
+  };
+  const projected = projectRunViewV2(RUN, view);
+  assert.equal(projected.gepa.contract.task.id, "banking77-intents-v1");
+  assert.equal(projected.gepa.contract.dataset.labelCount, 77);
+  assert.equal(projected.gepa.contract.container.workshopInstance, "B");
+  assert.equal(projected.gepa.models.policy, "openai/gpt-5.6-luna");
+  assert.equal(projected.gepa.runtime.configuredRolloutWorkers, 50);
+  assert.equal(projected.gepa.runtime.estimatedEffectiveConcurrency, 17.5);
+  assert.equal(projected.gepa.runtime.rolloutsPerMinute, 600);
 });
 
 function solEvents() {
@@ -368,6 +403,28 @@ test("observed rollout throughput uses completion timestamps, not configured cap
   assert.equal(projected.gepa.runtime.activeWorkers, 3);
   assert.equal(projected.gepa.runtime.semaphoreSize, 3);
   assert.equal(projected.gepa.runtime.queuedRollouts, 4);
+});
+
+test("runtime receipts expose configured, effective, and uncached throughput", () => {
+  const projected = projectAtCursor(RUN, [{
+    ...base,
+    sequenceNumber: 1,
+    type: "runtime.job.completed",
+    delta: {
+      lane: "rollout",
+      configured_rollout_workers: 1,
+      static_rollout_workers: 8,
+      estimated_effective_concurrency: 7.3,
+      rollout_submission_mode: "async",
+      cache_misses: 8,
+      wall_seconds: 60
+    }
+  }]);
+  assert.equal(projected.gepa.runtime.configuredRolloutWorkers, 1);
+  assert.equal(projected.gepa.runtime.staticRolloutWorkers, 8);
+  assert.equal(projected.gepa.runtime.estimatedEffectiveConcurrency, 7.3);
+  assert.equal(projected.gepa.runtime.rolloutSubmissionMode, "async");
+  assert.equal(projected.gepa.runtime.rolloutsPerMinute, 8);
 });
 
 test("live cost sums only when every completed rollout reports cost", () => {
