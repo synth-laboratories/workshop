@@ -1785,7 +1785,10 @@ async fn drive_hosted_sft_job(
                 cancel_sent = true;
             }
         }
-        let page = match client.optimizer_events_after(job_id, cursor, 500).await {
+        let page = match client
+            .optimizer_events_after(job_id, cursor, HOSTED_EVENT_PAGE_LIMIT)
+            .await
+        {
             Ok(page) => {
                 page_errors = 0;
                 page
@@ -1829,7 +1832,7 @@ async fn drive_hosted_sft_job(
             .unwrap_or("running")
         {
             "succeeded" | "completed" => {
-                if page.get("terminal").and_then(Value::as_bool) != Some(true) {
+                if !hosted_event_page_drained(&page, HOSTED_EVENT_PAGE_LIMIT) {
                     sleep(Duration::from_millis(50)).await;
                     continue;
                 }
@@ -1886,7 +1889,10 @@ async fn drive_hosted_cispo_job(
                 cancel_sent = true;
             }
         }
-        let page = match client.optimizer_events_after(job_id, cursor, 500).await {
+        let page = match client
+            .optimizer_events_after(job_id, cursor, HOSTED_EVENT_PAGE_LIMIT)
+            .await
+        {
             Ok(page) => {
                 page_errors = 0;
                 page
@@ -1930,7 +1936,7 @@ async fn drive_hosted_cispo_job(
             .unwrap_or("running")
         {
             "succeeded" | "completed" => {
-                if page.get("terminal").and_then(Value::as_bool) != Some(true) {
+                if !hosted_event_page_drained(&page, HOSTED_EVENT_PAGE_LIMIT) {
                     sleep(Duration::from_millis(50)).await;
                     continue;
                 }
@@ -1958,6 +1964,16 @@ async fn drive_hosted_cispo_job(
             _ => sleep(Duration::from_millis(400)).await,
         }
     }
+}
+
+const HOSTED_EVENT_PAGE_LIMIT: usize = 500;
+
+fn hosted_event_page_drained(page: &Value, limit: usize) -> bool {
+    page.get("terminal").and_then(Value::as_bool) == Some(true)
+        && page
+            .get("events")
+            .and_then(Value::as_array)
+            .is_some_and(|events| events.len() < limit)
 }
 
 fn normalize_hosted_event(mut event: Value, sequence: u64) -> Value {
@@ -2507,6 +2523,24 @@ mod tests {
         assert!(admitted_placements().contains(&PLACEMENT_TRAINING_CISPO_HOSTED));
         std::env::remove_var("TINKER_CISPO_VALIDATION_RECEIPT");
         assert!(!admitted_placements().contains(&PLACEMENT_TRAINING_CISPO_HOSTED));
+    }
+
+    #[test]
+    fn terminal_hosted_pages_are_drained_past_the_first_full_page() {
+        let full = json!({
+            "terminal": true,
+            "events": (0..HOSTED_EVENT_PAGE_LIMIT).map(|sequence| json!({"sequence": sequence + 1})).collect::<Vec<_>>()
+        });
+        assert!(!hosted_event_page_drained(&full, HOSTED_EVENT_PAGE_LIMIT));
+        let final_partial = json!({"terminal": true, "events": [{"sequence": 501}]});
+        assert!(hosted_event_page_drained(
+            &final_partial,
+            HOSTED_EVENT_PAGE_LIMIT
+        ));
+        assert!(!hosted_event_page_drained(
+            &json!({"terminal": false, "events": []}),
+            HOSTED_EVENT_PAGE_LIMIT
+        ));
     }
 
     #[test]
