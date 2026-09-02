@@ -1,0 +1,31 @@
+{
+  "schema_version": "synth.training-parent.v1",
+  "algorithm": "sft",
+  "job_id": "sft_banking77_nanoclassify_reference_ba558ab3",
+  "base_model": "openai/gpt-oss-20b",
+  "state_checkpoint": "tinker://364eaa27-90ef-5b7e-9a74-763460f30253:train:0/weights/optimizers-training-tinkerreq_79b1f6bde56a56f724650c7e",
+  "sampler_checkpoint": "tinker://364eaa27-90ef-5b7e-9a74-763460f30253:train:0/sampler_weights/optimizers-inference-tinkerreq_90ec78a1fbac76d02eca12c6",
+  "checkpoint_id": "training-100-be22981c562a",
+  "inference_checkpoint_id": "inference-100-f9856413e3ed",
+  "digest": "sha256:619ef376f1b51867fa09207adda9cab4659a8291db55a2eaba56f9856413e3ed",
+  "updates": 100,
+  "selection": {
+    "examples": 400,
+    "baseline_accuracy": 0.795,
+    "accuracy": 0.8675,
+    "uplift": 0.0725,
+    "ci_low": 0.045,
+    "ci_high": 0.1025,
+    "verdict": "material_uplift"
+  },
+  "heldout": {
+    "examples": 400,
+    "baseline_accuracy": 0.8125,
+    "accuracy": 0.875,
+    "uplift": 0.0625,
+    "ci_low": 0.0325,
+    "ci_high": 0.0925,
+    "verdict": "material_uplift",
+    "heldout_locked": true
+  }
+}
