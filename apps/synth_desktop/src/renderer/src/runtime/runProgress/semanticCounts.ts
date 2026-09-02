@@ -45,11 +45,15 @@ export function semanticCountsFromRunView(
 	const projection = view.projection as Record<string, unknown>;
 	switch (view.algorithm) {
 		case "gepa": {
+			// The wire view is bounded: collection-shaped arrays such as
+			// `evaluations` may be empty even though the run scored thousands of
+			// rollouts. The scalar counters are always present, so they are the
+			// floor for both numbers.
 			const evaluations = count(projection.evaluations);
 			const rollouts = Math.max(evaluations, count(projection.rolloutsScored) + count(projection.rolloutsFailed));
 			const candidates = count(projection.candidateOrder) || count(projection.candidates);
 			return {
-				semanticEvents: candidates + evaluations + count(projection.proposerCalls) + count(projection.frontierHistory),
+				semanticEvents: candidates + rollouts + count(projection.proposerCalls) + count(projection.frontierHistory),
 				rollouts,
 				source: "projection"
 			};
@@ -70,7 +74,10 @@ export function semanticCountsFromRunView(
 			const evaluations = count(projection.evaluations);
 			return {
 				semanticEvents: count(projection.checkpoints) + evaluations + points + workItems,
-				rollouts: view.algorithm === "cispo" ? workItems : evaluations,
+				// Completed checkpoint evaluations are also succeeded work items on
+				// the header, which survives the bounded wire view when the
+				// evaluation rows do not.
+				rollouts: view.algorithm === "cispo" ? workItems : (evaluations || sum(work.succeeded)),
 				source: "projection"
 			};
 		}
