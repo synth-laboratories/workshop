@@ -965,6 +965,43 @@ async fn optimizers_recipe_start(
     authorize_optimizer_recipe_start(&app, &state, &codex, request).await
 }
 
+fn optimizer_recipe_fixture_env(recipe_id: &str) -> Option<&'static str> {
+    match recipe_id {
+        "sft.craftax.nemotron-nano.tinker.v1"
+        | "sft.banking77.nemotron-lightning.tinker.v1" => {
+            Some("SYNTH_OPTIMIZERS_SFT_FIXTURE")
+        }
+        "cispo.banking77.tinker.v1"
+        | "cispo.hosted.tinker.v1"
+        | "cispo.slime.hosted.v1"
+        | "cispo.banking77.slime.tinker.v1" => Some("SYNTH_OPTIMIZERS_CISPO_FIXTURE"),
+        _ => None,
+    }
+}
+
+fn optimizer_recipe_is_unpaid_fixture(recipe_id: &str) -> bool {
+    optimizer_recipe_fixture_env(recipe_id).is_some_and(|name| {
+        std::env::var(name)
+            .ok()
+            .is_some_and(|value| value.trim() == "1")
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn hosted_fixture_gate_is_limited_to_known_recipe_families() {
+    assert_eq!(
+        optimizer_recipe_fixture_env("sft.banking77.nemotron-lightning.tinker.v1"),
+        Some("SYNTH_OPTIMIZERS_SFT_FIXTURE")
+    );
+    assert_eq!(
+        optimizer_recipe_fixture_env("cispo.banking77.tinker.v1"),
+        Some("SYNTH_OPTIMIZERS_CISPO_FIXTURE")
+    );
+    assert_eq!(optimizer_recipe_fixture_env("gepa.banking77.v1"), None);
+    assert_eq!(optimizer_recipe_fixture_env("cispo.unreviewed.tinker.v1"), None);
+}
+
 pub(crate) async fn authorize_optimizer_recipe_start(
     app: &tauri::AppHandle,
     state: &CoreRuntime,
@@ -984,12 +1021,16 @@ pub(crate) async fn authorize_optimizer_recipe_start(
                 request.recipe_id
             ))
         })?;
-    // Local MLX recipes do not incur provider charges. The click itself is the
-    // operator's explicit instruction.
+    // Local MLX recipes and explicitly enabled hosted fixtures do not incur
+    // provider charges. The card click is the operator's explicit instruction,
+    // so requiring an agent-session paid-compute receipt here makes the
+    // zero-cost Desktop acceptance path impossible. Exact recipe ids and the
+    // fixture env gate keep real hosted launches on the approval path below.
     if matches!(
         request.recipe_id.as_str(),
         "sft.qwen35-2b.mlx.v1" | "cispo.mlx.v1"
-    ) {
+    ) || optimizer_recipe_is_unpaid_fixture(&request.recipe_id)
+    {
         let (run, event) = state
             .optimizers()
             .start_recipe(request)
