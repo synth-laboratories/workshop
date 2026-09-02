@@ -621,6 +621,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					) : null}
 					{view.kind === "optimizers" ? (
 						<OptimizersPage
+							sessionRef={activeSessionId}
 							pluginStatuses={pluginStatuses}
 							initialRunId={preferences.layout.last.optimizers.selectedRunId}
 							onSelectedRunIdChange={(selectedRunId) => persistLayoutSnapshot({ optimizers: { selectedRunId } })}

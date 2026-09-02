@@ -928,10 +928,11 @@ async fn optimizers_algorithms_list(
 #[specta::specta]
 async fn optimizers_recipes_list(
     state: State<'_, Arc<CoreRuntime>>,
+    session_ref: Option<String>,
 ) -> Result<Vec<contract::specta::OpaqueJson>, AppError> {
     Ok(state
         .optimizers()
-        .list_recipes()
+        .list_recipes_for_session(session_ref.as_deref())
         .into_iter()
         .map(contract::specta::OpaqueJson)
         .collect())

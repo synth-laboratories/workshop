@@ -90,6 +90,7 @@ const OPTIMIZER_TABS = [
 type OptimizersTab = (typeof OPTIMIZER_TABS)[number]["id"];
 
 type Props = {
+	sessionRef?: string | null;
 	onOpenVisual: (visualId: string) => void;
 	onStartAgent: (guide: OptimizerGuide) => Promise<void>;
 	onBack: () => void;
@@ -240,6 +241,7 @@ const LIFECYCLE_ACTIONS: readonly LifecycleAction[] = [
 ];
 
 export function OptimizersPage({
+	sessionRef = null,
 	onOpenVisual,
 	onStartAgent,
 	onBack,
@@ -364,7 +366,7 @@ export function OptimizersPage({
 				source: source === "all" ? undefined : source
 			}),
 			bridges.optimizers.listAlgorithms(),
-			bridges.optimizers.listRecipes().catch(() => [] as OptimizerRecipeInfo[])
+			bridges.optimizers.listRecipes(sessionRef ?? undefined).catch(() => [] as OptimizerRecipeInfo[])
 		]);
 		setRuns(nextRuns);
 		setAlgorithms(nextAlgorithms);
@@ -373,7 +375,7 @@ export function OptimizersPage({
 		setLocalCispoRecipe(nextRecipes.find((recipe) => recipe.id === LOCAL_CISPO_RECIPE_ID) ?? null);
 		setHostedSftRecipe(nextRecipes.find((recipe) => recipe.id === HOSTED_SFT_RECIPE_ID) ?? null);
 		if (!selectedId && nextRuns[0]) setSelectedId(nextRuns[0].id);
-	}, [algorithm, search, selectedId, source, status]);
+	}, [algorithm, search, selectedId, sessionRef, source, status]);
 
 	// No plugin poller here. Registry status arrives from useAppController,
 	// which subscribes to `optimizer:status`; this page polled it every 750 ms
@@ -738,6 +740,7 @@ export function OptimizersPage({
 			const hostedTinker = recipeId === HOSTED_SFT_RECIPE_ID || isHostedCispoRecipeId(recipeId);
 			const run = await bridges.optimizers.startRecipe({
 				recipeId,
+				sessionRef: sessionRef ?? undefined,
 				openVisual: true,
 				containerId: hostedTinker ? undefined : (selectedContainerId ?? undefined)
 			});

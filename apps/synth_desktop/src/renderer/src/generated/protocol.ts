@@ -60,7 +60,7 @@ export const commands = {
 	updateOpenDownload: () => typedError<null, AppError_Serialize>(__TAURI_INVOKE("update_open_download")),
 	dataCounts: () => typedError<DataCounts, AppError_Serialize>(__TAURI_INVOKE("data_counts")),
 	optimizersAlgorithmsList: () => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("optimizers_algorithms_list")),
-	optimizersRecipesList: () => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("optimizers_recipes_list")),
+	optimizersRecipesList: (sessionRef: string | null) => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("optimizers_recipes_list", { sessionRef })),
 	optimizersRecipeStart: (request: OptimizerRecipeRunRequest) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_recipe_start", { request })),
 	/**
 	 *  Freeze policy files from the session's workspace into one immutable
