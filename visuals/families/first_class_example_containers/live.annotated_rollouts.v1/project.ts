@@ -35,9 +35,23 @@ export type Finding = {
   basis?: string;
   detail: Record<string, unknown>;
   ts: string;
+  logicalTime?: number;
 };
 
-export type Marker = { sequence: number; step?: number; kind: string; label: string; status: FindingStatus; findingId: string };
+export type Marker = { sequence: number; logicalTime?: number; step?: number; kind: string; label: string; status: FindingStatus; findingId: string };
+
+export type LogicalEvent = {
+  /** Shared, one-based replay tick across every rollout and annotation stream. */
+  logicalTime: number;
+  event: LiveEvalEvent;
+  lane: string;
+  stream: "rollout" | "annotation";
+  /** Sequence in the event's own producer stream. */
+  streamSequence?: number;
+  /** Rollout sequence this annotation had observed when it emitted. */
+  sourceSequence?: number;
+  occurredAt: string;
+};
 
 export type Lane = {
   name: string;
@@ -88,6 +102,9 @@ function str(value: unknown): string | undefined {
 export function timestamp(event: LiveEvalEvent): string {
   return event.occurred_at ?? event.ts ?? "";
 }
+export function eventLogicalTime(event: LiveEvalEvent): number | undefined {
+  return num((event as LiveEvalEvent & { logical_time?: unknown }).logical_time);
+}
 export function laneName(event: LiveEvalEvent): string {
   const extra = event as LiveEvalEvent & { rollout_id?: string };
   return extra.rollout_id ?? event.lane ?? str(event.payload.rollout_id) ?? event.run_id ?? "rollout";
@@ -117,6 +134,54 @@ export function unwrapRelayed(event: LiveEvalEvent): LiveEvalEvent {
     ...(str(inner.rollout_id) ? { rollout_id: inner.rollout_id as string } : {}),
     ...(streamId ? { stream_id: streamId } : {}),
   } as LiveEvalEvent;
+}
+
+/**
+ * Give all producer streams one deterministic replay clock.
+ *
+ * Producer timestamps establish the cross-stream order because each stream's
+ * sequence is only locally monotonic. Stable identity fields break equal-time
+ * ties; the original observed index is the final fallback. Wall time remains
+ * provenance, while consumers scrub and play using the one-based logical tick.
+ */
+export function logicalTimeline(events: LiveEvalEvent[]): LogicalEvent[] {
+  const ordered = events.map((raw, observedIndex) => {
+    const event = unwrapRelayed(raw);
+    const occurredAt = timestamp(event);
+    const parsed = Date.parse(occurredAt);
+    const annotation = isAnnotationEvent(event);
+    const ownSequence = num(event.sequence);
+    return {
+      event,
+      observedIndex,
+      occurredAt,
+      physicalTime: Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY,
+      lane: laneName(event),
+      stream: annotation ? "annotation" as const : "rollout" as const,
+      streamSequence: ownSequence,
+      sourceSequence: annotation ? num(event.payload.source_sequence) : ownSequence,
+    };
+  }).sort((left, right) =>
+    left.physicalTime - right.physicalTime
+    || left.occurredAt.localeCompare(right.occurredAt)
+    || left.lane.localeCompare(right.lane)
+    || (left.sourceSequence ?? Number.MAX_SAFE_INTEGER) - (right.sourceSequence ?? Number.MAX_SAFE_INTEGER)
+    || (left.stream === right.stream ? 0 : left.stream === "rollout" ? -1 : 1)
+    || (left.streamSequence ?? Number.MAX_SAFE_INTEGER) - (right.streamSequence ?? Number.MAX_SAFE_INTEGER)
+    || left.observedIndex - right.observedIndex
+  );
+  return ordered.map((row, index) => {
+    const logicalTime = index + 1;
+    return {
+      logicalTime,
+      event: { ...row.event, logical_time: logicalTime } as LiveEvalEvent,
+      lane: row.lane,
+      stream: row.stream,
+      streamSequence: row.streamSequence,
+      sourceSequence: row.sourceSequence,
+      occurredAt: row.occurredAt,
+    };
+  });
 }
 
 /**
@@ -238,9 +303,10 @@ function applyAnnotation(lane: Lane, event: LiveEvalEvent): void {
       basis: str(obj(p.detail).basis),
       detail: obj(p.detail),
       ts: timestamp(event),
+      logicalTime: eventLogicalTime(event),
     };
     lane.findings.push(finding);
-    lane.markers.push({ sequence, step: finding.step, kind: finding.kind, label: finding.label, status: "provisional", findingId });
+    lane.markers.push({ sequence, logicalTime: finding.logicalTime, step: finding.step, kind: finding.kind, label: finding.label, status: "provisional", findingId });
   } else if (kind === "annotation.finding.retracted") {
     const findingId = str(p.finding_id);
     const finding = lane.findings.find((row) => row.findingId === findingId);

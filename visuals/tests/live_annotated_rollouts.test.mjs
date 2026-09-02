@@ -9,6 +9,7 @@ import {
   eventDetail,
   isAnnotationEvent,
   labelTally,
+  logicalTimeline,
   projectLanes,
   unwrapRelayed,
 } from "../families/first_class_example_containers/live.annotated_rollouts.v1/project.ts";
@@ -149,6 +150,40 @@ test("relayed optimizer envelopes unwrap to the same reducer inputs", () => {
   assert.equal(activeFindings(lanes[0]).length, 1);
   assert.equal(eventDetail(unwrapRelayed(container)), "observation · step 2");
   assert.equal(eventDetail(event), "achievement · collect_wood");
+});
+
+test("rollout and annotation streams receive one deterministic logical clock", () => {
+  const groupedByTransport = [
+    rollout("roll_a", 1, "observation", { step: 0, readout: { inventory: { health: 9 } } }),
+    rollout("roll_a", 2, "action", { step: 1, action: "up" }),
+    annotation("roll_a", 1, "annotation.protocol.bound", { protocol_id: "craftax.live.v1", source_sequence: 1 }),
+    annotation("roll_a", 2, "annotation.finding", { finding_id: "fm:1", kind: "failure_mode", label: "blocked", source_sequence: 2, evidence: { sequences: [2] } }),
+  ];
+  // Transport batches are grouped, but producer time places the protocol bind
+  // between the two rollout rows and the finding after its cited action.
+  groupedByTransport[0].ts = "2026-09-01T00:00:01.000Z";
+  groupedByTransport[1].ts = "2026-09-01T00:00:03.000Z";
+  groupedByTransport[2].ts = "2026-09-01T00:00:02.000Z";
+  groupedByTransport[3].ts = "2026-09-01T00:00:04.000Z";
+
+  const timeline = logicalTimeline(groupedByTransport);
+  assert.deepEqual(timeline.map((row) => row.logicalTime), [1, 2, 3, 4]);
+  assert.deepEqual(timeline.map((row) => row.event.kind), [
+    "observation",
+    "annotation.protocol.bound",
+    "action",
+    "annotation.finding",
+  ]);
+  assert.deepEqual(timeline.map((row) => row.stream), ["rollout", "annotation", "rollout", "annotation"]);
+  assert.equal(timeline[3].streamSequence, 2);
+  assert.equal(timeline[3].sourceSequence, 2);
+  assert.equal(timeline[3].event.logical_time, 4);
+
+  const [laneAtT3] = projectLanes(timeline.slice(0, 3).map((row) => row.event));
+  assert.equal(laneAtT3.findings.length, 0);
+  const [laneAtT4] = projectLanes(timeline.map((row) => row.event));
+  assert.equal(laneAtT4.findings[0].logicalTime, 4);
+  assert.equal(laneAtT4.markers[0].logicalTime, 4);
 });
 
 test("a rollout without a bound protocol projects an empty annotation layer, never a fabricated one", () => {

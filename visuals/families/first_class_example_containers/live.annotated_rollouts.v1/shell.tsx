@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { MetricStrip, VisualChrome } from "../../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber } from "../../../runtime/liveStream.ts";
@@ -9,12 +9,9 @@ import {
   activeFindings,
   countByKind,
   eventDetail,
-  isAnnotationEvent,
   labelTally,
-  laneName,
+  logicalTimeline,
   projectLanes,
-  timestamp,
-  unwrapRelayed,
   type Finding,
   type Lane,
 } from "./project.ts";
@@ -53,6 +50,7 @@ function FindingChip({ finding, showHistory }: { finding: Finding; showHistory: 
     finding.status === "retracted" ? `retracted: ${finding.retractedReason ?? ""}` : null,
     finding.status === "superseded" ? `superseded by ${finding.supersededBy ?? ""}` : null,
     finding.sequences.length ? `evidence sequences ${finding.sequences.join(", ")}` : null,
+    finding.logicalTime != null ? `logical time t=${finding.logicalTime}` : null,
     typeof finding.detail.rationale === "string" ? String(finding.detail.rationale) : null,
   ].filter(Boolean).join(" · ");
   return <span title={title} data-status={finding.status} className="sv-mono" style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 7px", borderRadius: 999, fontSize: 10, border: `1px solid ${color}`, color: muted ? "var(--sv-text-faint)" : color, textDecoration: finding.status === "retracted" ? "line-through" : "none", opacity: muted ? 0.65 : 1 }}>
@@ -71,7 +69,7 @@ function MarkerStrip({ lane }: { lane: Lane }) {
       const step = marker.step ?? lane.done;
       const left = Math.min(99, Math.max(0, step / span * 100));
       const color = KIND_COLOR[marker.kind] ?? KIND_COLOR.note;
-      return <span key={`${marker.findingId}-${marker.sequence}`} title={`${marker.kind}: ${marker.label} @ step ${step} (${marker.status})`} style={{ position: "absolute", top: 2, left: `${left}%`, width: 10, height: 10, marginLeft: -5, borderRadius: marker.kind === "failure_mode" ? 2 : 999, background: marker.status === "provisional" ? color : "transparent", border: `2px solid ${color}`, opacity: marker.status === "provisional" ? 1 : 0.45, transform: marker.kind === "failure_mode" ? "rotate(45deg)" : "none" }} />;
+      return <span key={`${marker.findingId}-${marker.sequence}`} title={`${marker.kind}: ${marker.label} @ step ${step}${marker.logicalTime != null ? ` · t=${marker.logicalTime}` : ""} (${marker.status})`} style={{ position: "absolute", top: 2, left: `${left}%`, width: 10, height: 10, marginLeft: -5, borderRadius: marker.kind === "failure_mode" ? 2 : 999, background: marker.status === "provisional" ? color : "transparent", border: `2px solid ${color}`, opacity: marker.status === "provisional" ? 1 : 0.45, transform: marker.kind === "failure_mode" ? "rotate(45deg)" : "none" }} />;
     })}
   </div>;
 }
@@ -129,10 +127,15 @@ export function Shell(props: ShellProps) {
   const live = state === "live";
   const hasSource = declaredStreamCount > 0 || Boolean(stream.events);
   const [globalCursor, setGlobalCursor] = useState<number | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState(1);
   const [feed, setFeed] = useState<Feed>("annotations");
   const [showHistory, setShowHistory] = useState(false);
-  const selectedGlobal = globalCursor == null ? events.length - 1 : Math.max(0, Math.min(globalCursor, events.length - 1));
-  const visibleEvents = useMemo(() => events.slice(0, selectedGlobal + 1), [events, selectedGlobal]);
+  const timeline = useMemo(() => logicalTimeline(events), [events]);
+  const selectedGlobal = globalCursor == null ? timeline.length - 1 : Math.max(0, Math.min(globalCursor, timeline.length - 1));
+  const selectedMoment = timeline[selectedGlobal];
+  const visibleTimeline = useMemo(() => timeline.slice(0, selectedGlobal + 1), [timeline, selectedGlobal]);
+  const visibleEvents = useMemo(() => visibleTimeline.map((row) => row.event), [visibleTimeline]);
   const lanes = useMemo(() => projectLanes(visibleEvents), [visibleEvents]);
   const done = lanes.filter((lane) => lane.status === "finished").length;
   const active = lanes.flatMap(activeFindings);
@@ -142,8 +145,34 @@ export function Shell(props: ShellProps) {
   const allAchievements = new Set(lanes.flatMap((lane) => lane.achievements));
   const failureTally = labelTally(lanes, "failure_mode");
   const milestoneTally = labelTally(lanes, "milestone");
-  const recent = visibleEvents.map(unwrapRelayed).filter((event) => feed === "all" || (feed === "annotations") === isAnnotationEvent(event)).slice(-12).reverse();
+  const recent = visibleTimeline.filter((row) => feed === "all" || (feed === "annotations") === (row.stream === "annotation")).slice(-12).reverse();
   const streamBase = stream.sse_url ? new URL(stream.sse_url, window.location.href) : null;
+
+  useEffect(() => {
+    if (!playing || !timeline.length) return;
+    const timer = window.setInterval(() => {
+      setGlobalCursor((current) => {
+        const index = current == null ? -1 : current;
+        if (index >= timeline.length - 1) {
+          setPlaying(false);
+          return timeline.length - 1;
+        }
+        return index + 1;
+      });
+    }, Math.max(40, 360 / speed));
+    return () => window.clearInterval(timer);
+  }, [playing, speed, timeline.length]);
+
+  const seek = (index: number) => {
+    setPlaying(false);
+    setGlobalCursor(Math.max(0, Math.min(index, timeline.length - 1)));
+  };
+
+  const togglePlayback = () => {
+    if (!timeline.length) return;
+    if (!playing && selectedGlobal >= timeline.length - 1) setGlobalCursor(-1);
+    setPlaying((value) => !value);
+  };
 
   return <VisualChrome kicker="Container eval · live annotations" live={live} title={props.title ?? "Live annotated rollouts"} lede={props.lede ?? "Provisional findings from the bound protocol, layered over the rollouts producing them. Nothing here is sealed evidence."} testId="visual-live-annotated-rollouts" footer="live.annotated_rollouts.v1 · synth.trace-stream-event.v1 + synth.live-annotation-stream.v1">
     <MetricStrip metrics={[
@@ -156,8 +185,16 @@ export function Shell(props: ShellProps) {
       { label: "Stream", value: !hasSource ? "awaiting source" : !ready ? "connecting" : live ? "receiving" : done ? "complete" : "waiting" },
     ]} />
     <section className="sv-section" aria-label="Evaluation replay">
-      <div className="sv-section-head"><h3>Evaluation time</h3><time className="sv-mono">{events.length ? displayTime(timestamp(events[selectedGlobal])) : "Waiting for an event"}</time></div>
-      <input type="range" min={0} max={Math.max(0, events.length - 1)} value={selectedGlobal} onChange={(event) => setGlobalCursor(Number(event.currentTarget.value))} disabled={!events.length} aria-label="Replay the complete evaluation" style={{ width: "100%" }} />
+      <div className="sv-section-head"><div><h3>Logical evaluation time</h3><span className="sv-mono" style={{ fontSize: 10, color: "var(--sv-text-faint)" }}>one tick per rollout or annotation event</span></div><div style={{ textAlign: "right" }}><strong className="sv-mono">{selectedMoment ? `t=${selectedMoment.logicalTime} / ${timeline.length}` : "Waiting for an event"}</strong><br />{selectedMoment ? <time className="sv-mono" style={{ fontSize: 10, color: "var(--sv-text-faint)" }}>{displayTime(selectedMoment.occurredAt)}</time> : null}</div></div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 7 }}>
+        <button onClick={togglePlayback} disabled={!timeline.length}>{playing ? "Pause" : "Play"}</button>
+        <button onClick={() => seek(selectedGlobal - 1)} disabled={!timeline.length || selectedGlobal <= 0}>Previous</button>
+        <button onClick={() => seek(selectedGlobal + 1)} disabled={!timeline.length || selectedGlobal >= timeline.length - 1}>Next</button>
+        <select aria-label="Logical replay speed" value={speed} onChange={(event) => setSpeed(Number(event.currentTarget.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option><option value={8}>8×</option></select>
+        <button onClick={() => { setPlaying(false); setGlobalCursor(null); }} disabled={!timeline.length || globalCursor == null}>Follow live</button>
+      </div>
+      <input type="range" min={0} max={Math.max(0, timeline.length - 1)} value={Math.max(0, selectedGlobal)} onChange={(event) => seek(Number(event.currentTarget.value))} disabled={!timeline.length} aria-label="Replay the complete evaluation by logical time" style={{ width: "100%" }} />
+      {selectedMoment ? <div className="sv-mono" aria-live="polite" style={{ marginTop: 7, padding: "7px 9px", border: "1px solid var(--sv-border)", borderRadius: 7, display: "grid", gridTemplateColumns: "auto minmax(80px, .7fr) minmax(160px, 2fr)", gap: 9, fontSize: 10 }}><strong>t={selectedMoment.logicalTime}</strong><span>{selectedMoment.stream} · {selectedMoment.lane}</span><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{eventDetail(selectedMoment.event)} · stream seq {selectedMoment.streamSequence ?? "—"}{selectedMoment.stream === "annotation" ? ` · observed rollout seq ${selectedMoment.sourceSequence ?? "—"}` : ""}</span></div> : null}
     </section>
     {error ? <p role="alert" style={{ color: "#c2553f" }}>{error}</p> : null}
     <section className="sv-section" aria-label="Summary across rollouts">
@@ -182,7 +219,7 @@ export function Shell(props: ShellProps) {
     </section>
     <section className="sv-section" aria-label="Recent activity">
       <div className="sv-section-head"><h3>Activity</h3><div role="tablist" className="sv-mono" style={{ display: "flex", gap: 8, fontSize: 10 }}>{(["annotations", "rollout", "all"] as Feed[]).map((option) => <button key={option} role="tab" aria-selected={feed === option} onClick={() => setFeed(option)} style={{ background: feed === option ? "var(--sv-accent)" : "transparent", color: feed === option ? "#fff" : "var(--sv-text-muted)", border: "1px solid var(--sv-border)", borderRadius: 999, padding: "2px 8px", cursor: "pointer" }}>{option}</button>)}</div></div>
-      <ol style={{ listStyle: "none", margin: 0, padding: 0 }}>{recent.map((event, index) => <li key={`${timestamp(event)}-${index}`} style={{ display: "grid", gridTemplateColumns: "66px minmax(90px, 0.7fr) 2fr", gap: 10, padding: "7px 0", borderTop: "1px solid var(--sv-border)", fontSize: 11 }}><time className="sv-mono" style={{ color: "var(--sv-text-faint)" }}>{timestamp(event).slice(11, 19)}</time><strong style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{laneName(event)}</strong><span className="sv-mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isAnnotationEvent(event) ? (KIND_COLOR[String(event.payload.kind ?? "")] ?? "var(--sv-text)") : "var(--sv-text-muted)" }}>{isAnnotationEvent(event) ? "◌ " : "· "}{eventDetail(event)}</span></li>)}{!recent.length ? <li style={{ padding: 8, color: "var(--sv-text-faint)" }}>Nothing in this feed yet.</li> : null}</ol>
+      <ol style={{ listStyle: "none", margin: 0, padding: 0 }}>{recent.map((row) => <li key={`logical-${row.logicalTime}`} style={{ display: "grid", gridTemplateColumns: "58px 66px minmax(90px, 0.7fr) 2fr", gap: 10, padding: "7px 0", borderTop: "1px solid var(--sv-border)", fontSize: 11 }}><strong className="sv-mono">t={row.logicalTime}</strong><time className="sv-mono" title={displayTime(row.occurredAt)} style={{ color: "var(--sv-text-faint)" }}>{row.occurredAt.slice(11, 19)}</time><strong style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{row.lane}</strong><span className="sv-mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: row.stream === "annotation" ? (KIND_COLOR[String(row.event.payload.kind ?? "")] ?? "var(--sv-text)") : "var(--sv-text-muted)" }}>{row.stream === "annotation" ? "◌ " : "· "}{eventDetail(row.event)}</span></li>)}{!recent.length ? <li style={{ padding: 8, color: "var(--sv-text-faint)" }}>Nothing in this feed yet.</li> : null}</ol>
     </section>
   </VisualChrome>;
 }
