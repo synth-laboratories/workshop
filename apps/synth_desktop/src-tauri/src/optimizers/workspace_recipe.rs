@@ -610,9 +610,26 @@ pub fn ensure_bundled_annotation_eval_recipes(workspace: &Path) -> Result<usize>
 
 pub fn load_recipes(workspace: &Path) -> Result<Vec<WorkspaceRecipe>> {
     let mut recipes = Vec::new();
+    for path in recipe_paths(workspace)? {
+        recipes.push(parse_recipe(&path)?);
+    }
+    let mut seen = std::collections::HashSet::new();
+    for recipe in &recipes {
+        if !seen.insert(recipe.id.as_str()) {
+            bail!(
+                "workspace declares recipe id `{}` more than once",
+                recipe.id
+            );
+        }
+    }
+    Ok(recipes)
+}
+
+fn recipe_paths(workspace: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
     let root_file = workspace.join(RECIPE_FILE);
     if root_file.is_file() {
-        recipes.push(parse_recipe(&root_file)?);
+        paths.push(root_file);
     }
     let recipes_dir = workspace.join(RECIPES_DIR);
     if recipes_dir.is_dir() {
@@ -626,20 +643,21 @@ pub fn load_recipes(workspace: &Path) -> Result<Vec<WorkspaceRecipe>> {
             })
             .collect();
         entries.sort();
-        for path in entries {
-            recipes.push(parse_recipe(&path)?);
-        }
+        paths.extend(entries);
     }
-    let mut seen = std::collections::HashSet::new();
-    for recipe in &recipes {
-        if !seen.insert(recipe.id.as_str()) {
-            bail!(
-                "workspace declares recipe id `{}` more than once",
-                recipe.id
-            );
-        }
-    }
-    Ok(recipes)
+    Ok(paths)
+}
+
+fn declared_recipe_id(path: &Path) -> Result<Option<String>> {
+    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let value: toml::Value = toml::from_str(&text)
+        .with_context(|| format!("parse workspace recipe identity {}", path.display()))?;
+    Ok(value
+        .get("id")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned))
 }
 
 pub fn find_recipe(workspace: &Path, recipe_id: &str) -> Result<WorkspaceRecipe> {
@@ -667,9 +685,14 @@ pub fn find_session_recipe(
     let roots = session_search_roots(db, session_id)?;
     let mut matches = Vec::new();
     for root in roots {
-        for recipe in load_recipes(&root)? {
-            if recipe.id == recipe_id {
-                matches.push((root.clone(), recipe));
+        for path in recipe_paths(&root)? {
+            match parse_recipe(&path) {
+                Ok(recipe) if recipe.id == recipe_id => matches.push((root.clone(), recipe)),
+                Ok(_) => {}
+                Err(error) => match declared_recipe_id(&path) {
+                    Ok(Some(id)) if id != recipe_id => {}
+                    _ => return Err(error),
+                },
             }
         }
     }
@@ -693,7 +716,11 @@ pub fn load_session_recipes(
 ) -> Result<Vec<WorkspaceRecipe>> {
     let mut recipes = Vec::new();
     for root in session_search_roots(db, session_id)? {
-        recipes.extend(load_recipes(&root)?);
+        for path in recipe_paths(&root)? {
+            if let Ok(recipe) = parse_recipe(&path) {
+                recipes.push(recipe);
+            }
+        }
     }
     Ok(recipes)
 }
@@ -1975,6 +2002,21 @@ max_total_rollouts = 10
         fs::create_dir_all(&primary).unwrap();
         fs::create_dir_all(&attached).unwrap();
         fs::write(
+            primary.join(RECIPE_FILE),
+            r#"
+id = "gepa.stale.v1"
+algorithm = "gepa"
+container = "classify"
+provider = "openai"
+model = "gpt-4.1-nano"
+locality = "container"
+[bounds]
+max_cost_usd = 8.00
+max_total_rollouts = 1
+"#,
+        )
+        .unwrap();
+        fs::write(
             attached.join(RECIPE_FILE),
             r#"
 id = "eval.attached.v1"
@@ -2029,6 +2071,13 @@ max_total_rollouts = 1
         .unwrap();
         assert_eq!(source_root, attached.canonicalize().unwrap());
         assert_eq!(recipe.id, "eval.attached.v1");
+        let error = find_session_recipe(
+            storage.database(),
+            "attached-session",
+            "gepa.stale.v1",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("exceeds product cap"));
     }
 
     #[test]
