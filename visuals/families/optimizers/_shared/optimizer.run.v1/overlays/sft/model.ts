@@ -11,11 +11,74 @@ export type SftState = NonNullable<ProjectedState["sft"]>;
 
 export const SFT_TERMINAL_STATUSES = ["completed", "failed", "canceled", "cancelled", "succeeded"];
 
+export type SftAggregateBaseline = {
+  checkpointId?: string;
+  metric: string;
+  score: number;
+  n: number | null;
+};
+
+/** Collapse duplicate summary aliases while retaining the newest payload. */
+export function sftDistinctEvaluations(sft: SftState): Array<Record<string, unknown>> {
+  const byIdentity = new Map<string, Record<string, unknown>>();
+  for (const evaluation of sft.evaluations) {
+    const key = [
+      evaluation.role ?? evaluation.split ?? evaluation.phase,
+      evaluation.checkpoint_id ?? evaluation.checkpointId,
+      evaluation.step,
+      evaluation.metric,
+      evaluation.score ?? evaluation.accuracy ?? evaluation.calibration_accuracy,
+      evaluation.n ?? evaluation.sampleCount ?? evaluation.sample_count
+    ].map((value) => String(value ?? "")).join("|");
+    byIdentity.set(key, evaluation);
+  }
+  return [...byIdentity.values()];
+}
+
+/**
+ * Public SFT services may report the unchanged student as one aggregate
+ * selection evaluation instead of hundreds of `baseline_rollout` events.
+ * Preserve that evidence as an aggregate; never manufacture per-example rows.
+ */
+export function sftAggregateBaseline(sft: SftState): SftAggregateBaseline | null {
+  const evaluation = [...sft.evaluations].reverse().find((candidate) => {
+    const role = String(candidate.role ?? candidate.split ?? candidate.phase ?? "");
+    const candidateName = String(candidate.candidate ?? "");
+    const checkpointId = String(candidate.checkpoint_id ?? candidate.checkpointId ?? "");
+    const step = Number(candidate.step);
+    const score = Number(candidate.score ?? candidate.accuracy ?? candidate.calibration_accuracy);
+    return role === "selection"
+      && step === 0
+      && (candidateName === "base" || checkpointId.startsWith("inference-0-"))
+      && Number.isFinite(score);
+  });
+  if (!evaluation) return null;
+  const n = Number(evaluation.n ?? evaluation.sampleCount ?? evaluation.sample_count);
+  const checkpointId = evaluation.checkpoint_id ?? evaluation.checkpointId;
+  return {
+    checkpointId: typeof checkpointId === "string" ? checkpointId : undefined,
+    metric: String(evaluation.metric ?? (evaluation.accuracy != null ? "accuracy" : "score")),
+    score: Number(evaluation.score ?? evaluation.accuracy ?? evaluation.calibration_accuracy),
+    n: Number.isFinite(n) ? n : null
+  };
+}
+
+/** A stale admitted-run status must not override newer streamed work evidence. */
+export function sftEffectiveStatus(sft: SftState, reportedStatus: string): string {
+  if (SFT_TERMINAL_STATUSES.includes(reportedStatus)) return reportedStatus;
+  const workObserved = sft.points.length > 0
+    || sft.evaluations.length > 0
+    || sft.checkpoints.length > 0
+    || sft.campaigns.length > 0;
+  return reportedStatus === "queued" && workObserved ? "running" : reportedStatus;
+}
+
 /** Derive the semantic SFT stages from what the event stream actually shows. */
 export function sftStages(sft: SftState, status: string, promotedCheckpointId?: string): WorkspaceStage[] {
   const terminal = SFT_TERMINAL_STATUSES.includes(status);
   const failed = status === "failed";
-  const baselineScored = (sft.baseline?.seeds.length ?? 0) > 0;
+  const aggregateBaseline = sftAggregateBaseline(sft);
+  const baselineScored = (sft.baseline?.seeds.length ?? 0) > 0 || aggregateBaseline != null;
   const collected = sft.curation.collected ?? 0;
   const curationSettled = (sft.curation.accepted ?? 0) > 0;
   const datasetReady = Object.keys((sft.dataset.splits as Record<string, unknown> | undefined) ?? {}).length > 0;
@@ -23,7 +86,8 @@ export function sftStages(sft: SftState, status: string, promotedCheckpointId?: 
   const checkpointCount = sft.checkpoints.length;
   const readyCount = sft.checkpoints.filter((ckpt) => ckpt.ready === true || ckpt.promoted === true).length;
   const campaignCount = sft.campaigns.length;
-  const evaluationCount = campaignCount + sft.evaluations.length;
+  const distinctEvaluationCount = sftDistinctEvaluations(sft).length;
+  const evaluationCount = campaignCount + distinctEvaluationCount;
   const campaignsSettled = campaignCount > 0 && sft.campaigns.every((campaign) =>
     ["completed", "failed"].includes(String(campaign.status ?? ""))
   );
@@ -42,7 +106,11 @@ export function sftStages(sft: SftState, status: string, promotedCheckpointId?: 
       id: "baseline",
       label: "Baseline",
       status: settle(baselineScored, baselineScored),
-      detail: baselineScored ? `${sft.baseline?.seeds.length} seeds scored` : "unchanged student on frozen seeds"
+      detail: (sft.baseline?.seeds.length ?? 0) > 0
+        ? `${sft.baseline?.seeds.length} seeds scored`
+        : aggregateBaseline
+          ? `${aggregateBaseline.n ?? "—"} selection examples · ${aggregateBaseline.metric} ${aggregateBaseline.score}`
+          : "unchanged student on frozen seeds"
     },
     {
       id: "collection",
@@ -76,7 +144,7 @@ export function sftStages(sft: SftState, status: string, promotedCheckpointId?: 
       label: "Evaluations",
       status: settle(evaluationCount > 0, terminal && evaluationCount > 0 && (campaignCount === 0 || campaignsSettled)),
       detail: evaluationCount > 0
-        ? `${sft.evaluations.length} result${sft.evaluations.length === 1 ? "" : "s"}${campaignCount > 0 ? ` · ${campaignCount} rollout campaign${campaignCount === 1 ? "" : "s"}` : ""}`
+        ? `${distinctEvaluationCount} result${distinctEvaluationCount === 1 ? "" : "s"}${campaignCount > 0 ? ` · ${campaignCount} rollout campaign${campaignCount === 1 ? "" : "s"}` : ""}`
         : undefined
     },
     {

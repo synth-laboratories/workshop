@@ -3,10 +3,13 @@ import test from "node:test";
 import { projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
 import { projectRunViewV2 } from "../families/optimizers/_shared/optimizer.run.v1/components/projectRunViewV2.ts";
 import {
+  sftAggregateBaseline,
   sftComparison,
   sftCurationFunnel,
+  sftDistinctEvaluations,
   sftDistribution,
   sftHeldoutSummary,
+  sftEffectiveStatus,
   sftStages
 } from "../families/optimizers/_shared/optimizer.run.v1/overlays/sft/model.ts";
 
@@ -213,6 +216,45 @@ test("queued SFT run stays honestly queued with no fabricated progress", () => {
   assert.equal(projected.summary.status, "queued");
   const stages = sftStages(projected.sft, "queued", undefined);
   assert.ok(stages.every((stage) => stage.status === "pending"), "no stage may claim progress while queued");
+});
+
+test("streamed aggregate baseline overrides stale queued presentation without inventing rows", () => {
+  const projected = projectAtCursor(
+    { ...RUN, status: "queued" },
+    [{
+      ...base,
+      sequenceNumber: 1,
+      type: "training.evaluation.completed",
+      delta: {
+        role: "selection",
+        candidate: "base",
+        checkpoint_id: "inference-0-reference",
+        step: 0,
+        metric: "accuracy",
+        score: 0.795,
+        n: 400
+      }
+    }]
+  );
+  assert.deepEqual(sftAggregateBaseline(projected.sft), {
+    checkpointId: "inference-0-reference",
+    metric: "accuracy",
+    score: 0.795,
+    n: 400
+  });
+  assert.equal(sftEffectiveStatus(projected.sft, "queued"), "running");
+  const baseline = sftStages(projected.sft, "running").find((stage) => stage.id === "baseline");
+  assert.equal(baseline.status, "completed");
+  assert.match(baseline.detail, /400 selection examples/);
+});
+
+test("duplicate evaluation aliases collapse to one visible summary", () => {
+  const projected = projectAtCursor(RUN, [
+    { ...base, sequenceNumber: 1, type: "training.evaluation.completed", delta: { role: "selection", checkpoint_id: "inference-0", step: 0, metric: "accuracy", score: 0.795, n: 400 } },
+    { ...base, sequenceNumber: 2, type: "sft.checkpoint_evaluation.completed", delta: { role: "selection", checkpoint_id: "inference-0", step: 0, metric: "accuracy", score: 0.795, n: 400 } }
+  ]);
+  assert.equal(projected.sft.evaluations.length, 2);
+  assert.equal(sftDistinctEvaluations(projected.sft).length, 1);
 });
 
 /* ── Paired heldout comparison ─────────────────────────────────────────── */

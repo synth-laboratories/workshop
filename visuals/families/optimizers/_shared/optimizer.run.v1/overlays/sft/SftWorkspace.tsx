@@ -26,10 +26,13 @@ import {
 import { RolloutBrowser, type RolloutGroup, type RolloutRow } from "../../components/workspace/RolloutBrowser.tsx";
 import {
   SFT_TERMINAL_STATUSES,
+  sftAggregateBaseline,
   sftComparison,
   sftCurationFunnel,
+  sftDistinctEvaluations,
   sftDistribution,
   sftHeldoutSummary,
+  sftEffectiveStatus,
   sftStages,
   type SftComparison,
   type SftHeldoutSummary,
@@ -110,6 +113,7 @@ function Panel({
 
 function BaselinePanel({ sft, isCispo }: { sft: SftState; isCispo?: boolean }) {
   const baseline = sft.baseline;
+  const aggregate = sftAggregateBaseline(sft);
   const distribution = useMemo(
     () => sftDistribution((baseline?.seeds ?? []).map((seed) => seed.reward)),
     [baseline]
@@ -120,12 +124,12 @@ function BaselinePanel({ sft, isCispo }: { sft: SftState; isCispo?: boolean }) {
       aside={baseline?.splitDigest ? `split ${shortDigest(baseline.splitDigest)}` : undefined}
       testId={isCispo ? "cispo-baseline" : "sft-baseline"}
     >
-      {!baseline || baseline.seeds.length === 0 ? (
+      {(!baseline || baseline.seeds.length === 0) && !aggregate ? (
         <p className="sv-empty">
           No baseline evaluation has been emitted. The untrained student must be scored on the frozen
           baseline seeds before training, or there is nothing to measure uplift against.
         </p>
-      ) : (
+      ) : baseline && baseline.seeds.length > 0 ? (
         <>
           <dl className="sv-kv">
             <dt>Seeds scored</dt>
@@ -162,7 +166,15 @@ function BaselinePanel({ sft, isCispo }: { sft: SftState; isCispo?: boolean }) {
             </table>
           </details>
         </>
-      )}
+      ) : aggregate ? (
+        <dl className="sv-kv">
+          <dt>Examples scored</dt><dd>{formatMissingNumber(aggregate.n, 0)}</dd>
+          <dt>{aggregate.metric}</dt><dd>{percent(aggregate.score, 1)}</dd>
+          <dt>Policy</dt><dd>unchanged base</dd>
+          <dt>Checkpoint</dt>
+          <dd>{aggregate.checkpointId ? <Identifier value={aggregate.checkpointId} max={28} /> : "—"}</dd>
+        </dl>
+      ) : null}
     </Panel>
   );
 }
@@ -542,8 +554,9 @@ function ComparisonPanel({
 /* ── Selection evidence and provenance ──────────────────────────────────── */
 
 function EvaluationSummaries({ sft }: { sft: SftState }) {
-  const selection = sft.evaluations.filter((evaluation) => String(evaluation.role ?? evaluation.split) !== "heldout");
-  const heldout = sft.evaluations.filter((evaluation) => String(evaluation.role ?? evaluation.split) === "heldout");
+  const evaluations = sftDistinctEvaluations(sft);
+  const selection = evaluations.filter((evaluation) => String(evaluation.role ?? evaluation.split) !== "heldout");
+  const heldout = evaluations.filter((evaluation) => String(evaluation.role ?? evaluation.split) === "heldout");
   if (selection.length === 0 && heldout.length === 0) return null;
   const rows = (list: Array<Record<string, unknown>>) =>
     list.map((evaluation, index) => (
@@ -694,7 +707,8 @@ export function SftWorkspace({
   const sft = projected.sft;
   const cispo = projected.cispo;
   const isCispo = run.algorithmId === "cispo";
-  const status = String(projected.summary.status ?? run.status ?? "");
+  const reportedStatus = String(projected.summary.status ?? run.status ?? "");
+  const status = sft ? sftEffectiveStatus(sft, reportedStatus) : reportedStatus;
   const nested = (projected.summary.summary as Record<string, unknown> | undefined) ?? {};
   const promotedCheckpointId = typeof nested.promotedCheckpointId === "string" ? nested.promotedCheckpointId : undefined;
   const stages = useMemo(
@@ -739,6 +753,7 @@ export function SftWorkspace({
   const chip = statusChip(status, improvementVerdict);
   const terminal = TERMINAL_STATUSES.includes(status);
   const latest = sft.points.at(-1);
+  const aggregateBaseline = sftAggregateBaseline(sft);
   const readyCount = sft.checkpoints.filter((ckpt) => ckpt.ready === true || ckpt.promoted === true).length;
   const costUsd = projected.usage.costUsd;
   const activeStage = stages.find((stage) => stage.status === "active");
@@ -804,7 +819,9 @@ export function SftWorkspace({
       // Phase A only. The heldout base arm is a different split and lives in
       // the comparison panel; conflating them would misreport both.
       label: "Baseline mean",
-      value: formatMissingNumber(sftDistribution((sft.baseline?.seeds ?? []).map((seed) => seed.reward)).mean),
+      value: aggregateBaseline
+        ? percent(aggregateBaseline.score, 1)
+        : formatMissingNumber(sftDistribution((sft.baseline?.seeds ?? []).map((seed) => seed.reward)).mean),
       title: "Unchanged student on the frozen baseline seeds."
     },
     { label: "Step / epoch", value: `${formatMissingNumber(latest?.step, 0)} / ${formatMissingNumber(latest?.epoch, 0)}` },
