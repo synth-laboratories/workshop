@@ -23,6 +23,7 @@ note() { echo "[browser-bundle] $*"; }
 rm -rf "$DEST_RUNTIME"
 mkdir -p "$(dirname "$DEST_RUNTIME")"
 /usr/bin/ditto "$SOURCE_RUNTIME" "$DEST_RUNTIME"
+chmod +x "$DEST_RUNTIME/node/bin/node"
 
 if [[ "$IDENTITY" != "-" ]]; then
   /usr/bin/codesign --force --sign "$IDENTITY" --options runtime --timestamp "$APP"
