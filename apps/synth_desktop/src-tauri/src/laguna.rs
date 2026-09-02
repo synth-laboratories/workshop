@@ -881,10 +881,7 @@ for shard in sorted(shards):
                 if let Some(requirement) =
                     payload.as_ref().and_then(Self::memory_requirement_message)
                 {
-                    anyhow::bail!(
-                        "Laguna model load returned {} ({code}): {requirement}",
-                        status.as_u16()
-                    );
+                    anyhow::bail!(requirement);
                 }
             }
             anyhow::bail!("Laguna model load returned {} ({code})", status.as_u16());
@@ -905,8 +902,6 @@ for shard in sorted(shards):
             .get("required_available_bytes")
             .and_then(Value::as_u64);
         let available = details.get("available_bytes").and_then(Value::as_u64);
-        let weights = details.get("model_weight_bytes").and_then(Value::as_u64);
-        let headroom = details.get("load_headroom_bytes").and_then(Value::as_u64);
         let shortfall = details.get("shortfall_bytes").and_then(Value::as_u64);
         let constraint = details.get("constraint").and_then(Value::as_str);
         let gib = |bytes: u64| bytes as f64 / 1024_f64.powi(3);
@@ -920,21 +915,10 @@ for shard in sorted(shards):
         }
 
         if let Some(needed) = required_available {
-            let mut message = match (weights, headroom) {
-                (Some(weights), Some(headroom)) => format!(
-                    "needs about {:.1} GiB available to load its {:.1} GiB model, including {:.1} GiB safety headroom",
-                    gib(needed),
-                    gib(weights),
-                    gib(headroom)
-                ),
-                _ => format!("needs about {:.1} GiB available to load", gib(needed)),
-            };
-            if let Some(available) = available {
-                message.push_str(&format!("; {:.1} GiB is available", gib(available)));
-            }
+            let mut message = format!("Laguna needs {:.1} GiB available", gib(needed));
             let missing = shortfall.or_else(|| available.map(|value| needed.saturating_sub(value)));
             if let Some(missing) = missing.filter(|value| *value > 0) {
-                message.push_str(&format!("—free at least {:.1} GiB and retry", gib(missing)));
+                message.push_str(&format!(". Free {:.1} GiB and retry", gib(missing)));
             }
             return Some(message);
         }
@@ -2216,12 +2200,7 @@ mod tests {
             .await
             .expect_err("a rejected load must fail the turn preflight")
             .to_string();
-        assert!(error.contains("503 (insufficient_memory)"));
-        assert!(error.contains("24.1 GiB available"));
-        assert!(error.contains("20.1 GiB model"));
-        assert!(error.contains("4.0 GiB safety headroom"));
-        assert!(error.contains("18.2 GiB is available"));
-        assert!(error.contains("free at least 5.9 GiB and retry"));
+        assert!(error.contains("Laguna needs 24.1 GiB available. Free 5.9 GiB and retry"));
         assert!(!error.contains("sensitive daemon detail"));
         assert!(!error.contains(&credential));
         server.await.unwrap();
