@@ -1,5 +1,6 @@
 import type { KeyboardEvent, ReactNode } from "react";
 import { restoreFocusIfLost } from "../runtime/restoreFocus";
+import { MittenFrame } from "./MittenFrame";
 
 export type WorkbenchSidePanelTab = {
 	id: string;
@@ -36,10 +37,12 @@ export function WorkbenchSidePanel({ tabs, activeTabId, onTabChange, onClose }: 
 		const nextTab = primaryTabs[nextIndex];
 		if (!nextTab) return;
 		onTabChange(nextTab.id);
-		const buttons = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+		const tablist = event.currentTarget.closest<HTMLElement>('[role="tablist"]');
+		const buttons = tablist?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
 		buttons?.[nextIndex]?.focus();
 	}
 	return <aside id="workbench-side-panel" className="workbench-side-panel" data-testid="workbench-side-panel" aria-label="Workbench side panel">
+		<MittenFrame thumbSelector=".workbench-side-panel-header .workbench-side-panel-tab-shell.is-selected" bodySelector=".workbench-side-panel-content" />
 		<header className="workbench-side-panel-header">
 			<div className="workbench-side-panel-tabs workbench-side-panel-option-tabs" role="tablist" aria-label="Side-panel views">
 				{primaryTabs.map((item, index) => {
@@ -55,7 +58,7 @@ export function WorkbenchSidePanel({ tabs, activeTabId, onTabChange, onClose }: 
 			</div>
 			<button type="button" className="workbench-side-panel-close" aria-label="Close side panel" onClick={() => {
 				onClose();
-				restoreFocusIfLost('[data-testid="resource-shelf-trigger"]');
+				restoreFocusIfLost('[data-testid="toggle-inference-rail"]');
 			}}>×</button>
 		</header>
 		<div className="workbench-side-panel-content" data-active-tab={activeTab.id} data-document-active={documentActive ? "true" : "false"} role="tabpanel" id="workbench-side-tabpanel" data-testid={`workbench-side-tabpanel-${activeTab.id}`}>

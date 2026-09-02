@@ -43,9 +43,6 @@ type Props = {
 	onStop?: () => void;
 	onAdvanced?: () => void;
 	activityMode?: ToolActivityMode;
-	onActivityModeChange?: (mode: ToolActivityMode) => void;
-	outputsOpen?: boolean;
-	onToggleOutputs?: () => void;
 	showMascot?: boolean;
 	session?: Session;
 	historyState?: TranscriptHistoryState;
@@ -861,17 +858,12 @@ export function ChatTranscript({
 	onStop,
 	onAdvanced,
 	activityMode = "grouped",
-	onActivityModeChange,
-	outputsOpen = false,
-	onToggleOutputs,
 	showMascot = false,
 	session,
 	historyState,
 	onLoadOlder
 }: Props) {
 	const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
-	const [modeMenuOpen, setModeMenuOpen] = useState(false);
-	const modeMenuRef = useRef<HTMLDivElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const followsTailRef = useRef(true);
 	const historyAnchorRef = useRef<{ chatId: string; scrollHeight: number } | null>(null);
@@ -881,8 +873,6 @@ export function ChatTranscript({
 	const [liveAnnouncement, setLiveAnnouncement] = useState("");
 	const activityByMessageId = chat.activityByMessageId ?? {};
 	const artifacts = chat.artifacts ?? [];
-	const outputs = useChatOutputs(chat);
-	const hasResources = outputs.hasResources;
 	const turnTpsLabels = useTurnPerformanceLabels(
 		chat,
 		events,
@@ -981,15 +971,6 @@ export function ChatTranscript({
 		if (announcement) setLiveAnnouncement(announcement);
 	}, [activeLines, running]);
 
-	useEffect(() => {
-		if (!modeMenuOpen) return;
-		const close = (event: MouseEvent) => {
-			if (!modeMenuRef.current?.contains(event.target as Node)) setModeMenuOpen(false);
-		};
-		document.addEventListener("mousedown", close);
-		return () => document.removeEventListener("mousedown", close);
-	}, [modeMenuOpen]);
-
 	const toggleGroup = (id: string) => {
 		setExpandedGroupIds((current) => {
 			const next = new Set(current);
@@ -1053,44 +1034,8 @@ export function ChatTranscript({
 	});
 
 	return (
-		<div className={`chat-transcript${outputsOpen ? " resources-open" : ""}`} data-testid="chat-transcript" data-activity-mode={activityMode}>
+		<div className="chat-transcript" data-testid="chat-transcript" data-activity-mode={activityMode}>
 			{showMascot ? <ManderPresence session={session} chat={chat} running={running} /> : null}
-			<div className="transcript-toolbar" data-testid="transcript-toolbar">
-			<div className="activity-mode-bar" ref={modeMenuRef}>
-				<button
-					type="button"
-					className="activity-mode-trigger"
-					aria-expanded={modeMenuOpen}
-					aria-controls="activity-mode-menu"
-					aria-haspopup="menu"
-					data-testid="activity-mode-menu-trigger"
-					onClick={() => setModeMenuOpen((open) => !open)}
-				>
-					Activity · {activityMode}
-				</button>
-				{modeMenuOpen ? (
-					<div id="activity-mode-menu" className="activity-mode-menu" role="menu" data-testid="activity-mode-menu">
-						{(["detailed", "grouped", "compact"] as ToolActivityMode[]).map((mode) => (
-							<button
-								key={mode}
-								type="button"
-								role="menuitemradio"
-								aria-checked={activityMode === mode}
-								className={activityMode === mode ? "selected" : ""}
-								data-testid={`activity-mode-option-${mode}`}
-								onClick={() => {
-									onActivityModeChange?.(mode);
-									setModeMenuOpen(false);
-								}}
-							>
-								{mode[0]!.toUpperCase() + mode.slice(1)}
-							</button>
-						))}
-					</div>
-				) : null}
-			</div>
-			<button type="button" className={`resource-shelf-trigger${outputsOpen ? " active" : ""}`} onClick={onToggleOutputs} aria-expanded={outputsOpen} aria-controls="workbench-side-panel" data-testid="resource-shelf-trigger"><span aria-hidden>☷</span> Outputs {hasResources ? <strong>{outputs.count}</strong> : null}</button>
-			</div>
 			<div className="sr-only" role="status" aria-live="polite" data-testid="activity-live-region">{liveAnnouncement}</div>
 
 			<div

@@ -1,0 +1,56 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src");
+const read = (rel) => readFileSync(join(root, rel), "utf8");
+
+test("chat, terminal, and right panel each use one soft frame with ergonomic toggles", () => {
+	const titlebar = read("components/AppTitlebar.tsx");
+	const app = read("App.tsx");
+	const routes = read("routes.tsx");
+	const css = read("styles/app.css");
+	const mitten = read("components/MittenFrame.tsx");
+	const terminal = read("components/TerminalPanel.tsx");
+	const sidePanel = read("components/WorkbenchSidePanel.tsx");
+
+	assert.match(titlebar, /titlebar-icon-btn\$\{terminalOpen \? " active" : ""\}/);
+	assert.match(titlebar, /aria-label=\{sidePanelOpen \? "Hide right panel" : "Show right panel"\}/);
+	assert.equal(titlebar.match(/data-testid="toggle-inference-rail"/g)?.length, 1);
+	assert.match(app, /sidePanelOpen=\{c\.showSidePanel\}/);
+	assert.match(app, /const next = !c\.showSidePanel/);
+	assert.match(app, /c\.activeLocalModel \? "inference" : "outputs"/);
+	assert.match(app, /\{c\.view\.kind === "chat" \? null : appTitlebar\}/);
+	assert.match(app, /chatTitlebar=\{c\.view\.kind === "chat" \? appTitlebar : null\}/);
+	assert.doesNotMatch(css, /\.main-pane \{[^}]*(?:border-radius|box-shadow):/);
+	assert.doesNotMatch(css, /\.workbench \{[^}]*border-radius:/);
+	assert.match(css, /\.workbench \{[^}]*background: var\(--color-sidebar\);[^}]*padding: 8px 8px 8px 0;/);
+	assert.match(css, /html:has\(\.chat-pane-frame\) \.sidebar \{[^}]*border-right: 0;/);
+	assert.match(routes, /className="workbench-primary-stack"[\s\S]*?className="chat-pane-frame"[\s\S]*?<MittenFrame[\s\S]*?\{chatTitlebar\}[\s\S]*?<ChatTranscript[\s\S]*?\{bottomPanel\}[\s\S]*?<\/div>/);
+	assert.match(css, /\.workbench-primary-stack \{[^}]*flex-direction: column;[^}]*overflow: hidden/);
+	assert.match(css, /\.chat-pane-frame \{[^}]*overflow: visible;[^}]*border: 0;[^}]*background: transparent;[^}]*box-shadow: none/);
+	assert.match(css, /\.chat-pane-frame > \.titlebar \.titlebar-tabs \{[^}]*padding-top: 0;/);
+	assert.match(css, /\.chat-pane-frame > \.titlebar \.tab \{[^}]*height: var\(--titlebar-height\);/);
+	assert.match(css, /\.chat-pane-frame > \.chat-transcript \{[^}]*margin-top: 0;[^}]*border: 0;[^}]*background: transparent;[^}]*box-shadow: none/);
+	assert.match(css, /\.terminal-panel \{[^}]*background: transparent;[^}]*border: 0;[^}]*overflow: visible/);
+	assert.match(css, /\.terminal-viewport \{[^}]*border: 0;[^}]*border-radius: 0 14px 14px 14px;[^}]*background: transparent;[^}]*box-shadow: none/);
+	assert.match(routes + terminal, /className="terminal-tab-icon"/);
+	assert.match(css, /\.workbench-primary-stack > \.terminal-panel \{[^}]*margin: 0;/);
+	assert.match(css, /\.workbench-side-panel \{[^}]*display: flex[^}]*overflow: visible[^}]*border: 0/);
+	assert.match(css, /\.workbench-side-panel-content \{[^}]*margin-top: 0;[^}]*border: 0;[^}]*border-radius: 14px;[^}]*background: transparent;[^}]*box-shadow: none/);
+	assert.match(css, /\.mitten-frame-svg > path \{[^}]*fill: #fff;[^}]*stroke: var\(--color-border-strong/);
+	assert.match(css, /workbench-side-panel-option-tabs \.workbench-side-panel-tab-shell\.is-selected/);
+	assert.equal(mitten.match(/<svg\b/g)?.length, 1);
+	assert.equal(mitten.match(/<path\b/g)?.length, 1);
+	assert.match(mitten, /One SVG path owns the complete pane silhouette/);
+	assert.match(mitten, /const first = start <= left \+ 1\.5/);
+	assert.match(mitten, /const leftJoin = first \? 0/);
+	assert.match(mitten, /const rightJoin =/);
+	assert.match(terminal, /<MittenFrame thumbSelector="\.terminal-head \.terminal-tab\.is-active"/);
+	assert.match(sidePanel, /<MittenFrame thumbSelector="\.workbench-side-panel-header \.workbench-side-panel-tab-shell\.is-selected"/);
+	assert.doesNotMatch(css, /data:image\/svg\+xml/);
+	assert.match(css, /\.workbench\.with-side-panel > \.pane-resize-handle::after \{[^}]*background: transparent;/);
+	assert.match(css, /\.titlebar-icon-btn\.active/);
+});

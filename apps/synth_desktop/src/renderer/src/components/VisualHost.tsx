@@ -1362,7 +1362,6 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		throw new Error("injected renderer crash");
 	}
 	const resolvedProps = selected.projection ?? { ...synchronouslyResolved.props, ...traceResolution.props };
-	const degradedConnection = ["reconnecting", "failed", "interrupted"].includes(connectionState);
 	const boundEvents = Array.isArray(optimizerPayload?.events) ? optimizerPayload.events as unknown[] : [];
 	// Readiness describes the run, not the renderer's hydration. A
 	// projection-only visual proves its candidates and rollouts from the
@@ -1422,7 +1421,6 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					Showing last known good projection while live rendering recovers.
 				</p>
 			) : null}
-			{degradedConnection ? <p className="visual-connection-state" role="status" data-testid="visual-connection-state">Visual connection {connectionState}.</p> : null}
 			<Shell
 				{...(resolvedProps as ShellProps)}
 				title={artifact.title}

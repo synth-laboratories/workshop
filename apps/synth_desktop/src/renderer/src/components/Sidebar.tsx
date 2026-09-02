@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { type LandingState } from "../types/landing";
 import { ModelDownloadBar } from "./ModelDownloadBar";
 import { LocalModelResidency } from "./LocalModelResidency";
-import type { LagunaStatus } from "../bridge";
+import { WhisperResidency } from "./WhisperResidency";
+import type { LagunaStatus, WhisperRuntimeStatus } from "../bridge";
 import { type AccountViewModel } from "../runtime/accountView";
 import { ConversationContextMenu } from "./GeneralPreferencesSettings";
 import { PaneResizeHandle } from "./PaneResizeHandle";
@@ -32,6 +33,7 @@ type CodexUsageSnapshot = {
 type Props = {
 	state: LandingState;
 	lagunaStatus?: LagunaStatus | null;
+	whisperStatus?: WhisperRuntimeStatus | null;
 	activeChatId?: string | null;
 	inventoryActive?: boolean;
 	inferenceActive?: boolean;
@@ -234,6 +236,7 @@ const PLUGIN_NAV_ICONS: Record<PluginNavEntry["id"], () => ReactElement> = {
 export function Sidebar({
 	state,
 	lagunaStatus = null,
+	whisperStatus = null,
 	activeChatId = null,
 	inventoryActive = false,
 	inferenceActive = false,
@@ -649,6 +652,7 @@ export function Sidebar({
 			</div>
 
 			<div className="sidebar-footer">
+				<WhisperResidency status={whisperStatus ?? null} />
 				<LocalModelResidency status={lagunaStatus} onFreeMemory={onFreeLocalMemory} />
 				<ModelDownloadBar state={state} onPauseToggle={onPauseToggle} />
 				<div className="account-footer" ref={accountMenuRef}>

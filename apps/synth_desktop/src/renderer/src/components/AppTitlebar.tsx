@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { SynthLogo } from "./SynthLogo";
 import { ProviderMark } from "./ProviderMark";
 import { truncate } from "../runtime/codexTurn";
-import type { SidePanelTab } from "../hooks/useShellLayout";
 
 function IconSidePanel() {
 	return (
@@ -53,7 +52,7 @@ export type AppTitlebarProps = {
 	activeLocalModel: boolean;
 	terminalOpen: boolean;
 	sidePanelOpen: boolean;
-	sidePanelTab: SidePanelTab;
+	outputCount?: number;
 	reserveNativeControls?: boolean;
 	brand?: "synth" | "openai";
 	showTabIcon?: boolean;
@@ -79,7 +78,7 @@ export function AppTitlebar({
 	activeLocalModel,
 	terminalOpen,
 	sidePanelOpen,
-	sidePanelTab,
+	outputCount = 0,
 	reserveNativeControls = false,
 	brand = "synth",
 	showTabIcon = true,
@@ -179,31 +178,27 @@ export function AppTitlebar({
 			<div className="titlebar-actions">
 				<button
 					type="button"
-					className="titlebar-icon-btn"
+					className={`titlebar-icon-btn${terminalOpen ? " active" : ""}`}
 					aria-label={terminalOpen ? "Hide terminal" : "Show terminal"}
+					aria-pressed={terminalOpen}
 					title="Toggle terminal (⌘J)"
 					data-testid="toggle-terminal"
 					onClick={onToggleTerminal}
 				>
 					<IconTerminal />
 				</button>
-				{activeLocalModel ? (
-					<button
-						type="button"
-						className={`titlebar-icon-btn${sidePanelOpen && sidePanelTab === "inference" ? " active" : ""}`}
-						aria-label={
-							sidePanelOpen && sidePanelTab === "inference"
-								? "Hide inference panel"
-								: "Show inference panel"
-						}
-						aria-pressed={sidePanelOpen && sidePanelTab === "inference"}
-						title="Local inference panel"
-						data-testid="toggle-inference-rail"
-						onClick={onToggleInference}
-					>
-						<IconSidePanel />
-					</button>
-				) : null}
+				<button
+					type="button"
+					className={`titlebar-icon-btn${sidePanelOpen ? " active" : ""}`}
+					aria-label={sidePanelOpen ? "Hide right panel" : "Show right panel"}
+					aria-pressed={sidePanelOpen}
+					title="Toggle right panel"
+					data-testid="toggle-inference-rail"
+					onClick={onToggleInference}
+				>
+					<IconSidePanel />
+					{outputCount > 0 ? <span className="titlebar-panel-count" aria-label={`${outputCount} outputs`}>{outputCount}</span> : null}
+				</button>
 				<span
 					className="titlebar-version"
 					data-testid="app-version"

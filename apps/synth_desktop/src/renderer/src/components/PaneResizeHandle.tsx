@@ -6,6 +6,7 @@ type Props = {
 	value: number;
 	onChange: (value: number) => void;
 	minPrimary?: number;
+	maxPrimary?: number;
 	minSecondary?: number;
 	ariaLabel?: string;
 	direction?: PaneResizeDirection;
@@ -77,6 +78,7 @@ export function PaneResizeHandle({
 	value,
 	onChange,
 	minPrimary = 360,
+	maxPrimary,
 	minSecondary = 340,
 	ariaLabel = "Resize container inspector",
 	direction = "output",
@@ -121,8 +123,9 @@ export function PaneResizeHandle({
 		}
 		const parent = target.parentElement;
 		const floor = direction === "primary" ? minPrimary : minSecondary;
-		return parent ? Math.max(floor, parent.getBoundingClientRect().width - (direction === "primary" ? minSecondary : minPrimary)) : floor;
-	}, [direction, minPrimary, minSecondary]);
+		const available = parent ? Math.max(floor, parent.getBoundingClientRect().width - (direction === "primary" ? minSecondary : minPrimary)) : floor;
+		return direction === "primary" && maxPrimary != null ? Math.min(maxPrimary, available) : available;
+	}, [direction, maxPrimary, minPrimary, minSecondary]);
 
 	const persistRealized = useCallback((target: HTMLElement) => {
 		if (target.getClientRects().length === 0 || getComputedStyle(target).display === "none") return;

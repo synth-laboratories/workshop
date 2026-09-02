@@ -12,7 +12,7 @@ import { publicError } from "./runtime/publicError";
 import type { ArtifactRef, LandingState, LocalChat } from "./types/landing";
 import type { AccountViewModel } from "./runtime/accountView";
 import type { DeviceUsageSummary } from "./components/UsageSheet";
-import type { DesktopPreferences, ToolActivityMode } from "./preferences";
+import type { DesktopPreferences } from "./preferences";
 import { applyPreferencesToDocument } from "./preferences";
 import type { LagunaStatus, ModelPerformanceSummary, PluginPermission, PluginStatus, SynthAccountSummary, SynthBackendSettings } from "./bridge";
 import type { LagunaPolicy } from "./bridge/types";
@@ -37,6 +37,7 @@ import { VisualsPage } from "./components/VisualsPage";
 import { ReportsPage } from "./components/ReportsPage";
 import { ExperimentsPage } from "./experiments/ExperimentsPage";
 import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
+import { MittenFrame } from "./components/MittenFrame";
 import type { SidePanelTab } from "./hooks/useShellLayout";
 import { ResponsesTracePanel } from "./components/ResponsesTracePanel";
 import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
@@ -122,6 +123,7 @@ function isCloudDeskOrigin(view: MainView): boolean {
 
 export type MainRoutesProps = {
 	view: MainView;
+	chatTitlebar?: ReactNode;
 	computerUse: ComputerUseView;
 	computerUseBusy: boolean;
 	onInstallComputerUse: () => void;
@@ -145,7 +147,6 @@ export type MainRoutesProps = {
 	activeHostedInferencePhase: string | null;
 	activeHostedInference: HostedInferenceLifecycle | null;
 	activeLocalModel: boolean;
-	activeSessionId: string | null;
 	openArtifact: ArtifactRef | null;
 	openArtifactId: string | null;
 	openContainer: ContainerDeployment | null;
@@ -194,7 +195,7 @@ export type MainRoutesProps = {
 	repairOpenContainer: () => Promise<void>;
 	restartOpenContainer: () => Promise<void>;
 	controlActive: (kind: "approve" | "reject" | "cancel", payload?: Record<string, unknown>) => Promise<void>;
-	onActivityModeChange: (mode: ToolActivityMode) => void;
+	bottomPanel?: ReactNode;
 };
 
 /**
@@ -204,6 +205,7 @@ export type MainRoutesProps = {
 export function MainRoutes(props: MainRoutesProps): ReactNode {
 	const {
 		view,
+		chatTitlebar,
 		setView,
 		computerUse,
 		computerUseBusy,
@@ -267,8 +269,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		repairOpenContainer,
 		restartOpenContainer,
 		controlActive,
-		onActivityModeChange,
-		activeSessionId,
+		bottomPanel,
 		transcriptHistoryBySession,
 		loadOlderTranscript
 	} = props;
@@ -410,6 +411,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 	const originStackRef = useRef<OriginFrame[]>([]);
 	const restoringOriginRef = useRef(false);
 	const previousViewRef = useRef(view);
+	const recentChatIdRef = useRef<string | null>(view.kind === "chat" ? view.chatId : activeChat?.id ?? null);
+	if (view.kind === "chat") recentChatIdRef.current = view.chatId;
 	if (previousViewRef.current.kind !== view.kind) {
 		if (restoringOriginRef.current) {
 			restoringOriginRef.current = false;
@@ -452,8 +455,18 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		}
 		setView({ kind: "landing" });
 	};
-	const leaveReports = () => {
-		leaveInventory(inventoryOriginRef.current);
+	const leavePluginToRecentChat = () => {
+		originStackRef.current = [];
+		inventoryOriginRef.current = null;
+		const recentChatId = recentChatIdRef.current
+			?? activeChat?.id
+			?? sessions.find(sessionIsLocalChat)?.id
+			?? null;
+		if (recentChatId) {
+			openChat(recentChatId);
+			return;
+		}
+		setView({ kind: "landing" });
 	};
 	// An open artifact is durable navigation state, but it is only rendered on
 	// surfaces that actually own or inspect visuals. Independent destinations
@@ -567,44 +580,44 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					style={{ "--visual-pane-width": `${inventoryContainerWidth}px`, "--container-pane-width": `${inventoryContainerWidth}px`, "--side-panel-width": `${sidePanelWidth}px` } as CSSProperties}
 				>
 					{chatRoute && activeChat ? (
-					<ChatTranscript
-						chat={activeChat}
-						events={eventsBySession[activeChat.id] ?? []}
-						openArtifactId={openArtifactId}
-						onOpenArtifact={openArtifactInDock}
-						openContainerId={openContainer?.id ?? null}
-						onOpenContainer={(id) => void toggleContainer(id)}
-						onApprove={(approvalId, decision) => void controlActive("approve", { approvalId, decision })}
-						onAlwaysAllow={(approvalId) =>
-							void controlActive("approve", { approvalId, decision: "always" })
-						}
-						onReject={(approvalId) => void controlActive("reject", { approvalId })}
-						running={activeChatRunning}
-						warmingUp={activeChatWarmingUp}
-						hostedInferencePhase={activeHostedInferencePhase}
-						hostedInference={activeHostedInference}
-						localInferencePhase={activeChatSession?.target.kind === "local"
-							? inferenceMonitor.snapshot?.active?.phase === "loading" || inferenceMonitor.snapshot?.active?.phase === "prefill"
-								? inferenceMonitor.snapshot.active.phase
-								: laguna?.phase === "loading" ? "loading" : null
-							: null}
-						onAdvanced={() => {
-							setSidePanelTab("trace");
-							setSidePanelOpen(true);
-						}}
-						activityMode={preferences.toolActivity.mode}
-						onActivityModeChange={onActivityModeChange}
-						outputsOpen={showSidePanel && sidePanelTab === "outputs"}
-						onToggleOutputs={() => {
-							const next = !(showSidePanel && sidePanelTab === "outputs");
-							setSidePanelTab("outputs");
-							setSidePanelOpen(next);
-						}}
-						showMascot={preferences.appearance.showMascot}
-						session={activeChatSession}
-						historyState={transcriptHistoryBySession[activeChat.id]}
-						onLoadOlder={loadOlderTranscript}
-					/>
+						<div className="workbench-primary-stack">
+						<section className="chat-pane-frame" aria-label="Chat pane">
+							<MittenFrame thumbSelector=".titlebar .tab-active" bodySelector=".chat-transcript" />
+							{chatTitlebar}
+							<ChatTranscript
+								chat={activeChat}
+								events={eventsBySession[activeChat.id] ?? []}
+								openArtifactId={openArtifactId}
+								onOpenArtifact={openArtifactInDock}
+								openContainerId={openContainer?.id ?? null}
+								onOpenContainer={(id) => void toggleContainer(id)}
+								onApprove={(approvalId, decision) => void controlActive("approve", { approvalId, decision })}
+								onAlwaysAllow={(approvalId) =>
+									void controlActive("approve", { approvalId, decision: "always" })
+								}
+								onReject={(approvalId) => void controlActive("reject", { approvalId })}
+								running={activeChatRunning}
+								warmingUp={activeChatWarmingUp}
+								hostedInferencePhase={activeHostedInferencePhase}
+								hostedInference={activeHostedInference}
+								localInferencePhase={activeChatSession?.target.kind === "local"
+									? inferenceMonitor.snapshot?.active?.phase === "loading" || inferenceMonitor.snapshot?.active?.phase === "prefill"
+										? inferenceMonitor.snapshot.active.phase
+										: laguna?.phase === "loading" ? "loading" : null
+									: null}
+								onAdvanced={() => {
+									setSidePanelTab("trace");
+									setSidePanelOpen(true);
+								}}
+								activityMode={preferences.toolActivity.mode}
+								showMascot={preferences.appearance.showMascot}
+								session={activeChatSession}
+								historyState={transcriptHistoryBySession[activeChat.id]}
+								onLoadOlder={loadOlderTranscript}
+							/>
+						</section>
+							{bottomPanel}
+						</div>
 					) : null}
 					{view.kind === "visuals" ? (
 						<VisualsPage
@@ -615,40 +628,13 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 								openChat(sessionId);
 							}}
 							onOpenReport={(reportId) => setView({ kind: "reports", reportId })}
-							onBack={() => leaveInventory(inventoryOriginRef.current)}
-							onCreate={() => {
-								void (async () => {
-									if (!bridges.visuals) {
-										showToast("Visual registry requires Synth Desktop");
-										return;
-									}
-									try {
-										// The registry's first template is the chart template, whose
-										// content is intentionally mandatory.  A generic “New visual”
-										// action must create an immediately valid draft instead of
-										// presenting that validation error before the user can choose a
-										// template or add content.
-										const templateId = "blank.canvas.v1";
-										await bridges.visuals.getTemplate(templateId);
-										const visual = await bridges.visuals.create({
-											templateId,
-											title: "New visual",
-											bindings: {},
-											sessionId: activeSessionId ?? undefined
-										});
-										openVisualRecord(visual);
-										showToast(`Created visual · ${visual.title}`);
-									} catch (reason) {
-										showToast(publicError(reason));
-									}
-								})();
-							}}
+							onBack={leavePluginToRecentChat}
 						/>
 					) : null}
 					{view.kind === "experiments" ? (
 						<ExperimentsPage
 							initialId={view.experimentId}
-							onBack={() => leaveInventory(inventoryOriginRef.current)}
+							onBack={leavePluginToRecentChat}
 							onOpenReport={(reportId) => setView({ kind: "reports", reportId })}
 							onSectionChange={(section) => setExperimentSectionOwnsVisualPane(section === "experiments")}
 						/>
@@ -675,7 +661,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 									}
 								})();
 							}}
-							onBack={() => leaveInventory(inventoryOriginRef.current)}
+							onBack={leavePluginToRecentChat}
 						/>
 					) : null}
 					{view.kind === "inventory" ? (
@@ -683,7 +669,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							onOpenVisual={openVisualRecord}
 							onOpenContainer={(id) => void toggleContainer(id)}
 							openContainerId={openContainer?.id ?? null}
-							onBack={() => leaveInventory(inventoryOriginRef.current)}
+							onBack={leavePluginToRecentChat}
 						/>
 					) : null}
 					{view.kind === "inference" ? (
@@ -694,7 +680,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							openContainerId={openContainer?.id ?? null}
 							sessions={sessions}
 							activeSessionId={activeChatSession?.id ?? null}
-							onBack={() => leaveInventory(inventoryOriginRef.current)}
+							onBack={leavePluginToRecentChat}
 						/>
 					) : null}
 					{view.kind === "plugins" ? (
@@ -703,11 +689,11 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							pluginStatuses={pluginStatuses}
 							onPreferencesChange={setPreferences}
 							onOpenPlugin={(id) => setView({ kind: id === "inventory" ? "inventory" : id === "inference" ? "inference" : id === "computer-use" ? "computer-use" : id === "reports" ? "reports" : id })}
-							onBack={() => leaveInventory(inventoryOriginRef.current)}
+							onBack={leavePluginToRecentChat}
 						/>
 					) : null}
 					{view.kind === "reports" ? (
-						<ReportsPage initialReportId={view.reportId} onBack={leaveReports} />
+						<ReportsPage initialReportId={view.reportId} onBack={leavePluginToRecentChat} />
 					) : null}
 					{view.kind === "settings" && openArtifact ? settingsPage : null}
 					{visualPaneVisible && visualPaneContent ? (
@@ -873,6 +859,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					) : null}
 				</div>
 			) : null}
+
+			{!chatRoute ? bottomPanel : null}
 
 			{view.kind === "computer-use" ? (
 				<div className="inventory-workbench">

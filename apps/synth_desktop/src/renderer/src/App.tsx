@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { formatTps } from "./components/InferencePanel";
 import { AppTitlebar, type TabCopyItem } from "./components/AppTitlebar";
@@ -9,12 +9,12 @@ import { ManderLabGate } from "./components/mander";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { useAppController } from "./hooks/useAppController";
+import { useChatOutputs } from "./hooks/useChatOutputs";
 import {
 	archiveConversation,
 	pinConversation,
 	renameConversation,
-	promptsForConversation,
-	setToolActivityMode
+	promptsForConversation
 } from "./preferences";
 import { publicError } from "./runtime/publicError";
 import { conversationMarkdown } from "./runtime/chatCopy";
@@ -22,10 +22,17 @@ import { copyText } from "./runtime/clipboard";
 import { eventsToMessages } from "./runtime/sessionView";
 import { MainRoutes } from "./routes";
 import { bridges } from "./runtime/desktopBridge";
+import type { WhisperRuntimeStatus } from "./bridge";
 
 /** Shell + wiring only — orchestration lives in useAppController / ComposerDock. */
 export default function App() {
 	const c = useAppController();
+	const activeChatOutputs = useChatOutputs(c.activeChat ?? { id: "", title: "", messages: [] });
+	const [whisperStatus, setWhisperStatus] = useState<WhisperRuntimeStatus | null>(null);
+	useEffect(() => {
+		void bridges.whisper?.getRuntimeStatus?.().then(setWhisperStatus).catch(() => undefined);
+		return bridges.whisper?.onRuntimeStatus?.(setWhisperStatus);
+	}, []);
 	const tabCopyItems = useMemo<TabCopyItem[]>(() => {
 		if (c.view.kind !== "chat" || !c.activeSessionId) return [];
 		const messages = eventsToMessages(c.eventsBySession[c.activeSessionId] ?? []);
@@ -58,6 +65,44 @@ export default function App() {
 		return () => unlisten?.();
 	}, [c.preferences, c.setPreferences]);
 
+	const appTitlebar = (
+		<AppTitlebar
+			tabLabel={c.view.kind === "landing" ? "New conversation" : c.tabLabel}
+			appVersion={c.appVersion}
+			activeLocalModel={Boolean(c.activeLocalModel)}
+			reserveNativeControls={c.view.kind === "settings" || !c.sidebarVisible}
+			brand={c.view.kind === "settings" && c.view.section === "models" ? "openai" : "synth"}
+			showTabIcon={c.view.kind !== "landing"}
+			showCloseTab={c.view.kind !== "landing"}
+			copyItems={tabCopyItems}
+			onCopyItem={async (item) => {
+				try {
+					await copyText(item.value);
+					c.showToast(item.successMessage);
+				} catch (reason) {
+					c.showToast(`Copy failed: ${publicError(reason)}`);
+				}
+			}}
+			terminalOpen={c.terminalOpen}
+			sidePanelOpen={c.showSidePanel}
+			outputCount={activeChatOutputs.count}
+			onCloseTab={() => {
+				c.setView({ kind: "landing" });
+				c.showToast("Back to landing");
+			}}
+			onNewConversation={c.onNewConversation}
+			onToggleTerminal={() => {
+				c.persistLayoutSnapshot({ bottomPanelVisible: !c.terminalOpen });
+			}}
+			onToggleInference={() => {
+				const next = !c.showSidePanel;
+				if (next) c.setSidePanelTab(c.activeLocalModel ? "inference" : "outputs");
+				c.setSidePanelOpen(next);
+				window.localStorage.setItem("synth.inferenceRailOpen", next ? "1" : "0");
+			}}
+		/>
+	);
+
 	return (
 		<div className="app-shell">
 			<ManderLabGate />
@@ -66,6 +111,7 @@ export default function App() {
 					<Sidebar
 						state={c.state}
 						lagunaStatus={c.laguna}
+						whisperStatus={whisperStatus}
 						activeChatId={c.view.kind === "chat" ? c.view.chatId : null}
 						inventoryActive={c.view.kind === "inventory"}
 						inferenceActive={c.view.kind === "inference"}
@@ -151,41 +197,7 @@ export default function App() {
 
 				<main className="main-pane">
 					<ComposerLayoutProvider>
-					<AppTitlebar
-						tabLabel={c.view.kind === "landing" ? "New conversation" : c.tabLabel}
-						appVersion={c.appVersion}
-						activeLocalModel={Boolean(c.activeLocalModel)}
-						reserveNativeControls={c.view.kind === "settings" || !c.sidebarVisible}
-						brand={c.view.kind === "settings" && c.view.section === "models" ? "openai" : "synth"}
-						showTabIcon={c.view.kind !== "landing"}
-						showCloseTab={c.view.kind !== "landing"}
-						copyItems={tabCopyItems}
-						onCopyItem={async (item) => {
-							try {
-								await copyText(item.value);
-								c.showToast(item.successMessage);
-							} catch (reason) {
-								c.showToast(`Copy failed: ${publicError(reason)}`);
-							}
-						}}
-						terminalOpen={c.terminalOpen}
-						sidePanelOpen={c.sidePanelOpen}
-						sidePanelTab={c.sidePanelTab}
-						onCloseTab={() => {
-							c.setView({ kind: "landing" });
-							c.showToast("Back to landing");
-						}}
-						onNewConversation={c.onNewConversation}
-						onToggleTerminal={() => {
-							c.persistLayoutSnapshot({ bottomPanelVisible: !c.terminalOpen });
-						}}
-						onToggleInference={() => {
-							const next = !(c.sidePanelOpen && c.sidePanelTab === "inference");
-							c.setSidePanelTab("inference");
-							c.setSidePanelOpen(next);
-							window.localStorage.setItem("synth.inferenceRailOpen", next ? "1" : "0");
-						}}
-					/>
+					{c.view.kind === "chat" ? null : appTitlebar}
 
 					{c.bootError ? (
 						<div className="boot-error" role="alert">
@@ -194,6 +206,7 @@ export default function App() {
 					) : null}
 
 					<MainRoutes
+						chatTitlebar={c.view.kind === "chat" ? appTitlebar : null}
 						view={c.view}
 						setView={c.setView}
 						computerUse={c.computerUse}
@@ -220,7 +233,6 @@ export default function App() {
 						activeHostedInferencePhase={c.activeHostedInferencePhase}
 						activeHostedInference={c.activeHostedInference}
 						activeLocalModel={Boolean(c.activeLocalModel)}
-						activeSessionId={c.activeSessionId}
 						openArtifact={c.openArtifact}
 						openArtifactId={c.openArtifactId}
 						openContainer={c.openContainer}
@@ -281,7 +293,20 @@ export default function App() {
 						repairOpenContainer={c.repairOpenContainer}
 						restartOpenContainer={c.restartOpenContainer}
 						controlActive={c.controlActive}
-						onActivityModeChange={(mode) => c.setPreferences(setToolActivityMode(mode))}
+						bottomPanel={c.terminalOpen ? (
+							<TerminalPanel
+								open
+								workspaceId={c.terminalWorkspaceId}
+								workspaceRoot={c.terminalWorkspaceRoot}
+								height={c.preferences.layout.last.bottomPanelHeight}
+								fontFamily={c.preferences.appearance.terminalFontFamily}
+								fontSize={c.preferences.appearance.terminalFontSize}
+								onOpenChange={(open) => {
+									c.persistLayoutSnapshot({ bottomPanelVisible: open });
+								}}
+								onHeightChange={(height) => c.persistLayoutSnapshot({ bottomPanelHeight: height })}
+							/>
+						) : null}
 					/>
 
 					<ComposerDock
@@ -334,18 +359,6 @@ export default function App() {
 						}}
 					/>
 
-					<TerminalPanel
-						open={c.terminalOpen}
-						workspaceId={c.terminalWorkspaceId}
-						workspaceRoot={c.terminalWorkspaceRoot}
-						height={c.preferences.layout.last.bottomPanelHeight}
-						fontFamily={c.preferences.appearance.terminalFontFamily}
-						fontSize={c.preferences.appearance.terminalFontSize}
-						onOpenChange={(open) => {
-							c.persistLayoutSnapshot({ bottomPanelVisible: open });
-						}}
-						onHeightChange={(height) => c.persistLayoutSnapshot({ bottomPanelHeight: height })}
-					/>
 					</ComposerLayoutProvider>
 				</main>
 			</div>

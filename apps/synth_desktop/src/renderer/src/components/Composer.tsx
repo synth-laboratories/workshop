@@ -27,6 +27,7 @@ import type { Skill } from "../runtime/skills";
 import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
 import type { LagunaPolicy } from "../bridge/types";
+import { compactModelLabel } from "../runtime/modelPresentation";
 import { orderedLagunaPolicies, policyLabel } from "../runtime/lagunaPolicies";
 import { bridges } from "../runtime/desktopBridge";
 import type { PaidComputeAutoApprovalSettings } from "../generated/protocol";
@@ -572,6 +573,7 @@ function ModelMenu({
 		policy.isBase ? lagunaAdapter.selectedId === null : policy.modelId === lagunaAdapter.selectedId
 	);
 	const modelLabel = modelChipLabel(state, selectedLagunaPolicy);
+	const shortModelLabel = compactModelLabel(modelLabel);
 	const modelReady = !(
 		state.selectedTargetId === "local-laguna" && state.model.status === "not_installed"
 	);
@@ -617,6 +619,7 @@ function ModelMenu({
 				data-testid="composer-model"
 			>
 				<span className="model-chip-label">{modelLabel}</span>
+				<span className="model-chip-short-label" aria-hidden>{shortModelLabel}</span>
 				<IconChevron />
 			</button>
 			{open ? (
@@ -1462,15 +1465,6 @@ export function Composer({
 					<span><strong>{state.codexOauthStatus?.state === "expired" ? "ChatGPT authorization expired" : state.codexOauthStatus?.state === "refresh_failed" ? "ChatGPT re-sync failed" : "ChatGPT subscription required"}</strong> {state.codexOauthStatus?.guidance ?? "Connect it under Settings → Models before sending a message."}</span>
 					<button type="button" onClick={onConfigureModels} data-testid="configure-codex-oauth">{state.codexOauthStatus?.action === "reauthenticate" || state.codexOauthStatus?.action === "retry" ? "Re-sync ChatGPT" : "Open Models settings"}</button>
 				</div>
-			) : null}
-			{whisperRuntime?.phase !== "unloaded" ? (
-				<p className={`composer-whisper-status is-${whisperRuntime?.phase}`} role="status" data-testid="composer-whisper-status">
-					<span aria-hidden />
-					{whisperRuntime?.phase === "warming" ? "Warming Whisper…"
-						: whisperRuntime?.phase === "transcribing" ? "Transcribing…"
-							: whisperRuntime?.phase === "ready" ? "Whisper ready · releases after 15 min idle"
-								: "Whisper needs attention"}
-				</p>
 			) : null}
 			<div className={`composer${enabled ? "" : " is-disabled"}${imageDragActive ? " is-image-drag-active" : ""}`} data-testid="composer" data-enter-action={enterAction}>
 				{imageDragActive ? <div className="composer-image-drop-target" aria-hidden>Drop screenshots here</div> : null}

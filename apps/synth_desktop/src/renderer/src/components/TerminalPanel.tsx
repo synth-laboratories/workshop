@@ -7,6 +7,7 @@ import type { TerminalEvent, TerminalInfo } from "../bridge";
 import { bridges } from "../runtime/desktopBridge";
 import { publicError } from "../runtime/publicError";
 import { restoreFocusIfLost } from "../runtime/restoreFocus";
+import { MittenFrame } from "./MittenFrame";
 
 type Props = {
 	open: boolean;
@@ -17,6 +18,31 @@ type Props = {
 	fontSize: number;
 	onOpenChange(open: boolean): void;
 	onHeightChange(height: number): void;
+};
+
+const TERMINAL_THEME = {
+	background: "#ffffff",
+	foreground: "#2d2a27",
+	cursor: "#e45b2b",
+	cursorAccent: "#ffffff",
+	selectionBackground: "#f2d7c8",
+	selectionInactiveBackground: "#f7e9e1",
+	black: "#2d2a27",
+	brightBlack: "#7b746d",
+	red: "#b74732",
+	brightRed: "#d9654d",
+	green: "#26835f",
+	brightGreen: "#3a9a73",
+	yellow: "#95651d",
+	brightYellow: "#b37d2c",
+	blue: "#a85f39",
+	brightBlue: "#c7794d",
+	magenta: "#9b5147",
+	brightMagenta: "#bd6a5c",
+	cyan: "#8b674d",
+	brightCyan: "#a77e5d",
+	white: "#ede9e5",
+	brightWhite: "#ffffff"
 };
 
 function decode(value: string): Uint8Array {
@@ -83,37 +109,22 @@ export function TerminalPanel({
 			fontFamily,
 			fontSize,
 			lineHeight: 1.18,
-			theme: {
-				background: "#111318",
-				foreground: "#dce2ea",
-				cursor: "#ff8656",
-				cursorAccent: "#111318",
-				selectionBackground: "#33455dcc",
-				selectionInactiveBackground: "#2a354480",
-				black: "#252a33",
-				brightBlack: "#667080",
-				red: "#ef7d8e",
-				brightRed: "#ff9aa8",
-				green: "#78d19c",
-				brightGreen: "#9ae7b5",
-				yellow: "#e5bd78",
-				brightYellow: "#f5d899",
-				blue: "#82a9ff",
-				brightBlue: "#acc8ff",
-				magenta: "#c39bff",
-				brightMagenta: "#d9bdff",
-				cyan: "#70ced5",
-				brightCyan: "#9ce5eb",
-				white: "#dce2ea",
-				brightWhite: "#ffffff"
-			}
+			theme: TERMINAL_THEME
 		});
 		const addon = new FitAddon(); terminal.loadAddon(addon); terminal.open(viewport.current); addon.fit();
 		xterm.current = terminal; fit.current = addon; seen.current = new Set();
 		const apply = (event: TerminalEvent) => {
 			if (event.terminalId !== activeId || seen.current.has(event.sequence)) return;
 			seen.current.add(event.sequence);
-			if (event.dataBase64) { setConnection("live"); terminal.write(decode(event.dataBase64)); }
+			if (event.dataBase64) {
+				setConnection("live");
+				terminal.write(decode(event.dataBase64), () => {
+					// Shell snapshots may include OSC palette values captured under the
+					// previous dark terminal. The pane owns its palette, so re-assert it
+					// after xterm has parsed each chunk.
+					terminal.options.theme = TERMINAL_THEME;
+				});
+			}
 			if (event.kind === "exit") {
 				setTerminals((current) => current.map((item) => item.id === activeId
 					? { ...item, status: "exited", exitCode: event.exitCode }
@@ -155,6 +166,7 @@ export function TerminalPanel({
 
 	if (!open) return null;
 	return <section className="terminal-panel" aria-label="Terminal panel" data-testid="terminal-panel" data-status={activeTerminal?.status ?? "idle"} data-connection={connection}>
+		<MittenFrame thumbSelector=".terminal-head .terminal-tab.is-active" bodySelector=".terminal-viewport, .terminal-empty" />
 		<div
 			className="terminal-resize-handle"
 			role="separator"
@@ -192,7 +204,7 @@ export function TerminalPanel({
 				<span className="terminal-session-count">{runningCount || terminals.length}</span>
 			</div>
 			<div className="terminal-tabs" role="tablist" aria-label="Terminal sessions">
-				{terminals.map((item) => <button type="button" role="tab" aria-selected={item.id === activeId} className={`terminal-tab${item.id === activeId ? " is-active" : ""}`} key={item.id} onClick={() => setActiveId(item.id)} title={`${item.title} · ${item.status}`}><span className={`terminal-dot ${item.status}`} /><span className="terminal-tab-title">{item.title}</span></button>)}
+				{terminals.map((item) => <button type="button" role="tab" aria-selected={item.id === activeId} className={`terminal-tab${item.id === activeId ? " is-active" : ""}`} key={item.id} onClick={() => setActiveId(item.id)} title={`${item.title} · ${item.status}`}><span className="terminal-tab-icon" aria-hidden>{">_"}</span><span className={`terminal-dot ${item.status}`} /><span className="terminal-tab-title">{item.title}</span></button>)}
 			</div>
 			<div className="terminal-actions" aria-label="Terminal controls">
 				<button type="button" className="terminal-action" aria-label="New terminal" title="New terminal (⌘⇧T)" onClick={() => void createTerminal()}><span aria-hidden>+</span></button>

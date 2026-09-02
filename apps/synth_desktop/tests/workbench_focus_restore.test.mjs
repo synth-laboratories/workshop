@@ -7,14 +7,14 @@ import test from "node:test";
 const root = join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src");
 const read = (rel) => readFileSync(join(root, rel), "utf8");
 
-test("close-outputs restores resource-shelf-trigger", () => {
+test("closing the side panel restores its persistent titlebar toggle", () => {
 	const panel = read("components/WorkbenchSidePanel.tsx");
-	const transcript = read("components/ChatTranscript.tsx");
+	const titlebar = read("components/AppTitlebar.tsx");
 	const helper = read("runtime/restoreFocus.ts");
 	const close = panel.match(/aria-label="Close side panel"[\s\S]*?<\/button>/)?.[0] ?? "";
-	assert.match(transcript, /data-testid="resource-shelf-trigger"/);
+	assert.match(titlebar, /data-testid="toggle-inference-rail"/);
 	assert.match(close, /restoreFocusIfLost/);
-	assert.match(close, /resource-shelf-trigger/);
+	assert.match(close, /toggle-inference-rail/);
 	assert.match(helper, /queueMicrotask/);
 	assert.match(helper, /requestAnimationFrame/);
 	assert.match(helper, /document\.body/);
@@ -62,4 +62,13 @@ test("visual tabs use short display names while retaining descriptive titles", (
 	assert.match(routes, /title:\s*artifact\.title\s*\|\|\s*artifact\.displayName\s*\|\|\s*"Visual"/);
 	assert.match(panel, /title=\{item\.title \?\? item\.label\}/);
 	assert.match(sessionView, /stringField\(metadata \?\? \{\}, "displayName", "display_name"\)/);
+});
+
+test("side-panel tabs remain interactive inside the draggable desktop shell", () => {
+	const panel = read("components/WorkbenchSidePanel.tsx");
+	const css = read("styles/app.css");
+	assert.match(panel, /closest<HTMLElement>\('\[role="tablist"\]'\)/);
+	assert.match(panel, /onClick=\{\(\) => onTabChange\(item\.id\)\}/);
+	assert.match(css, /\.workbench-side-panel-tabs \{[^}]*-webkit-app-region: no-drag;/);
+	assert.match(css, /\.workbench-side-panel-option-tabs \[role="tab"\] \{[^}]*pointer-events: auto;[^}]*-webkit-app-region: no-drag;/);
 });

@@ -64,6 +64,17 @@
 	gap: var(--sp-2);
 }
 
+.plugin-page { --plugin-page-accent: var(--selected-edge); }
+.plugin-page-head { min-height: 58px; align-items: flex-start; }
+.plugin-page-back { flex: 0 0 auto; margin-top: 1px; }
+.plugin-page-head .ws-title { font-size: 24px; }
+.plugin-page-head .ws-lede {
+	max-width: 62ch;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
 /* Section heading inside a page. */
 .ws-section-head {
 	display: flex;
@@ -703,6 +714,15 @@
 	font-size: var(--fs-meta);
 	line-height: var(--lh-body);
 }
+
+.plugin-empty {
+	min-height: 240px;
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-lg);
+	background: var(--surface-raised);
+}
+
+.plugin-empty-guidance { color: var(--color-text-muted) !important; }
 
 /* ── Text utilities ───────────────────────────────────────────────────── */
 
