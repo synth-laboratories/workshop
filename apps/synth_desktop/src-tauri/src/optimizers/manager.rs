@@ -729,6 +729,12 @@ impl OptimizerManager {
         }
         fs::rename(&staging, &dest)
             .with_context(|| format!("activate optimizer version {}", dest.display()))?;
+        // Status polling may repopulate discovery with an empty result while the
+        // distribution is still staged. Activation is the visibility boundary,
+        // so invalidate again before selecting the newly installed version.
+        if let Ok(mut cache) = self.discovery_cache.lock() {
+            *cache = None;
+        }
         for template_id in &spec.template_ids {
             retain_template_package(&self.home, template_id, &spec.version, &installed.digest)?;
         }
