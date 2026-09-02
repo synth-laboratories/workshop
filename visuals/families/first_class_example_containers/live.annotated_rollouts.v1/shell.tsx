@@ -149,7 +149,6 @@ export function Shell(props: ShellProps) {
   const counts = countByKind(active);
   const retracted = lanes.reduce((sum, lane) => sum + lane.findings.filter((row) => row.status === "retracted").length, 0);
   const judge = lanes.reduce((sum, lane) => sum + lane.model.requested, 0);
-  const allAchievements = new Set(lanes.flatMap((lane) => lane.achievements));
   const failureTally = labelTally(lanes, "failure_mode");
   const milestoneTally = labelTally(lanes, "milestone");
   const recent = visibleTimeline.filter((row) => feed === "all" || (feed === "annotations") === (row.stream === "annotation")).slice(-12).reverse();
@@ -185,7 +184,7 @@ export function Shell(props: ShellProps) {
   return <VisualChrome kicker="Container eval · annotated rollouts" live={live} title={props.title ?? "Annotated Rollouts"} lede={props.lede ?? "Rollout evidence and provisional annotations on one replay clock. Choose a rollout for task-specific detail; return to All rollouts for the aggregate."} testId="visual-live-annotated-rollouts" footer="Annotated Rollouts · live.annotated_rollouts.v1 · synth.trace-stream-event.v1 + synth.live-annotation-stream.v1">
     <MetricStrip metrics={[
       { label: "Rollouts", value: `${done}/${lanes.length || "—"} done` },
-      { label: "Achievements", value: String(allAchievements.size) },
+      { label: "Achievements", value: String(counts.achievement ?? 0) },
       { label: "Milestones", value: String(counts.milestone ?? 0) },
       { label: "Failure modes", value: String(counts.failure_mode ?? 0) },
       { label: "Retracted", value: String(retracted) },
