@@ -61,9 +61,13 @@ export function WorkspaceHeader({
           </span>
         ) : null}
       </div>
-      <div className="sv-workspace-metrics" role="group" aria-label="Run metrics">
+      <div
+        className="sv-workspace-metrics"
+        role="group"
+        aria-label={`Run metrics: ${metrics.map((metric) => `${metric.label} ${metric.value}`).join("; ")}`}
+      >
         {metrics.map((metric) => (
-          <div key={metric.label} className="sv-workspace-metric" title={metric.title} data-testid={metric.testId}>
+          <div key={metric.label} className="sv-workspace-metric" title={metric.title} data-testid={metric.testId} aria-hidden="true">
             <span>{metric.label}</span>
             <strong>{metric.value}</strong>
           </div>

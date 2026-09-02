@@ -73,6 +73,30 @@ function rewardVectorGradient(
   return `linear-gradient(to right, ${stops.join(", ")})`;
 }
 
+export function frontierFacts(gepa: GepaState): {
+  members: number;
+  dimensions: number;
+  coverage: number;
+} {
+  const frontierIds = new Set(gepa.frontier.map((member) => String(member.candidateId)));
+  const selectable = gepa.candidates.filter(isTrainSelectable);
+  const dimensions = [...new Set(selectable.flatMap((candidate) =>
+    [...fullTrainScores(gepa, String(candidate.id ?? "")).keys()]
+  ))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const scoreRows = selectable.map((candidate) => ({
+    id: String(candidate.id ?? ""),
+    scores: fullTrainScores(gepa, String(candidate.id ?? ""))
+  }));
+  const hasDurableVectors = scoreRows.some((row) => row.scores.size > 0);
+  const frontierRows = scoreRows.filter(({ id, scores }) => hasDurableVectors
+    ? scores.size > 0 && !scoreRows.some((other) => other.id !== id && dominates(other.scores, scores, dimensions))
+    : frontierIds.has(id));
+  const coverage = new Set(frontierRows.flatMap((row) =>
+    [...row.scores].filter(([, reward]) => reward > 0).map(([exampleId]) => exampleId)
+  )).size;
+  return { members: frontierRows.length, dimensions: dimensions.length, coverage };
+}
+
 export function FrontierPanel({
   gepa,
   selectedId,

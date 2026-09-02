@@ -22,7 +22,7 @@ import {
 import { RolloutBrowser, type RolloutGroup, type RolloutRow } from "../../components/workspace/RolloutBrowser.tsx";
 import { CandidateInspector, CandidateList } from "./CandidateBoard.tsx";
 import { ComparisonCard, type ComparisonColumn } from "./ComparisonCard.tsx";
-import { FrontierPanel } from "./FrontierPanel.tsx";
+import { FrontierPanel, frontierFacts } from "./FrontierPanel.tsx";
 import { HillClimbPanel } from "./HillClimbPanel.tsx";
 import { ProposerTracePanel } from "./ProposerTracePanel.tsx";
 import { SearchOverviewPanel } from "./SearchOverviewPanel.tsx";
@@ -305,6 +305,8 @@ export function GepaWorkspace({
 
   if (!gepa) return null;
 
+  const pareto = frontierFacts(gepa);
+
   const selection = resolvedSelection(presentationState.selection, gepa);
   const candidates = visibleCandidates(gepa, presentationState);
   const selectedEvaluationId = selection?.kind === "evaluation" || selection?.kind === "trial" ? selection.id : null;
@@ -492,16 +494,16 @@ export function GepaWorkspace({
       <SearchOverviewPanel gepa={gepa} />
       <section
         className="sv-section"
-        aria-label={`Candidate and Pareto summary: ${gepa.candidates.length} candidates, ${gepa.frontier.length} retained frontier members, ${gepa.frontierHistory.at(-1)?.totalExamples ?? "unknown"} example dimensions`}
+        aria-label={`Candidate and Pareto summary: ${gepa.candidates.length} candidates, ${pareto.members} retained frontier members, ${pareto.dimensions} example dimensions, ${pareto.coverage} covered`}
         data-testid="gepa-search-summary"
         style={{ marginTop: 0 }}
       >
         <div className="sv-section-head">
           <h3>Candidates &amp; Pareto</h3>
-          <span className="sv-mono">{gepa.candidates.length} candidates · {gepa.frontier.length} frontier members · {gepa.frontierHistory.at(-1)?.totalExamples ?? "—"} dimensions</span>
+          <span className="sv-mono">{gepa.candidates.length} candidates · {pareto.members} frontier members · {pareto.dimensions} dimensions</span>
         </div>
         <p style={{ margin: 0, color: "var(--sv-text-muted)", fontSize: 11.5 }}>
-          Best train {bestScore != null ? bestScore.toFixed(3) : "—"} · heldout {heldoutValue} · {gepa.frontierHistory.at(-1)?.optimisticSolved ?? "—"}/{gepa.frontierHistory.at(-1)?.totalExamples ?? "—"} examples covered by retained candidates.
+          Best train {bestScore != null ? bestScore.toFixed(3) : "—"} · heldout {heldoutValue} · {pareto.coverage}/{pareto.dimensions || "—"} examples covered by retained candidates.
         </p>
       </section>
       <details ref={searchDetailsRef} data-testid="gepa-search-details">
