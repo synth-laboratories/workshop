@@ -11,6 +11,10 @@ const seam = extract((state: any) => {
 		.find((element) => element.textContent?.trim() === "Inference");
 	const advanced = document.querySelector<HTMLElement>('[data-testid="inference-advanced-summary"]');
 	const activity = document.querySelector<HTMLElement>('[data-testid="inference-activity"]');
+	const panelHeader = panel?.querySelector<HTMLElement>('.workbench-side-panel-header');
+	const tabRows = panel?.querySelectorAll<HTMLElement>('[role="tablist"]') ?? [];
+	const panelLabel = [...(panel?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])]
+		.some((element) => element.textContent?.trim() === "Panel");
 	const fingerprint = (element: HTMLElement | null | undefined) => element ? {
 		testId: element.dataset.testid ?? null,
 		id: element.id || null,
@@ -40,6 +44,7 @@ const seam = extract((state: any) => {
 		advancedVisible: Boolean(advanced && activity),
 		advancedAligned: !advanced || !activity ||
 			Math.abs(advanced.getBoundingClientRect().left - activity.getBoundingClientRect().left) <= 1,
+		cleanTabChrome: !panel || Boolean(panelHeader && tabRows.length === 1 && !panelLabel),
 		singlePaintedSeam: !panel || !handle ||
 			(panelBorderLeft === 0 && dividerWidth !== null && dividerWidth >= 1)
 	};
@@ -67,3 +72,7 @@ export const side_panel_has_exactly_one_vertical_seam = always(() =>
 export const inference_advanced_marker_aligns_with_content_border = eventually(() =>
 	seam.current.advancedVisible && seam.current.advancedAligned
 ).within(4, "seconds");
+
+export const side_panel_uses_one_tab_bar_without_a_panel_label = always(() =>
+	seam.current.cleanTabChrome
+);

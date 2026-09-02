@@ -24,10 +24,7 @@ export function WorkbenchSidePanel({ tabs, activeTabId, onTabChange, onClose }: 
 	const activeTab = requestedTab ?? panelTabs[0] ?? documentTabs[0];
 	if (!activeTab) return null;
 	const documentActive = activeTab.kind === "document";
-	const primaryTabs = [
-		...(panelTabs.length > 0 ? [{ id: "__panel_home__", label: "Panel", title: "Panel" }] : []),
-		...documentTabs.map((tab) => ({ id: tab.id, label: tab.label, title: tab.title, tab }))
-	];
+	const primaryTabs = tabs;
 	function moveTabFocus(event: KeyboardEvent<HTMLButtonElement>, index: number) {
 		let nextIndex: number | null = null;
 		if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % primaryTabs.length;
@@ -38,21 +35,21 @@ export function WorkbenchSidePanel({ tabs, activeTabId, onTabChange, onClose }: 
 		event.preventDefault();
 		const nextTab = primaryTabs[nextIndex];
 		if (!nextTab) return;
-		onTabChange(nextTab.id === "__panel_home__" ? (panelTabs[0]?.id ?? nextTab.id) : nextTab.id);
+		onTabChange(nextTab.id);
 		const buttons = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
 		buttons?.[nextIndex]?.focus();
 	}
 	return <aside id="workbench-side-panel" className="workbench-side-panel" data-testid="workbench-side-panel" aria-label="Workbench side panel">
 		<header className="workbench-side-panel-header">
-			<div className="workbench-side-panel-tabs workbench-side-panel-primary-tabs" role="tablist" aria-label="Open side-panel views">
+			<div className="workbench-side-panel-tabs workbench-side-panel-option-tabs" role="tablist" aria-label="Side-panel views">
 				{primaryTabs.map((item, index) => {
-					const selected = item.id === "__panel_home__" ? !documentActive : item.id === activeTab.id;
-					return <span className={`workbench-side-panel-tab-shell ${item.id === "__panel_home__" ? "is-home" : "is-document"} ${selected ? "is-selected" : ""}`} key={item.id}>
-						<button type="button" role="tab" title={item.title ?? item.label} aria-label={item.title ?? item.label} id={`workbench-side-tab-${item.id}`} aria-selected={selected} aria-controls="workbench-side-tabpanel" tabIndex={selected ? 0 : -1} data-testid={`workbench-side-tab-${item.id}`} onKeyDown={(event) => moveTabFocus(event, index)} onClick={() => onTabChange(item.id === "__panel_home__" ? (panelTabs[0]?.id ?? item.id) : item.id)}>
-							<span className="workbench-side-tab-icon" aria-hidden="true" />
+					const selected = item.id === activeTab.id;
+					return <span className={`workbench-side-panel-tab-shell ${item.kind === "document" ? "is-document" : "is-panel"} ${selected ? "is-selected" : ""}`} key={item.id}>
+						<button type="button" role="tab" title={item.title ?? item.label} aria-label={item.title ?? item.label} id={`workbench-side-tab-${item.id}`} aria-selected={selected} aria-controls="workbench-side-tabpanel" tabIndex={selected ? 0 : -1} data-testid={`workbench-side-tab-${item.id}`} onKeyDown={(event) => moveTabFocus(event, index)} onClick={() => onTabChange(item.id)}>
 							<span className="workbench-side-tab-label">{item.label}</span>
+							{item.badge ? <strong>{item.badge}</strong> : null}
 						</button>
-						{"tab" in item && item.tab.onClose ? <button type="button" className="workbench-side-document-close" aria-label={`Close ${item.title ?? item.label}`} onClick={(event) => { event.stopPropagation(); item.tab.onClose?.(); }}>×</button> : null}
+						{item.onClose ? <button type="button" className="workbench-side-document-close" aria-label={`Close ${item.title ?? item.label}`} onClick={(event) => { event.stopPropagation(); item.onClose?.(); }}>×</button> : null}
 					</span>;
 				})}
 			</div>
@@ -61,11 +58,6 @@ export function WorkbenchSidePanel({ tabs, activeTabId, onTabChange, onClose }: 
 				restoreFocusIfLost('[data-testid="resource-shelf-trigger"]');
 			}}>×</button>
 		</header>
-		{!documentActive && panelTabs.length > 1 ? <nav className="workbench-side-panel-option-tabs" role="tablist" aria-label="Panel options">
-			{panelTabs.map((tab) => <button key={tab.id} type="button" role="tab" aria-selected={tab.id === activeTab.id} data-testid={`workbench-side-tab-${tab.id}`} onClick={() => onTabChange(tab.id)}>
-				<span>{tab.label}</span>{tab.badge ? <strong>{tab.badge}</strong> : null}
-			</button>)}
-		</nav> : null}
 		<div className="workbench-side-panel-content" data-active-tab={activeTab.id} data-document-active={documentActive ? "true" : "false"} role="tabpanel" id="workbench-side-tabpanel" data-testid={`workbench-side-tabpanel-${activeTab.id}`}>
 			{activeTab.content}
 		</div>
