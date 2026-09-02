@@ -237,11 +237,17 @@ test("optimizer entry points describe algorithms without binding them to environ
 	await expect(page.getByTestId("optimizer-guide-gepa")).toContainText("Propose");
 	await expect(page.getByTestId("optimizer-guide-go-ex")).toContainText("Explore");
 	await expect(page.getByTestId("optimizer-guide-sft")).toContainText("Collect");
+	await expect(page.getByTestId("optimizer-guide-cispo")).toContainText("Preflight");
 	await expect(page.getByTestId("optimizers-page")).not.toContainText("Banking77");
 	await expect(page.getByTestId("optimizers-page")).not.toContainText("Craftax");
 	await expect(page.getByTestId("start-gepa-agent")).toBeEnabled();
 	await expect(page.getByTestId("start-go-ex-agent")).toBeEnabled();
 	await expect(page.getByTestId("start-sft-agent")).toBeEnabled();
+	await expect(page.getByTestId("start-cispo-agent")).toBeEnabled();
+	await expect(page.getByTestId("start-sft-mlx")).toBeVisible();
+	await expect(page.getByTestId("start-sft-hosted")).toBeEnabled();
+	await expect(page.getByTestId("start-cispo-mlx")).toBeVisible();
+	await expect(page.getByTestId("start-cispo-hosted")).toHaveCount(0);
 	await expect(page.getByTestId("start-sft-fixture")).toHaveCount(0);
 	await expect(page.getByTestId("optimizer-guide-sft")).not.toContainText("no provider charges");
 });

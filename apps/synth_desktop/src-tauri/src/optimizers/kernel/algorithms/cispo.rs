@@ -74,7 +74,7 @@ impl CispoProjection {
                     self.clip_config = config.clone();
                 }
             }
-            "cispo.training.metrics" | "cispo.step.metrics" | "training.step.metrics" => {
+            "cispo.training.metrics" | "cispo.step.metrics" | "training.step.metrics" | "training.metrics" => {
                 self.phase = Some(RunPhase::Training);
                 if let Some(step) = payload.get("step").and_then(|v| v.as_u64()) {
                     self.usage.steps = Some(step);

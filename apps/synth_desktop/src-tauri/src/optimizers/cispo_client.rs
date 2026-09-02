@@ -1,27 +1,27 @@
-//! Public `synth-optimizers` SFT control-plane client.
+//! Public `synth-optimizers` CISPO control-plane client.
 //!
-//! Workshop never contacts Optimizers-beta directly. The public SFT service owns
-//! canonical runs and proxies beta only as its internal training executor.
+//! Workshop never contacts Optimizers-beta directly. The public CISPO service
+//! owns canonical runs and executes `cispo.slime.v1` locally against Tinker.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::time::Duration;
 
 #[derive(Clone)]
-pub(super) struct SftOptimizerClient {
+pub(super) struct CispoOptimizerClient {
     client: reqwest::Client,
     pub(super) base_url: String,
     token: String,
 }
 
-impl SftOptimizerClient {
+impl CispoOptimizerClient {
     pub(super) fn from_env() -> Result<Self> {
-        let token = std::env::var("SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN")
-            .map_err(|_| anyhow!("SFT service requires SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN"))?;
-        let base_url = std::env::var("SYNTH_OPTIMIZERS_SFT_SERVICE_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:8878".into());
+        let token = std::env::var("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN")
+            .map_err(|_| anyhow!("CISPO service requires SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN"))?;
+        let base_url = std::env::var("SYNTH_OPTIMIZERS_CISPO_SERVICE_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8880".into());
         if base_url.trim().is_empty() || token.trim().is_empty() {
-            bail!("public SFT service URL/token must be non-empty");
+            bail!("public CISPO service URL/token must be non-empty");
         }
         Ok(Self {
             client: crate::http::http_client_with_timeout(crate::limits::OPTIMIZERS_CLOUD_TIMEOUT),
@@ -35,13 +35,14 @@ impl SftOptimizerClient {
         self.get_json("/health").await
     }
 
-    pub(super) async fn submit_toml(&self, run_id: &str, config_toml: &str) -> Result<Value> {
+    pub(super) async fn submit(&self, run_id: &str, config_json: &Value) -> Result<Value> {
         self.post_json(
             "/v1/runs",
             json!({
-                "algorithm": "sft",
+                "algorithm": "cispo",
                 "idempotency_key": run_id,
-                "config_toml": config_toml,
+                "run_id": run_id,
+                "config_json": config_json,
             }),
         )
         .await
@@ -69,31 +70,6 @@ impl SftOptimizerClient {
             .await
     }
 
-    pub(super) async fn infer_checkpoint(
-        &self,
-        family: &str,
-        sampler_path: &str,
-        run_id: &str,
-        checkpoint_id: &str,
-        body: &Value,
-    ) -> Result<Value> {
-        let path = match family {
-            "chat_completions" | "chat" => "/v1/checkpoints/infer/chat/completions",
-            "responses" => "/v1/checkpoints/infer/responses",
-            other => bail!("unsupported inference family {other}"),
-        };
-        self.post_json(
-            path,
-            json!({
-                "sampler_path": sampler_path,
-                "run_id": run_id,
-                "checkpoint_id": checkpoint_id,
-                "body": body,
-            }),
-        )
-        .await
-    }
-
     async fn get_json(&self, path: &str) -> Result<Value> {
         let url = format!("{}{path}", self.base_url);
         let response = self
@@ -104,7 +80,7 @@ impl SftOptimizerClient {
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;
-        decode_response(response, "GET public SFT service").await
+        decode_response(response, "GET public CISPO service").await
     }
 
     async fn post_json(&self, path: &str, body: Value) -> Result<Value> {
@@ -119,7 +95,7 @@ impl SftOptimizerClient {
             .send()
             .await
             .with_context(|| format!("POST {url}"))?;
-        decode_response(response, "POST public SFT service").await
+        decode_response(response, "POST public CISPO service").await
     }
 }
 
@@ -128,12 +104,12 @@ async fn decode_response(response: reqwest::Response, operation: &str) -> Result
     let text = response
         .text()
         .await
-        .context("read public SFT service body")?;
+        .context("read public CISPO service body")?;
     if !status.is_success() {
         bail!("{operation} failed ({status}): {text}");
     }
     if text.trim().is_empty() {
         return Ok(json!({}));
     }
-    serde_json::from_str(&text).context("decode public SFT service JSON")
+    serde_json::from_str(&text).context("decode public CISPO service JSON")
 }

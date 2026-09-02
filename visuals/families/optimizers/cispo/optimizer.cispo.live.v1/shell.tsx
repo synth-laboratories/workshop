@@ -1,8 +1,8 @@
 /**
- * SFT workspace template: sticky run header, dataset → training → checkpoint
- * → evaluation → promotion stages, aligned curves, checkpoint campaigns in
- * the scalable rollout browser, and a collapsed debug section with the raw
- * event scrubber, usage, artifacts, and execution bindings.
+ * CISPO workspace template: clip identity, group advantages, aligned curves,
+ * checkpoints, and rollout groups. Hydrates Workshop collections
+ * (`metric_points`, `candidates`, `evaluations`, `rollouts`) instead of
+ * reconstructing charts from the raw journal.
  */
 
 import { OptimizerFamilyShell } from "../../_shared/optimizer.run.v1/components/FamilyShell.tsx";
@@ -52,7 +52,7 @@ function finite(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function SftWorkspaceFromCollections({
+function CispoWorkspaceFromCollections({
   projected,
   run,
   collections,
@@ -73,7 +73,7 @@ function SftWorkspaceFromCollections({
     const points = metricPage.page.rows
       .map((row) => record(row.details))
       .map((point) => ({
-        step: finite(point.step) ?? 0,
+        step: finite(point.step ?? point.update) ?? 0,
         ...(finite(point.epoch) == null ? {} : { epoch: finite(point.epoch) }),
         ...(finite(point.trainLoss ?? point.train_loss ?? point.loss) == null
           ? {}
@@ -88,8 +88,21 @@ function SftWorkspaceFromCollections({
       .filter((point) => point.step > 0)
       .sort((left, right) => left.step - right.step);
     if (points.length === 0) return projected;
+    const latest = record(metricPage.page.rows.at(-1)?.details);
+    const cispo = projected.cispo
+      ? {
+          ...projected.cispo,
+          groupSize: finite(latest.group_size ?? latest.groupSize ?? latest.group_count) ?? projected.cispo.groupSize,
+          rewardVariance: finite(latest.reward_variance ?? latest.rewardVariance) ?? projected.cispo.rewardVariance,
+          advantageMean: finite(latest.advantage_mean ?? latest.advantageMean) ?? projected.cispo.advantageMean,
+          advantageStd: finite(latest.advantage_std ?? latest.advantageStd) ?? projected.cispo.advantageStd,
+          optimizerSteps: finite(latest.optimizer_step ?? latest.optimizerStep ?? latest.update)
+            ?? projected.cispo.optimizerSteps
+        }
+      : projected.cispo;
     return {
       ...projected,
+      cispo,
       sft: {
         ...projected.sft,
         points,
@@ -110,13 +123,13 @@ export function Shell(props: ShellProps) {
   return (
     <OptimizerFamilyShell
       {...props}
-      templateId="optimizer.sft.live.v1"
-      kicker="Training"
-      testId="visual-optimizer-sft-live"
+      templateId="optimizer.cispo.live.v1"
+      kicker="CISPO"
+      testId="visual-optimizer-cispo-live"
       chrome="workspace"
     >
       {({ run, projected, cursor, collections }) => (
-        <SftWorkspaceFromCollections
+        <CispoWorkspaceFromCollections
           projected={projected}
           run={run}
           collections={collections}
@@ -135,9 +148,10 @@ export function Shell(props: ShellProps) {
                 onFollowLive={cursor.onFollowLive}
               />
               <UsageCards usage={projected.usage} />
-              <CollectionBrowser client={collections} collection="candidates" title="Durable checkpoints" testId="sft-durable-checkpoints" />
-              <CollectionBrowser client={collections} collection="metric_points" title="Training metric series" descending testId="sft-durable-metrics" />
-              <CollectionBrowser client={collections} collection="evaluations" title="Checkpoint and heldout evaluations" descending testId="sft-durable-evaluations" />
+              <CollectionBrowser client={collections} collection="candidates" title="Durable checkpoints" testId="cispo-durable-checkpoints" />
+              <CollectionBrowser client={collections} collection="metric_points" title="Training metric series" descending testId="cispo-durable-metrics" />
+              <CollectionBrowser client={collections} collection="evaluations" title="Checkpoint and heldout evaluations" descending testId="cispo-durable-evaluations" />
+              <CollectionBrowser client={collections} collection="rollouts" title="Rollout groups" descending testId="cispo-durable-rollouts" />
               <EventLog entries={projected.logs} />
               <ArtifactList artifacts={projected.artifacts} />
               <ExecutionBindings bindings={projected.execution.bindings} />

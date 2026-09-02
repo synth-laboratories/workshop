@@ -185,6 +185,7 @@ fn coerce_training_fact(event: &Value) -> Result<CoercedFact> {
     let kind = event
         .get("kind")
         .or_else(|| event.get("type"))
+        .or_else(|| event.get("event_type"))
         .and_then(Value::as_str)
         .unwrap_or("job.event")
         .to_string();
@@ -323,34 +324,17 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
             } else {
                 "sft.training.metrics"
             };
-            OptimizerEventDraft::new(event_type, algorithm).delta(Map::from_iter([
-                ("step".into(), payload["step"].clone()),
-                ("train_loss".into(), payload["loss"].clone()),
-                ("learning_rate".into(), payload["learning_rate"].clone()),
-                ("throughput".into(), payload["tokens_per_second"].clone()),
-            ]))
+            let mut delta = if algorithm == "cispo" {
+                cispo_metric_delta(payload)
+            } else {
+                sft_metric_delta(payload)
+            };
+            if delta.get("train_loss").is_none_or(|value| value.is_null()) {
+                delta.insert("train_loss".into(), payload["loss"].clone());
+            }
+            OptimizerEventDraft::new(event_type, algorithm).delta(delta)
         }
-        "checkpoint.created" | "checkpoint.ready" => {
-            OptimizerEventDraft::new("sft.checkpoint.ready", algorithm)
-                .item(json!({
-                    "id": payload["checkpoint_id"],
-                    "step": payload["step"],
-                    "status": "ready",
-                    "ready": true,
-                    "path": payload["path"],
-                    "sha256": payload["sha256"],
-                    "bytes": payload["bytes"],
-                    "kind": payload.get("kind").cloned().unwrap_or_else(|| json!("mlx-lora.v1")),
-                    "baseModel": payload.get("base_model"),
-                    "raw": payload
-                }))
-                .artifact_refs(vec![json!({
-                    "kind": "checkpoint",
-                    "id": payload["checkpoint_id"],
-                    "uri": payload["path"],
-                    "digest": payload["sha256"]
-                })])
-        }
+        "checkpoint.created" | "checkpoint.ready" => checkpoint_ready_draft(algorithm, payload),
         "evaluation.completed" | "heldout_eval.completed" => {
             OptimizerEventDraft::new("sft.heldout_evaluation.completed", algorithm)
                 .delta(Map::from_iter([
@@ -359,15 +343,152 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
                 ]))
                 .item(payload.clone())
         }
-        "training.clip" => OptimizerEventDraft::new("cispo.clip.identity", algorithm)
-            .delta(Map::from_iter([("clip".into(), payload.clone())])),
+        "training.clip" | "cispo.clip.identity" => {
+            OptimizerEventDraft::new("cispo.clip.identity", algorithm).delta(clip_delta(payload))
+        }
         "cispo.no_learning_signal" => {
             OptimizerEventDraft::new("cispo.no_learning_signal", algorithm)
                 .level("error")
                 .error(payload.clone())
         }
+        "sft.step.metrics" | "sft.training.metrics" | "training.step.metrics" => {
+            OptimizerEventDraft::new("sft.training.metrics", algorithm).delta(sft_metric_delta(payload))
+        }
+        "cispo.update.completed"
+        | "cispo.step.metrics"
+        | "cispo.training.metrics"
+        | "cispo.importance_ratio.measured" => {
+            OptimizerEventDraft::new("training.metrics", algorithm).delta(cispo_metric_delta(payload))
+        }
+        "sft.checkpoint.created" | "sft.checkpoint.ready" | "cispo.checkpoint.created" => {
+            checkpoint_ready_draft(algorithm, payload)
+        }
+        "sft.checkpoint_eval.completed"
+        | "sft.heldout_eval.completed"
+        | "cispo.checkpoint_eval.completed"
+        | "cispo.heldout_eval.completed"
+        | "sft.checkpoint_evaluation.completed" => {
+            OptimizerEventDraft::new("sft.heldout_evaluation.completed", algorithm)
+                .delta(Map::from_iter([
+                    ("kind".into(), json!(kind)),
+                    ("evaluation".into(), payload.clone()),
+                ]))
+                .item(payload.clone())
+        }
+        "sft.completed" | "cispo.completed" => {
+            OptimizerEventDraft::new(TRAINING_JOB_COMPLETED, algorithm)
+                .delta(Map::from_iter([("status".into(), json!("succeeded"))]))
+        }
+        "sft.failed" | "cispo.failed" => OptimizerEventDraft::new(TRAINING_JOB_FAILED, algorithm)
+            .level("error")
+            .delta(Map::from_iter([("status".into(), json!("failed"))]))
+            .error(payload.clone()),
+        "sft.cancelled" | "cispo.cancelled" => {
+            OptimizerEventDraft::new(TRAINING_JOB_CANCELLED, algorithm)
+                .delta(Map::from_iter([("status".into(), json!("cancelled"))]))
+        }
         _ => OptimizerEventDraft::new(format!("training.{kind}"), algorithm),
     }
+}
+
+fn sft_metric_delta(payload: &Value) -> Map<String, Value> {
+    Map::from_iter([
+        ("step".into(), metric_step(payload)),
+        ("train_loss".into(), metric_number(payload, &["train_loss", "trainLoss", "loss"])),
+        ("learning_rate".into(), metric_number(payload, &["learning_rate", "learningRate", "lr"])),
+        ("throughput".into(), metric_number(payload, &["tokens_per_second", "tokensPerSecond"])),
+    ])
+}
+
+fn cispo_metric_delta(payload: &Value) -> Map<String, Value> {
+    Map::from_iter([
+        ("step".into(), metric_step(payload)),
+        ("train_loss".into(), metric_number(payload, &["train_loss", "trainLoss", "loss"])),
+        ("reward".into(), metric_number(payload, &["reward_mean", "mean_reward", "reward"])),
+        ("mean_reward".into(), metric_number(payload, &["reward_mean", "mean_reward", "reward"])),
+        (
+            "reward_variance".into(),
+            metric_number(payload, &["reward_variance", "rewardVariance"]),
+        ),
+        (
+            "advantage_mean".into(),
+            metric_number(payload, &["advantage_mean", "mean_advantage", "advantage"]),
+        ),
+        (
+            "advantage_std".into(),
+            metric_number(payload, &["advantage_std", "advantageStd"]),
+        ),
+        ("group_size".into(), metric_number(payload, &["group_size", "groupSize", "group_count"])),
+        (
+            "optimizer_step".into(),
+            metric_number(payload, &["optimizer_step", "optimizerStep", "update", "step"]),
+        ),
+    ])
+}
+
+fn clip_delta(payload: &Value) -> Map<String, Value> {
+    let clip = payload.get("clip").cloned().unwrap_or_else(|| payload.clone());
+    Map::from_iter([
+        ("clip".into(), clip.clone()),
+        (
+            "identity".into(),
+            payload
+                .get("identity")
+                .cloned()
+                .unwrap_or_else(|| json!("cispo.slime.v1")),
+        ),
+        ("config".into(), clip),
+    ])
+}
+
+fn checkpoint_ready_draft(algorithm: &str, payload: &Value) -> OptimizerEventDraft {
+    OptimizerEventDraft::new("sft.checkpoint.ready", algorithm)
+        .item(json!({
+            "id": payload["checkpoint_id"],
+            "step": payload.get("step").cloned().unwrap_or_else(|| payload["update"].clone()),
+            "status": "ready",
+            "ready": true,
+            "path": payload["path"],
+            "sha256": payload["sha256"],
+            "bytes": payload["bytes"],
+            "kind": payload.get("kind").cloned().unwrap_or_else(|| json!("mlx-lora.v1")),
+            "baseModel": payload.get("base_model"),
+            "raw": payload
+        }))
+        .artifact_refs(vec![json!({
+            "kind": "checkpoint",
+            "id": payload["checkpoint_id"],
+            "uri": payload["path"],
+            "digest": payload["sha256"]
+        })])
+}
+
+fn metric_step(payload: &Value) -> Value {
+    payload
+        .get("step")
+        .or_else(|| payload.get("update"))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+fn metric_number(payload: &Value, keys: &[&str]) -> Value {
+    for key in keys {
+        if let Some(value) = payload.get(*key) {
+            if !value.is_null() {
+                return value.clone();
+            }
+        }
+    }
+    if let Some(metrics) = payload.get("metrics") {
+        for key in keys {
+            if let Some(value) = metrics.get(*key) {
+                if !value.is_null() {
+                    return value.clone();
+                }
+            }
+        }
+    }
+    Value::Null
 }
 
 pub fn promote_hosted_fact(event: Value) -> Result<Value> {
@@ -514,6 +635,58 @@ mod tests {
         assert_eq!(adapted.source_event_id, "hosted-evt-4");
         assert_eq!(adapted.attempt_id, "att-2");
         assert_eq!(adapted.source_sequence, 4);
+    }
+
+    #[test]
+    fn public_sft_step_metrics_flatten_nested_loss() {
+        let adapted = adapt_source_fact(
+            "sft",
+            &native_event(
+                4,
+                "sft.step.metrics",
+                json!({"step": 2, "metrics": {"loss": 0.31}, "tokens": 16}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(adapted.draft.event_type, "sft.training.metrics");
+        assert_eq!(adapted.draft.delta["train_loss"], 0.31);
+        assert_eq!(adapted.draft.delta["step"], 2);
+    }
+
+    #[test]
+    fn public_cispo_update_maps_to_training_metrics() {
+        let adapted = adapt_source_fact(
+            "cispo",
+            &json!({
+                "schema_version": "training.event.v1",
+                "event_id": "evt-9",
+                "job_id": "cispo_public",
+                "attempt_id": "attempt-1",
+                "sequence": 9,
+                "occurred_at": "2026-09-02T14:00:00Z",
+                "kind": "cispo.update.completed",
+                "phase": "running",
+                "payload": {
+                    "update": 1,
+                    "reward_mean": 0.5,
+                    "reward_variance": 0.08,
+                    "group_count": 2
+                },
+                "producer": {"service": "synth-optimizers", "version": "v1", "commit": "local"}
+            }),
+        )
+        .unwrap();
+        assert_eq!(adapted.draft.event_type, "training.metrics");
+        assert_eq!(adapted.draft.delta["step"], 1);
+        assert_eq!(adapted.draft.delta["reward_variance"], 0.08);
+    }
+
+    #[test]
+    fn public_completed_is_not_optimizer_run_completed() {
+        let adapted =
+            adapt_source_fact("sft", &native_event(8, "sft.completed", json!({}))).unwrap();
+        assert_eq!(adapted.draft.event_type, TRAINING_JOB_COMPLETED);
+        assert_ne!(adapted.draft.event_type, "optimizer.run.completed");
     }
 
     #[test]

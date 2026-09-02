@@ -2427,10 +2427,10 @@ export function projectAtCursor(
         };
       }
     }
-    if (event.type === "sft.step.metrics" || event.type === "sft.training.metrics" || event.type === "training.metrics") {
+    if (event.type === "sft.step.metrics" || event.type === "sft.training.metrics" || event.type === "training.metrics" || event.type === "cispo.training.metrics" || event.type === "cispo.update.completed" || event.type === "cispo.step.metrics") {
       const step = missingNumber(event.delta?.step ?? event.delta?.global_step);
       const epoch = missingNumber(event.delta?.epoch);
-      const trainLoss = missingNumber(event.delta?.train_loss ?? event.delta?.trainLoss);
+      const trainLoss = missingNumber(event.delta?.train_loss ?? event.delta?.trainLoss ?? event.delta?.loss);
       const validationLoss = missingNumber(event.delta?.validation_loss ?? event.delta?.validationLoss);
       const learningRate = missingNumber(event.delta?.learning_rate ?? event.delta?.learningRate);
       if (step != null) {

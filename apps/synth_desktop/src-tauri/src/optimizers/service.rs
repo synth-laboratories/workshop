@@ -837,7 +837,8 @@ impl OptimizerService {
             }
             super::mlx_sft::QWEN_MLX_SFT_RECIPE => super::mlx_sft::start(self, request).await,
             super::sidecar_training::LOCAL_MLX_CISPO_RECIPE
-            | super::sidecar_training::HOSTED_CISPO_RECIPE => {
+            | super::sidecar_training::HOSTED_CISPO_RECIPE
+            | super::sidecar_training::HOSTED_BANKING77_CISPO_RECIPE => {
                 super::cispo::start(self, request).await
             }
             id if super::eval_recipes::is_eval_recipe(id) => {
@@ -3990,6 +3991,7 @@ fn algorithm_label(algorithm_id: &str) -> &'static str {
         "gepa" => "GEPA",
         "go-ex" => "GELO",
         "sft" => "SFT",
+        "cispo" => "CISPO",
         "eval" => "Eval",
         id if id == "dag" || id.starts_with("dag.") => "DAG",
         _ => "Optimizer",
@@ -3998,7 +4000,8 @@ fn algorithm_label(algorithm_id: &str) -> &'static str {
 
 pub(in crate::optimizers) fn primary_visual_template(algorithm_id: &str) -> &'static str {
     match algorithm_id {
-        "sft" | "cispo" => "optimizer.sft.live.v1",
+        "sft" => "optimizer.sft.live.v1",
+        "cispo" => "optimizer.cispo.live.v1",
         "gepa" => "optimizer.gepa.live.v1",
         "eval" => "optimizer.eval.live.v1",
         id if id == "dag" || id.starts_with("dag.") => "optimizer.dag.live.v1",
@@ -8455,7 +8458,7 @@ pub(in crate::optimizers) mod tests {
         // the training routes it serves.
         assert_eq!(negotiate_visual_template("gepa"), "optimizer.gepa.live.v1");
         assert_eq!(negotiate_visual_template("sft"), "optimizer.sft.live.v1");
-        assert_eq!(negotiate_visual_template("cispo"), "optimizer.sft.live.v1");
+        assert_eq!(negotiate_visual_template("cispo"), "optimizer.cispo.live.v1");
         assert_eq!(negotiate_visual_template("eval"), "optimizer.eval.live.v1");
 
         // Execution is where a capability claim has to hold up.
@@ -10031,7 +10034,10 @@ pub(in crate::optimizers) mod tests {
             .any(|item| item.get("id") == Some(&json!("cispo.mlx.v1"))));
         assert!(recipes
             .iter()
-            .any(|item| item.get("id") == Some(&json!("cispo.slime.hosted.v1"))));
+            .any(|item| item.get("id") == Some(&json!("cispo.hosted.tinker.v1"))));
+        assert!(recipes
+            .iter()
+            .any(|item| item.get("id") == Some(&json!("cispo.banking77.tinker.v1"))));
     }
 
     #[tokio::test]

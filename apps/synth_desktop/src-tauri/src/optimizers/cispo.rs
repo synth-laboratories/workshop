@@ -6,8 +6,8 @@ use super::models::{
 };
 use super::sidecar_training::{
     advertised_placement, spawn_watch_worker, training_create_request, tunneled_evaluation_plan,
-    EvaluationContract, SidecarTrainingClient, HOSTED_CISPO_RECIPE, LOCAL_MLX_CISPO_RECIPE,
-    PLACEMENT_TRAINING_CISPO_HOSTED, PLACEMENT_TRAINING_CISPO_LOCAL,
+    EvaluationContract, SidecarTrainingClient, HOSTED_BANKING77_CISPO_RECIPE, HOSTED_CISPO_RECIPE,
+    LOCAL_MLX_CISPO_RECIPE, PLACEMENT_TRAINING_CISPO_HOSTED, PLACEMENT_TRAINING_CISPO_LOCAL,
 };
 use super::OptimizerService;
 use anyhow::Result;
@@ -15,7 +15,14 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 
 pub fn recipe_catalog() -> Vec<Value> {
-    vec![local_mlx_recipe(), hosted_slime_recipe()]
+    vec![
+        local_mlx_recipe(),
+        hosted_cispo_recipe(
+            HOSTED_BANKING77_CISPO_RECIPE,
+            "Banking77 Tinker CISPO",
+        ),
+        hosted_cispo_recipe(HOSTED_CISPO_RECIPE, "Hosted CISPO · Tinker"),
+    ]
 }
 
 fn local_mlx_recipe() -> Value {
@@ -48,27 +55,135 @@ fn local_mlx_recipe() -> Value {
     })
 }
 
-fn hosted_slime_recipe() -> Value {
+fn hosted_cispo_recipe(id: &str, title: &str) -> Value {
+    let (available, reason) = hosted_cispo_availability();
+    json!({
+        "id": id,
+        "title": title,
+        "algorithmId": "cispo",
+        "task": "banking77",
+        "placement": PLACEMENT_TRAINING_CISPO_HOSTED,
+        "availability": if available { "available" } else { "unavailable" },
+        "availabilityReason": reason,
+        "limits": {
+            "backend": "cispo.slime.v1",
+            "implementation": "slime-reference",
+            "implementationVersion": "cispo.slime.v1",
+            "maxSteps": 2,
+            "costCeilingUsd": 10.0,
+            "costNotice": "Hosted Tinker via the public CISPO service. Receipt-gated; unpaid fixture with SYNTH_OPTIMIZERS_CISPO_FIXTURE=1."
+        },
+        "credentialInputs": [],
+        "prerequisites": hosted_cispo_prerequisites()
+    })
+}
+
+fn hosted_cispo_prerequisites() -> Vec<&'static str> {
+    vec![
+        "synth-optimizers-cispo service --db … --bind 127.0.0.1:8880",
+        "SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN",
+        "SYNTH_OPTIMIZERS_CISPO_SERVICE_URL (default http://127.0.0.1:8880)",
+        "TINKER_CISPO_VALIDATION_RECEIPT",
+        "SYNTH_OPTIMIZERS_CISPO_FIXTURE=1 for unpaid",
+    ]
+}
+
+fn hosted_cispo_availability() -> (bool, Value) {
     let admitted = advertised_placement(
         &json!({"placements": super::sidecar_training::admitted_placements()}),
         PLACEMENT_TRAINING_CISPO_HOSTED,
     );
+    let client_ok = super::cispo_client::CispoOptimizerClient::from_env().is_ok();
+    if admitted && client_ok {
+        return (true, Value::Null);
+    }
+    if !admitted {
+        return (
+            false,
+            json!("Hosted CISPO stays fail-closed until TINKER_CISPO_VALIDATION_RECEIPT points at a paid slime-canary receipt (validated=true, paid_update=true)."),
+        );
+    }
+    if std::env::var("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        return (
+            false,
+            json!("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN is required to reach the public CISPO service."),
+        );
+    }
+    if std::env::var("SYNTH_OPTIMIZERS_CISPO_SERVICE_URL")
+        .ok()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return (
+            false,
+            json!("SYNTH_OPTIMIZERS_CISPO_SERVICE_URL is empty; default is http://127.0.0.1:8880."),
+        );
+    }
+    (
+        false,
+        json!("Public CISPO service client is not configured."),
+    )
+}
+
+fn hosted_cispo_config_json() -> Value {
+    let labels = [
+        "activate_my_card",
+        "balance_not_updated_after_cheque_or_cash_deposit",
+        "card_swallowed",
+        "get_physical_card",
+        "lost_or_stolen_card",
+        "order_physical_card",
+    ];
     json!({
-        "id": HOSTED_CISPO_RECIPE,
-        "title": "Hosted CISPO · slime.v1",
-        "algorithmId": "cispo",
-        "task": Value::Null,
-        "placement": PLACEMENT_TRAINING_CISPO_HOSTED,
-        "availability": if admitted { "available" } else { "unavailable" },
-        "availabilityReason": if admitted { Value::Null } else { json!("Hosted CISPO stays fail-closed until the slime clip canary (1+eps_high) admits it.") },
-        "limits": {
-            "backend": "cispo.slime.v1",
-            "maxSteps": 2,
-            "costCeilingUsd": 10.0,
-            "costNotice": "Hosted Tinker plus the bound container. Sidecar owns the tunnel lease."
+        "schema_version": "cispo.request.v1",
+        "algorithm_id": "cispo",
+        "implementation": "slime-reference",
+        "implementation_version": "cispo.slime.v1",
+        "provider": "tinker",
+        "model_id": "openai/gpt-oss-20b",
+        "base_model": "openai/gpt-oss-20b",
+        "renderer_version": "renderers.gpt-oss.low.v1",
+        "runner_version": "synth-optimizers.training.v1",
+        "seed": 20260902,
+        "repeat_index": 0,
+        "mode": "learning_signal",
+        "rank": 8,
+        "dataset": {
+            "recipe_id": "banking77.cispo.v1",
+            "examples": [],
+            "train_indexes": [0, 1],
+            "calibration_indexes": [4],
+            "heldout_indexes": [5],
+            "label_taxonomy": labels,
+            "system_prompt": format!(
+                "Classify the customer banking message. Return exactly one label from this list, with no explanation or punctuation:\n{}",
+                labels.join(", ")
+            ),
+            "scorer_version": "banking77.exact_label.v1",
+            "heldout_locked": true
         },
-        "credentialInputs": [],
-        "prerequisites": ["Optimizers sidecar", "authenticated sidecar capability projecting a signed slime-canary admission receipt"]
+        "training": {
+            "updates": 1,
+            "group_size": 2,
+            "prompts_per_update": 1,
+            "max_sample_tokens": 8,
+            "temperature": 1.0,
+            "learning_rate": 0.000005,
+            "eps_clip": 1.0,
+            "eps_clip_high": 4.0,
+            "normalize_group_rewards": true,
+            "checkpoint_every_updates": 1
+        },
+        "reward": { "version": "banking77.exact_label.v1", "task": "banking77" },
+        "evaluation": {
+            "scorer_version": "banking77.exact_label.v1",
+            "heldout_locked": true,
+            "mode": "learning_signal"
+        }
     })
 }
 
@@ -78,7 +193,9 @@ pub async fn start(
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     match request.recipe_id.as_str() {
         LOCAL_MLX_CISPO_RECIPE => start_local(service, request).await,
-        HOSTED_CISPO_RECIPE => start_hosted(service, request).await,
+        id if super::sidecar_training::is_hosted_cispo_recipe(id) => {
+            start_hosted(service, request).await
+        }
         other => anyhow::bail!("unknown CISPO recipe: {other}"),
     }
 }
@@ -234,45 +351,45 @@ async fn start_hosted(
     service: &OptimizerService,
     request: OptimizerRecipeRunRequest,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
-    let (bind, cispo) =
-        container_training::bind_cispo(service, request.container_id.as_deref()).await?;
+    super::cispo_client::CispoOptimizerClient::from_env()?;
+    let recipe_id = request.recipe_id.clone();
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("cispo_hosted_{}", &suffix[..12]);
-    let evaluation_plan = tunneled_evaluation_plan(
-        Some(cispo.rollout_url.clone()),
-        "SYNTH_OPTIMIZERS_CISPO_CONTAINER_URL",
-        "SYNTH_OPTIMIZERS_CISPO_CONTAINER_TOKEN",
-        1,
-        vec![1, 2],
-        EvaluationContract {
-            task: bind.task_id.clone(),
-            harness: cispo.harness.clone(),
-            plan_ref: cispo.plan_ref.clone(),
-            world_ref: cispo.heldout_world_ref.clone(),
-        },
-    );
+    let config_json = hosted_cispo_config_json();
     let create = training_create_request(
         &run_id,
         "cispo",
-        "cispo-slime-hosted-v1",
-        "Hosted CISPO · slime.v1",
+        "cispo.tinker.v1",
+        "Hosted CISPO · Tinker",
         "hosted",
-        HOSTED_CISPO_RECIPE,
+        &recipe_id,
         &request,
         json!({
-            "recipeId": HOSTED_CISPO_RECIPE,
+            "recipeId": recipe_id,
             "backend": "cispo.slime.v1",
+            "implementation": "slime-reference",
+            "implementationVersion": "cispo.slime.v1",
             "placement": PLACEMENT_TRAINING_CISPO_HOSTED,
             "trainingCursor": 0,
-            "evaluationPlan": { "phases": ["baseline", "checkpoint", "final"], "checkpointEvery": 1, "transport": "tunnel", "metric": "reward" }
+            "evaluationPlan": {
+                "scorer_version": "banking77.exact_label.v1",
+                "heldout_locked": true,
+                "mode": "learning_signal"
+            }
         }),
         vec![OptimizerResourceRef {
             kind: "recipe".into(),
-            id: HOSTED_CISPO_RECIPE.into(),
+            id: recipe_id.clone(),
             digest: None,
             role: Some("configuration".into()),
             title: Some("Hosted CISPO slime".into()),
-            metadata: json!({"epsHigh": 4.0, "tinkerBound": 5.0}),
+            metadata: json!({
+                "epsHigh": 4.0,
+                "tinkerBound": 5.0,
+                "algorithmId": "cispo",
+                "implementation": "slime-reference",
+                "implementationVersion": "cispo.slime.v1"
+            }),
         }],
     );
     super::sidecar_training::create_and_watch(
@@ -280,19 +397,7 @@ async fn start_hosted(
         request,
         create,
         PLACEMENT_TRAINING_CISPO_HOSTED,
-        json!({
-            "algorithm": "cispo",
-            "implementation": cispo.implementation,
-            "task": bind.task_id,
-            "eps_high": 4.0,
-            "evaluation": evaluation_plan,
-            "rollout": {
-                "url": cispo.rollout_url,
-                "reward_url": cispo.reward_url,
-                "train_world_ref": cispo.train_world_ref,
-                "heldout_world_ref": cispo.heldout_world_ref
-            }
-        }),
+        json!({ "config_json": config_json }),
     )
     .await
 }
@@ -334,13 +439,23 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .unwrap();
+        let start_local = production
+            .split("async fn start_local")
+            .nth(1)
+            .unwrap()
+            .split("async fn start_hosted")
+            .next()
+            .unwrap();
+        let start_hosted = production.split("async fn start_hosted").nth(1).unwrap();
         assert!(!production.contains(&["127.0.0.1:", "8787"].concat()));
         assert!(!production.contains("SYNTH_MLX_CISPO_ROLLOUT_URL"));
         assert!(!production.contains("SYNTH_MLX_CISPO_WARM_START"));
-        assert!(!production.contains("banking77"));
+        assert!(!start_local.contains("banking77"));
         assert!(!production.contains("alfworld"));
         assert!(!production.contains("cookbooks/optimizers/cispo/rollout.json"));
-        assert!(production.contains("bind_cispo"));
+        assert!(start_local.contains("bind_cispo"));
+        assert!(!start_hosted.contains("bind_cispo"));
+        assert!(start_hosted.contains("hosted_cispo_config_json"));
         assert!(production.contains("training_artifact_id"));
         assert!(production.contains("\"signal_attempts\": 24"));
         assert!(production.contains("\"group_size\": 16"));
@@ -348,6 +463,132 @@ mod tests {
         assert!(production.contains("\"learning_rate\": 0.00005"));
         assert!(production.contains("\"checkpoint_every\": 1"));
         assert!(production.contains("create_and_watch"));
+    }
+
+    fn paid_slime_receipt_path() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cispo.slime.v1.receipt.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "schema_version": "tinker.capability_validation.v1",
+              "capability": "cispo.slime.v1",
+              "validated": true,
+              "paid_update": true
+            }"#,
+        )
+        .unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn hosted_recipe_catalog_is_available_only_with_receipt_and_cispo_token() {
+        let previous_receipt = std::env::var("TINKER_CISPO_VALIDATION_RECEIPT").ok();
+        let previous_token = std::env::var("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN").ok();
+        std::env::remove_var("TINKER_CISPO_VALIDATION_RECEIPT");
+        std::env::remove_var("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN");
+        let recipes = recipe_catalog();
+        let hosted: Vec<_> = recipes
+            .iter()
+            .filter(|recipe| {
+                matches!(
+                    recipe["id"].as_str(),
+                    Some(HOSTED_CISPO_RECIPE) | Some(HOSTED_BANKING77_CISPO_RECIPE)
+                )
+            })
+            .collect();
+        assert_eq!(hosted.len(), 2);
+        for recipe in &hosted {
+            assert_eq!(recipe["availability"], "unavailable");
+            assert!(
+                recipe["availabilityReason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("TINKER_CISPO_VALIDATION_RECEIPT"),
+                "{}",
+                recipe["availabilityReason"]
+            );
+            let prerequisites = recipe["prerequisites"].as_array().unwrap();
+            assert!(prerequisites.iter().any(|item| {
+                item.as_str()
+                    == Some("synth-optimizers-cispo service --db … --bind 127.0.0.1:8880")
+            }));
+            assert!(prerequisites
+                .iter()
+                .any(|item| item.as_str() == Some("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN")));
+            assert!(!serde_json::to_string(recipe)
+                .unwrap()
+                .contains("tunnel lease"));
+        }
+
+        let (_dir, receipt) = paid_slime_receipt_path();
+        std::env::set_var("TINKER_CISPO_VALIDATION_RECEIPT", receipt.to_str().unwrap());
+        let with_receipt = recipe_catalog();
+        let alias = with_receipt
+            .iter()
+            .find(|recipe| recipe["id"] == HOSTED_CISPO_RECIPE)
+            .unwrap();
+        assert_eq!(alias["availability"], "unavailable");
+        assert!(
+            alias["availabilityReason"]
+                .as_str()
+                .unwrap()
+                .contains("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN"),
+            "{}",
+            alias["availabilityReason"]
+        );
+
+        std::env::set_var("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN", "local-qa-token");
+        let admitted = recipe_catalog();
+        for id in [HOSTED_CISPO_RECIPE, HOSTED_BANKING77_CISPO_RECIPE] {
+            let recipe = admitted
+                .iter()
+                .find(|recipe| recipe["id"] == id)
+                .unwrap();
+            assert_eq!(recipe["availability"], "available", "{id}");
+            assert!(recipe["availabilityReason"].is_null());
+        }
+
+        match previous_receipt {
+            Some(value) => std::env::set_var("TINKER_CISPO_VALIDATION_RECEIPT", value),
+            None => std::env::remove_var("TINKER_CISPO_VALIDATION_RECEIPT"),
+        }
+        match previous_token {
+            Some(value) => std::env::set_var("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN", value),
+            None => std::env::remove_var("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN"),
+        }
+    }
+
+    #[test]
+    fn hosted_cispo_config_json_is_cispo_request_v1() {
+        let request = hosted_cispo_config_json();
+        assert_eq!(request["schema_version"], "cispo.request.v1");
+        assert_eq!(request["algorithm_id"], "cispo");
+        assert_eq!(request["implementation"], "slime-reference");
+        assert_eq!(request["implementation_version"], "cispo.slime.v1");
+        assert_eq!(request["provider"], "tinker");
+        assert_eq!(request["model_id"], "openai/gpt-oss-20b");
+        assert_eq!(request["mode"], "learning_signal");
+        assert_eq!(request["renderer_version"], "renderers.gpt-oss.low.v1");
+        assert_eq!(request["dataset"]["recipe_id"], "banking77.cispo.v1");
+        assert_eq!(request["dataset"]["heldout_locked"], true);
+        assert!(request["dataset"]["examples"].is_array());
+        assert_eq!(request["training"]["updates"], 1);
+        assert_eq!(request["training"]["group_size"], 2);
+        assert_eq!(request["training"]["prompts_per_update"], 1);
+        assert_eq!(request["training"]["eps_clip"], 1.0);
+        assert_eq!(request["training"]["eps_clip_high"], 4.0);
+        assert_eq!(request["training"]["checkpoint_every_updates"], 1);
+        assert_eq!(request["reward"]["version"], "banking77.exact_label.v1");
+        assert_eq!(request["reward"]["task"], "banking77");
+        assert_eq!(
+            request["evaluation"]["scorer_version"],
+            "banking77.exact_label.v1"
+        );
+        assert_eq!(request["evaluation"]["heldout_locked"], true);
+        assert_eq!(request["evaluation"]["mode"], "learning_signal");
+        assert!(request["evaluation"].get("transport").is_none());
+        assert!(request["evaluation"].get("container").is_none());
     }
 
     #[test]
@@ -428,6 +669,7 @@ mod tests {
     #[test]
     fn hosted_cispo_is_not_admitted_even_when_the_legacy_environment_flag_is_set() {
         std::env::set_var("SYNTH_OPTIMIZERS_CISPO_HOSTED_ADMITTED", "1");
+        std::env::remove_var("TINKER_CISPO_VALIDATION_RECEIPT");
         assert!(!crate::optimizers::sidecar_training::admitted_placements()
             .contains(&PLACEMENT_TRAINING_CISPO_HOSTED));
         std::env::remove_var("SYNTH_OPTIMIZERS_CISPO_HOSTED_ADMITTED");

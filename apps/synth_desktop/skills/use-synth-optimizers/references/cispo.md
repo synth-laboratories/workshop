@@ -12,10 +12,10 @@ Requires the Optimizers sidecar on Apple Silicon. Warm-start from an SFT adapter
 {"operation":"start_workflow","arguments":{"recipe_id":"cispo.banking77.mlx.v1","open_visual":true}}
 ```
 
-## Hosted slime.v1
+## Hosted Tinker
 
-Recipe: `cispo.slime.hosted.v1`. Fail-closed until the slime clip identity canary (`1 + eps_high`) admits `training.cispo.hosted`. Do not draft a free-form agent launch against Optimizers-beta.
+Recipe: `cispo.banking77.tinker.v1` (alias `cispo.hosted.tinker.v1`). Fail-closed until `TINKER_CISPO_VALIDATION_RECEIPT` admits hosted CISPO. Public `synth-optimizers` CISPO service on Tinker — not Modal slime. Do not draft a free-form agent launch.
 
 ```json
-{"operation":"start_workflow","arguments":{"recipe_id":"cispo.slime.hosted.v1","open_visual":true}}
+{"operation":"start_workflow","arguments":{"recipe_id":"cispo.banking77.tinker.v1","open_visual":true}}
 ```

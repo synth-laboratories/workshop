@@ -14,7 +14,8 @@ use super::models::{
     SavedLoraCheckpoint, TrainingJobStatus,
 };
 use super::sft_client::SftOptimizerClient;
-use super::training_adapter::TerminalMapping;
+use super::cispo_client::CispoOptimizerClient;
+use super::training_adapter::{adapt_source_fact, TerminalMapping};
 use super::OptimizerService;
 use crate::error::error_is;
 use crate::ipc::{JsonHttpRequest, JsonHttpResponse};
@@ -38,7 +39,18 @@ pub const PLACEMENT_TRAINING_CISPO_HOSTED: &str = "training.cispo.hosted";
 pub const LOCAL_MLX_SFT_RECIPE: &str = "sft.qwen35-2b.mlx.v1";
 pub const LOCAL_SFT_LEARNING_RATE: f64 = 0.00001;
 pub const LOCAL_MLX_CISPO_RECIPE: &str = "cispo.mlx.v1";
-pub const HOSTED_CISPO_RECIPE: &str = "cispo.slime.hosted.v1";
+pub const HOSTED_CISPO_RECIPE: &str = "cispo.hosted.tinker.v1";
+pub const HOSTED_BANKING77_CISPO_RECIPE: &str = "cispo.banking77.tinker.v1";
+const HOSTED_CISPO_LEGACY_IDS: &[&str] = &[
+    "cispo.slime.hosted.v1",
+    "cispo.banking77.slime.tinker.v1",
+];
+
+pub fn is_hosted_cispo_recipe(recipe_id: &str) -> bool {
+    recipe_id == HOSTED_CISPO_RECIPE
+        || recipe_id == HOSTED_BANKING77_CISPO_RECIPE
+        || HOSTED_CISPO_LEGACY_IDS.contains(&recipe_id)
+}
 
 const BASE_MODEL: &str = "Qwen/Qwen3.5-2B";
 const MAX_STEPS: u64 = 4;
@@ -255,6 +267,7 @@ impl TrainingRuntime {
             .filter(|event| {
                 event
                     .get("sequence")
+                    .or_else(|| event.get("sequence_number"))
                     .and_then(Value::as_u64)
                     .is_some_and(|sequence| sequence > after)
             })
@@ -437,13 +450,33 @@ impl TrainingRuntime {
 }
 
 pub fn admitted_placements() -> Vec<&'static str> {
-    vec![
+    let mut placements = vec![
         PLACEMENT_SEARCH_GEPA_LOCAL,
         PLACEMENT_SEARCH_GELO_HOSTED,
         PLACEMENT_TRAINING_SFT_LOCAL,
         PLACEMENT_TRAINING_SFT_HOSTED,
         PLACEMENT_TRAINING_CISPO_LOCAL,
-    ]
+    ];
+    if hosted_cispo_receipt_admits() {
+        placements.push(PLACEMENT_TRAINING_CISPO_HOSTED);
+    }
+    placements
+}
+
+fn hosted_cispo_receipt_admits() -> bool {
+    let Ok(path) = std::env::var("TINKER_CISPO_VALIDATION_RECEIPT") else {
+        return false;
+    };
+    let Ok(text) = std::fs::read_to_string(path.trim()) else {
+        return false;
+    };
+    let Ok(receipt) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    receipt.get("schema_version").and_then(Value::as_str) == Some("tinker.capability_validation.v1")
+        && receipt.get("capability").and_then(Value::as_str) == Some("cispo.slime.v1")
+        && receipt.get("validated").and_then(Value::as_bool) == Some(true)
+        && receipt.get("paid_update").and_then(Value::as_bool) == Some(true)
 }
 
 pub fn merge_training_capabilities(mut upstream: Value) -> Value {
@@ -736,7 +769,11 @@ async fn watch_job(
             .unwrap_or_default();
         if let Some(sequence) = events
             .first()
-            .and_then(|event| event.get("sequence"))
+            .and_then(|event| {
+                event
+                    .get("sequence")
+                    .or_else(|| event.get("sequence_number"))
+            })
             .and_then(Value::as_u64)
         {
             if sequence != cursor + 1 {
@@ -752,13 +789,20 @@ async fn watch_job(
         for event in events {
             let sequence = event
                 .get("sequence")
+                .or_else(|| event.get("sequence_number"))
                 .and_then(Value::as_u64)
                 .ok_or_else(|| anyhow!("training event omitted sequence"))?;
             if sequence != cursor + 1 {
                 bail!("training event sequence gap after {cursor}: {sequence}");
             }
             append_mapped_event(&service, &run_id, &algorithm, &event, sequence).await?;
-            if event.get("type").and_then(Value::as_str) == Some("checkpoint.created") {
+            if event
+                .get("type")
+                .or_else(|| event.get("event_type"))
+                .or_else(|| event.get("kind"))
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind == "checkpoint.created" || kind.ends_with("checkpoint.created"))
+            {
                 let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
                 let _ = service
                     .upsert_local_lora_from_event(run_id.clone(), payload)
@@ -933,21 +977,29 @@ pub async fn append_mapped_event(
     event: &Value,
     sequence: u64,
 ) -> Result<()> {
+    let mut draft = mapped_training_draft(algorithm, event)
+        .idempotency_key(format!("sidecar-training:{sequence}"));
+    if draft.raw.is_null() {
+        draft = draft.raw(event.clone());
+    }
+    service
+        .append_event_payloads(run_id.into(), vec![draft])
+        .await?;
+    Ok(())
+}
+
+fn mapped_training_draft(algorithm: &str, event: &Value) -> OptimizerEventDraft {
+    if let Ok(adapted) = adapt_source_fact(algorithm, event) {
+        return adapted.draft;
+    }
     let kind = event
         .get("type")
+        .or_else(|| event.get("event_type"))
+        .or_else(|| event.get("kind"))
         .and_then(Value::as_str)
         .unwrap_or("job.event");
     let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
-    let draft = mapped_event_draft(kind, algorithm, &payload);
-    service
-        .append_event_payloads(
-            run_id.into(),
-            vec![draft
-                .idempotency_key(format!("sidecar-training:{sequence}"))
-                .raw(event.clone())],
-        )
-        .await?;
-    Ok(())
+    mapped_event_draft(kind, algorithm, &payload)
 }
 
 fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> OptimizerEventDraft {
@@ -1002,8 +1054,91 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
                 ]))
                 .item(normalized_sidecar_evaluation(kind, algorithm, detail))
         }
-        "training.clip" => OptimizerEventDraft::new("cispo.clip.identity", algorithm)
-            .delta(Map::from_iter([("clip".into(), payload.clone())])),
+        "training.clip" | "cispo.clip.identity" => {
+            OptimizerEventDraft::new("cispo.clip.identity", algorithm)
+                .delta(Map::from_iter([
+                    ("clip".into(), payload.get("clip").cloned().unwrap_or_else(|| payload.clone())),
+                    (
+                        "identity".into(),
+                        payload
+                            .get("identity")
+                            .cloned()
+                            .unwrap_or_else(|| json!("cispo.slime.v1")),
+                    ),
+                ]))
+        }
+        "sft.step.metrics" | "sft.training.metrics" => {
+            OptimizerEventDraft::new("sft.training.metrics", algorithm).delta(Map::from_iter([
+                (
+                    "step".into(),
+                    payload
+                        .get("step")
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "train_loss".into(),
+                    payload
+                        .get("train_loss")
+                        .or_else(|| payload.get("loss"))
+                        .or_else(|| payload.pointer("/metrics/loss"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                ),
+                ("learning_rate".into(), payload["learning_rate"].clone()),
+                ("throughput".into(), payload["tokens_per_second"].clone()),
+            ]))
+        }
+        "cispo.update.completed" | "cispo.step.metrics" | "cispo.importance_ratio.measured" => {
+            OptimizerEventDraft::new("training.metrics", algorithm).delta(Map::from_iter([
+                (
+                    "step".into(),
+                    payload
+                        .get("step")
+                        .or_else(|| payload.get("update"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "train_loss".into(),
+                    payload
+                        .get("train_loss")
+                        .or_else(|| payload.get("loss"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "reward_variance".into(),
+                    payload["reward_variance"].clone(),
+                ),
+                ("group_size".into(), payload.get("group_count").or_else(|| payload.get("group_size")).cloned().unwrap_or(Value::Null)),
+                (
+                    "mean_reward".into(),
+                    payload["reward_mean"].clone(),
+                ),
+                (
+                    "optimizer_step".into(),
+                    payload
+                        .get("update")
+                        .or_else(|| payload.get("step"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                ),
+            ]))
+        }
+        "sft.checkpoint.created" | "cispo.checkpoint.created" => {
+            OptimizerEventDraft::new("sft.checkpoint.ready", algorithm).item(json!({
+                "id": payload["checkpoint_id"],
+                "step": payload.get("step").cloned().unwrap_or_else(|| payload["update"].clone()),
+                "status": "ready",
+                "ready": true,
+                "raw": payload
+            }))
+        }
+        "sft.completed" | "cispo.completed" => {
+            OptimizerEventDraft::new("training.job.completed", algorithm)
+                .delta(Map::from_iter([("status".into(), json!("succeeded"))]))
+        }
         "cispo.no_learning_signal" => {
             OptimizerEventDraft::new("cispo.no_learning_signal", algorithm)
                 .level("error")
@@ -1380,6 +1515,27 @@ pub fn tunneled_evaluation_plan(
     })
 }
 
+fn public_tinker_cispo_request(value: &Value) -> bool {
+    value.get("schema_version").and_then(Value::as_str) == Some("cispo.request.v1")
+        && value.get("algorithm_id").and_then(Value::as_str) == Some("cispo")
+}
+
+fn hosted_cispo_submit_payload(config: &Value) -> Result<Value> {
+    if let Some(config_json) = config.get("config_json") {
+        if public_tinker_cispo_request(config_json) {
+            return Ok(config_json.clone());
+        }
+    }
+    if public_tinker_cispo_request(config) {
+        return Ok(config.clone());
+    }
+    validate_tunneled_evaluation_plan(config)?;
+    Ok(config
+        .get("config_json")
+        .cloned()
+        .unwrap_or_else(|| config.clone()))
+}
+
 fn validate_tunneled_evaluation_plan(config: &Value) -> Result<()> {
     let plan = config
         .get("evaluation")
@@ -1654,11 +1810,7 @@ async fn drive_hosted_sft_job(
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
                 if sequence > cursor {
-                    job.events.push(json!({
-                        "sequence": sequence,
-                        "type": event.get("type").cloned().unwrap_or_else(|| json!("hosted.event")),
-                        "payload": event,
-                    }));
+                    job.events.push(normalize_hosted_event(event, sequence));
                     cursor = sequence;
                 }
             }
@@ -1701,11 +1853,115 @@ async fn drive_hosted_cispo_job(
     job_id: &str,
     config: &Value,
 ) -> Result<()> {
-    validate_tunneled_evaluation_plan(config)?;
-    let _ = (runtime, job_id);
-    bail!(
-        "hosted CISPO is fail-closed until an authenticated sidecar capability projects a signed slime-canary admission receipt"
-    )
+    if !hosted_cispo_receipt_admits() {
+        bail!(
+            "hosted CISPO is fail-closed until TINKER_CISPO_VALIDATION_RECEIPT points at a paid slime-canary receipt"
+        );
+    }
+    let client = CispoOptimizerClient::from_env()?;
+    let payload = hosted_cispo_submit_payload(config)?;
+    client.submit(job_id, &payload).await?;
+    let mut cursor = 0u64;
+    let mut page_errors = 0u32;
+    let mut cancel_sent = false;
+    loop {
+        {
+            let jobs = runtime.jobs.lock().await;
+            if jobs.get(job_id).is_some_and(|job| job.cancelled) && !cancel_sent {
+                client
+                    .cancel(job_id)
+                    .await
+                    .context("request hosted CISPO cancellation")?;
+                cancel_sent = true;
+            }
+        }
+        let page = match client.optimizer_events_after(job_id, cursor, 500).await {
+            Ok(page) => {
+                page_errors = 0;
+                page
+            }
+            Err(_error) if page_errors < MAX_PAGE_ERRORS => {
+                page_errors += 1;
+                sleep(Duration::from_millis(250)).await;
+                continue;
+            }
+            Err(error) => {
+                return Err(error.context("hosted CISPO event polling stayed unavailable"));
+            }
+        };
+        {
+            let mut jobs = runtime.jobs.lock().await;
+            let job = jobs
+                .get_mut(job_id)
+                .ok_or_else(|| anyhow!("training job disappeared"))?;
+            job.status = TrainingJobStatus::Running;
+            for event in page
+                .get("events")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            {
+                let sequence = event
+                    .get("sequence_number")
+                    .or_else(|| event.get("sequence"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if sequence > cursor {
+                    job.events.push(normalize_hosted_event(event, sequence));
+                    cursor = sequence;
+                }
+            }
+        }
+        let remote = client.get_run(job_id).await?;
+        match remote
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("running")
+        {
+            "succeeded" | "completed" => {
+                let mut jobs = runtime.jobs.lock().await;
+                if let Some(job) = jobs.get_mut(job_id) {
+                    job.status = TrainingJobStatus::Succeeded;
+                    append_job_event(job, "job.succeeded", json!({}));
+                }
+                return Ok(());
+            }
+            "failed" => bail!(
+                "{}",
+                remote
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("hosted CISPO failed")
+            ),
+            "cancelled" => {
+                let mut jobs = runtime.jobs.lock().await;
+                if let Some(job) = jobs.get_mut(job_id) {
+                    job.status = TrainingJobStatus::Cancelled;
+                }
+                return Ok(());
+            }
+            _ => sleep(Duration::from_millis(400)).await,
+        }
+    }
+}
+
+fn normalize_hosted_event(mut event: Value, sequence: u64) -> Value {
+    let kind = event
+        .get("type")
+        .or_else(|| event.get("event_type"))
+        .or_else(|| event.get("kind"))
+        .cloned();
+    if let Some(object) = event.as_object_mut() {
+        object
+            .entry("sequence".to_string())
+            .or_insert_with(|| json!(sequence));
+        if !object.get("type").is_some_and(Value::is_string) {
+            if let Some(kind) = kind {
+                object.insert("type".into(), kind);
+            }
+        }
+    }
+    event
 }
 
 pub async fn infer_checkpoint<F>(
@@ -2125,6 +2381,47 @@ pub fn optional_jsonl(var: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn public_sequence_number_events_survive_the_sidecar_page() {
+        let runtime = TrainingRuntime::new();
+        runtime.jobs.lock().await.insert(
+            "hosted-job".into(),
+            TrainingJob {
+                placement: PLACEMENT_TRAINING_SFT_HOSTED.into(),
+                recipe_id: "sft.banking77.nemotron-lightning.tinker.v1".into(),
+                status: TrainingJobStatus::Running,
+                events: vec![json!({
+                    "sequence_number": 1,
+                    "event_type": "sft.step.metrics",
+                    "payload": {"step": 1, "train_loss": 0.42}
+                })],
+                handoff: json!({}),
+                cancelled: false,
+                error: None,
+            },
+        );
+
+        let response = runtime.job_events("hosted-job", "after=0").await;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.body["events"].as_array().unwrap().len(), 1);
+        assert_eq!(response.body["events"][0]["sequence_number"], 1);
+    }
+
+    #[test]
+    fn hosted_event_copy_backfills_sequence_and_type() {
+        let event = normalize_hosted_event(
+            json!({
+                "sequence_number": 7,
+                "kind": "cispo.update.completed",
+                "payload": {"update": 1}
+            }),
+            7,
+        );
+        assert_eq!(event["sequence"], 7);
+        assert_eq!(event["sequence_number"], 7);
+        assert_eq!(event["type"], "cispo.update.completed");
+    }
+
     #[test]
     fn capability_merge_keeps_gepa_first_and_adds_training() {
         let merged = merge_training_capabilities(json!({
@@ -2158,6 +2455,27 @@ mod tests {
         std::env::set_var("SYNTH_OPTIMIZERS_CISPO_HOSTED_ADMITTED", "1");
         assert!(!admitted_placements().contains(&PLACEMENT_TRAINING_CISPO_HOSTED));
         std::env::remove_var("SYNTH_OPTIMIZERS_CISPO_HOSTED_ADMITTED");
+        std::env::remove_var("TINKER_CISPO_VALIDATION_RECEIPT");
+    }
+
+    #[test]
+    fn hosted_cispo_admits_only_a_paid_slime_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cispo.slime.v1.receipt.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "schema_version": "tinker.capability_validation.v1",
+              "capability": "cispo.slime.v1",
+              "validated": true,
+              "paid_update": true
+            }"#,
+        )
+        .unwrap();
+        std::env::set_var("TINKER_CISPO_VALIDATION_RECEIPT", path.to_str().unwrap());
+        assert!(admitted_placements().contains(&PLACEMENT_TRAINING_CISPO_HOSTED));
+        std::env::remove_var("TINKER_CISPO_VALIDATION_RECEIPT");
+        assert!(!admitted_placements().contains(&PLACEMENT_TRAINING_CISPO_HOSTED));
     }
 
     #[test]
@@ -2167,6 +2485,16 @@ mod tests {
                 "training.metric",
                 json!({"step":2,"epoch":1,"loss":0.42,"learning_rate":0.00005,"tokens":128.0,"step_seconds":2.0,"tokens_per_second":64.0,"memory_bytes":1048576}),
                 "sft.training.metrics",
+            ),
+            (
+                "sft.step.metrics",
+                json!({"step":2,"metrics":{"loss":0.31},"tokens":16}),
+                "sft.training.metrics",
+            ),
+            (
+                "cispo.update.completed",
+                json!({"update":1,"reward_mean":0.5,"reward_variance":0.08,"group_count":2}),
+                "training.metrics",
             ),
             (
                 "checkpoint.created",
@@ -2312,6 +2640,72 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("exact-artifact"));
+    }
+
+    #[test]
+    fn hosted_cispo_submit_payload_skips_tunnel_for_cispo_request_v1() {
+        let request = json!({
+            "schema_version": "cispo.request.v1",
+            "algorithm_id": "cispo",
+            "implementation": "slime-reference",
+            "implementation_version": "cispo.slime.v1",
+            "provider": "tinker",
+            "model_id": "openai/gpt-oss-20b",
+            "mode": "learning_signal",
+            "dataset": { "recipe_id": "banking77.cispo.v1", "examples": [], "heldout_locked": true },
+            "training": {
+                "updates": 1,
+                "group_size": 2,
+                "prompts_per_update": 1,
+                "eps_clip": 1.0,
+                "eps_clip_high": 4.0,
+                "checkpoint_every_updates": 1
+            },
+            "reward": { "version": "banking77.exact_label.v1", "task": "banking77" },
+            "evaluation": {
+                "scorer_version": "banking77.exact_label.v1",
+                "heldout_locked": true,
+                "mode": "learning_signal"
+            }
+        });
+        let payload = hosted_cispo_submit_payload(&json!({ "config_json": request })).unwrap();
+        assert_eq!(payload["schema_version"], "cispo.request.v1");
+        assert_eq!(payload["algorithm_id"], "cispo");
+        assert_eq!(payload["evaluation"]["mode"], "learning_signal");
+        assert!(payload["evaluation"].get("transport").is_none());
+    }
+
+    #[test]
+    fn hosted_cispo_submit_payload_requires_tunnel_without_cispo_request() {
+        let error = hosted_cispo_submit_payload(&json!({
+            "algorithm": "cispo",
+            "evaluation": { "mode": "learning_signal" }
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("evaluation plan"), "{error}");
+    }
+
+    #[test]
+    fn mapping_prefers_training_adapter_when_the_fact_is_coercible() {
+        let event = json!({
+            "sequence": 4,
+            "type": "cispo.update.completed",
+            "payload": {
+                "update": 1,
+                "reward_mean": 0.5,
+                "reward_variance": 0.08,
+                "group_count": 2
+            }
+        });
+        let draft = mapped_training_draft("cispo", &event);
+        assert_eq!(draft.event_type, "training.metrics");
+        assert_eq!(draft.delta["sourceSequence"], 4);
+        let fallback = mapped_training_draft(
+            "sft",
+            &json!({ "type": "job.started", "payload": {} }),
+        );
+        assert_eq!(fallback.event_type, "optimizer.run.started");
     }
 
     #[test]

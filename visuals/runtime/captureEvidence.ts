@@ -18,5 +18,6 @@ export const CAPTURE_REVIEW_PRODUCT_CLASSES = [
   "trace.rollout_inspector.v1",
   "live.craftax.v1",
   "optimizer.eval.live.v1",
-  "optimizer.sft.live.v1"
+  "optimizer.sft.live.v1",
+  "optimizer.cispo.live.v1"
 ] as const;

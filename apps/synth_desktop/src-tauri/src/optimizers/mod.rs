@@ -3,6 +3,7 @@
 pub mod admission;
 mod artifacts;
 mod cispo;
+mod cispo_client;
 pub(crate) mod cloud;
 mod container_eval;
 pub(crate) mod container_lifecycle;

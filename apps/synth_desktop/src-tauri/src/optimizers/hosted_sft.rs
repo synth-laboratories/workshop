@@ -1,7 +1,6 @@
-//! Hosted SFT recipes backed by the public `synth-optimizers` control plane.
-//!
-//! Optimizers-beta remains an internal training executor. Workshop starts, watches,
-//! cancels, and mirrors only public SFT runs before opening `optimizer.sft.live.v1`.
+//! Hosted SFT recipes backed by the public `synth-optimizers` `sft service`
+//! (`TinkerSftExecutor`). Workshop starts, watches, cancels, and mirrors only
+//! public SFT runs before opening `optimizer.sft.live.v1`.
 
 use super::{
     ingest,
@@ -67,17 +66,22 @@ pub fn recipe_catalog() -> Vec<Value> {
 
 fn craftax_nemotron_recipe() -> Value {
     let catalog_ok = super::tinker_catalog::TinkerBaseModelCatalog::load().is_ok();
-    let availability = if catalog_ok && SftOptimizerClient::from_env().is_ok() {
-        "available"
+    let service_reason = public_sft_service_reason();
+    let available = catalog_ok && service_reason.is_none();
+    let availability_reason = if available {
+        Value::Null
+    } else if let Some(reason) = service_reason {
+        json!(reason)
     } else {
-        "unavailable"
+        json!("Hosted Tinker base-model catalog is unavailable")
     };
     json!({
         "id": HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE,
         "title": "Craftax Nemotron 3.5 Lightning Tinker SFT",
         "algorithmId": "sft",
         "task": "craftax",
-        "availability": availability,
+        "availability": if available { "available" } else { "unavailable" },
+        "availabilityReason": availability_reason,
         "limits": {
             "backend": "tinker",
             "checkpointSteps": CRAFTAX_CHECKPOINT_STEPS,
@@ -90,9 +94,10 @@ fn craftax_nemotron_recipe() -> Value {
         },
         "credentialInputs": [],
         "prerequisites": [
-            "SYNTH_OPTIMIZERS_SFT_SERVICE_URL (or local http://127.0.0.1:8878)",
+            "synth-optimizers sft service --db … --bind 127.0.0.1:8878",
             "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN",
-            "TINKER_API_KEY held by the Optimizers-beta executor",
+            "SYNTH_OPTIMIZERS_SFT_SERVICE_URL",
+            "SYNTH_OPTIMIZERS_SFT_FIXTURE=1 for unpaid",
             "Craftax gold / GameBench on 127.0.0.1:8098"
         ],
     })
@@ -100,18 +105,25 @@ fn craftax_nemotron_recipe() -> Value {
 
 fn banking77_recipe() -> Value {
     let catalog_ok = super::tinker_catalog::TinkerBaseModelCatalog::load().is_ok();
-    let availability =
-        if catalog_ok && SftOptimizerClient::from_env().is_ok() && banking77_source().is_ok() {
-            "available"
-        } else {
-            "unavailable"
-        };
+    let service_reason = public_sft_service_reason();
+    let jsonl_ok = banking77_source().is_ok();
+    let available = catalog_ok && service_reason.is_none() && jsonl_ok;
+    let availability_reason = if available {
+        Value::Null
+    } else if let Some(reason) = service_reason {
+        json!(reason)
+    } else if !jsonl_ok {
+        json!("SYNTH_SFT_BANKING77_TRAIN_JSONL must point at a real Banking77 JSONL file")
+    } else {
+        json!("Hosted Tinker base-model catalog is unavailable")
+    };
     json!({
         "id": HOSTED_SFT_BANKING77_RECIPE,
         "title": "Banking77 Nemotron Lightning Tinker SFT",
         "algorithmId": "sft",
         "task": "banking77",
-        "availability": availability,
+        "availability": if available { "available" } else { "unavailable" },
+        "availabilityReason": availability_reason,
         "limits": {
             "backend": "tinker",
             "checkpointSteps": BANKING77_CHECKPOINT_STEPS,
@@ -125,13 +137,41 @@ fn banking77_recipe() -> Value {
         },
         "credentialInputs": [],
         "prerequisites": [
-            "SYNTH_OPTIMIZERS_SFT_SERVICE_URL (or local http://127.0.0.1:8878)",
+            "synth-optimizers sft service --db … --bind 127.0.0.1:8878",
             "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN",
-            "TINKER_API_KEY held by the Optimizers-beta executor",
+            "SYNTH_OPTIMIZERS_SFT_SERVICE_URL",
+            "SYNTH_OPTIMIZERS_SFT_FIXTURE=1 for unpaid",
             "SYNTH_SFT_BANKING77_TRAIN_JSONL",
             "banking77_classify container on 127.0.0.1:8110"
         ],
     })
+}
+
+fn public_sft_service_reason() -> Option<String> {
+    if SftOptimizerClient::from_env().is_ok() {
+        return None;
+    }
+    if std::env::var("SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        return Some(
+            "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN is required to reach the public SFT service."
+                .into(),
+        );
+    }
+    if std::env::var("SYNTH_OPTIMIZERS_SFT_SERVICE_URL")
+        .ok()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return Some("SYNTH_OPTIMIZERS_SFT_SERVICE_URL is empty.".into());
+    }
+    Some(
+        "Public SFT service client is not configured (SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN / SYNTH_OPTIMIZERS_SFT_SERVICE_URL)."
+            .into(),
+    )
 }
 
 pub async fn start(
@@ -961,6 +1001,36 @@ mod tests {
             HOSTED_SFT_COST_CEILING_USD
         );
         assert_eq!(HOSTED_SFT_COST_CEILING_USD, 10.0);
+    }
+
+    #[test]
+    fn hosted_sft_prerequisites_name_the_public_sft_service() {
+        for recipe in [craftax_nemotron_recipe(), banking77_recipe()] {
+            let text = serde_json::to_string(&recipe).unwrap();
+            assert!(
+                !text.contains("Optimizers-beta"),
+                "{}",
+                recipe["id"]
+            );
+            let prerequisites = recipe["prerequisites"].as_array().unwrap();
+            assert!(prerequisites.iter().any(|item| {
+                item.as_str() == Some("synth-optimizers sft service --db … --bind 127.0.0.1:8878")
+            }));
+            assert!(prerequisites
+                .iter()
+                .any(|item| item.as_str() == Some("SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN")));
+            assert!(prerequisites
+                .iter()
+                .any(|item| item.as_str() == Some("SYNTH_OPTIMIZERS_SFT_SERVICE_URL")));
+            assert!(prerequisites
+                .iter()
+                .any(|item| item.as_str() == Some("SYNTH_OPTIMIZERS_SFT_FIXTURE=1 for unpaid")));
+        }
+        let craftax = serde_json::to_string(&craftax_nemotron_recipe()).unwrap();
+        assert!(craftax.contains("127.0.0.1:8098"));
+        let banking = serde_json::to_string(&banking77_recipe()).unwrap();
+        assert!(banking.contains("SYNTH_SFT_BANKING77_TRAIN_JSONL"));
+        assert!(banking.contains("127.0.0.1:8110"));
     }
 
     #[test]
