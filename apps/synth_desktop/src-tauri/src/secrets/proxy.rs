@@ -489,6 +489,7 @@ fn is_forbidden_header(name: &str) -> bool {
             | "trailer"
             | "transfer-encoding"
             | "upgrade"
+            | "accept-encoding"
             | "content-length"
     ) || name.eq_ignore_ascii_case(RELAY_ORIGIN_HEADER)
 }
@@ -645,6 +646,9 @@ async fn handle(
         }
         outbound = outbound.header(name.as_str(), value.as_bytes());
     }
+    // Keep the exact response bytes inspectable for usage accounting. The
+    // downstream SDK must not be the only process that can decompress them.
+    outbound = outbound.header(reqwest::header::ACCEPT_ENCODING, "identity");
     outbound = match inject_auth(outbound, route, &secret) {
         Ok(builder) => builder,
         Err(error) => {
@@ -967,6 +971,7 @@ mod tests {
     fn relay_origin_header_is_never_forwarded() {
         assert!(is_forbidden_header(RELAY_ORIGIN_HEADER));
         assert!(is_forbidden_header("X-Workshop-Proxy-Origin"));
+        assert!(is_forbidden_header("accept-encoding"));
     }
 
     /// A timeout, an unreachable host, and an unreadable body are three
