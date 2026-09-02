@@ -1928,6 +1928,7 @@ test("a recent folder can create and attach to a conversation from the landing c
 	});
 	await installLagunaFixture(page, "ready");
 
+	await page.getByTestId("composer-add-menu-trigger").click();
 	await page.getByTestId("composer-slash-btn").click();
 	await page.getByTestId("slash-command-item-workspace").click();
 	const addFolder = page.getByTestId("workspace-scope-menu").getByRole("menuitem", { name: "Add folder…" });

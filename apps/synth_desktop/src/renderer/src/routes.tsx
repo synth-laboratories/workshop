@@ -209,11 +209,6 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		onRevokeComputerUseApp,
 		state,
 		sessions,
-		selectedTargetId,
-		onSelectTarget,
-		lagunaAdapters,
-		selectedLagunaAdapterId,
-		onSelectLagunaAdapter,
 		activeChat,
 		eventsBySession,
 		activeChatSession,
@@ -247,7 +242,6 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		onReloadLaguna,
 		openBilling,
 		refreshAccountSummary,
-		setUsageSheetOpen,
 		setSidebarVisible,
 		setSidebarWidth,
 		setTerminalOpen,
@@ -882,14 +876,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 			{view.kind === "landing" ? (
 				<LandingPage
 					state={state}
-					selectedTargetId={selectedTargetId}
-					onSelectTarget={onSelectTarget}
-					lagunaAdapters={lagunaAdapters}
-					selectedLagunaAdapterId={selectedLagunaAdapterId}
-					onSelectLagunaAdapter={onSelectLagunaAdapter}
 					onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
-					onConfigureModels={() => setView({ kind: "settings", section: "models" })}
-					onResolveBilling={() => setUsageSheetOpen(true)}
 				/>
 			) : null}
 

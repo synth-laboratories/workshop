@@ -61,12 +61,19 @@ test("empty conversation keeps a quiet, icon-free model surface", () => {
 	const composer = read("components/Composer.tsx");
 	const styles = read("styles/app.css");
 	assert.match(app, /showTabIcon=\{c\.view\.kind !== "landing"\}/);
+	assert.match(app, /showCloseTab=\{c\.view\.kind !== "landing"\}/);
+	assert.match(app, /c\.view\.kind === "landing" \? "New conversation"/);
 	assert.doesNotMatch(landing, /ProviderMark|providerMarkForTarget/);
+	assert.match(landing, /What do you want to work on\?/);
+	assert.doesNotMatch(landing.slice(landing.indexOf("export function LandingPage")), /<ModelPicker/);
 	assert.doesNotMatch(composer, /ProviderMark|providerMarkForTarget/);
+	assert.match(composer, /data-testid="composer-add-menu-trigger"/);
+	assert.match(composer, /Commands and skills/);
 	const landingRule = styles.match(/\.landing \{[\s\S]*?\n\}/)?.[0] ?? "";
 	assert.doesNotMatch(landingRule, /background-image|background-size/);
 	assert.match(styles, /\.landing \.composer,[\s\S]*?max-width: 880px/);
 	assert.match(styles, /\.landing \.composer \{[\s\S]*?min-height: 126px;[\s\S]*?border-radius:var\(--radius-composer\)/);
+	assert.doesNotMatch(styles, /#9bb5ed/);
 });
 
 test("design debt: CloudDesk leave-safe is projection-driven from AsyncInternPin", () => {

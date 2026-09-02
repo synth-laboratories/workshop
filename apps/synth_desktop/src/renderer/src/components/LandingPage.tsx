@@ -9,14 +9,7 @@ import { ComposerLayoutHost } from "./ComposerLayout";
 
 type Props = {
 	state: LandingState;
-	selectedTargetId: string;
-	onSelectTarget: (id: string) => void;
-	lagunaAdapters?: LagunaPolicy[];
-	selectedLagunaAdapterId?: string | null;
-	onSelectLagunaAdapter?: (checkpointId: string | null) => void;
 	onConfigureAccount?: () => void;
-	onConfigureModels?: () => void;
-	onResolveBilling?: () => void;
 };
 
 export function ModelPicker({
@@ -310,14 +303,7 @@ export function ModelPicker({
 
 export function LandingPage({
 	state,
-	selectedTargetId,
-	onSelectTarget,
-	lagunaAdapters = [],
-	selectedLagunaAdapterId = null,
-	onSelectLagunaAdapter,
 	onConfigureAccount,
-	onConfigureModels,
-	onResolveBilling
 }: Props) {
 	const [accountChoiceMade, setAccountChoiceMade] = useState(
 		() => window.localStorage.getItem("synth.accountChoiceMade") === "1"
@@ -328,23 +314,7 @@ export function LandingPage({
 				<div className="synth-logo-wrap">
 					<SynthLogo className="synth-logo" />
 				</div>
-				<div className="landing-title-row">
-					<p className="landing-title">Start a new conversation using</p>
-					<ModelPicker
-						selectedTargetId={selectedTargetId}
-						apiKeyConfigured={state.apiKeyConfigured}
-						openrouterApiKeyConfigured={state.openrouterApiKeyConfigured}
-						codexOauthConfigured={state.codexOauthConfigured}
-						cloudBlockedReason={state.cloudBlockedReason}
-						onSelectTarget={onSelectTarget}
-						onConfigureAccount={onConfigureAccount}
-						onConfigureModels={onConfigureModels}
-							onResolveBilling={onResolveBilling}
-							lagunaPolicies={lagunaAdapters}
-							selectedLagunaPolicyId={selectedLagunaAdapterId}
-							onSelectLagunaPolicy={onSelectLagunaAdapter}
-						/>
-				</div>
+				<p className="landing-title">What do you want to work on?</p>
 				{!state.apiKeyConfigured && !accountChoiceMade ? (
 					<div className="quick-actions" data-testid="first-run-account-choice">
 						<button type="button" className="quick-card" onClick={() => {

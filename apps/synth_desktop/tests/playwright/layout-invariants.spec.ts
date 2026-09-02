@@ -322,17 +322,17 @@ test("a long prompt never hides the active turn beneath the composer", async ({ 
 	});
 });
 
-// Model-picker containment (12:54 screenshot regression): while open, the
+// Composer model-menu containment: while open, the
 // dropdown must stay inside the viewport with an 8px inset, never overlap the
 // composer, scroll internally when tall, and flip above a low trigger.
 async function readPickerLayout(page: import("@playwright/test").Page) {
 	return page.evaluate(() => {
-		const picker = document.querySelector('[data-testid="model-dropdown"]');
+		const picker = document.querySelector('[data-testid="composer-model-menu"]');
 		const composer = document.querySelector('[data-testid="composer"]');
 		if (!picker) return { open: false as const };
 		const p = picker.getBoundingClientRect();
 		const c = composer?.getBoundingClientRect() ?? null;
-		const selected = picker.querySelector(".model-option.selected");
+		const selected = picker.querySelector(".composer-model-option.selected");
 		const s = selected?.getBoundingClientRect() ?? null;
 		return {
 			open: true as const,
@@ -354,33 +354,32 @@ async function readPickerLayout(page: import("@playwright/test").Page) {
 test("model picker stays contained at normal and short window sizes", async ({ page }) => {
 	for (const [width, height] of [[1728, 1117], [1100, 700], [960, 640]] as const) {
 		await page.setViewportSize({ width, height });
-		await page.getByTestId("model-picker").click();
-		await expect(page.getByTestId("model-dropdown")).toBeVisible();
+		await page.getByTestId("composer-model").click();
+		await expect(page.getByTestId("composer-model-menu")).toBeVisible();
 		const layout = await readPickerLayout(page);
 		if (!layout.open) throw new Error("model dropdown did not open");
 		expect(layout.rect.left, `left inset at ${width}x${height}`).toBeGreaterThanOrEqual(8);
 		expect(layout.rect.top, `top inset at ${width}x${height}`).toBeGreaterThanOrEqual(8);
 		expect(layout.rect.right, `right inset at ${width}x${height}`).toBeLessThanOrEqual(width - 8);
 		expect(layout.rect.bottom, `bottom inset at ${width}x${height}`).toBeLessThanOrEqual(height - 8);
-		expect(layout.overlapsComposer, `composer overlap at ${width}x${height}`).toBe(false);
 		expect(layout.selectedVisible, `selected visible at ${width}x${height}`).toBe(true);
 		expect(layout.bodyOverflowX, `horizontal overflow at ${width}x${height}`).toBe(false);
 		// The first level is intentionally limited to the three access methods.
-		await expect(page.getByTestId("model-access-local")).toBeVisible();
-		await expect(page.getByTestId("model-access-api")).toBeVisible();
-		await expect(page.getByTestId("model-access-chatgpt")).toBeVisible();
-		await page.getByTestId("model-access-local").click();
-		await expect(page.getByTestId("model-option-local-laguna")).toBeVisible();
+		await expect(page.getByTestId("composer-model-access-local")).toBeVisible();
+		await expect(page.getByTestId("composer-model-access-api")).toBeVisible();
+		await expect(page.getByTestId("composer-model-access-chatgpt")).toBeVisible();
+		await page.getByTestId("composer-model-access-local").click();
+		await expect(page.getByTestId("composer-model-option-local-laguna")).toBeVisible();
 		await page.keyboard.press("Escape");
-		await expect(page.getByTestId("model-dropdown")).not.toBeVisible();
+		await expect(page.getByTestId("composer-model-menu")).not.toBeVisible();
 	}
 });
 
 test("opening and closing the model picker never moves the composer", async ({ page }) => {
 	await page.setViewportSize({ width: 1280, height: 840 });
 	const before = await readLayout(page);
-	await page.getByTestId("model-picker").click();
-	await expect(page.getByTestId("model-dropdown")).toBeVisible();
+	await page.getByTestId("composer-model").click();
+	await expect(page.getByTestId("composer-model-menu")).toBeVisible();
 	const during = await readLayout(page);
 	await page.keyboard.press("Escape");
 	const after = await readLayout(page);

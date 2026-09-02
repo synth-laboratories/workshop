@@ -57,6 +57,7 @@ export type AppTitlebarProps = {
 	reserveNativeControls?: boolean;
 	brand?: "synth" | "openai";
 	showTabIcon?: boolean;
+	showCloseTab?: boolean;
 	copyItems?: TabCopyItem[];
 	onCopyItem?: (item: TabCopyItem) => Promise<void>;
 	onCloseTab: () => void;
@@ -82,6 +83,7 @@ export function AppTitlebar({
 	reserveNativeControls = false,
 	brand = "synth",
 	showTabIcon = true,
+	showCloseTab = true,
 	copyItems = [],
 	onCopyItem,
 	onCloseTab,
@@ -157,9 +159,11 @@ export function AppTitlebar({
 							) : null}
 						</div>
 					) : null}
-					<button type="button" className="tab-close" aria-label="Close tab" onPointerDown={(event) => event.stopPropagation()} onClick={onCloseTab}>
-						×
-					</button>
+					{showCloseTab ? (
+						<button type="button" className="tab-close" aria-label="Close tab" onPointerDown={(event) => event.stopPropagation()} onClick={onCloseTab}>
+							×
+						</button>
+					) : null}
 				</div>
 				{activeLocalModel ? (
 					<button

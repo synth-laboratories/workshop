@@ -173,13 +173,13 @@ test.describe("coverage gaps", () => {
 	});
 
 	test("Intern is absent from every v0.1 navigation and setup surface", async ({ page }) => {
-		await page.getByTestId("model-picker").click();
-		const menu = page.getByTestId("model-dropdown");
-		await menu.getByTestId("model-access-local").click();
+		await page.getByTestId("composer-model").click();
+		const menu = page.getByTestId("composer-model-menu");
+		await menu.getByTestId("composer-model-access-local").click();
 		await expect(menu).toBeVisible();
 		await expect(menu.getByText("Intern · Live", { exact: true })).toHaveCount(0);
 		await expect(menu.getByText("Intern · Background", { exact: true })).toHaveCount(0);
-		await expect(menu.getByTestId("model-option-local-laguna")).toBeVisible();
+		await expect(menu.getByTestId("composer-model-option-local-laguna")).toBeVisible();
 		await expect(page.getByTestId("cloud-list")).toHaveCount(0);
 		await expect(page.getByTestId("new-sync-session")).toHaveCount(0);
 		await expect(page.getByTestId("async-intern-pin")).toHaveCount(0);

@@ -360,10 +360,6 @@ function IconImage() {
 	return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden><rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.3"/><circle cx="5.2" cy="5.7" r="1.15" fill="currentColor"/><path d="m3.5 11 3-3 2.2 2.1 1.7-1.7 2.1 2.6" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 }
 
-function IconImageUnsupported() {
-	return <svg className="composer-image-unsupported" width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden data-testid="composer-image-unsupported"><circle cx="7" cy="7" r="6" fill="currentColor"/><path d="M7 3.5v4.1M7 10.3v.2" stroke="white" strokeWidth="1.45" strokeLinecap="round"/></svg>;
-}
-
 function formatContextWindow(tokens: number): string {
 	return `${Math.round(tokens / 1_000)}K context`;
 }
@@ -803,6 +799,7 @@ export function Composer({
 	const [skillChip, setSkillChip] = useState<Skill | null>(null);
 	const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
 	const [modelMenuOpen, setModelMenuOpen] = useState(false);
+	const [addMenuOpen, setAddMenuOpen] = useState(false);
 	// Steering lives in the turn controller, not on the queued-prompt row, so a
 	// second Return works from wherever the keyboard is. The ref mirrors the
 	// state because a keydown handler must read it before React commits.
@@ -885,6 +882,17 @@ export function Composer({
 		document.addEventListener("mousedown", close);
 		return () => document.removeEventListener("mousedown", close);
 	}, [slashMenuVisible]);
+
+	useEffect(() => {
+		if (!addMenuOpen) return;
+		const close = (event: MouseEvent) => {
+			if (!dockRef.current?.querySelector(".composer-add-wrap")?.contains(event.target as Node)) {
+				setAddMenuOpen(false);
+			}
+		};
+		document.addEventListener("mousedown", close);
+		return () => document.removeEventListener("mousedown", close);
+	}, [addMenuOpen]);
 
 	useLayoutEffect(() => {
 		const dock = dockRef.current;
@@ -1034,10 +1042,16 @@ export function Composer({
 
 	const openSlashMenuFromButton = () => {
 		if (!enabled) return;
+		setAddMenuOpen(false);
 		if (!/^\/(\S*)$/.test(value)) setValue("/");
 		setSlashDismissed(false);
 		textareaRef.current?.focus();
 	};
+
+	const chooseImageAttachments = () => void bridges.desktop.chooseImageFiles().then((images) => {
+		setImageAttachments((current) => [...current, ...images.filter((image) => !current.some((item) => item.path === image.path))].slice(0, 4));
+		setAttachmentError(images.length && !modelSupportsImageInput(state.selectedTargetId) ? "This model does not support image input. Choose a multimodal model or remove the screenshots before sending." : null);
+	});
 
 	const closeSlashMenu = () => setSlashDismissed(true);
 
@@ -1423,25 +1437,31 @@ export function Composer({
 				) : null}
 				<div className="composer-toolbar">
 					<div className="composer-left">
-						<button type="button" className="composer-icon-btn composer-image-button" aria-label={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Add screenshots — selected model does not support image input"} title={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Selected model does not support image input"} data-testid="composer-add-images" disabled={!enabled || submitting} onClick={() => void bridges.desktop.chooseImageFiles().then((images) => {
-							setImageAttachments((current) => [...current, ...images.filter((image) => !current.some((item) => item.path === image.path))].slice(0, 4));
-							setAttachmentError(images.length && !modelSupportsImageInput(state.selectedTargetId) ? "This model does not support image input. Choose a multimodal model or remove the screenshots before sending." : null);
-						})}><IconImage />{!modelSupportsImageInput(state.selectedTargetId) ? <IconImageUnsupported /> : null}</button>
 						<WorkspaceScopeChip hideTrigger openSignal={workspaceMenuSignal} sessionId={workspaceSessionId ?? null} ensureSession={onEnsureWorkspaceSession} fallbackWorkspace={workspaceFallback ?? null} scope={workspaceScope ?? null} onScopeChange={(next) => onWorkspaceScopeChange?.(next)} onError={(message) => onWorkspaceError?.(message)} />
-						<div className="slash-command-wrap">
+						<div className="composer-add-wrap">
 							<button
 								type="button"
-								className="composer-icon-btn"
-								disabled={!enabled}
-								aria-label="Slash commands"
-								aria-haspopup="listbox"
-								aria-expanded={slashMenuVisible}
-								aria-controls="composer-slash-menu"
-								data-testid="composer-slash-btn"
-								onClick={openSlashMenuFromButton}
+								className="composer-add-trigger"
+								disabled={!enabled || submitting}
+								aria-label="Add to conversation"
+								aria-haspopup="menu"
+								aria-expanded={addMenuOpen}
+								aria-controls="composer-add-menu"
+								data-testid="composer-add-menu-trigger"
+								onClick={() => setAddMenuOpen((open) => !open)}
 							>
-								<IconEdit />
+								<span aria-hidden>+</span>
 							</button>
+							{addMenuOpen ? (
+								<div id="composer-add-menu" className="composer-add-menu" role="menu" data-testid="composer-add-menu">
+									<button type="button" role="menuitem" data-testid="composer-add-images" onClick={() => { setAddMenuOpen(false); chooseImageAttachments(); }}>
+										<IconImage /><span><strong>Add screenshots</strong><small>Attach up to four images</small></span>
+									</button>
+									<button type="button" role="menuitem" data-testid="composer-slash-btn" onClick={openSlashMenuFromButton}>
+										<IconEdit /><span><strong>Commands and skills</strong><small>Open the command palette</small></span>
+									</button>
+								</div>
+							) : null}
 							{slashMenuVisible ? (
 								<SlashCommandMenu
 									ref={slashMenuRef}

@@ -37,14 +37,14 @@ test.describe("first-five-minutes golden path", () => {
 		const placeholder = await input.getAttribute("placeholder");
 		expect(placeholder, "composer guides the fresh user").toBeTruthy();
 		// The model picker opens, offers the local target first, and hides Intern.
-		await page.getByTestId("model-picker").click();
-		const dropdown = page.getByTestId("model-dropdown");
+		await page.getByTestId("composer-model").click();
+		const dropdown = page.getByTestId("composer-model-menu");
 		await expect(dropdown).toBeVisible();
-		await expect(dropdown.getByTestId("model-access-local")).toBeVisible();
-		await expect(dropdown.getByTestId("model-access-api")).toBeVisible();
-		await expect(dropdown.getByTestId("model-access-chatgpt")).toBeVisible();
-		await dropdown.getByTestId("model-access-local").click();
-		await expect(dropdown.getByTestId("model-option-local-laguna")).toBeVisible();
+		await expect(dropdown.getByTestId("composer-model-access-local")).toBeVisible();
+		await expect(dropdown.getByTestId("composer-model-access-api")).toBeVisible();
+		await expect(dropdown.getByTestId("composer-model-access-chatgpt")).toBeVisible();
+		await dropdown.getByTestId("composer-model-access-local").click();
+		await expect(dropdown.getByTestId("composer-model-option-local-laguna")).toBeVisible();
 		await expect(dropdown.getByText("Intern · Live", { exact: true })).toHaveCount(0);
 		await page.keyboard.press("Escape");
 		await expect(dropdown).not.toBeVisible();
@@ -53,13 +53,13 @@ test.describe("first-five-minutes golden path", () => {
 	test("without an account, cloud targets ask for configuration instead of failing", async ({ page }) => {
 		await page.getByTestId("first-run-account-choice")
 			.getByRole("button", { name: /Continue locally/ }).click();
-		await page.getByTestId("model-picker").click();
-		const dropdown = page.getByTestId("model-dropdown");
+		await page.getByTestId("composer-model").click();
+		const dropdown = page.getByTestId("composer-model-menu");
 		await expect(dropdown).toBeVisible();
-		await dropdown.getByTestId("model-access-api").click();
-		const cloudOption = dropdown.getByTestId("model-option-synth-cloud-laguna-s");
+		await dropdown.getByTestId("composer-model-access-api").click();
+		const cloudOption = dropdown.getByTestId("composer-model-option-synth-cloud-laguna-s");
 		await expect(cloudOption).toContainText("Synth API key required");
-		await expect(cloudOption.getByTestId("model-configure-synth-api-key")).toBeVisible();
+		await expect(cloudOption.getByTestId("composer-model-configure-synth-api-key")).toBeVisible();
 	});
 
 	test("the account footer reports local mode and leads to sign-in, settings stay reachable", async ({ page }) => {

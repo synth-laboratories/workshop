@@ -104,8 +104,7 @@ const toolbar = extract((state: any) => {
 	const toolbarElement = document.querySelector<HTMLElement>(".composer-toolbar");
 	const toolbarRect = toolbarElement?.getBoundingClientRect() ?? null;
 	const controlSelectors = [
-		'[data-testid="composer-add-images"]',
-		'[data-testid="composer-slash-btn"]',
+		'[data-testid="composer-add-menu-trigger"]',
 		'[data-testid="approval-mode-select"]',
 		'[data-testid="composer-model"]',
 		'[data-testid="reasoning-effort-select"]',

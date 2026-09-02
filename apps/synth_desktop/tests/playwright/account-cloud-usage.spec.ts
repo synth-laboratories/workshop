@@ -427,18 +427,18 @@ test("an exhausted allowance blocks the cloud model and offers upgrade; local st
 	await expect(page.getByTestId("account-primary-action")).toContainText("Upgrade");
 	await page.keyboard.press("Escape");
 
-	await page.getByTestId("model-picker").click();
-	await page.getByTestId("model-access-api").click();
-	await expect(page.getByTestId("model-option-allowance-blocked").first()).toContainText("allowance is used up");
+	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-api").click();
+	await expect(page.getByTestId("composer-model-allowance-blocked").first()).toContainText("allowance is used up");
 	// Every hosted Synth Cloud model is blocked; local models remain available.
-	await expect(page.getByTestId("model-option-allowance-blocked")).toHaveCount(4);
+	await expect(page.getByTestId("composer-model-allowance-blocked")).toHaveCount(4);
 	// The local target is untouched by a cloud billing state.
-	await page.getByTestId("model-access-back").click();
-	await page.getByTestId("model-access-local").click();
-	await expect(page.getByTestId("model-option-local-laguna")).toBeVisible();
-	await page.getByTestId("model-access-back").click();
-	await page.getByTestId("model-access-api").click();
-	await page.getByTestId("model-resolve-synth-billing").first().click();
+	await page.getByTestId("composer-model-access-back").click();
+	await page.getByTestId("composer-model-access-local").click();
+	await expect(page.getByTestId("composer-model-option-local-laguna")).toBeVisible();
+	await page.getByTestId("composer-model-access-back").click();
+	await page.getByTestId("composer-model-access-api").click();
+	await page.getByTestId("composer-model-resolve-synth-billing").first().click();
 	await expect(page.getByTestId("usage-sheet")).toBeVisible();
 	await expect(page.getByTestId("usage-sheet-blocked")).toContainText("allowance is used up");
 	await expect(page.getByTestId("usage-sheet-quota-exhausted")).toContainText("Hosted quota is exhausted");
