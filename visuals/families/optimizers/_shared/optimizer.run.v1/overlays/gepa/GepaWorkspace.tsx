@@ -191,6 +191,7 @@ export function GepaWorkspace({
   const gepa = projected.gepa;
   const [presentationState, setPresentationState] = useState<GepaPresentationState>(DEFAULT_GEPA_PRESENTATION_STATE);
   const [hydratedRunId, setHydratedRunId] = useState<string | null>(null);
+  const runDetailsRef = useRef<HTMLDetailsElement | null>(null);
   const tracesRef = useRef<HTMLDivElement | null>(null);
   const candidateInspectorRef = useRef<HTMLDivElement | null>(null);
   const stageFilter = presentationState.stageFilter;
@@ -466,7 +467,8 @@ export function GepaWorkspace({
   ];
 
   const showTrace = () => {
-    tracesRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (runDetailsRef.current) runDetailsRef.current.open = true;
+    window.requestAnimationFrame(() => tracesRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
   };
 
   return (
@@ -545,70 +547,75 @@ export function GepaWorkspace({
           />
         </div>
       </div>
-      <EvidenceIntegrity gepa={gepa} />
-      <RolloutBrowser
-        groups={evaluationData.groups}
-        rows={evaluationData.rows}
-        totalRows={evaluationTotal}
-        loading={evaluationPageState === "loading"}
-        stale={evaluationPageState === "stale"}
-        itemLabel="evaluation results"
-        emptyText={stageFilter
-          ? "No rollouts for the selected stage yet. Clear the stage filter to see everything."
-          : "Evaluation rollouts appear as candidates are scored."}
-        testId="gepa-child-evaluations"
-        selectedId={selectedEvaluationId}
-        onInspect={(row) => {
-          if (!row) {
-            updatePresentation({ selection: selectedCandidate ? { runId: run.id, kind: "candidate", id: selectedCandidate, candidateId: selectedCandidate } : null });
-            return;
-          }
-          const candidateId = row.groupKey.split("::", 1)[0];
-          if (gepa.candidates.some((candidate) => String(candidate.id) === candidateId)) setSelectedCandidate(candidateId);
-          const next: GepaLinkedSelection = {
-            runId: run.id,
-            kind: "evaluation",
-            id: row.id,
-            sequenceNumber: row.sequence,
-            candidateId,
-            ...(visualId ? { visualId } : {}),
-            ...(visualRevision != null ? { visualRevision } : {}),
-            ...(sourceDigest ? { sourceDigest } : {})
-          };
-          updatePresentation({ selection: next });
-        }}
-      />
-      <div ref={tracesRef}>
-        <ProposerTracePanel
-          gepa={gepa}
-          onSelectCandidate={selectAndRevealCandidate}
-          selectedItemId={selection?.kind === "trace_item" ? selection.id : null}
-          onSelectItem={(item) => updatePresentation({
-            selection: {
+      <details ref={runDetailsRef} data-testid="gepa-run-details">
+        <summary style={{ width: "fit-content", cursor: "pointer", color: "var(--sv-text-muted)", fontSize: 12, fontWeight: 650 }}>
+          Evaluation results, proposer traces, and run comparison
+        </summary>
+        <EvidenceIntegrity gepa={gepa} />
+        <RolloutBrowser
+          groups={evaluationData.groups}
+          rows={evaluationData.rows}
+          totalRows={evaluationTotal}
+          loading={evaluationPageState === "loading"}
+          stale={evaluationPageState === "stale"}
+          itemLabel="evaluation results"
+          emptyText={stageFilter
+            ? "No rollouts for the selected stage yet. Clear the stage filter to see everything."
+            : "Evaluation rollouts appear as candidates are scored."}
+          testId="gepa-child-evaluations"
+          selectedId={selectedEvaluationId}
+          onInspect={(row) => {
+            if (!row) {
+              updatePresentation({ selection: selectedCandidate ? { runId: run.id, kind: "candidate", id: selectedCandidate, candidateId: selectedCandidate } : null });
+              return;
+            }
+            const candidateId = row.groupKey.split("::", 1)[0];
+            if (gepa.candidates.some((candidate) => String(candidate.id) === candidateId)) setSelectedCandidate(candidateId);
+            const next: GepaLinkedSelection = {
               runId: run.id,
-              kind: item.family === "artifact" ? "artifact" : "trace_item",
-              id: item.id,
-              sequenceNumber: item.sequence,
-              ...(item.candidateId ? { candidateId: item.candidateId } : {}),
+              kind: "evaluation",
+              id: row.id,
+              sequenceNumber: row.sequence,
+              candidateId,
               ...(visualId ? { visualId } : {}),
               ...(visualRevision != null ? { visualRevision } : {}),
               ...(sourceDigest ? { sourceDigest } : {})
-            }
-          })}
+            };
+            updatePresentation({ selection: next });
+          }}
         />
-      </div>
-      {comparisonProjection ? (
-        <ComparisonCard
-          columns={[
-            { runId: run.id, label: gepa.models.proposer ?? "This run", gepa },
-            {
-              runId: comparisonProjection.runId,
-              label: comparisonProjection.label ?? comparisonProjection.gepa.models.proposer ?? "Comparison run",
-              gepa: comparisonProjection.gepa
-            } satisfies ComparisonColumn
-          ]}
-        />
-      ) : null}
+        <div ref={tracesRef}>
+          <ProposerTracePanel
+            gepa={gepa}
+            onSelectCandidate={selectAndRevealCandidate}
+            selectedItemId={selection?.kind === "trace_item" ? selection.id : null}
+            onSelectItem={(item) => updatePresentation({
+              selection: {
+                runId: run.id,
+                kind: item.family === "artifact" ? "artifact" : "trace_item",
+                id: item.id,
+                sequenceNumber: item.sequence,
+                ...(item.candidateId ? { candidateId: item.candidateId } : {}),
+                ...(visualId ? { visualId } : {}),
+                ...(visualRevision != null ? { visualRevision } : {}),
+                ...(sourceDigest ? { sourceDigest } : {})
+              }
+            })}
+          />
+        </div>
+        {comparisonProjection ? (
+          <ComparisonCard
+            columns={[
+              { runId: run.id, label: gepa.models.proposer ?? "This run", gepa },
+              {
+                runId: comparisonProjection.runId,
+                label: comparisonProjection.label ?? comparisonProjection.gepa.models.proposer ?? "Comparison run",
+                gepa: comparisonProjection.gepa
+              } satisfies ComparisonColumn
+            ]}
+          />
+        ) : null}
+      </details>
       {debug ? (
         <details data-testid="gepa-debug">
           <summary style={{ width: "fit-content", cursor: "pointer", color: "var(--sv-text-muted)", fontSize: 12, fontWeight: 650 }}>
