@@ -393,6 +393,13 @@ fn sanitize_upstream_body(status: reqwest::StatusCode, bytes: Bytes) -> Bytes {
     )))
 }
 
+fn decode_json_response(content_type: &str, bytes: &[u8]) -> Option<Value> {
+    if content_type.contains("text/event-stream") {
+        return None;
+    }
+    serde_json::from_slice(bytes).ok()
+}
+
 fn bearer(request: &Request<Incoming>) -> Option<String> {
     request
         .headers()
@@ -694,10 +701,11 @@ async fn handle(
         }
     };
     let bytes = sanitize_upstream_body(status, bytes);
-    let response_body = content_type
-        .contains("json")
-        .then(|| serde_json::from_slice::<Value>(&bytes).ok())
-        .flatten();
+    // OpenRouter's OpenAI-compatible endpoint can return a valid JSON body
+    // with a non-JSON content type. The workload can still decode that body,
+    // so accounting must inspect the bytes too or Workshop records the call
+    // while silently losing its tokens and generation id.
+    let response_body = decode_json_response(&content_type, &bytes);
     let (sse_response_id, sse_usage) = if content_type.contains("text/event-stream") {
         let (id, usage) = parse_sse_usage(&bytes);
         (id, Some(usage))
@@ -1009,5 +1017,17 @@ mod tests {
         ] {
             assert_eq!(providers::sanitize_error_message(code), code);
         }
+    }
+
+    #[test]
+    fn json_usage_is_decoded_even_when_upstream_mislabels_content_type() {
+        let body = br#"{"id":"gen-1","usage":{"prompt_tokens":12,"completion_tokens":4}}"#;
+        let decoded = decode_json_response("text/plain; charset=utf-8", body)
+            .expect("valid provider JSON must remain accountable");
+        let usage = parse_usage(&decoded);
+        assert_eq!(providers::response_id(&decoded), Some("gen-1"));
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 4);
+        assert!(decode_json_response("text/event-stream", body).is_none());
     }
 }
