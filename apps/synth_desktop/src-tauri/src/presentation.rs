@@ -557,6 +557,32 @@ mod tests {
     }
 
     #[test]
+    fn annotation_workbench_reimported_trace_digest_mints_a_new_id() {
+        let campaign = Some("acmp_luna");
+        let first = annotation_workbench_visual_id(
+            "sha256:6e47e52c30126d3f360d74576569a7358230b0255d646e8465a57693fdb48d69",
+            campaign,
+        );
+        let second = annotation_workbench_visual_id(
+            "sha256:d90a66ed94d8b65fdf6df8a306912a5e26eea07f5f17965a4e8fc987bd40ed21",
+            campaign,
+        );
+        assert_ne!(
+            first, second,
+            "a re-imported source digest must not mutate vis_analysis_{{old_digest}}_{{campaign}}"
+        );
+        assert_eq!(
+            annotation_workbench_visual_id(
+                "sha256:6e47e52c30126d3f360d74576569a7358230b0255d646e8465a57693fdb48d69",
+                campaign,
+            ),
+            first
+        );
+        assert!(first.contains("6e47e52c30126d3f360d74576569a735"));
+        assert!(second.contains("d90a66ed94d8b65fdf6df8a306912a5e"));
+    }
+
+    #[test]
     fn annotation_workbench_bindings_are_peer_identities() {
         let bindings = annotation_workbench_bindings(
             "sha256:trace",

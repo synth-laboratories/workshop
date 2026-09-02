@@ -9,6 +9,8 @@
 //! The host side lives in `annotations_ipc.rs`; `OPERATIONS` there mirrors this
 //! table and a test keeps them equal.
 
+#![recursion_limit = "256"]
+
 #[path = "../ipc/mcp_stdio.rs"]
 mod mcp_stdio;
 
@@ -87,6 +89,7 @@ const OPERATIONS: &[(&str, bool, bool, &str)] = &[
     ("annotation_estimate", true, false, "Idempotency key, cached-or-not, resolved model/effort, limits, and whether a broker reservation is needed. No compute."),
     ("annotation_start", false, true, "Enqueue one annotation job (202; poll annotation_get). Cached results return without compute. Paid annotators need a reservation_id from the host broker, bound to this trace/annotator/model/session."),
     ("annotation_get", true, false, "Job state, typed error, receipts, usage, sealed output ids."),
+    ("annotation_events", true, false, "Poll the annotation job event log (sequence cursor). Events cover prepared → running → tool → validating → sealed/abstained/failed/cancelled. Hidden chain-of-thought is never included."),
     ("annotation_cancel", false, false, "Cancel a prepared or running job; sealed results are never removed."),
     ("annotation_list", true, false, "Current annotations on a trace from the sealed evidence head, with filters. Labels are diagnostics, never reward."),
     ("annotation_get_evidence", true, false, "Resolve an annotation's target and evidence selectors to the exact cited text."),
@@ -95,6 +98,10 @@ const OPERATIONS: &[(&str, bool, bool, &str)] = &[
     ("annotation_review", false, false, "Accept, reject, dispute, or flag an annotation: appends a superseding revision, never edits history."),
     ("annotation_consensus", false, false, "Inter-annotator agreement over repeats plus majority consensus records."),
     ("annotation_campaign", false, true, "Fan one plan (annotators x repeats) over a run's sealed traces; returns an estimate first when estimate_only is set."),
+    ("annotation_protocol_get", true, false, "Installed live annotation protocol identity on a container (protocol_revision_id, digests, judge model); never source or credentials."),
+    ("annotation_protocol_update", false, false, "Install a live annotation protocol revision (code + protocol_id + configuration) on a container; with run_id, advance that run's pin so its next rollouts use it; with rollout_ids, hot-swap rollouts running now (carry_state carries snapshot state). Findings stay provisional and never touch reward."),
+    ("annotation_control_send", false, false, "Send one consumer -> annotator control to a running rollout: op message ({type: note|judge_now|set, ...}), protocol.update (protocol_revision_id, carry_state), or stop (reason). The durable acknowledgement lands on the rollout's annotation stream."),
+    ("annotation_provisional_list", true, false, "Provisional live findings relayed for an eval run (optionally one rollout_id), with supersede/retract history and post-seal reconciliation (resolved | corroborated | unresolved | unsealed). Never sealed evidence."),
 ];
 
 fn tools() -> Value {
@@ -140,7 +147,20 @@ fn tools() -> Value {
                 "traces":{"type":"array","description":"annotation_campaign: trace refs {kind: trace_v5, id, digest}"},
                 "label":{"type":"string"},
                 "annotators":{"type":"array"},
-                "estimate_only":{"type":"boolean"}
+                "estimate_only":{"type":"boolean"},
+                "after":{"type":"integer","description":"annotation_events: sequence cursor, default 0"},
+                "limit":{"type":"integer","description":"annotation_events: page size, default 1000"},
+                "rollout_id":{"type":"string","description":"annotation_control_send: the running rollout whose annotator receives the control"},
+                "rollout_ids":{"type":"array","items":{"type":"string"},"description":"annotation_protocol_update: rollouts running now to hot-swap onto the new revision"},
+                "protocol_id":{"type":"string","description":"annotation_protocol_update: the PROTOCOL_ID the file declares"},
+                "protocol_revision_id":{"type":"string","description":"annotation_control_send protocol.update: an installed anprev_ revision"},
+                "code":{"type":"string","description":"annotation_protocol_update: stdlib-only protocol source"},
+                "configuration":{"type":"object","description":"annotation_protocol_update: protocol configuration; may carry a model block (model, base_url, api_key_env, max_calls); never a key"},
+                "source_revision":{"type":"string"},
+                "op":{"type":"string","enum":["message","protocol.update","stop"]},
+                "message":{"type":"object","description":"annotation_control_send message: {type: note|judge_now|set, ...}"},
+                "carry_state":{"type":"boolean"},
+                "reason":{"type":"string"}
             },"additionalProperties":false}
          },"required":["operation"],"additionalProperties":false},
          "annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
@@ -184,6 +204,20 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                     | "traces"
                     | "label"
                     | "repeats"
+                    | "after"
+                    | "limit"
+                    | "rollout_id"
+                    | "rollout_ids"
+                    | "protocol_id"
+                    | "protocol_revision_id"
+                    | "code"
+                    | "configuration"
+                    | "source_revision"
+                    | "op"
+                    | "message"
+                    | "carry_state"
+                    | "reason"
+                    | "control_id"
             ) {
                 return Err(format!("annotation arguments reject `{key}`"));
             }

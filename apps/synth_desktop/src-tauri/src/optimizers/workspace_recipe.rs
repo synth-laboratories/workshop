@@ -24,6 +24,35 @@ const RECIPE_FILE: &str = "workshop.recipe.toml";
 const RECIPES_DIR: &str = "workshop.recipes";
 const CONTAINERS_FILE: &str = "workshop.containers.toml";
 
+/// Shipped annotated eval recipes. Written into a session workspace on first
+/// catalog list so a fresh session can run them without copying fixtures.
+const BUNDLED_ANNOTATION_EVAL_RECIPES: &[(&str, &str)] = &[
+    (
+        "eval.craftax.gold.annotated.v1.toml",
+        include_str!("../../recipes/annotation_eval/eval.craftax.gold.annotated.v1.toml"),
+    ),
+    (
+        "eval.banking77.annotated.v1.toml",
+        include_str!("../../recipes/annotation_eval/eval.banking77.annotated.v1.toml"),
+    ),
+    (
+        "eval.deepswe.annotated.v1.toml",
+        include_str!("../../recipes/annotation_eval/eval.deepswe.annotated.v1.toml"),
+    ),
+    (
+        "eval.code_policy.annotated.v1.toml",
+        include_str!("../../recipes/annotation_eval/eval.code_policy.annotated.v1.toml"),
+    ),
+    (
+        "eval.healthbench.annotated.v1.toml",
+        include_str!("../../recipes/annotation_eval/eval.healthbench.annotated.v1.toml"),
+    ),
+    (
+        "eval.craftax.gold.live_annotated.v1.toml",
+        include_str!("../../recipes/annotation_eval/eval.craftax.gold.live_annotated.v1.toml"),
+    ),
+];
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AlgorithmKind {
@@ -85,6 +114,9 @@ pub struct WorkspaceRecipe {
     pub relay: super::eval_relay::RelaySettings,
     /// Optional post-rollout annotation stage; `None` means off (the default).
     pub annotation: Option<super::annotation_stage::AnnotationStageSpec>,
+    /// Optional live annotation protocol streamed beside each rollout while
+    /// it runs (observe-only, provisional); `None` means off.
+    pub live_annotation: Option<super::live_annotation::LiveAnnotationSpec>,
     pub source_path: PathBuf,
     pub source_hash: String,
 }
@@ -432,6 +464,8 @@ struct RecipeFile {
     media: Option<MediaFile>,
     #[serde(default)]
     annotation: Option<toml::value::Table>,
+    #[serde(default)]
+    live_annotation: Option<toml::value::Table>,
 }
 
 #[derive(Deserialize, Default)]
@@ -556,27 +590,28 @@ pub fn require_session_workspace(
     })
 }
 
+/// Copy shipped annotated eval recipes into `workshop.recipes/` when missing.
+/// Existing files win so an operator override is never overwritten.
+pub fn ensure_bundled_annotation_eval_recipes(workspace: &Path) -> Result<usize> {
+    let recipes_dir = workspace.join(RECIPES_DIR);
+    fs::create_dir_all(&recipes_dir)
+        .with_context(|| format!("create {}", recipes_dir.display()))?;
+    let mut written = 0usize;
+    for (name, contents) in BUNDLED_ANNOTATION_EVAL_RECIPES {
+        let dest = recipes_dir.join(name);
+        if dest.exists() {
+            continue;
+        }
+        fs::write(&dest, contents).with_context(|| format!("write {}", dest.display()))?;
+        written += 1;
+    }
+    Ok(written)
+}
+
 pub fn load_recipes(workspace: &Path) -> Result<Vec<WorkspaceRecipe>> {
     let mut recipes = Vec::new();
-    let root_file = workspace.join(RECIPE_FILE);
-    if root_file.is_file() {
-        recipes.push(parse_recipe(&root_file)?);
-    }
-    let recipes_dir = workspace.join(RECIPES_DIR);
-    if recipes_dir.is_dir() {
-        let mut entries: Vec<PathBuf> = fs::read_dir(&recipes_dir)
-            .with_context(|| format!("read {}", recipes_dir.display()))?
-            .filter_map(|entry| entry.ok().map(|item| item.path()))
-            .filter(|path| {
-                path.extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
-            })
-            .collect();
-        entries.sort();
-        for path in entries {
-            recipes.push(parse_recipe(&path)?);
-        }
+    for path in recipe_paths(workspace)? {
+        recipes.push(parse_recipe(&path)?);
     }
     let mut seen = std::collections::HashSet::new();
     for recipe in &recipes {
@@ -590,6 +625,41 @@ pub fn load_recipes(workspace: &Path) -> Result<Vec<WorkspaceRecipe>> {
     Ok(recipes)
 }
 
+fn recipe_paths(workspace: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    let root_file = workspace.join(RECIPE_FILE);
+    if root_file.is_file() {
+        paths.push(root_file);
+    }
+    let recipes_dir = workspace.join(RECIPES_DIR);
+    if recipes_dir.is_dir() {
+        let mut entries: Vec<PathBuf> = fs::read_dir(&recipes_dir)
+            .with_context(|| format!("read {}", recipes_dir.display()))?
+            .filter_map(|entry| entry.ok().map(|item| item.path()))
+            .filter(|path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+            })
+            .collect();
+        entries.sort();
+        paths.extend(entries);
+    }
+    Ok(paths)
+}
+
+fn declared_recipe_id(path: &Path) -> Result<Option<String>> {
+    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let value: toml::Value = toml::from_str(&text)
+        .with_context(|| format!("parse workspace recipe identity {}", path.display()))?;
+    Ok(value
+        .get("id")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned))
+}
+
 pub fn find_recipe(workspace: &Path, recipe_id: &str) -> Result<WorkspaceRecipe> {
     load_recipes(workspace)?
         .into_iter()
@@ -601,6 +671,58 @@ pub fn find_recipe(workspace: &Path, recipe_id: &str) -> Result<WorkspaceRecipe>
                 RECIPES_DIR
             )
         })
+}
+
+/// Resolve a workspace recipe from every repository the conversation has
+/// explicitly approved. The working workspace remains first, followed by
+/// user-attached folders. Container declarations already use this authority;
+/// recipe discovery must not silently apply a narrower boundary.
+pub fn find_session_recipe(
+    db: &crate::storage::Database,
+    session_id: &str,
+    recipe_id: &str,
+) -> Result<(PathBuf, WorkspaceRecipe)> {
+    let roots = session_search_roots(db, session_id)?;
+    let mut matches = Vec::new();
+    for root in roots {
+        for path in recipe_paths(&root)? {
+            match parse_recipe(&path) {
+                Ok(recipe) if recipe.id == recipe_id => matches.push((root.clone(), recipe)),
+                Ok(_) => {}
+                Err(error) => match declared_recipe_id(&path) {
+                    Ok(Some(id)) if id != recipe_id => {}
+                    _ => return Err(error),
+                },
+            }
+        }
+    }
+    match matches.len() {
+        0 => Err(anyhow!(
+            "workspace recipe `{recipe_id}` is not declared in any approved workspace or attached folder"
+        )),
+        1 => Ok(matches.remove(0)),
+        _ => Err(anyhow!(
+            "workspace recipe `{recipe_id}` is declared in more than one approved workspace or attached folder"
+        )),
+    }
+}
+
+/// Catalog recipes from the same approved roots used by execution. Duplicate
+/// ids are retained here so start can reject the ambiguity instead of the
+/// catalog silently choosing one source.
+pub fn load_session_recipes(
+    db: &crate::storage::Database,
+    session_id: &str,
+) -> Result<Vec<WorkspaceRecipe>> {
+    let mut recipes = Vec::new();
+    for root in session_search_roots(db, session_id)? {
+        for path in recipe_paths(&root)? {
+            if let Ok(recipe) = parse_recipe(&path) {
+                recipes.push(recipe);
+            }
+        }
+    }
+    Ok(recipes)
 }
 
 pub fn load_container_specs(workspace: &Path) -> Result<Vec<ContainerSpec>> {
@@ -837,6 +959,7 @@ pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
         },
         "locality": recipe.locality.as_str(),
         "container": recipe.container,
+        "provider": recipe.provider,
         "sourceHash": recipe.source_hash,
         "limits": {
             "maxCostUsd": recipe.bounds.max_cost_usd,
@@ -860,6 +983,12 @@ pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
             AlgorithmKind::Gepa => "optimizer.gepa.v1",
             AlgorithmKind::Eval => "experiment.overview.v1",
         },
+        "liveAnnotation": recipe.live_annotation.as_ref().map(|spec| spec.summary_json()),
+        "annotation": recipe.annotation.as_ref().map(|stage| json!({
+            "label": stage.label,
+            "annotatorCount": stage.annotators.len(),
+            "annotators": stage.annotators.iter().map(|item| item.annotator_id.clone()).collect::<Vec<_>>(),
+        })),
     })
 }
 
@@ -1179,6 +1308,12 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         .map(|table| super::annotation_stage::AnnotationStageSpec::parse(&parsed.id, table))
         .transpose()?
         .flatten();
+    let live_annotation = parsed
+        .live_annotation
+        .as_ref()
+        .map(|table| super::live_annotation::LiveAnnotationSpec::parse(&parsed.id, table))
+        .transpose()?
+        .flatten();
     let train_seeds = parsed
         .train_seeds
         .unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -1223,6 +1358,7 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         requires_credential_advertisement: parsed.requires_credential_advertisement,
         relay,
         annotation,
+        live_annotation,
         source_path: path.to_path_buf(),
         source_hash: content_hash(&text),
         id: parsed.id,
@@ -1335,15 +1471,11 @@ fn parse_containers(
             }
         }
         for name in launch.environment.keys() {
-            let upper = name.to_ascii_uppercase();
             if !name
                 .chars()
                 .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
                 || name.is_empty()
-                || upper.contains("KEY")
-                || upper.contains("SECRET")
-                || upper.contains("TOKEN")
-                || upper.contains("PASSWORD")
+                || credential_bearing_environment_name(name)
             {
                 bail!(
                     "container `{}` has unsafe environment name `{name}`",
@@ -1375,6 +1507,17 @@ fn parse_containers(
         });
     }
     Ok(specs)
+}
+
+fn credential_bearing_environment_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    if upper == "SYNTH_ANNOTATION_USD_PER_MILLION_TOKENS" {
+        return false;
+    }
+    upper.contains("KEY")
+        || upper.contains("SECRET")
+        || upper.contains("TOKEN")
+        || upper.contains("PASSWORD")
 }
 
 fn validate_launch(
@@ -1458,12 +1601,8 @@ fn validate_launch(
                 LaunchDeclarationError::InvalidEnvironmentName { name: name.clone() }.into_anyhow(),
             );
         }
-        let upper = name.to_ascii_uppercase();
         anyhow::ensure!(
-            !upper.contains("KEY")
-                && !upper.contains("SECRET")
-                && !upper.contains("TOKEN")
-                && !upper.contains("PASSWORD"),
+            !credential_bearing_environment_name(name),
             "launch_declaration_invalid: credential-bearing environment name `{name}` is forbidden"
         );
     }
@@ -1856,6 +1995,92 @@ max_total_rollouts = 10
         assert!(recipe.annotation.is_none(), "annotation stage is off by default");
     }
 
+    #[tokio::test]
+    async fn attached_repository_recipes_are_cataloged_and_resolved_for_execution() {
+        let root = tempdir().unwrap();
+        let primary = root.path().join("primary");
+        let attached = root.path().join("attached");
+        fs::create_dir_all(&primary).unwrap();
+        fs::create_dir_all(&attached).unwrap();
+        fs::write(
+            primary.join(RECIPE_FILE),
+            r#"
+id = "gepa.stale.v1"
+algorithm = "gepa"
+container = "classify"
+provider = "openai"
+model = "gpt-4.1-nano"
+locality = "container"
+[bounds]
+max_cost_usd = 8.00
+max_total_rollouts = 1
+"#,
+        )
+        .unwrap();
+        fs::write(
+            attached.join(RECIPE_FILE),
+            r#"
+id = "eval.attached.v1"
+algorithm = "eval"
+container = "attached"
+provider = "openai"
+model = "gpt-4.1-nano"
+locality = "container"
+family = "classify"
+harness = "desktop_eval"
+policy_config = "classify_default"
+train_seeds = [0]
+[bounds]
+max_cost_usd = 0.01
+max_total_rollouts = 1
+"#,
+        )
+        .unwrap();
+
+        let data = tempdir().unwrap();
+        let storage = crate::storage::Storage::open(data.path()).unwrap();
+        storage
+            .database()
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO sessions(id,title,target_json,status,metadata_json,created_at,updated_at) VALUES('attached-session','Attached','{}','ready',?1,'now','now')",
+                    [serde_json::json!({"workspace": primary}).to_string()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        crate::workspace_scope::get(storage.database(), "attached-session")
+            .await
+            .unwrap();
+        crate::workspace_scope::attach(
+            storage.database(),
+            "attached-session",
+            attached.to_str().unwrap(),
+            crate::workspace_scope::WorkspaceAccessMode::ReadWrite,
+            crate::workspace_scope::AttachmentSource::UserPicker,
+        )
+        .await
+        .unwrap();
+
+        let catalog = load_session_recipes(storage.database(), "attached-session").unwrap();
+        assert!(catalog.iter().any(|recipe| recipe.id == "eval.attached.v1"));
+        let (source_root, recipe) = find_session_recipe(
+            storage.database(),
+            "attached-session",
+            "eval.attached.v1",
+        )
+        .unwrap();
+        assert_eq!(source_root, attached.canonicalize().unwrap());
+        assert_eq!(recipe.id, "eval.attached.v1");
+        let error = find_session_recipe(
+            storage.database(),
+            "attached-session",
+            "gepa.stale.v1",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("exceeds product cap"));
+    }
+
     #[test]
     fn eval_recipe_declares_the_optional_annotation_stage_and_bad_blocks_refuse_at_load() {
         let (_dir, workspace) = write_workspace();
@@ -1901,6 +2126,124 @@ paid = 2
             error.to_string().contains("annotation.annotators"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn five_domain_eval_recipes_opt_into_post_rollout_annotation() {
+        let (_dir, workspace) = write_workspace();
+        let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/annotation_eval_recipes");
+        fs::create_dir_all(workspace.join(RECIPES_DIR)).unwrap();
+        let mut expected = Vec::new();
+        for entry in fs::read_dir(&fixture_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+                continue;
+            }
+            expected.push(path.file_stem().unwrap().to_string_lossy().into_owned());
+            fs::copy(&path, workspace.join(RECIPES_DIR).join(path.file_name().unwrap())).unwrap();
+        }
+        expected.sort();
+        assert_eq!(
+            expected,
+            vec![
+                "eval.banking77.annotated.v1",
+                "eval.code_policy.annotated.v1",
+                "eval.craftax.gold.annotated.v1",
+                "eval.deepswe.annotated.v1",
+                "eval.healthbench.annotated.v1",
+            ]
+        );
+        let recipes = load_recipes(&workspace).unwrap();
+        assert_eq!(recipes.len(), 5);
+        for recipe in &recipes {
+            let stage = recipe
+                .annotation
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} missing [annotation]", recipe.id));
+            assert_eq!(stage.label, "post_rollout");
+            assert!(!stage.annotators.is_empty());
+            assert!(recipe.bounds.max_cost_usd <= PRODUCT_MAX_COST_USD);
+            assert_eq!(recipe.bounds.max_total_rollouts, 1);
+        }
+        let craftax = recipes
+            .iter()
+            .find(|recipe| recipe.id == "eval.craftax.gold.annotated.v1")
+            .expect("Craftax recipe is loaded");
+        assert!(craftax.annotation.as_ref().is_some_and(|stage| {
+            stage.annotators.iter().any(|annotator| {
+                annotator.annotator_id == "craftax.rubric_verifier"
+                    && annotator.rubric_id.as_deref() == Some("craftax.execution_quality")
+            })
+        }));
+    }
+
+    #[test]
+    fn bundled_annotation_eval_recipes_seed_a_fresh_workspace() {
+        let (_dir, workspace) = write_workspace();
+        assert_eq!(
+            ensure_bundled_annotation_eval_recipes(&workspace).unwrap(),
+            6
+        );
+        assert_eq!(
+            ensure_bundled_annotation_eval_recipes(&workspace).unwrap(),
+            0,
+            "existing files are not overwritten"
+        );
+        let recipes = load_recipes(&workspace).unwrap();
+        assert_eq!(recipes.len(), 6);
+        let mut ids: Vec<_> = recipes.iter().map(|recipe| recipe.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec![
+                "eval.banking77.annotated.v1",
+                "eval.code_policy.annotated.v1",
+                "eval.craftax.gold.annotated.v1",
+                "eval.craftax.gold.live_annotated.v1",
+                "eval.deepswe.annotated.v1",
+                "eval.healthbench.annotated.v1",
+            ]
+        );
+        let live = recipes
+            .iter()
+            .find(|recipe| recipe.id == "eval.craftax.gold.live_annotated.v1")
+            .unwrap();
+        let protocol = live.live_annotation.as_ref().expect("live lane declared");
+        assert_eq!(protocol.protocol_id, "craftax.live.v1");
+        assert_eq!(protocol.protocol_source, "domains/craftax/annotations/live_protocol.py");
+        assert_eq!(protocol.configuration.get("judge_every_calls"), Some(&serde_json::json!(3)));
+        assert!(protocol.model.is_none(), "the bundled recipe does not pick a judge model");
+        assert!(live.annotation.is_some(), "live findings never replace the sealed post-hoc lane");
+        let craftax = recipes
+            .iter()
+            .find(|recipe| recipe.id == "eval.craftax.gold.annotated.v1")
+            .unwrap();
+        assert!(craftax.annotation.as_ref().is_some_and(|stage| {
+            stage
+                .annotators
+                .iter()
+                .any(|annotator| annotator.annotator_id == "craftax.rubric_verifier")
+        }));
+        let banking = recipes
+            .iter()
+            .find(|recipe| recipe.id == "eval.banking77.annotated.v1")
+            .unwrap();
+        assert!(banking.annotation.is_some());
+        for id in [
+            "eval.deepswe.annotated.v1",
+            "eval.code_policy.annotated.v1",
+            "eval.healthbench.annotated.v1",
+        ] {
+            let recipe = recipes.iter().find(|recipe| recipe.id == id).unwrap();
+            assert!(
+                recipe.annotation.is_none(),
+                "{id} keeps [annotation] enabled = false so paid evals do not auto-spend"
+            );
+        }
+        let entry = catalog_entry(craftax);
+        assert_eq!(entry["annotation"]["label"], json!("post_rollout"));
+        assert_eq!(entry["annotation"]["annotatorCount"], json!(5));
     }
 
     #[test]
@@ -2088,8 +2431,8 @@ shutdown_grace_seconds = 5
 expected_port = 8098
 image_ref = "fixture"
 health_target = "fixture"
-declared_environment = ["SYNTH_CRAFTAX_URL"]
-environment = { SYNTH_CRAFTAX_URL = "http://127.0.0.1:8098" }
+declared_environment = ["SYNTH_CRAFTAX_URL", "SYNTH_ANNOTATION_USD_PER_MILLION_TOKENS"]
+environment = { SYNTH_CRAFTAX_URL = "http://127.0.0.1:8098", SYNTH_ANNOTATION_USD_PER_MILLION_TOKENS = "2" }
 [container.launch.source]
 revision_policy = "exact-or-dirty-digest"
 tracked_revision = "fixture-revision"
@@ -2104,6 +2447,10 @@ include = ["svc/serve.py"]
         assert_eq!(
             spec.environment["SYNTH_CRAFTAX_URL"],
             "http://127.0.0.1:8098"
+        );
+        assert_eq!(
+            spec.environment["SYNTH_ANNOTATION_USD_PER_MILLION_TOKENS"],
+            "2"
         );
     }
 

@@ -149,6 +149,47 @@ pub fn parse_usage(body: &Value) -> MeasuredUsage {
     }
 }
 
+/// Recover response identity and inline usage from an OpenAI-compatible SSE
+/// response. The proxy buffers provider bodies before relaying them, so it can
+/// account for the final `stream_options.include_usage` chunk without changing
+/// a byte of the worker-visible stream.
+pub fn parse_sse_usage(bytes: &[u8]) -> (Option<String>, MeasuredUsage) {
+    let text = String::from_utf8_lossy(bytes);
+    let mut response_id = None;
+    let mut measured = MeasuredUsage {
+        calls: 1,
+        input_tokens: 0,
+        output_tokens: 0,
+        cost_usd: None,
+    };
+    for line in text.lines() {
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let Ok(chunk) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        if response_id.is_none() {
+            response_id = response_id_for_owned(&chunk);
+        }
+        if chunk.get("usage").is_some_and(Value::is_object) {
+            let usage = parse_usage(&chunk);
+            measured.input_tokens = usage.input_tokens;
+            measured.output_tokens = usage.output_tokens;
+            measured.cost_usd = usage.cost_usd;
+        }
+    }
+    (response_id, measured)
+}
+
+fn response_id_for_owned(body: &Value) -> Option<String> {
+    response_id(body).map(str::to_owned)
+}
+
 /// Stable provider response identity retained for asynchronous accounting.
 /// OpenRouter returns the generation id on the top-level chat response; the
 /// Responses API carries the same identity inside `response`.
@@ -309,6 +350,21 @@ mod tests {
                 "usage": 0.9
             }
         }));
+        assert_eq!(usage.input_tokens, 1479);
+        assert_eq!(usage.output_tokens, 83);
+        assert_eq!(usage.cost_usd, Some(0.0003107));
+    }
+
+    #[test]
+    fn sse_final_usage_and_response_id_are_accounted() {
+        let body = concat!(
+            "data: {\"id\":\"gen-stream\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+            "data: {\"id\":\"gen-stream\",\"choices\":[],\"usage\":{\"prompt_tokens\":1479,\"completion_tokens\":83,\"cost\":0.0003107}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (id, usage) = parse_sse_usage(body.as_bytes());
+        assert_eq!(id.as_deref(), Some("gen-stream"));
+        assert_eq!(usage.calls, 1);
         assert_eq!(usage.input_tokens, 1479);
         assert_eq!(usage.output_tokens, 83);
         assert_eq!(usage.cost_usd, Some(0.0003107));

@@ -322,8 +322,14 @@ pub(crate) fn sealed_trace_refs(records: &[Value]) -> Vec<Value> {
             continue;
         };
         for trace in traces {
+            // The imported Workshop trace id is host-local. The annotation
+            // router still owns the producer bundle, so address that bundle
+            // by its original trace id while preserving the verified digest.
             let (Some(id), Some(digest)) = (
-                trace.get("traceId").and_then(Value::as_str),
+                trace
+                    .get("producerTraceId")
+                    .or_else(|| trace.get("traceId"))
+                    .and_then(Value::as_str),
                 trace
                     .get("digest")
                     .and_then(Value::as_str)
@@ -542,6 +548,28 @@ impl CampaignClient {
         structured.details = detail;
         Err(anyhow::Error::new(structured))
     }
+
+    /// The container may expose a promoted domain digest for the producer
+    /// trace. Workshop's imported trace keeps the sealed source digest, so use
+    /// the container-owned ref when it identifies the same producer bundle.
+    async fn trace_refs(&self) -> Option<Vec<Value>> {
+        let response = self
+            .client
+            .get(format!("{}/annotation/traces", self.base))
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        response
+            .json::<Value>()
+            .await
+            .ok()?
+            .get("traces")?
+            .as_array()
+            .cloned()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -655,7 +683,7 @@ pub(crate) async fn execute(
     records: &[Value],
     approver: Option<PaidApprover>,
 ) -> Result<StageReport> {
-    let traces = sealed_trace_refs(records);
+    let mut traces = sealed_trace_refs(records);
     if traces.is_empty() {
         let mut report = StageReport::new("skipped", container_id);
         report
@@ -664,6 +692,26 @@ pub(crate) async fn execute(
         return Ok(report);
     }
     let client = CampaignClient::new(container_base_url)?;
+    if let Some(owner_refs) = client.trace_refs().await {
+        for trace in &mut traces {
+            let Some(id) = trace.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(owner) = owner_refs
+                .iter()
+                .find(|candidate| candidate.get("id").and_then(Value::as_str) == Some(id))
+            else {
+                continue;
+            };
+            if let Some(digest) = owner
+                .get("digest")
+                .and_then(Value::as_str)
+                .filter(|digest| !digest.trim().is_empty())
+            {
+                trace["digest"] = json!(digest);
+            }
+        }
+    }
     let session_id = service.get(run_id.to_string()).await?.session_ref;
     let mut plan = json!({
         "traces": traces,
@@ -1265,9 +1313,9 @@ mod tests {
     #[test]
     fn sealed_trace_refs_skip_partial_and_duplicate_traces() {
         let records = vec![
-            json!({"sealedTrace": {"traces": [{"traceId": "t1", "digest": "sha256:aaa"}]}}),
+            json!({"sealedTrace": {"traces": [{"traceId": "host-t1", "producerTraceId": "t1", "digest": "sha256:aaa"}]}}),
             json!({"evidenceState": "sealed_partial", "sealedTrace": {"traces": [{"traceId": "t2", "digest": "sha256:bbb"}]}}),
-            json!({"sealedTrace": {"traces": [{"traceId": "t1", "digest": "sha256:aaa"}]}}),
+            json!({"sealedTrace": {"traces": [{"traceId": "host-t1", "producerTraceId": "t1", "digest": "sha256:aaa"}]}}),
             json!({"reward": 1.0}),
         ];
         assert_eq!(

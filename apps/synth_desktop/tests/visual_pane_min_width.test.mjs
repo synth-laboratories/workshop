@@ -35,6 +35,15 @@ test("the visual pane keeps the 320px certification floor", () => {
   assert.match(css, /\.visual-pane:not\(\.visual-pane-expanded\) \.cv-overview-grid[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
 });
 
+test("the Visuals inventory is a compact list and its pane can consume nearly the full workspace", () => {
+  const css = readFileSync(join(rendererRoot, "styles/app.css"), "utf8");
+  const routes = readFileSync(join(rendererRoot, "routes.tsx"), "utf8");
+  assert.match(css, /\.inventory-workbench\.with-visual \.visual-pane\s*\{[^}]*var\(--visual-pane-width, 720px\)[^}]*calc\(100% - 167px\)/s);
+  assert.match(css, /\.visuals-layout:not\(\.reports-layout\) > \.visuals-grid\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column/s);
+  assert.match(css, /\.visuals-layout:not\(\.reports-layout\) > \.visuals-grid > \.visuals-card\s*\{[^}]*grid-template-columns:/s);
+  assert.match(routes, /chatRoute \? \(showSidePanel \? 680 : 260\) : 160/);
+});
+
 test("the unified workbench side panel preserves a draggable boundary", () => {
   const routes = readFileSync(join(rendererRoot, "routes.tsx"), "utf8");
   const css = readFileSync(join(rendererRoot, "styles/app.css"), "utf8");

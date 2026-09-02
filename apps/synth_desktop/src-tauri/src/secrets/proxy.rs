@@ -19,7 +19,9 @@ pub const API_KEY_SENTINEL: &str = "workshop-proxy";
 use super::audit::{self, SecretAuditEvent};
 use super::backend::SecretBackend;
 use super::capability::{self, CapabilityStore, MeasuredUsage};
-use super::providers::{self, inject_auth, parse_usage, request_effort, request_model, route_for};
+use super::providers::{
+    self, inject_auth, parse_sse_usage, parse_usage, request_effort, request_model, route_for,
+};
 use super::vault;
 use crate::ipc::constant_time_eq;
 use crate::storage::Database;
@@ -391,6 +393,13 @@ fn sanitize_upstream_body(status: reqwest::StatusCode, bytes: Bytes) -> Bytes {
     )))
 }
 
+fn decode_json_response(content_type: &str, bytes: &[u8]) -> Option<Value> {
+    if content_type.contains("text/event-stream") {
+        return None;
+    }
+    serde_json::from_slice(bytes).ok()
+}
+
 fn bearer(request: &Request<Incoming>) -> Option<String> {
     request
         .headers()
@@ -480,6 +489,7 @@ fn is_forbidden_header(name: &str) -> bool {
             | "trailer"
             | "transfer-encoding"
             | "upgrade"
+            | "accept-encoding"
             | "content-length"
     ) || name.eq_ignore_ascii_case(RELAY_ORIGIN_HEADER)
 }
@@ -636,6 +646,9 @@ async fn handle(
         }
         outbound = outbound.header(name.as_str(), value.as_bytes());
     }
+    // Keep the exact response bytes inspectable for usage accounting. The
+    // downstream SDK must not be the only process that can decompress them.
+    outbound = outbound.header(reqwest::header::ACCEPT_ENCODING, "identity");
     outbound = match inject_auth(outbound, route, &secret) {
         Ok(builder) => builder,
         Err(error) => {
@@ -692,16 +705,26 @@ async fn handle(
         }
     };
     let bytes = sanitize_upstream_body(status, bytes);
-    let response_body = content_type
-        .contains("json")
-        .then(|| serde_json::from_slice::<Value>(&bytes).ok())
-        .flatten();
+    // OpenRouter's OpenAI-compatible endpoint can return a valid JSON body
+    // with a non-JSON content type. The workload can still decode that body,
+    // so accounting must inspect the bytes too or Workshop records the call
+    // while silently losing its tokens and generation id.
+    let response_body = decode_json_response(&content_type, &bytes);
+    let (sse_response_id, sse_usage) = if content_type.contains("text/event-stream") {
+        let (id, usage) = parse_sse_usage(&bytes);
+        (id, Some(usage))
+    } else {
+        (None, None)
+    };
     let provider_response_id = response_body
         .as_ref()
         .and_then(providers::response_id)
-        .map(str::to_owned);
+        .map(str::to_owned)
+        .or(sse_response_id);
     let mut usage = if let Some(body) = response_body.as_ref() {
         parse_usage(body)
+    } else if let Some(usage) = sse_usage {
+        usage
     } else {
         MeasuredUsage {
             calls: 1,
@@ -948,6 +971,7 @@ mod tests {
     fn relay_origin_header_is_never_forwarded() {
         assert!(is_forbidden_header(RELAY_ORIGIN_HEADER));
         assert!(is_forbidden_header("X-Workshop-Proxy-Origin"));
+        assert!(is_forbidden_header("accept-encoding"));
     }
 
     /// A timeout, an unreachable host, and an unreadable body are three
@@ -998,5 +1022,17 @@ mod tests {
         ] {
             assert_eq!(providers::sanitize_error_message(code), code);
         }
+    }
+
+    #[test]
+    fn json_usage_is_decoded_even_when_upstream_mislabels_content_type() {
+        let body = br#"{"id":"gen-1","usage":{"prompt_tokens":12,"completion_tokens":4}}"#;
+        let decoded = decode_json_response("text/plain; charset=utf-8", body)
+            .expect("valid provider JSON must remain accountable");
+        let usage = parse_usage(&decoded);
+        assert_eq!(providers::response_id(&decoded), Some("gen-1"));
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 4);
+        assert!(decode_json_response("text/event-stream", body).is_none());
     }
 }

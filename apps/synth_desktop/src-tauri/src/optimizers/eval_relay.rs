@@ -30,6 +30,7 @@ use crate::container_stream::{poll_event_list, STREAM_SUBSCRIBED_KIND};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 /// Algorithm id every relayed event is filed under. Same lane as the rest of
@@ -263,6 +264,14 @@ pub(crate) struct RelayOutcome {
     pub span_completion_tokens: u64,
     pub span_cost_usd: Option<f64>,
     pub span_cost_complete: bool,
+    pub reward_events_relayed: usize,
+    pub reward_grades_relayed: usize,
+    /// Events relayed from the declared live annotation stream, and how many
+    /// of them were provisional findings.
+    pub annotation_events_relayed: usize,
+    pub annotation_findings_relayed: usize,
+    /// The annotation stream reported `closed`; its producer sealed it.
+    pub annotation_closed: bool,
     pub degradations: Vec<Degradation>,
 }
 
@@ -299,6 +308,11 @@ impl RelayOutcome {
                 "cost_usd": if self.span_cost_complete { json!(self.span_cost_usd) } else { Value::Null },
                 "cost_complete": self.span_cost_complete,
             },
+            "rewardEventsRelayed": self.reward_events_relayed,
+            "rewardGradesRelayed": self.reward_grades_relayed,
+            "annotationEventsRelayed": self.annotation_events_relayed,
+            "annotationFindingsRelayed": self.annotation_findings_relayed,
+            "annotationClosed": self.annotation_closed,
             "degradations": self.degradations.iter().map(Degradation::to_json).collect::<Vec<_>>(),
         })
     }
@@ -326,6 +340,13 @@ pub(crate) struct RelayContext<'a> {
     /// resolved against this and nothing else.
     pub base: &'a str,
     pub poll_url: &'a str,
+    /// Declared `/rollouts/{id}/reward/events` sibling of the SSE reward stream.
+    /// None when the producer omitted `reward.events`; never guessed.
+    pub reward_poll_url: Option<&'a str>,
+    /// Declared `/rollouts/{id}/annotations/events` sibling published by a
+    /// bound live annotation protocol. None when no protocol is bound to the
+    /// rollout; never guessed.
+    pub annotation_poll_url: Option<&'a str>,
     pub client: &'a reqwest::Client,
     /// Redirect-refusing client used only for frame bodies.
     pub media_client: &'a reqwest::Client,
@@ -357,6 +378,14 @@ where
     let mut idle_drains: u32 = 0;
     let mut declares_cursor = false;
     let poll_interval = ctx.settings.event_stream.poll_interval;
+    let mut relayed: BTreeSet<u64> = BTreeSet::new();
+    let mut reward_after: u64 = 0;
+    let mut reward_ok = ctx.reward_poll_url.is_some();
+    // The annotation stream has its own sequence space; it is never folded
+    // into the rollout journal's de-duplication set.
+    let mut annotation_after: u64 = 0;
+    let mut annotation_ok = ctx.annotation_poll_url.is_some();
+    let mut annotation_relayed: BTreeSet<u64> = BTreeSet::new();
 
     loop {
         let cancel_request = if settled.is_none() {
@@ -380,12 +409,29 @@ where
                     &mut acked,
                     &mut chain_head,
                     &mut journal_v2,
+                    &mut relayed,
                     &mut outcome,
                 )
                 .await
                 {
                     Ok(summary) => {
                         outcome.journal_closed |= summary.closed;
+                        let _ = drain_reward(
+                            ctx,
+                            &mut reward_after,
+                            &mut reward_ok,
+                            &mut relayed,
+                            &mut outcome,
+                        )
+                        .await;
+                        let _ = drain_annotation(
+                            ctx,
+                            &mut annotation_after,
+                            &mut annotation_ok,
+                            &mut annotation_relayed,
+                            &mut outcome,
+                        )
+                        .await;
                         cancellation_idle_drains = if summary.relayed == 0 {
                             cancellation_idle_drains.saturating_add(1)
                         } else {
@@ -426,6 +472,7 @@ where
             &mut acked,
             &mut chain_head,
             &mut journal_v2,
+            &mut relayed,
             &mut outcome,
         )
         .await
@@ -435,6 +482,22 @@ where
                     outcome.journal_closed = true;
                 }
                 declares_cursor |= summary.declares_cursor;
+                let _ = drain_reward(
+                    ctx,
+                    &mut reward_after,
+                    &mut reward_ok,
+                    &mut relayed,
+                    &mut outcome,
+                )
+                .await;
+                let _ = drain_annotation(
+                    ctx,
+                    &mut annotation_after,
+                    &mut annotation_ok,
+                    &mut annotation_relayed,
+                    &mut outcome,
+                )
+                .await;
                 if settled.is_some() {
                     idle_drains = if summary.relayed == 0 {
                         idle_drains + 1
@@ -547,6 +610,19 @@ where
         }
     }
 
+    // The annotation stream seals after the rollout journal: its protocol
+    // drains the last events and any in-flight judgment first, bounded by the
+    // container's own drain timeout. Give it a grace of its own.
+    settle_annotation_stream(
+        ctx,
+        &mut annotation_after,
+        &mut annotation_ok,
+        &mut annotation_relayed,
+        &mut outcome,
+        poll_interval,
+    )
+    .await;
+
     let result = match settled {
         Some(result) => result,
         None => (&mut rollout).await,
@@ -575,6 +651,7 @@ async fn drain(
     acked: &mut u64,
     chain_head: &mut String,
     journal_v2: &mut Option<bool>,
+    relayed: &mut BTreeSet<u64>,
     outcome: &mut RelayOutcome,
 ) -> Result<DrainSummary> {
     let mut summary = DrainSummary::default();
@@ -625,6 +702,10 @@ async fn drain(
                 let digest = verify_envelope_digest(event, sequence)
                     .map_err(|error| relay_integrity(format!("{error:#}")))?;
                 *chain_head = journal_chain_extend(chain_head, digest);
+            }
+            if !relayed.insert(sequence) {
+                *cursor = sequence;
+                continue;
             }
             let draft = relay_event(ctx, event, sequence, outcome).await?;
             drafts.push(draft);
@@ -740,6 +821,269 @@ async fn fetch_page(ctx: &RelayContext<'_>, after: u64, ack: u64) -> Result<Valu
         .json::<Value>()
         .await
         .context("decode rollout event page")
+}
+
+async fn fetch_reward_page(ctx: &RelayContext<'_>, url: &str, after: u64) -> Result<Value> {
+    let wait_ms = ctx
+        .settings
+        .event_stream
+        .poll_interval
+        .as_millis()
+        .min(10_000) as u64;
+    let response = ctx
+        .client
+        .get(url)
+        .query(&[
+            ("after", after.to_string()),
+            ("limit", ctx.settings.event_stream.page_limit.to_string()),
+            ("wait_ms", wait_ms.to_string()),
+        ])
+        .send()
+        .await
+        .context("GET declared reward event page")?;
+    let status = response.status();
+    if !status.is_success() {
+        bail!("reward event page returned {status}");
+    }
+    response
+        .json::<Value>()
+        .await
+        .context("decode reward event page")
+}
+
+/// Drain `/rollouts/{id}/reward/events` (same events as `/reward/stream`).
+/// Sequences may gap relative to the full journal; duplicates are skipped.
+async fn drain_reward(
+    ctx: &RelayContext<'_>,
+    after: &mut u64,
+    ok: &mut bool,
+    relayed: &mut BTreeSet<u64>,
+    outcome: &mut RelayOutcome,
+) -> Result<()> {
+    if !*ok {
+        return Ok(());
+    }
+    let Some(url) = ctx.reward_poll_url else {
+        *ok = false;
+        return Ok(());
+    };
+    let page = match fetch_reward_page(ctx, url, *after).await {
+        Ok(page) => page,
+        Err(error) => {
+            outcome.note("reward_stream_unavailable", format!("{error:#}"), 0);
+            *ok = false;
+            return Ok(());
+        }
+    };
+    let events = poll_event_list(&page);
+    let mut drafts = Vec::new();
+    for event in events {
+        let Some(sequence) = event.get("sequence").and_then(Value::as_u64) else {
+            continue;
+        };
+        if sequence <= *after {
+            continue;
+        }
+        *after = (*after).max(sequence);
+        let kind = event.get("kind").and_then(Value::as_str).unwrap_or("");
+        if kind == STREAM_SUBSCRIBED_KIND {
+            continue;
+        }
+        if !relayed.insert(sequence) {
+            continue;
+        }
+        let draft = relay_event(ctx, event, sequence, outcome).await?;
+        drafts.push(draft);
+        outcome.relayed_events += 1;
+        outcome.reward_events_relayed += 1;
+        if kind == "rubric.grade" {
+            outcome.reward_grades_relayed += 1;
+        }
+    }
+    if !drafts.is_empty() {
+        ctx.service
+            .append_event_payloads(ctx.run_id.to_string(), drafts)
+            .await
+            .context("append relayed reward events")?;
+    }
+    Ok(())
+}
+
+/// Grace for the declared annotation stream to report `closed` after the
+/// rollout settled. Matches the container's post-terminal drain budget plus
+/// one poll of slack.
+const ANNOTATION_DRAIN_GRACE: Duration = Duration::from_secs(45);
+
+async fn fetch_lane_page(
+    ctx: &RelayContext<'_>,
+    url: &str,
+    after: u64,
+    lane: &'static str,
+) -> Result<Value> {
+    let wait_ms = ctx
+        .settings
+        .event_stream
+        .poll_interval
+        .as_millis()
+        .min(10_000) as u64;
+    let response = ctx
+        .client
+        .get(url)
+        .query(&[
+            ("after", after.to_string()),
+            ("limit", ctx.settings.event_stream.page_limit.to_string()),
+            ("wait_ms", wait_ms.to_string()),
+        ])
+        .send()
+        .await
+        .with_context(|| format!("GET declared {lane} event page"))?;
+    let status = response.status();
+    if !status.is_success() {
+        bail!("{lane} event page returned {status}");
+    }
+    response
+        .json::<Value>()
+        .await
+        .with_context(|| format!("decode {lane} event page"))
+}
+
+/// Drain the declared live annotation stream: `annotation.*` kinds a bound
+/// protocol publishes beside the rollout. Its sequences are its own, so they
+/// are de-duplicated apart from the rollout journal. Returns how many events
+/// were relayed by this drain.
+async fn drain_annotation(
+    ctx: &RelayContext<'_>,
+    after: &mut u64,
+    ok: &mut bool,
+    relayed: &mut BTreeSet<u64>,
+    outcome: &mut RelayOutcome,
+) -> Result<usize> {
+    if !*ok || outcome.annotation_closed {
+        return Ok(0);
+    }
+    let Some(url) = ctx.annotation_poll_url else {
+        *ok = false;
+        return Ok(0);
+    };
+    let page = match fetch_lane_page(ctx, url, *after, "annotation").await {
+        Ok(page) => page,
+        Err(error) => {
+            outcome.note("annotation_stream_unavailable", format!("{error:#}"), 0);
+            *ok = false;
+            return Ok(0);
+        }
+    };
+    let mut drafts = Vec::new();
+    for event in poll_event_list(&page) {
+        let Some(sequence) = event.get("sequence").and_then(Value::as_u64) else {
+            continue;
+        };
+        if sequence <= *after {
+            continue;
+        }
+        *after = (*after).max(sequence);
+        let kind = event.get("kind").and_then(Value::as_str).unwrap_or("");
+        if kind == STREAM_SUBSCRIBED_KIND {
+            continue;
+        }
+        if !relayed.insert(sequence) {
+            continue;
+        }
+        drafts.push(relay_annotation_event(ctx, event, sequence, kind));
+        outcome.annotation_events_relayed += 1;
+        if kind == "annotation.finding" {
+            outcome.annotation_findings_relayed += 1;
+        }
+    }
+    if page.pointer("/cursor/closed").and_then(Value::as_bool) == Some(true) {
+        outcome.annotation_closed = true;
+    }
+    let count = drafts.len();
+    if !drafts.is_empty() {
+        ctx.service
+            .append_event_payloads(ctx.run_id.to_string(), drafts)
+            .await
+            .context("append relayed annotation events")?;
+    }
+    Ok(count)
+}
+
+/// One relayed annotation-stream envelope.
+///
+/// It rides the owner's `eval.trial.event` carrier -- the vocabulary belongs
+/// to Optimizers and is the union of what that repo emits, so Workshop cannot
+/// honestly declare a type of its own -- and is distinguished by
+/// `delta.stream = "annotation"` plus the envelope's own `stream_id`. Its
+/// idempotency key lives in a separate namespace from the rollout journal so
+/// equal sequence numbers on the two streams never collide.
+fn relay_annotation_event(
+    ctx: &RelayContext<'_>,
+    event: &Value,
+    sequence: u64,
+    kind: &str,
+) -> OptimizerEventDraft {
+    let container_event = json!({
+        "rollout_id": ctx.rollout_id,
+        "stream_id": event.get("stream_id").cloned().unwrap_or_else(|| json!(format!("stream:{}:annotations", ctx.rollout_id))),
+        "sequence": sequence,
+        "kind": kind,
+        "occurred_at": event.get("ts").cloned().unwrap_or(Value::Null),
+        "digest": event.get("digest").cloned().unwrap_or(Value::Null),
+        "payload": event.get("payload").cloned().unwrap_or(Value::Null),
+    });
+    let delta = Map::from_iter([
+        ("trial_id".into(), json!(ctx.trial_id)),
+        ("seed".into(), json!(ctx.seed)),
+        ("pool".into(), json!(ctx.pool)),
+        ("scenario".into(), json!(ctx.scenario)),
+        ("message".into(), json!(kind)),
+        ("stream".into(), json!("annotation")),
+        ("container_event".into(), container_event.clone()),
+    ]);
+    OptimizerEventDraft::new("eval.trial.event", EVAL_ALGORITHM_ID)
+        // One relay of one producer sequence on the annotation stream.
+        .idempotency_key(format!("eval:annotation:{}:{sequence}", ctx.rollout_id))
+        .level("debug")
+        .occurred_at_opt(event.get("ts").and_then(Value::as_str))
+        .delta(delta)
+        .raw(json!({
+            "source": "container_eval",
+            "stream": "annotation",
+            "trial_id": ctx.trial_id,
+            "container_event": container_event,
+        }))
+}
+
+async fn settle_annotation_stream(
+    ctx: &RelayContext<'_>,
+    after: &mut u64,
+    ok: &mut bool,
+    relayed: &mut BTreeSet<u64>,
+    outcome: &mut RelayOutcome,
+    poll_interval: Duration,
+) {
+    if !*ok || outcome.annotation_closed {
+        return;
+    }
+    let started = Instant::now();
+    loop {
+        let _ = drain_annotation(ctx, after, ok, relayed, outcome).await;
+        if !*ok || outcome.annotation_closed {
+            return;
+        }
+        if started.elapsed() >= ANNOTATION_DRAIN_GRACE {
+            outcome.note(
+                "annotation_stream_not_closed",
+                format!(
+                    "the rollout settled but its annotation stream did not close within {}s",
+                    ANNOTATION_DRAIN_GRACE.as_secs()
+                ),
+                0,
+            );
+            return;
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
 }
 
 fn page_declares_journal_v2(page: &Value) -> bool {

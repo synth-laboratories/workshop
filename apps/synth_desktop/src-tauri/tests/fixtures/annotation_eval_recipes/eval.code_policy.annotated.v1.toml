@@ -1,0 +1,27 @@
+id = "eval.code_policy.annotated.v1"
+algorithm = "eval"
+container = "harbor-code-policy"
+provider = "codex"
+model = "codex_agentic"
+locality = "container"
+train_seeds = [0]
+
+[bounds]
+# Workshop product cap is 2.45; deterministic post_rollout is $0.
+max_cost_usd = 2.00
+max_total_rollouts = 1
+
+[annotation]
+annotators = [
+  "code_policy.command_facts",
+  "code_policy.candidate_revisions",
+  "code_policy.evaluation_results",
+  "code_policy.protocol_facts",
+  "code_policy.verifier_status",
+  "code_policy.episode_integrity",
+  "code_policy.milestone_progress",
+]
+label = "post_rollout"
+
+[annotation.throughput]
+deterministic = 4

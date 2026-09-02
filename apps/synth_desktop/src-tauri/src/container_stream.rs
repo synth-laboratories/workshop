@@ -168,6 +168,37 @@ pub fn declared_sse_url(stream: &Value) -> Result<String> {
         .context("stream descriptor omitted transports.sse.url; refusing to guess /events")
 }
 
+/// Poll URL for the reward-calculation stream (`rubric.grade`, `reward_signal`).
+/// Absent when the producer omitted `reward.events`; never guess `/reward/events`.
+pub fn declared_reward_poll_url(stream: &Value) -> Option<String> {
+    stream
+        .pointer("/reward/events")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .map(str::to_string)
+}
+
+/// Poll URL for the live annotation stream a bound protocol publishes beside the
+/// rollout (`annotation.*` kinds). Absent when no protocol is bound to the
+/// rollout; never guess `/annotations/events`.
+pub fn declared_annotation_poll_url(stream: &Value) -> Option<String> {
+    stream
+        .pointer("/annotation/events")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .map(str::to_string)
+}
+
+/// SSE URL for the live annotation stream, declared beside `annotation.events`
+/// when the rollout bound an SSE or WebSocket transport. Never guessed.
+pub fn declared_annotation_sse_url(stream: &Value) -> Option<String> {
+    stream
+        .pointer("/annotation/stream")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .map(str::to_string)
+}
+
 pub fn resolve_declared_url(base: &str, declared: &str) -> Result<String> {
     let base_url = reqwest::Url::parse(base).context("invalid container base URL")?;
     Ok(base_url
@@ -506,6 +537,20 @@ mod tests {
             "transports": { "poll": { "url": "/rollouts/r1/events" } }
         }))
         .is_err());
+        let with_reward = json!({
+            "id": "stream:r1",
+            "transports": { "poll": { "url": "/rollouts/r1/events" } },
+            "reward": {
+                "url": "/rollouts/r1/reward",
+                "events": "/rollouts/r1/reward/events",
+                "stream": "/rollouts/r1/reward/stream"
+            }
+        });
+        assert_eq!(
+            declared_reward_poll_url(&with_reward).as_deref(),
+            Some("/rollouts/r1/reward/events")
+        );
+        assert!(declared_reward_poll_url(&stream).is_none());
     }
 
     #[test]

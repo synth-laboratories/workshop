@@ -318,6 +318,7 @@ pub struct ProjectedHead {
     pub digest: String,
     pub trace_id: String,
     pub trace_digest: String,
+    pub container_id: Option<String>,
     pub campaign_id: Option<String>,
     pub campaign_status: String,
     pub session_id: Option<String>,
@@ -1261,6 +1262,7 @@ pub fn project_trace_head(
         digest,
         trace_id: trace_id.to_string(),
         trace_digest: trace_digest.to_string(),
+        container_id: jobs.first().and_then(|job| job.container_id.clone()),
         campaign_id: Some(campaign_id.to_string()),
         campaign_status,
         session_id,
@@ -1299,6 +1301,29 @@ pub fn list_campaigns_for_eval(conn: &Connection, eval_run_id: &str) -> Result<V
 }
 
 pub fn list_findings_for_trace(conn: &Connection, trace_digest: &str) -> Result<Vec<Value>> {
+    // The annotation container retains its own trace-content digest, whereas a
+    // Workshop Trace V5 import has the archive digest.  The local import's
+    // producerTraceId is the owner-bound identity that joins those namespaces;
+    // use it only as a fallback after an exact evidence-head digest lookup.
+    let (container_id, producer_trace_id) = conn
+        .query_row(
+            "SELECT container_id, metadata_json FROM traces WHERE digest=?1",
+            [trace_digest],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?
+        .map(|(container_id, metadata_json)| {
+            let metadata: Value = serde_json::from_str(&metadata_json).unwrap_or(Value::Null);
+            let producer_trace_id = metadata
+                .get("producerTraceId")
+                .or_else(|| metadata.get("rolloutId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            (container_id, producer_trace_id)
+        })
+        .unwrap_or((None, None));
     let mut statement = conn.prepare(
         "SELECT f.finding_id, f.annotator_id, f.annotation_type, f.taxonomy_label,
                 f.severity, f.status, f.target_selector, f.target_selector_json,
@@ -1306,10 +1331,16 @@ pub fn list_findings_for_trace(conn: &Connection, trace_digest: &str) -> Result<
          FROM annotation_findings f
          JOIN annotation_evidence_heads h ON h.digest = f.evidence_head_digest
          WHERE h.trace_digest=?1
+            OR (?2 IS NOT NULL AND h.campaign_id IN (
+                SELECT j.campaign_id
+                FROM annotation_jobs j
+                WHERE j.trace_id=?2
+                  AND (?3 IS NULL OR j.container_id=?3)
+            ))
          ORDER BY f.created_at, f.finding_id",
     )?;
     let rows = statement
-        .query_map([trace_digest], |row| {
+        .query_map((trace_digest, producer_trace_id, container_id), |row| {
             let target_json: String = row.get(7)?;
             let payload_json: String = row.get(8)?;
             Ok(json!({
@@ -1470,7 +1501,7 @@ mod tests {
             }
         });
         let first = apply_job_snapshot(&conn, Some("acmp_1"), "ctr_1", &payload).unwrap();
-        assert!(first.terminal);
+        assert!(first.terminal, "Workshop polls GET /annotation-jobs until terminal");
         assert!(!first.already_projected);
         assert_eq!(first.bundle_digest.as_deref(), Some("sha256:head"));
         let second = apply_job_snapshot(&conn, Some("acmp_1"), "ctr_1", &payload).unwrap();
@@ -1573,6 +1604,107 @@ mod tests {
     }
 
     #[test]
+    fn restart_resumes_running_jobs_without_a_second_reservation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.sqlite");
+        let idempotency = "ik_campaign_restart_1";
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            apply_migrations(&conn).unwrap();
+            let stage = json!({
+                "status": "submitted",
+                "containerId": "ctr_1",
+                "campaignId": "acmp_restart",
+                "jobs": [
+                    {
+                        "job_id": "ajob_restart",
+                        "trace_id": "trace_1",
+                        "trace_digest": "sha256:trace",
+                        "annotator_id": "craftax.recovery_facts"
+                    }
+                ]
+            });
+            assert_eq!(
+                seed_from_stage_payload(&conn, "opt_eval_restart", Some("post_rollout"), &stage)
+                    .unwrap(),
+                1
+            );
+            let running = json!({
+                "terminal": false,
+                "job": {
+                    "job_id": "ajob_restart",
+                    "state": "running",
+                    "reservation_id": "rsv_restart",
+                    "request": {
+                        "source_trace_id": "trace_1",
+                        "source_trace_digest": "sha256:trace",
+                        "annotator_id": "craftax.recovery_facts",
+                        "idempotency_key": idempotency
+                    }
+                }
+            });
+            let applied = apply_job_snapshot(&conn, Some("acmp_restart"), "ctr_1", &running).unwrap();
+            assert!(!applied.terminal);
+            assert_eq!(applied.state, "running");
+            let jobs = list_jobs_needing_reconcile(&conn).unwrap();
+            assert_eq!(jobs.len(), 1);
+            assert_eq!(jobs[0].state, "running");
+        }
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let jobs = list_jobs_needing_reconcile(&conn).unwrap();
+        assert_eq!(jobs.len(), 1, "Workshop restart re-reads running jobs from SQLite");
+        assert_eq!(jobs[0].job_id, "ajob_restart");
+        assert_eq!(jobs[0].state, "running");
+        let sealed = json!({
+            "terminal": true,
+            "job": {
+                "job_id": "ajob_restart",
+                "state": "sealed",
+                "bundle_digest": "sha256:head",
+                "reservation_id": "rsv_restart",
+                "applied_count": 1,
+                "abstained_count": 0,
+                "rejected_count": 0,
+                "request": {
+                    "source_trace_id": "trace_1",
+                    "source_trace_digest": "sha256:trace",
+                    "annotator_id": "craftax.recovery_facts",
+                    "idempotency_key": idempotency
+                }
+            }
+        });
+        let outcome = apply_job_snapshot(&conn, Some("acmp_restart"), "ctr_1", &sealed).unwrap();
+        assert!(outcome.terminal);
+        assert_eq!(outcome.state, "sealed");
+        let job_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM annotation_jobs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(job_count, 1, "reconciler must not insert a second job");
+        let (payload_json, reservation_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT payload_json, reservation_id FROM annotation_jobs WHERE job_id='ajob_restart'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload_json).unwrap();
+        assert_eq!(
+            payload["job"]["request"]["idempotency_key"],
+            json!(idempotency),
+            "idempotency key is unchanged across restart"
+        );
+        assert_eq!(reservation_id.as_deref(), Some("rsv_restart"));
+        let distinct: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT reservation_id) FROM annotation_jobs WHERE reservation_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(distinct, 1, "no second reservation is minted on resume");
+    }
+
+    #[test]
     fn verifier_result_summaries_project_as_available_scorecards() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         apply_migrations(&conn).unwrap();
@@ -1647,6 +1779,112 @@ mod tests {
         let rubric = get_rubric_result(&conn, "sha256:vres").unwrap().unwrap();
         assert!(rubric.available);
         assert_eq!(rubric.summary.get("score"), Some(&json!(0.625)));
+    }
+
+    #[test]
+    fn luna_verifier_result_projects_criterion_scorecard() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        apply_migrations(&conn).unwrap();
+        let stage = json!({
+            "status": "submitted",
+            "containerId": "ctr_18082",
+            "campaignId": "acmp_luna",
+            "jobs": [{
+                "job_id": "ajob_a0d742cc7ce34e3a",
+                "trace_id": "roll_ab9de205861d",
+                "trace_digest": "sha256:6e47e52c30126d3f360d74576569a7358230b0255d646e8465a57693fdb48d69",
+                "annotator_id": "craftax.rubric_verifier"
+            }]
+        });
+        seed_from_stage_payload(&conn, "opt_eval_luna", Some("post_rollout"), &stage).unwrap();
+        apply_job_snapshot(
+            &conn,
+            Some("acmp_luna"),
+            "ctr_18082",
+            &json!({
+                "terminal": true,
+                "job": {
+                    "job_id": "ajob_a0d742cc7ce34e3a",
+                    "state": "sealed",
+                    "bundle_digest": "sha256:668f85a4825bf96cb25476eecd96736e5f6cb430948fac18134b5207b780db7e",
+                    "request": {
+                        "source_trace_id": "roll_ab9de205861d",
+                        "source_trace_digest": "sha256:6e47e52c30126d3f360d74576569a7358230b0255d646e8465a57693fdb48d69",
+                        "annotator_id": "craftax.rubric_verifier"
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        let projected = project_trace_head(
+            &conn,
+            "acmp_luna",
+            "roll_ab9de205861d",
+            "sha256:6e47e52c30126d3f360d74576569a7358230b0255d646e8465a57693fdb48d69",
+            &json!({
+                "trace_id": "roll_ab9de205861d",
+                "bundle_digest": "sha256:668f85a4825bf96cb25476eecd96736e5f6cb430948fac18134b5207b780db7e",
+                "annotations": []
+            }),
+            &json!({
+                "bundles": [{
+                    "bundle_id": "evb_de36e1a0ba95d45b",
+                    "bundle_digest": "sha256:668f85a4825bf96cb25476eecd96736e5f6cb430948fac18134b5207b780db7e",
+                    "is_head": true,
+                    "annotation_count": 0,
+                    "verifier_result_count": 1,
+                    "verifier_results": [{
+                        "verifier_result_id": "vres_2a294bcd197fd15c",
+                        "content_digest": "sha256:f3b1f77bfb50067ac860cf551277fd038c73ac9fa3d8379ea6b57dddea3fe56d",
+                        "verifier_id": "craftax.rubric_verifier.verifier",
+                        "rubric_id": "craftax.execution_quality",
+                        "rubric_digest": "sha256:6f6ffade02247deb3614c1f693dc37507aff4cccd4ead17bbfe17350bac815e1",
+                        "score": 0.4722222222222222,
+                        "passed": false,
+                        "verdict": "fail",
+                        "verification_status": "valid",
+                        "pass_threshold": 0.5,
+                        "criterion_results": [
+                            {
+                                "criterion_id": "state_grounding",
+                                "score": 2.0,
+                                "verdict": "pass",
+                                "passed": true,
+                                "status": "decisive",
+                                "rationale": "The policy correctly identified the initial map."
+                            },
+                            {
+                                "criterion_id": "belief_calibration",
+                                "score": 3.0,
+                                "verdict": "pass",
+                                "passed": true,
+                                "status": "decisive"
+                            }
+                        ]
+                    }]
+                }]
+            }),
+        )
+        .unwrap()
+        .expect("head digest");
+        let head = get_evidence_head(&conn, &projected.digest).unwrap().unwrap();
+        assert_eq!(head.summary["rubric"]["available"], json!(true));
+        assert_eq!(head.summary["rubric"]["score"], json!(0.4722222222222222));
+        assert_eq!(head.summary["rubric"]["passed"], json!(false));
+        assert_eq!(
+            head.summary["rubric"]["verifierResultId"],
+            json!("vres_2a294bcd197fd15c")
+        );
+        assert_eq!(head.summary["rubric"]["criteria"].as_array().unwrap().len(), 2);
+        let rubric = get_rubric_result(
+            &conn,
+            "sha256:f3b1f77bfb50067ac860cf551277fd038c73ac9fa3d8379ea6b57dddea3fe56d",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(rubric.available);
+        assert_eq!(rubric.summary.get("score"), Some(&json!(0.4722222222222222)));
+        assert_ne!(rubric.summary.get("score"), Some(&json!(0.0)));
     }
 
     #[test]

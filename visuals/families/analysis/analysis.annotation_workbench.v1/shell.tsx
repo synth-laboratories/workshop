@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { MetricStrip, VisualChrome } from "../../../chrome/VisualChrome.tsx";
 import type { VisualBinding } from "../../../runtime/types.ts";
 import craftaxFixture from "../../../fixtures/annotation_workbench_craftax.json";
+import { rubricCriterionView, rubricScore, type RubricCriterionInput } from "./rubric.ts";
 
 type FindingStatus = "applied" | "abstained" | "rejected";
 type MilestoneState = "verified" | "partial" | "blocked" | "unsupported" | "attempted";
@@ -20,13 +21,6 @@ type Finding = {
 };
 type Milestone = { id: string; label: string; state: MilestoneState; engineVerified?: boolean };
 type SpanRow = { id: string; sequence?: number; title: string; kind?: string };
-type RubricCriterion = {
-  id: string;
-  label: string;
-  judgment?: string;
-  score?: number | null;
-  citations?: string[];
-};
 type WorkbenchProjection = {
   schemaVersion?: string;
   campaign?: {
@@ -55,7 +49,13 @@ type WorkbenchProjection = {
     available?: boolean;
     reason?: string;
     digest?: string | null;
-    criteria?: RubricCriterion[];
+    rubricId?: string;
+    rubric_id?: string;
+    verdict?: string;
+    passed?: boolean | null;
+    score?: number | null;
+    passThreshold?: number | null;
+    criteria?: RubricCriterionInput[];
   };
   findings?: Finding[];
   taxonomy?: { label: string; count: number }[];
@@ -74,7 +74,7 @@ export type ShellProps = {
   title?: string;
   lede?: string;
   evidence?: WorkbenchProjection;
-  rubric?: { available?: boolean; reason?: string; criteria?: RubricCriterion[]; digest?: string | null };
+  rubric?: WorkbenchProjection["rubric"];
   data?: WorkbenchProjection;
   bindings?: VisualBinding[];
   onReviewFinding?: (input: {
@@ -156,6 +156,7 @@ function Chip({ label, tone }: { label: string; tone?: { bg: string; fg: string 
 export function Shell(props: ShellProps) {
   const projection = readProjection(props.evidence ?? props.data ?? craftaxFixture);
   const rubric = props.rubric ?? projection.rubric ?? { available: false, reason: "verifier_result_missing" };
+  const rubricCriteria = (rubric.criteria ?? []).map(rubricCriterionView);
   const findings = projection.findings ?? [];
   const milestones = projection.milestones ?? [];
   const spans = projection.spans ?? [];
@@ -363,18 +364,32 @@ export function Shell(props: ShellProps) {
 
       {view === "rubric" ? (
         <section aria-label="Rubric" data-testid="analysis-rubric">
-          {rubric.available && (rubric.criteria?.length ?? 0) > 0 ? (
-            <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 8 }}>
-              {(rubric.criteria ?? []).map((criterion) => (
+          {rubric.available && rubricCriteria.length > 0 ? (
+            <>
+              <div style={{ border: "1px solid var(--sv-border)", borderRadius: 10, padding: 12, marginBottom: 10, background: "var(--sv-surface-muted)" }}>
+                <strong>{rubric.rubricId ?? rubric.rubric_id ?? "Rubric result"}</strong>
+                <div style={{ fontSize: "var(--sv-fs-body)", color: "var(--sv-text-muted)", marginTop: 4 }}>
+                  {rubric.verdict ?? (rubric.passed === true ? "pass" : rubric.passed === false ? "fail" : "—")}
+                  {rubric.score != null ? ` · ${rubricScore(rubric.score)}` : ""}
+                </div>
+              </div>
+              <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 8 }}>
+              {rubricCriteria.map((criterion) => (
                 <li key={criterion.id} style={{ border: "1px solid var(--sv-border)", borderRadius: 10, padding: 12 }}>
                   <strong>{criterion.label}</strong>
                   <div style={{ fontSize: "var(--sv-fs-body)", color: "var(--sv-text-muted)" }}>
-                    {criterion.judgment ?? "—"}
+                    {criterion.judgment}
                     {criterion.score != null ? ` · ${criterion.score}` : ""}
                   </div>
+                  {criterion.rationale ? (
+                    <p style={{ margin: "6px 0 0", color: "var(--sv-text-muted)", fontSize: "var(--sv-fs-meta)", lineHeight: 1.45 }}>
+                      {criterion.rationale}
+                    </p>
+                  ) : null}
                 </li>
               ))}
-            </ul>
+              </ul>
+            </>
           ) : (
             <p data-testid="analysis-rubric-unavailable" style={{ color: "var(--sv-text-muted)" }}>
               Rubric unavailable{rubric.reason ? ` (${rubric.reason})` : ""}. Missing verifier evidence is not a zero score.

@@ -21,13 +21,13 @@ use crate::limits;
 use crate::session::annotation_reservation::{self as reservations, ReservationBinding};
 use crate::session::approval::{ApprovalBroker, ApprovalDecision, ApprovalKind, PaidComputeCap};
 use crate::session::paid_compute_budget::{micros_from_reported_cost, SettlementOutcome};
-
 /// Mirrors `bin/synth_annotations_mcp.rs::OPERATIONS`; a contract test keeps them equal.
 pub const OPERATIONS: &[(&str, bool, bool)] = &[
     ("annotation_list_definitions", true, false),
     ("annotation_estimate", true, false),
     ("annotation_start", false, true),
     ("annotation_get", true, false),
+    ("annotation_events", true, false),
     ("annotation_cancel", false, false),
     ("annotation_list", true, false),
     ("annotation_get_evidence", true, false),
@@ -36,6 +36,11 @@ pub const OPERATIONS: &[(&str, bool, bool)] = &[
     ("annotation_review", false, false),
     ("annotation_consensus", false, false),
     ("annotation_campaign", false, true),
+    // Lane C: live annotation protocols beside running rollouts.
+    ("annotation_protocol_get", true, false),
+    ("annotation_protocol_update", false, false),
+    ("annotation_control_send", false, false),
+    ("annotation_provisional_list", true, false),
 ];
 
 const ALLOWED_ARGUMENTS: &[&str] = &[
@@ -62,6 +67,20 @@ const ALLOWED_ARGUMENTS: &[&str] = &[
     "traces",
     "label",
     "repeats",
+    "after",
+    "limit",
+    // live annotation protocol + control
+    "rollout_id",
+    "rollout_ids",
+    "protocol_id",
+    "protocol_revision_id",
+    "code",
+    "configuration",
+    "source_revision",
+    "op",
+    "message",
+    "carry_state",
+    "reason",
 ];
 
 const RESERVATION_TTL_SECONDS: i64 = 900;
@@ -140,6 +159,143 @@ fn client() -> Result<reqwest::Client> {
         .build()?)
 }
 
+/// `annotation_protocol_update`: install (or re-install) a live annotation
+/// protocol revision on the container, optionally advance a run's pin so its
+/// next rollouts use it, and optionally hot-swap rollouts that are running now.
+///
+/// The container is the authority: it boots the code in isolation before it
+/// counts as installed and returns the digest-pinned `protocol_revision_id`.
+async fn protocol_update(body: &Value, core: &CoreRuntime, base: &str) -> Result<Value> {
+    let code = body
+        .get("code")
+        .and_then(Value::as_str)
+        .filter(|code| !code.trim().is_empty())
+        .ok_or_else(|| failure("annotation_argument_missing", "code required", "pass the protocol source"))?;
+    let protocol_id = body
+        .get("protocol_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| failure("annotation_argument_missing", "protocol_id required", "pass the protocol id the file declares"))?;
+    let configuration = match body.get("configuration") {
+        None | Some(Value::Null) => json!({}),
+        Some(Value::Object(map)) => Value::Object(map.clone()),
+        Some(_) => return Err(failure("annotation_argument_invalid", "configuration must be an object", "pass a JSON object")),
+    };
+    if crate::optimizers::live_annotation::contains_secret_key(&configuration) {
+        return Err(failure(
+            "protocol_credential_forbidden",
+            "configuration must not carry credentials",
+            "the container reads its own provider key; pass model and limits only",
+        ));
+    }
+    let source_revision = body
+        .get("source_revision")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("sha256:{:x}", sha2::Sha256::digest(code.as_bytes())));
+    let installed = forward(
+        "PUT",
+        &format!("{base}/annotation-protocol"),
+        Some(&json!({
+            "code": code,
+            "protocol_id": protocol_id,
+            "configuration": configuration,
+            "source_revision": source_revision,
+        })),
+    )
+    .await?;
+    let revision = installed
+        .get("protocol_revision_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| failure("annotation_container_error", "install omitted protocol_revision_id", "inspect the container"))?
+        .to_string();
+    let mut result = json!({
+        "protocol": installed,
+        "protocol_revision_id": revision,
+        "idempotent": installed.get("idempotent").cloned().unwrap_or(Value::Bool(false)),
+    });
+    if let Some(run_id) = body.get("run_id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+        let client = client()?;
+        let state = crate::optimizers::live_annotation::read_protocol_state(&client, base).await?;
+        let pin = crate::optimizers::live_annotation::pin_from_state(&state, None)?;
+        crate::optimizers::live_annotation::persist_protocol_pin(core.optimizers(), run_id, &pin).await?;
+        result["run_pin"] = pin;
+    }
+    let mut rebinds = Vec::new();
+    if let Some(rollouts) = body.get("rollout_ids").and_then(Value::as_array) {
+        let carry_state = body.get("carry_state").and_then(Value::as_bool).unwrap_or(true);
+        for rollout in rollouts.iter().filter_map(Value::as_str) {
+            let ack = forward(
+                "POST",
+                &format!("{base}/rollouts/{rollout}/annotations/control"),
+                Some(&json!({
+                    "schema": "synth.live-annotation-control.v1",
+                    "op": "protocol.update",
+                    "protocol_revision_id": revision,
+                    "carry_state": carry_state,
+                })),
+            )
+            .await;
+            rebinds.push(match ack {
+                Ok(ack) => json!({"rollout_id": rollout, "ack": ack}),
+                Err(error) => json!({"rollout_id": rollout, "error": format!("{error:#}")}),
+            });
+        }
+    }
+    result["rebinds"] = Value::Array(rebinds);
+    Ok(result)
+}
+
+/// `annotation_control_send`: one consumer control message to one running
+/// rollout's annotator. The container answers the sender immediately and
+/// publishes the durable acknowledgement on the annotation stream.
+async fn control_send(body: &Value, base: &str) -> Result<Value> {
+    let rollout_id = string_field(body, "rollout_id", "rolloutId").ok_or_else(|| {
+        failure("annotation_argument_missing", "rollout_id required", "pass the rollout id")
+    })?;
+    if rollout_id.contains('/') || rollout_id.is_empty() {
+        return Err(failure("annotation_argument_invalid", "rollout_id is malformed", "pass the rollout id from the run"));
+    }
+    let op = body
+        .get("op")
+        .and_then(Value::as_str)
+        .ok_or_else(|| failure("annotation_argument_missing", "op required", "one of message, protocol.update, stop"))?;
+    let mut control = json!({"schema": "synth.live-annotation-control.v1", "op": op});
+    match op {
+        "message" => {
+            let message = body.get("message").cloned().unwrap_or(Value::Null);
+            if !message.is_object() {
+                return Err(failure("annotation_argument_invalid", "message must be an object with a type", "pass {type: note|judge_now|set, ...}"));
+            }
+            if crate::optimizers::live_annotation::contains_secret_key(&message) {
+                return Err(failure("protocol_credential_forbidden", "message must not carry credentials", "messages are evidence, never secrets"));
+            }
+            control["message"] = message;
+        }
+        "protocol.update" => {
+            let revision = body
+                .get("protocol_revision_id")
+                .and_then(Value::as_str)
+                .filter(|id| id.starts_with("anprev_"))
+                .ok_or_else(|| failure("annotation_argument_missing", "protocol_revision_id required", "install the revision first (annotation_protocol_update) and pass its anprev_ id"))?;
+            control["protocol_revision_id"] = json!(revision);
+            control["carry_state"] = json!(body.get("carry_state").and_then(Value::as_bool).unwrap_or(true));
+        }
+        "stop" => {
+            if let Some(reason) = body.get("reason").and_then(Value::as_str) {
+                control["reason"] = json!(reason);
+            }
+        }
+        other => {
+            return Err(failure("annotation_argument_invalid", format!("unknown control op `{other}`"), "one of message, protocol.update, stop"));
+        }
+    }
+    if let Some(control_id) = body.get("control_id").and_then(Value::as_str) {
+        control["control_id"] = json!(control_id);
+    }
+    forward("POST", &format!("{base}/rollouts/{rollout_id}/annotations/control"), Some(&control)).await
+}
+
 /// Known container error codes keep their identity through the proxy.
 fn container_code(code: &str) -> &'static str {
     match code {
@@ -154,6 +310,12 @@ fn container_code(code: &str) -> &'static str {
         "unsupported_finding" => "unsupported_finding",
         "job_not_found" => "job_not_found",
         "annotation_not_found" => "annotation_not_found",
+        "annotation_runner_not_active" => "annotation_runner_not_active",
+        "annotation_stream_not_found" => "annotation_stream_not_found",
+        "annotation_protocol_unknown" => "annotation_protocol_unknown",
+        "protocol_boot_failed" => "protocol_boot_failed",
+        "protocol_identity_mismatch" => "protocol_identity_mismatch",
+        "protocol_credential_forbidden" => "protocol_credential_forbidden",
         _ => "annotation_container_error",
     }
 }
@@ -162,6 +324,7 @@ async fn forward(method: &str, url: &str, body: Option<&Value>) -> Result<Value>
     let client = client()?;
     let request = match method {
         "GET" => client.get(url),
+        "PUT" => client.put(url).json(body.unwrap_or(&Value::Null)),
         _ => client.post(url).json(body.unwrap_or(&Value::Null)),
     };
     let response = request.send().await.map_err(|error| {
@@ -178,12 +341,19 @@ async fn forward(method: &str, url: &str, body: Option<&Value>) -> Result<Value>
         return Ok(payload);
     }
     let detail = payload.get("detail").cloned().unwrap_or(payload.clone());
+    // The compat façade answers `{error, status_code, ...}`; the annotation
+    // router answers `{detail: {code, message}}`; a refused control answers
+    // `{accepted: false, reason}`. Keep whichever identity the producer gave.
     let code = detail
         .get("code")
+        .or_else(|| detail.get("error"))
+        .or_else(|| detail.get("reason"))
         .and_then(Value::as_str)
         .unwrap_or("annotation_container_error");
     let message = detail
         .get("message")
+        .or_else(|| detail.get("reason"))
+        .or_else(|| detail.get("detail"))
         .and_then(Value::as_str)
         .unwrap_or(&text)
         .to_string();
@@ -253,10 +423,192 @@ fn trace_id_of(body: &Value) -> Result<String> {
         })
 }
 
+/// Container annotation endpoints address the producer's sealed rollout id,
+/// whereas Workshop indexes the imported archive under a local `tracev5_…`
+/// record id.  Resolve that local record back to its producer identity before
+/// crossing the container boundary.  The recorded owner must agree with the
+/// requested container so an imported trace can never be redirected to a
+/// different loopback service.
+async fn resolve_container_trace_id(
+    core: &CoreRuntime,
+    container_id: &str,
+    body: Value,
+) -> Result<Value> {
+    let Some(local_id) = string_field(&body, "trace_id", "traceId").or_else(|| {
+        body.get("request")
+            .and_then(|request| request.get("source_trace_id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }) else {
+        return Ok(body);
+    };
+    let local_id_for_lookup = local_id.clone();
+    let owned = core
+        .storage()
+        .database()
+        .run_read(move |conn| {
+            use rusqlite::OptionalExtension;
+            conn.query_row(
+                "SELECT container_id, digest, metadata_json FROM traces WHERE id=?1",
+                [local_id_for_lookup],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+        .await?;
+    let Some((owner, trace_digest, metadata_json)) = owned else {
+        return Ok(body);
+    };
+    if owner.as_deref() != Some(container_id) {
+        return Ok(body);
+    }
+    let metadata: Value = serde_json::from_str(&metadata_json).unwrap_or(Value::Null);
+    let Some(producer_id) = metadata
+        .get("producerTraceId")
+        .or_else(|| metadata.get("rolloutId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(body);
+    };
+    let producer_id = producer_id.to_string();
+    let mut resolved = body;
+    if let Some(object) = resolved.as_object_mut() {
+        object.insert("trace_id".into(), json!(producer_id));
+        if let Some(request) = object.get_mut("request").and_then(Value::as_object_mut) {
+            request.insert("source_trace_id".into(), json!(producer_id));
+            request.insert("source_trace_digest".into(), json!(trace_digest));
+        }
+    }
+    Ok(resolved)
+}
+
+fn campaign_id_for_annotation(trace_digest: &str, session_id: Option<&str>) -> String {
+    let trace = trace_digest
+        .trim_start_matches("sha256:")
+        .chars()
+        .take(24)
+        .collect::<String>();
+    let session = session_id
+        .map(|value| {
+            value
+                .chars()
+                .filter(|value| value.is_ascii_alphanumeric())
+                .take(12)
+                .collect::<String>()
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "local".into());
+    format!("acmp_annotation_{trace}_{session}")
+}
+
+/// A direct annotation start is still a campaign from the presentation
+/// perspective: every job needs a durable owner, status, and session binding
+/// so the reconciler can hydrate the evidence head and open its workbench.
+async fn persist_started_annotation_job(
+    core: &CoreRuntime,
+    container_id: &str,
+    session_id: Option<&str>,
+    request: &Value,
+    payload: &Value,
+) -> Result<()> {
+    let trace_digest = request
+        .get("source_trace_digest")
+        .and_then(Value::as_str)
+        .context("annotation request has no source trace digest")?
+        .to_string();
+    let trace_id = request
+        .get("source_trace_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let annotator_id = request
+        .get("annotator_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let campaign_id = campaign_id_for_annotation(&trace_digest, session_id);
+    let container_id = container_id.to_string();
+    let session_id = session_id.map(str::to_owned);
+    let request = request.clone();
+    let mut stored_payload = payload.clone();
+    if let Some(job) = stored_payload.get_mut("job").and_then(Value::as_object_mut) {
+        job.entry("request").or_insert(request.clone());
+    }
+    core.storage()
+        .database()
+        .run_transaction(move |conn| {
+            crate::session::annotation_projection::upsert_campaign(
+                conn,
+                &campaign_id,
+                "submitted",
+                &json!({
+                    "containerId": container_id,
+                    "sessionId": session_id,
+                    "label": "Trace annotation",
+                    "domain": annotator_id.split('.').next().unwrap_or("annotation"),
+                    "traces": [{"id": trace_id, "digest": trace_digest}],
+                    "annotators": [annotator_id],
+                }),
+            )?;
+            crate::session::annotation_projection::apply_job_snapshot(
+                conn,
+                Some(&campaign_id),
+                &container_id,
+                &stored_payload,
+            )?;
+            crate::session::annotation_projection::refresh_campaign_coverage(conn, &campaign_id)?;
+            Ok(())
+        })
+        .await
+}
+
 fn micros_of(value: Option<&Value>) -> Option<u64> {
     value
         .and_then(Value::as_f64)
         .and_then(micros_from_reported_cost)
+}
+
+/// openai-2026-08 gpt-5.6-luna rates. Used when the container left
+/// `usage.cost_usd` null (`cost_status: unavailable`) so the ledger can still
+/// close to metered spend instead of the reservation cap.
+const LUNA_INPUT_USD_PER_MILLION: f64 = 1.25;
+const LUNA_CACHED_INPUT_USD_PER_MILLION: f64 = 0.125;
+const LUNA_OUTPUT_USD_PER_MILLION: f64 = 10.0;
+
+fn luna_cost_micros(usage: &Value) -> Option<u64> {
+    let input = usage.get("input_tokens").and_then(Value::as_f64)?;
+    let output = usage.get("output_tokens").and_then(Value::as_f64).unwrap_or(0.0);
+    let cached = usage
+        .get("cached_input_tokens")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0)
+        .min(input)
+        .max(0.0);
+    let uncached = (input - cached).max(0.0);
+    let usd = (uncached * LUNA_INPUT_USD_PER_MILLION
+        + cached * LUNA_CACHED_INPUT_USD_PER_MILLION
+        + output.max(0.0) * LUNA_OUTPUT_USD_PER_MILLION)
+        / 1_000_000.0;
+    micros_from_reported_cost(usd)
+}
+
+fn settlement_from_usage(usage: Option<&Value>) -> SettlementOutcome {
+    let Some(usage) = usage else {
+        return SettlementOutcome::Unknown;
+    };
+    match micros_of(usage.get("cost_usd")).or_else(|| luna_cost_micros(usage)) {
+        Some(cost_usd_micros) => SettlementOutcome::Exact { cost_usd_micros },
+        None => SettlementOutcome::Unknown,
+    }
 }
 
 struct PaidGrant {
@@ -282,6 +634,43 @@ struct TraceOwner {
     row_id: String,
     source: String,
     container_id: Option<String>,
+}
+
+/// Resolve a producer rollout back to the unique imported Trace V5 row owned
+/// by the campaign container.  Producer and Workshop identities intentionally
+/// occupy different namespaces, so an evidence head cannot open by producer
+/// id alone.  Ambiguous imports fail closed rather than selecting a trace from
+/// another import history.
+fn owned_imported_trace_id_for_producer(
+    conn: &rusqlite::Connection,
+    container_id: &str,
+    producer_trace_id: &str,
+) -> Result<Option<String>> {
+    let mut statement = conn.prepare(
+        "SELECT id, metadata_json FROM traces WHERE container_id=?1 ORDER BY created_at DESC, id",
+    )?;
+    let rows = statement.query_map([container_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut candidate = None;
+    for row in rows {
+        let (id, metadata_json) = row?;
+        let metadata: Value = serde_json::from_str(&metadata_json).unwrap_or(Value::Null);
+        let matches_producer = metadata
+            .get("producerTraceId")
+            .or_else(|| metadata.get("rolloutId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            == Some(producer_trace_id);
+        if matches_producer {
+            if let Some(previous) = candidate.replace(id.clone()) {
+                anyhow::bail!(
+                    "ambiguous imported trace ownership for producer {producer_trace_id}: {previous}, {id}"
+                );
+            }
+        }
+    }
+    Ok(candidate)
 }
 
 /// Look a sealed trace up by digest in `traces`. `None` when the digest was
@@ -310,19 +699,89 @@ async fn trace_owner(core: &CoreRuntime, trace_digest: &str) -> Result<Option<Tr
         .await
 }
 
+/// Resolve the owner of a paid annotation binding. The container's normalized
+/// trace digest is allowed to differ from Workshop's imported archive digest,
+/// but only when an existing evidence head and job already seal the join from
+/// that normalized digest to the same producer rollout. Current container
+/// ownership is proven separately by its unique imported Trace V5 row; this
+/// permits a broker-capable replacement registration to extend evidence made
+/// under an earlier registration of the same producer.
+async fn trace_owner_for_binding(
+    core: &CoreRuntime,
+    container_id: &str,
+    producer_trace_id: Option<&str>,
+    trace_digest: &str,
+) -> Result<Option<TraceOwner>> {
+    if let Some(owner) = trace_owner(core, trace_digest).await? {
+        return Ok(Some(owner));
+    }
+    let Some(producer_trace_id) = producer_trace_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let container_id = container_id.to_string();
+    let producer_trace_id = producer_trace_id.to_string();
+    let trace_digest = crate::trace_ingest::qualified_sha256(trace_digest)
+        .unwrap_or_else(|_| trace_digest.to_string());
+    core.storage()
+        .database()
+        .run_read(move |conn| {
+            use rusqlite::OptionalExtension;
+            let linked = conn
+                .query_row(
+                    "SELECT 1
+                     FROM annotation_evidence_heads h
+                     JOIN annotation_jobs j ON j.campaign_id=h.campaign_id
+                     WHERE h.trace_digest=?1 AND j.trace_id=?2
+                     LIMIT 1",
+                    rusqlite::params![trace_digest, producer_trace_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if !linked {
+                return Ok(None);
+            }
+            let Some(row_id) =
+                owned_imported_trace_id_for_producer(conn, &container_id, &producer_trace_id)?
+            else {
+                return Ok(None);
+            };
+            Ok(conn
+                .query_row(
+                    "SELECT id, source, container_id FROM traces WHERE id=?1",
+                    [row_id],
+                    |row| {
+                        Ok(TraceOwner {
+                            row_id: row.get(0)?,
+                            source: row.get(1)?,
+                            container_id: row.get(2)?,
+                        })
+                    },
+                )
+                .optional()?)
+        })
+        .await
+}
+
 /// Paid annotation charges a human's budget on behalf of one container, so
 /// the trace must have a recorded owner and it must be the container asked
 /// for. Fails closed with a distinct code for each way that can be untrue.
 async fn require_trace_owner(
     core: &CoreRuntime,
     container_id: &str,
+    producer_trace_id: Option<&str>,
     trace_digest: &str,
 ) -> Result<TraceOwner> {
-    let owner = trace_owner(core, trace_digest).await?.ok_or_else(|| {
+    let owner = trace_owner_for_binding(core, container_id, producer_trace_id, trace_digest)
+        .await?
+        .ok_or_else(|| {
         failure(
             "annotation_trace_unknown",
-            format!("trace `{trace_digest}` is not in Workshop's trace index, so no owning container can be named on the approval card"),
-            format!("import the sealed trace from container `{container_id}` first (data_trace_materialize / the traces MCP container import with the container's immutable id), then start the paid job again"),
+            format!("trace `{trace_digest}` is neither in Workshop's trace index nor joined to an existing evidence head for this producer and container, so no owning container can be named on the approval card"),
+            format!("import the sealed trace from container `{container_id}` first, or reconcile its evidence head, then start the paid job again"),
         )
     })?;
     match owner.container_id.as_deref() {
@@ -412,7 +871,8 @@ pub(crate) async fn paid_preflight(
                 "pass a registered annotator id",
             )
         })?;
-    let owner = require_trace_owner(core, container_id, trace_digest).await?;
+    let producer_trace_id = request.get("source_trace_id").and_then(Value::as_str);
+    let owner = require_trace_owner(core, container_id, producer_trace_id, trace_digest).await?;
     Ok(PaidPreflight {
         binding: ReservationBinding {
             trace_digest: trace_digest.to_string(),
@@ -422,7 +882,9 @@ pub(crate) async fn paid_preflight(
         },
         cap_usd_micros: cap,
         model,
-        container_id: owner.container_id.unwrap_or_else(|| container_id.to_string()),
+        container_id: owner
+            .container_id
+            .unwrap_or_else(|| container_id.to_string()),
         trace_row_id: owner.row_id,
     })
 }
@@ -559,17 +1021,11 @@ async fn settle_if_terminal(core: &CoreRuntime, container_id: &str, payload: &Va
     else {
         return Ok(());
     };
-    let cost = payload
-        .get("job")
-        .and_then(|job| job.get("usage"))
-        .and_then(|usage| usage.get("cost_usd"))
-        .cloned();
-    let outcome = match micros_of(cost.as_ref()) {
-        Some(micros) => SettlementOutcome::Exact {
-            cost_usd_micros: micros,
-        },
-        None => SettlementOutcome::Unknown,
-    };
+    let outcome = settlement_from_usage(
+        payload
+            .get("job")
+            .and_then(|job| job.get("usage")),
+    );
     let container_id = container_id.to_string();
     core.storage()
         .database()
@@ -839,7 +1295,29 @@ async fn open_annotation_workbench(
 ) -> Result<()> {
     let mut trace = match core.data().get_trace(head.trace_digest.clone()).await {
         Ok(trace) => trace,
-        Err(_) => core.data().get_trace(head.trace_id.clone()).await?,
+        Err(_) => match core.data().get_trace(head.trace_id.clone()).await {
+            Ok(trace) => trace,
+            Err(_) => {
+                let Some(container_id) = head.container_id.as_deref() else {
+                    anyhow::bail!("annotation workbench head has no owning container");
+                };
+                let producer_trace_id = head.trace_id.clone();
+                let container_id = container_id.to_string();
+                let local_trace_id = core
+                    .storage()
+                    .database()
+                    .run_read(move |conn| {
+                        owned_imported_trace_id_for_producer(
+                            conn,
+                            &container_id,
+                            &producer_trace_id,
+                        )
+                    })
+                    .await?
+                    .context("annotation workbench trace was not imported by its owning container")?;
+                core.data().get_trace(local_trace_id).await?
+            }
+        },
     };
     if trace.run_id.is_none() {
         trace.run_id = head.eval_run_id.clone();
@@ -951,6 +1429,19 @@ pub(crate) async fn dispatch_annotations(
         )
     })?;
     let base = container_base(core, &container_id).await?;
+    let body = if matches!(
+        operation,
+        "annotation_list_definitions"
+            | "annotation_estimate"
+            | "annotation_start"
+            | "verification_start"
+            | "annotation_list"
+            | "annotation_consensus"
+    ) {
+        resolve_container_trace_id(core, &container_id, body).await?
+    } else {
+        body
+    };
     let _ = pull_reconciliations(core, &container_id, &base).await;
     let session_id = string_field(&body, "session_id", "sessionRef");
     if !matches!(
@@ -1036,6 +1527,18 @@ pub(crate) async fn dispatch_annotations(
                             release_reservation(core, reservation.reservation_id).await;
                         }
                     }
+                    // Deterministic starts (and cached paid starts) have no
+                    // reservation to reconcile, but still must become a
+                    // local campaign/job before the periodic reconciler can
+                    // materialize the evidence-head workbench.
+                    persist_started_annotation_job(
+                        core,
+                        &container_id,
+                        session_id.as_deref(),
+                        &request,
+                        &payload,
+                    )
+                    .await?;
                     Ok(payload)
                 }
                 Err(error) => {
@@ -1264,6 +1767,33 @@ pub(crate) async fn dispatch_free(
     base: &str,
 ) -> Result<Value> {
     match operation {
+        "annotation_protocol_get" => forward("GET", &format!("{base}/annotation-protocol"), None).await,
+        "annotation_provisional_list" => {
+            let run_id = string_field(body, "run_id", "runId").ok_or_else(|| {
+                failure("annotation_argument_missing", "run_id required", "pass the eval run id")
+            })?;
+            let rollout_id = string_field(body, "rollout_id", "rolloutId");
+            core.storage()
+                .database()
+                .run_read(move |conn| {
+                    let rows = crate::session::live_annotation_projection::list_run_rows(
+                        conn,
+                        &run_id,
+                        rollout_id.as_deref(),
+                    )?;
+                    let summary = crate::session::live_annotation_projection::run_summary(conn, &run_id)?;
+                    Ok(json!({
+                        "schema": crate::session::live_annotation_projection::PROVISIONAL_SCHEMA,
+                        "run_id": run_id,
+                        "count": rows.len(),
+                        "summary": summary,
+                        "findings": rows,
+                    }))
+                })
+                .await
+        }
+        "annotation_protocol_update" => protocol_update(body, core, base).await,
+        "annotation_control_send" => control_send(body, base).await,
         "annotation_list_definitions" => {
             let trace_id = trace_id_of(body)?;
             let query = query_string(body.get("domain").map(|d| json!({"domain": d})).as_ref());
@@ -1294,6 +1824,25 @@ pub(crate) async fn dispatch_free(
             let payload = forward("GET", &format!("{base}/annotation-jobs/{job_id}"), None).await?;
             settle_if_terminal(core, container_id, &payload).await?;
             Ok(payload)
+        }
+        "annotation_events" => {
+            let job_id = string_field(body, "job_id", "jobId").ok_or_else(|| {
+                failure(
+                    "annotation_argument_missing",
+                    "job_id required",
+                    "pass the job id",
+                )
+            })?;
+            let query = query_string(Some(&json!({
+                "after": body.get("after").cloned().unwrap_or(json!(0)),
+                "limit": body.get("limit").cloned().unwrap_or(json!(1000)),
+            })));
+            forward(
+                "GET",
+                &format!("{base}/annotation-jobs/{job_id}/events{query}"),
+                None,
+            )
+            .await
         }
         "annotation_cancel" => {
             let job_id = string_field(body, "job_id", "jobId").ok_or_else(|| {
@@ -1384,6 +1933,34 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    #[test]
+    fn luna_token_usage_settles_to_metered_micros_when_cost_usd_is_null() {
+        let usage = json!({
+            "input_tokens": 119275.0,
+            "output_tokens": 3438.0,
+            "cached_input_tokens": 79104.0,
+            "cost_usd": null,
+            "cost_status": "unavailable"
+        });
+        match settlement_from_usage(Some(&usage)) {
+            SettlementOutcome::Exact { cost_usd_micros } => {
+                assert!(cost_usd_micros > 0);
+                // 40171 uncached * $1.25 + 79104 cached * $0.125 + 3438 * $10 per million
+                assert_eq!(cost_usd_micros, 94_482);
+            }
+            other => panic!("expected Exact, got {other:?}"),
+        }
+        let pinned = json!({
+            "input_tokens": 10.0,
+            "output_tokens": 10.0,
+            "cost_usd": 0.25
+        });
+        match settlement_from_usage(Some(&pinned)) {
+            SettlementOutcome::Exact { cost_usd_micros } => assert_eq!(cost_usd_micros, 250_000),
+            other => panic!("expected Exact from cost_usd, got {other:?}"),
+        }
+    }
+
     /// Minimal loopback container: health/info for registration plus the annotation router shape.
     async fn fake_container(
         paid: bool,
@@ -1451,6 +2028,28 @@ mod tests {
                         ),
                         (_, p) if p.contains("/annotations?") || p.ends_with("/annotations") => {
                             (200, json!({"count": 0, "annotations": []}))
+                        }
+                        ("GET", "/annotation-protocol") | ("PUT", "/annotation-protocol") => (
+                            200,
+                            json!({
+                                "schema_version": "synth.container-annotation-protocol.v1",
+                                "status": "installed",
+                                "protocol_id": "craftax.live.v1",
+                                "protocol_revision_id": "anprev_1234567890abcdef",
+                                "source_revision": "sha256:abc",
+                                "configuration_digest": "sha256:cfg",
+                                "credential_state": "not_exposed",
+                                "idempotent": method == "GET"
+                            }),
+                        ),
+                        ("POST", p) if p.ends_with("/annotations/control") => {
+                            if text.contains("\"op\":\"stop\"") {
+                                (202, json!({"accepted": true, "control_id": "ctl:1", "op": "stop", "queued": true}))
+                            } else if text.contains("anprev_0000000000000000") {
+                                (422, json!({"accepted": false, "control_id": "ctl:2", "reason": "annotation_protocol_unknown"}))
+                            } else {
+                                (202, json!({"accepted": true, "control_id": "ctl:3", "queued": true}))
+                            }
                         }
                         _ => (
                             404,
@@ -1675,6 +2274,211 @@ mod tests {
         assert_eq!(ok.trace_row_id, "tracev5_aaaa");
     }
 
+    #[tokio::test]
+    async fn paid_preflight_accepts_a_sealed_normalized_evidence_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = CoreRuntime::open(dir.path()).unwrap();
+        let normalized = format!("sha256:{}", "b".repeat(64));
+        let request = json!({
+            "source_trace_id": "roll_real",
+            "source_trace_digest": normalized,
+            "annotator_id": "craftax.rubric_verifier"
+        });
+        let estimate = json!({
+            "paid": true,
+            "cached": false,
+            "max_cost_usd": 2.0,
+            "resolved_model": "gpt-5.6-luna"
+        });
+        core.storage()
+            .database()
+            .run_transaction(|conn| {
+                reservations::store_broker_secret(conn, "ctr_owned", "secret")?;
+                conn.execute(
+                    "INSERT INTO containers(id,name,location,status,health_json,metadata_json,created_at,updated_at)
+                     VALUES('ctr_owned','Craftax','local','ready','{}','{}','2026-01-03','2026-01-03')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO traces(id,digest,title,source,container_id,metrics_json,metadata_json,created_at)
+                     VALUES('tracev5_archive',?1,'Trace','container','ctr_owned','[]',?2,'2026-01-03')",
+                    rusqlite::params![
+                        format!("sha256:{}", "a".repeat(64)),
+                        json!({"producerTraceId": "roll_real"}).to_string()
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let err = paid_preflight(&core, "ctr_owned", Some("sess"), &request, &estimate)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<StructuredFailure>().unwrap().code,
+            "annotation_trace_unknown"
+        );
+
+        let sealed_digest = normalized.clone();
+        core.storage()
+            .database()
+            .run_transaction(move |conn| {
+                conn.execute(
+                    "INSERT INTO annotation_campaigns(campaign_id,container_id,status,created_at,updated_at)
+                     VALUES('acmp_existing','ctr_owned','sealed','2026-01-03','2026-01-03')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO annotation_jobs(job_id,campaign_id,container_id,trace_id,trace_digest,annotator_id,state,created_at,updated_at)
+                     VALUES('ajob_existing','acmp_existing','ctr_previous','roll_real',?1,'craftax.belief_facts','sealed','2026-01-03','2026-01-03')",
+                    rusqlite::params![sealed_digest],
+                )?;
+                conn.execute(
+                    "INSERT INTO annotation_evidence_heads(digest,trace_digest,campaign_id,summary_json,created_at,updated_at)
+                     VALUES(?1,?2,'acmp_existing','{}','2026-01-03','2026-01-03')",
+                    rusqlite::params![
+                        format!("sha256:{}", "c".repeat(64)),
+                        sealed_digest
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let ok = paid_preflight(&core, "ctr_owned", Some("sess"), &request, &estimate)
+            .await
+            .unwrap();
+        assert_eq!(ok.trace_row_id, "tracev5_archive");
+        assert_eq!(ok.container_id, "ctr_owned");
+        assert_eq!(ok.binding.trace_digest, normalized);
+    }
+
+    #[tokio::test]
+    async fn local_trace_id_resolves_to_the_owned_producer_rollout() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = CoreRuntime::open(dir.path()).unwrap();
+        core.storage()
+            .database()
+            .run_transaction(|conn| {
+                conn.execute(
+                    "INSERT INTO containers(id,name,location,status,health_json,metadata_json,created_at,updated_at)
+                     VALUES('ctr_owned','Craftax','local','ready','{}','{}','2026-01-03','2026-01-03')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO traces(id,digest,title,source,container_id,metrics_json,metadata_json,created_at)
+                     VALUES('tracev5_local','sha256:trace','Trace','import','ctr_owned','[]',?1,'2026-01-03')",
+                    [json!({"producerTraceId": "roll_real"}).to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let resolved = resolve_container_trace_id(
+            &core,
+            "ctr_owned",
+            json!({
+                "trace_id": "tracev5_local",
+                "request": {"source_trace_id": "tracev5_local"}
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved["trace_id"], "roll_real");
+        assert_eq!(resolved["request"]["source_trace_id"], "roll_real");
+        assert_eq!(resolved["request"]["source_trace_digest"], "sha256:trace");
+
+        let untouched =
+            resolve_container_trace_id(&core, "ctr_other", json!({"trace_id": "tracev5_local"}))
+                .await
+                .unwrap();
+        assert_eq!(untouched["trace_id"], "tracev5_local");
+    }
+
+    #[test]
+    fn workbench_lookup_uses_the_container_owned_import_for_a_producer_trace() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE traces(
+                id TEXT PRIMARY KEY,
+                container_id TEXT,
+                metadata_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO traces VALUES('tracev5_foreign', 'ctr_other', ?1, '2026-01-01')",
+            [json!({"producerTraceId": "roll_real"}).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO traces VALUES('tracev5_owned', 'ctr_owned', ?1, '2026-01-02')",
+            [json!({"producerTraceId": "roll_real"}).to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            owned_imported_trace_id_for_producer(&conn, "ctr_owned", "roll_real").unwrap(),
+            Some("tracev5_owned".into())
+        );
+        conn.execute(
+            "INSERT INTO traces VALUES('tracev5_duplicate', 'ctr_owned', ?1, '2026-01-03')",
+            [json!({"producerTraceId": "roll_real"}).to_string()],
+        )
+        .unwrap();
+        assert!(owned_imported_trace_id_for_producer(&conn, "ctr_owned", "roll_real").is_err());
+    }
+
+    #[tokio::test]
+    async fn annotation_start_is_persisted_for_reconciliation_and_workbench_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = CoreRuntime::open(dir.path()).unwrap();
+        let request = json!({
+            "source_trace_id": "roll_real",
+            "source_trace_digest": "sha256:abcdef0123456789",
+            "annotator_id": "craftax.belief_facts",
+            "annotator_digest": "sha256:definition",
+            "runner_kind": "deterministic",
+        });
+        persist_started_annotation_job(
+            &core,
+            "ctr_owned",
+            Some("sess_123"),
+            &request,
+            &json!({"accepted": true, "job": {"job_id": "ajob_1", "state": "prepared"}}),
+        )
+        .await
+        .unwrap();
+        let (campaign_id, session_id, trace_id, annotator_id, state) = core
+            .storage()
+            .database()
+            .run_read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT j.campaign_id, c.session_id, j.trace_id, j.annotator_id, j.state
+                     FROM annotation_jobs j
+                     JOIN annotation_campaigns c ON c.campaign_id=j.campaign_id
+                     WHERE j.job_id='ajob_1'",
+                    [],
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    )),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(campaign_id, "acmp_annotation_abcdef0123456789_sess123");
+        assert_eq!(session_id.as_deref(), Some("sess_123"));
+        assert_eq!(trace_id.as_deref(), Some("roll_real"));
+        assert_eq!(annotator_id, "craftax.belief_facts");
+        assert_eq!(state, "prepared");
+    }
+
     #[test]
     fn unknown_container_is_refused_before_any_hop() {
         let dir = tempfile::tempdir().unwrap();
@@ -1687,6 +2491,88 @@ mod tests {
             err.downcast_ref::<StructuredFailure>().unwrap().code,
             "annotation_container_unknown"
         );
+    }
+
+    #[tokio::test]
+    async fn live_annotation_control_and_protocol_ops_proxy_to_the_container() {
+        let (base, _jobs, seen) = fake_container(false).await;
+        let dir = tempfile::tempdir().unwrap();
+        let core = CoreRuntime::open(dir.path()).unwrap();
+        let container_id = registered(&core, &base).await;
+
+        let state = dispatch_free("annotation_protocol_get", &json!({}), &core, &container_id, &base)
+            .await
+            .unwrap();
+        assert_eq!(state["protocol_revision_id"], "anprev_1234567890abcdef");
+
+        let installed = dispatch_free(
+            "annotation_protocol_update",
+            &json!({
+                "code": "PROTOCOL = 'synth.live-annotation-protocol.v1'\nclass Protocol: pass\n",
+                "protocol_id": "craftax.live.v1",
+                "configuration": {"judge_every_calls": 2},
+                "rollout_ids": ["roll_a"],
+            }),
+            &core,
+            &container_id,
+            &base,
+        )
+        .await
+        .unwrap();
+        assert_eq!(installed["protocol_revision_id"], "anprev_1234567890abcdef");
+        assert_eq!(installed["rebinds"][0]["rollout_id"], "roll_a");
+        assert_eq!(installed["rebinds"][0]["ack"]["accepted"], true);
+
+        let secret = dispatch_free(
+            "annotation_protocol_update",
+            &json!({"code": "x", "protocol_id": "p", "configuration": {"model": {"model": "m", "api_key": "sk"}}}),
+            &core,
+            &container_id,
+            &base,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            secret.downcast_ref::<StructuredFailure>().unwrap().code,
+            "protocol_credential_forbidden"
+        );
+
+        let stopped = dispatch_free(
+            "annotation_control_send",
+            &json!({"rollout_id": "roll_a", "op": "stop", "reason": "done"}),
+            &core,
+            &container_id,
+            &base,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stopped["accepted"], true);
+        let refused = dispatch_free(
+            "annotation_control_send",
+            &json!({"rollout_id": "roll_a", "op": "protocol.update", "protocol_revision_id": "anprev_0000000000000000"}),
+            &core,
+            &container_id,
+            &base,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refused.downcast_ref::<StructuredFailure>().unwrap().code,
+            "annotation_protocol_unknown"
+        );
+        let bad_op = dispatch_free(
+            "annotation_control_send",
+            &json!({"rollout_id": "roll_a", "op": "steer"}),
+            &core,
+            &container_id,
+            &base,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(bad_op.downcast_ref::<StructuredFailure>().unwrap().code, "annotation_argument_invalid");
+        let lines = seen.lock().unwrap().clone();
+        assert!(lines.iter().any(|line| line == "PUT /annotation-protocol"), "{lines:?}");
+        assert!(lines.iter().filter(|line| *line == "POST /rollouts/roll_a/annotations/control").count() >= 3, "{lines:?}");
     }
 
     #[test]
@@ -1719,6 +2605,10 @@ mod tests {
         assert_eq!(
             operation_from_path("/v1/annotations/annotation_get").unwrap(),
             "annotation_get"
+        );
+        assert_eq!(
+            operation_from_path("/v1/annotations/annotation_events").unwrap(),
+            "annotation_events"
         );
         assert!(validate_arguments(&json!({"trace_id": "t", "path": "/etc/passwd"})).is_err());
         assert!(

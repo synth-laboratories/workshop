@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, ComposerImageAttachment, DesktopInstanceDiagnostics, HostedTrainingModelCatalog, LagunaAdapterStatus, LagunaDownloadProgress, LagunaModelHit, LagunaPolicy, LagunaStatus, ModelPerformanceSummary, ModelPerformanceTurnSample, OptimizerInferDelta, OptimizerRunOutputs, OptimizerRunViewV2, PersistedCodexSession, RegisteredInstance, RequestOptions, RuntimeBridge, SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraDownload, SavedLoraRunPage, SecretsBridge, TerminalEvent, TrainingModelDownloadProgress, WhisperDownloadProgress, WhisperRuntimeStatus } from "../bridge";
+import type { AnalysisBridge, CodexEvent, ComposerImageAttachment, DesktopInstanceDiagnostics, HostedTrainingModelCatalog, LagunaAdapterStatus, LagunaDownloadProgress, LagunaModelHit, LagunaPolicy, LagunaStatus, ModelPerformanceSummary, ModelPerformanceTurnSample, OptimizerInferDelta, OptimizerRunOutputs, OptimizerRunViewV2, PersistedCodexSession, RegisteredInstance, RequestOptions, RuntimeBridge, SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraDownload, SavedLoraRunPage, SecretsBridge, TerminalEvent, TrainingModelDownloadProgress, WhisperDownloadProgress, WhisperRuntimeStatus } from "../bridge";
 import type { CoreDiagnostics } from "@synth/runtime-protocol";
 import type { ContainerDeployment, TraceV5Record, UsageLedgerEntry, UsageWindow } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
@@ -252,6 +252,34 @@ const unavailableLaguna: LagunaStatus = {
 /** Installs Rust-owned desktop bridges; HTTP runtime compatibility is browser-only. */
 export function installDesktopBridge(): void {
 	if (!isTauri && import.meta.env.DEV) window.synthRuntime ??= browserRuntimeBridge();
+	window.synthAnalysis ??= isTauri
+		? {
+			projection: (kind, digest) => bridgeResult<{ payload?: unknown }>(
+				fromGenerated(spectaCommands.analysisProjectionGet(kind, digest))
+			).then((row) => row?.payload ?? row),
+			findings: (traceDigest) => bridgeResult<{ findings: unknown[] }>(fromGenerated(spectaCommands.analysisFindingsList(traceDigest))),
+			campaigns: (evalRunId) => bridgeResult<{ campaigns: unknown[] }>(fromGenerated(spectaCommands.analysisCampaignsList(evalRunId))),
+			review: (input) => bridgeResult<unknown>(fromGenerated(spectaCommands.analysisReviewRecord(
+				input.findingId,
+				input.evidenceHeadDigest,
+				input.decision,
+				input.rationale
+			)))
+		} satisfies AnalysisBridge
+		: {
+			projection: (kind, digest) => window.synthRuntime!.request<{ payload?: unknown }>("/v1/analysis/projection", {
+				method: "POST", body: { kind, digest }
+			}).then((row) => row?.payload ?? row),
+			findings: (traceDigest) => window.synthRuntime!.request<{ findings: unknown[] }>("/v1/analysis/findings", {
+				method: "POST", body: { traceDigest }
+			}),
+			campaigns: (evalRunId) => window.synthRuntime!.request<{ campaigns: unknown[] }>("/v1/analysis/campaigns", {
+				method: "POST", body: { evalRunId }
+			}),
+			review: (input) => window.synthRuntime!.request("/v1/analysis/review", {
+				method: "POST", body: input
+			})
+		} satisfies AnalysisBridge;
 	window.synthDesktop ??= {
 		platform: navigator.platform,
 		chooseImageFiles: async () => {
@@ -1073,6 +1101,9 @@ export const bridges = {
 	},
 	get runtime() {
 		return window.synthRuntime;
+	},
+	get analysis() {
+		return window.synthAnalysis;
 	},
 	get laguna() {
 		return window.synthLaguna;

@@ -119,6 +119,10 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::data_trace_materialize,
             crate::data_traces_ingest,
             crate::data_trace_projection_resolve,
+            crate::analysis_projection_get,
+            crate::analysis_findings_list,
+            crate::analysis_campaigns_list,
+            crate::analysis_review_record,
             crate::data_usage_list,
             crate::model_performance_summary,
             crate::model_performance_turn_samples,
@@ -524,8 +528,11 @@ mod tests {
         // 286 → 289: compatibility run-view projection, durable
         // range-addressed optimizer evidence, and the visual render receipt
         // used to validate locally cached projections.
+        // 289 → 293: native annotation evidence, findings, campaign, and
+        // review commands. These replace browser-only loopback requests in
+        // Desktop without exposing its IPC capability token to the renderer.
         assert_eq!(
-            exported, 289,
+            exported, 293,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(
