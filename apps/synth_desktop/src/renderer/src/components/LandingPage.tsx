@@ -314,7 +314,7 @@ export function LandingPage({
 				<div className="synth-logo-wrap">
 					<SynthLogo className="synth-logo" />
 				</div>
-				<h1 className="landing-title">What should we build?</h1>
+				<h1 className="landing-title">Start a new conversation with Workshop</h1>
 				{!state.apiKeyConfigured && !accountChoiceMade ? (
 					<div className="quick-actions" data-testid="first-run-account-choice">
 						<button type="button" className="quick-card" onClick={() => {

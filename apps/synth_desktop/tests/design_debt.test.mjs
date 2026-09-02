@@ -64,15 +64,15 @@ test("empty conversation keeps a quiet, icon-free model surface", () => {
 	assert.match(app, /showCloseTab=\{c\.view\.kind !== "landing"\}/);
 	assert.match(app, /c\.view\.kind === "landing" \? "New conversation"/);
 	assert.doesNotMatch(landing, /ProviderMark|providerMarkForTarget/);
-	assert.match(landing, /What should we build\?/);
+	assert.match(landing, /Start a new conversation with Workshop/);
 	assert.doesNotMatch(landing.slice(landing.indexOf("export function LandingPage")), /<ModelPicker/);
 	assert.doesNotMatch(composer, /ProviderMark|providerMarkForTarget/);
 	assert.match(composer, /data-testid="composer-add-menu-trigger"/);
 	assert.match(composer, /Commands and skills/);
 	const landingRule = styles.match(/\.landing \{[\s\S]*?\n\}/)?.[0] ?? "";
 	assert.doesNotMatch(landingRule, /background-image|background-size/);
-	assert.match(styles, /\.landing \.composer,[\s\S]*?max-width: 880px/);
-	assert.match(styles, /\.landing \.composer \{[\s\S]*?min-height: 126px;[\s\S]*?border-radius:var\(--radius-composer\)/);
+	assert.match(styles, /\.landing \.composer,[\s\S]*?max-width: 980px/);
+	assert.match(styles, /\.landing \.composer \{[\s\S]*?min-height: 148px;[\s\S]*?border-radius:var\(--radius-composer\)/);
 	assert.doesNotMatch(styles, /#9bb5ed/);
 });
 
