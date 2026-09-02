@@ -30,6 +30,15 @@ test("base tauri.conf.json declares no bundle.resources", () => {
 	assert.doesNotMatch(text, /helpers\//);
 });
 
+test("the main window opens centered at a desktop-friendly size", () => {
+	const base = readJson("src-tauri/tauri.conf.json");
+	const main = base.app.windows.find((window) => window.label === "main");
+	assert.equal(main.width, 1280);
+	assert.equal(main.height, 900);
+	assert.equal(main.center, true);
+	assert.equal(main.maximized, false);
+});
+
 test("tauri.package.json is the one place packaged resources are declared", () => {
 	const overlay = readJson("src-tauri/tauri.package.json");
 	const resources = overlay.bundle?.resources ?? {};
