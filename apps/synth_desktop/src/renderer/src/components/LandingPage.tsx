@@ -314,7 +314,7 @@ export function LandingPage({
 				<div className="synth-logo-wrap">
 					<SynthLogo className="synth-logo" />
 				</div>
-				<p className="landing-title">What do you want to work on?</p>
+				<h1 className="landing-title">What do you want to build?</h1>
 				{!state.apiKeyConfigured && !accountChoiceMade ? (
 					<div className="quick-actions" data-testid="first-run-account-choice">
 						<button type="button" className="quick-card" onClick={() => {
@@ -326,6 +326,22 @@ export function LandingPage({
 						<button type="button" className="quick-card" onClick={onConfigureAccount}>
 							<span><strong>Sign in to Synth</strong><small>Connect cloud models</small></span>
 						</button>
+					</div>
+				) : state.composerEnabled ? (
+					<div className="landing-starters" data-testid="landing-starters" aria-label="Suggested prompts">
+						{[
+							"Build and test a new feature",
+							"Run an evaluation and inspect the results",
+							"Optimize a model with my dataset"
+						].map((prompt) => (
+							<button
+								key={prompt}
+								type="button"
+								onClick={() => window.dispatchEvent(new CustomEvent("synth:composer-prefill", { detail: prompt }))}
+							>
+								<span aria-hidden>↗</span>{prompt}
+							</button>
+						))}
 					</div>
 				) : null}
 			</div>

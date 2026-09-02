@@ -36,6 +36,7 @@ test.describe("first-five-minutes golden path", () => {
 		await expect(input).toHaveAttribute("aria-label", "Message composer");
 		const placeholder = await input.getAttribute("placeholder");
 		expect(placeholder, "composer guides the fresh user").toBeTruthy();
+		await expect(page.getByTestId("landing-starters")).toHaveCount(0);
 		// The model picker opens, offers the local target first, and hides Intern.
 		await page.getByTestId("composer-model").click();
 		const dropdown = page.getByTestId("composer-model-menu");

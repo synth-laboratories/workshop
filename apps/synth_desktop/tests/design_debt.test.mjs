@@ -64,7 +64,9 @@ test("empty conversation keeps a quiet, icon-free model surface", () => {
 	assert.match(app, /showCloseTab=\{c\.view\.kind !== "landing"\}/);
 	assert.match(app, /c\.view\.kind === "landing" \? "New conversation"/);
 	assert.doesNotMatch(landing, /ProviderMark|providerMarkForTarget/);
-	assert.match(landing, /What do you want to work on\?/);
+	assert.match(landing, /What do you want to build\?/);
+	assert.match(landing, /data-testid="landing-starters"/);
+	assert.match(composer, /synth:composer-prefill/);
 	assert.doesNotMatch(landing.slice(landing.indexOf("export function LandingPage")), /<ModelPicker/);
 	assert.doesNotMatch(composer, /ProviderMark|providerMarkForTarget/);
 	assert.match(composer, /data-testid="composer-add-menu-trigger"/);
