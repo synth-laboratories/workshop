@@ -1644,10 +1644,10 @@ html.visual-expanded .titlebar {
 	height: 148px;
 	margin-bottom: 22px;
 	border-radius: 50%;
-	border: 2px solid rgba(184, 188, 248, 0.62);
+	border: 2px solid var(--color-accent-ring);
 	box-shadow:
-		0 0 0 7px rgba(184, 188, 248, 0.16),
-		0 0 28px rgba(184, 188, 248, 0.28);
+		0 0 0 7px var(--color-accent-subtle),
+		0 0 28px rgba(240, 95, 34, 0.16);
 	display: flex;
 	align-items: center;
 	justify-content: center;
