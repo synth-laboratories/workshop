@@ -345,6 +345,7 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
                     .get("dataset_sha256")
                     .or_else(|| payload.get("sha256"))
                     .or_else(|| payload.get("digest"))
+                    .or_else(|| payload.pointer("/manifest/digest"))
                 {
                     delta.insert("dataset_digest".into(), digest.clone());
                 }
@@ -755,6 +756,17 @@ mod tests {
         .unwrap();
         assert_eq!(dataset.draft.event_type, "sft.dataset.validated");
         assert_eq!(dataset.draft.delta["dataset_digest"], "sha256:banking77");
+
+        let nested = adapt_source_fact(
+            "sft",
+            &native_event(
+                1,
+                "sft.dataset.validated",
+                json!({"manifest": {"digest": "sha256:manifest"}}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(nested.draft.delta["dataset_digest"], "sha256:manifest");
     }
 
     #[test]
