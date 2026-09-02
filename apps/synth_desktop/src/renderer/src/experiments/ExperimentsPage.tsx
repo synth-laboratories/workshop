@@ -4,6 +4,7 @@ import { fromGenerated, n } from "../bridge";
 import { orderLineageNodes } from "../lineage/orderLineageNodes";
 import { ExperimentIndex } from "./ExperimentIndex";
 import { ExperimentWorkspace } from "./ExperimentWorkspace";
+import { PluginEmptyState, PluginPage, PluginPageHeader, PluginTabs } from "../components/PluginPage";
 
 export { orderLineageNodes } from "../lineage/orderLineageNodes";
 
@@ -198,25 +199,11 @@ export function ExperimentsPage({ initialId, onBack, onOpenReport, onSectionChan
 	};
 
 	return (
-		<section className="experiments-page workbench" data-testid="experiments-workbench">
-			<header>
-				<button type="button" onClick={onBack}>Back</button>
-				<div>
-					<span className="eyebrow">LOCAL REGISTRY</span>
-					<h1>Experiments</h1>
-					<p>Saved comparisons, working notes, and publication-ready reports. Nothing is uploaded.</p>
-				</div>
-			</header>
-			<nav className="research-sections" aria-label="Research sections">
-				{(["experiments", "log", "reports"] as const).map((item) => <button key={item} type="button" className={section === item ? "active" : ""} onClick={() => { setSection(item); onSectionChange?.(item); }}>{item === "log" ? "Research logs" : item[0].toUpperCase() + item.slice(1)}</button>)}
-			</nav>
+		<PluginPage className="experiments-page workbench" testId="experiments-workbench">
+			<PluginPageHeader title="Experiments" description="Saved comparisons, working notes, and publication-ready reports. Nothing is uploaded." onBack={onBack} />
+			<PluginTabs tabs={[{ id: "experiments", label: "Experiments" }, { id: "log", label: "Research logs" }, { id: "reports", label: "Reports" }]} selected={section} onSelect={(item) => { setSection(item); onSectionChange?.(item); }} label="Research sections" testIdPrefix="research-tab" />
 			{section === "experiments" && loaded && !error && rows.length === 0 && !query.trim() ? (
-				<div className="experiments-empty" data-testid="experiments-empty">
-					<div className="experiments-empty-icon" aria-hidden>↗</div>
-					<h2>No experiments yet</h2>
-					<p>Comparisons created from evaluation runs will appear here with their results and lineage.</p>
-					<p className="experiments-empty-note">Start from a conversation and ask Workshop to compare models, policies, or prompts.</p>
-				</div>
+				<PluginEmptyState testId="experiments-empty" title="No experiments yet" description="Comparisons created from evaluation runs will appear here with their results and lineage." guidance="Start from a conversation and ask Workshop to compare models, policies, or prompts." />
 			) : section === "experiments" ? <div className="experiments-workbench">
 				<ExperimentIndex
 					query={query}
@@ -257,6 +244,6 @@ export function ExperimentsPage({ initialId, onBack, onOpenReport, onSectionChan
 				<div className="research-log-list">{researchLogDays.length === 0 ? <div className="ws-empty"><p>No research logs yet.</p></div> : researchLogDays.map((day) => <section key={day.key} className="research-log-day"><h2>{day.label}</h2>{day.projects.map((project) => <section key={project.key} className="research-log-project"><header><h3>{project.title}</h3><span>{project.entries.length} {project.entries.length === 1 ? "entry" : "entries"}</span></header>{project.entries.map((entry) => <article key={entry.entryId} className="research-log-entry"><header><span>{entry.entryKind.replace("_", " ")}</span><time>{new Date(entry.occurredAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time></header><h3>{entry.title}</h3><p>{entry.body}</p>{entry.tags.length ? <div className="research-log-tags">{entry.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}<footer>{entry.author}{entry.supersedesEntryId ? " · correction" : ""}</footer></article>)}</section>)}</section>)}</div>
 			</div> : null}
 			{section === "reports" ? <div className="research-reports-list">{reports.length === 0 ? <div className="ws-empty"><p>No reports yet.</p></div> : reports.map((report) => <article key={report.id}><div><span className="eyebrow">{report.status}</span><h2>{report.title}</h2><p>{report.summary || "No summary yet."}</p><small>Revision {report.currentRevision} · updated {new Date(report.updatedAt).toLocaleString()}</small></div><button type="button" onClick={() => onOpenReport(report.id)}>Open</button></article>)}</div> : null}
-		</section>
+		</PluginPage>
 	);
 }

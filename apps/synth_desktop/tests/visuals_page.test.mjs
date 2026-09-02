@@ -16,7 +16,7 @@ test("filtered empty copy is not No visuals yet and offers Clear filter", () => 
   assert.match(visualsPage, /setTab\("all"\)/);
   assert.match(visualsPage, /setSearch\(""\)/);
   assert.match(visualsPage, /visuals\.length > 0/);
-  assert.match(visualsPage, /No visuals yet\. Create one from chat, MCP, or New visual\./);
+  assert.match(visualsPage, /Visuals created through chat and agent tools will appear here/);
 });
 
 test("Templates tab is labeled Template visuals and still filters rendererKind template", () => {
@@ -25,19 +25,17 @@ test("Templates tab is labeled Template visuals and still filters rendererKind t
   assert.doesNotMatch(visualsPage, /\["templates", "Templates"\]/);
 });
 
-test("existing report destination disables Add to report as Already added", () => {
-  assert.match(visualsPage, /Already added/);
-  assert.match(visualsPage, /Open in report/);
+test("report integration remains internal without rendering report controls", () => {
   assert.match(visualsPage, /alreadyAdded/);
-  assert.match(visualsPage, /disabled=\{addDisabled\}/);
   assert.match(visualsPage, /block\.anchor === `visual-\$\{visualId\}`/);
   assert.match(visualsPage, /getRevision\(reportTarget\)/);
-  assert.match(visualsPage, /This visual is already on the selected report/);
+  assert.doesNotMatch(visualsPage, /data-testid="visual-add-to-report"/);
+  assert.doesNotMatch(visualsPage, /aria-label="Report destination"/);
   assert.doesNotMatch(visualsPage, /decideVisualEvidence/);
 });
 
-test("registry cards expose vis_ identity plus Rename and Archive", () => {
-  assert.match(visualsPage, /visuals-card-identity-\$\{visual\.id\}/);
+test("registry rows keep raw identity out of sight while preview actions expose Rename and Archive", () => {
+  assert.doesNotMatch(visualsPage, /visuals-card-identity-\$\{visual\.id\}/);
   assert.match(visualsPage, /formatVisualAdmissionIdentity/);
   assert.match(visualsPage, />Rename</);
   assert.match(visualsPage, />Archive</);
@@ -47,12 +45,21 @@ test("registry cards expose vis_ identity plus Rename and Archive", () => {
   assert.match(visualsPage, /bridges\.visuals\.archive\(visual\.id\)/);
 });
 
-test("focus visual hides library chrome and is not an authoring canvas", () => {
-  assert.match(visualsPage, /"Focus visual"/);
-  assert.match(visualsPage, /"Show library"/);
-  assert.doesNotMatch(visualsPage, /Open canvas/);
-  assert.doesNotMatch(visualsPage, /Exit canvas/);
-  assert.match(visualsPage, /setFocusVisualId\(focusVisualId \? null : selected\.id\)/);
+test("Expand hides library chrome and remains a viewing surface", () => {
+	assert.match(visualsPage, /"Expand"/);
+	assert.match(visualsPage, /"Show library"/);
+	assert.doesNotMatch(visualsPage, /Exit canvas/);
+	assert.match(visualsPage, /setFocusVisualId\(focusVisualId \? null : selected\.id\)/);
+});
+
+test("preview header omits report references and moves provenance into overflow", () => {
+	assert.doesNotMatch(visualsPage, /visuals-preview-report/);
+	assert.doesNotMatch(visualsPage, /aria-label="Report placement"/);
+	assert.match(visualsPage, /Details &amp; provenance/);
+	assert.match(visualsPage, /setPreviewDetailsOpen/);
+	assert.match(visualsPage, /previewDetailsOpen \? \(/);
+	assert.match(visualsPage, /visuals-preview-actions/);
+	assert.match(visualsPage, /statusLabel\(selected\.status\).*rev.*selected\.currentRevision.*visualKindLabel\(selected\)/s);
 });
 
 const canvasShell = readFileSync(

@@ -44,14 +44,15 @@ test("admission identity labels receipt vs content vs missing digest", () => {
   );
 });
 
-test("attach/pin/seal chrome show vis_ identity and do not call live pointers Frozen", () => {
+test("preview details and report pinning preserve vis_ identity without noisy list-row IDs", () => {
   const visualsPage = readFileSync(
     join(appRoot, "src/renderer/src/components/VisualsPage.tsx"),
     "utf8"
   );
-  assert.match(visualsPage, /visual-add-to-report-identity/);
+  assert.match(visualsPage, /visuals-preview-identity/);
   assert.match(visualsPage, /formatVisualAdmissionIdentity/);
-  assert.match(visualsPage, /visuals-card-identity-\$\{visual\.id\}/);
+  assert.match(visualsPage, /Details &amp; provenance/);
+  assert.doesNotMatch(visualsPage, /visuals-card-identity-\$\{visual\.id\}/);
   assert.match(visualsPage, /sourceDigest: sealForRevision\?\.receiptDigest/);
   assert.match(visualsPage, /anchor: `visual-\$\{selected\.id\}`/);
   assert.doesNotMatch(visualsPage, /selected\.id\.slice\(0, 12\)/);
@@ -90,17 +91,6 @@ test("attach/pin/seal chrome show vis_ identity and do not call live pointers Fr
   assert.match(chat, /receiptDigest: artifact\.receiptDigest/);
   assert.match(chat, /contentDigest: artifact\.contentDigest/);
   assert.match(chat, /<code>\{report\.id\} · \{report\.status\}<\/code>/);
-
-  const dataPage = readFileSync(
-    join(appRoot, "src/renderer/src/components/DataPage.tsx"),
-    "utf8"
-  );
-  assert.match(dataPage, /formatVisualAdmissionIdentity/);
-  assert.match(dataPage, /inventory-visual-identity-\$\{v\.id\}/);
-  assert.match(dataPage, /visual-ops-\$\{v\.id\}/);
-  assert.match(dataPage, /visualId: v\.id/);
-  assert.match(dataPage, /revision: v\.currentRevision/);
-  assert.match(dataPage, /contentDigest: v\.contentDigest/);
 
   assert.match(visualsPage, /visual-ops-\$\{visual\.id\}/);
 

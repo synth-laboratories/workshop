@@ -9,7 +9,7 @@ const visualsLayout = extract((state: any) => {
 	const previewHeader = document.querySelector<HTMLElement>('[data-testid="visuals-preview-header"]');
 	const previewToolbar = document.querySelector<HTMLElement>('[data-testid="visuals-preview-toolbar"]');
 	const previewContext = document.querySelector<HTMLElement>('[data-testid="visuals-preview-context"]');
-	const provenance = document.querySelector<HTMLElement>('[data-testid="visual-add-to-report-identity"]');
+	const provenance = document.querySelector<HTMLElement>('[data-testid="visuals-preview-identity"]');
 	const previewOps = document.querySelector<HTMLElement>('[data-testid^="visual-ops-preview-"]');
 	const open = document.querySelector<HTMLElement>('[data-testid="open-visuals"]')
 		?? [...document.querySelectorAll<HTMLElement>("button")].find((button) => button.textContent?.trim() === "Visuals")
@@ -77,7 +77,7 @@ const visualsLayout = extract((state: any) => {
 		shortCardUsesIntrinsicRowHeight: !shortCard || getComputedStyle(shortCard).alignSelf === "start",
 		shortCardActionsStayGrouped: !shortActionsRect || !shortMainRect || shortActionsRect.top - shortMainRect.bottom <= 1,
 		columnsUsable: !gridRect || !previewRect || (
-			gridRect.width >= 360 && previewRect.width >= 360 && (
+			gridRect.width >= 280 && gridRect.width <= 420 && previewRect.width >= 520 && (
 				gridRect.right <= previewRect.left - 12
 				|| gridRect.bottom <= previewRect.top - 12
 			)
@@ -86,6 +86,10 @@ const visualsLayout = extract((state: any) => {
 			gridRect.width >= 360 && previewRect.width >= 360 && gridRect.bottom <= previewRect.top - 12
 		),
 		separatorVisible: Boolean(splitterRect && splitterRect.width > 0 && splitterRect.height > 0),
+		independentPaneScroll: !splitterRect || splitterRect.width === 0 || (
+			getComputedStyle(grid!).overflowY === "auto"
+			&& getComputedStyle(preview!).overflowY === "auto"
+		),
 		previewHeaderBounded: !headerRect || headerRect.height <= 240,
 		previewContextReadable: maxTextBlockHeight(provenance, provenanceRect)
 			&& maxTextBlockHeight(previewOps, previewOpsRect),
@@ -137,6 +141,7 @@ export const visual_library_keeps_usable_non_overlapping_panes = always(() =>
 	!visualsLayout.current.visible || (
 		(visualsLayout.current.columnsUsable
 			|| (visualsLayout.current.stackedUsable && !visualsLayout.current.separatorVisible))
+		&& visualsLayout.current.independentPaneScroll
 		&& visualsLayout.current.contained
 		&& visualsLayout.current.noHorizontalOverflow
 	)

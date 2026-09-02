@@ -11,6 +11,7 @@ import type {
 	VisualRecord
 } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
+import { PluginEmptyState, PluginPage, PluginPageHeader, PluginTabs } from "./PluginPage";
 
 import { CONTAINER_POLL_MS } from "../limits";
 import { bridges } from "../runtime/desktopBridge";
@@ -325,50 +326,24 @@ export function DataPage({
 	};
 
 	return (
-		<div className="ws-page" data-testid={surface === "inference" ? "inference-page" : "inventory-page"}>
-			<header className="ws-page-head">
-				<button type="button" className="desk-back ws-btn ws-btn-ghost" onClick={onBack}>
-					← Back
-				</button>
-				<div className="ws-page-head-text">
-					<h1 className="ws-title">{surface === "inference" ? "Inference" : "Data"}</h1>
-					<p className="ws-lede">
-						{surface === "inference"
-							? "Model runtime, Codex traces, generation activity, usage, and request health."
-							: "Local containers available to Workshop."}
-					</p>
-				</div>
-				{surface === "data" ? <button type="button" className="ws-btn ws-btn-secondary ws-page-head-actions" onClick={() => void refresh()}>
-					Refresh
-				</button> : null}
-			</header>
+		<PluginPage testId={surface === "inference" ? "inference-page" : "inventory-page"}>
+			<PluginPageHeader
+				title={surface === "inference" ? "Inference" : "Data"}
+				description={surface === "inference" ? "Model runtime, Codex traces, generation activity, usage, and request health." : "Local containers available to Workshop."}
+				onBack={onBack}
+				actions={surface === "data" ? <button type="button" className="ws-btn ws-btn-secondary" onClick={() => void refresh()}>Refresh</button> : null}
+			/>
+
+			<PluginTabs tabs={surface === "inference"
+				? [{ id: "runtime", label: "Runtime" }, { id: "traces", label: "Codex traces", count: codexSessionCount }, { id: "usage", label: "Usage", count: usage.length }]
+				: [{ id: "containers", label: "Containers", count: activeContainers.length }]}
+				selected={tab} onSelect={setTab} label={surface === "inference" ? "Inference sections" : "Data sections"} testIdPrefix="inventory-tab" />
 
 			{error ? (
 				<div className="ws-note ws-note-danger" role="alert">
 					{error}
 				</div>
 			) : null}
-
-			<div className="ws-tabs" role="tablist" aria-label={surface === "inference" ? "Inference sections" : "Data sections"}>
-				{(
-					(surface === "inference"
-						? [["runtime", "Runtime", null], ["traces", "Codex traces", codexSessionCount], ["usage", "Usage", usage.length]]
-						: [["containers", "Containers", activeContainers.length]]) as readonly (readonly [DataTab, string, number | null])[]
-				).map(([id, label, count]) => (
-					<button
-						key={id}
-						type="button"
-						role="tab"
-						aria-selected={tab === id}
-						className="ws-tab"
-						onClick={() => setTab(id)}
-						data-testid={`inventory-tab-${id}`}
-					>
-						{label}
-						{count == null ? null : <span className="ws-tab-count">{count}</span>}
-					</button>
-				))}
-			</div>
 
 			{surface === "inference" && tab === "runtime" ? <InferencePanel visible /> : null}
 			{surface === "inference" && tab === "traces" ? <CodexTracesPanel sessions={sessions} activeSessionId={activeSessionId} /> : null}
@@ -384,7 +359,7 @@ export function DataPage({
 						</form> : null}
 					</div>
 					{activeContainers.length === 0 ? (
-						<div className="ws-empty"><p>No containers yet.</p></div>
+						<PluginEmptyState title="No containers yet" description="Containers attached to Workshop will appear here with their health and runtime details." />
 					) : (
 						<ul className="ws-list">
 							{activeContainers.map((c) => {
@@ -537,6 +512,6 @@ export function DataPage({
 					</details>
 				</div>
 			) : null}
-		</div>
+		</PluginPage>
 	);
 }

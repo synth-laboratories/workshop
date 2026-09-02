@@ -11,6 +11,15 @@ REPO_SIBLING_ROOT="$(dirname "$ROOT")"
 # tier for the renderer bundle through Vite's WORKSHOP_TIER define. Packaged
 # releases keep the stable default by not going through this script.
 export WORKSHOP_TIER="${WORKSHOP_TIER:-dev}"
+
+# Share compiled Rust dependencies across named CUA instances. Each instance
+# intentionally keeps its own Cargo target directory for runtime isolation;
+# sccache recovers cross-instance compiler reuse without weakening that boundary.
+if [[ "${SYNTH_DESKTOP_USE_SCCACHE:-1}" == "1" ]] && command -v sccache >/dev/null 2>&1; then
+  export RUSTC_WRAPPER="${RUSTC_WRAPPER:-$(command -v sccache)}"
+  export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/synth-workshop/sccache}"
+  mkdir -p "$SCCACHE_DIR"
+fi
 GIT_COMMON_DIR="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 if [[ -n "$GIT_COMMON_DIR" ]]; then
   PRIMARY_REPO_SIBLING_ROOT="$(dirname "$(dirname "$GIT_COMMON_DIR")")"
@@ -53,7 +62,7 @@ WORKTREE_HASH="$(printf '%s' "$WORKTREE" | shasum -a 256 | awk '{print substr($1
 DEFAULT_NAME="codex-$WORKTREE_HASH"
 NAME="${NAME:-$DEFAULT_NAME}"
 RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.9}"
-APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.9.3}"
+APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.9.5}"
 BOOT_EPOCH="inst_$(uuidgen | tr -d '-' | tr '[:upper:]' '[:lower:]')"
 PROCESS_START_TIME="$(ps -p $$ -o lstart= | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 
@@ -69,6 +78,8 @@ Usage: ./scripts/desktop-instance.sh <command> [name] [--verbose]
 
   dev [name]       Run an isolated foreground Tauri/Vite development instance
   cua [name]       Build and run a named debug .app for Computer Use
+  cua-live [name]  Run the signed CUA app against Vite with renderer hot reload
+  cua-live-build [name]  Rebuild the signed native shell used by cua-live
   cua-build [name] Build and sign the named debug .app without launching it
   cua-run [name]   Run the existing signed CUA app without rebuilding
   rebuild-run [name]  Build, bundle, sign, record, verify, launch, wait for health
@@ -106,6 +117,8 @@ WORKSPACE="$INSTANCE_ROOT/workspace"
 GENERATED_ROOT="$INSTANCE_ROOT/generated"
 TARGET_ROOT="$INSTANCE_ROOT/build/target"
 CONFIG="$GENERATED_ROOT/tauri.instance.json"
+LIVE_CONFIG="$GENERATED_ROOT/tauri.live.json"
+LIVE_MARKER="$GENERATED_ROOT/cua-live.bundle"
 # Packaged resources (cookbooks, Computer Use helper, visuals) live in the
 # packaging overlay, never in the base tauri.conf.json, so `cargo check` and
 # library tests need no staged resources. The overlay merges first; the
@@ -139,6 +152,7 @@ case "$NAME" in
   delta) ICON_LABEL="4" ;;
   epsilon) ICON_LABEL="5" ;;
   test-[1-5]) ICON_LABEL="${NAME#test-}" ;;
+  v095) ICON_LABEL="P" ;;
   *) ICON_LABEL="$(printf '%s' "$NAME" | cut -c1 | tr '[:lower:]' '[:upper:]')" ;;
 esac
 
@@ -455,7 +469,7 @@ EOF
   fi
   # Durable instance authority for signed debug/CUA bundles. LaunchServices
   # does not inherit the shell launcher's environment.
-  if [[ "$COMMAND" == "cua" || "$COMMAND" == "cua-build" || "$COMMAND" == "cua-run" || "$COMMAND" == "rebuild-run" ]]; then
+  if [[ "$COMMAND" == "cua" || "$COMMAND" == "cua-build" || "$COMMAND" == "cua-run" || "$COMMAND" == "cua-live" || "$COMMAND" == "cua-live-build" || "$COMMAND" == "rebuild-run" ]]; then
     cat >"$DATA_ROOT/eval-admission.toml" <<'EOF'
 [target_admission.local_pinned_digest]
 enabled = true
@@ -523,6 +537,20 @@ EOF
     rm "$CONFIG.tmp"
   else
     mv "$CONFIG.tmp" "$CONFIG"
+  fi
+
+  cat >"$LIVE_CONFIG.tmp" <<EOF
+{
+  "build": {
+    "beforeBuildCommand": "",
+    "frontendDist": "http://127.0.0.1:$VITE_PORT"
+  }
+}
+EOF
+  if [[ -f "$LIVE_CONFIG" ]] && cmp -s "$LIVE_CONFIG.tmp" "$LIVE_CONFIG"; then
+    rm "$LIVE_CONFIG.tmp"
+  else
+    mv "$LIVE_CONFIG.tmp" "$LIVE_CONFIG"
   fi
 
   if [[ -f "$MANIFEST" ]]; then
@@ -1101,7 +1129,7 @@ packaging_preflight() {
     echo "[desktop:$NAME] run: ./scripts/build-computer-use-helper.sh ensure-dev" >&2
     exit 1
   fi
-  if [[ "$SOURCE_REVISION" == *-dirty ]]; then
+  if [[ "$SOURCE_REVISION" == *-dirty && "$COMMAND" != "cua-live-build" ]]; then
     echo "[desktop:$NAME] ERROR dirty source tree; cua-build requires a clean checkout" >&2
     exit 1
   fi
@@ -1369,7 +1397,7 @@ dev_instance() {
   # A run-only launch must validate the already-signed bundle instead of
   # replacing its receipt with the unsigned raw target's identity.
   local pre_build_revision="$SOURCE_REVISION"
-  if [[ "$COMMAND" == "cua" || "$COMMAND" == "cua-build" ]]; then
+  if [[ "$COMMAND" == "cua" || "$COMMAND" == "cua-build" || "$COMMAND" == "cua-live-build" ]]; then
     packaging_preflight
   fi
   if [[ "$COMMAND" == "cua-run" ]]; then
@@ -1454,7 +1482,7 @@ dev_instance() {
   fi
 
   revalidate_provenance "post-build" "$pre_build_revision"
-  if [[ "$COMMAND" == "cua-build" ]]; then
+  if [[ "$COMMAND" == "cua-build" || "$COMMAND" == "cua-live-build" ]]; then
     echo "[desktop:$NAME] building $APP_TITLE without launch"
   else
     echo "[desktop:$NAME] launching $APP_TITLE"
@@ -1462,7 +1490,7 @@ dev_instance() {
   echo "[desktop:$NAME] data=$DATA_ROOT vite=$VITE_PORT laguna=$SYNTH_LAGUNA_BASE_URL home=$laguna_home"
   echo "[desktop:$NAME] provenance $SOURCE_REVISION digest=$(executable_digest)"
   cd "$ROOT/apps/synth_desktop"
-  if [[ "$COMMAND" == "cua" || "$COMMAND" == "cua-build" ]]; then
+  if [[ "$COMMAND" == "cua" || "$COMMAND" == "cua-build" || "$COMMAND" == "cua-live-build" ]]; then
     # Raw `tauri dev` binaries have no LaunchServices app identity, so macOS
     # accessibility clients cannot address a named instance reliably. A debug
     # bundle preserves the isolated environment and registers the unique ID.
@@ -1483,7 +1511,11 @@ dev_instance() {
     fi
     export SYNTH_MLX_RL_PROJECT_ROOT
     "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
-    npx tauri build --debug --features eval-driver --bundles app --config "$PACKAGE_CONFIG" --config "$CONFIG"
+    local tauri_configs=(--config "$PACKAGE_CONFIG" --config "$CONFIG")
+    if [[ "$COMMAND" == "cua-live-build" ]]; then
+      tauri_configs+=(--config "$LIVE_CONFIG")
+    fi
+    npx tauri build --debug --features eval-driver --bundles app "${tauri_configs[@]}"
     local app_bundle="$CARGO_TARGET_DIR/debug/bundle/macos/$APP_TITLE.app"
     local app_executable="$CUA_EXE"
     if [[ ! -x "$app_executable" ]]; then
@@ -1498,6 +1530,12 @@ dev_instance() {
     record_packaged_provenance "$app_bundle"
     echo "[desktop:$NAME] CUA bundle $app_bundle"
     echo "[desktop:$NAME] CUA target $BUNDLE_ID"
+    if [[ "$COMMAND" == "cua-live-build" ]]; then
+      printf '%s\n' "$SOURCE_REVISION" >"$LIVE_MARKER"
+      echo "[desktop:$NAME] live shell ready; renderer changes now use Vite hot reload"
+      return
+    fi
+    rm -f "$LIVE_MARKER"
     if [[ "$COMMAND" == "cua-build" ]]; then
       echo "[desktop:$NAME] build complete; app was not launched"
       return
@@ -1529,6 +1567,52 @@ clean_instance() {
   local trash="$HOME/.Trash/Synth Desktop instance $NAME $(date '+%Y%m%d-%H%M%S')"
   mv "$INSTANCE_ROOT" "$trash"
   echo "[desktop:$NAME] moved to $trash (recoverable from Trash)"
+}
+
+# Build the signed native shell once, then keep Vite attached to it. This keeps
+# LaunchServices/CUA identity stable while React and CSS edits hot-reload.
+cua_live_instance() {
+  write_contract
+  if [[ "${SYNTH_DESKTOP_OPERATION_DRY_RUN:-0}" == "1" ]]; then
+    dry_run_operation
+    return
+  fi
+  if [[ ! -x "$CUA_EXE" || ! -f "$LIVE_MARKER" ]]; then
+    local requested_command="$COMMAND"
+    COMMAND=cua-live-build
+    dev_instance
+    COMMAND="$requested_command"
+  fi
+  stop_instance >/dev/null
+  export_instance_env
+  local app_bundle vite_pid ready=0
+  app_bundle="$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
+  codesign --verify --deep --strict "$app_bundle"
+  cd "$ROOT/apps/synth_desktop"
+  npm run frontend:dev -- --port "$VITE_PORT" --strictPort &
+  vite_pid=$!
+  cleanup_cua_live() {
+    kill "$vite_pid" >/dev/null 2>&1 || true
+    wait "$vite_pid" >/dev/null 2>&1 || true
+  }
+  trap cleanup_cua_live EXIT INT TERM
+  for _ in {1..100}; do
+    if curl -fsS --max-time 1 "http://127.0.0.1:$VITE_PORT" >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    kill -0 "$vite_pid" >/dev/null 2>&1 || break
+    sleep 0.1
+  done
+  if [[ "$ready" != "1" ]]; then
+    echo "[desktop:$NAME] ERROR Vite did not become ready on port $VITE_PORT" >&2
+    return 1
+  fi
+  cd "$INSTANCE_ROOT"
+  launch_isolated_cua_bundle
+  echo "[desktop:$NAME] live CUA ready at http://127.0.0.1:$VITE_PORT"
+  echo "[desktop:$NAME] React/CSS edits hot-reload; rerun cua-live-build only for Rust or bundle changes"
+  wait "$vite_pid"
 }
 
 wait_for_health_instance() {
@@ -1619,13 +1703,14 @@ rebuild_run_instance() {
 }
 
 case "$COMMAND" in
-  cua-build|cua-run|cua|stop|clean|stage|rebuild-run|host-job-selftest)
+  cua-build|cua-run|cua|cua-live|cua-live-build|stop|clean|stage|rebuild-run|host-job-selftest)
     acquire_operation_lock "$COMMAND"
     ;;
 esac
 
 case "$COMMAND" in
-  dev|cua|cua-build|cua-run) dev_instance ;;
+  dev|cua|cua-build|cua-run|cua-live-build) dev_instance ;;
+  cua-live) cua_live_instance ;;
   rebuild-run) rebuild_run_instance ;;
   host-job-selftest) host_job_selftest ;;
   assert-identity) assert_identity_command ;;

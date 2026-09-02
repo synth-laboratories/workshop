@@ -20,9 +20,9 @@
    ────────────────────────────────────────────────────────────────────────── */
 :root {
 	--usage-series-one: #f05f22;
-	--usage-series-two: #447dfc;
+	--usage-series-two: #d89a32;
 	--usage-series-three: #1f9d76;
-	--usage-series-four: #9061e8;
+	--usage-series-four: #b8673f;
 	--usage-series-other: #8c929b;
 }
 .usage-series-one { --series: var(--usage-series-one); }

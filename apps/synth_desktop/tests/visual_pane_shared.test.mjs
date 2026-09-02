@@ -42,8 +42,8 @@ test("v0.9 visual chrome keeps provenance, sharing, and diagnostics behind the i
 });
 
 test("healthy transport states stay diagnostic-only", () => {
-  assert.match(visualHost, /const degradedConnection = \["reconnecting", "failed", "interrupted"\]\.includes\(connectionState\)/);
-  assert.doesNotMatch(visualHost, /\{connectionState\}<\/p>/);
+  assert.doesNotMatch(visualHost, /visual-connection-state/);
+  assert.doesNotMatch(css, /\.visual-connection-state/);
   assert.match(visualHost, /data-connection-state=\{connectionState\}/);
 });
 

@@ -98,7 +98,7 @@ export const DEFAULT_LAYOUT: LayoutSnapshot = {
 	sidebarWidth: 260,
 	outputPaneVisible: false,
 	outputPaneWidth: 720,
-	visualsListWidth: 560,
+	visualsListWidth: 320,
 	bottomPanelVisible: false,
 	bottomPanelHeight: 220,
 	selectedConversationId: null,
@@ -189,7 +189,7 @@ export function normalizeLayoutSnapshot(
 	const minVisualsList = 280;
 	// Preserve the desktop preference while compact layouts are stacked; the
 	// live separator clamps against its actual parent content box.
-	const maxVisualsList = 960;
+	const maxVisualsList = 420;
 	const minBottom = 120;
 	const maxBottom = Math.max(minBottom, Math.min(480, viewportHeight - 280));
 	const optimizers = source.optimizers && typeof source.optimizers === "object"
@@ -416,7 +416,7 @@ export function migrateLegacyPreferences(storage: Storage): DesktopPreferences {
 	const hasCanonicalVisualsWidth = parsedLast && typeof parsedLast === "object"
 		&& "visualsListWidth" in (parsedLast as Record<string, unknown>);
 	if (!hasCanonicalVisualsWidth && Number.isFinite(legacyVisualsListWidth) && legacyVisualsListWidth > 0) {
-		base.layout.last.visualsListWidth = clampNumber(legacyVisualsListWidth, 280, 960, base.layout.last.visualsListWidth);
+		base.layout.last.visualsListWidth = clampNumber(legacyVisualsListWidth, 280, 420, base.layout.last.visualsListWidth);
 		base.layout.default.visualsListWidth = base.layout.last.visualsListWidth;
 	}
 

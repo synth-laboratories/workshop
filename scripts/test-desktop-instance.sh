@@ -37,7 +37,7 @@ printf '%s' "$default_instance" | jq -e '
   .mode == "development" and
   .product == "workshop" and
   .releaseLine == "v0.9" and
-  .appVersion == "0.9.3" and
+  .appVersion == "0.9.5" and
   (.sourceRoot | length > 0) and
   (.sourceRevision | length > 0) and
   .hotReload.renderer == true and
@@ -138,13 +138,19 @@ fi
 jq -e '
   .identifier == "com.synth.desktop.v09.dev.alpha" and
   .productName == "Synth Workshop v0.9 · alpha" and
-  .version == "0.9.3" and
+  .version == "0.9.5" and
   (.bundle.icon | length) == 2 and
   .bundle.targets == ["app"] and
   .bundle.resources == {} and
   .bundle.macOS.minimumSystemVersion == "14.0"
 ' \
   "$TEST_ROOT/instances/v09/alpha/generated/tauri.instance.json" >/dev/null
+jq -e '
+  .build.beforeBuildCommand == "" and
+  .build.frontendDist == "http://127.0.0.1:14794"
+' "$TEST_ROOT/instances/v09/alpha/generated/tauri.live.json" >/dev/null
+rg -q 'cua-live.*renderer hot reload' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'React/CSS edits hot-reload' "$ROOT/scripts/desktop-instance.sh"
 jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' \
   "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
 # Packaged resources live in the packaging overlay, not the base config, so a
@@ -168,6 +174,9 @@ rg -q 'assert_bundle_identity' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'record_bundle_signing "\$app_bundle"' "$ROOT/scripts/desktop-instance.sh"
 rg -Fq -- '--arg identity "${host_authority:-adhoc}"' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_REBUILD_ADAPTERS:-0' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'SYNTH_DESKTOP_USE_SCCACHE:-1' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'RUSTC_WRAPPER=.*sccache' "$ROOT/scripts/desktop-instance.sh"
+rg -q '\.cache/synth-workshop/sccache' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'cargo:rerun-if-changed=' "$ROOT/apps/synth_desktop/src-tauri/build.rs"
 rg -q 'symbolic-ref.*HEAD' "$ROOT/apps/synth_desktop/src-tauri/build.rs"
 rg -Fq 'local use_local_optimizer="${SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-}"' "$ROOT/scripts/desktop-instance.sh"

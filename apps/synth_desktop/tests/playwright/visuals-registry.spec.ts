@@ -86,10 +86,30 @@ test("Visuals library lists a saved visual by visual_id", async ({ page }) => {
 	await expect(page.getByTestId("visuals-card-vis_test_reward")).toContainText("Reward breakdown");
 });
 
+test("Visuals preview keeps primary chrome concise and omits report controls", async ({ page }) => {
+	await installVisualsFixture(page);
+	await page.getByTestId("open-visuals").click();
+	const header = page.getByTestId("visuals-preview-header");
+	await expect(header).toContainText("Reward breakdown");
+	await expect(header).toContainText("Saved · rev 1 · Reward Breakdown");
+	await expect(header.getByRole("button", { name: "Expand" })).toBeVisible();
+	await expect(header.getByLabel("Report destination")).toHaveCount(0);
+	await expect(page.getByLabel("Report placement")).toHaveCount(0);
+	await expect(page.getByTestId("visual-add-to-report")).toHaveCount(0);
+	await header.getByLabel("More actions for Reward breakdown").click();
+	await expect(page.getByTestId("visuals-preview-context")).toHaveCount(0);
+	await expect(header.getByRole("menuitem", { name: "Rename" })).toBeVisible();
+	await expect(header.getByRole("menuitem", { name: "Archive" })).toBeVisible();
+	await header.getByRole("menuitem", { name: "Details & provenance" }).click();
+	await expect(page.getByTestId("visuals-preview-context")).toBeVisible();
+	await expect(header.getByRole("menuitem", { name: "Rename" })).toBeHidden();
+});
+
 test("chat visual card, registry, and right pane resolve one visual_id", async ({ page }) => {
 	await installVisualsFixture(page);
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId("visuals-card-vis_test_reward").getByRole("button", { name: "Open" }).click();
+	await page.getByTestId("visuals-actions-vis_test_reward").locator("summary").click();
+	await page.getByTestId("visuals-actions-vis_test_reward").getByRole("menuitem", { name: "Open canvas" }).click();
 	await expect(page.getByTestId("visual-pane")).toBeVisible();
 	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
 	await expect(page.getByTestId("visuals-preview")).toBeVisible();
@@ -144,7 +164,8 @@ test("an open visual pane keeps its title when switching chat and Visuals", asyn
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId("visuals-card-vis_test_reward").getByRole("button", { name: "Open" }).click();
+	await page.getByTestId("visuals-actions-vis_test_reward").locator("summary").click();
+	await page.getByTestId("visuals-actions-vis_test_reward").getByRole("menuitem", { name: "Open canvas" }).click();
 	await expect(page.getByTestId("visual-pane")).toBeVisible();
 	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
 	await page.getByTestId("local-chat-pane-host-chat").click();
@@ -157,12 +178,24 @@ test("an open visual pane keeps its title when switching chat and Visuals", asyn
 	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
 });
 
-test("Visuals page can create a draft visual from the registry", async ({ page }) => {
+test("Visuals page directs visual creation through the agent", async ({ page }) => {
 	await installVisualsFixture(page, []);
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId("visuals-new").click();
-	await expect(page.getByTestId("visual-pane")).toBeVisible();
-	await expect(page.getByTestId("visuals-grid")).toContainText("New visual");
+	await expect(page.getByTestId("visuals-new")).toHaveCount(0);
+	await expect(page.getByTestId("visuals-grid")).toContainText("Ask the agent to create one in chat.");
+});
+
+test("Visual row overflow dismisses on outside interaction and Escape", async ({ page }) => {
+	await installVisualsFixture(page);
+	await page.getByTestId("open-visuals").click();
+	const actions = page.getByTestId("visuals-actions-vis_test_reward");
+	await actions.locator("summary").click();
+	await expect(actions).toHaveJSProperty("open", true);
+	await page.getByRole("heading", { name: "Visuals" }).click();
+	await expect(actions).toHaveJSProperty("open", false);
+	await actions.locator("summary").click();
+	await page.keyboard.press("Escape");
+	await expect(actions).toHaveJSProperty("open", false);
 });
 
 test("an already-open pane rejects stale gets and reconciles a dropped final update on focus", async ({ page }) => {
@@ -630,6 +663,50 @@ test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears w
 	expect(Number(await page.getByTestId("visuals-resize-handle").getAttribute("aria-valuenow"))).toBe(keyboard);
 });
 
+test("Visuals master-detail panes preserve the compact list and useful preview across supported widths", async ({ page }) => {
+	await installVisualsFixture(page);
+	await page.getByTestId("open-visuals").click();
+
+	for (const viewport of [
+		{ width: 960, height: 640 },
+		{ width: 1172, height: 768 },
+		{ width: 1280, height: 840 },
+		{ width: 1600, height: 900 }
+	]) {
+		await page.setViewportSize(viewport);
+		const geometry = await page.getByTestId("visuals-page").evaluate((pageElement) => {
+			const list = pageElement.querySelector<HTMLElement>('[data-testid="visuals-grid"]')!;
+			const preview = pageElement.querySelector<HTMLElement>('[data-testid="visuals-preview"]')!;
+			const splitter = pageElement.querySelector<HTMLElement>('[data-testid="visuals-resize-handle"]');
+			const listRect = list.getBoundingClientRect();
+			const previewRect = preview.getBoundingClientRect();
+			const splitterRect = splitter?.getBoundingClientRect() ?? null;
+			const split = Boolean(splitterRect && splitterRect.width > 0 && splitterRect.height > 0);
+			return {
+				split,
+				listWidth: listRect.width,
+				previewWidth: previewRect.width,
+				listOverflowY: getComputedStyle(list).overflowY,
+				previewOverflowY: getComputedStyle(preview).overflowY,
+				boundariesOrdered: !splitterRect || (listRect.right <= splitterRect.left + 1 && splitterRect.right <= previewRect.left + 1),
+				noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1
+			};
+		});
+
+		expect(geometry.noHorizontalOverflow, `${viewport.width}px should not overflow horizontally`).toBe(true);
+		if (geometry.split) {
+			expect(geometry.listWidth).toBeGreaterThanOrEqual(279);
+			expect(geometry.listWidth).toBeLessThanOrEqual(421);
+			expect(geometry.previewWidth).toBeGreaterThanOrEqual(519);
+			expect(geometry.listOverflowY).toBe("auto");
+			expect(geometry.previewOverflowY).toBe("auto");
+			expect(geometry.boundariesOrdered).toBe(true);
+		} else {
+			expect(geometry.previewWidth).toBeGreaterThanOrEqual(519);
+		}
+	}
+});
+
 test("Trace V5 inspector provides focus, full, evidence, and expandable output views", async ({ page }) => {
 	const traceVisual: VisualRecord = {
 		...sampleVisual,
@@ -661,7 +738,8 @@ test("Trace V5 inspector provides focus, full, evidence, and expandable output v
 	};
 	await installVisualsFixture(page, [traceVisual]);
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId("visuals-card-tracevis_test").getByRole("button", { name: "Open" }).click();
+	await page.getByTestId("visuals-actions-tracevis_test").locator("summary").click();
+	await page.getByTestId("visuals-actions-tracevis_test").getByRole("menuitem", { name: "Open canvas" }).click();
 	const pane = page.getByTestId("visual-pane");
 	await expect(pane.getByTestId("visual-trace-rollout-inspector")).toBeVisible();
 	await expect(pane).toContainText("I’ll update the configuration.");
@@ -724,7 +802,8 @@ test("Trace V5 inspector renders canonical Craftax rewards, usage, achievements,
 	};
 	await installVisualsFixture(page, [craftaxVisual]);
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId("visuals-card-tracevis_craftax").getByRole("button", { name: "Open" }).click();
+	await page.getByTestId("visuals-actions-tracevis_craftax").locator("summary").click();
+	await page.getByTestId("visuals-actions-tracevis_craftax").getByRole("menuitem", { name: "Open canvas" }).click();
 	const comparison = page.getByTestId("visual-pane").getByTestId("craftax-policy-comparison");
 	await expect(comparison).toBeVisible();
 	await expect(comparison).toContainText("4");

@@ -11,6 +11,7 @@ import { formatVisualAdmissionIdentity } from "../types/landing";
 import { VisualOpsLine } from "./VisualOpsLine";
 import { optimizerRunIdFromBindings, traceIdFromBindings, traceSetCountFromBindings } from "../runtime/visualBindings";
 import { SEALED_TRACE_WORKBENCH_TEMPLATES } from "../runtime/templatePresentation";
+import { PluginEmptyState, PluginPage, PluginPageHeader, PluginTabs } from "./PluginPage";
 
 type Tab = "all" | "recent" | "live" | "sealed" | "templates";
 
@@ -19,11 +20,15 @@ type Props = {
 	onGoToChat?: (sessionId: string) => void;
 	onOpenReport?: (reportId: string) => void;
 	onBack: () => void;
-	onCreate?: () => void;
 };
 
 function statusLabel(status: VisualRecord["status"]): string {
 	return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function visualKindLabel(visual: VisualRecord): string {
+	const raw = visual.templateId.split(".").filter(Boolean).slice(0, -1).join(" ") || visual.rendererKind;
+	return raw.replaceAll(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function payloadVisualId(payload: ReportBlock["payload"]): string | undefined {
@@ -36,11 +41,13 @@ function blockReferencesVisual(block: ReportBlock, visualId: string): boolean {
 	return block.anchor === `visual-${visualId}` || payloadVisualId(block.payload) === visualId;
 }
 
-export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, onCreate }: Props) {
+export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: Props) {
 	const [tab, setTab] = useState<Tab>("all");
 	const [search, setSearch] = useState("");
 	const [visuals, setVisuals] = useState<VisualRecord[]>([]);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
+	const [openActionsId, setOpenActionsId] = useState<string | null>(null);
+	const [previewDetailsOpen, setPreviewDetailsOpen] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [listEpoch, setListEpoch] = useState(0);
@@ -61,6 +68,28 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 	const [reportNotice, setReportNotice] = useState<string | null>(null);
 	const [targetBlocks, setTargetBlocks] = useState<ReportBlock[]>([]);
 	const [targetBlocksReady, setTargetBlocksReady] = useState(true);
+
+	useEffect(() => {
+		const dismissActions = (event: PointerEvent) => {
+			if (!(event.target instanceof Element) || !event.target.closest(".visuals-card-actions")) {
+				setOpenActionsId(null);
+			}
+		};
+		const dismissActionsWithEscape = (event: KeyboardEvent) => {
+			if (event.key === "Escape") setOpenActionsId(null);
+		};
+		document.addEventListener("pointerdown", dismissActions);
+		document.addEventListener("keydown", dismissActionsWithEscape);
+		return () => {
+			document.removeEventListener("pointerdown", dismissActions);
+			document.removeEventListener("keydown", dismissActionsWithEscape);
+		};
+	}, []);
+
+	useEffect(() => {
+		setOpenActionsId(null);
+		setPreviewDetailsOpen(false);
+	}, [selectedId, tab, search]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -301,13 +330,8 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 	}
 
 	return (
-		<section className={`visuals-page${focusVisualId ? " visuals-page-focus" : ""}`} data-testid="visuals-page">
-			<header className="visuals-page-head">
-				<div>
-					<button type="button" className="ghost-button" onClick={onBack}>Back</button>
-					<h1>Visuals</h1>
-					<p>Local registry of agent- and user-created visuals.</p>
-				</div>
+		<PluginPage className={`visuals-page${focusVisualId ? " visuals-page-focus" : ""}`} testId="visuals-page">
+			<PluginPageHeader title="Visuals" description="Local registry of visuals created through chat and agent tools." onBack={onBack} actions={
 				<div className="visuals-page-actions">
 					<input
 						data-testid="visuals-search"
@@ -316,58 +340,36 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 						placeholder="Search…"
 						aria-label="Search visuals"
 					/>
-					{onCreate ? (
-						<button type="button" data-testid="visuals-new" onClick={onCreate}>+ New visual</button>
-					) : null}
 				</div>
-			</header>
+			} />
 
-			<nav className="visuals-tabs" aria-label="Visual filters">
-				{([
-					["all", "All"],
-					["recent", "Recent"],
-					["live", "Live"],
-					["sealed", "Sealed"],
-					["templates", "Template visuals"]
-				] as const).map(([id, label]) => (
-					<button
-						key={id}
-						type="button"
-						className={tab === id ? "active" : undefined}
-						aria-pressed={tab === id}
-						onClick={() => setTab(id)}
-					>
-						{label}
-					</button>
-				))}
-			</nav>
+			<PluginTabs tabs={[
+				{ id: "all", label: "All" }, { id: "recent", label: "Recent" }, { id: "live", label: "Live" },
+				{ id: "sealed", label: "Sealed" }, { id: "templates", label: "Template visuals" }
+			]} selected={tab} onSelect={setTab} label="Visual filters" testIdPrefix="visuals-tab" />
 
 			{error ? <p className="visuals-error">{error}</p> : null}
 			{loading ? <p className="visuals-loading">Loading visuals…</p> : null}
 
 			<div className={`visuals-layout${focusVisualId ? " focus" : ""}`} style={focusVisualId ? undefined : { "--visuals-list-width": `${listWidth}px` } as CSSProperties}>
-				<div className="visuals-grid" data-testid="visuals-grid" hidden={Boolean(focusVisualId)}>
+				<ul className="visuals-grid" data-testid="visuals-grid" aria-label="Visuals" hidden={Boolean(focusVisualId)}>
 					{showFilteredEmpty ? (
-						<p className="visuals-empty">
-							No visuals match the active filter.
-							<button type="button" className="ghost-button" data-testid="visuals-clear-filter" onClick={() => { setTab("all"); setSearch(""); }}>Clear filter</button>
-						</p>
+						<PluginEmptyState as="li" title="No matching visuals" description="No visuals match the active filter." action={<button type="button" className="ws-btn ws-btn-secondary" data-testid="visuals-clear-filter" onClick={() => { setTab("all"); setSearch(""); }}>Clear filter</button>} />
 					) : null}
 					{showRegistryEmpty ? (
-						<p className="visuals-empty">No visuals yet. Create one from chat, MCP, or New visual.</p>
+						<PluginEmptyState as="li" title="No visuals yet" description="Visuals created through chat and agent tools will appear here." guidance="Ask the agent to create one in chat." />
 					) : null}
 					{filtered.map((visual) => (
-						<article
+						<li
 							key={visual.id}
 							className={`visuals-card${selected?.id === visual.id ? " active" : ""}`}
 							data-testid={`visuals-card-${visual.id}`}
+							data-visual-id={visual.id}
 						>
-							<button type="button" className="visuals-card-main" onClick={() => setSelectedId(visual.id)}>
+							<button type="button" className="visuals-card-main" onClick={() => { setOpenActionsId(null); setSelectedId(visual.id); }} aria-pressed={selected?.id === visual.id} data-testid={`visuals-row-${visual.id}`}>
 								<strong>{visual.title}</strong>
-								<span data-testid={`visuals-card-identity-${visual.id}`}>{admissionIdentity(visual)}</span>
-								<span>{statusLabel(visual.status)} · rev {visual.currentRevision}</span>
-								<span>{visual.templateId}</span>
-								<span>{new Date(visual.updatedAt).toLocaleString()}</span>
+								<span className="visuals-card-status">{statusLabel(visual.status)} · rev {visual.currentRevision}</span>
+								<span className="visuals-card-context">{visualKindLabel(visual)}</span>
 							</button>
 							<VisualOpsLine
 								sessionId={visual.sessionId}
@@ -377,62 +379,58 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 								testId={`visual-ops-${visual.id}`}
 								compact
 							/>
-							<div className="visuals-card-actions">
-								<button type="button" onClick={() => onOpenVisual(visual)}>Open</button>
+							<details className="visuals-card-actions" data-testid={`visuals-actions-${visual.id}`} open={openActionsId === visual.id}>
+								<summary aria-label={`Actions for ${visual.title}`} title="More actions" onClick={(event) => { event.preventDefault(); setOpenActionsId((current) => current === visual.id ? null : visual.id); }}>
+									<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="3" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="8" cy="13" r="1.25"/></svg>
+								</summary>
+								<div role="menu" aria-label={`${visual.title} actions`}>
+								<button type="button" role="menuitem" onClick={() => { setOpenActionsId(null); onOpenVisual(visual); }}>Open canvas</button>
 								{visual.sessionId && onGoToChat ? (
-									<button type="button" onClick={() => onGoToChat(visual.sessionId!)}>Go to chat</button>
+									<button type="button" role="menuitem" onClick={() => { setOpenActionsId(null); onGoToChat(visual.sessionId!); }}>Go to chat</button>
 								) : null}
-								<button type="button" onClick={() => void renameVisual(visual)}>Rename</button>
-								<button type="button" onClick={() => void archiveVisual(visual)}>Archive</button>
-							</div>
-						</article>
+								<button type="button" role="menuitem" onClick={() => { setOpenActionsId(null); void renameVisual(visual); }}>Rename</button>
+								<button type="button" role="menuitem" onClick={() => { setOpenActionsId(null); void archiveVisual(visual); }}>Archive</button>
+								</div>
+							</details>
+						</li>
 					))}
-				</div>
-				{selected && !focusVisualId ? <PaneResizeHandle value={listWidth} onChange={updateListWidth} minPrimary={280} minSecondary={320} ariaLabel="Resize visual list and preview" direction="primary" resetValue={560} /> : null}
+				</ul>
+				{selected && !focusVisualId ? <PaneResizeHandle value={listWidth} onChange={updateListWidth} minPrimary={280} maxPrimary={420} minSecondary={520} ariaLabel="Resize visual list and preview" direction="primary" resetValue={320} /> : null}
 				{selected ? (
 					<div className="visuals-preview" data-testid="visuals-preview">
 						<header className="visuals-preview-header" data-testid="visuals-preview-header">
 							<div className="visuals-preview-heading">
 								<h2>{selected.title}</h2>
-								<p>{selected.templateId} · {statusLabel(selected.status)}</p>
+								<p>{statusLabel(selected.status)} · rev {selected.currentRevision} · {visualKindLabel(selected)}</p>
 							</div>
 							<div className="visuals-preview-toolbar" data-testid="visuals-preview-toolbar">
-								<div className="reports-inline-form">
-									<select value={reportTarget} onChange={(event) => setReportTarget(event.target.value)} aria-label="Report destination"><option value="new">New report</option>{reports.map((report) => <option key={report.id} value={report.id}>{report.title}</option>)}</select>
-									<button
-										type="button"
-										data-testid="visual-add-to-report"
-										disabled={addDisabled}
-										title={admissionIdentity(selected)}
-										onClick={() => void addSelectedToReport()}
-									>
-										{alreadyAdded ? "Already added" : "Add to report"}
-									</button>
-									{alreadyAdded && onOpenReport ? (
-										<button type="button" data-testid="visuals-open-in-report" onClick={() => onOpenReport(reportTarget)}>
-											Open in report
-										</button>
-									) : null}
-								</div>
-								<button type="button" className="ghost-button" onClick={() => void renameVisual(selected)}>Rename</button>
-								<button type="button" className="ghost-button" onClick={() => void archiveVisual(selected)}>Archive</button>
+								<details className="visuals-preview-actions">
+									<summary aria-label={`More actions for ${selected.title}`} title="More actions">
+										<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="8" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="13" cy="8" r="1.25"/></svg>
+									</summary>
+									<div role="menu" aria-label={`${selected.title} preview actions`}>
+										<button type="button" role="menuitem" aria-pressed={previewDetailsOpen} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); setPreviewDetailsOpen((open) => !open); }}>Details &amp; provenance</button>
+										{selected.sessionId && onGoToChat ? <button type="button" role="menuitem" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onGoToChat(selected.sessionId!); }}>Go to chat</button> : null}
+										<button type="button" role="menuitem" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); void renameVisual(selected); }}>Rename</button>
+										<button type="button" role="menuitem" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); void archiveVisual(selected); }}>Archive</button>
+									</div>
+								</details>
 								<button
 									type="button"
-									className="ghost-button"
+									className="ws-btn ws-btn-primary visuals-open-canvas"
 									aria-pressed={Boolean(focusVisualId)}
 									title={focusVisualId ? "Show the visual library" : "Focus this visual and hide the library"}
 									onClick={() => setFocusVisualId(focusVisualId ? null : selected.id)}
 								>
-									{focusVisualId ? "Show library" : "Focus visual"}
+									{focusVisualId ? "Show library" : "Expand"}
 								</button>
 							</div>
-							<div className="visuals-preview-context" data-testid="visuals-preview-context">
-								<p className="reports-provenance" data-testid="visual-add-to-report-identity">
+						</header>
+						{previewDetailsOpen ? (
+							<section className="visuals-preview-context" data-testid="visuals-preview-context" aria-label="Details and provenance">
+								<p className="reports-provenance" data-testid="visuals-preview-identity">
 									{admissionIdentity(selected)}
 								</p>
-								{alreadyAdded && !onOpenReport ? (
-									<p className="reports-provenance" role="status">This visual is already on the selected report.</p>
-								) : null}
 								<VisualOpsLine
 									sessionId={selected.sessionId}
 									runId={visualRunId(selected)}
@@ -441,9 +439,8 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 									testId={`visual-ops-preview-${selected.id}`}
 									compact
 								/>
-							</div>
-						</header>
-						{reportNotice ? <p className="reports-provenance" role="status">{reportNotice}</p> : null}
+							</section>
+						) : null}
 						{seals.some((seal) => seal.visualId === selected.id) ? (
 							<div className="visual-seal-strip" aria-label="Offline revisions">
 								<button type="button" onClick={() => { setSealedBundle(null); setCompareBundle(null); }}>Live</button>
@@ -469,6 +466,6 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 					</div>
 				) : null}
 			</div>
-		</section>
+		</PluginPage>
 	);
 }

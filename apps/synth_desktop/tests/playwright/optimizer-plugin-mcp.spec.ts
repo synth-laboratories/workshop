@@ -231,5 +231,6 @@ test("optimizer visual posts a subscription receipt after replay", async ({ page
 	const receipt = await page.evaluate(() => (window as any).__visualReady[0]);
 	expect(receipt.optimizerRunId).toBe("banking77_ready");
 	expect(receipt.subscribedFrom).toBe(receipt.replayedThrough + 1);
-	await expect(page.getByTestId("visual-connection-state")).toHaveText(/subscribed|terminal/);
+	await expect(page.getByTestId("visual-template-shell")).toHaveAttribute("data-connection-state", /subscribed|terminal/);
+	await expect(page.getByTestId("visual-connection-state")).toHaveCount(0);
 });
