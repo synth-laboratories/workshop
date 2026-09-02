@@ -1383,7 +1383,7 @@ html[data-synth-review-capture] .visuals-preview {
 	/* The traffic lights sit over the sidebar, so the main-pane tab should align
 	   with its own content edge. A safe zone is only needed when that sidebar is
 	   hidden and the main pane extends beneath the native controls. */
-	padding: 0 10px;
+	padding: 0 10px 0 0;
 	background: var(--color-tab-bar);
 	border-bottom: 1px solid var(--color-border);
 	flex-shrink: 0;
