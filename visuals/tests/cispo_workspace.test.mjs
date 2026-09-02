@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { algorithmLabel } from "../families/optimizers/_shared/optimizer.run.v1/components/algorithmLabel.ts";
 import { projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
+import { projectedScalar } from "../families/optimizers/cispo/optimizer.cispo.live.v1/collectionHydration.ts";
 
 const RUN = {
   id: "cispo_mlx_workspace",
@@ -158,4 +159,10 @@ test("CISPO derives group size from streamed rewards and retains selection evide
   assert.equal(projected.sft.evaluations.length, 1);
   assert.equal(projected.sft.evaluations[0].role, "checkpoint");
   assert.equal(projected.sft.evaluations[0].calibration_accuracy, 0);
+});
+
+test("CISPO collection telemetry cannot overwrite authoritative group size", () => {
+  assert.equal(projectedScalar(2, 1), 2);
+  assert.equal(projectedScalar(null, 1), 1);
+  assert.equal(projectedScalar(undefined, "1"), undefined);
 });

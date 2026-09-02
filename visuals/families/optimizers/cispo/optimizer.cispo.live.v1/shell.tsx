@@ -26,6 +26,7 @@ import type {
   OptimizerRun,
   ProjectedState
 } from "../../_shared/optimizer.run.v1/components/projectEvents.ts";
+import { projectedScalar } from "./collectionHydration.ts";
 
 export type ShellProps = {
   title?: string;
@@ -92,12 +93,26 @@ function CispoWorkspaceFromCollections({
     const cispo = projected.cispo
       ? {
           ...projected.cispo,
-          groupSize: finite(latest.group_size ?? latest.groupSize ?? latest.group_count) ?? projected.cispo.groupSize,
-          rewardVariance: finite(latest.reward_variance ?? latest.rewardVariance) ?? projected.cispo.rewardVariance,
-          advantageMean: finite(latest.advantage_mean ?? latest.advantageMean) ?? projected.cispo.advantageMean,
-          advantageStd: finite(latest.advantage_std ?? latest.advantageStd) ?? projected.cispo.advantageStd,
-          optimizerSteps: finite(latest.optimizer_step ?? latest.optimizerStep ?? latest.update)
-            ?? projected.cispo.optimizerSteps
+          groupSize: projectedScalar(
+            projected.cispo.groupSize,
+            latest.group_size ?? latest.groupSize ?? latest.group_count
+          ),
+          rewardVariance: projectedScalar(
+            projected.cispo.rewardVariance,
+            latest.reward_variance ?? latest.rewardVariance
+          ),
+          advantageMean: projectedScalar(
+            projected.cispo.advantageMean,
+            latest.advantage_mean ?? latest.advantageMean
+          ),
+          advantageStd: projectedScalar(
+            projected.cispo.advantageStd,
+            latest.advantage_std ?? latest.advantageStd
+          ),
+          optimizerSteps: projectedScalar(
+            projected.cispo.optimizerSteps,
+            latest.optimizer_step ?? latest.optimizerStep ?? latest.update
+          ) ?? 0
         }
       : projected.cispo;
     return {
