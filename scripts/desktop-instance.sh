@@ -852,7 +852,7 @@ stage_gepa_runtime() {
   local runtime_root="$INSTANCE_ROOT/runtime/gepa"
   local optimizer_target="$runtime_root/optimizer-project"
   local optimizer_selection="$runtime_root/optimizer-selection"
-  local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-$REPO_SIBLING_ROOT/optimizers-g1}"
+  local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-${SYNTH_OPTIMIZER_PROJECT_ROOT:-$REPO_SIBLING_ROOT/optimizers-g1}}"
   local use_local_optimizer="${SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-}"
   local secret_target="$DATA_ROOT/gepa-secret.env"
   local secret_source="${SYNTH_GEPA_SECRET_ENV_SOURCE:-$REPO_SIBLING_ROOT/synth-ai/.env}"
