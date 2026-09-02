@@ -95,6 +95,17 @@ impl TrainingEvaluationSummary {
             .or_else(|| payload.get("childEvalRunId"))
             .and_then(Value::as_str)
             .map(str::to_string);
+        let sample_count = integer(&["sample_count", "sampleCount", "n"]).or_else(|| {
+            evaluation
+                .get("per_intent")
+                .and_then(Value::as_object)
+                .map(|intents| {
+                    intents
+                        .values()
+                        .filter_map(|row| row.get("n").and_then(Value::as_u64))
+                        .sum()
+                })
+        });
         let id = checkpoint_id.clone().unwrap_or_else(|| {
             format!(
                 "{}:{}",
@@ -122,7 +133,7 @@ impl TrainingEvaluationSummary {
             checkpoint_id,
             artifact_digest: string(&["artifact_digest", "artifactDigest", "digest"]),
             evaluator: string(&["evaluator"]),
-            sample_count: integer(&["sample_count", "sampleCount", "n"]),
+            sample_count,
             status: string(&["status"]),
             child_run_id,
             sequence,
@@ -368,7 +379,7 @@ mod tests {
                     "checkpoint_id": "ckpt-10",
                     "step": 10,
                     "calibration_accuracy": 0.0,
-                    "n": 1
+                    "per_intent": {"card_swallowed": {"correct": 0, "n": 1}}
                 }
             }),
             14,
