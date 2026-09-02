@@ -13,7 +13,6 @@ import {
 } from "../types/landing";
 import { targetOptionForId } from "../runtime/modelCatalog";
 import { publicError } from "../runtime/publicError";
-import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 import type { ApprovalPolicy, SandboxMode } from "../runtime/nativeCodex";
 import {
 	modelCapabilitiesForTarget,
@@ -518,10 +517,6 @@ function ModelMenu({
 				aria-haspopup="listbox"
 				data-testid="composer-model"
 			>
-				<ProviderMark
-					kind={providerMarkForTarget(state.selectedTargetId)}
-					className={`model-chip-logo model-chip-logo-${providerMarkForTarget(state.selectedTargetId)}`}
-				/>
 				<span className="model-chip-label">{modelLabel}</span>
 				<IconChevron />
 			</button>

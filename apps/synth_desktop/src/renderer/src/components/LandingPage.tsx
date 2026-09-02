@@ -3,7 +3,6 @@ import { apiProviderForTarget, EXECUTION_TARGETS, isOpenRouterTargetId, LAUNCH_P
 import { targetOptionForId } from "../runtime/modelCatalog";
 import type { ExecutionTargetOption, LandingState, ModelAccessKind } from "../types/landing";
 import { SynthLogo } from "./SynthLogo";
-import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 import type { LagunaPolicy } from "../bridge/types";
 import { policyLabel } from "../runtime/lagunaPolicies";
 import { ComposerLayoutHost } from "./ComposerLayout";
@@ -132,10 +131,6 @@ export function ModelPicker({
 				aria-controls="model-dropdown"
 				aria-haspopup="listbox"
 			>
-				<ProviderMark
-					kind={providerMarkForTarget(selectedTargetId)}
-					className={`model-pill-logo model-pill-logo-${providerMarkForTarget(selectedTargetId)}`}
-				/>
 				<span className="model-pill-label">{selectedLabel}</span>
 				<svg className="model-pill-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden>
 					<path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" fill="none" />

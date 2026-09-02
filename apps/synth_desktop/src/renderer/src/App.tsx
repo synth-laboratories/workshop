@@ -157,6 +157,7 @@ export default function App() {
 						activeLocalModel={Boolean(c.activeLocalModel)}
 						reserveNativeControls={c.view.kind === "settings" || !c.sidebarVisible}
 						brand={c.view.kind === "settings" && c.view.section === "models" ? "openai" : "synth"}
+						showTabIcon={c.view.kind !== "landing"}
 						copyItems={tabCopyItems}
 						onCopyItem={async (item) => {
 							try {

@@ -56,6 +56,7 @@ export type AppTitlebarProps = {
 	sidePanelTab: SidePanelTab;
 	reserveNativeControls?: boolean;
 	brand?: "synth" | "openai";
+	showTabIcon?: boolean;
 	copyItems?: TabCopyItem[];
 	onCopyItem?: (item: TabCopyItem) => Promise<void>;
 	onCloseTab: () => void;
@@ -80,6 +81,7 @@ export function AppTitlebar({
 	sidePanelTab,
 	reserveNativeControls = false,
 	brand = "synth",
+	showTabIcon = true,
 	copyItems = [],
 	onCopyItem,
 	onCloseTab,
@@ -110,11 +112,11 @@ export function AppTitlebar({
 		<header className={`titlebar${reserveNativeControls ? " titlebar-native-inset" : ""}`} data-testid="titlebar" data-tauri-drag-region="">
 			<div className="titlebar-tabs" data-tauri-drag-region="">
 				<div className="tab tab-active" role="group" aria-label={`${tabLabel} chat tab`} data-tauri-drag-region="">
-					{brand === "openai" ? (
+					{showTabIcon ? (brand === "openai" ? (
 						<ProviderMark kind="openai" className="tab-logo" />
 					) : (
 						<SynthLogo className="tab-logo" compact />
-					)}
+					)) : null}
 					<span>{truncate(tabLabel, 28)}</span>
 					{copyItems.length > 0 && onCopyItem ? (
 						<div className="tab-menu" ref={menuRef}>

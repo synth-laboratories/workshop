@@ -55,6 +55,20 @@ test("Landing Set up an agent card is removed; Laguna reload stays a typed bridg
 	assert.match(rust, /async fn laguna_reload/);
 });
 
+test("empty conversation keeps a quiet, icon-free model surface", () => {
+	const app = read("App.tsx");
+	const landing = read("components/LandingPage.tsx");
+	const composer = read("components/Composer.tsx");
+	const styles = read("styles/app.css");
+	assert.match(app, /showTabIcon=\{c\.view\.kind !== "landing"\}/);
+	assert.doesNotMatch(landing, /ProviderMark|providerMarkForTarget/);
+	assert.doesNotMatch(composer, /ProviderMark|providerMarkForTarget/);
+	const landingRule = styles.match(/\.landing \{[\s\S]*?\n\}/)?.[0] ?? "";
+	assert.doesNotMatch(landingRule, /background-image|background-size/);
+	assert.match(styles, /\.landing \.composer,[\s\S]*?max-width: 880px/);
+	assert.match(styles, /\.landing \.composer \{[\s\S]*?min-height: 126px;[\s\S]*?border-radius:var\(--radius-composer\)/);
+});
+
 test("design debt: CloudDesk leave-safe is projection-driven from AsyncInternPin", () => {
 	const desk = read("components/CloudDesk.tsx");
 	assert.match(desk, /props\.intern\.leaveSafe === true/);
