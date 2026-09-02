@@ -1,5 +1,5 @@
 // @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { EVENT_CHANNELS, fromGenerated, spectaCommands } from "../bridge";
 import { LOCAL_BASE_POLICY } from "../runtime/lagunaPolicies";
@@ -639,6 +639,20 @@ export function InferencePanel({
 	const snapshot = view.snapshot;
 	const active = snapshot?.active ?? null;
 	const phase = active?.phase ?? null;
+	const warmingStartedAt = useRef<number | null>(null);
+	const [warmingElapsedMs, setWarmingElapsedMs] = useState<number | null>(null);
+	useEffect(() => {
+		if (!warmingUp) {
+			warmingStartedAt.current = null;
+			setWarmingElapsedMs(null);
+			return;
+		}
+		warmingStartedAt.current ??= Date.now();
+		const update = () => setWarmingElapsedMs(Date.now() - warmingStartedAt.current!);
+		update();
+		const timer = window.setInterval(update, 250);
+		return () => window.clearInterval(timer);
+	}, [warmingUp]);
 	const rolling = snapshot?.rolling;
 	const observation = mergeObservation(snapshot, status);
 	const authority = inferenceAuthorityLabel(observation);
@@ -724,6 +738,8 @@ export function InferencePanel({
 							RESIDENT <span aria-hidden>·</span>{" "}
 							<Metric label="Resident memory" value={formatBytes(snapshot.residentBytes)} />
 						</>
+					) : warmingUp ? (
+						<>LOADING on {authority}</>
 					) : (
 						<>UNLOADED on {authority}</>
 					)}
@@ -766,9 +782,12 @@ export function InferencePanel({
 					</>
 				) : warmingUp ? (
 					<>
-						<span className="inference-activity-state">WARMING</span>
+						<span className="inference-activity-state">LOADING</span>
 						<span className="inference-phase" data-phase="loading">
 							loading model weights
+						</span>
+						<span className="inference-activity-elapsed">
+							<Metric label="Load elapsed" value={formatElapsed(warmingElapsedMs)} />
 						</span>
 					</>
 				) : turnRunning ? (
@@ -801,9 +820,9 @@ export function InferencePanel({
 					</strong>
 				</li>
 				<li>
-					<span>prompt</span>
+					<span title="Includes system instructions, tool schemas, and conversation history">input context</span>
 					<strong>
-						<Metric label="Prompt tokens" value={formatCount(active?.promptTokens ?? null)} />
+						<Metric label="Total input context tokens" value={formatCount(active?.promptTokens ?? null)} />
 					</strong>
 				</li>
 				<li>
@@ -877,7 +896,7 @@ export function InferencePanel({
 								</span>
 								<span className="inference-recent-model">{compactModelName(request.model)}</span>
 								<span>
-									<Metric label="Prompt tokens" value={formatCount(request.promptTokens)} />
+									<Metric label="Input context tokens" value={formatCount(request.promptTokens)} />
 									<span aria-hidden> → </span>
 									<Metric label="Output tokens" value={formatCount(request.outputTokens)} />
 								</span>
@@ -906,7 +925,7 @@ export function InferencePanel({
 					title={freeReason}
 					aria-describedby={reasonId}
 				>
-					{view.unloadState === "pending" ? "Freeing…" : "Free now"}
+					{view.unloadState === "pending" ? "Freeing…" : "Free memory"}
 				</button>
 				<span id={reasonId} className="inference-foot-note" aria-live="polite">
 					{view.unloadDetail ??

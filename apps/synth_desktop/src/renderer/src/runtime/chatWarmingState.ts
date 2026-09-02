@@ -5,6 +5,8 @@ export type ChatWarmingState = {
 	lastMessageRole: string | null;
 	localPhase: string | null;
 	localLoadedModel: string | null;
+	/** Weight residency from the inference daemon, when observed. */
+	localResident?: boolean | null;
 };
 
 export type ChatInferencePhase = "idle" | "warming" | "working";
@@ -24,7 +26,7 @@ function isHostedLaguna(state: ChatWarmingState): boolean {
 export function chatInferencePhase(state: ChatWarmingState): ChatInferencePhase {
 	if (!state.running) return "idle";
 	if (state.targetKind === "local") {
-		return state.localPhase === "loading" || !state.localLoadedModel
+		return state.localPhase === "loading" || state.localResident === false || !state.localLoadedModel
 			? "warming"
 			: "working";
 	}

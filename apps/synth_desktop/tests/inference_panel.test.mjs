@@ -229,7 +229,8 @@ test("a cold local turn reports model warmup before generation telemetry begins"
 		warmingUp: true
 	});
 	assert.match(html, /data-phase="loading"/);
-	assert.match(html, /WARMING/);
+	assert.match(html, /LOADING/);
+	assert.match(html, /LOADING on Local/);
 	assert.match(html, /loading model weights/);
 	assert.doesNotMatch(html, /waiting for next inference call/);
 	assert.doesNotMatch(html, />IDLE</);

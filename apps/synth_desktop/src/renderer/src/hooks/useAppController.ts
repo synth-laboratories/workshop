@@ -1207,7 +1207,8 @@ export function useAppController() {
 		targetModel: activeChatSession?.target.kind === "cloud" ? activeChatSession.target.model : null,
 		lastMessageRole: activeChat?.messages.at(-1)?.role ?? null,
 		localPhase: laguna?.phase ?? null,
-		localLoadedModel: laguna?.loadedModel ?? null
+		localLoadedModel: laguna?.loadedModel ?? null,
+		localResident: inferenceMonitor.snapshot?.resident ?? null
 	});
 	const activeChatWarmingUp = activeChatInferencePhase === "warming";
 	const activeLocalModel = activeChatSession?.target.kind === "local";

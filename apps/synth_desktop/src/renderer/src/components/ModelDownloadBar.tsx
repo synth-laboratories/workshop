@@ -54,16 +54,8 @@ export function ModelDownloadBar({ state, onPauseToggle }: Props) {
 	}
 
 	if (model.status === "ready") {
-		return (
-			<div className="download-bar" data-testid="model-status-ready">
-				<div className="download-label">
-					<span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-						<span className="ready-dot" aria-hidden />
-						{model.name} ready
-					</span>
-				</div>
-			</div>
-		);
+		// The residency card immediately above owns the ready/resident state.
+		return null;
 	}
 
 	if (model.status === "starting" || model.status === "loading") {
