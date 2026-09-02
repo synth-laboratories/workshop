@@ -226,6 +226,7 @@ function gepaProjection(base: ProjectedState, view: OptimizerRunViewV2Like): voi
     const trainReward = numberOrNull(candidate.trainReward);
     const heldoutReward = numberOrNull(candidate.heldoutReward);
     const gateAccepted = typeof candidate.gateAccepted === "boolean" ? candidate.gateAccepted : undefined;
+    const minibatchReward = numberOrNull(candidate.minibatchReward);
     return {
       candidateId: id,
       id,
@@ -235,10 +236,11 @@ function gepaProjection(base: ProjectedState, view: OptimizerRunViewV2Like): voi
       // to read both the event-reducer and run-view spellings.
       train_reward: trainReward ?? undefined,
       heldout_reward: heldoutReward ?? undefined,
+      minibatchReward: minibatchReward ?? undefined,
       status: gateAccepted === true
         ? "accepted"
         : gateAccepted === false
-          ? "rejected_full_train"
+          ? trainReward != null ? "rejected_full_train" : "rejected_minibatch"
           : trainReward != null
             ? "full_train_evaluated"
             : "registered"
@@ -256,6 +258,23 @@ function gepaProjection(base: ProjectedState, view: OptimizerRunViewV2Like): voi
   const incumbentId = typeof projection.incumbentId === "string"
     ? projection.incumbentId
     : typeof projection.selectedCandidateId === "string" ? projection.selectedCandidateId : undefined;
+  const incumbent = incumbentId ? candidateMap[incumbentId] : undefined;
+  const incumbentTrain = numberOrNull(incumbent?.trainReward);
+  const incumbentHeldout = numberOrNull(incumbent?.heldoutReward);
+  const evaluations = records(projection.evaluations).map((entry, index) => ({
+    candidateId: typeof entry.candidateId === "string" ? entry.candidateId : undefined,
+    sequence: index + 1,
+    ref: {
+      kind: "container_rollout" as const,
+      id: typeof entry.rolloutId === "string" ? entry.rolloutId : String(entry.id ?? `evaluation-${index + 1}`),
+      role: "candidate_evaluation"
+    },
+    stage: typeof entry.stage === "string" ? entry.stage : undefined,
+    exampleId: typeof entry.exampleId === "string" ? entry.exampleId : undefined,
+    reward: numberOrNull(entry.reward),
+    costUsd: numberOrNull(entry.costUsd) ?? undefined
+  }));
+  const proposerCalls = records(projection.proposerCalls);
   base.gepa = {
     candidates,
     frontier: strings(projection.frontierHistory).map((candidateId) => ({ candidateId })),
@@ -265,10 +284,20 @@ function gepaProjection(base: ProjectedState, view: OptimizerRunViewV2Like): voi
     contract: { program: { mutableFields: [] }, objectiveSet: { objectives: [] } },
     frontierHistory: [],
     stages,
-    evaluations: [],
+    evaluations,
     failedAttempts: [],
     coverage: [],
-    proposerTraces: [],
+    proposerTraces: proposerCalls.map((call, index) => ({
+      generation: numberOrNull(call.generation) ?? index,
+      sequence: index + 1,
+      status: "completed",
+      model: typeof call.model === "string" ? call.model : undefined,
+      provider: typeof call.provider === "string" ? call.provider : undefined,
+      proposalCount: numberOrNull(call.proposalCount) ?? undefined,
+      costUsd: numberOrNull(call.costUsd) ?? undefined,
+      candidateIds: [],
+      steps: []
+    })),
     activity: {
       phase,
       label: terminal ? "Search complete" : GEPA_STAGE_LABELS[phase] ?? phase,
@@ -278,10 +307,17 @@ function gepaProjection(base: ProjectedState, view: OptimizerRunViewV2Like): voi
       terminal
     },
     incumbentId,
-    best: incumbentId ? { candidateId: incumbentId } : undefined,
+    best: incumbentId ? {
+      candidateId: incumbentId,
+      trainReward: incumbentTrain ?? undefined,
+      heldoutReward: incumbentHeldout ?? undefined
+    } : undefined,
+    heldout: incumbentId && incumbentHeldout != null
+      ? { candidateId: incumbentId, reward: incumbentHeldout }
+      : undefined,
     models: {},
     timing: {},
-    rolloutsCompleted: typeof projection.rolloutsScored === "number" ? projection.rolloutsScored : 0,
+    rolloutsCompleted: evaluations.length || (typeof projection.rolloutsScored === "number" ? projection.rolloutsScored : 0),
     runtime: {
       activeWorkers: numberOrNull(projection.maxActiveWorkers) ?? undefined,
       reportedCostUsd: view.header.usage.costUsd ?? undefined,

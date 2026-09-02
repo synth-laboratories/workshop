@@ -3224,6 +3224,13 @@ pub(crate) async fn dispatch_optimizer(
                         .ok_or_else(|| {
                         anyhow::anyhow!("prepared optimizer run omitted proposerModel")
                     })?;
+                    let provider = run
+                        .summary
+                        .pointer("/credentialChain/provider")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("prepared optimizer run omitted credential provider")
+                        })?;
                     let auth = core
                         .plugins()
                         .authorize_compute(
@@ -3234,6 +3241,7 @@ pub(crate) async fn dispatch_optimizer(
                             digest.as_deref().unwrap_or(""),
                             max_cost_usd,
                             max_rollouts,
+                            provider,
                             proposer_model,
                             300,
                         )

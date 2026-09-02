@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn container_replacement_always_uses_a_once_only_native_modal() {
+    fn container_replacement_honors_never_but_remains_modal_otherwise() {
         let replacement = ApprovalKind::ContainerLifecycle {
             container_id: "ctr_craftax".into(),
             declaration_id: "nanohorizon-craftax".into(),
@@ -173,7 +173,8 @@ mod tests {
             action: "force_replace".into(),
             effect: "replace the declared workload".into(),
         };
-        for policy in ["never", "on-request", "untrusted"] {
+        assert!(auto_decision("never", &replacement).unwrap().is_some());
+        for policy in ["on-request", "untrusted"] {
             assert!(auto_decision(policy, &replacement).unwrap().is_none());
         }
         replacement

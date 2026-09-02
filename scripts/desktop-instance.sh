@@ -76,7 +76,7 @@ Usage: ./scripts/desktop-instance.sh <command> [name] [--verbose]
   status [name]    Show the exact process and instance paths
                    --verbose also prints the operation-lock owner
   stage [name]     Stage protected-folder-free runtime inputs without launching
-  stop [name]      Stop only the named instance
+  stop [name]      Stop only the named instance service and owned runtime
   clean [name]     Stop and move the named instance data to Trash
   print [name]     Print the resolved instance contract without launching
 
@@ -117,6 +117,10 @@ ICON_ICNS="$GENERATED_ROOT/icon.icns"
 EXE="$TARGET_ROOT/debug/synth-desktop"
 APP_TITLE="Synth Workshop $RELEASE_LINE · $NAME"
 CUA_EXE="$TARGET_ROOT/debug/bundle/macos/$APP_TITLE.app/Contents/MacOS/synth-desktop"
+LAUNCHD_LABEL="com.synth.workshop.$RELEASE_SLUG.$NAME.host"
+HOST_LAUNCHD_DOMAIN="gui/$(id -u)"
+HOST_LAUNCHD_TARGET="$HOST_LAUNCHD_DOMAIN/$LAUNCHD_LABEL"
+HOST_LAUNCHD_PLIST="$INSTANCE_ROOT/launchd/$LAUNCHD_LABEL.plist"
 BUNDLE_ID="com.synth.desktop.$RELEASE_SLUG.dev.$NAME"
 CHECKSUM="$(printf '%s' "$NAME" | cksum | awk '{print $1}')"
 VITE_PORT=$((14200 + CHECKSUM % 1000))
@@ -550,6 +554,9 @@ EOF
   "worktree": "$WORKTREE",
   "worktreeHash": "$WORKTREE_HASH",
   "viteUrl": "http://127.0.0.1:$VITE_PORT",
+  "launchdLabel": "$LAUNCHD_LABEL",
+  "launchdDomain": "$HOST_LAUNCHD_DOMAIN",
+  "launchdPlist": "$HOST_LAUNCHD_PLIST",
   "config": "$CONFIG",
   "hotReload": {
     "renderer": true,
@@ -736,6 +743,9 @@ mark_runtime() {
     --arg sourceRevision "$SOURCE_REVISION" \
     --arg bootEpoch "$BOOT_EPOCH" \
     --arg processStartIdentity "$PROCESS_START_TIME" \
+    --arg launchdLabel "$LAUNCHD_LABEL" \
+    --arg launchdDomain "$HOST_LAUNCHD_DOMAIN" \
+    --arg launchdPlist "$HOST_LAUNCHD_PLIST" \
     --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '.runtime = ((if ((.runtime.sourceRevision // "") == $sourceRevision)
                   then (.runtime // {})
@@ -747,6 +757,9 @@ mark_runtime() {
       sourceRevision: $sourceRevision,
       bootEpoch: $bootEpoch,
       processStartIdentity: $processStartIdentity,
+      launchdLabel: $launchdLabel,
+      launchdDomain: $launchdDomain,
+      launchdPlist: $launchdPlist,
       checkedAt: $checkedAt
     })' "$MANIFEST" >"$manifest_tmp"
   mv "$manifest_tmp" "$MANIFEST"
@@ -757,8 +770,21 @@ print_contract() {
   cat "$MANIFEST"
 }
 
+stop_host_launchd_job() {
+  # Boot out the current gui-domain job, then drop any leftover
+  # `launchctl submit` label from earlier launchers. KeepAlive is never set,
+  # so this must not respawn during a rebuild.
+  launchctl bootout "$HOST_LAUNCHD_TARGET" >/dev/null 2>&1 || true
+  launchctl remove "$LAUNCHD_LABEL" >/dev/null 2>&1 || true
+}
+
 stop_instance() {
   local rows pids env_pids lease_pid all_pids
+  # Packaged CUA apps are owned by a named launchd job so their lifetime is
+  # independent of the terminal or coding-agent command that launched them.
+  # Remove that owner before signalling the process or launchd would revive it
+  # while this command is trying to prove the instance stopped.
+  stop_host_launchd_job
   rows="$(instance_processes)"
   env_pids="$(instance_env_pids)"
   lease_pid="$(optimizer_lease_pid)"
@@ -815,6 +841,7 @@ status_instance() {
   echo "[desktop:$NAME] laguna http://127.0.0.1:$LAGUNA_PORT"
   echo "[desktop:$NAME] identity $APP_TITLE · badge $ICON_LABEL · $BUNDLE_ID"
   echo "[desktop:$NAME] executable $EXE"
+  echo "[desktop:$NAME] launchd $LAUNCHD_LABEL ($HOST_LAUNCHD_DOMAIN)"
   echo "[desktop:$NAME] manifest $MANIFEST"
   if [[ "$VERBOSE" == "1" ]]; then
     print_operation_lock_status
@@ -891,59 +918,154 @@ stage_gepa_runtime() {
 # the caller's database and provider proxy.  Keep this allowlist deliberately
 # small. Provider credentials live in the named instance's private .env and
 # are loaded by the app, never inherited here.
-exec_isolated_cua_bundle() {
-  local oauth_file="${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}"
-  local oauth_state="${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}"
-  local sft_train_jsonl="${SYNTH_MLX_SFT_TRAIN_JSONL:-}"
-  local sft_eval_jsonl="${SYNTH_MLX_SFT_EVAL_JSONL:-}"
-  # stage_gepa_runtime rewrites an explicitly reviewed local optimizer source
-  # into this instance-owned directory. Preserve only that resolved path across
-  # the env -i boundary; passing the caller's source path would defeat packaged
-  # isolation, while dropping it silently falls back to the immutable plugin.
-  local optimizer_project_root="${SYNTH_OPTIMIZER_PROJECT_ROOT:-}"
-  local optimizer_wheel_file="${SYNTH_OPTIMIZER_WHEEL_FILE:-}"
-  local mlx_rl_url="${SYNTH_MLX_RL_URL:-}"
-  # Workspace-owned container launchers may pin a clean Containers checkout.
-  # Carry only the path selector across packaged isolation; provider secrets
-  # remain instance-owned and are never inherited from the calling shell.
-  local containers_root="${CONTAINERS_ROOT:-}"
-  local home_dir="${HOME:?HOME must be set to launch a CUA bundle}"
-  local user_name="${USER:-$(id -un)}"
-  local logname="${LOGNAME:-$user_name}"
-  local temp_dir="${TMPDIR:-/tmp}"
+host_launchd_program() {
+  printf '%s' "${SYNTH_DESKTOP_LAUNCHD_PROGRAM:-$CUA_EXE}"
+}
 
+write_host_launchd_plist() {
+  local program oauth_file oauth_state sft_train_jsonl sft_eval_jsonl
+  local optimizer_project_root optimizer_wheel_file mlx_rl_url containers_root annotation_broker_secret
+  local home_dir user_name logname temp_dir log_dir
+  program="$(host_launchd_program)"
+  [[ -x "$program" ]] || {
+    echo "[desktop:$NAME] host launchd program is not executable: $program" >&2
+    return 1
+  }
+  oauth_file="${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}"
+  oauth_state="${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}"
+  sft_train_jsonl="${SYNTH_MLX_SFT_TRAIN_JSONL:-}"
+  sft_eval_jsonl="${SYNTH_MLX_SFT_EVAL_JSONL:-}"
+  optimizer_project_root="${SYNTH_OPTIMIZER_PROJECT_ROOT:-}"
+  optimizer_wheel_file="${SYNTH_OPTIMIZER_WHEEL_FILE:-}"
+  mlx_rl_url="${SYNTH_MLX_RL_URL:-}"
+  containers_root="${CONTAINERS_ROOT:-}"
+  annotation_broker_secret="${SYNTH_ANNOTATION_BROKER_SECRET:-}"
+  home_dir="${HOME:?HOME must be set to launch a CUA bundle}"
+  user_name="${USER:-$(id -un)}"
+  logname="${LOGNAME:-$user_name}"
+  temp_dir="${TMPDIR:-/tmp}"
+  log_dir="$DATA_ROOT/logs"
+  mkdir -p "$(dirname "$HOST_LAUNCHD_PLIST")" "$log_dir"
+  python3 - "$HOST_LAUNCHD_PLIST" "$LAUNCHD_LABEL" "$program" "$INSTANCE_ROOT" \
+    "$PATH" "$home_dir" "$user_name" "$logname" "$temp_dir" \
+    "$NAME" "$MANIFEST" "$DATA_ROOT" "$WORKSPACE" "$SOURCE_REVISION" \
+    "$VITE_PORT" "${SYNTH_LAGUNA_HOME:-}" "${SYNTH_LAGUNA_PORT:-}" \
+    "${SYNTH_LAGUNA_BASE_URL:-}" "${SYNTH_COMPUTER_USE_PARENT_REQUIREMENT:-}" \
+    "$oauth_file" "$oauth_state" "$sft_train_jsonl" "$sft_eval_jsonl" \
+    "$optimizer_project_root" "$optimizer_wheel_file" "$mlx_rl_url" \
+    "$containers_root" "$annotation_broker_secret" "$log_dir" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+
+(
+    plist_path,
+    label,
+    program,
+    instance_root,
+    path,
+    home,
+    user,
+    logname,
+    tmpdir,
+    name,
+    manifest,
+    data_root,
+    workspace,
+    source_revision,
+    vite_port,
+    laguna_home,
+    laguna_port,
+    laguna_base,
+    computer_use_req,
+    oauth_file,
+    oauth_state,
+    sft_train,
+    sft_eval,
+    optimizer_root,
+    optimizer_wheel,
+    mlx_rl_url,
+    containers_root,
+    annotation_broker_secret,
+    log_dir,
+) = sys.argv[1:]
+
+env = {
+    "PATH": path,
+    "HOME": home,
+    "USER": user,
+    "LOGNAME": logname,
+    "TMPDIR": tmpdir,
+    "PWD": instance_root,
+    "SYNTH_DESKTOP_INSTANCE": name,
+    "SYNTH_DESKTOP_INSTANCE_MANIFEST": manifest,
+    "SYNTH_DESKTOP_DATA_ROOT": data_root,
+    "SYNTH_DESKTOP_CONFIG": f"{data_root}/config.toml",
+    "SYNTH_CODEX_HOME": f"{data_root}/codex",
+    "SYNTH_DESKTOP_WORKSPACE": workspace,
+    "SYNTH_DESKTOP_SOURCE_REVISION": source_revision,
+    "SYNTH_DESKTOP_VITE_URL": f"http://127.0.0.1:{vite_port}",
+    "SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS": "1",
+    "SYNTH_LAGUNA_HOME": laguna_home,
+    "SYNTH_LAGUNA_PORT": laguna_port,
+    "SYNTH_LAGUNA_BASE_URL": laguna_base,
+    "SYNTH_COMPUTER_USE_PARENT_REQUIREMENT": computer_use_req,
+    "SYNTH_DESKTOP_DEV_OAUTH_FILE": oauth_file,
+    "SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE": oauth_state,
+    "SYNTH_MLX_SFT_TRAIN_JSONL": sft_train,
+    "SYNTH_MLX_SFT_EVAL_JSONL": sft_eval,
+    "SYNTH_OPTIMIZER_PROJECT_ROOT": optimizer_root,
+    "SYNTH_OPTIMIZER_WHEEL_FILE": optimizer_wheel,
+    "SYNTH_MLX_RL_URL": mlx_rl_url,
+    "CONTAINERS_ROOT": containers_root,
+    "SYNTH_ANNOTATION_BROKER_SECRET": annotation_broker_secret,
+}
+# launchd rejects empty EnvironmentVariables values. Credentials never
+# belong here; skip any leftover empty optional path.
+env = {key: value for key, value in env.items() if value}
+forbidden = (
+    "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "SYNTH_API_KEY",
+    "ANTHROPIC_API_KEY",
+)
+if any(name in env for name in forbidden):
+    raise SystemExit("host launchd plist must not carry provider credentials")
+
+payload = {
+    "Label": label,
+    "ProgramArguments": [program],
+    "WorkingDirectory": instance_root,
+    "EnvironmentVariables": env,
+    "RunAtLoad": True,
+    "KeepAlive": False,
+    "ProcessType": "Interactive",
+    "StandardOutPath": f"{log_dir}/host.stdout.log",
+    "StandardErrorPath": f"{log_dir}/host.stderr.log",
+}
+Path(plist_path).write_bytes(plistlib.dumps(payload))
+PY
+}
+
+bootstrap_host_launchd_job() {
+  write_host_launchd_plist
+  stop_host_launchd_job
+  launchctl bootstrap "$HOST_LAUNCHD_DOMAIN" "$HOST_LAUNCHD_PLIST"
+  # RunAtLoad starts the job. kickstart without -k covers the case where
+  # bootstrap left it loaded but not running; -k would race a just-started
+  # process and is reserved for explicit replace via stop+bootstrap.
+  launchctl kickstart "$HOST_LAUNCHD_TARGET" >/dev/null 2>&1 || true
+}
+
+launch_isolated_cua_bundle() {
   mark_runtime "launching" "$$"
   release_operation_lock_before_exec
-  exec env -i \
-    PATH="$PATH" \
-    HOME="$home_dir" \
-    USER="$user_name" \
-    LOGNAME="$logname" \
-    TMPDIR="$temp_dir" \
-    PWD="$INSTANCE_ROOT" \
-    SYNTH_DESKTOP_INSTANCE="$NAME" \
-    SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST" \
-    SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT" \
-    SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml" \
-    SYNTH_CODEX_HOME="$DATA_ROOT/codex" \
-    SYNTH_DESKTOP_WORKSPACE="$WORKSPACE" \
-    SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION" \
-    SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT" \
-    SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS=1 \
-    SYNTH_LAGUNA_HOME="$SYNTH_LAGUNA_HOME" \
-    SYNTH_LAGUNA_PORT="$SYNTH_LAGUNA_PORT" \
-    SYNTH_LAGUNA_BASE_URL="$SYNTH_LAGUNA_BASE_URL" \
-    SYNTH_COMPUTER_USE_PARENT_REQUIREMENT="$SYNTH_COMPUTER_USE_PARENT_REQUIREMENT" \
-    SYNTH_DESKTOP_DEV_OAUTH_FILE="$oauth_file" \
-    SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$oauth_state" \
-    SYNTH_ANNOTATION_BROKER_SECRET="${SYNTH_ANNOTATION_BROKER_SECRET:-}" \
-    SYNTH_MLX_SFT_TRAIN_JSONL="$sft_train_jsonl" \
-    SYNTH_MLX_SFT_EVAL_JSONL="$sft_eval_jsonl" \
-    SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_project_root" \
-    SYNTH_OPTIMIZER_WHEEL_FILE="$optimizer_wheel_file" \
-    SYNTH_MLX_RL_URL="$mlx_rl_url" \
-    CONTAINERS_ROOT="$containers_root" \
-    "$CUA_EXE"
+  # `rebuild-run` and `cua-run` are routinely invoked from bounded coding-agent
+  # terminals. Executing the app in that terminal's process group caused a
+  # healthy long-running optimizer to receive SIGTERM when the command session
+  # expired. Own the signed app with a gui-domain LaunchAgent that has no
+  # KeepAlive, so stop/rebuild cannot loop, and the caller can exit.
+  bootstrap_host_launchd_job
 }
 
 stage_instance() {
@@ -1294,7 +1416,10 @@ dev_instance() {
     codesign --verify --deep --strict "$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
     echo "[desktop:$NAME] launching existing signed CUA app from $INSTANCE_ROOT"
     cd "$INSTANCE_ROOT"
-    exec_isolated_cua_bundle
+    launch_isolated_cua_bundle
+    wait_for_health_instance >/dev/null
+    print_runtime_identity
+    return
   fi
 
   # The adapter prebuild compiles the shared desktop library and therefore
@@ -1380,7 +1505,10 @@ dev_instance() {
     # traversal to the app and triggers an unnecessary Files & Folders prompt.
     # Runtime data and workspaces already live under this isolated instance.
     cd "$INSTANCE_ROOT"
-    exec_isolated_cua_bundle
+    launch_isolated_cua_bundle
+    wait_for_health_instance >/dev/null
+    print_runtime_identity
+    return
   fi
   release_operation_lock_before_exec
   exec npx tauri dev --features eval-driver --config "$PACKAGE_CONFIG" --config "$CONFIG"
@@ -1441,19 +1569,25 @@ print_runtime_identity() {
     instanceRoot: .instanceRoot,
     dataRoot: .dataRoot,
     sourceRevision: .sourceRevision,
+    launchdLabel: .launchdLabel,
+    launchdDomain: .launchdDomain,
+    launchdPlist: .launchdPlist,
     runtime: .runtime
   }' "$MANIFEST"
 }
 
-observe_rebuild_readiness() {
-  # This observer is the only asynchronous process in rebuild-run. The app
-  # itself must replace the launcher exactly as it does for cua-run; launching
-  # the app as a background child loses the foreground lifecycle under which
-  # the packaged debug runtime consumes its file-backed ChatGPT authorization.
-  # Do not let the observer's subshell run the launcher's operation-lock trap.
-  trap - EXIT
-  wait_for_health_instance >/dev/null
-  print_runtime_identity
+host_job_selftest() {
+  [[ -n "${SYNTH_DESKTOP_LAUNCHD_PROGRAM:-}" ]] || {
+    echo "[desktop:$NAME] ERROR host-job-selftest requires SYNTH_DESKTOP_LAUNCHD_PROGRAM" >&2
+    exit 2
+  }
+  write_contract
+  mkdir -p "$DATA_ROOT/logs" "${SYNTH_LAGUNA_HOME:-$DATA_ROOT/laguna}"
+  SYNTH_LAGUNA_HOME="${SYNTH_LAGUNA_HOME:-$DATA_ROOT/laguna}"
+  SYNTH_LAGUNA_PORT="${SYNTH_LAGUNA_PORT:-$LAGUNA_PORT}"
+  SYNTH_LAGUNA_BASE_URL="${SYNTH_LAGUNA_BASE_URL:-http://127.0.0.1:$LAGUNA_PORT}"
+  bootstrap_host_launchd_job
+  echo "[desktop:$NAME] host-job-selftest label=$LAUNCHD_LABEL domain=$HOST_LAUNCHD_DOMAIN plist=$HOST_LAUNCHD_PLIST"
 }
 
 # build → bundle → sign → record → verify → launch with descriptor →
@@ -1477,12 +1611,13 @@ rebuild_run_instance() {
   rm -f "$DATA_ROOT/eval-driver.json"
   echo "[desktop:$NAME] launching recorded bundle from $INSTANCE_ROOT"
   cd "$INSTANCE_ROOT"
-  observe_rebuild_readiness &
-  exec_isolated_cua_bundle
+  launch_isolated_cua_bundle
+  wait_for_health_instance >/dev/null
+  print_runtime_identity
 }
 
 case "$COMMAND" in
-  cua-build|cua-run|cua|stop|clean|stage|rebuild-run)
+  cua-build|cua-run|cua|stop|clean|stage|rebuild-run|host-job-selftest)
     acquire_operation_lock "$COMMAND"
     ;;
 esac
@@ -1490,6 +1625,7 @@ esac
 case "$COMMAND" in
   dev|cua|cua-build|cua-run) dev_instance ;;
   rebuild-run) rebuild_run_instance ;;
+  host-job-selftest) host_job_selftest ;;
   assert-identity) assert_identity_command ;;
   status) status_instance ;;
   stage) stage_instance ;;

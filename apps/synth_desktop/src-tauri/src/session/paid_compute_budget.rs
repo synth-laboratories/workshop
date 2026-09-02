@@ -97,12 +97,28 @@ pub(crate) fn try_reserve(
         return Ok(None);
     }
     let reserved = active_reservations(conn, session_id)?;
-    let used = budget.settled_spend_usd_micros.saturating_add(reserved);
+    let replacing = match preparation_digest.filter(|digest| !digest.is_empty()) {
+        Some(digest) => reserved_micros_for_digest(conn, session_id, digest)?,
+        None => 0,
+    };
+    let used = budget
+        .settled_spend_usd_micros
+        .saturating_add(reserved.saturating_sub(replacing));
     let Some(remaining_before) = budget.conversation_cap_usd_micros.checked_sub(used) else {
         return Ok(None);
     };
     if requested_usd_micros > remaining_before {
         return Ok(None);
+    }
+    if let Some(digest) = preparation_digest.filter(|digest| !digest.is_empty()) {
+        // A retried start on the same preparation must not stack unused
+        // ceilings. Drop the prior reserved row only after this request is
+        // known to fit, so a rejected retry cannot wipe an outstanding hold.
+        conn.execute(
+            "DELETE FROM paid_compute_reservations
+             WHERE session_id=?1 AND preparation_digest=?2 AND status='reserved'",
+            params![session_id, digest],
+        )?;
     }
     let now = Utc::now().to_rfc3339();
     conn.execute(
@@ -316,6 +332,73 @@ fn active_reservations(conn: &Connection, session_id: &str) -> Result<u64> {
     as_u64(total, "active reservations")
 }
 
+fn reserved_micros_for_digest(
+    conn: &Connection,
+    session_id: &str,
+    preparation_digest: &str,
+) -> Result<u64> {
+    let total: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(reserved_usd_micros), 0)
+         FROM paid_compute_reservations
+         WHERE session_id=?1 AND preparation_digest=?2 AND status='reserved'",
+        params![session_id, preparation_digest],
+        |row| row.get(0),
+    )?;
+    as_u64(total, "digest reservations")
+}
+
+pub(crate) fn reserved_approval_ids_for_digest(
+    conn: &Connection,
+    session_id: &str,
+    preparation_digest: &str,
+) -> Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT approval_id FROM paid_compute_reservations
+         WHERE session_id=?1 AND preparation_digest=?2 AND status='reserved'
+         ORDER BY created_at DESC",
+    )?;
+    let ids = statement
+        .query_map(params![session_id, preparation_digest], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(ids)
+}
+
+pub(crate) fn reserved_rows_for_digest(
+    conn: &Connection,
+    preparation_digest: &str,
+) -> Result<Vec<(String, String)>> {
+    let mut statement = conn.prepare(
+        "SELECT approval_id, session_id FROM paid_compute_reservations
+         WHERE preparation_digest=?1 AND status='reserved'
+         ORDER BY created_at DESC",
+    )?;
+    let rows = statement
+        .query_map(params![preparation_digest], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+pub(crate) fn list_reserved(conn: &Connection) -> Result<Vec<(String, String, Option<String>)>> {
+    let mut statement = conn.prepare(
+        "SELECT approval_id, session_id, preparation_digest
+         FROM paid_compute_reservations
+         WHERE status='reserved'
+         ORDER BY created_at ASC",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 fn apply_exact_settlement(
     conn: &Connection,
     reservation: &ReservationRow,
@@ -443,6 +526,26 @@ mod tests {
                 assert_eq!(first.remaining_usd_micros, 190_000);
                 assert!(try_reserve(conn, "sess-a", "approval-over", None, 200_000)?.is_none());
                 assert!(try_reserve(conn, "sess-a", "approval-none", None, 0)?.is_none());
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn retried_start_replaces_the_same_digest_reservation() {
+        let (_dir, database) = db();
+        database
+            .with_conn(|conn| {
+                seed_conversation_budget(conn, "sess-a", &policy(true, 100_000, 250_000))?;
+                try_reserve(conn, "sess-a", "approval-1", Some("sha256:prep"), 60_000)?
+                    .expect("first reserve");
+                let second = try_reserve(conn, "sess-a", "approval-2", Some("sha256:prep"), 60_000)?
+                    .expect("retry replaces rather than stacking");
+                assert_eq!(second.reserved_usd_micros, 60_000);
+                assert_eq!(second.remaining_usd_micros, 190_000);
+                assert_eq!(active_reservations(conn, "sess-a")?, 60_000);
+                let ids = reserved_approval_ids_for_digest(conn, "sess-a", "sha256:prep")?;
+                assert_eq!(ids, vec!["approval-2".to_string()]);
                 Ok(())
             })
             .unwrap();

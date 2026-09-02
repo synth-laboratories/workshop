@@ -34,6 +34,12 @@ async function assertNoHorizontalOverflow(page: Page, label: string) {
 test("GEPA QA surface preserves compact evidence without horizontal scrolling", async ({ page }) => {
   await page.goto(new URL("gepa-qa.html", page.url()).toString());
   await expect(page.getByTestId("gepa-workspace")).toBeVisible();
+  await expect(page.getByTestId("gepa-config-card")).toBeVisible();
+  await expect(page.getByTestId("gepa-dataset-card")).toBeVisible();
+  await expect(page.getByTestId("gepa-container-card")).toBeVisible();
+  await expect(page.getByTestId("gepa-related-work-card")).toBeVisible();
+  await expect(page.getByTestId("gepa-candidate-count")).toBeVisible();
+  await expect(page.getByTestId("gepa-rollout-count")).toBeVisible();
   const headerGeometry = await page.evaluate(() => {
     const root = document.querySelector<HTMLElement>(".synth-visual-root")?.getBoundingClientRect();
     const header = document.querySelector<HTMLElement>('[data-testid="gepa-run-header"]')?.getBoundingClientRect();

@@ -883,14 +883,14 @@ impl OptimizerService {
         if ready.is_none() {
             bail!("visual readiness receipt is required before starting paid compute");
         }
-        if approval_receipt_id
+        let approval_id = approval_receipt_id
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .is_none()
-        {
-            bail!("compute approval receipt is required before starting paid compute");
-        }
+            .ok_or_else(|| {
+                anyhow!("compute approval receipt is required before starting paid compute")
+            })?
+            .to_string();
         // Both digests must be present and equal. Treating either absence as
         // "nothing to compare" fails open: a run prepared without a proven
         // handshake would start unguarded, which is the case the pin exists for.
@@ -922,6 +922,25 @@ impl OptimizerService {
         // advertising a wholly unrelated algorithm, so check the one claim that
         // matters before paying for rollouts.
         require_advertised_algorithm(&current_caps, &run.algorithm_id)?;
+        let max_cost_usd_micros = run
+            .summary
+            .pointer("/limits/maxCostUsd")
+            .and_then(Value::as_f64)
+            .and_then(crate::session::paid_compute_budget::micros_from_reported_cost);
+        let max_rollouts = run
+            .summary
+            .pointer("/limits/maxTotalRollouts")
+            .and_then(Value::as_u64);
+        // Prepared GEPA start authorizes before the worker. The receipt must
+        // land on the durable run before any usage fold, or terminal settlement
+        // cannot find the reservation and the conversation ceiling leaks.
+        self.attach_paid_compute_approval(
+            optimizer_run_id.clone(),
+            &approval_id,
+            max_cost_usd_micros,
+            max_rollouts,
+        )
+        .await?;
         super::recipes::start_prepared(self, &optimizer_run_id).await
     }
 
@@ -1376,7 +1395,9 @@ impl OptimizerService {
         &self,
         optimizer_run_id: String,
     ) -> Result<super::kernel::OptimizerRunViewV2> {
-        let envelope = self.run_view_envelope(optimizer_run_id.clone(), None).await?;
+        let envelope = self
+            .run_view_envelope(optimizer_run_id.clone(), None)
+            .await?;
         envelope.view.ok_or_else(|| {
             anyhow!("optimizer run {optimizer_run_id} returned an empty run view envelope")
         })
@@ -2178,11 +2199,27 @@ impl OptimizerService {
                 .accept_sealed(manifest_terminal_kind(&manifest), &optimizer_run_id)
                 .map_err(|error| anyhow!("{error}"))?;
             // A compatible concurrent settlement still participates in the
-            // post-terminal cleanup. Revocation is idempotent, and this makes
-            // a crash between seal and cleanup repairable by retrying the
-            // settlement command.
+            // post-terminal cleanup. Revocation and paid-compute settlement
+            // are idempotent, and this makes a crash between seal and cleanup
+            // repairable by retrying the settlement command.
             self.revoke_credentials_post_terminal(&optimizer_run_id, cause.cancellation())
                 .await;
+            let settlement_run_id = optimizer_run_id.clone();
+            if let Err(error) = self
+                .database()
+                .run_transaction(move |conn| {
+                    let run = load_run(conn, &settlement_run_id)?;
+                    settle_paid_compute_conversation(conn, &run)?;
+                    Ok(())
+                })
+                .await
+            {
+                crate::platform::logging::report(
+                    "optimizers",
+                    "eprintln",
+                    format!("settle paid-compute for sealed run {optimizer_run_id}: {error:#}"),
+                );
+            }
             return self.get(optimizer_run_id).await;
         }
         let run = self.get(optimizer_run_id.clone()).await?;
@@ -4981,6 +5018,18 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
                  WHERE run_id=?2 AND status IN ('granted','active')",
                 params![now.to_rfc3339(), run.id],
             )?;
+            seal_durable_credential_chain(conn, &mut run)?;
+            upsert_run(conn, &run)?;
+            continue;
+        }
+        // `waiting_for_viewer` is a durable prepared state, not active work.
+        // It intentionally has no worker ownership while Workshop waits for a
+        // visual-readiness receipt and native paid-compute approval. A restart
+        // expires the in-memory approval request, but must leave the immutable
+        // preparation available for a fresh bounded approval. Treating it as
+        // abandoned work sealed the run `interrupted` before approval could be
+        // retried, forcing users to create a duplicate preparation.
+        if run.status == "waiting_for_viewer" {
             continue;
         }
         if crate::recovery::ownership::optimizer_run_is_live(conn, &run.id, instance_id, now)? {
@@ -5014,7 +5063,49 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
         super::experiment_bind::settle_run(conn, &run)?;
         recovered.push(run);
     }
+    reconcile_orphaned_paid_compute_reservations(conn)?;
     Ok(recovered)
+}
+
+/// Repair the user-facing credential receipt from durable capability state.
+/// This is the restart-safe counterpart to the live broker's chain seal: a
+/// crash can erase the in-memory chain after the capability row was revoked,
+/// but it must not leave a terminal run claiming that authority is granted.
+fn seal_durable_credential_chain(
+    conn: &Connection,
+    run: &mut OptimizerRunRecord,
+) -> Result<()> {
+    let Some(chain) = run
+        .summary
+        .get_mut("credentialChain")
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(());
+    };
+    let Some(capability_id) = chain
+        .get("capabilityId")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return Ok(());
+    };
+    let lifecycle = conn
+        .query_row(
+            "SELECT status, revoked_at FROM secret_capabilities WHERE id=?1",
+            [&capability_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?;
+    let Some((status, revoked_at)) = lifecycle else {
+        return Ok(());
+    };
+    chain.insert("capabilityStatus".into(), json!(status));
+    chain.insert("revokedAt".into(), json!(revoked_at));
+    chain.insert(
+        "capabilityRevoked".into(),
+        json!(status == "revoked"),
+    );
+    Ok(())
 }
 
 /// The `sequence -> event_id` map for exactly the sequences a batch touches.
@@ -5417,48 +5508,123 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
 }
 
 fn settle_paid_compute_conversation(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
-    let Some(session_id) = run
+    let targets = paid_compute_settlement_targets(conn, run)?;
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let outcome = paid_compute_settlement_outcome(conn, run)?;
+    for (index, (approval_id, session_id)) in targets.iter().enumerate() {
+        let this_outcome = if index == 0 {
+            outcome
+        } else {
+            crate::session::paid_compute_budget::SettlementOutcome::Exact { cost_usd_micros: 0 }
+        };
+        let Some(snapshot) = crate::session::paid_compute_budget::settle(
+            conn,
+            session_id,
+            approval_id,
+            this_outcome,
+        )?
+        else {
+            continue;
+        };
+        if run
+            .usage
+            .extra
+            .get("paidComputeApproval")
+            .and_then(|value| value.get("receiptViolation"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            crate::session::paid_compute_budget::disable_auto(conn, session_id)?;
+        }
+        crate::session::paid_compute_budget::append_settlement_receipt(
+            conn,
+            session_id,
+            approval_id,
+            this_outcome,
+            &snapshot,
+        )?;
+    }
+    Ok(())
+}
+
+fn paid_compute_settlement_targets(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+) -> Result<Vec<(String, String)>> {
+    let mut targets = Vec::new();
+    let run_session = run
         .session_ref
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(());
-    };
-    let Some(approval_id) = run
-        .usage
-        .extra
-        .get("paidComputeApproval")
-        .and_then(|value| value.get("approvalId"))
+        .filter(|value| !value.is_empty());
+    if let (Some(approval_id), Some(session_id)) = (
+        run.usage
+            .extra
+            .get("paidComputeApproval")
+            .and_then(|value| value.get("approvalId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        run_session,
+    ) {
+        targets.push((approval_id.to_string(), session_id.to_string()));
+    }
+    if let Some(digest) = run
+        .summary
+        .get("preparationDigest")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    else {
-        return Ok(());
-    };
-    let outcome = paid_compute_settlement_outcome(conn, run)?;
-    let Some(snapshot) =
-        crate::session::paid_compute_budget::settle(conn, session_id, approval_id, outcome)?
-    else {
-        return Ok(());
-    };
-    if run
-        .usage
-        .extra
-        .get("paidComputeApproval")
-        .and_then(|value| value.get("receiptViolation"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
     {
-        crate::session::paid_compute_budget::disable_auto(conn, session_id)?;
+        for (approval_id, session_id) in
+            crate::session::paid_compute_budget::reserved_rows_for_digest(conn, digest)?
+        {
+            if !targets.iter().any(|(id, _)| id == &approval_id) {
+                targets.push((approval_id, session_id));
+            }
+        }
     }
-    crate::session::paid_compute_budget::append_settlement_receipt(
-        conn,
-        session_id,
-        approval_id,
-        outcome,
-        &snapshot,
-    )?;
+    Ok(targets)
+}
+
+fn reconcile_orphaned_paid_compute_reservations(conn: &Connection) -> Result<()> {
+    let reserved = crate::session::paid_compute_budget::list_reserved(conn)?;
+    if reserved.is_empty() {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare("SELECT payload_json FROM optimizer_runs")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut runs = Vec::new();
+    for row in rows {
+        runs.push(serde_json::from_str::<OptimizerRunRecord>(&row?)?);
+    }
+    drop(stmt);
+    for (approval_id, session_id, digest) in reserved {
+        let matched = digest.as_deref().and_then(|digest| {
+            runs.iter().find(|run| {
+                run.summary.get("preparationDigest").and_then(Value::as_str) == Some(digest)
+            })
+        });
+        match matched {
+            Some(run) if is_terminal_status(&run.status) => {
+                settle_paid_compute_conversation(conn, run)?;
+            }
+            Some(run)
+                if matches!(
+                    run.status.as_str(),
+                    "running" | "queued" | "cancelling" | "paused"
+                ) =>
+            {
+                // Live work still holds the ceiling.
+            }
+            Some(_) | None => {
+                crate::session::paid_compute_budget::release_reservation(conn, &approval_id)?;
+                let _ = session_id;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -5468,23 +5634,18 @@ fn paid_compute_settlement_outcome(
 ) -> Result<crate::session::paid_compute_budget::SettlementOutcome> {
     use crate::session::paid_compute_budget::{micros_from_reported_cost, SettlementOutcome};
     if let Ok(Some(receipt)) = crate::secrets::capability::provider_usage_receipt(conn, &run.id) {
-        return Ok(match receipt.cost_usd.and_then(micros_from_reported_cost) {
-            Some(cost_usd_micros) => SettlementOutcome::Exact { cost_usd_micros },
-            None => SettlementOutcome::Unknown,
-        });
-    }
-    let complete = run
-        .usage
-        .extra
-        .get("costTelemetryComplete")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    if !complete {
-        return Ok(SettlementOutcome::Unknown);
+        if let Some(cost_usd_micros) = receipt.cost_usd.and_then(micros_from_reported_cost) {
+            return Ok(SettlementOutcome::Exact { cost_usd_micros });
+        }
+        // Some providers report token/call usage without a monetary amount.
+        // A poisoned receipt must not retain the reservation after the run is
+        // terminal: GEPA still records a durable costUsd aggregate.
     }
     match run.usage.cost_usd.and_then(micros_from_reported_cost) {
         Some(cost_usd_micros) => Ok(SettlementOutcome::Exact { cost_usd_micros }),
-        None => Ok(SettlementOutcome::Unknown),
+        None => Ok(SettlementOutcome::Exact {
+            cost_usd_micros: 0,
+        }),
     }
 }
 
@@ -7058,6 +7219,58 @@ pub(in crate::optimizers) mod tests {
             .unwrap();
     }
 
+    #[tokio::test]
+    async fn open_preserves_prepared_run_while_native_approval_is_reissued() {
+        let dir = tempdir().unwrap();
+        let run_id = "opt_waiting_for_viewer";
+        {
+            let core = crate::core_runtime::CoreRuntime::open(dir.path()).unwrap();
+            let svc = core.optimizers().clone();
+            let (mut run, _) = svc
+                .create(OptimizerCreateRequest {
+                    algorithm_id: "gepa".into(),
+                    algorithm_version: Some("1".into()),
+                    objective: Some("prepared restart approval".into()),
+                    source: Some("local".into()),
+                    project_ref: None,
+                    session_ref: Some("session_prepared_restart".into()),
+                    id: Some(run_id.into()),
+                    execution_bindings: None,
+                    input_refs: None,
+                    capabilities: None,
+                    summary: Some(json!({
+                        "recipeId": "gepa.banking77.workspace.v1",
+                        "preparationDigest": "sha256:prepared",
+                        "visualReadyReceipt": { "visualId": "vis_prepared" }
+                    })),
+                    open_visual: Some(false),
+                    seed_fixture: None,
+                    cloud_config: None,
+                    local_path: None,
+                })
+                .await
+                .unwrap();
+            run.status = "waiting_for_viewer".into();
+            svc.persist_run(run).await.unwrap();
+        }
+
+        let core = crate::core_runtime::CoreRuntime::open(dir.path()).unwrap();
+        let run = core.optimizers().get(run_id.to_string()).await.unwrap();
+        assert_eq!(run.status, "waiting_for_viewer");
+        assert!(run.finished_at.is_none());
+        assert!(run.error.is_none());
+        core.storage()
+            .database()
+            .with_conn(|conn| {
+                assert!(
+                    terminal::load(conn, run_id)?.is_none(),
+                    "a passive prepared run must not receive a terminal seal at restart"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
     async fn eval_run(svc: &OptimizerService, id: &str, session: &str) -> OptimizerRunRecord {
         let (run, _) = svc
             .create(OptimizerCreateRequest {
@@ -8280,7 +8493,10 @@ pub(in crate::optimizers) mod tests {
             .iter()
             .filter(|run| OptimizerRunStatus::str_is_terminal(&run.status))
             .collect();
-        assert!(!terminal.is_empty(), "the library has completed runs to open");
+        assert!(
+            !terminal.is_empty(),
+            "the library has completed runs to open"
+        );
 
         let mut slowest = 0u128;
         let mut failures = Vec::new();
@@ -8290,7 +8506,11 @@ pub(in crate::optimizers) mod tests {
                 Ok(envelope) => {
                     let elapsed = started.elapsed().as_millis();
                     slowest = slowest.max(elapsed);
-                    assert!(envelope.view.is_some(), "{} projected an empty view", run.id);
+                    assert!(
+                        envelope.view.is_some(),
+                        "{} projected an empty view",
+                        run.id
+                    );
                     assert!(envelope.run.is_some(), "{} carried no run record", run.id);
                     println!(
                         "  {:<44} {:>5}ms  rev={} tail={}",
@@ -8300,7 +8520,11 @@ pub(in crate::optimizers) mod tests {
                 Err(error) => failures.push(format!("{}: {error}", run.id)),
             }
         }
-        println!("\n  {} completed runs, slowest cold open {}ms", terminal.len(), slowest);
+        println!(
+            "\n  {} completed runs, slowest cold open {}ms",
+            terminal.len(),
+            slowest
+        );
         assert!(failures.is_empty(), "runs failed to open: {failures:#?}");
         assert!(
             slowest < 1_000,
@@ -8314,8 +8538,14 @@ pub(in crate::optimizers) mod tests {
             .run_view_envelope(first.id.clone(), Some(held.projection_revision))
             .await
             .unwrap();
-        assert!(again.unchanged, "a current revision must answer `unchanged`");
-        assert!(again.view.is_none(), "an unchanged answer carries no payload");
+        assert!(
+            again.unchanged,
+            "a current revision must answer `unchanged`"
+        );
+        assert!(
+            again.view.is_none(),
+            "an unchanged answer carries no payload"
+        );
     }
 
     /// A run that cannot be projected says so once, in a way the renderer can
@@ -8447,7 +8677,10 @@ pub(in crate::optimizers) mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(held.projection_revision, 15, "a lower revision cannot overwrite a higher one");
+        assert_eq!(
+            held.projection_revision, 15,
+            "a lower revision cannot overwrite a higher one"
+        );
         assert_eq!(held.data_digest, "fnv1a64:bbbb");
 
         // A template change is a different render, so it replaces regardless:
@@ -8514,10 +8747,19 @@ pub(in crate::optimizers) mod tests {
         // Scrolling back widens the window. Only the hole is transferred; the
         // ten events already held are not sent again.
         let back = svc
-            .evidence_page(run.id.clone(), EvidenceRange::new(1, 30), tail.coverage.clone(), None)
+            .evidence_page(
+                run.id.clone(),
+                EvidenceRange::new(1, 30),
+                tail.coverage.clone(),
+                None,
+            )
             .await
             .unwrap();
-        assert_eq!(back.events.len(), 20, "only the missing span crosses the bridge");
+        assert_eq!(
+            back.events.len(),
+            20,
+            "only the missing span crosses the bridge"
+        );
         assert_eq!(back.range, Some(EvidenceRange::new(1, 20)));
         assert_eq!(back.coverage, vec![EvidenceRange::new(1, 30)]);
         assert!(back.complete);
@@ -8525,7 +8767,12 @@ pub(in crate::optimizers) mod tests {
         // Asking again with full coverage is the "nothing to send" answer,
         // which is what makes re-opening a tab after a restart free.
         let again = svc
-            .evidence_page(run.id.clone(), EvidenceRange::new(1, 30), back.coverage.clone(), None)
+            .evidence_page(
+                run.id.clone(),
+                EvidenceRange::new(1, 30),
+                back.coverage.clone(),
+                None,
+            )
             .await
             .unwrap();
         assert!(again.events.is_empty());
@@ -8540,7 +8787,10 @@ pub(in crate::optimizers) mod tests {
             .unwrap();
         assert_eq!(bounded.events.len(), 7);
         assert_eq!(bounded.range, Some(EvidenceRange::new(1, 7)));
-        assert!(!bounded.complete, "a partial page must not claim the window");
+        assert!(
+            !bounded.complete,
+            "a partial page must not claim the window"
+        );
 
         // The window is clamped to what actually exists rather than trusted.
         let beyond = svc
@@ -8577,12 +8827,9 @@ pub(in crate::optimizers) mod tests {
             .unwrap();
 
         for sequence in 1..=40u64 {
-            svc.append_events(
-                run.id.clone(),
-                vec![gepa_progress_event(&run.id, sequence)],
-            )
-            .await
-            .unwrap();
+            svc.append_events(run.id.clone(), vec![gepa_progress_event(&run.id, sequence)])
+                .await
+                .unwrap();
         }
         assert_eq!(
             full_journal_replays_for(&run.id),
@@ -8676,10 +8923,7 @@ pub(in crate::optimizers) mod tests {
 
         // And the usage accumulator, which resumes from the run row on the
         // incremental path rather than being rebuilt from zero.
-        let incremental = svc
-            .get("gepa_fold_incremental".to_string())
-            .await
-            .unwrap();
+        let incremental = svc.get("gepa_fold_incremental".to_string()).await.unwrap();
         let batched = svc.get("gepa_fold_batched".to_string()).await.unwrap();
         assert_eq!(incremental.usage.calls, 24);
         assert_eq!(incremental.usage.calls, batched.usage.calls);
@@ -9430,6 +9674,398 @@ pub(in crate::optimizers) mod tests {
             .await
             .unwrap_err();
         assert!(missing_approval.to_string().contains("approval"));
+    }
+
+    fn paid_policy(
+        request: u64,
+        conversation: u64,
+    ) -> crate::synth_config::PaidComputeAutoApprovalPolicy {
+        crate::synth_config::PaidComputeAutoApprovalPolicy {
+            enabled: true,
+            max_request_usd_micros: request,
+            max_conversation_usd_micros: conversation,
+            providers: vec!["openrouter".into()],
+        }
+    }
+
+    #[tokio::test]
+    async fn start_prepared_attaches_paid_compute_approval_before_the_worker() {
+        let (svc, _dir, _) = service().await;
+        std::fs::write(
+            svc.manager.home().join("capabilities.json"),
+            serde_json::to_vec(&json!({
+                "algorithms": ["gepa"],
+                "replay": true,
+                "cancellation": true,
+                "digest": "sha256:caps"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "banking77_attach_approval",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = run.clone();
+        stored.status = "waiting_for_viewer".into();
+        stored.summary = json!({
+            "recipeId": "gepa.banking77.workspace.v1",
+            "preparationDigest": "sha256:prepare",
+            "capabilitiesDigest": "sha256:caps",
+            "limits": { "maxCostUsd": 8.0, "maxTotalRollouts": 400 }
+        });
+        svc.persist_run(stored).await.unwrap();
+        svc.record_visual_ready(
+            run.id.clone(),
+            json!({
+                "schemaVersion": "synth.visual-subscription-receipt.v1",
+                "visualId": "visual_attach_approval",
+                "optimizerRunId": run.id,
+                "templateId": "optimizer.gepa.live.v1",
+                "replayedThrough": 0,
+                "subscribedFrom": 1
+            }),
+        )
+        .await
+        .unwrap();
+        let _ = svc
+            .start_prepared(
+                run.id.clone(),
+                Some("sha256:prepare".into()),
+                Some("approval-auto-1".into()),
+            )
+            .await;
+        let stored = svc.get(run.id).await.unwrap();
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["approvalId"],
+            "approval-auto-1"
+        );
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["cap"]["maxCostUsdMicros"],
+            8_000_000
+        );
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["cap"]["maxRollouts"],
+            400
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_run_settles_digest_reservation_despite_poisoned_provider_receipt() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_settle_digest",
+                    "sessionRef": "sess-settle",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = svc.get(run.id.clone()).await.unwrap();
+        stored.session_ref = Some("sess-settle".into());
+        stored.status = "completed".into();
+        stored.summary = json!({
+            "recipeId": "gepa.banking77.workspace.v1",
+            "preparationDigest": "sha256:prep"
+        });
+        stored.usage.cost_usd = Some(0.785);
+        stored
+            .usage
+            .extra
+            .insert("costTelemetryComplete".into(), json!(true));
+        svc.persist_run(stored).await.unwrap();
+        svc.database()
+            .run_transaction(|conn| {
+                crate::session::paid_compute_budget::seed_conversation_budget(
+                    conn,
+                    "sess-settle",
+                    &paid_policy(2_450_000, 50_000_000),
+                )?;
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-settle",
+                    "approval-auto-1",
+                    Some("sha256:prep"),
+                    2_450_000,
+                )?
+                .expect("reserve");
+                conn.execute(
+                    "INSERT INTO secret_refs(
+                        id,alias,provider,scope,backend,backend_ref,fingerprint,
+                        display_suffix,status,created_at,updated_at
+                     ) VALUES(
+                        'secret-settle','openrouter','openrouter','provider',
+                        'memory','backend-settle','sha256:test','test','valid',
+                        '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'
+                     )",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO secret_capabilities(
+                        id,handle,secret_id,run_id,recipe_id,provider,
+                        operations_json,models_json,reasoning_efforts_json,
+                        max_calls,max_input_tokens,max_output_tokens,
+                        max_cost_usd_micros,used_calls,used_input_tokens,
+                        used_output_tokens,used_cost_usd_micros,status,
+                        created_at,expires_at,used_cost_known
+                     ) VALUES(
+                        'cap-settle','handle-settle','secret-settle',
+                        'gepa_settle_digest','recipe','openrouter','[]','[]','[]',
+                        100,1000,1000,2450000,10,500,50,0,'revoked',
+                        '2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',0
+                     )",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        svc.database()
+            .run_transaction(|conn| {
+                let run = load_run(conn, "gepa_settle_digest")?;
+                settle_paid_compute_conversation(conn, &run)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let (status, settled, remaining): (String, i64, u64) = svc
+            .database()
+            .run(|conn| {
+                let status = conn.query_row(
+                    "SELECT status FROM paid_compute_reservations WHERE approval_id=?1",
+                    ["approval-auto-1"],
+                    |row| row.get(0),
+                )?;
+                let settled = conn.query_row(
+                    "SELECT settled_usd_micros FROM paid_compute_reservations WHERE approval_id=?1",
+                    ["approval-auto-1"],
+                    |row| row.get(0),
+                )?;
+                let snap = crate::session::paid_compute_budget::snapshot(conn, "sess-settle")?
+                    .expect("budget");
+                Ok((status, settled, snap.remaining_usd_micros))
+            })
+            .await
+            .unwrap();
+        assert_eq!(status, "settled");
+        assert_eq!(settled, 785_000);
+        assert_eq!(remaining, 50_000_000 - 785_000);
+    }
+
+    #[tokio::test]
+    async fn terminal_settle_releases_cross_session_digest_retries() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_cross_session",
+                    "sessionRef": "sess-owner",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = svc.get(run.id.clone()).await.unwrap();
+        stored.session_ref = Some("sess-owner".into());
+        stored.status = "cancelled".into();
+        stored.summary = json!({ "preparationDigest": "sha256:shared" });
+        stored.usage.cost_usd = Some(0.0);
+        stored
+            .usage
+            .extra
+            .insert("costTelemetryComplete".into(), json!(true));
+        svc.persist_run(stored).await.unwrap();
+        svc.database()
+            .run_transaction(|conn| {
+                crate::session::paid_compute_budget::seed_conversation_budget(
+                    conn,
+                    "sess-owner",
+                    &paid_policy(2_450_000, 50_000_000),
+                )?;
+                crate::session::paid_compute_budget::seed_conversation_budget(
+                    conn,
+                    "sess-retry",
+                    &paid_policy(2_450_000, 50_000_000),
+                )?;
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-owner",
+                    "approval-owner",
+                    Some("sha256:shared"),
+                    2_450_000,
+                )?
+                .expect("owner reserve");
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-retry",
+                    "approval-retry",
+                    Some("sha256:shared"),
+                    2_450_000,
+                )?
+                .expect("retry reserve");
+                Ok(())
+            })
+            .await
+            .unwrap();
+        svc.database()
+            .run_transaction(|conn| {
+                let run = load_run(conn, "gepa_cross_session")?;
+                settle_paid_compute_conversation(conn, &run)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let (owner_status, retry_count, owner_remaining, retry_remaining): (String, i64, u64, u64) =
+            svc.database()
+                .run(|conn| {
+                    let owner_status = conn.query_row(
+                        "SELECT status FROM paid_compute_reservations WHERE approval_id=?1",
+                        ["approval-owner"],
+                        |row| row.get(0),
+                    )?;
+                    let retry_count: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM paid_compute_reservations
+                     WHERE approval_id=?1 AND status='reserved'",
+                        ["approval-retry"],
+                        |row| row.get(0),
+                    )?;
+                    let owner = crate::session::paid_compute_budget::snapshot(conn, "sess-owner")?
+                        .expect("owner budget");
+                    let retry = crate::session::paid_compute_budget::snapshot(conn, "sess-retry")?
+                        .expect("retry budget");
+                    Ok((
+                        owner_status,
+                        retry_count,
+                        owner.remaining_usd_micros,
+                        retry.remaining_usd_micros,
+                    ))
+                })
+                .await
+                .unwrap();
+        assert_ne!(owner_status, "reserved");
+        assert_eq!(
+            retry_count, 0,
+            "cross-session unused retry must not stay reserved"
+        );
+        assert_eq!(owner_remaining, 50_000_000);
+        assert_eq!(retry_remaining, 50_000_000);
+    }
+
+    #[tokio::test]
+    async fn startup_reconcile_settles_completed_and_releases_waiting_reservations() {
+        let (svc, _dir, _) = service().await;
+        let (completed, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_orphan_completed",
+                    "sessionRef": "sess-orphan",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = svc.get(completed.id.clone()).await.unwrap();
+        stored.session_ref = Some("sess-orphan".into());
+        stored.status = "completed".into();
+        stored.summary = json!({ "preparationDigest": "sha256:done" });
+        stored.usage.cost_usd = Some(0.10);
+        stored
+            .usage
+            .extra
+            .insert("costTelemetryComplete".into(), json!(true));
+        svc.persist_run(stored).await.unwrap();
+
+        let (waiting, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_orphan_waiting",
+                    "sessionRef": "sess-orphan",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = svc.get(waiting.id.clone()).await.unwrap();
+        stored.session_ref = Some("sess-orphan".into());
+        stored.status = "waiting_for_viewer".into();
+        stored.summary = json!({ "preparationDigest": "sha256:wait" });
+        svc.persist_run(stored).await.unwrap();
+
+        svc.database()
+            .run_transaction(|conn| {
+                crate::session::paid_compute_budget::seed_conversation_budget(
+                    conn,
+                    "sess-orphan",
+                    &paid_policy(2_450_000, 50_000_000),
+                )?;
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-orphan",
+                    "approval-done",
+                    Some("sha256:done"),
+                    2_450_000,
+                )?
+                .expect("completed reserve");
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-orphan",
+                    "approval-wait",
+                    Some("sha256:wait"),
+                    2_450_000,
+                )?
+                .expect("waiting reserve");
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        svc.database()
+            .run_transaction(|conn| {
+                reconcile_orphaned_paid_compute_reservations(conn)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let (done_status, wait_count, remaining): (String, i64, u64) = svc
+            .database()
+            .run(|conn| {
+                let done_status = conn.query_row(
+                    "SELECT status FROM paid_compute_reservations WHERE approval_id=?1",
+                    ["approval-done"],
+                    |row| row.get(0),
+                )?;
+                let wait_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM paid_compute_reservations WHERE approval_id=?1",
+                    ["approval-wait"],
+                    |row| row.get(0),
+                )?;
+                let snap = crate::session::paid_compute_budget::snapshot(conn, "sess-orphan")?
+                    .expect("budget");
+                Ok((done_status, wait_count, snap.remaining_usd_micros))
+            })
+            .await
+            .unwrap();
+        assert_eq!(done_status, "settled");
+        assert_eq!(wait_count, 0, "unused waiting reservation is released");
+        assert_eq!(remaining, 50_000_000 - 100_000);
     }
 
     /// A4. Absent capabilities must refuse, not skip.

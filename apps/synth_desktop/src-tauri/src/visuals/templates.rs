@@ -105,22 +105,25 @@ pub fn visuals_root() -> PathBuf {
 }
 
 pub fn list_templates(genre: Option<&str>) -> anyhow::Result<Vec<TemplateMeta>> {
-    let mut out = Vec::new();
-    for (_, meta) in build_template_index(&visuals_root())? {
-        if let Some(filter) = genre {
-            let matches = meta
-                .genre
-                .as_deref()
-                .map(|value| value.eq_ignore_ascii_case(filter))
-                .unwrap_or(false)
-                || meta.id.to_lowercase().contains(&filter.to_lowercase());
-            if !matches {
-                continue;
+    let filter = genre.map(str::to_owned);
+    with_template_index(&visuals_root(), move |templates| {
+        let mut out = Vec::new();
+        for (_, meta) in templates {
+            if let Some(filter) = filter.as_deref() {
+                let matches = meta
+                    .genre
+                    .as_deref()
+                    .map(|value| value.eq_ignore_ascii_case(filter))
+                    .unwrap_or(false)
+                    || meta.id.to_lowercase().contains(&filter.to_lowercase());
+                if !matches {
+                    continue;
+                }
             }
+            out.push(meta);
         }
-        out.push(meta);
-    }
-    Ok(out)
+        Ok(out)
+    })
 }
 
 pub fn resolve_template(template_id: &str) -> anyhow::Result<TemplateMeta> {
@@ -128,17 +131,29 @@ pub fn resolve_template(template_id: &str) -> anyhow::Result<TemplateMeta> {
     if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
         anyhow::bail!("invalid template id");
     }
-    build_template_index(&visuals_root())?
-        .remove(id)
-        .ok_or_else(|| anyhow::anyhow!("unknown visual template: {id}"))
+    let id = id.to_owned();
+    with_template_index(&visuals_root(), move |mut templates| {
+        templates
+            .remove(&id)
+            .ok_or_else(|| anyhow::anyhow!("unknown visual template: {id}"))
+    })
 }
 
 fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, TemplateMeta>> {
+    with_template_index(visuals_root, Ok)
+}
+
+fn with_template_index<T, F>(visuals_root: &Path, consume: F) -> anyhow::Result<T>
+where
+    T: Send,
+    F: FnOnce(BTreeMap<String, TemplateMeta>) -> anyhow::Result<T> + Send,
+{
     // Visual creation commonly runs inside a Tokio worker that is already
     // carrying the optimizer admission future. Keep registry discovery and
-    // manifest decoding off that comparatively small stack. The traversal is
-    // iterative, but serde/path processing for the full bundled registry can
-    // still need substantially more stack than the worker has available.
+    // manifest decoding off that comparatively small stack. The complete map
+    // must also be consumed and dropped here: returning it to the Tokio worker
+    // merely moves the stack-heavy BTreeMap/serde teardown back onto the stack
+    // this boundary is intended to protect.
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("visual-template-index".into())
@@ -149,7 +164,10 @@ fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, 
             // an ordinary template error).  Keep that work isolated and give
             // the bounded registry scan enough headroom.
             .stack_size(32 * 1024 * 1024)
-            .spawn_scoped(scope, || build_template_index_inner(visuals_root))
+            .spawn_scoped(scope, move || {
+                let templates = build_template_index_inner(visuals_root)?;
+                consume(templates)
+            })
             .map_err(|error| anyhow::anyhow!("failed to start visual template indexer: {error}"))?
             .join()
             .map_err(|_| anyhow::anyhow!("visual template indexer panicked"))?

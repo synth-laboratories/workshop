@@ -546,6 +546,35 @@ fn usage_lanes(summary: &Value) -> Value {
     json!({ "proposer": lane("proposer"), "policy": lane("policy") })
 }
 
+fn heldout_receipt(
+    mut detail: Value,
+    seed_heldout: Option<f64>,
+    selected_heldout: Option<f64>,
+    seed_samples: u64,
+    selected_samples: u64,
+    claim_uplift: bool,
+) -> Value {
+    let uplift = match (claim_uplift, seed_heldout, selected_heldout) {
+        (true, Some(seed), Some(selected)) => Some(selected - seed),
+        _ => None,
+    };
+    let Some(object) = detail.as_object_mut() else {
+        return detail;
+    };
+    object.insert("seedHeldout".into(), json!(seed_heldout));
+    object.insert("selectedHeldout".into(), json!(selected_heldout));
+    object.insert("heldoutUplift".into(), json!(uplift));
+    object.insert(
+        "positiveHeldoutUplift".into(),
+        json!(uplift.is_some_and(|value| value > 0.0)),
+    );
+    object.insert("baselineHeldout".into(), json!(seed_heldout));
+    object.insert("baselineHeldoutSamples".into(), json!(seed_samples));
+    object.insert("selectedHeldoutSamples".into(), json!(selected_samples));
+    object.insert("upliftAbsolute".into(), json!(uplift));
+    detail
+}
+
 impl GepaEvidence {
     fn candidate(&self, id: &str) -> Option<&Candidate> {
         self.candidates.iter().find(|entry| entry.id == id)
@@ -574,96 +603,121 @@ impl GepaEvidence {
     ///
     /// Only a heldout comparison between the seed and a *different* selected
     /// candidate can support an improvement claim. Everything else is honest
-    /// about being something less.
+    /// about being something less. Every branch still emits the first-class
+    /// heldout receipt so a completed run cannot hide behind a single selected
+    /// score.
     pub(super) fn verdict(&self, run_status: &str) -> (Verdict, Value) {
+        let seed = self.seed();
+        let selected = self.selected();
+        let seed_heldout = seed.and_then(Candidate::heldout);
+        let seed_samples = seed.map(Candidate::heldout_samples).unwrap_or(0);
         if self.failure.is_some() || matches!(run_status, "failed" | "degraded" | "cancelled") {
             return (
                 Verdict::Failed,
-                json!({
-                    "reason": "the search did not finish",
-                    "failure": self.failure.clone().unwrap_or(Value::Null),
-                }),
+                heldout_receipt(
+                    json!({
+                        "reason": "the search did not finish",
+                        "failure": self.failure.clone().unwrap_or(Value::Null),
+                    }),
+                    seed_heldout,
+                    None,
+                    seed_samples,
+                    0,
+                    false,
+                ),
             );
         }
-        let seed = self.seed();
-        let selected = self.selected();
-        let baseline = seed.and_then(Candidate::heldout);
-        let baseline_samples = seed.map(Candidate::heldout_samples).unwrap_or(0);
-
         let Some(selected) = selected else {
             return (
                 Verdict::Inconclusive,
-                json!({
-                    "reason": "the run settled on no candidate",
-                    "baselineHeldout": baseline,
-                    "baselineHeldoutSamples": baseline_samples,
-                }),
+                heldout_receipt(
+                    json!({
+                        "reason": "the run settled on no candidate",
+                    }),
+                    seed_heldout,
+                    None,
+                    seed_samples,
+                    0,
+                    false,
+                ),
             );
         };
+        let selected_heldout = selected.heldout();
+        let selected_samples = selected.heldout_samples();
 
         // The winner is the seed: the search ran and kept the incumbent. That is
         // a real, reportable outcome — and it is not an improvement.
         if seed.map(|seed| seed.id == selected.id).unwrap_or(false) {
             return (
                 Verdict::NoMeasuredImprovement,
-                json!({
-                    "reason": "the seed candidate was retained; no proposal beat it",
-                    "baselineHeldout": baseline,
-                    "baselineHeldoutSamples": baseline_samples,
-                    "selectedHeldout": baseline,
-                    "selectedHeldoutSamples": baseline_samples,
-                    "upliftAbsolute": Value::Null,
-                    "proposalsRegistered": self.proposals_registered,
-                }),
+                heldout_receipt(
+                    json!({
+                        "reason": "the seed candidate was retained; no proposal beat it",
+                        "proposalsRegistered": self.proposals_registered,
+                    }),
+                    seed_heldout,
+                    seed_heldout,
+                    seed_samples,
+                    seed_samples,
+                    true,
+                ),
             );
         }
 
-        let challenger = selected.heldout();
-        let challenger_samples = selected.heldout_samples();
         // A mean with no samples behind it is a producer summary we could not
         // corroborate from the rollout log. Reporting an uplift on it would put
         // a number where a measurement belongs, so the comparison is refused
         // rather than dressed up.
-        if baseline.is_some()
-            && challenger.is_some()
-            && (baseline_samples == 0 || challenger_samples == 0)
+        if seed_heldout.is_some()
+            && selected_heldout.is_some()
+            && (seed_samples == 0 || selected_samples == 0)
         {
             return (
                 Verdict::Inconclusive,
-                json!({
-                    "reason": "a heldout mean was reported without per-rollout evidence behind it",
-                    "baselineCandidateId": seed.map(|seed| seed.id.clone()),
-                    "baselineHeldout": baseline,
-                    "baselineHeldoutSamples": baseline_samples,
-                    "selectedCandidateId": selected.id,
-                    "selectedHeldout": challenger,
-                    "selectedHeldoutSamples": challenger_samples,
-                }),
+                heldout_receipt(
+                    json!({
+                        "reason": "a heldout mean was reported without per-rollout evidence behind it",
+                        "baselineCandidateId": seed.map(|seed| seed.id.clone()),
+                        "selectedCandidateId": selected.id,
+                    }),
+                    seed_heldout,
+                    selected_heldout,
+                    seed_samples,
+                    selected_samples,
+                    false,
+                ),
             );
         }
-        let (Some(baseline), Some(challenger)) = (baseline, challenger) else {
+        let (Some(baseline), Some(challenger)) = (seed_heldout, selected_heldout) else {
             return (
                 Verdict::Inconclusive,
-                json!({
-                    "reason": "no heldout comparison exists between the baseline and the selected candidate",
-                    "baselineHeldout": baseline,
-                    "baselineHeldoutSamples": baseline_samples,
-                    "selectedHeldout": challenger,
-                    "selectedHeldoutSamples": challenger_samples,
-                }),
+                heldout_receipt(
+                    json!({
+                        "reason": "no heldout comparison exists between the baseline and the selected candidate",
+                        "baselineCandidateId": seed.map(|seed| seed.id.clone()),
+                        "selectedCandidateId": selected.id,
+                    }),
+                    seed_heldout,
+                    selected_heldout,
+                    seed_samples,
+                    selected_samples,
+                    false,
+                ),
             );
         };
         let uplift = challenger - baseline;
-        let detail = json!({
-            "baselineCandidateId": seed.map(|seed| seed.id.clone()),
-            "baselineHeldout": baseline,
-            "baselineHeldoutSamples": baseline_samples,
-            "selectedCandidateId": selected.id,
-            "selectedHeldout": challenger,
-            "selectedHeldoutSamples": challenger_samples,
-            "upliftAbsolute": uplift,
-            "proposalsRegistered": self.proposals_registered,
-        });
+        let detail = heldout_receipt(
+            json!({
+                "baselineCandidateId": seed.map(|seed| seed.id.clone()),
+                "selectedCandidateId": selected.id,
+                "proposalsRegistered": self.proposals_registered,
+            }),
+            seed_heldout,
+            selected_heldout,
+            seed_samples,
+            selected_samples,
+            true,
+        );
         if uplift > 0.0 {
             (Verdict::MeasuredImprovement, detail)
         } else {
@@ -755,6 +809,13 @@ impl GepaEvidence {
             "usageLanes": self.usage_lanes.clone().unwrap_or(Value::Null),
             "verdict": verdict.as_str(),
             "verdictDetail": verdict_detail,
+            "seedHeldout": verdict_detail.get("seedHeldout").cloned().unwrap_or(Value::Null),
+            "selectedHeldout": verdict_detail.get("selectedHeldout").cloned().unwrap_or(Value::Null),
+            "heldoutUplift": verdict_detail.get("heldoutUplift").cloned().unwrap_or(Value::Null),
+            "positiveHeldoutUplift": verdict_detail
+                .get("positiveHeldoutUplift")
+                .cloned()
+                .unwrap_or(json!(false)),
         })
     }
 }
@@ -1002,8 +1063,13 @@ mod tests {
         let (verdict, detail) = evidence.verdict("completed");
         assert_eq!(verdict, Verdict::NoMeasuredImprovement);
         assert_eq!(detail["selectedHeldout"], json!(0.5));
-        assert_eq!(detail["upliftAbsolute"], Value::Null);
+        assert_eq!(detail["seedHeldout"], json!(0.5));
+        assert_eq!(detail["heldoutUplift"], json!(0.0));
+        assert_eq!(detail["positiveHeldoutUplift"], json!(false));
+        assert_eq!(detail["upliftAbsolute"], json!(0.0));
         let value = evidence.to_value("completed");
+        assert_eq!(value["positiveHeldoutUplift"], json!(false));
+        assert_eq!(value["heldoutUplift"], json!(0.0));
         assert_eq!(value["deployment"]["recommended"], json!(false));
         assert_eq!(value["deployment"]["candidateId"], Value::Null);
     }
@@ -1147,10 +1213,15 @@ mod tests {
         let (verdict, detail) = evidence.verdict("completed");
         assert_eq!(verdict, Verdict::MeasuredImprovement);
         assert_eq!(detail["baselineHeldout"], json!(0.5));
+        assert_eq!(detail["seedHeldout"], json!(0.5));
         assert_eq!(detail["selectedHeldout"], json!(0.75));
         assert_eq!(detail["selectedHeldoutSamples"], json!(4));
+        assert_eq!(detail["heldoutUplift"], json!(0.25));
+        assert_eq!(detail["positiveHeldoutUplift"], json!(true));
         assert_eq!(detail["upliftAbsolute"], json!(0.25));
         let value = evidence.to_value("completed");
+        assert_eq!(value["positiveHeldoutUplift"], json!(true));
+        assert_eq!(value["heldoutUplift"], json!(0.25));
         assert_eq!(value["deployment"]["recommended"], json!(true));
         assert_eq!(value["deployment"]["candidateId"], json!("gepa_child"));
     }
@@ -1271,10 +1342,8 @@ mod tests {
         let (verdict, detail) = evidence.verdict("completed");
         assert_eq!(verdict, Verdict::Inconclusive);
         assert_eq!(detail["selectedHeldoutSamples"], json!(0));
-        assert!(
-            detail.get("upliftAbsolute").is_none(),
-            "no uplift is claimed"
-        );
+        assert_eq!(detail["upliftAbsolute"], Value::Null);
+        assert_eq!(detail["positiveHeldoutUplift"], json!(false));
     }
 
     /// A finished search with no heldout evidence at all cannot claim anything.

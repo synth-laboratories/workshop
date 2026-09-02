@@ -367,10 +367,24 @@ export function GepaWorkspace({
 
   const metrics: WorkspaceMetric[] = [
     ...(!terminal ? [{ label: "Job", value: "Running" }] : []),
+    {
+      label: "Candidates",
+      value: `${gepa.candidates.length}`,
+      title: `${gepa.candidates.length} candidate${gepa.candidates.length === 1 ? "" : "s"} registered in this run`,
+      testId: "gepa-candidate-count"
+    },
+    {
+      label: "Rollouts",
+      value: `${Math.round(gepa.rolloutsCompleted)}${rolloutLimit?.max != null ? ` / ${Math.round(rolloutLimit.max)}` : ""}`,
+      title: rolloutLimit?.max != null
+        ? `${Math.round(gepa.rolloutsCompleted)} completed against the ${Math.round(rolloutLimit.max)}-rollout run ceiling`
+        : `${Math.round(gepa.rolloutsCompleted)} completed rollouts`,
+      testId: "gepa-rollout-count"
+    },
     { label: "Best train", value: bestScore != null ? bestScore.toFixed(2) : "—" },
     { label: "Heldout", value: heldoutValue },
     {
-      label: "Rollouts",
+      label: "Scored results",
       value: rolloutSpent != null
         ? `${Math.round(rolloutSpent)}${rolloutLimit?.max != null ? ` / ${Math.round(rolloutLimit.max)}` : ""}`
         : "—"
@@ -449,6 +463,7 @@ export function GepaWorkspace({
           testId="gepa-run-header"
         />
       ) : null}
+      <SearchOverviewPanel gepa={gepa} />
       <StageTimeline
         stages={gepa.stages}
         selected={stageFilter}
@@ -494,8 +509,6 @@ export function GepaWorkspace({
           </div>
         ) : null}
       </section>
-      <SearchOverviewPanel gepa={gepa} />
-      <EvidenceIntegrity gepa={gepa} />
       <HillClimbPanel gepa={gepa} onSelect={selectCandidate} />
       <div className="sv-workspace-canvas">
         <div>
@@ -511,9 +524,11 @@ export function GepaWorkspace({
           />
         </div>
       </div>
+      <EvidenceIntegrity gepa={gepa} />
       <RolloutBrowser
         groups={evaluationData.groups}
         rows={evaluationData.rows}
+        itemLabel="evaluation results"
         emptyText={stageFilter
           ? "No rollouts for the selected stage yet. Clear the stage filter to see everything."
           : "Evaluation rollouts appear as candidates are scored."}

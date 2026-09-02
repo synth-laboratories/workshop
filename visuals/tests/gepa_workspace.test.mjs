@@ -17,6 +17,62 @@ test("generation colors are stable and keep the seed neutral", () => {
   assert.deepEqual(generationPalette(6), generationPalette(0), "the bounded palette repeats deterministically");
 });
 
+test("durable setup events retain task, dataset, container, and selected taskset context", () => {
+  const projected = projectAtCursor(RUN, [
+    {
+      ...base, sequenceNumber: 1, type: "optimizer.state.transitioned",
+      delta: { from: "created", to: "initializing", trigger: "run_started", details: {
+        train_ids: Array.from({ length: 50 }, (_, index) => `train:${index}`),
+        heldout_ids: Array.from({ length: 50 }, (_, index) => `test:${index}`),
+        policy_model: "openai/gpt-5.6-luna", proposer_model: "openai/gpt-5.6-luna"
+      } }
+    },
+    { ...base, sequenceNumber: 2, type: "gepa.run.started", delta: { container_url: "http://127.0.0.1:8127" } },
+    {
+      ...base, sequenceNumber: 3, type: "container.contract.verified", delta: {
+        container_spec_id: "banking77-gepa-b-v6", workshop_instance: "B",
+        credential_mode: "workshop_ephemeral_proxy", runtime_family: "banking77",
+        reward_authority: "container_evaluator", evaluator_id: "banking77-evaluator-v1",
+        retention: "run", scale_leases: 4,
+        dataset: {
+          source: "PolyAI/banking77", config: "test", revision: "evals:abc", row_count: 3080,
+          label_count: 77, dataset_digest: "sha256:dataset",
+          splits: { train: { count: 2114 }, selection: { count: 623 }, heldout: { count: 343 } }
+        },
+        policy_refs: [{ harness: "banking77_classifier", config: "chatgpt_proxy" }]
+      }
+    },
+    {
+      ...base, sequenceNumber: 4, type: "container.task_info.loaded", delta: {
+        task: { id: "banking77-intents-v1", name: "Banking77 intent classification", description: "Classify one message.", task_family: "banking77", version: "v1" },
+        dataset: {
+          source: "PolyAI/banking77", config: "test", revision: "evals:abc", row_count: 3080,
+          label_count: 77, dataset_digest: "sha256:dataset",
+          splits: { train: { count: 2114 }, selection: { count: 623 }, heldout: { count: 343 } }
+        }
+      }
+    },
+    { ...base, sequenceNumber: 5, type: "container.program.loaded", delta: { program_id: "banking77-classifier-v1", mutable_fields: ["classification_system_prompt"] } },
+    { ...base, sequenceNumber: 6, type: "taskset.tasks.loaded", delta: { minibatch_rows: 20, reflection_rows: 50, pareto_rows: 50, heldout_rows: 50, task_pools: { pareto: Array.from({ length: 50 }, (_, index) => `train:${index}`) } } }
+  ]);
+
+  assert.deepEqual(projected.gepa.contract.task, {
+    id: "banking77-intents-v1", name: "Banking77 intent classification", objective: undefined,
+    description: "Classify one message.", family: "banking77", version: "v1", outputKind: undefined
+  });
+  assert.deepEqual(projected.gepa.contract.dataset, {
+    source: "PolyAI/banking77", config: "test", revision: "evals:abc", digest: "sha256:dataset",
+    rowCount: 3080, labelCount: 77, splits: { train: 2114, selection: 623, heldout: 343 }
+  });
+  assert.deepEqual(projected.gepa.contract.splits, { train: 50, minibatch: 20, reflection: 50, pareto: 50, heldout: 50 });
+  assert.deepEqual(projected.gepa.contract.container, {
+    url: "http://127.0.0.1:8127", verified: true, specId: "banking77-gepa-b-v6", workshopInstance: "B",
+    credentialMode: "workshop_ephemeral_proxy", evaluatorId: "banking77-evaluator-v1",
+    runtimeFamily: "banking77", targetId: undefined, rewardAuthority: "container_evaluator",
+    policyHarness: "banking77_classifier", policyConfig: "chatgpt_proxy", scaleLeases: 4, retention: "run"
+  });
+});
+
 function solEvents() {
   let seq = 0;
   const at = (minute, second = 0) =>

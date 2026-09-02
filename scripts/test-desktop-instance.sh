@@ -8,6 +8,9 @@ LOCK_HOLDER=""
 cleanup() {
   [[ -z "$UNRELATED_PID" ]] || kill "$UNRELATED_PID" 2>/dev/null || true
   [[ -z "$LOCK_HOLDER" ]] || kill "$LOCK_HOLDER" 2>/dev/null || true
+  if [[ "${LINGER_CLEANUP:-0}" == "1" ]]; then
+    "$ROOT/scripts/desktop-instance.sh" stop alpha >/dev/null 2>&1 || true
+  fi
   rm -rf "$TEST_ROOT"
 }
 trap cleanup EXIT
@@ -34,7 +37,7 @@ printf '%s' "$default_instance" | jq -e '
   .mode == "development" and
   .product == "workshop" and
   .releaseLine == "v0.9" and
-  .appVersion == "0.9.0" and
+  .appVersion == "0.9.3" and
   (.sourceRoot | length > 0) and
   (.sourceRevision | length > 0) and
   .hotReload.renderer == true and
@@ -46,11 +49,15 @@ printf '%s' "$default_instance" | jq -e '
 [[ "$(printf '%s' "$alpha" | jq -r .workspace)" != "$(printf '%s' "$beta" | jq -r .workspace)" ]]
 [[ "$(printf '%s' "$alpha" | jq -r .cargoTargetDir)" != "$(printf '%s' "$beta" | jq -r .cargoTargetDir)" ]]
 [[ "$(printf '%s' "$alpha" | jq -r .viteUrl)" != "$(printf '%s' "$beta" | jq -r .viteUrl)" ]]
-[[ "$(printf '%s' "$alpha" | jq -r .iconLabel)" == "1" ]]
+printf '%s' "$alpha" | jq -e '
+  .launchdLabel == "com.synth.workshop.v09.alpha.host" and
+  (.launchdDomain | startswith("gui/")) and
+  (.launchdPlist | endswith("/com.synth.workshop.v09.alpha.host.plist"))
+' >/dev/null
 [[ "$(printf '%s' "$beta" | jq -r .iconLabel)" == "2" ]]
 [[ -f "$(printf '%s' "$alpha" | jq -r .icon)" ]]
 printf '%s' "$alpha" | jq -e '
-  (.appBundle | endswith("/Synth Workshop v0.9.0 · alpha.app")) and
+  (.appBundle | endswith("/Synth Workshop v0.9 · alpha.app")) and
   (.executable | endswith("/debug/synth-desktop"))
 ' >/dev/null
 
@@ -87,18 +94,22 @@ rg -q '^OPENAI_API_KEY=.openai-fixture.$' "$alpha_env"
 dev_instance_body="$(sed -n '/^dev_instance()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
 awk '
   /cd "\$INSTANCE_ROOT"/ && !safe_cwd {safe_cwd=NR}
-  /exec_isolated_cua_bundle/ && !launch_line {launch_line=NR}
+  /launch_isolated_cua_bundle/ && !launch_line {launch_line=NR}
   END { exit !(safe_cwd && launch_line && safe_cwd < launch_line) }
 ' <<<"$dev_instance_body"
-# The helper itself must end in an environment-scrubbed exec of the recorded
-# bundle executable; checking a removed inline exec made this gate stale while
-# missing the stronger isolation contract.
-isolated_exec="$(sed -n '/^exec_isolated_cua_bundle()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
-grep -q 'exec env -i' <<<"$isolated_exec"
-grep -q 'PWD="\$INSTANCE_ROOT"' <<<"$isolated_exec"
-grep -q 'SYNTH_OPTIMIZER_PROJECT_ROOT="\$optimizer_project_root"' <<<"$isolated_exec"
-grep -q 'CONTAINERS_ROOT="\$containers_root"' <<<"$isolated_exec"
-grep -q '"\$CUA_EXE"' <<<"$isolated_exec"
+# The helper writes a gui-domain LaunchAgent with no KeepAlive. This keeps
+# a packaged app alive after a bounded terminal exits without weakening the
+# existing isolated-environment contract or colliding with an active rebuild.
+isolated_exec="$(sed -n '/^write_host_launchd_plist()/,/^bootstrap_host_launchd_job()/p' "$ROOT/scripts/desktop-instance.sh")"
+grep -q 'KeepAlive": False' <<<"$isolated_exec"
+grep -q 'ProcessType": "Interactive"' <<<"$isolated_exec"
+grep -q 'SYNTH_DESKTOP_DATA_ROOT' <<<"$isolated_exec"
+grep -q 'SYNTH_OPTIMIZER_PROJECT_ROOT' <<<"$isolated_exec"
+grep -q 'CONTAINERS_ROOT' <<<"$isolated_exec"
+grep -q 'must not carry provider credentials' <<<"$isolated_exec"
+rg -q 'launchctl bootstrap "\$HOST_LAUNCHD_DOMAIN"' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'launchctl bootout "\$HOST_LAUNCHD_TARGET"' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'host_launchd_program' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'if \(\$0 == exe \|\| \$0 == cua_exe\)' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_DEV_OAUTH_FILE' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE' "$ROOT/scripts/desktop-instance.sh"
@@ -126,8 +137,8 @@ fi
 
 jq -e '
   .identifier == "com.synth.desktop.v09.dev.alpha" and
-  .productName == "Synth Workshop v0.9.0 · alpha" and
-  .version == "0.9.0" and
+  .productName == "Synth Workshop v0.9 · alpha" and
+  .version == "0.9.3" and
   (.bundle.icon | length) == 2 and
   .bundle.targets == ["app"] and
   .bundle.resources == {} and
@@ -159,7 +170,7 @@ rg -Fq -- '--arg identity "${host_authority:-adhoc}"' "$ROOT/scripts/desktop-ins
 rg -q 'SYNTH_DESKTOP_REBUILD_ADAPTERS:-0' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'cargo:rerun-if-changed=' "$ROOT/apps/synth_desktop/src-tauri/build.rs"
 rg -q 'symbolic-ref.*HEAD' "$ROOT/apps/synth_desktop/src-tauri/build.rs"
-rg -q 'SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0' "$ROOT/scripts/desktop-instance.sh"
+rg -Fq 'local use_local_optimizer="${SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-}"' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_COMPUTER_USE_PARENT_REQUIREMENT=' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'optimizer runtime=immutable installed plugin' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'verify_packaged_provenance' "$ROOT/scripts/desktop-instance.sh"
@@ -326,17 +337,14 @@ rg -q 'executable_digest.*==.*expected_digest' "$ROOT/scripts/desktop-instance.s
 rg -q 'rm -f "\$DATA_ROOT/eval-driver.json"' "$ROOT/scripts/desktop-instance.sh"
 rebuild_body="$(sed -n '/^rebuild_run_instance()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
 case "$rebuild_body" in
-  *"observe_rebuild_readiness &"*"exec_isolated_cua_bundle"*) ;;
-  *) echo "rebuild-run did not keep the app on cua-run's foreground exec path" >&2; exit 1 ;;
+  *"launch_isolated_cua_bundle"*"wait_for_health_instance"*"print_runtime_identity"*) ;;
+  *) echo "rebuild-run did not launch the persistent app and verify health" >&2; exit 1 ;;
 esac
 case "$rebuild_body" in
-  *'exec_isolated_cua_bundle &'*|*'"$CUA_EXE" &'*) echo "rebuild-run launched the app asynchronously" >&2; exit 1 ;;
+  *'launch_isolated_cua_bundle &'*|*'"$CUA_EXE" &'*) echo "rebuild-run used an unowned background child" >&2; exit 1 ;;
   *) ;;
 esac
-readiness_body="$(sed -n '/^observe_rebuild_readiness()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
-grep -q 'trap - EXIT' <<<"$readiness_body"
-grep -q 'wait_for_health_instance' <<<"$readiness_body"
-grep -q 'print_runtime_identity' <<<"$readiness_body"
+rg -q 'launchctl remove "\$LAUNCHD_LABEL"' "$ROOT/scripts/desktop-instance.sh"
 set +e
 drift_out="$($ROOT/scripts/desktop-instance.sh cua-run alpha 2>&1)"
 drift_status=$?
@@ -346,5 +354,76 @@ case "$drift_out" in
   *"bundle was not produced by cua-build; run desktop-instance.sh rebuild-run alpha"*) ;;
   *) echo "cua-run drift message did not name rebuild-run: $drift_out" >&2; exit 1 ;;
 esac
+
+# The packaged host job must outlive the invoking shell. Prove it with a
+# stand-in binary: bootstrap from a subshell, let that subshell exit, then
+# require the job still running. stop must retire only that named job.
+if launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+  linger_src="$TEST_ROOT/linger.c"
+  linger_bin="$TEST_ROOT/linger"
+  printf '#include <unistd.h>\nint main(void) { for (;;) sleep(30); return 0; }\n' >"$linger_src"
+  cc -o "$linger_bin" "$linger_src"
+  LINGER_CLEANUP=1
+  (
+    SYNTH_DESKTOP_LAUNCHD_PROGRAM="$linger_bin" \
+      "$ROOT/scripts/desktop-instance.sh" host-job-selftest alpha >/dev/null
+  )
+  label="$(jq -r .launchdLabel "$TEST_ROOT/instances/v09/alpha/instance.json")"
+  domain="$(jq -r .launchdDomain "$TEST_ROOT/instances/v09/alpha/instance.json")"
+  plist="$(jq -r .launchdPlist "$TEST_ROOT/instances/v09/alpha/instance.json")"
+  [[ -f "$plist" ]] || { echo "host launchd plist was not written" >&2; exit 1; }
+  python3 - "$plist" <<'PY'
+import plistlib, sys
+payload = plistlib.loads(open(sys.argv[1], "rb").read())
+assert payload["KeepAlive"] is False
+assert payload["RunAtLoad"] is True
+assert payload["ProcessType"] == "Interactive"
+env = payload["EnvironmentVariables"]
+assert "OPENROUTER_API_KEY" not in env
+assert "OPENAI_API_KEY" not in env
+assert env["SYNTH_DESKTOP_INSTANCE"] == "alpha"
+assert env["SYNTH_DESKTOP_DATA_ROOT"].endswith("/instances/v09/alpha/data")
+PY
+  linger_pid=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    linger_pid="$(launchctl print "$domain/$label" 2>/dev/null | awk '/pid = / {print $3; exit}')"
+    [[ -n "$linger_pid" && "$linger_pid" != "0" ]] && break
+    sleep 0.2
+  done
+  [[ -n "$linger_pid" && "$linger_pid" != "0" ]] || {
+    echo "launchd host job has no pid after the caller subshell exited" >&2
+    exit 1
+  }
+  kill -0 "$linger_pid" || {
+    echo "launchd host job died with the invoking subshell" >&2
+    exit 1
+  }
+  beta_label="$(jq -r .launchdLabel "$TEST_ROOT/instances/v09/beta/instance.json")"
+  if launchctl print "$domain/$beta_label" >/dev/null 2>&1; then
+    echo "alpha host job leaked onto beta" >&2
+    exit 1
+  fi
+  "$ROOT/scripts/desktop-instance.sh" stop alpha >/dev/null
+  LINGER_CLEANUP=0
+  still_running=0
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if kill -0 "$linger_pid" 2>/dev/null; then
+      still_running=1
+      sleep 0.2
+    else
+      still_running=0
+      break
+    fi
+  done
+  if [[ "$still_running" -eq 1 ]]; then
+    echo "stop left the named host job running" >&2
+    kill "$linger_pid" 2>/dev/null || true
+    exit 1
+  fi
+  if launchctl print "$domain/$label" >/dev/null 2>&1; then
+    echo "stop did not boot out the named host job" >&2
+    exit 1
+  fi
+fi
 
 echo "desktop instance contract: ok"

@@ -24,7 +24,14 @@ const fixtureProjected: ProjectedState = {
   cursorSeq: 82, summary: { status: "running" }, timeline: [], usage: { costUsd: 0.08 }, logs: [], artifacts: [], execution: { bindings: [] },
   gepa: {
     candidates, frontier: [{ candidateId: "gepa_2" }, { candidateId: "gepa_3" }], reflections: [], budget: {}, limits: [{ kind: "total_rollouts", max: 100, spent: 80 }, { kind: "cost_usd", max: 2, spent: 0.08 }],
-    contract: { task: { id: "banking77", name: "Banking77 intent classification" }, program: { id: "banking77_classifier", mutableFields: ["system_prompt"] }, objectiveSet: { frontierType: "per_example", selectionObjective: "accuracy", objectives: [{ name: "accuracy", direction: "maximize", aggregation: "mean" }] }, splits: { minibatch: 10, reflection: 10, pareto: 50, heldout: 20 }, container: { rewardAuthority: "container", policyHarness: "chat_completions" } },
+    contract: {
+      task: { id: "banking77-intents-v1", name: "Banking77 intent classification", description: "Classify each Banking77 customer message into exactly one catalog intent label.", family: "banking77", version: "v1" },
+      program: { id: "banking77-classifier-v1", mutableFields: ["classification_system_prompt"] },
+      objectiveSet: { frontierType: "per_example", selectionObjective: "accuracy", objectives: [{ name: "accuracy", direction: "maximize", aggregation: "mean" }] },
+      splits: { train: 50, minibatch: 20, reflection: 50, pareto: 50, heldout: 50 },
+      dataset: { source: "PolyAI/banking77", config: "test", revision: "evals:7fde918e", digest: "sha256:d8818d40c6329ce6b727180b5e2e7c210e3aa1efab6120518b1d2db14682927e", rowCount: 3080, labelCount: 77, splits: { train: 2114, selection: 623, heldout: 343 } },
+      container: { verified: true, specId: "banking77-gepa-b-v6", url: "http://127.0.0.1:8127", workshopInstance: "B", credentialMode: "workshop_ephemeral_proxy", evaluatorId: "banking77-evaluator-v1", runtimeFamily: "banking77", rewardAuthority: "container_evaluator", policyHarness: "banking77_classifier", retention: "run" }
+    },
     frontierHistory: [{ sequence: 12, bestCandidateId: "gepa_seed", bestTrainReward: .71, bestCandidateSolved: 35, optimisticSolved: 35, totalExamples: 50, coverageSemantics: "solved_reward_positive", frontierSize: 1, addedCandidateIds: ["gepa_seed"], removedCandidateIds: [] }, { sequence: 54, generation: 1, bestCandidateId: "gepa_2", bestTrainReward: .79, bestCandidateSolved: 40, optimisticSolved: 44, totalExamples: 50, coverageSemantics: "solved_reward_positive", frontierSize: 2, addedCandidateIds: ["gepa_2"], removedCandidateIds: [] }],
     stages: [
       { id: "seed", label: "Seed evaluation", status: "completed" }, { id: "proposal", label: "Reflection + proposal", status: "completed" },
