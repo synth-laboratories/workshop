@@ -107,7 +107,7 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
 
 fn tools() -> Value {
     json!({"tools":[
-        {"name":"plugin_manage","description":"Manage built-in Workshop product plugins. Load the use-synth-plugins skill. Callers supply only plugin_id and optional catalog version — never URLs, paths, commands, env, or tokens.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list","status","capabilities","enable","disable","install","start","stop","update","remove"]},"arguments":{"type":"object","properties":{"plugin_id":{"type":"string","enum":["optimizers"]},"version":{"type":"string"}},"required":["plugin_id"],"additionalProperties":false}},"required":["operation","arguments"],"additionalProperties":false}}
+        {"name":"plugin_manage","description":"Manage built-in Workshop product plugins. Load the use-synth-plugins skill. Callers supply only plugin_id and optional catalog version — never URLs, paths, commands, env, or tokens.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list","status","capabilities","enable","disable","install","start","restart","stop","update","remove"]},"arguments":{"type":"object","properties":{"plugin_id":{"type":"string","enum":["optimizers"]},"version":{"type":"string"}},"required":["plugin_id"],"additionalProperties":false}},"required":["operation","arguments"],"additionalProperties":false}}
     ]})
 }
 

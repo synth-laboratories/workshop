@@ -18,6 +18,8 @@ type VisualPaneChromeProps = {
 	moreButtonRef: RefObject<HTMLButtonElement | null>;
 	busy: boolean;
 	artifactOperationsEnabled: boolean;
+	evaluatorRestartAvailable: boolean;
+	actionStatus: string | null;
 	annotationsCount: number;
 	sealEligible: boolean;
 	sealDisabledReason: string | null;
@@ -31,6 +33,8 @@ type VisualPaneChromeProps = {
 	debugState: VisualPaneDebugState;
 	onToggleInspector: () => void;
 	onBeginLabeling: () => void;
+	onRerender: () => void;
+	onRestartEvaluator: () => void;
 	onSeal: () => void;
 	onLiveRevision: () => void;
 	onCloseComparison: () => void;
@@ -56,6 +60,8 @@ export function VisualPaneChrome({
 	moreButtonRef,
 	busy,
 	artifactOperationsEnabled,
+	evaluatorRestartAvailable,
+	actionStatus,
 	annotationsCount,
 	sealEligible,
 	sealDisabledReason,
@@ -69,6 +75,8 @@ export function VisualPaneChrome({
 	debugState,
 	onToggleInspector,
 	onBeginLabeling,
+	onRerender,
+	onRestartEvaluator,
 	onSeal,
 	onLiveRevision,
 	onCloseComparison,
@@ -120,10 +128,13 @@ export function VisualPaneChrome({
 								<div className="visual-inspector-actions">
 									{sealedBundle ? <button type="button" onClick={onLiveRevision}>Live revision</button> : null}
 									{compareBundle ? <button type="button" onClick={onCloseComparison}>Close comparison</button> : null}
+									<button type="button" onClick={onRerender} disabled={!visualId || busy}>Re-render with current template</button>
+									{evaluatorRestartAvailable ? <button type="button" onClick={onRestartEvaluator} disabled={busy}>Restart evaluator</button> : null}
 									<button type="button" onClick={onBeginLabeling} disabled={!visualId || !revision || busy}>Label{annotationsCount ? ` · ${annotationsCount}` : ""}</button>
 									<button type="button" onClick={onSeal} disabled={!sealEligible || busy}>{busy ? "Working…" : "Seal revision"}</button>
 									{sealedBundle ? <button type="button" onClick={onShare} disabled={busy}>{shareUpload?.state === "committed" ? "Shared privately" : "Share privately"}</button> : null}
 								</div>
+								{actionStatus ? <p className="visual-inspector-note" role="status">{actionStatus}</p> : null}
 								{!sealEligible && sealDisabledReason ? <p className="visual-inspector-note">{sealDisabledReason}</p> : null}
 							</section> : null}
 

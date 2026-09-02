@@ -21,7 +21,7 @@ pub fn classify(kind: &ApprovalKind, active_runs: u64) -> PluginRisk {
     match kind {
         ApprovalKind::PluginLifecycle { action, .. } => match action.as_str() {
             "enable" | "disable" => PluginRisk::Low,
-            "start" | "stop" if active_runs == 0 => PluginRisk::Low,
+            "start" | "restart" | "stop" if active_runs == 0 => PluginRisk::Low,
             "stop" | "install" | "update" | "remove" => PluginRisk::High,
             _ => PluginRisk::High,
         },
@@ -101,6 +101,14 @@ pub fn plugin_kind(
             true,
         ),
         "start" => ("Start the installed optimizer service", true),
+        "restart" if active_runs == 0 => (
+            "Restart the idle optimizer service; retain runs, artifacts, and visuals",
+            true,
+        ),
+        "restart" => (
+            "Restart the optimizer service while jobs are active; product safety refuses",
+            false,
+        ),
         "stop" if active_runs == 0 => ("Stop the idle optimizer service; retain runs and visuals", true),
         "stop" => (
             "Stop the optimizer service while jobs are active; product safety may refuse",
@@ -327,7 +335,12 @@ mod tests {
                 assert_eq!(requested_cap.max_cost_usd_micros, Some(1_500_000));
                 assert_eq!(requested_cap.max_rollouts, Some(6));
                 assert_eq!(preparation_digest.as_deref(), Some("sha256:prep"));
-                assert_eq!(parameters.pointer("/model/provider").and_then(serde_json::Value::as_str), Some("openrouter"));
+                assert_eq!(
+                    parameters
+                        .pointer("/model/provider")
+                        .and_then(serde_json::Value::as_str),
+                    Some("openrouter")
+                );
                 assert_eq!(credential_names, vec!["openrouter:workshop_secrets_proxy"]);
             }
             other => panic!("expected paid compute approval, got {other:?}"),

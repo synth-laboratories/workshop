@@ -154,7 +154,8 @@ impl PluginService {
             }
             "status" => Ok(serde_json::to_value(self.status(core).await)?),
             "capabilities" => self.capabilities(core).await,
-            "enable" | "disable" | "install" | "start" | "stop" | "update" | "remove" => {
+            "enable" | "disable" | "install" | "start" | "restart" | "stop" | "update"
+            | "remove" => {
                 self.mutate(core, broker, app, session_id, operation, version.as_deref())
                     .await
             }
@@ -252,6 +253,16 @@ impl PluginService {
                 Ok(())
             }
             "install" | "update" => {
+                // `update` is also the repair path for an installed version.
+                // Stop first even when the catalog version is unchanged;
+                // otherwise `start` can adopt the still-healthy old process and
+                // the newly materialized runtime never actually takes effect.
+                if action == "update" {
+                    let status = manager.status().await;
+                    if matches!(status.phase.as_str(), "ready" | "degraded" | "starting") {
+                        manager.stop().await?;
+                    }
+                }
                 manager
                     .set_status_phase("downloading", Some("Downloading optimizer distribution…"))
                     .await;
@@ -293,6 +304,11 @@ impl PluginService {
                 manager.start().await?;
                 Ok(())
             }
+            "restart" => {
+                manager.stop().await?;
+                manager.start().await?;
+                Ok(())
+            }
             "stop" => {
                 manager.stop().await?;
                 Ok(())
@@ -330,10 +346,7 @@ impl PluginService {
                 rejected: false,
             });
         }
-        if let Some(session_id) = session_id
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
+        if let Some(session_id) = session_id.map(str::trim).filter(|value| !value.is_empty()) {
             if let Some((approval_id, decision)) = broker
                 .try_auto_authorize_paid_compute(app, session_id, &kind)
                 .await?
@@ -423,7 +436,7 @@ fn refuse_plugin_mutation(
         return Ok(());
     }
     match action {
-        "stop" | "remove" | "install" | "update" => {
+        "stop" | "restart" | "remove" | "install" | "update" => {
             bail!("refusing to {action} Optimizers while {active_runs} run(s) are active");
         }
         "start" if installed_version.is_some_and(|installed| installed != target_version) => {
@@ -489,6 +502,7 @@ mod tests {
             "disable",
             "install",
             "start",
+            "restart",
             "stop",
             "update",
             "remove",
@@ -508,6 +522,7 @@ mod tests {
         refuse_plugin_mutation("remove", 1, Some("0.2.12"), "0.2.12").unwrap_err();
         refuse_plugin_mutation("install", 1, Some("0.2.12"), "0.2.14").unwrap_err();
         refuse_plugin_mutation("update", 3, Some("0.2.12"), "0.2.14").unwrap_err();
+        refuse_plugin_mutation("restart", 3, Some("0.2.12"), "0.2.12").unwrap_err();
         let start = refuse_plugin_mutation("start", 1, Some("0.2.12"), "0.2.14").unwrap_err();
         assert!(start.to_string().contains("0.2.14"));
         assert!(start.to_string().contains("0.2.12"));

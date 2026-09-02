@@ -31,7 +31,10 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex as StdMutex,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::State;
@@ -216,6 +219,7 @@ fn catalog_spec(version: &str) -> OptimizerSidecarInstallSpec {
 }
 
 struct SidecarRuntime {
+    generation: u64,
     proxy_task: tokio::task::JoinHandle<()>,
     child: Option<Child>,
     child_pid: Option<u32>,
@@ -243,6 +247,10 @@ pub struct OptimizerManager {
     ensure_lock: Mutex<()>,
     updates: broadcast::Sender<OptimizerSidecarStatus>,
     runtime: Mutex<Option<SidecarRuntime>>,
+    /// Invalidates exit watchers before an intentional stop can signal their
+    /// child. A watcher from generation N must never overwrite generation
+    /// N+1's ready status during a restart.
+    runtime_generation: Arc<AtomicU64>,
     /// First missed `/health` while the cached phase is still `ready`. After
     /// `2 × OPTIMIZER_SIDECAR_HEALTH_TIMEOUT` the projection becomes `degraded`.
     missed_ready_since: StdMutex<Option<tokio::time::Instant>>,
@@ -291,6 +299,7 @@ impl OptimizerManager {
             ensure_lock: Mutex::new(()),
             updates,
             runtime: Mutex::new(None),
+            runtime_generation: Arc::new(AtomicU64::new(0)),
             missed_ready_since: StdMutex::new(None),
             gepa_workers: Mutex::new(HashMap::new()),
             gepa_capacity: Arc::new(Semaphore::new(MAX_CONCURRENT_GEPA_RECIPES)),
@@ -826,7 +835,9 @@ impl OptimizerManager {
                 );
             }
         });
+        let generation = self.runtime_generation.fetch_add(1, Ordering::SeqCst) + 1;
         *self.runtime.lock().await = Some(SidecarRuntime {
+            generation,
             proxy_task,
             child_pid: child.as_ref().and_then(Child::id),
             child,
@@ -1360,6 +1371,18 @@ impl OptimizerManager {
     }
 
     async fn abort_runtime(&self) {
+        // Retire the watcher before signalling its child. Without this order,
+        // the intentional SIGTERM can win the restart race and publish an
+        // error over the replacement runtime's starting/ready state.
+        self.runtime_generation.fetch_add(1, Ordering::SeqCst);
+        let mut runtime = self.runtime.lock().await.take();
+        if let Some(task) = runtime
+            .as_mut()
+            .and_then(|runtime| runtime.exit_watcher.take())
+        {
+            task.abort();
+            let _ = task.await;
+        }
         // The exported address describes a service that is about to stop
         // existing. Every teardown goes through here.
         clear_env_sh(&self.home);
@@ -1384,10 +1407,7 @@ impl OptimizerManager {
         if let Some(pid) = leased_pid {
             terminate_process_groups(&[pid]).await;
         }
-        if let Some(mut runtime) = self.runtime.lock().await.take() {
-            if let Some(task) = runtime.exit_watcher.take() {
-                task.abort();
-            }
+        if let Some(mut runtime) = runtime {
             runtime.proxy_task.abort();
             if let Some(child) = runtime.child.as_mut() {
                 terminate_child(child).await;
@@ -1408,12 +1428,17 @@ impl OptimizerManager {
             return;
         };
         runtime.child_pid = child.id().or(runtime.child_pid);
+        let generation = runtime.generation;
+        let runtime_generation = self.runtime_generation.clone();
         let home = self.home.clone();
         let status = self.status.clone();
         let updates = self.updates.clone();
         let diagnostics = self.diagnostics.clone();
         runtime.exit_watcher = Some(tokio::spawn(async move {
             let exit = child.wait().await;
+            if runtime_generation.load(Ordering::SeqCst) != generation {
+                return;
+            }
             clear_env_sh(&home);
             clear_runtime_lease(&home);
             let previous = status.read().await.clone();
@@ -3552,6 +3577,29 @@ mod tests {
             }
         }
         assert!(saw_bus, "pin must still publish optimizer.run.updated");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn intentional_restart_cannot_be_overwritten_by_retired_child_watcher() {
+        let (mgr, _home) = manager();
+        mgr.enable_real_child_fixture().unwrap();
+        mgr.install(None).unwrap();
+
+        assert_eq!(mgr.start().await.unwrap().phase, "ready");
+        let first_pid = mgr.sidecar_child_pid().await.unwrap();
+        assert_ne!(mgr.stop().await.unwrap().phase, "error");
+        assert_eq!(mgr.start().await.unwrap().phase, "ready");
+        let second_pid = mgr.sidecar_child_pid().await.unwrap();
+        assert_ne!(first_pid, second_pid);
+
+        // Give the SIGTERM from the retired generation enough time to be
+        // observed if its watcher was not invalidated and joined first.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let status = mgr.status().await;
+        assert_eq!(status.phase, "ready");
+        assert!(!status.detail.unwrap_or_default().contains("child exited"));
+        let _ = mgr.stop().await;
     }
 
     #[cfg(unix)]

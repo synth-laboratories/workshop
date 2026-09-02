@@ -191,7 +191,16 @@ const LIFECYCLE_ACTIONS: readonly LifecycleAction[] = [
 	{
 		operation: "start",
 		label: "Start",
-		available: (status) => status.enabled && (status.phase === "installed" || status.phase === "stopped")
+		available: (status) => status.enabled && (status.phase === "installed" || status.phase === "stopped" || status.phase === "degraded")
+	},
+	{
+		operation: "restart",
+		label: "Restart service",
+		confirm: (_status, presentation) => presentation.activeRuns > 0
+			? `Restart Optimizers while ${presentation.activeRuns} run(s) are active? Workshop will refuse until they finish.`
+			: "Restart the Optimizers service? Runs, artifacts, and visuals are retained.",
+		available: (status) => status.enabled && status.installedVersion != null
+			&& (status.phase === "ready" || status.phase === "degraded")
 	},
 	{
 		operation: "stop",
@@ -203,9 +212,11 @@ const LIFECYCLE_ACTIONS: readonly LifecycleAction[] = [
 	},
 	{
 		operation: "update",
-		label: "Update",
+		label: "Update & restart",
+		confirm: (status) => status.installedVersion === status.catalogVersion
+			? `Reinstall Optimizers v${status.catalogVersion} and restart it? Runs, artifacts, and visuals are retained.`
+			: `Update Optimizers from v${status.installedVersion ?? "unknown"} to v${status.catalogVersion} and restart it? Runs, artifacts, and visuals are retained.`,
 		available: (status) => status.enabled && status.installedVersion != null
-			&& status.installedVersion !== status.catalogVersion
 	},
 	{
 		operation: "disable",

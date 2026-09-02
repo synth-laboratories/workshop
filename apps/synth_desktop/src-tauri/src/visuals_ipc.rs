@@ -5188,6 +5188,37 @@ pub(crate) async fn dispatch_container_restart(
         .or_else(|| body.get("session_ref"))
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
+    // A restart is a maintenance operation, not an implicit cancellation.
+    // Refuse before approval when any non-terminal optimizer run is bound to
+    // this evaluator so the operator can stop or cancel that work explicitly.
+    let active = core
+        .optimizers()
+        .list(crate::optimizers::models::OptimizerQuery {
+            limit: Some(1_000),
+            ..Default::default()
+        })
+        .await?
+        .into_iter()
+        .filter(|run| {
+            !crate::optimizers::models::OptimizerRunStatus::str_is_terminal(&run.status)
+                && (run
+                    .execution_bindings
+                    .iter()
+                    .any(|binding| binding.kind == "container_http" && binding.id == id)
+                    || run
+                        .summary
+                        .get("containerId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|container_id| container_id == id))
+        })
+        .map(|run| run.id)
+        .collect::<Vec<_>>();
+    if !active.is_empty() {
+        anyhow::bail!(
+            "container_restart_blocked_active_optimizer_runs: `{id}` is used by {}; cancel or finish those runs before restarting",
+            active.join(", ")
+        );
+    }
     // Validate and reconcile before the destructive approval. An invalid
     // declaration must not consume a click.
     let spec = crate::optimizers::container_lifecycle::reconcile_declaration(
