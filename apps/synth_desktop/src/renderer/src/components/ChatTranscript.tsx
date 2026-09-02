@@ -14,7 +14,7 @@ import { contextCompactionTokenSummary } from "../runtime/sessionView";
 import { runProgressItemsByMessage } from "../runtime/runProgress/transcript";
 import { bridges } from "../runtime/desktopBridge";
 import { useTurnPerformanceLabels } from "../hooks/useTurnPerformanceLabels";
-import { hostedCooldownLabel, hostedLifecycleLabel, hostedThroughputLabel, type HostedInferenceLifecycle } from "../runtime/hostedInferenceLifecycle";
+import { hostedCooldownLabel, hostedLifecycleLabel, hostedThroughputLabel, hostedTtftLabel, type HostedInferenceLifecycle } from "../runtime/hostedInferenceLifecycle";
 import { outputContainerIds as chatOutputContainerIds, primaryVisualId, useChatOutputs } from "../hooks/useChatOutputs";
 import { RunProgressCard } from "./runProgress/RunProgressCard";
 import { ComposerLayoutHost } from "./ComposerLayout";
@@ -1181,6 +1181,7 @@ export function ChatTranscript({
 								<span className="hosted-lifecycle-dot" aria-hidden />
 								{hostedCooldownLabel(hostedInference)}
 								{hostedThroughputLabel(hostedInference) ? ` · ${hostedThroughputLabel(hostedInference)}` : null}
+								{hostedTtftLabel(hostedInference) ? ` · ${hostedTtftLabel(hostedInference)}` : null}
 							</div>
 						) : null}
 						{running ? (

@@ -4,6 +4,7 @@ import {
 	hostedLifecycleLabel,
 	hostedCooldownLabel,
 	hostedThroughputLabel,
+	hostedTtftLabel,
 	parseHostedInferenceLifecycle
 } from "../src/renderer/src/runtime/hostedInferenceLifecycle.ts";
 
@@ -29,6 +30,11 @@ test("parses Shoal v3 lifecycle and cooldown without inventing fields", () => {
 				duration_seconds: 3.73,
 				observed_at: 401,
 				sample_count: 2
+			},
+			latency: {
+				ttft_seconds: 0.209,
+				measurement_kind: "first_model_output_event",
+				observed_at: 401
 			}
 		}
 	}), {
@@ -51,11 +57,19 @@ test("parses Shoal v3 lifecycle and cooldown without inventing fields", () => {
 			durationSeconds: 3.73,
 			observedAt: 401,
 			sampleCount: 2
+		},
+		latency: {
+			ttftSeconds: 0.209,
+			measurementKind: "first_model_output_event",
+			observedAt: 401
 		}
 	});
 	assert.equal(hostedThroughputLabel(parseHostedInferenceLifecycle({ inference_lifecycle: {
 		throughput: { tokens_per_second: 33.456, sample_count: 1 }
 	} })), "Last output 33.5 tok/s");
+	assert.equal(hostedTtftLabel(parseHostedInferenceLifecycle({ inference_lifecycle: {
+		latency: { ttft_seconds: 0.209 }
+	} })), "TTFT 209 ms");
 });
 
 test("renders an authoritative hosted cooldown without pretending provider-managed timing", () => {

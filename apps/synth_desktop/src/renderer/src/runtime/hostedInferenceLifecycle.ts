@@ -19,6 +19,11 @@ export type HostedInferenceLifecycle = {
 		observedAt: number | null;
 		sampleCount: number;
 	};
+	latency: {
+		ttftSeconds: number | null;
+		measurementKind: string | null;
+		observedAt: number | null;
+	};
 };
 
 const EMPTY_COOLDOWN = { policy: null, idleTimeoutSeconds: null, lastActivityAt: null, warmUntil: null };
@@ -34,6 +39,8 @@ export function parseHostedInferenceLifecycle(value: unknown): HostedInferenceLi
 	const cooldown = rawCooldown && typeof rawCooldown === "object" ? rawCooldown as Record<string, unknown> : null;
 	const rawThroughput = lifecycle.throughput;
 	const throughput = rawThroughput && typeof rawThroughput === "object" ? rawThroughput as Record<string, unknown> : null;
+	const rawLatency = lifecycle.latency;
+	const latency = rawLatency && typeof rawLatency === "object" ? rawLatency as Record<string, unknown> : null;
 	return {
 		protocolVersion: typeof lifecycle.protocol_version === "string" ? lifecycle.protocol_version : null,
 		phase: typeof lifecycle.phase === "string" ? lifecycle.phase : null,
@@ -54,6 +61,11 @@ export function parseHostedInferenceLifecycle(value: unknown): HostedInferenceLi
 			durationSeconds: numberOrNull(throughput?.duration_seconds),
 			observedAt: numberOrNull(throughput?.observed_at),
 			sampleCount: Math.max(0, Math.floor(numberOrNull(throughput?.sample_count) ?? 0))
+		},
+		latency: {
+			ttftSeconds: numberOrNull(latency?.ttft_seconds),
+			measurementKind: latency && typeof latency.measurement_kind === "string" ? latency.measurement_kind : null,
+			observedAt: numberOrNull(latency?.observed_at)
 		}
 	};
 }
@@ -62,6 +74,12 @@ export function hostedThroughputLabel(lifecycle: HostedInferenceLifecycle | null
 	const value = lifecycle?.throughput.tokensPerSecond;
 	if (value == null || value <= 0) return null;
 	return `Last output ${value >= 10 ? value.toFixed(1) : value.toFixed(2)} tok/s`;
+}
+
+export function hostedTtftLabel(lifecycle: HostedInferenceLifecycle | null): string | null {
+	const seconds = lifecycle?.latency.ttftSeconds;
+	if (seconds == null || seconds < 0) return null;
+	return seconds < 1 ? `TTFT ${Math.round(seconds * 1_000)} ms` : `TTFT ${seconds.toFixed(2)} s`;
 }
 
 export function hostedLifecycleLabel(phase: string | null | undefined): string | null {
