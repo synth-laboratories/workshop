@@ -191,6 +191,7 @@ export function GepaWorkspace({
   const gepa = projected.gepa;
   const [presentationState, setPresentationState] = useState<GepaPresentationState>(DEFAULT_GEPA_PRESENTATION_STATE);
   const [hydratedRunId, setHydratedRunId] = useState<string | null>(null);
+  const searchDetailsRef = useRef<HTMLDetailsElement | null>(null);
   const runDetailsRef = useRef<HTMLDetailsElement | null>(null);
   const tracesRef = useRef<HTMLDivElement | null>(null);
   const candidateInspectorRef = useRef<HTMLDivElement | null>(null);
@@ -332,6 +333,7 @@ export function GepaWorkspace({
   };
 
   const selectAndRevealCandidate = (id: string) => {
+    if (searchDetailsRef.current) searchDetailsRef.current.open = true;
     selectCandidate(id);
     // Candidate links in the proposer trace live well below the inspector.
     // Move the viewport only after React has committed the new selection so
@@ -467,6 +469,7 @@ export function GepaWorkspace({
   ];
 
   const showTrace = () => {
+    if (searchDetailsRef.current) searchDetailsRef.current.open = true;
     if (runDetailsRef.current) runDetailsRef.current.open = true;
     window.requestAnimationFrame(() => tracesRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
   };
@@ -487,21 +490,39 @@ export function GepaWorkspace({
         />
       ) : null}
       <SearchOverviewPanel gepa={gepa} />
-      <StageTimeline
-        stages={gepa.stages}
-        selected={stageFilter}
-        onSelect={(id) => {
-          updatePresentation({ stageFilter: id });
-          if (id === "proposal") showTrace();
-        }}
-        testId="gepa-stage-timeline"
-      />
-      <section className="sv-section" aria-label="GEPA candidate controls" data-testid="gepa-workbench-controls" style={{ marginTop: 0 }}>
+      <section
+        className="sv-section"
+        aria-label={`Candidate and Pareto summary: ${gepa.candidates.length} candidates, ${gepa.frontier.length} retained frontier members, ${gepa.frontierHistory.at(-1)?.totalExamples ?? "unknown"} example dimensions`}
+        data-testid="gepa-search-summary"
+        style={{ marginTop: 0 }}
+      >
         <div className="sv-section-head">
-          <h3>Candidate view</h3>
-          <span className="sv-mono">{candidates.length} of {gepa.candidates.length}</span>
+          <h3>Candidates &amp; Pareto</h3>
+          <span className="sv-mono">{gepa.candidates.length} candidates · {gepa.frontier.length} frontier members · {gepa.frontierHistory.at(-1)?.totalExamples ?? "—"} dimensions</span>
         </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center" }}>
+        <p style={{ margin: 0, color: "var(--sv-text-muted)", fontSize: 11.5 }}>
+          Best train {bestScore != null ? bestScore.toFixed(3) : "—"} · heldout {heldoutValue} · {gepa.frontierHistory.at(-1)?.optimisticSolved ?? "—"}/{gepa.frontierHistory.at(-1)?.totalExamples ?? "—"} examples covered by retained candidates.
+        </p>
+      </section>
+      <details ref={searchDetailsRef} data-testid="gepa-search-details">
+        <summary style={{ width: "fit-content", cursor: "pointer", color: "var(--sv-text-muted)", fontSize: 12, fontWeight: 650 }}>
+          Explore candidate search, Pareto vectors, and prompt details
+        </summary>
+        <StageTimeline
+          stages={gepa.stages}
+          selected={stageFilter}
+          onSelect={(id) => {
+            updatePresentation({ stageFilter: id });
+            if (id === "proposal") showTrace();
+          }}
+          testId="gepa-stage-timeline"
+        />
+        <section className="sv-section" aria-label="GEPA candidate controls" data-testid="gepa-workbench-controls" style={{ marginTop: 0 }}>
+          <div className="sv-section-head">
+            <h3>Candidate view</h3>
+            <span className="sv-mono">{candidates.length} of {gepa.candidates.length}</span>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center" }}>
           <input
             type="search"
             aria-label="Search GEPA candidates"
@@ -521,8 +542,8 @@ export function GepaWorkspace({
             <option value="asc">Ascending</option><option value="desc">Descending</option>
           </select>
           <button type="button" className="sv-btn" aria-pressed={presentationState.frontierOnly} data-testid="gepa-frontier-filter" onClick={() => updatePresentation({ frontierOnly: !presentationState.frontierOnly })}>Frontier only</button>
-        </div>
-        {selection ? (
+          </div>
+          {selection ? (
           <div data-testid="gepa-linked-selection" style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 7, marginTop: 9, paddingTop: 8, borderTop: "1px solid var(--sv-border)", fontSize: 11.5 }}>
             <strong>Linked selection</strong>
             <span className="sv-chip">{selection.kind.replaceAll("_", " ")}</span>
@@ -530,23 +551,24 @@ export function GepaWorkspace({
             {selection.candidateId && selection.candidateId !== selection.id ? <span>candidate · <span className="sv-mono">{selection.candidateId}</span></span> : null}
             <button type="button" className="sv-btn" style={{ marginLeft: "auto" }} onClick={() => selectCandidate(null)}>Clear</button>
           </div>
-        ) : null}
-      </section>
-      <HillClimbPanel gepa={gepa} onSelect={selectCandidate} />
-      <div className="sv-workspace-canvas">
-        <div>
-          <FrontierPanel gepa={gepa} selectedId={selectedCandidate} onSelect={selectCandidate} />
-          <CandidateList gepa={gepa} candidates={candidates} selectedId={selectedCandidate} onSelect={selectCandidate} />
+          ) : null}
+        </section>
+        <HillClimbPanel gepa={gepa} onSelect={selectCandidate} />
+        <div className="sv-workspace-canvas">
+          <div>
+            <FrontierPanel gepa={gepa} selectedId={selectedCandidate} onSelect={selectCandidate} />
+            <CandidateList gepa={gepa} candidates={candidates} selectedId={selectedCandidate} onSelect={selectCandidate} />
+          </div>
+          <div ref={candidateInspectorRef} tabIndex={-1} style={{ scrollMarginTop: 12, outline: "none" }}>
+            <CandidateInspector
+              gepa={gepa}
+              selectedId={selectedCandidate}
+              onSelect={selectCandidate}
+              onShowTrace={showTrace}
+            />
+          </div>
         </div>
-        <div ref={candidateInspectorRef} tabIndex={-1} style={{ scrollMarginTop: 12, outline: "none" }}>
-          <CandidateInspector
-            gepa={gepa}
-            selectedId={selectedCandidate}
-            onSelect={selectCandidate}
-            onShowTrace={showTrace}
-          />
-        </div>
-      </div>
+      </details>
       <details ref={runDetailsRef} data-testid="gepa-run-details">
         <summary style={{ width: "fit-content", cursor: "pointer", color: "var(--sv-text-muted)", fontSize: 12, fontWeight: 650 }}>
           Evaluation results, proposer traces, and run comparison
