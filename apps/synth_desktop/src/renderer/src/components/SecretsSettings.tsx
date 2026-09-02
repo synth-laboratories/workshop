@@ -406,7 +406,7 @@ export function SecretsSettings() {
 				</SettingsCard>
 			) : null}
 
-			<SettingsCard title="Active capabilities">
+			<SettingsCard title="Active capabilities" testId="secrets-active-capabilities">
 				{capabilities.length === 0 ? <p className="secrets-copy">No run is currently authorized to use a provider through Workshop.</p> : capabilities.map((capability) => (
 					<div className="secrets-row" key={capability.id}>
 						<div>
@@ -418,7 +418,7 @@ export function SecretsSettings() {
 				))}
 			</SettingsCard>
 
-			<SettingsCard title="Audit log">
+			<SettingsCard title="Audit log" testId="secrets-audit-log">
 				{audit.length === 0 ? <p className="secrets-copy">No secret events yet.</p> : (
 					<ul className="secrets-audit">
 						{audit.map((event) => (

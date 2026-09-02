@@ -98,6 +98,7 @@ const includeChartPane = specificationPath.endsWith("chart-pane.spec.ts");
 const includeMinimumWidthReplay = specificationPath.endsWith("minimum-width-replay.spec.ts");
 const includeSidePanelComposerDrag = specificationPath.endsWith("side-panel-composer-drag.spec.ts");
 const includeSidePanelSeam = specificationPath.endsWith("side-panel-seam.spec.ts");
+const includeSettingsPolish = specificationPath.endsWith("settings-polish.spec.ts");
 // Five seconds covers every directed/eventual horizon in layout.spec.ts. Longer
 // runs intermittently wedge the current Chromiumoxide transport after the
 // properties have already been exercised, turning a clean trace into a harness
@@ -109,7 +110,7 @@ const timeLimit = process.env.BOMBADIL_TIME_LIMIT
 		? "15s"
 		: includeMinimumWidthReplay
 		? "20s"
-		: includeBlankWorkedTurn || includeTerminalPolish || includeVisualContracts || includeChatgptBranding || includeApprovalCard || includeGroupedVisualEvidence || includeChartPane
+		: includeBlankWorkedTurn || includeTerminalPolish || includeVisualContracts || includeChatgptBranding || includeApprovalCard || includeGroupedVisualEvidence || includeChartPane || includeSettingsPolish
 		? "10s"
 		: "5s");
 const timeLimitMatch = /^(\d+(?:\.\d+)?)(ms|s|m)$/.exec(timeLimit);
