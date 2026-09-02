@@ -900,35 +900,46 @@ for shard in sorted(shards):
     fn memory_requirement_message(payload: &Value) -> Option<String> {
         let details = payload.pointer("/error/details")?;
         let required = details.get("required_bytes").and_then(Value::as_u64);
+        let system = details.get("system_bytes").and_then(Value::as_u64);
         let required_available = details
             .get("required_available_bytes")
             .and_then(Value::as_u64);
         let available = details.get("available_bytes").and_then(Value::as_u64);
-        if required.is_none() && required_available.is_none() {
-            return None;
+        let weights = details.get("model_weight_bytes").and_then(Value::as_u64);
+        let headroom = details.get("load_headroom_bytes").and_then(Value::as_u64);
+        let shortfall = details.get("shortfall_bytes").and_then(Value::as_u64);
+        let constraint = details.get("constraint").and_then(Value::as_str);
+        let gib = |bytes: u64| bytes as f64 / 1024_f64.powi(3);
+
+        if constraint == Some("system_capacity") {
+            return Some(format!(
+                "this model requires a Mac with at least {:.1} GiB unified memory; this Mac has {:.1} GiB",
+                gib(required?),
+                gib(system?)
+            ));
         }
 
-        let gib = |bytes: u64| bytes as f64 / 1024_f64.powi(3);
-        let mut needs = Vec::new();
-        if let Some(bytes) = required {
-            needs.push(format!("{:.1} GiB total unified memory", gib(bytes)));
-        }
-        if let Some(bytes) = required_available {
-            needs.push(format!("{:.1} GiB available to load", gib(bytes)));
-        }
-        let mut message = format!("requires {}", needs.join(" and "));
-        if let Some(bytes) = available {
-            message.push_str(&format!("; {:.1} GiB is currently available", gib(bytes)));
-            if let Some(required_now) = required_available.or(required) {
-                if required_now > bytes {
-                    message.push_str(&format!(
-                        " ({:.1} GiB more needed)",
-                        gib(required_now - bytes)
-                    ));
-                }
+        if let Some(needed) = required_available {
+            let mut message = match (weights, headroom) {
+                (Some(weights), Some(headroom)) => format!(
+                    "needs about {:.1} GiB available to load its {:.1} GiB model, including {:.1} GiB safety headroom",
+                    gib(needed),
+                    gib(weights),
+                    gib(headroom)
+                ),
+                _ => format!("needs about {:.1} GiB available to load", gib(needed)),
+            };
+            if let Some(available) = available {
+                message.push_str(&format!("; {:.1} GiB is available", gib(available)));
             }
+            let missing = shortfall.or_else(|| available.map(|value| needed.saturating_sub(value)));
+            if let Some(missing) = missing.filter(|value| *value > 0) {
+                message.push_str(&format!("—free at least {:.1} GiB and retry", gib(missing)));
+            }
+            return Some(message);
         }
-        Some(message)
+
+        required.map(|needed| format!("requires {:.1} GiB unified memory", gib(needed)))
     }
 
     async fn probe(&self, base_url: &str, api_key: &str) -> Option<LagunaStatus> {
@@ -2197,7 +2208,7 @@ mod tests {
     async fn model_load_failure_is_typed_and_does_not_echo_daemon_detail() {
         let (base_url, credential, server) = serve_model_load(
             503,
-            r#"{"error":{"code":"insufficient_memory","message":"sensitive daemon detail","details":{"required_bytes":34359738368,"required_available_bytes":25769803776,"available_bytes":8589934592}}}"#,
+            r#"{"error":{"code":"insufficient_memory","message":"sensitive daemon detail","details":{"constraint":"available_memory","system_bytes":68719476736,"required_bytes":34359738368,"model_weight_bytes":21561408512,"required_available_bytes":25856375808,"available_bytes":19542101197,"load_headroom_bytes":4294967296,"shortfall_bytes":6314274611}}}"#,
         )
         .await;
         let error = LagunaManager::new()
@@ -2206,10 +2217,11 @@ mod tests {
             .expect_err("a rejected load must fail the turn preflight")
             .to_string();
         assert!(error.contains("503 (insufficient_memory)"));
-        assert!(error.contains("32.0 GiB total unified memory"));
-        assert!(error.contains("24.0 GiB available to load"));
-        assert!(error.contains("8.0 GiB is currently available"));
-        assert!(error.contains("16.0 GiB more needed"));
+        assert!(error.contains("24.1 GiB available"));
+        assert!(error.contains("20.1 GiB model"));
+        assert!(error.contains("4.0 GiB safety headroom"));
+        assert!(error.contains("18.2 GiB is available"));
+        assert!(error.contains("free at least 5.9 GiB and retry"));
         assert!(!error.contains("sensitive daemon detail"));
         assert!(!error.contains(&credential));
         server.await.unwrap();

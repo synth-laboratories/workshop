@@ -357,8 +357,11 @@ class LifecycleTests(ControlApiTestCase):
         response = self.client.post(f"/v1/synth/models/{MODEL}/load")
         body = self.assert_error(response, 503, "insufficient_memory")
         details = body["error"]["details"]
+        self.assertEqual(details["constraint"], "system_capacity")
         self.assertEqual(details["required_bytes"], 32 * GIB)
+        self.assertEqual(details["system_bytes"], 16 * GIB)
         self.assertEqual(details["available_bytes"], 16 * GIB)
+        self.assertEqual(details["shortfall_bytes"], 16 * GIB)
         status = self.status()
         self.assertEqual(status["state"], "blocked_memory")
         self.assertEqual(status["memory"]["admission"], "blocked")
@@ -368,7 +371,9 @@ class LifecycleTests(ControlApiTestCase):
         self.control.available_memory_bytes = 8 * GIB
         response = self.client.post(f"/v1/synth/models/{MODEL}/load")
         body = self.assert_error(response, 503, "insufficient_memory")
+        self.assertEqual(body["error"]["details"]["constraint"], "available_memory")
         self.assertEqual(body["error"]["details"]["available_bytes"], 8 * GIB)
+        self.assertEqual(body["error"]["details"]["shortfall_bytes"], 16 * GIB)
         self.assertEqual(self.status()["state"], "blocked_memory")
 
     def test_load_of_an_unknown_model_is_invalid_model(self) -> None:
