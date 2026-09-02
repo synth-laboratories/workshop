@@ -45,13 +45,28 @@ const status = (overrides = {}) => ({
 	...overrides
 });
 
-test("About and Diagnostics both mount capability-manifest", () => {
+test("About owns the capability manifest while side-panel Diagnostics focuses error logs", () => {
 	const about = read("components/SettingsPage.tsx");
-	const diagnostics = read("components/DiagnosticsPanel.tsx");
+	const routes = read("routes.tsx");
 	assert.match(about, /data-testid="settings-about"/);
 	assert.match(about, /CapabilityManifest/);
-	assert.match(diagnostics, /CapabilityManifest/);
 	assert.match(read("components/CapabilityManifest.tsx"), /data-testid="capability-manifest"/);
+	assert.doesNotMatch(routes, /<DiagnosticsPanel/);
+	assert.match(routes, /id: "diagnostics"[\s\S]{0,240}<ErrorsLogsPanel/);
+});
+
+test("Diagnostics presents errors and logs as one feed with a useful empty state", () => {
+	const panel = read("components/ErrorsLogsPanel.tsx");
+	const css = read("components/ErrorsLogsPanel.css");
+	assert.match(panel, /data-testid="error-log-empty"/);
+	assert.match(panel, /No matching events/);
+	assert.match(panel, /Errors only/);
+	assert.match(panel, /Copy visible/);
+	assert.match(panel, /aria-label=\{copied \? "Copied error content" : "Copy error content"\}/);
+	assert.match(panel, /rows\.map\(copyableRow\)/);
+	assert.doesNotMatch(panel, /role="tablist"/);
+	assert.doesNotMatch(panel, />Errors<|>Logs</);
+	assert.match(css, /\.errors-logs-empty \{/);
 });
 
 test("Intern/CloudDesk are listed unsupported; Laguna is not a plugin", () => {
@@ -128,10 +143,10 @@ test("Intern/CloudDesk stay unsupported in this build", () => {
 	assert.equal(intern.thisBuild, "Unsupported in v0.9 (v0.1 removal)");
 });
 
-test("routes pass existing pluginStatuses and LagunaStatus phase, inventing no IPC", () => {
+test("About receives existing pluginStatuses while Diagnostics invents no manifest IPC", () => {
 	const routes = read("routes.tsx");
 	assert.match(routes, /<SettingsPage[\s\S]{0,1200}pluginStatuses=\{pluginStatuses\}/);
-	assert.match(routes, /<DiagnosticsPanel[\s\S]{0,400}pluginStatuses=\{pluginStatuses\}[\s\S]{0,80}lagunaPhase=\{laguna\?\.phase\}/);
+	assert.doesNotMatch(routes, /<DiagnosticsPanel/);
 	assert.doesNotMatch(routes, /list_components/);
 	assert.doesNotMatch(read("runtime/pluginNav.ts"), /id: "laguna"/);
 });

@@ -68,7 +68,6 @@ export default function App() {
 	const appTitlebar = (
 		<AppTitlebar
 			tabLabel={c.view.kind === "landing" ? "New conversation" : c.tabLabel}
-			appVersion={c.appVersion}
 			activeLocalModel={Boolean(c.activeLocalModel)}
 			reserveNativeControls={c.view.kind === "settings" || !c.sidebarVisible}
 			brand={c.view.kind === "settings" && c.view.section === "models" ? "openai" : "synth"}
@@ -110,6 +109,7 @@ export default function App() {
 				{c.view.kind !== "settings" ? (
 					<Sidebar
 						state={c.state}
+						appVersion={c.appVersion}
 						lagunaStatus={c.laguna}
 						whisperStatus={whisperStatus}
 						activeChatId={c.view.kind === "chat" ? c.view.chatId : null}

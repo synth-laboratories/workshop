@@ -62,7 +62,7 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 		if (workbench) workbench.style.gridTemplateColumns = "minmax(0, 1fr) 228px";
 	});
 	const outerTabs = sidePanel.locator(".workbench-side-panel-tabs [role=tab]");
-	expect(await outerTabs.count()).toBe(5);
+	expect(await outerTabs.count()).toBe(4);
 	const tabGeometry = await outerTabs.evaluateAll((elements) => {
 		const header = elements[0]?.closest(".workbench-side-panel-header")?.getBoundingClientRect();
 		return elements.map((element) => {
@@ -74,17 +74,14 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 				&& rect.right <= header!.right;
 		});
 	});
-	expect(tabGeometry).toEqual([true, true, true, true, true]);
-	await sidePanel.getByRole("tab", { name: "Diagnostics" }).focus();
-	await page.keyboard.press("ArrowRight");
+	expect(tabGeometry).toEqual([true, true, true, true]);
+	await sidePanel.getByRole("tab", { name: "Diagnostics" }).click();
 	await expect(sidePanel).toBeVisible();
-	await expect(sidePanel.getByRole("tab", { name: "Failures" })).toBeFocused();
-	await expect(sidePanel.getByRole("tab", { name: "Failures" })).toHaveAttribute("aria-selected", "true");
-	await expect(sidePanel.getByRole("tab", { name: "Occurrences" })).toHaveAttribute("aria-selected", "true");
-	await sidePanel.getByRole("tab", { name: "Occurrences" }).focus();
-	await page.keyboard.press("ArrowRight");
-	await expect(sidePanel.getByRole("tab", { name: "Logs" })).toBeFocused();
-	await expect(sidePanel.getByRole("tab", { name: "Logs" })).toHaveAttribute("aria-selected", "true");
+	await expect(sidePanel.getByRole("tab", { name: "Diagnostics" })).toHaveAttribute("aria-selected", "true");
+	await expect(sidePanel.getByTestId("errors-logs-panel")).toBeVisible();
+	await expect(sidePanel.getByText("Error log", { exact: true })).toBeVisible();
+	await expect(sidePanel.getByRole("tab", { name: "Failures" })).toHaveCount(0);
+	await expect(sidePanel.locator('[aria-label="Error and diagnostic log"]')).toBeVisible();
 	await sidePanel.getByRole("tab", { name: "Outputs" }).click();
 	await sidePanel.getByRole("button", { name: "Close side panel" }).click();
 	await expect(outputsPanel).toHaveCount(0);
@@ -118,9 +115,8 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 	await page.getByRole("button", { name: "Close search" }).click();
 	await expect(page.getByTestId("conversation-search")).toHaveCount(0);
 
-	// Failures is not a local-inference-only tab. A remote chat used to update
-	// the selected tab and immediately fail the showSidePanel predicate, making
-	// both click and keyboard activation look like a close action in the app.
+	// Diagnostics is not a local-inference-only tab. Remote chats must expose the
+	// same unified error log instead of closing the panel during activation.
 	await page.keyboard.press("Meta+k");
 	const remoteSearch = page.getByTestId("conversation-search");
 	await remoteSearch.getByRole("searchbox", { name: "Search conversations" }).fill("Remote failure");
@@ -128,10 +124,10 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 	const remoteOutputsTrigger = page.getByTestId("resource-shelf-trigger");
 	await remoteOutputsTrigger.click();
 	const remoteSidePanel = page.getByTestId("workbench-side-panel");
-	await remoteSidePanel.getByRole("tab", { name: "Diagnostics" }).focus();
-	await page.keyboard.press("ArrowRight");
+	await remoteSidePanel.getByRole("tab", { name: "Diagnostics" }).click();
 	await expect(remoteSidePanel).toBeVisible();
-	await expect(remoteSidePanel.getByRole("tab", { name: "Failures" })).toHaveAttribute("aria-selected", "true");
+	await expect(remoteSidePanel.getByTestId("errors-logs-panel")).toBeVisible();
+	await expect(remoteSidePanel.getByRole("tab", { name: "Failures" })).toHaveCount(0);
 });
 
 test("dense search results scroll inside the dialog instead of clipping its last row", async ({ page }) => {

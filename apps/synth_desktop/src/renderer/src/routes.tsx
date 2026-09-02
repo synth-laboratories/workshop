@@ -40,7 +40,6 @@ import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
 import { MittenFrame } from "./components/MittenFrame";
 import type { SidePanelTab } from "./hooks/useShellLayout";
 import { ResponsesTracePanel } from "./components/ResponsesTracePanel";
-import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
 import { ErrorsLogsPanel } from "./components/ErrorsLogsPanel";
 import { sessionIsLocalChat } from "./runtime/sessionView";
 import { bridges, isDesktopApp } from "./runtime/desktopBridge";
@@ -746,7 +745,9 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 								ariaLabel="Resize workbench side panel"
 							/>
 							<WorkbenchSidePanel
-							activeTabId={sidePanelTab === "visual" && openArtifactId ? `visual:${openArtifactId}` : sidePanelTab}
+							activeTabId={sidePanelTab === "visual" && openArtifactId
+								? `visual:${openArtifactId}`
+								: sidePanelTab === "errors" ? "diagnostics" : sidePanelTab}
 							onTabChange={(tabId) => {
 								if (tabId.startsWith("visual:")) {
 									const visualId = tabId.slice("visual:".length);
@@ -759,7 +760,6 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 									|| tabId === "inference"
 									|| tabId === "trace"
 									|| tabId === "diagnostics"
-									|| tabId === "errors"
 								) {
 									setSidePanelTab(tabId);
 								}
@@ -804,22 +804,6 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 								{
 									id: "diagnostics",
 									label: "Diagnostics",
-									content: (
-										<DiagnosticsPanel
-											sessionId={activeChat.id}
-											visualId={openArtifact?.visualId ?? openArtifact?.id ?? null}
-											pluginStatuses={pluginStatuses}
-											lagunaPhase={laguna?.phase}
-											onOpenVisual={(id) => toggleArtifact(id)}
-											onOpenContainer={(id) => void toggleContainer(id)}
-											onOpenOptimizer={() => setView({ kind: "optimizers" })}
-											onOpenTrace={() => setView({ kind: "inventory" })}
-										/>
-									)
-								},
-								{
-									id: "errors",
-									label: "Failures",
 									content: (
 										<ErrorsLogsPanel
 											sessionId={activeChat.id}

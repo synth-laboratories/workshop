@@ -26,6 +26,14 @@ export function WorkbenchSidePanel({ tabs, activeTabId, onTabChange, onClose }: 
 	if (!activeTab) return null;
 	const documentActive = activeTab.kind === "document";
 	const primaryTabs = tabs;
+	function closeSelectedTab() {
+		if (activeTab.onClose) {
+			activeTab.onClose();
+			return;
+		}
+		onClose();
+		restoreFocusIfLost('[data-testid="toggle-inference-rail"]');
+	}
 	function moveTabFocus(event: KeyboardEvent<HTMLButtonElement>, index: number) {
 		let nextIndex: number | null = null;
 		if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % primaryTabs.length;
@@ -52,14 +60,10 @@ export function WorkbenchSidePanel({ tabs, activeTabId, onTabChange, onClose }: 
 							<span className="workbench-side-tab-label">{item.label}</span>
 							{item.badge ? <strong>{item.badge}</strong> : null}
 						</button>
-						{item.onClose ? <button type="button" className="workbench-side-document-close" aria-label={`Close ${item.title ?? item.label}`} onClick={(event) => { event.stopPropagation(); item.onClose?.(); }}>×</button> : null}
+						{selected ? <button type="button" className="workbench-side-tab-close" aria-label={item.onClose ? `Close ${item.title ?? item.label}` : "Close side panel"} onClick={(event) => { event.stopPropagation(); closeSelectedTab(); }}>×</button> : null}
 					</span>;
 				})}
 			</div>
-			<button type="button" className="workbench-side-panel-close" aria-label="Close side panel" onClick={() => {
-				onClose();
-				restoreFocusIfLost('[data-testid="toggle-inference-rail"]');
-			}}>×</button>
 		</header>
 		<div className="workbench-side-panel-content" data-active-tab={activeTab.id} data-document-active={documentActive ? "true" : "false"} role="tabpanel" id="workbench-side-tabpanel" data-testid={`workbench-side-tabpanel-${activeTab.id}`}>
 			{activeTab.content}

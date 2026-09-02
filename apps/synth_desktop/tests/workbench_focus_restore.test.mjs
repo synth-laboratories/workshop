@@ -11,10 +11,9 @@ test("closing the side panel restores its persistent titlebar toggle", () => {
 	const panel = read("components/WorkbenchSidePanel.tsx");
 	const titlebar = read("components/AppTitlebar.tsx");
 	const helper = read("runtime/restoreFocus.ts");
-	const close = panel.match(/aria-label="Close side panel"[\s\S]*?<\/button>/)?.[0] ?? "";
 	assert.match(titlebar, /data-testid="toggle-inference-rail"/);
-	assert.match(close, /restoreFocusIfLost/);
-	assert.match(close, /toggle-inference-rail/);
+	assert.match(panel, /function closeSelectedTab\(\)[\s\S]*?restoreFocusIfLost\('\[data-testid="toggle-inference-rail"\]'\)/);
+	assert.match(panel, /aria-label=\{item\.onClose \? `Close \$\{item\.title \?\? item\.label\}` : "Close side panel"\}/);
 	assert.match(helper, /queueMicrotask/);
 	assert.match(helper, /requestAnimationFrame/);
 	assert.match(helper, /document\.body/);

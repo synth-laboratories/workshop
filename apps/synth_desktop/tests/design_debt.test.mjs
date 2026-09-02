@@ -18,8 +18,10 @@ function read(rel) {
 	return readFileSync(join(renderer, rel), "utf8");
 }
 
-test("titlebar is trimmed; account entry lives in the sidebar footer", () => {
+test("titlebar is trimmed; account and version live in the sidebar footer", () => {
 	const app = read("App.tsx");
+	const titlebar = read("components/AppTitlebar.tsx");
+	const sidebar = read("components/Sidebar.tsx");
 	assert.doesNotMatch(app, /Account — stub/);
 	assert.doesNotMatch(app, /data-testid="open-account-settings"/);
 	assert.doesNotMatch(app, /data-testid="open-models-settings"/);
@@ -31,6 +33,9 @@ test("titlebar is trimmed; account entry lives in the sidebar footer", () => {
 	assert.doesNotMatch(app, /Expand — stub/);
 	assert.doesNotMatch(app, /aria-label="Account menu"/);
 	assert.doesNotMatch(app, /aria-label="Expand"/);
+	assert.doesNotMatch(titlebar, /data-testid="app-version"/);
+	assert.match(sidebar, /className="sidebar-version"/);
+	assert.match(sidebar, /data-testid="app-version"/);
 });
 
 test("Runtime settings no longer expose legacy Python migration UI", () => {

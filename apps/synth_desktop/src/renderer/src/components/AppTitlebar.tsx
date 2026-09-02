@@ -48,7 +48,6 @@ function IconEllipsis() {
 
 export type AppTitlebarProps = {
 	tabLabel: string;
-	appVersion: string;
 	activeLocalModel: boolean;
 	terminalOpen: boolean;
 	sidePanelOpen: boolean;
@@ -74,7 +73,6 @@ export type TabCopyItem = {
 
 export function AppTitlebar({
 	tabLabel,
-	appVersion,
 	activeLocalModel,
 	terminalOpen,
 	sidePanelOpen,
@@ -199,14 +197,6 @@ export function AppTitlebar({
 					<IconSidePanel />
 					{outputCount > 0 ? <span className="titlebar-panel-count" aria-label={`${outputCount} outputs`}>{outputCount}</span> : null}
 				</button>
-				<span
-					className="titlebar-version"
-					data-testid="app-version"
-					aria-label={`Synth Desktop version ${appVersion}`}
-					title={`Synth Desktop v${appVersion}`}
-				>
-					v{appVersion}
-				</span>
 			</div>
 		</header>
 	);

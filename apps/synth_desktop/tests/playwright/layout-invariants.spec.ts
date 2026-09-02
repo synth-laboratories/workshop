@@ -132,22 +132,28 @@ test("sidebar seam is one hairline with an invisible resize hit target", async (
 	expect(seam.handleWidth).toBeGreaterThanOrEqual(6);
 });
 
-test("titlebar always shows the package version", async ({ page }) => {
+test("sidebar footer shows the package version at the bottom left", async ({ page }) => {
 	const version = page.getByTestId("app-version");
 	const expected = `v${desktopPackage.version}`;
 	await expect(version).toBeVisible();
 	await expect(version).toHaveText(expected);
 	await expect(version).toHaveAttribute("aria-label", `Synth Desktop version ${desktopPackage.version}`);
-
-	await page.getByTestId("account-menu-trigger").click();
-	await page.getByTestId("account-menu-settings").click();
-	await expect(page.getByTestId("settings-page")).toBeVisible();
-	await expect(version).toBeVisible();
-	await expect(version).toHaveText(expected);
+	const placement = await page.evaluate(() => {
+		const sidebar = document.querySelector<HTMLElement>('[data-testid="sidebar"]')!.getBoundingClientRect();
+		const footer = document.querySelector<HTMLElement>(".sidebar-footer")!.getBoundingClientRect();
+		const version = document.querySelector<HTMLElement>('[data-testid="app-version"]')!.getBoundingClientRect();
+		return {
+			leftInset: version.left - sidebar.left,
+			bottomInset: footer.bottom - version.bottom
+		};
+	});
+	expect(placement.leftInset).toBeLessThan(24);
+	expect(placement.bottomInset).toBeLessThan(8);
 });
 
-test("titlebar chrome stays trimmed to version and terminal controls", async ({ page }) => {
+test("titlebar chrome stays trimmed to terminal and panel controls", async ({ page }) => {
 	await expect(page.getByRole("button", { name: "Show terminal" })).toBeVisible();
+	await expect(page.getByTestId("titlebar").getByTestId("app-version")).toHaveCount(0);
 	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
 	await expect(page.getByTestId("open-account-settings")).toHaveCount(0);
 	await expect(page.getByTestId("open-models-settings")).toHaveCount(0);

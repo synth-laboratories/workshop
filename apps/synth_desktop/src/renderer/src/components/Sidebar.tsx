@@ -32,6 +32,7 @@ type CodexUsageSnapshot = {
 
 type Props = {
 	state: LandingState;
+	appVersion: string;
 	lagunaStatus?: LagunaStatus | null;
 	whisperStatus?: WhisperRuntimeStatus | null;
 	activeChatId?: string | null;
@@ -235,6 +236,7 @@ const PLUGIN_NAV_ICONS: Record<PluginNavEntry["id"], () => ReactElement> = {
 
 export function Sidebar({
 	state,
+	appVersion,
 	lagunaStatus = null,
 	whisperStatus = null,
 	activeChatId = null,
@@ -774,6 +776,14 @@ export function Sidebar({
 						<span className="account-help" aria-hidden>?</span>
 					</button>
 				</div>
+				<span
+					className="sidebar-version"
+					data-testid="app-version"
+					aria-label={`Synth Desktop version ${appVersion}`}
+					title={`Synth Desktop v${appVersion}`}
+				>
+					v{appVersion}
+				</span>
 			</div>
 			{onSidebarWidthChange ? (
 				<PaneResizeHandle

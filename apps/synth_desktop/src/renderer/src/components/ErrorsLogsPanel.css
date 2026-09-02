@@ -1,44 +1,235 @@
 .errors-logs-panel {
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
+	gap: 12px;
 	height: 100%;
 	min-height: 0;
-	padding: 8px;
+	padding: 18px;
+	overflow: hidden;
 	font-size: var(--font-size-sm);
 }
+
 .errors-logs-header {
 	display: flex;
-	justify-content: space-between;
-	align-items: center;
+	align-items: flex-start;
+	gap: 12px;
+	min-width: 0;
 }
-.errors-logs-tabs {
+
+.errors-logs-header > div {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+}
+
+.errors-logs-header strong {
+	font-size: 13px;
+	font-weight: 650;
+}
+
+.errors-logs-header span,
+.errors-logs-mode {
+	color: var(--color-text-muted);
+	font-size: 11px;
+}
+
+.errors-logs-mode {
+	margin: 1px 0 0 auto;
+	white-space: nowrap;
+}
+
+.errors-logs-toolbar {
 	display: flex;
-	gap: 4px;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	padding-bottom: 10px;
+	border-bottom: 1px solid var(--color-border);
 }
+
+.errors-logs-toolbar label {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--color-text-muted);
+}
+
+.errors-logs-toolbar input {
+	margin: 0;
+}
+
+.errors-logs-toolbar > span {
+	margin-left: auto;
+	color: var(--color-text-muted);
+	font-size: 11px;
+}
+
+.errors-logs-toolbar button,
+.errors-logs-detail button {
+	min-height: 28px;
+	padding: 4px 9px;
+	border: 1px solid var(--color-border);
+	border-radius: 8px;
+	background: var(--color-card);
+	color: var(--color-text);
+}
+
 .errors-logs-list {
-	list-style: none;
+	display: grid;
+	align-content: start;
+	gap: 7px;
+	min-height: 0;
 	margin: 0;
 	padding: 0;
 	overflow: auto;
+	list-style: none;
 }
-.errors-logs-list button {
+
+.errors-logs-item {
+	position: relative;
+	min-width: 0;
+}
+
+.errors-logs-entry {
+	display: grid;
+	gap: 6px;
 	width: 100%;
-	text-align: left;
-	background: var(--color-card);
+	min-width: 0;
+	padding: 9px 38px 9px 10px;
 	border: 1px solid var(--color-border);
-	border-radius: 8px;
-	padding: 8px;
-	margin-bottom: 6px;
+	border-radius: 9px;
+	background: var(--color-card);
+	color: var(--color-text);
+	text-align: left;
 }
-.errors-logs-detail {
-	border-top: 1px solid var(--color-border);
-	padding-top: 8px;
-}
-.errors-logs-mode {
+
+.errors-logs-copy {
+	position: absolute;
+	top: 6px;
+	right: 7px;
+	display: grid;
+	place-items: center;
+	width: 25px;
+	height: 25px;
+	padding: 0;
+	border-radius: 7px;
 	color: var(--color-text-muted);
-	margin: 0;
 }
-.errors-logs-error {
+
+.errors-logs-copy:hover,
+.errors-logs-copy:focus-visible {
+	background: var(--color-bg-subtle);
+	color: var(--color-text);
+}
+
+.errors-logs-copy.is-copied {
+	color: #248348;
+}
+
+button.errors-logs-entry:hover {
+	border-color: color-mix(in srgb, var(--color-text-muted) 48%, var(--color-border));
+	background: var(--color-bg-subtle);
+}
+
+.errors-logs-entry-head {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	min-width: 0;
+}
+
+.errors-logs-level {
+	flex: 0 0 auto;
+	color: var(--color-text-muted);
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: .04em;
+	text-transform: uppercase;
+}
+
+.errors-logs-level.is-error {
 	color: var(--color-danger-text);
+}
+
+.errors-logs-level.is-warn,
+.errors-logs-level.is-warning {
+	color: var(--color-warning-text, #946200);
+}
+
+.errors-logs-source {
+	min-width: 0;
+	overflow: hidden;
+	font-family: var(--code-font-family);
+	font-size: 11px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.errors-logs-count {
+	flex: 0 0 auto;
+	padding: 1px 5px;
+	border-radius: 999px;
+	background: var(--color-bg-subtle);
+	color: var(--color-text-muted);
+	font-size: 10px;
+}
+
+.errors-logs-entry-head time {
+	flex: 0 0 auto;
+	margin-left: auto;
+	color: var(--color-text-muted);
+	font-size: 10px;
+	white-space: nowrap;
+}
+
+.errors-logs-message {
+	min-width: 0;
+	overflow-wrap: anywhere;
+	color: var(--color-text-secondary, var(--color-text));
+	line-height: 1.4;
+}
+
+.errors-logs-detail {
+	display: grid;
+	gap: 8px;
+	padding: 10px;
+	border: 1px solid var(--color-border);
+	border-radius: 9px;
+	background: var(--color-bg-subtle);
+}
+
+.errors-logs-detail p,
+.errors-logs-detail ol {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+
+.errors-logs-error {
+	margin: 0;
+	color: var(--color-danger-text);
+}
+
+.errors-logs-loading {
+	margin: 4px 0;
+	color: var(--color-text-muted);
+}
+
+.errors-logs-empty {
+	display: grid;
+	gap: 5px;
+	margin-top: 4px;
+	padding: 18px;
+	border: 1px dashed var(--color-border);
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--color-card) 78%, transparent);
+}
+
+.errors-logs-empty strong {
+	font-size: 13px;
+	font-weight: 620;
+}
+
+.errors-logs-empty span {
+	color: var(--color-text-muted);
+	line-height: 1.45;
 }
