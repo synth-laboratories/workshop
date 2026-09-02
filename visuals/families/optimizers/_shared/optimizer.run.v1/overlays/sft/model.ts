@@ -23,6 +23,7 @@ export function sftStages(sft: SftState, status: string, promotedCheckpointId?: 
   const checkpointCount = sft.checkpoints.length;
   const readyCount = sft.checkpoints.filter((ckpt) => ckpt.ready === true || ckpt.promoted === true).length;
   const campaignCount = sft.campaigns.length;
+  const evaluationCount = campaignCount + sft.evaluations.length;
   const campaignsSettled = campaignCount > 0 && sft.campaigns.every((campaign) =>
     ["completed", "failed"].includes(String(campaign.status ?? ""))
   );
@@ -71,9 +72,11 @@ export function sftStages(sft: SftState, status: string, promotedCheckpointId?: 
     },
     {
       id: "evaluation",
-      label: "Eval campaigns",
-      status: settle(campaignCount > 0, campaignsSettled),
-      detail: campaignCount > 0 ? `${campaignCount} campaign${campaignCount === 1 ? "" : "s"}` : undefined
+      label: "Evaluations",
+      status: settle(evaluationCount > 0, terminal && evaluationCount > 0 && (campaignCount === 0 || campaignsSettled)),
+      detail: evaluationCount > 0
+        ? `${sft.evaluations.length} result${sft.evaluations.length === 1 ? "" : "s"}${campaignCount > 0 ? ` · ${campaignCount} rollout campaign${campaignCount === 1 ? "" : "s"}` : ""}`
+        : undefined
     },
     {
       id: "promotion",

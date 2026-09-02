@@ -415,13 +415,16 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
         "sft.checkpoint.created" | "sft.checkpoint.ready" | "cispo.checkpoint.created" => {
             checkpoint_ready_draft(algorithm, payload)
         }
-        "sft.checkpoint.promoted" => {
+        "sft.checkpoint.promoted" | "cispo.checkpoint.promoted" => {
             let mut delta = payload.as_object().cloned().unwrap_or_default();
             if !delta.contains_key("checkpointId") {
                 if let Some(id) = payload.get("checkpoint_id").or_else(|| payload.get("id")) {
                     delta.insert("checkpointId".into(), id.clone());
                 }
             }
+            // SFT and CISPO share the checkpoint/selection projection. Keep a
+            // single canonical event name so the visual can show a selected
+            // checkpoint without treating selection as an uplift claim.
             OptimizerEventDraft::new("sft.checkpoint.promoted", algorithm).delta(delta)
         }
         "sft.checkpoint_eval.completed"
@@ -440,7 +443,7 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
             OptimizerEventDraft::new(TRAINING_JOB_COMPLETED, algorithm)
                 .delta(Map::from_iter([("status".into(), json!("succeeded"))]))
         }
-        "sft.model.materialized" | "sft.adapter.materialized" => {
+        "sft.model.materialized" | "sft.adapter.materialized" | "cispo.model.materialized" => {
             let mut delta = payload.as_object().cloned().unwrap_or_default();
             if !delta.contains_key("adapterId") {
                 if let Some(id) = payload
@@ -794,6 +797,38 @@ mod tests {
         .unwrap();
         assert_eq!(materialized.draft.event_type, "sft.model.materialized");
         assert_eq!(materialized.draft.delta["adapterId"], "ckpt_10_inference");
+    }
+
+    #[test]
+    fn public_cispo_selection_keeps_checkpoint_evidence() {
+        let promoted = adapt_source_fact(
+            "cispo",
+            &native_event(
+                8,
+                "cispo.checkpoint.promoted",
+                json!({
+                    "checkpoint_id": "ckpt_1_inference",
+                    "calibration_accuracy": 0.0,
+                    "digest": "sha256:chosen"
+                }),
+            ),
+        )
+        .unwrap();
+        assert_eq!(promoted.draft.event_type, "sft.checkpoint.promoted");
+        assert_eq!(promoted.draft.delta["checkpointId"], "ckpt_1_inference");
+        assert_eq!(promoted.draft.delta["calibration_accuracy"], 0.0);
+
+        let materialized = adapt_source_fact(
+            "cispo",
+            &native_event(
+                10,
+                "cispo.model.materialized",
+                json!({"checkpoint_id": "ckpt_1_inference", "digest": "sha256:model"}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(materialized.draft.event_type, "sft.model.materialized");
+        assert_eq!(materialized.draft.delta["adapterId"], "ckpt_1_inference");
     }
 
     #[test]

@@ -115,3 +115,47 @@ test("uniform CISPO groups surface a truthful no-learning-signal stop", () => {
   ]);
   assert.equal(projected.cispo.noLearningSignal, true);
 });
+
+test("CISPO derives group size from streamed rewards and retains selection evidence", () => {
+  const projected = projectAtCursor({ ...RUN, status: "completed" }, [
+    {
+      ...base,
+      sequenceNumber: 1,
+      type: "cispo.rollout_group.completed",
+      delta: { rewards: [0, 0], reward_variance: 0 }
+    },
+    {
+      ...base,
+      sequenceNumber: 2,
+      type: "training.metrics",
+      delta: { step: 1, group_size: 1, optimizer_step: 1 }
+    },
+    {
+      ...base,
+      sequenceNumber: 3,
+      type: "sft.checkpoint.ready",
+      item: { id: "ckpt_1_inference", status: "ready", raw: {} }
+    },
+    {
+      ...base,
+      sequenceNumber: 4,
+      type: "sft.checkpoint.promoted",
+      delta: { checkpointId: "ckpt_1_inference", calibration_accuracy: 0 }
+    },
+    {
+      ...base,
+      sequenceNumber: 5,
+      type: "sft.heldout_evaluation.completed",
+      delta: {
+        kind: "cispo.checkpoint_eval.completed",
+        evaluation: { checkpoint_id: "ckpt_1_inference", calibration_accuracy: 0, step: 1 }
+      }
+    }
+  ]);
+  assert.equal(projected.cispo.groupSize, 2);
+  assert.equal(projected.sft.checkpoints[0].selected, true);
+  assert.equal(projected.sft.checkpoints[0].promoted, false);
+  assert.equal(projected.sft.evaluations.length, 1);
+  assert.equal(projected.sft.evaluations[0].role, "checkpoint");
+  assert.equal(projected.sft.evaluations[0].calibration_accuracy, 0);
+});

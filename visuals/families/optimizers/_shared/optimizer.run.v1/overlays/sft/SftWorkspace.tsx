@@ -512,14 +512,15 @@ function EvaluationSummaries({ sft }: { sft: SftState }) {
   const selection = sft.evaluations.filter((evaluation) => String(evaluation.role ?? evaluation.split) !== "heldout");
   const heldout = sft.evaluations.filter((evaluation) => String(evaluation.role ?? evaluation.split) === "heldout");
   if (selection.length === 0 && heldout.length === 0) return null;
-  const rows = (list: Array<Record<string, unknown>>, role: string) =>
+  const rows = (list: Array<Record<string, unknown>>) =>
     list.map((evaluation, index) => (
-      <tr key={`${role}-${index}`}>
-        <td>{role}</td>
-        <td className="sv-mono">{String(evaluation.split ?? evaluation.role ?? "—")}</td>
-        <td className="sv-mono">{String(evaluation.metric ?? "—")}</td>
-        <td className="sv-mono">{String(evaluation.score ?? "—")}</td>
-        <td className="sv-mono">{evaluation.accuracy != null ? String(evaluation.accuracy) : "—"}</td>
+      <tr key={`${String(evaluation.role ?? "evaluation")}-${index}`}>
+        <td>{String(evaluation.role ?? "evaluation")}</td>
+        <td className="sv-mono">{String(evaluation.checkpoint_id ?? evaluation.checkpointId ?? "—")}</td>
+        <td className="sv-mono">{String(evaluation.step ?? "—")}</td>
+        <td className="sv-mono">{String(evaluation.metric ?? (evaluation.calibration_accuracy != null ? "calibration accuracy" : evaluation.accuracy != null ? "accuracy" : "—"))}</td>
+        <td className="sv-mono">{String(evaluation.score ?? evaluation.calibration_accuracy ?? evaluation.accuracy ?? "—")}</td>
+        <td className="sv-mono">{String(evaluation.n ?? "—")}</td>
       </tr>
     ));
   return (
@@ -531,13 +532,13 @@ function EvaluationSummaries({ sft }: { sft: SftState }) {
       <table className="sv-table">
         <thead>
           <tr>
-            <th scope="col">Role</th><th scope="col">Split</th><th scope="col">Metric</th>
-            <th scope="col">Score</th><th scope="col">Accuracy</th>
+            <th scope="col">Role</th><th scope="col">Checkpoint</th><th scope="col">Step</th>
+            <th scope="col">Metric</th><th scope="col">Value</th><th scope="col">N</th>
           </tr>
         </thead>
         <tbody>
-          {rows(selection, "selection")}
-          {rows(heldout, "heldout")}
+          {rows(selection)}
+          {rows(heldout)}
         </tbody>
       </table>
     </Panel>
