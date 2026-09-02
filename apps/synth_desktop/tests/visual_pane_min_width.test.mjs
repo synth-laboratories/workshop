@@ -93,6 +93,14 @@ test("narrow windows cap the visual pane at min(40vw, persisted) then overlay vi
     css,
     /html\.visual-expanded \.composer-dock\s*\{[^}]*display:\s*none/s
   );
+  assert.match(
+    css,
+    /\.workbench\.with-side-panel:has\(\.visual-pane-expanded\)\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s
+  );
+  assert.match(
+    css,
+    /\.workbench\.with-side-panel:has\(\.visual-pane-expanded\) > \.chat-transcript,[\s\S]*> \.pane-resize-handle\s*\{[^}]*display:\s*none/s
+  );
   assert.doesNotMatch(css, /html\.compact-workbench\.sidebar-hidden/);
   assert.match(shell, /classList\.toggle\("compact-workbench"/);
   assert.match(shell, /matchMedia\("\(max-width: 860px\)"\)/);

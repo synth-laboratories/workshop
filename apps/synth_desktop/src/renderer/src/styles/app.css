@@ -8929,6 +8929,22 @@ html.visual-expanded .sidebar {
 	grid-column: 1;
 }
 
+/* A visual hosted in the unified side panel still participates in the outer
+ * chat/panel grid. When that visual expands, collapse the outer grid too so
+ * the panel becomes the workspace instead of leaving an empty chat column. */
+.workbench.with-side-panel:has(.visual-pane-expanded) {
+	grid-template-columns: minmax(0, 1fr);
+}
+
+.workbench.with-side-panel:has(.visual-pane-expanded) > .chat-transcript,
+.workbench.with-side-panel:has(.visual-pane-expanded) > .pane-resize-handle {
+	display: none;
+}
+
+.workbench.with-side-panel:has(.visual-pane-expanded) > .workbench-side-panel {
+	grid-column: 1;
+}
+
 .workbench.with-side-panel.transcript-collapsed {
 	grid-template-columns: 0 12px minmax(0, 1fr);
 }
