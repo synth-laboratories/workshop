@@ -97,6 +97,7 @@ const includeGroupedVisualEvidence = specificationPath.endsWith("grouped-visual-
 const includeChartPane = specificationPath.endsWith("chart-pane.spec.ts");
 const includeMinimumWidthReplay = specificationPath.endsWith("minimum-width-replay.spec.ts");
 const includeSidePanelComposerDrag = specificationPath.endsWith("side-panel-composer-drag.spec.ts");
+const includeSidePanelSeam = specificationPath.endsWith("side-panel-seam.spec.ts");
 // Five seconds covers every directed/eventual horizon in layout.spec.ts. Longer
 // runs intermittently wedge the current Chromiumoxide transport after the
 // properties have already been exercised, turning a clean trace into a harness
@@ -662,7 +663,7 @@ function browserBridgeScript() {
 window.__bombadilBootErrors = [];
 window.addEventListener("error", (event) => window.__bombadilBootErrors.push(String(event.error?.stack || event.message)));
 window.addEventListener("unhandledrejection", (event) => window.__bombadilBootErrors.push(String(event.reason?.stack || event.reason)));
-${includeSidePanelComposerDrag ? `
+${includeSidePanelComposerDrag || includeSidePanelSeam ? `
 try {
   const key = "synth.preferences.v1";
   const current = JSON.parse(localStorage.getItem(key) || "{}");
