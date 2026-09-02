@@ -621,7 +621,13 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					) : null}
 					{view.kind === "optimizers" ? (
 						<OptimizersPage
-							sessionRef={activeSessionId}
+							sessionRef={
+								inventoryOriginRef.current?.kind === "chat"
+									? inventoryOriginRef.current.chatId
+									: inventoryOriginRef.current?.kind === "sync" || inventoryOriginRef.current?.kind === "async"
+										? inventoryOriginRef.current.sessionId
+										: null
+							}
 							pluginStatuses={pluginStatuses}
 							initialRunId={preferences.layout.last.optimizers.selectedRunId}
 							onSelectedRunIdChange={(selectedRunId) => persistLayoutSnapshot({ optimizers: { selectedRunId } })}
