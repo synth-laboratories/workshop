@@ -410,6 +410,19 @@ test("multiplexed rollout-local event ids never collapse across lanes", () => {
   ]);
   assert.equal(state.events.length, 4);
   assert.deepEqual(state.events.map((event) => event.rollout_id), ["seed-0", "seed-1", "seed-0", "seed-1"]);
+  assert.deepEqual(state.events.map((event) => event.logical_time), [1, 2, 3, 4]);
+});
+
+test("logical time records acceptance order and ignores controls and reconnect duplicates", () => {
+  const state = ingestLiveEnvelopes([
+    { kind: "stream.subscribed", event_id: "sub", rollout_id: "r1", control: true, payload: {} },
+    { kind: "action", event_id: "2", sequence: 2, occurred_at: "2026-09-01T00:00:02Z", rollout_id: "r1", payload: {} },
+    { kind: "observation", event_id: "1", sequence: 1, occurred_at: "2026-09-01T00:00:01Z", rollout_id: "r1", payload: {} },
+    { kind: "action", event_id: "2", sequence: 2, occurred_at: "2026-09-01T00:00:02Z", rollout_id: "r1", payload: {} },
+    { kind: "reward", event_id: "3", sequence: 3, occurred_at: "2026-09-01T00:00:03Z", rollout_id: "r1", payload: {} },
+  ]);
+  assert.deepEqual(state.events.map((event) => event.kind), ["action", "observation", "reward"]);
+  assert.deepEqual(state.events.map((event) => event.logical_time), [1, 2, 3]);
 });
 
 test("payload-carried rollout identity is promoted before multiplexed replay", () => {

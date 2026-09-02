@@ -210,6 +210,8 @@ export const DEFAULT_CHROME: VisualChromeTheme = {
 export type LiveEvalEvent = {
   ts?: string;
   occurred_at?: string;
+  /** Stable, one-based order in which this viewer accepted the event. */
+  logical_time?: number;
   run_id: string;
   kind: string;
   /** Optimizer envelopes use `type`; includeKinds matches kind or type. */

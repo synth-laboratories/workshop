@@ -43,6 +43,8 @@ export type LiveEnvelope = {
   type?: string | null;
   ts?: string;
   occurred_at?: string;
+  /** Stable, one-based acceptance order assigned at the ingest boundary. */
+  logical_time?: number;
   run_id?: string;
   rollout_id?: string;
   lane?: string | null;
@@ -238,6 +240,15 @@ export function ingestLiveEnvelopeBatch(
   const touchedSequenceScopes = new Set<string>();
   const conflicts = [...state.conflicts];
   let ready = state.ready;
+  // Replayed pages can already carry the receiver clock. Continue after its
+  // high-water mark; otherwise assign ticks in the exact order envelopes are
+  // accepted below. Controls and duplicates never consume a tick.
+  let nextLogicalTime = events.reduce((maximum, row) => {
+    const value = typeof row.logical_time === "number" && Number.isFinite(row.logical_time)
+      ? row.logical_time
+      : 0;
+    return Math.max(maximum, value);
+  }, 0) + 1;
 
   for (const event of incoming) {
     const id = envelopeIdentity(event, events.length);
@@ -253,7 +264,14 @@ export function ingestLiveEnvelopeBatch(
       ready ||= String(event.kind ?? event.type ?? "") === "stream.subscribed";
       continue;
     }
-    events.push(normalizeEnvelopeIdentity(event));
+    const suppliedLogicalTime = typeof event.logical_time === "number"
+      && Number.isInteger(event.logical_time)
+      && event.logical_time > 0
+      ? event.logical_time
+      : undefined;
+    const logicalTime = suppliedLogicalTime ?? nextLogicalTime;
+    nextLogicalTime = Math.max(nextLogicalTime, logicalTime + 1);
+    events.push({ ...normalizeEnvelopeIdentity(event), logical_time: logicalTime });
     const scope = envelopeScope(event);
     const rawSequence = event.sequence_number ?? event.sequence;
     const sequence = typeof rawSequence === "number" ? rawSequence : Number(rawSequence);
