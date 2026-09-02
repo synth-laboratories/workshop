@@ -15,6 +15,7 @@ import {
   type Finding,
   type Lane,
 } from "./project.ts";
+import { TaskDetails, familyLabel, outcomeLabel, progressLabel, taskFamily } from "./adapters.tsx";
 
 type StreamPayload = { run_id?: string; events?: LiveEvalEvent[]; sse_url?: string };
 type Feed = "all" | "annotations" | "rollout";
@@ -31,11 +32,6 @@ function displayTime(value: string) {
   if (!value) return "Waiting for an event";
   const parsed = new Date(value);
   return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" });
-}
-
-function Vital({ label, value }: { label: string; value?: number }) {
-  const pct = value == null ? 0 : value <= 9 ? value / 9 * 100 : Math.min(100, value);
-  return <div title={`${label}: ${value ?? "unknown"}`} style={{ display: "grid", gap: 3 }}><span className="sv-mono" style={{ fontSize: 9, color: "var(--sv-text-faint)" }}>{label}</span><span style={{ width: 42, height: 4, borderRadius: 9, background: "var(--sv-border)", overflow: "hidden" }}><span style={{ display: "block", width: `${pct}%`, height: "100%", background: pct < 34 ? "#d84b3f" : pct < 67 ? "#e5a226" : "#39a46b" }} /></span></div>;
 }
 
 function FindingChip({ finding, showHistory }: { finding: Finding; showHistory: boolean }) {
@@ -74,6 +70,16 @@ function MarkerStrip({ lane }: { lane: Lane }) {
   </div>;
 }
 
+function RolloutBar({ lane, selected, onClick }: { lane: Lane; selected: boolean; onClick: () => void }) {
+  const pct = lane.status === "finished" ? 100 : lane.total ? Math.min(100, lane.done / lane.total * 100) : lane.rolloutEvents ? 12 : 0;
+  const findings = activeFindings(lane).length;
+  return <button type="button" onClick={onClick} aria-pressed={selected} data-testid={`rollout-bar-${lane.name}`} style={{ width: "100%", display: "grid", gridTemplateColumns: "minmax(120px, 1.4fr) minmax(110px, 2fr) auto", gap: 10, alignItems: "center", padding: "8px 10px", border: selected ? "1px solid var(--sv-accent)" : "1px solid var(--sv-border)", borderRadius: 8, background: selected ? "#fff8f3" : "var(--sv-surface)", color: "var(--sv-text)", cursor: "pointer", textAlign: "left" }}>
+    <span style={{ minWidth: 0 }}><strong style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>{lane.name}</strong><span className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 9 }}>{familyLabel(lane)} · {progressLabel(lane)}</span></span>
+    <span style={{ display: "grid", gap: 4 }}><span style={{ display: "block", height: 7, borderRadius: 9, overflow: "hidden", background: "var(--sv-border)" }}><span style={{ display: "block", width: `${pct}%`, height: "100%", background: lane.status === "failed" ? "#d84b3f" : "var(--sv-accent)", transition: "width 180ms ease" }} /></span><span className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lane.lastAnnotation}</span></span>
+    <span className="sv-mono" style={{ fontSize: 9, textAlign: "right", whiteSpace: "nowrap" }}>{outcomeLabel(lane)}<br />{findings} finding{findings === 1 ? "" : "s"}</span>
+  </button>;
+}
+
 function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: boolean; streamBase: URL | null }) {
   const pct = lane.total ? Math.min(100, lane.done / lane.total * 100) : 0;
   const active = activeFindings(lane);
@@ -94,7 +100,7 @@ function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: 
       <span>{lane.calls} calls</span>
       {judge != null ? <span title="latest judge progress: 1 advancing, 0 stalled, -1 regressing">judge {judge > 0 ? "advancing" : judge < 0 ? "regressing" : "stalled"}</span> : null}
     </div>
-    <div style={{ display: "flex", gap: 10, alignItems: "end" }}><Vital label="HLTH" value={lane.health} /><Vital label="FOOD" value={lane.food} /><Vital label="DRNK" value={lane.drink} /><Vital label="NRGY" value={lane.energy} /><span className="sv-mono" style={{ marginLeft: "auto", maxWidth: "52%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10, color: "var(--sv-text-faint)" }}>› {lane.last}</span></div>
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "end" }}><span className="sv-mono" style={{ fontSize: 10, color: "var(--sv-text-faint)" }}>{familyLabel(lane)} · {taskFamily(lane)}</span><span className="sv-mono" style={{ maxWidth: "68%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10, color: "var(--sv-text-faint)" }}>› {lane.last}</span></div>
     <MarkerStrip lane={lane} />
     <div style={{ display: "flex", gap: 10, fontSize: 10, color: "var(--sv-text-faint)", flexWrap: "wrap" }} className="sv-mono">
       {FINDING_KIND_ORDER.map((kind) => <span key={kind} style={{ color: counts[kind] ? KIND_COLOR[kind] : undefined }}>{counts[kind] ?? 0} {kind.replace("_", " ")}</span>)}
@@ -108,7 +114,7 @@ function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: 
       {!lane.findings.length ? <span style={{ fontSize: 10, color: "var(--sv-text-faint)" }}>{lane.protocol ? "no findings yet" : "no protocol bound"}</span> : null}
     </div>
     <span className="sv-mono" style={{ fontSize: 10, color: "var(--sv-text-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>◌ {lane.lastAnnotation}{lane.protocol?.revisionId ? ` · ${lane.protocol.protocolId ?? "protocol"} ${lane.protocol.revisionId}` : ""}</span>
-    {lane.frameUrl && streamBase ? <img src={new URL(lane.frameUrl, streamBase).toString()} alt={`World for ${lane.name} at step ${lane.done}`} style={{ display: "block", width: "100%", maxHeight: 260, borderRadius: 8, objectFit: "contain", imageRendering: "pixelated", background: "#111" }} /> : null}
+    <TaskDetails lane={lane} streamBase={streamBase} />
   </article>;
 }
 
@@ -131,6 +137,7 @@ export function Shell(props: ShellProps) {
   const [speed, setSpeed] = useState(1);
   const [feed, setFeed] = useState<Feed>("annotations");
   const [showHistory, setShowHistory] = useState(false);
+  const [selectedRollout, setSelectedRollout] = useState<string | null>(null);
   const timeline = useMemo(() => logicalTimeline(events), [events]);
   const selectedGlobal = globalCursor == null ? timeline.length - 1 : Math.max(0, Math.min(globalCursor, timeline.length - 1));
   const selectedMoment = timeline[selectedGlobal];
@@ -147,6 +154,7 @@ export function Shell(props: ShellProps) {
   const milestoneTally = labelTally(lanes, "milestone");
   const recent = visibleTimeline.filter((row) => feed === "all" || (feed === "annotations") === (row.stream === "annotation")).slice(-12).reverse();
   const streamBase = stream.sse_url ? new URL(stream.sse_url, window.location.href) : null;
+  const selectedLane = lanes.find((lane) => lane.name === selectedRollout);
 
   useEffect(() => {
     if (!playing || !timeline.length) return;
@@ -174,7 +182,7 @@ export function Shell(props: ShellProps) {
     setPlaying((value) => !value);
   };
 
-  return <VisualChrome kicker="Container eval · live annotations" live={live} title={props.title ?? "Live annotated rollouts"} lede={props.lede ?? "Provisional findings from the bound protocol, layered over the rollouts producing them. Nothing here is sealed evidence."} testId="visual-live-annotated-rollouts" footer="live.annotated_rollouts.v1 · synth.trace-stream-event.v1 + synth.live-annotation-stream.v1">
+  return <VisualChrome kicker="Container eval · annotated rollouts" live={live} title={props.title ?? "Annotated Rollouts"} lede={props.lede ?? "Rollout evidence and provisional annotations on one replay clock. Choose a rollout for task-specific detail; return to All rollouts for the aggregate."} testId="visual-live-annotated-rollouts" footer="Annotated Rollouts · live.annotated_rollouts.v1 · synth.trace-stream-event.v1 + synth.live-annotation-stream.v1">
     <MetricStrip metrics={[
       { label: "Rollouts", value: `${done}/${lanes.length || "—"} done` },
       { label: "Achievements", value: String(allAchievements.size) },
@@ -211,11 +219,14 @@ export function Shell(props: ShellProps) {
       </div>
     </section>
     <section className="sv-section" aria-label="Rollout lanes" aria-live="polite">
-      <div className="sv-section-head"><h3>Rollouts</h3><label className="sv-mono" style={{ fontSize: 10, display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={showHistory} onChange={(event) => setShowHistory(event.currentTarget.checked)} /> show superseded and retracted</label></div>
-      <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" }}>
-        {lanes.map((lane) => <LaneCard key={lane.name} lane={lane} showHistory={showHistory} streamBase={streamBase} />)}
+      <div className="sv-section-head"><div style={{ display: "flex", gap: 9, alignItems: "center" }}><h3>{selectedLane ? selectedLane.name : "All rollouts"}</h3>{selectedLane ? <button type="button" onClick={() => setSelectedRollout(null)}>← All rollouts</button> : null}</div><label className="sv-mono" style={{ fontSize: 10, display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={showHistory} onChange={(event) => setShowHistory(event.currentTarget.checked)} /> show superseded and retracted</label></div>
+      {selectedLane ? <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(260px, .85fr)", gap: 12, alignItems: "start" }}>
+        <LaneCard lane={selectedLane} showHistory={showHistory} streamBase={streamBase} />
+        <aside aria-label="Related rollout information" style={{ display: "grid", gap: 7, position: "sticky", top: 8 }}><strong style={{ fontSize: 11 }}>Related info</strong>{lanes.map((lane) => <RolloutBar key={lane.name} lane={lane} selected={lane.name === selectedLane.name} onClick={() => setSelectedRollout(lane.name)} />)}</aside>
+      </div> : <div style={{ display: "grid", gap: 7 }}>
+        {lanes.map((lane) => <RolloutBar key={lane.name} lane={lane} selected={false} onClick={() => setSelectedRollout(lane.name)} />)}
         {!lanes.length ? <div style={{ padding: 20, color: "var(--sv-text-faint)" }}>Waiting for the first rollout…</div> : null}
-      </div>
+      </div>}
     </section>
     <section className="sv-section" aria-label="Recent activity">
       <div className="sv-section-head"><h3>Activity</h3><div role="tablist" className="sv-mono" style={{ display: "flex", gap: 8, fontSize: 10 }}>{(["annotations", "rollout", "all"] as Feed[]).map((option) => <button key={option} role="tab" aria-selected={feed === option} onClick={() => setFeed(option)} style={{ background: feed === option ? "var(--sv-accent)" : "transparent", color: feed === option ? "#fff" : "var(--sv-text-muted)", border: "1px solid var(--sv-border)", borderRadius: 999, padding: "2px 8px", cursor: "pointer" }}>{option}</button>)}</div></div>

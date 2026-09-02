@@ -55,6 +55,8 @@ export type LogicalEvent = {
 
 export type Lane = {
   name: string;
+  /** Task family is advisory presentation metadata, never evidence. */
+  family?: string;
   status: "starting" | "running" | "finished" | "failed";
   done: number;
   total?: number;
@@ -84,6 +86,8 @@ export type Lane = {
   annotationClosed: boolean;
   annotationEvents: number;
   lastAnnotation: string;
+  /** Task-specific facts retained for adapters without coupling the shared fold. */
+  task: Record<string, unknown>;
 };
 
 export const FINDING_KIND_ORDER = ["achievement", "milestone", "failure_mode", "intent", "note"] as const;
@@ -221,13 +225,30 @@ function newLane(name: string): Lane {
   return {
     name, status: "starting", done: 0, achievements: [], calls: 0, last: "opening rollout", rolloutEvents: 0,
     findings: [], markers: [], metrics: {}, metricSeries: {}, model: { requested: 0, completed: 0, failed: 0 }, controls: [], rebinds: 0,
-    protocolErrors: 0, annotationClosed: false, annotationEvents: 0, lastAnnotation: "waiting for the protocol",
+    protocolErrors: 0, annotationClosed: false, annotationEvents: 0, lastAnnotation: "waiting for the protocol", task: {},
   };
+}
+
+function rememberTaskFacts(lane: Lane, payload: Record<string, unknown>): void {
+  const readout = obj(payload.readout);
+  const observation = Object.keys(readout).length ? readout : obj(readout.observation);
+  const sources = [payload, observation, obj(payload.result), obj(payload.score), obj(payload.rubric)];
+  for (const source of sources) {
+    for (const key of [
+      "family", "task", "task_family", "query", "customer_query", "prompt", "response",
+      "answer", "action", "label", "predicted_label", "canonical_label", "gold_label",
+      "split", "seed", "criteria_met", "rubric_id", "rubric_text", "points", "score",
+      "possible", "achieved", "finish_reason", "reward_kind",
+      "skill", "level", "xp", "xp_delta", "xp_per_min", "peak_xp_per_min",
+    ]) if (source[key] != null) lane.task[key] = source[key];
+  }
+  lane.family = str(lane.task.family) ?? str(lane.task.task_family) ?? str(lane.task.task) ?? lane.family;
 }
 
 function applyRollout(lane: Lane, event: LiveEvalEvent): void {
   const p = event.payload;
   const kind = event.kind;
+  rememberTaskFacts(lane, p);
   lane.rolloutEvents += 1;
   if (kind === "env.episode.opened") { lane.status = "running"; lane.total = num(p.max_steps) ?? lane.total; }
   if (kind === "observation") {
@@ -257,6 +278,16 @@ function applyRollout(lane: Lane, event: LiveEvalEvent): void {
     const value = num(p.value);
     if (value != null) lane.reward = (lane.reward ?? 0) + value;
     lane.done = num(p.step) ?? lane.done;
+    lane.task.reward_value = value;
+    lane.task.reward_kind = p.kind ?? lane.task.reward_kind;
+  }
+  if (kind === "action") {
+    lane.task.response = p.response ?? p.text ?? p.content ?? p.label ?? p.action ?? lane.task.response;
+    lane.task.predicted_label = p.predicted_label ?? p.label ?? p.action ?? lane.task.predicted_label;
+  }
+  if (kind === "rubric.grade") {
+    const grades = Array.isArray(lane.task.rubric_grades) ? lane.task.rubric_grades as unknown[] : [];
+    lane.task.rubric_grades = [...grades, { ...p, logical_time: eventLogicalTime(event) }];
   }
   if (kind === "span.policy.plan") { lane.calls += 1; lane.planLength = Array.isArray(p.actions) ? p.actions.length : num(p.length); }
   if (kind === "achievement_unlocked") {
@@ -306,6 +337,9 @@ function applyAnnotation(lane: Lane, event: LiveEvalEvent): void {
       logicalTime: eventLogicalTime(event),
     };
     lane.findings.push(finding);
+    // Live protocols may expose structured task facts as finding detail. Keep
+    // them available to the presentation adapter while preserving the finding.
+    for (const [key, value] of Object.entries(finding.detail)) if (value != null) lane.task[key] = value;
     lane.markers.push({ sequence, logicalTime: finding.logicalTime, step: finding.step, kind: finding.kind, label: finding.label, status: "provisional", findingId });
   } else if (kind === "annotation.finding.retracted") {
     const findingId = str(p.finding_id);
