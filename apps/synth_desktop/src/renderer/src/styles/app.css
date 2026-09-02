@@ -1444,6 +1444,12 @@ html.visual-expanded .titlebar {
 	color: var(--color-text);
 }
 
+/* With the sidebar visible, the first tab is attached to its divider. A
+ * rounded left corner creates a visible notch between those two surfaces. */
+html:not(.sidebar-hidden):not(.visual-expanded) .titlebar:not(.titlebar-native-inset) .titlebar-tabs > .tab:first-child {
+	border-top-left-radius: 0;
+}
+
 .tab-logo {
 	width: 18px;
 	height: 18px;

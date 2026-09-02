@@ -74,6 +74,7 @@ test("empty conversation keeps a quiet, icon-free model surface", () => {
 	assert.match(styles, /\.landing \.composer,[\s\S]*?max-width: 980px/);
 	assert.match(styles, /\.landing \.composer \{[\s\S]*?min-height: 148px;[\s\S]*?border-radius:var\(--radius-composer\)/);
 	assert.match(styles, /\.titlebar \{[\s\S]*?padding: 0 10px 0 0;/);
+	assert.match(styles, /html:not\(\.sidebar-hidden\):not\(\.visual-expanded\)[\s\S]*?border-top-left-radius: 0;/);
 	assert.doesNotMatch(styles, /#9bb5ed/);
 });
 
