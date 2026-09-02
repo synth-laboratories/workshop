@@ -35,6 +35,8 @@ type Props = {
 	onReject?: (approvalId: string) => void;
 	running?: boolean;
 	warmingUp?: boolean;
+	/** Live Laguna phase. Intentionally omitted for hosted targets. */
+	localInferencePhase?: "loading" | "prefill" | null;
 	onStop?: () => void;
 	onAdvanced?: () => void;
 	activityMode?: ToolActivityMode;
@@ -850,6 +852,7 @@ export function ChatTranscript({
 	onReject,
 	running = false,
 	warmingUp = false,
+	localInferencePhase = null,
 	onStop,
 	onAdvanced,
 	activityMode = "grouped",
@@ -1177,9 +1180,13 @@ export function ChatTranscript({
 								data-waiting-on={warmingUp ? (session?.target.kind === "local" ? "local" : "cloud") : undefined}
 							>
 								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
-								<span>{warmingUp
-									? session?.target.kind === "local" ? "Waiting on local…" : "Waiting on cloud…"
-									: "Working…"}</span>
+								<span>{session?.target.kind === "local" && localInferencePhase === "loading"
+									? "Loading…"
+									: session?.target.kind === "local" && localInferencePhase === "prefill"
+										? "Prefilling…"
+										: warmingUp
+											? session?.target.kind === "local" ? "Waiting on local…" : "Waiting on cloud…"
+											: "Working…"}</span>
 								{turnTpsLabels.live ? <small className="model-working-throughput" data-testid="model-working-generation-tps">{turnTpsLabels.live}</small> : null}
 								{onStop ? <button type="button" onClick={onStop} aria-label="Stop generating">Stop</button> : null}
 								{onAdvanced ? <button type="button" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}

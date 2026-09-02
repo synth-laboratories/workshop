@@ -60,6 +60,16 @@ test("running tool calls show a compact progress icon before their tool icon", (
 	assert.match(css, /prefers-reduced-motion: reduce[\s\S]*\.tool-running-indicator/);
 });
 
+test("local model working status names loading and prefill lifecycle phases", () => {
+	const transcript = read("components/ChatTranscript.tsx");
+	const routes = read("routes.tsx");
+	assert.match(transcript, /localInferencePhase === "loading"[\s\S]*"Loading…"/);
+	assert.match(transcript, /localInferencePhase === "prefill"[\s\S]*"Prefilling…"/);
+	assert.match(transcript, /session\?\.target\.kind === "local" && localInferencePhase/);
+	assert.match(routes, /inferenceMonitor\.snapshot\?\.active\?\.phase === "loading"/);
+	assert.match(routes, /inferenceMonitor\.snapshot\?\.active\?\.phase === "prefill"/);
+});
+
 test("finished tool calls show duration only after fifteen seconds", () => {
 	const transcript = read("components/ChatTranscript.tsx");
 	const projection = read("runtime/sessionView.ts");

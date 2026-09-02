@@ -576,6 +576,11 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						onReject={(approvalId) => void controlActive("reject", { approvalId })}
 						running={activeChatRunning}
 						warmingUp={activeChatWarmingUp}
+						localInferencePhase={activeChatSession?.target.kind === "local"
+							? inferenceMonitor.snapshot?.active?.phase === "loading" || inferenceMonitor.snapshot?.active?.phase === "prefill"
+								? inferenceMonitor.snapshot.active.phase
+								: laguna?.phase === "loading" ? "loading" : null
+							: null}
 						onAdvanced={() => {
 							setSidePanelTab("trace");
 							setSidePanelOpen(true);
