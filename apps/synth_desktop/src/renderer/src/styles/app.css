@@ -1642,12 +1642,14 @@ html.visual-expanded .titlebar {
 }
 
 .synth-logo-wrap {
-	width: 42px;
-	height: 42px;
-	margin-bottom: 22px;
+	width: 80px;
+	height: 80px;
+	margin-bottom: 24px;
 	border-radius: 50%;
-	border: 1px solid #d8d8d6;
-	box-shadow: none;
+	border: 1px solid #d4d3d0;
+	box-shadow:
+		0 0 0 4px rgba(240, 95, 34, 0.055),
+		0 5px 18px rgba(31, 35, 42, 0.055);
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -1666,8 +1668,8 @@ html.visual-expanded .titlebar {
 }
 
 .synth-logo {
-	width: 28px;
-	height: 28px;
+	width: 56px;
+	height: 56px;
 	margin-bottom: 0;
 	object-fit: contain;
 	display: block;
