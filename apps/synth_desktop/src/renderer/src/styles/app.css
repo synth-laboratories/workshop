@@ -7914,12 +7914,34 @@ html.visual-expanded .composer-dock {
 }
 
 .inference-advanced > summary {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
 	width: fit-content;
 	color: var(--color-text-muted);
 	cursor: pointer;
 	font-size: 10px;
 	font-weight: 650;
-	list-style-position: outside;
+	list-style: none;
+}
+
+.inference-advanced > summary::-webkit-details-marker {
+	display: none;
+}
+
+.inference-advanced > summary::before {
+	content: "";
+	width: 0;
+	height: 0;
+	border-top: 4px solid transparent;
+	border-bottom: 4px solid transparent;
+	border-left: 6px solid currentColor;
+	transform-origin: 2px 50%;
+	transition: transform 120ms ease;
+}
+
+.inference-advanced[open] > summary::before {
+	transform: rotate(90deg);
 }
 
 .inference-advanced > summary:hover,

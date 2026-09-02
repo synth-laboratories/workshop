@@ -837,7 +837,7 @@ export function InferencePanel({
 				open={advancedOpen}
 				onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
 			>
-				<summary>Advanced</summary>
+				<summary data-testid="inference-advanced-summary">Advanced</summary>
 				<div className="inference-advanced-body">
 					<div className="inference-advanced-meta">
 						<span className="inference-policy-kind" data-finetuned={fineTuned ? "yes" : "no"} data-testid="inference-policy-kind">
