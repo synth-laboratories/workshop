@@ -653,21 +653,25 @@ pub async fn require_training_ready(
     super::recipes::require_plugin_ready(service.manager()).await?;
     let capabilities = service.manager().advertised_capabilities();
     let algorithm = algorithm_for_placement(placement);
-    let algorithms = capabilities
-        .get("algorithms")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect::<Vec<_>>();
-    if !algorithms
-        .iter()
-        .any(|item| *item == algorithm || *item == algorithm.split('.').next().unwrap_or(algorithm))
-    {
+    if !advertises_training_algorithm(&capabilities, algorithm) {
         bail!("optimizer runtime does not advertise algorithm `{algorithm}`");
     }
     require_placement(&capabilities, placement)?;
     SidecarTrainingClient::from_manager(service.manager()).await
+}
+
+fn advertises_training_algorithm(capabilities: &Value, algorithm: &str) -> bool {
+    capabilities
+        // Manager projections deliberately separate optimizer algorithms from
+        // evaluation execution capabilities under this canonical key.
+        .get("optimization_algorithms")
+        // Accept the raw sidecar handshake too, before manager projection.
+        .or_else(|| capabilities.get("algorithms"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|item| item == algorithm || item == algorithm.split('.').next().unwrap_or(algorithm))
 }
 
 fn algorithm_for_placement(placement: &str) -> &'static str {
@@ -2447,6 +2451,22 @@ mod tests {
             .any(|item| item == PLACEMENT_TRAINING_SFT_LOCAL));
         assert!(merged.get("recipes").is_none());
         assert!(merged.get("compatibleTemplateIds").is_none());
+    }
+
+    #[test]
+    fn training_admission_reads_manager_projected_algorithm_key() {
+        assert!(advertises_training_algorithm(
+            &json!({"optimization_algorithms": ["gepa", "sft", "cispo"]}),
+            "cispo"
+        ));
+        assert!(advertises_training_algorithm(
+            &json!({"algorithms": ["gepa", "sft"]}),
+            "sft"
+        ));
+        assert!(!advertises_training_algorithm(
+            &json!({"optimization_algorithms": ["gepa"]}),
+            "cispo"
+        ));
     }
 
     #[test]
