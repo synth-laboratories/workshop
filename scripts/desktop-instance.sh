@@ -925,6 +925,8 @@ host_launchd_program() {
 write_host_launchd_plist() {
   local program oauth_file oauth_state sft_train_jsonl sft_eval_jsonl
   local optimizer_project_root optimizer_wheel_file mlx_rl_url containers_root
+  local sft_service_url sft_service_token cispo_service_url cispo_service_token
+  local sft_fixture cispo_fixture banking77_train_jsonl cispo_receipt
   local home_dir user_name logname temp_dir log_dir
   program="$(host_launchd_program)"
   [[ -x "$program" ]] || {
@@ -939,6 +941,14 @@ write_host_launchd_plist() {
   optimizer_wheel_file="${SYNTH_OPTIMIZER_WHEEL_FILE:-}"
   mlx_rl_url="${SYNTH_MLX_RL_URL:-}"
   containers_root="${CONTAINERS_ROOT:-}"
+  sft_service_url="${SYNTH_OPTIMIZERS_SFT_SERVICE_URL:-}"
+  sft_service_token="${SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN:-}"
+  cispo_service_url="${SYNTH_OPTIMIZERS_CISPO_SERVICE_URL:-}"
+  cispo_service_token="${SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN:-}"
+  sft_fixture="${SYNTH_OPTIMIZERS_SFT_FIXTURE:-}"
+  cispo_fixture="${SYNTH_OPTIMIZERS_CISPO_FIXTURE:-}"
+  banking77_train_jsonl="${SYNTH_SFT_BANKING77_TRAIN_JSONL:-}"
+  cispo_receipt="${TINKER_CISPO_VALIDATION_RECEIPT:-}"
   home_dir="${HOME:?HOME must be set to launch a CUA bundle}"
   user_name="${USER:-$(id -un)}"
   logname="${LOGNAME:-$user_name}"
@@ -952,7 +962,9 @@ write_host_launchd_plist() {
     "${SYNTH_LAGUNA_BASE_URL:-}" "${SYNTH_COMPUTER_USE_PARENT_REQUIREMENT:-}" \
     "$oauth_file" "$oauth_state" "$sft_train_jsonl" "$sft_eval_jsonl" \
     "$optimizer_project_root" "$optimizer_wheel_file" "$mlx_rl_url" \
-    "$containers_root" "$log_dir" <<'PY'
+    "$containers_root" "$log_dir" "$sft_service_url" "$sft_service_token" \
+    "$cispo_service_url" "$cispo_service_token" "$sft_fixture" "$cispo_fixture" \
+    "$banking77_train_jsonl" "$cispo_receipt" <<'PY'
 import plistlib
 import sys
 from pathlib import Path
@@ -986,6 +998,14 @@ from pathlib import Path
     mlx_rl_url,
     containers_root,
     log_dir,
+    sft_service_url,
+    sft_service_token,
+    cispo_service_url,
+    cispo_service_token,
+    sft_fixture,
+    cispo_fixture,
+    banking77_train_jsonl,
+    cispo_receipt,
 ) = sys.argv[1:]
 
 env = {
@@ -1016,6 +1036,14 @@ env = {
     "SYNTH_OPTIMIZER_WHEEL_FILE": optimizer_wheel,
     "SYNTH_MLX_RL_URL": mlx_rl_url,
     "CONTAINERS_ROOT": containers_root,
+    "SYNTH_OPTIMIZERS_SFT_SERVICE_URL": sft_service_url,
+    "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN": sft_service_token,
+    "SYNTH_OPTIMIZERS_CISPO_SERVICE_URL": cispo_service_url,
+    "SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN": cispo_service_token,
+    "SYNTH_OPTIMIZERS_SFT_FIXTURE": sft_fixture,
+    "SYNTH_OPTIMIZERS_CISPO_FIXTURE": cispo_fixture,
+    "SYNTH_SFT_BANKING77_TRAIN_JSONL": banking77_train_jsonl,
+    "TINKER_CISPO_VALIDATION_RECEIPT": cispo_receipt,
 }
 # launchd rejects empty EnvironmentVariables values. Credentials never
 # belong here; skip any leftover empty optional path.
