@@ -1,5 +1,45 @@
 # Workshop handoff: live SFT + CISPO visuals
 
+## 2026-09-02 closeout — Desktop click-through is proven
+
+The implementation and Workshop proof are complete on these revisions:
+
+- Workshop: `226224b2` (`bdda44db` terminal watcher drain, `226224b2` aggregate paired-heldout presentation)
+- Optimizers: `0b5f46c` (explicit run-scoped idempotency), on top of `c464392` (streamed paired selection/heldout evaluation)
+
+The NanoClassify reference split is now the product contract:
+
+- 9,233 training examples, 400 stratified selection examples, 400 heldout examples, 77 labels.
+- Selection evaluation streams during training and chooses a checkpoint.
+- The heldout split is not inspected “during” training. It runs once after selection, comparing the unchanged base and selected checkpoint on the same 400 examples.
+- Accuracy, macro-F1, exact paired uplift, bootstrap 95% CI, McNemar exact p-value, minimum practical uplift, and a claim-ready verdict are producer facts. The visual never infers an uplift claim from training completion or checkpoint readiness.
+
+Full-size unpaid fixture runs were launched by clicking the Workshop cards and observed live:
+
+| Algorithm | Workshop run | Terminal cursor | Scale proven |
+|---|---|---:|---|
+| SFT | `sft_banking77_nanoclassify_reference_5f81bc86` | 2,917 | 100 steps, batch 64, checkpoints 25/50/75/100, five 400-example selection passes, paired 400-example closeout |
+| CISPO | `cispo_hosted_379e0d3d5fbe` | 3,718 | 50 updates, 150 groups, group size 64 (9,600 sampled rollouts), five checkpoints/evals, paired 400-example closeout |
+
+Both visuals crossed the former 500-event cutoff while still updating. SFT finished with 100 curve points and four ready checkpoints. CISPO finished with 50 curve points, five ready checkpoints, `150/150` rollout groups, clip `0…5`, and an honest uniform-reward/no-learning-signal result.
+
+The final shared heldout card shows base score, selected score, paired N, uplift, paired 95% CI, verdict, and whether an uplift claim is established. On the fixture both scores are zero, CI is zero, and the verdict is `inconclusive`; this proves plumbing, not model quality.
+
+Two races found during the proof are fixed:
+
+1. The hosted mirror drains full 500-event producer pages even when the producer already reports terminal.
+2. The Workshop watcher requires a follow-up empty page after a terminal status, so it cannot settle between reading page N and the sidecar appending page N+1.
+
+Distinct Workshop launches now honor their supplied run ID as the public-service idempotency scope. Retrying the same run still deduplicates; launching the same recipe again creates a new run instead of colliding with a configuration-only key.
+
+### Remaining paid proof boundary
+
+No authorized project-local `TINKER_API_KEY` is present, so no paid model training was run. Do not use Keychain. Start the existing public services without fixture mode once a project-local `.env` or Workshop proxy credential is available; the combined experiment remains capped at $50.
+
+NanoClassify's real reference evidence remains the expectation check: SFT moved the fixed 400-example evaluation from 35.25% to 51.25% (+16 points); the cited CISPO v5 continuation added only one example (+0.25 points), which is not a material uplift. A new paid run must report its own paired heldout result and cannot reuse those numbers as its result.
+
+The remainder of this document preserves the original diagnostic handoff for provenance; sections that call the Desktop path unproven are historical.
+
 **Owner:** Workshop Desktop (`workshop-readmodel-cua`).  
 **Do not redo:** public `optimizers` control planes, CISPO CLI, fixture executors, `cispo.request.v1` submit shape. Those are done and proven.  
 **Your job:** click a hosted Banking77 recipe in Desktop, keep the live visual open, and watch `metric_points` grow the way GEPA live grows `candidates` / `evaluations`.
