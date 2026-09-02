@@ -61,6 +61,7 @@ const idleRolling = {
 	requestsCompleted: 31,
 	requestsFailed: 1,
 	requestsCancelled: 2,
+	lastFailureReason: "Unknown tool: container_list",
 	inputTokens: 41000,
 	outputTokens: 9100,
 	cachedTokens: 22000,
@@ -76,6 +77,7 @@ const blankRolling = {
 	requestsCompleted: null,
 	requestsFailed: null,
 	requestsCancelled: null,
+	lastFailureReason: null,
 	inputTokens: null,
 	outputTokens: null,
 	cachedTokens: null,
@@ -338,7 +340,8 @@ test("recent requests distinguish ok, failed and cancelled outcomes", () => {
 					cachedTokens: 0,
 					cacheHitRatio: 0,
 					ttftMs: 2100,
-					decodeTps: 9.2
+					decodeTps: 9.2,
+					failureReason: "Unknown tool: container_list"
 				},
 				{
 					id: "b",
@@ -358,6 +361,7 @@ test("recent requests distinguish ok, failed and cancelled outcomes", () => {
 	assert.match(html, /data-status="failed"/);
 	assert.match(html, /data-status="cancelled"/);
 	assert.match(html, /Laguna XS 2\.1/);
+	assert.match(html, /Unknown tool: container_list/);
 	assert.match(html, /2\.10 s/);
 });
 
@@ -496,6 +500,7 @@ test("a departing generation is classified from the rolling counter that moved",
 		})
 	);
 	assert.equal(failed.recent[0].status, "failed");
+	assert.equal(failed.recent[0].failureReason, "Unknown tool: container_list");
 
 	const completed = reduceFeed(first, snapshot({ active: null }));
 	assert.equal(completed.recent[0].status, "ok");

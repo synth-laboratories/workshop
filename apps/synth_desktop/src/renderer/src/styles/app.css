@@ -3287,9 +3287,29 @@ html:not(.sidebar-hidden):not(.visual-expanded) .titlebar:not(.titlebar-native-i
 
 .mcp-activity .tool-activity-icon {
 	border: 0;
-	color: #8c74d6;
-	font-family: inherit;
-	font-size: 11px;
+	color: #777d85;
+	width: 18px;
+	height: 18px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.mcp-activity .tool-activity-icon svg {
+	width: 17px;
+	height: 17px;
+	stroke: currentColor;
+	stroke-width: 1.5;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.inference-recent-reason {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: #a45353;
 }
 
 .mcp-activity-name {

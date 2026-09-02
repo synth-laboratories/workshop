@@ -68,6 +68,13 @@ test("finished tool calls show duration only after fifteen seconds", () => {
 	assert.match(projection, /durationMs: safeTool\.durationMs/);
 });
 
+test("MCP activity uses semantic Codex-style icons instead of a decorative diamond", () => {
+	const transcript = read("components/ChatTranscript.tsx");
+	assert.match(transcript, /function ToolActivityIcon/);
+	assert.match(transcript, /<ToolActivityIcon label=\{line\.label\}/);
+	assert.doesNotMatch(transcript, />◆</);
+});
+
 test("paid-compute approval is a cap-scoped modal, not a transcript card", () => {
 	const transcript = read("components/ChatTranscript.tsx");
 	assert.match(transcript, /data-testid="paid-compute-approval-modal"/);

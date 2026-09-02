@@ -41,6 +41,7 @@ ROLLING_FIELDS = {
     "requestsCompleted",
     "requestsFailed",
     "requestsCancelled",
+    "lastFailureReason",
     "inputTokens",
     "outputTokens",
     "cachedTokens",
@@ -251,12 +252,13 @@ class RollingAggregateTests(unittest.TestCase):
 
     def test_failures_do_not_pollute_token_totals(self) -> None:
         telemetry = InferenceTelemetry()
-        telemetry.record_failed()
+        telemetry.record_failed(RuntimeError("The model selected unknown tool 'container_list' with argument keys []."))
         telemetry.record_cancelled()
         snapshot = telemetry.snapshot()
         self.assertEqual(snapshot["inputTokens"], 0)
         self.assertEqual(snapshot["outputTokens"], 0)
         self.assertEqual(snapshot["requestsCompleted"], 0)
+        self.assertEqual(snapshot["lastFailureReason"], "Unknown tool: container_list")
 
 
 class InferenceEndpointTests(unittest.TestCase):

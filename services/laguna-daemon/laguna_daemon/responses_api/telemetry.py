@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -169,6 +170,7 @@ class InferenceTelemetry:
     requests_completed: int = 0
     requests_failed: int = 0
     requests_cancelled: int = 0
+    last_failure_reason: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
@@ -322,8 +324,9 @@ class InferenceTelemetry:
             "policies": policies,
         }
 
-    def record_failed(self) -> None:
+    def record_failed(self, error: BaseException | None = None) -> None:
         self.requests_failed += 1
+        self.last_failure_reason = _public_failure_reason(error)
 
     def record_cancelled(self) -> None:
         self.requests_cancelled += 1
@@ -336,6 +339,7 @@ class InferenceTelemetry:
             "requestsCompleted": self.requests_completed,
             "requestsFailed": self.requests_failed,
             "requestsCancelled": self.requests_cancelled,
+            "lastFailureReason": self.last_failure_reason,
             "inputTokens": self.input_tokens,
             "outputTokens": self.output_tokens,
             "cachedTokens": self.cached_tokens,
@@ -349,3 +353,14 @@ class InferenceTelemetry:
             "resetsOnRestart": True,
             "windowSize": self.window,
         }
+
+
+def _public_failure_reason(error: BaseException | None) -> str:
+    """Return a terse monitor-safe reason without prompts or tool arguments."""
+    message = str(error or "").strip()
+    unknown_tool = re.search(r"unknown tool ['\"]([^'\"]{1,80})['\"]", message, re.IGNORECASE)
+    if unknown_tool:
+        return f"Unknown tool: {unknown_tool.group(1)}"
+    if isinstance(error, TimeoutError):
+        return "Generation timed out"
+    return "Generation failed"

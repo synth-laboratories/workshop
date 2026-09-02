@@ -185,6 +185,7 @@ pub struct LagunaRollingStats {
     pub requests_failed: Option<u64>,
     #[specta(type = specta_typescript::Number)]
     pub requests_cancelled: Option<u64>,
+    pub last_failure_reason: Option<String>,
     #[specta(type = specta_typescript::Number)]
     pub input_tokens: Option<u64>,
     #[specta(type = specta_typescript::Number)]
@@ -2451,6 +2452,7 @@ mod tests {
             },
             "rolling": {
                 "requestsCompleted": 31, "requestsFailed": 1, "requestsCancelled": 2,
+                "lastFailureReason": "Unknown tool: container_list",
                 "inputTokens": 500, "outputTokens": 226, "cachedTokens": 8420,
                 "ttftP50Ms": 1840.0, "ttftP95Ms": null,
                 "decodeTpsP50": 12.4, "decodeTpsP95": null,
@@ -2479,6 +2481,7 @@ mod tests {
         assert_eq!(snapshot.rolling.ttft_p50_ms, Some(1840.0));
         assert_eq!(snapshot.rolling.ttft_p95_ms, None);
         assert_eq!(snapshot.rolling.requests_failed, Some(1));
+        assert_eq!(snapshot.rolling.last_failure_reason.as_deref(), Some("Unknown tool: container_list"));
     }
 
     #[test]

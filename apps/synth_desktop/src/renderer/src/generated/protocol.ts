@@ -2139,6 +2139,7 @@ export type LagunaRollingStats = {
 	requestsCompleted?: number,
 	requestsFailed?: number,
 	requestsCancelled?: number,
+	lastFailureReason?: string | null,
 	inputTokens?: number,
 	outputTokens?: number,
 	cachedTokens?: number,

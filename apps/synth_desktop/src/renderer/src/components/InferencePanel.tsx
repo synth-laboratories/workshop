@@ -42,6 +42,7 @@ export type InferenceRolling = {
 	requestsCompleted: number | null;
 	requestsFailed: number | null;
 	requestsCancelled: number | null;
+	lastFailureReason: string | null;
 	inputTokens: number | null;
 	outputTokens: number | null;
 	cachedTokens: number | null;
@@ -109,6 +110,7 @@ export type RecentRequest = {
 	cacheHitRatio: number | null;
 	ttftMs: number | null;
 	decodeTps: number | null;
+	failureReason: string | null;
 };
 
 export type InferenceFeedState = "loading" | "ready" | "error" | "off";
@@ -328,7 +330,8 @@ function finishRequest(
 		cachedTokens: generation.cachedTokens,
 		cacheHitRatio: generation.cacheHitRatio,
 		ttftMs,
-		decodeTps: generation.decodeTokensPerSecond
+		decodeTps: generation.decodeTokensPerSecond,
+		failureReason: status === "failed" ? after.rolling.lastFailureReason : null
 	};
 }
 
@@ -820,6 +823,7 @@ export function InferencePanel({
 									{STATUS_LABELS[request.status]}
 								</span>
 								<span className="inference-recent-model">{compactModelName(request.model)}</span>
+								{request.failureReason ? <span className="inference-recent-reason" title={request.failureReason}>{request.failureReason}</span> : null}
 								<span>ttft <Metric label="TTFT" value={formatMs(request.ttftMs)} /></span>
 								<span><Metric label="Decode throughput" value={formatTps(request.decodeTps)} /> tok/s</span>
 							</li>
