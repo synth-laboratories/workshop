@@ -1022,6 +1022,14 @@ pub(crate) async fn authorize_optimizer_recipe_start(
                 request.recipe_id
             ))
         })?;
+    let is_unpaid_workspace_eval = recipe.get("algorithmId").and_then(Value::as_str)
+        == Some("eval")
+        && recipe.get("source").and_then(Value::as_str) == Some("workspace")
+        && recipe.get("semantics").and_then(Value::as_str) == Some("baseline_eval")
+        && recipe
+            .get("credentialInputs")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty);
     // Local MLX recipes and explicitly enabled hosted fixtures do not incur
     // provider charges. The card click is the operator's explicit instruction,
     // so requiring an agent-session paid-compute receipt here makes the
@@ -1031,6 +1039,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         request.recipe_id.as_str(),
         "sft.qwen35-2b.mlx.v1" | "cispo.mlx.v1"
     ) || optimizer_recipe_is_unpaid_fixture(&request.recipe_id)
+        || is_unpaid_workspace_eval
     {
         let (run, event) = state
             .optimizers()
