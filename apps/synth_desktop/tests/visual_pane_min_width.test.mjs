@@ -144,7 +144,11 @@ test("routes.tsx keeps the window host and tabbed dock visual hosts distinct", (
   assert.doesNotMatch(source, /Chat still remounts/);
   assert.doesNotMatch(source, /onBack=\{\(\) => openChat/);
   assert.doesNotMatch(source, /crypto\.randomUUID\(\)/);
-	assert.match(source, /const visualPaneVisible = Boolean\(openArtifact && \(!chatRoute \|\| !showSidePanel\)\)/);
+	// The standalone pane renders for a chat without the dock and for the
+	// inventory surfaces that own visuals; independent destinations never
+	// inherit a previously opened artifact.
+	assert.match(source, /const inventoryOwnsVisualPane = view\.kind === "visuals"/);
+	assert.match(source, /const visualPaneVisible = Boolean\(openArtifact && \(\s*\(chatRoute && !showSidePanel\)\s*\|\| inventoryOwnsVisualPane\s*\)\)/);
 	assert.match(source, /id: `visual:\$\{artifact\.id\}`/);
 	assert.match(source, /activeTabId=\{sidePanelTab === "visual"/);
 	assert.match(source, /setSidePanelTab\("visual"\)/);
