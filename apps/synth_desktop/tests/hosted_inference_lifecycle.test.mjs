@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	hostedLifecycleLabel,
 	hostedCooldownLabel,
+	hostedThroughputLabel,
 	parseHostedInferenceLifecycle
 } from "../src/renderer/src/runtime/hostedInferenceLifecycle.ts";
 
@@ -20,6 +21,14 @@ test("parses Shoal v3 lifecycle and cooldown without inventing fields", () => {
 				idle_timeout_seconds: 300,
 				last_activity_at: 100,
 				warm_until: 400
+			},
+			throughput: {
+				measurement_kind: "end_to_end_output",
+				tokens_per_second: 33.456,
+				output_tokens: 125,
+				duration_seconds: 3.73,
+				observed_at: 401,
+				sample_count: 2
 			}
 		}
 	}), {
@@ -34,8 +43,19 @@ test("parses Shoal v3 lifecycle and cooldown without inventing fields", () => {
 			idleTimeoutSeconds: 300,
 			lastActivityAt: 100,
 			warmUntil: 400
+		},
+		throughput: {
+			measurementKind: "end_to_end_output",
+			tokensPerSecond: 33.456,
+			outputTokens: 125,
+			durationSeconds: 3.73,
+			observedAt: 401,
+			sampleCount: 2
 		}
 	});
+	assert.equal(hostedThroughputLabel(parseHostedInferenceLifecycle({ inference_lifecycle: {
+		throughput: { tokens_per_second: 33.456, sample_count: 1 }
+	} })), "Last output 33.5 tok/s");
 });
 
 test("renders an authoritative hosted cooldown without pretending provider-managed timing", () => {

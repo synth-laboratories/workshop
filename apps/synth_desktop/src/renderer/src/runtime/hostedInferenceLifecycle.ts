@@ -11,6 +11,14 @@ export type HostedInferenceLifecycle = {
 		lastActivityAt: number | null;
 		warmUntil: number | null;
 	};
+	throughput: {
+		measurementKind: string | null;
+		tokensPerSecond: number | null;
+		outputTokens: number | null;
+		durationSeconds: number | null;
+		observedAt: number | null;
+		sampleCount: number;
+	};
 };
 
 const EMPTY_COOLDOWN = { policy: null, idleTimeoutSeconds: null, lastActivityAt: null, warmUntil: null };
@@ -24,6 +32,8 @@ export function parseHostedInferenceLifecycle(value: unknown): HostedInferenceLi
 	const lifecycle = raw as Record<string, unknown>;
 	const rawCooldown = lifecycle.cooldown;
 	const cooldown = rawCooldown && typeof rawCooldown === "object" ? rawCooldown as Record<string, unknown> : null;
+	const rawThroughput = lifecycle.throughput;
+	const throughput = rawThroughput && typeof rawThroughput === "object" ? rawThroughput as Record<string, unknown> : null;
 	return {
 		protocolVersion: typeof lifecycle.protocol_version === "string" ? lifecycle.protocol_version : null,
 		phase: typeof lifecycle.phase === "string" ? lifecycle.phase : null,
@@ -36,8 +46,22 @@ export function parseHostedInferenceLifecycle(value: unknown): HostedInferenceLi
 			idleTimeoutSeconds: numberOrNull(cooldown.idle_timeout_seconds),
 			lastActivityAt: numberOrNull(cooldown.last_activity_at),
 			warmUntil: numberOrNull(cooldown.warm_until)
-		} : EMPTY_COOLDOWN
+		} : EMPTY_COOLDOWN,
+		throughput: {
+			measurementKind: throughput && typeof throughput.measurement_kind === "string" ? throughput.measurement_kind : null,
+			tokensPerSecond: numberOrNull(throughput?.tokens_per_second),
+			outputTokens: numberOrNull(throughput?.output_tokens),
+			durationSeconds: numberOrNull(throughput?.duration_seconds),
+			observedAt: numberOrNull(throughput?.observed_at),
+			sampleCount: Math.max(0, Math.floor(numberOrNull(throughput?.sample_count) ?? 0))
+		}
 	};
+}
+
+export function hostedThroughputLabel(lifecycle: HostedInferenceLifecycle | null): string | null {
+	const value = lifecycle?.throughput.tokensPerSecond;
+	if (value == null || value <= 0) return null;
+	return `Last output ${value >= 10 ? value.toFixed(1) : value.toFixed(2)} tok/s`;
 }
 
 export function hostedLifecycleLabel(phase: string | null | undefined): string | null {
