@@ -6,6 +6,7 @@ import {
   sftComparison,
   sftCurationFunnel,
   sftDistribution,
+  sftHeldoutSummary,
   sftStages
 } from "../families/optimizers/_shared/optimizer.run.v1/overlays/sft/model.ts";
 
@@ -111,6 +112,37 @@ test("SFT V2 projection keeps bounded evaluation summaries in first paint", () =
   assert.equal(projected.sft.evaluations[1].role, "heldout");
   const stages = sftStages(projected.sft, "completed", undefined);
   assert.equal(stages.find((stage) => stage.id === "evaluation").status, "completed");
+});
+
+test("classification heldout summaries surface paired uplift without rollout arms", () => {
+  const projected = projectRunViewV2(
+    { ...RUN, status: "completed" },
+    {
+      algorithm: "sft",
+      header: {
+        runId: RUN.id, algorithm: "sft", lifecycle: "terminal", condition: "healthy",
+        placement: "hosted", specId: "spec-1", specDigest: "sha256:spec",
+        executionBindings: [], inputRefs: [], outputRefs: [], visualRefs: [],
+        usage: { steps: 100 }, evidence: { completeness: "complete", refs: [] },
+        terminal: { kind: "completed", finalSequence: 3000, sealedAt: "2026-09-02T20:00:00Z" },
+        projectionSchemaVersion: "sft_projection.v1", asOfSequence: 3000, projectionRevision: 3000
+      },
+      projection: {
+        evaluations: [{
+          id: "heldout:ckpt_25", phase: "heldout", checkpointId: "ckpt_25",
+          score: 0.52, delta: 0.16, ciLow: 0.11, ciHigh: 0.21,
+          pairedN: 400, verdict: "improvement_demonstrated", claimReady: true
+        }]
+      }
+    }
+  );
+  const summary = sftHeldoutSummary(projected.sft);
+  assert.equal(summary.paired, 400);
+  assert.equal(summary.baseScore, 0.36);
+  assert.equal(summary.trainedScore, 0.52);
+  assert.deepEqual(summary.upliftCi, [0.11, 0.21]);
+  assert.equal(summary.claimReady, true);
+  assert.equal(sftStages(projected.sft, "completed").find((stage) => stage.id === "heldout").status, "completed");
 });
 
 test("SFT stages: ready checkpoint is never presented as promoted", () => {

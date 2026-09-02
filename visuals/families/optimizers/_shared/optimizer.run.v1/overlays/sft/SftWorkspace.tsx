@@ -29,8 +29,10 @@ import {
   sftComparison,
   sftCurationFunnel,
   sftDistribution,
+  sftHeldoutSummary,
   sftStages,
   type SftComparison,
+  type SftHeldoutSummary,
   type SftState
 } from "./model.ts";
 
@@ -375,7 +377,38 @@ function CheckpointRail({ sft, promotedCheckpointId }: { sft: SftState; promoted
 
 /* ── Phase G · paired heldout comparison ────────────────────────────────── */
 
-function ComparisonPanel({ comparison }: { comparison: SftComparison | null }) {
+function ComparisonPanel({
+  comparison,
+  aggregate
+}: {
+  comparison: SftComparison | null;
+  aggregate: SftHeldoutSummary | null;
+}) {
+  if (!comparison && aggregate) {
+    return (
+      <Panel title="Heldout comparison — base vs selected" testId="sft-comparison">
+        <div className="sv-arms">
+          <div className="sv-arm" data-arm="base">
+            <span className="sv-micro-label">unchanged base</span>
+            <strong>{formatMissingNumber(aggregate.baseScore)}</strong>
+          </div>
+          <div className="sv-arm" data-arm="trained">
+            <span className="sv-micro-label">{aggregate.checkpointId ?? "selected checkpoint"}</span>
+            <strong>{formatMissingNumber(aggregate.trainedScore)}</strong>
+          </div>
+        </div>
+        <dl className="sv-kv" data-testid="sft-uplift">
+          <dt>Paired examples</dt><dd>{aggregate.paired}</dd>
+          <dt>Accuracy uplift</dt>
+          <dd><span className="sv-delta" data-dir={direction(aggregate.absoluteUplift)}>{signed(aggregate.absoluteUplift)}</span></dd>
+          <dt>95% paired CI</dt>
+          <dd>{aggregate.upliftCi ? `${signed(aggregate.upliftCi[0])} … ${signed(aggregate.upliftCi[1])}` : "—"}</dd>
+          <dt>Verdict</dt><dd>{aggregate.verdict ?? "not reported"}</dd>
+          <dt>Uplift claim</dt><dd>{aggregate.claimReady ? "supported" : "not established"}</dd>
+        </dl>
+      </Panel>
+    );
+  }
   if (!comparison) {
     return (
       <Panel title="Heldout comparison — base vs promoted" testId="sft-comparison">
@@ -669,6 +702,7 @@ export function SftWorkspace({
     [sft, status, promotedCheckpointId]
   );
   const comparison = useMemo(() => (sft ? sftComparison(sft) : null), [sft]);
+  const heldoutSummary = useMemo(() => (sft ? sftHeldoutSummary(sft) : null), [sft]);
   const campaignData = useMemo(() => {
     if (!sft) return { groups: [] as RolloutGroup[], rows: [] as RolloutRow[] };
     const groups: RolloutGroup[] = [];
@@ -717,6 +751,10 @@ export function SftWorkspace({
   const headline = terminal
     ? status === "failed"
       ? "Training failed"
+      : heldoutSummary
+        ? heldoutSummary.claimReady
+          ? `Heldout uplift ${signed(heldoutSummary.absoluteUplift)} over ${heldoutSummary.paired} paired examples`
+          : `Completed · heldout ${heldoutSummary.verdict ?? "inconclusive"} — no uplift claimed`
       : upliftClaimed && comparison
         ? `Heldout uplift ${signed(comparison.absoluteUplift)} over ${comparison.paired} paired seeds`
         : improvementVerdict === "inconclusive"
@@ -751,9 +789,15 @@ export function SftWorkspace({
       : []),
     {
       label: "Heldout uplift",
-      value: comparison ? signed(comparison.absoluteUplift) : "not measured",
-      title: comparison
-        ? `Paired mean difference over ${comparison.paired} seeds, trained minus base.`
+      value: heldoutSummary
+        ? signed(heldoutSummary.absoluteUplift)
+        : comparison
+          ? signed(comparison.absoluteUplift)
+          : "not measured",
+      title: heldoutSummary
+        ? `Paired accuracy difference over ${heldoutSummary.paired} examples, selected checkpoint minus base.`
+        : comparison
+          ? `Paired mean difference over ${comparison.paired} seeds, trained minus base.`
         : "Requires a paired base-vs-promoted run on untouched heldout seeds."
     },
     {
@@ -820,7 +864,7 @@ export function SftWorkspace({
         testId="sft-live-campaigns"
       />
 
-      <ComparisonPanel comparison={comparison} />
+      <ComparisonPanel comparison={comparison} aggregate={heldoutSummary} />
       <EvaluationSummaries sft={sft} />
       <ProvenancePanel sft={sft} />
 

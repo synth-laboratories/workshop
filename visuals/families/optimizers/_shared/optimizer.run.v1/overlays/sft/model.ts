@@ -31,6 +31,7 @@ export function sftStages(sft: SftState, status: string, promotedCheckpointId?: 
     sft.checkpoints.some((ckpt) => ckpt.selected === true || ckpt.promoted === true);
   const upliftClaimed = sft.checkpoints.some((ckpt) => ckpt.promoted === true);
   const comparison = sftComparison(sft);
+  const heldoutSummary = sftHeldoutSummary(sft);
   const settle = (started: boolean, done: boolean): WorkspaceStage["status"] => {
     if (done) return "completed";
     if (started) return terminal ? (failed ? "failed" : "completed") : "active";
@@ -89,9 +90,12 @@ export function sftStages(sft: SftState, status: string, promotedCheckpointId?: 
     {
       id: "heldout",
       label: "Heldout comparison",
-      status: settle(comparison != null, comparison != null && comparison.paired > 0),
-      detail: comparison
-        ? `${comparison.paired} paired seeds`
+      status: settle(
+        comparison != null || heldoutSummary != null,
+        (comparison?.paired ?? heldoutSummary?.paired ?? 0) > 0
+      ),
+      detail: comparison || heldoutSummary
+        ? `${comparison?.paired ?? heldoutSummary?.paired} paired examples`
         : "base vs promoted on untouched seeds — the only evidence for an uplift claim"
     }
   ];
@@ -143,6 +147,46 @@ export type SftComparisonRow = {
   delta: number | null;
   outcome: "win" | "loss" | "tie" | "unpaired";
 };
+
+export type SftHeldoutSummary = {
+  paired: number;
+  baseScore: number | null;
+  trainedScore: number | null;
+  absoluteUplift: number;
+  upliftCi: [number, number] | null;
+  verdict?: string;
+  claimReady: boolean;
+  checkpointId?: string;
+};
+
+/** Aggregate paired result emitted by classification trainers. */
+export function sftHeldoutSummary(sft: SftState): SftHeldoutSummary | null {
+  const evaluation = [...sft.evaluations].reverse().find((candidate) => {
+    const phase = String(candidate.phase ?? candidate.role ?? candidate.split ?? "");
+    return phase === "heldout" && Number(candidate.pairedN ?? candidate.paired_n ?? 0) > 0;
+  });
+  if (!evaluation) return null;
+  const uplift = Number(evaluation.delta);
+  const trainedScore = Number(evaluation.score);
+  const paired = Number(evaluation.pairedN ?? evaluation.paired_n);
+  if (!Number.isFinite(uplift) || !Number.isFinite(paired) || paired <= 0) return null;
+  const ciLow = Number(evaluation.ciLow ?? evaluation.ci_low);
+  const ciHigh = Number(evaluation.ciHigh ?? evaluation.ci_high);
+  return {
+    paired,
+    baseScore: Number.isFinite(trainedScore) ? trainedScore - uplift : null,
+    trainedScore: Number.isFinite(trainedScore) ? trainedScore : null,
+    absoluteUplift: uplift,
+    upliftCi: Number.isFinite(ciLow) && Number.isFinite(ciHigh) ? [ciLow, ciHigh] : null,
+    verdict: typeof evaluation.verdict === "string" ? evaluation.verdict : undefined,
+    claimReady: evaluation.claimReady === true || evaluation.claim_ready === true,
+    checkpointId: typeof evaluation.checkpointId === "string"
+      ? evaluation.checkpointId
+      : typeof evaluation.checkpoint_id === "string"
+        ? evaluation.checkpoint_id
+        : undefined
+  };
+}
 
 function mean(values: number[]): number | null {
   return values.length === 0 ? null : values.reduce((sum, value) => sum + value, 0) / values.length;
