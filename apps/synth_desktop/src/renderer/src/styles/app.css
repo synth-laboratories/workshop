@@ -2111,15 +2111,15 @@ html:not(.sidebar-hidden):not(.visual-expanded) .titlebar:not(.titlebar-native-i
  * the roomy, low-profile proportions of the Codex composer while retaining
  * the compact geometry used beside transcripts and workbench panes. */
 .landing .composer-dock {
-	left: 32px;
-	right: 32px;
-	bottom: 86px;
+	left: clamp(44px, 7vw, 112px);
+	right: clamp(44px, 7vw, 112px);
+	bottom: 28px;
 }
 
 .landing .composer,
 .landing .composer-configuration-required,
 .landing .composer-send-retry {
-	max-width: 980px;
+	max-width: 860px;
 }
 
 .landing .composer {
@@ -2138,6 +2138,14 @@ html:not(.sidebar-hidden):not(.visual-expanded) .titlebar:not(.titlebar-native-i
 
 .landing .composer-toolbar {
 	padding: 5px 14px 14px;
+}
+
+@media (max-width: 620px) {
+	.landing .composer-dock {
+		left: 18px;
+		right: 18px;
+		bottom: 18px;
+	}
 }
 
 .composer-left,
