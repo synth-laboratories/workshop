@@ -840,18 +840,6 @@ export function Composer({
 	}, [state.id]);
 
 	useEffect(() => {
-		const prefill = (rawEvent: Event) => {
-			const prompt = (rawEvent as CustomEvent<string>).detail?.trim();
-			if (!prompt) return;
-			setValue(prompt);
-			setSlashDismissed(true);
-			window.requestAnimationFrame(() => textareaRef.current?.focus());
-		};
-		window.addEventListener("synth:composer-prefill", prefill);
-		return () => window.removeEventListener("synth:composer-prefill", prefill);
-	}, []);
-
-	useEffect(() => {
 		historyIndexRef.current = null;
 		historyDraftRef.current = "";
 	}, [workspaceSessionId]);
