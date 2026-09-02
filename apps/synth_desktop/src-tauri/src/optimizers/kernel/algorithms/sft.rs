@@ -13,6 +13,8 @@ use crate::optimizers::kernel::types::{
 };
 use crate::optimizers::kernel::work::{close_open_items, WorkItem, WorkSummary};
 
+use super::training::{MetricSeries, TrainingEvaluationSummary, TrainingMetricPoint};
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SftProjection {
@@ -26,6 +28,14 @@ pub struct SftProjection {
     pub child_eval_run_ids: Vec<String>,
     pub produced_adapter: Option<String>,
     pub train_loss: Option<f64>,
+    /// Checkpoint evaluation scorecards, bounded by the evaluation schedule.
+    /// Served through the `evaluations` collection; the renderer never
+    /// rebuilds these from raw `training.evaluation.completed` events.
+    #[serde(default)]
+    pub evaluations: Vec<TrainingEvaluationSummary>,
+    /// Bounded, deterministically downsampled loss/step curve.
+    #[serde(default)]
+    pub metrics: MetricSeries,
 }
 
 impl SftProjection {
@@ -40,7 +50,7 @@ impl SftProjection {
                     .map(str::to_string);
                 self.phase = Some(RunPhase::Validating);
             }
-            "sft.training.metrics" | "sft.step.metrics" => {
+            "sft.training.metrics" | "sft.step.metrics" | "training.step.metrics" => {
                 self.phase = Some(RunPhase::Training);
                 self.train_loss = payload
                     .get("trainLoss")
@@ -49,6 +59,10 @@ impl SftProjection {
                     .and_then(|v| v.as_f64());
                 if let Some(step) = payload.get("step").and_then(|v| v.as_u64()) {
                     self.usage.steps = Some(step);
+                }
+                if let Some(point) = TrainingMetricPoint::from_payload(payload, event.aggregate_sequence)
+                {
+                    self.metrics.push(point);
                 }
             }
             "sft.checkpoint.ready" | "sft.checkpoint.created" => {
@@ -108,6 +122,21 @@ impl SftProjection {
                         .find(|item| item.work_item_id == format!("sft:ckpt-eval:{child}"))
                     {
                         item.seal_terminal(TerminalKind::Completed)?;
+                    }
+                }
+                if let Some(summary) =
+                    TrainingEvaluationSummary::from_payload(payload, event.aggregate_sequence)
+                {
+                    // One row per evaluation identity: a producer that reports
+                    // the same checkpoint twice updates it rather than
+                    // duplicating the scorecard.
+                    match self
+                        .evaluations
+                        .iter_mut()
+                        .find(|existing| existing.id == summary.id)
+                    {
+                        Some(existing) => *existing = summary,
+                        None => self.evaluations.push(summary),
                     }
                 }
                 self.phase = Some(RunPhase::HeldoutEvaluation);

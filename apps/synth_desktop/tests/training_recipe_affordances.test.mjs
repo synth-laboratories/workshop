@@ -21,3 +21,12 @@ test("start rechecks recipe admission instead of trusting a selected label", () 
   assert.match(source, /selectedRecipe\?\.availability !== "available"/);
   assert.match(source, /disabled=\{!selectedPlacementAvailable \|\| !targets\.length/);
 });
+
+test("the training workspace reads the shared run read model and never polls an event prefix", () => {
+  assert.match(source, /useOptimizerRun\(durableRunId\)/);
+  assert.match(source, /useRunCollection\(durableRunId, "evaluations", \{ limit: 100/);
+  assert.equal(source.includes(".eventsAfter("), false, "no eventsAfter(run.id, 0, 2000) prefix read");
+  assert.equal(source.includes("setInterval("), false, "no one-second poll timer");
+  assert.equal(source.includes("bridge.refresh("), false, "status comes from the durable summary, not a refresh loop");
+  assert.match(source, /data-testid="training-evaluations-stale"/, "stale evaluations stay visible with a marker");
+});

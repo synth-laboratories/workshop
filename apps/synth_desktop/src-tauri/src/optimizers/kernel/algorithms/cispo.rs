@@ -13,6 +13,8 @@ use crate::optimizers::kernel::types::{
 };
 use crate::optimizers::kernel::work::{close_open_items, WorkItem, WorkSummary};
 
+use super::training::{MetricSeries, TrainingEvaluationSummary, TrainingMetricPoint};
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CispoProjection {
@@ -26,6 +28,16 @@ pub struct CispoProjection {
     pub child_eval_run_ids: Vec<String>,
     pub no_learning_signal: bool,
     pub policy_checkpoint_id: Option<String>,
+    /// Checkpoint evaluation scorecards; see `SftProjection::evaluations`.
+    #[serde(default)]
+    pub evaluations: Vec<TrainingEvaluationSummary>,
+    /// Bounded reward/advantage/loss curve keyed by training step.
+    #[serde(default)]
+    pub metrics: MetricSeries,
+    /// Clip configuration as reported by the producer. Compact facts only.
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub clip_config: serde_json::Value,
 }
 
 impl CispoProjection {
@@ -44,6 +56,60 @@ impl CispoProjection {
                     .or_else(|| payload.get("clipIdentity"))
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
+                if let Some(config) = payload
+                    .get("config")
+                    .or_else(|| payload.get("clipConfig"))
+                    .or_else(|| payload.get("clip_config"))
+                {
+                    self.clip_config = config.clone();
+                }
+            }
+            "cispo.training.metrics" | "cispo.step.metrics" | "training.step.metrics" => {
+                self.phase = Some(RunPhase::Training);
+                if let Some(step) = payload.get("step").and_then(|v| v.as_u64()) {
+                    self.usage.steps = Some(step);
+                }
+                if let Some(point) = TrainingMetricPoint::from_payload(payload, event.aggregate_sequence)
+                {
+                    if let Some(advantage) = point.advantage {
+                        self.mean_advantage = Some(advantage);
+                    }
+                    self.metrics.push(point);
+                }
+            }
+            "cispo.checkpoint_evaluation.completed" | "training.evaluation.completed" => {
+                if let Some(child) = payload
+                    .get("childEvalRunId")
+                    .or_else(|| payload.get("optimizerRunId"))
+                    .and_then(|v| v.as_str())
+                {
+                    if let Some(item) = self
+                        .work_items
+                        .iter_mut()
+                        .find(|item| item.work_item_id == format!("cispo:ckpt-eval:{child}"))
+                    {
+                        if item.lifecycle != WorkItemLifecycle::Terminal {
+                            if item.lifecycle == WorkItemLifecycle::Queued {
+                                item.transition(WorkItemLifecycle::Starting)?;
+                                item.transition(WorkItemLifecycle::Running)?;
+                            }
+                            item.seal_terminal(TerminalKind::Completed)?;
+                        }
+                    }
+                }
+                if let Some(summary) =
+                    TrainingEvaluationSummary::from_payload(payload, event.aggregate_sequence)
+                {
+                    match self
+                        .evaluations
+                        .iter_mut()
+                        .find(|existing| existing.id == summary.id)
+                    {
+                        Some(existing) => *existing = summary,
+                        None => self.evaluations.push(summary),
+                    }
+                }
+                self.phase = Some(RunPhase::HeldoutEvaluation);
             }
             "cispo.rollout_group.completed" => {
                 let id = payload

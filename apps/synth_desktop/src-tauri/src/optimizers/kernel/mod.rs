@@ -14,6 +14,7 @@ pub mod error;
 pub mod evidence;
 pub mod outbox;
 pub mod persist;
+pub mod read_model;
 pub mod sequences;
 pub mod settle;
 pub mod types;
@@ -36,6 +37,10 @@ pub use types::{
     CancelledError, EvidenceCompleteness, ExecutionPlacement, RunCondition, RunLifecycle, RunPhase,
     TerminalKind, TerminalReason, WorkItemKind, WorkItemLifecycle, GELO_HOSTED_RECIPE_ID,
     KERNEL_SCHEMA_VERSION, PRODUCER_EVENT_SCHEMA_VERSION, RUN_VIEW_SCHEMA_VERSION,
+};
+pub use read_model::{
+    HistoricalProjection, OptimizerRunSummary, OptimizerRunSummaryEnvelope, RunCollection,
+    RunCollectionFilter, RunCollectionPage, RunCollectionQuery, RunCollectionRow,
 };
 pub use view::{
     project_view, project_view_with_context, OptimizerRunViewEnvelope, OptimizerRunViewV2,

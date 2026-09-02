@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { VisualChrome } from "../../../../chrome/VisualChrome.tsx";
 import type { VisualBinding } from "../../../../runtime/types.ts";
 import { bindingInputName } from "../../../../runtime/types.ts";
@@ -11,14 +11,19 @@ import {
   UsageCards
 } from "./components/RunChrome.tsx";
 import {
-  projectAtCursor,
   type OptimizerEvent,
   type OptimizerRun
 } from "./components/projectEvents.ts";
 import {
-  projectRunViewV2,
   type OptimizerRunViewV2Like
 } from "./components/projectRunViewV2.ts";
+import { normalizeOptimizerEvents } from "./components/normalizeEvents.ts";
+import {
+  useHistoricalCursor,
+  type EvidenceHydrationState,
+  type EvidenceIntentClient,
+  type HistoryClient
+} from "./components/useHistoricalCursor.ts";
 import { DagOverlay } from "./overlays/dag.tsx";
 import { GepaOverlay } from "./overlays/gepa.tsx";
 import { GoExOverlay } from "./overlays/go-ex.tsx";
@@ -29,6 +34,7 @@ type FixturePayload = {
   events?: OptimizerEvent[];
   runViewV2?: OptimizerRunViewV2Like;
   runProgress?: RunProgressAgreementLike;
+  evidenceState?: EvidenceHydrationState;
 };
 
 type RunProgressAgreementLike = {
@@ -58,15 +64,15 @@ export type ShellProps = {
    * cannot tell them apart silently offers an empty history as if it were the
    * whole one.
    */
-  evidenceState?: "pending" | "loading" | "ready" | "partial" | "unavailable";
+  evidenceState?: EvidenceHydrationState;
   /**
    * Lazy, range-addressed access to the journal. Present in the desktop host;
    * absent in previews and fixtures, where `events` is whatever was injected.
    */
-  evidence?: {
-    load(window: { from: number; to: number }): Promise<unknown[]>;
-    tail(): number;
-  };
+  evidence?: EvidenceIntentClient;
+  /** Backend checkpointed historical projections. Present in the desktop host. */
+  history?: HistoryClient;
+  tailCursor?: number;
   run?: OptimizerRun;
   runViewV2?: OptimizerRunViewV2Like;
   runProgress?: RunProgressAgreementLike;
@@ -103,30 +109,6 @@ function normalizeRun(raw: Record<string, unknown>): OptimizerRun {
   };
 }
 
-function normalizeEvents(events: unknown[]): OptimizerEvent[] {
-  return events.map((event) => {
-    const e = event as Record<string, unknown>;
-    return {
-      schemaVersion: e.schemaVersion ? String(e.schemaVersion) : undefined,
-      eventId: e.eventId ? String(e.eventId) : undefined,
-      type: String(e.type ?? e.event_type ?? "unknown"),
-      sequenceNumber: Number(e.sequenceNumber ?? e.sequence_number ?? 0),
-      occurredAt: String(e.occurredAt ?? e.occurred_at ?? e.created_at ?? ""),
-      optimizerRunId: String(e.optimizerRunId ?? e.optimizer_run_id ?? e.run_id ?? ""),
-      algorithmId: String(e.algorithmId ?? e.algorithm_id ?? "unknown"),
-      level: e.level ? String(e.level) : undefined,
-      item: e.item as OptimizerEvent["item"],
-      delta: (e.delta as Record<string, unknown>) ?? {},
-      snapshot: e.snapshot as Record<string, unknown> | undefined,
-      usageDelta: e.usageDelta as Record<string, number | null> | undefined ??
-        (e.usage_delta as Record<string, number | null> | undefined),
-      artifactRefs: (e.artifactRefs as unknown[]) ?? (e.artifact_refs as unknown[]) ?? [],
-      error: e.error,
-      raw: e.raw
-    };
-  });
-}
-
 export function Shell(props: ShellProps) {
   const bindingList = Array.isArray(props.bindings) ? props.bindings : (props.bindings?.inputs ?? props.bindings?.slots);
   const binding = bindingList?.find((b) => bindingInputName(b) === "optimizer_run");
@@ -157,61 +139,26 @@ export function Shell(props: ShellProps) {
     algorithmId: hintAlgorithm ?? "unknown",
     status: "loading"
   }) as Record<string, unknown>);
-  const events = normalizeEvents(
+  const injectedEvents = normalizeOptimizerEvents(
     (props.events ?? payload?.events ?? []) as unknown[]
   );
   const runViewV2 = props.runViewV2 ?? payload?.runViewV2;
   const runProgress = props.runProgress ?? payload?.runProgress;
-
-  const [followLive, setFollowLive] = useState(true);
-  const [cursorIndex, setCursorIndex] = useState(Math.max(0, events.length - 1));
-  const [selectedCandidate, setSelectedCandidate] = useState<string | null>(null);
-  // Evidence fetched on intent, kept separately from whatever the host
-  // injected so a fixture or preview keeps rendering exactly what it was given.
-  const [loadedEvidence, setLoadedEvidence] = useState<OptimizerEvent[] | null>(null);
-  const [evidenceLoading, setEvidenceLoading] = useState(false);
-
   const evidenceState = props.evidenceState ?? payload?.evidenceState;
-  const hydrating = evidenceState === "pending" || evidenceState === "loading";
 
-  // Leaving live is the intent signal. Nothing is fetched while the user is
-  // watching the aggregate, which is the whole point of splitting the two.
-  useEffect(() => {
-    if (followLive || !props.evidence || loadedEvidence || evidenceLoading) return;
-    const tail = props.evidence.tail();
-    if (tail <= 0) return;
-    let cancelled = false;
-    setEvidenceLoading(true);
-    void props.evidence
-      .load({ from: 1, to: tail })
-      .then((rows) => {
-        if (!cancelled) setLoadedEvidence(normalizeEvents(rows));
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setEvidenceLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [followLive, props.evidence, loadedEvidence, evidenceLoading]);
-
-  const timelineEvents = loadedEvidence ?? events;
-
-  useEffect(() => {
-    if (followLive) setCursorIndex(Math.max(0, timelineEvents.length - 1));
-  }, [timelineEvents.length, followLive]);
-
-  const atSeq = timelineEvents[cursorIndex]?.sequenceNumber;
-  const projected = useMemo(
-    () => (followLive ? null : projectAtCursor(run, timelineEvents, atSeq)),
-    [followLive, run, timelineEvents, atSeq]
-  );
-
-  // Raw events are reduced only for an explicit historical cursor. The live
-  // workspace formats the backend-owned algorithm projection directly.
-  const displayed = useMemo(() => {
-    if (!followLive) return projected;
-    return runViewV2 ? projectRunViewV2(run, runViewV2) : null;
-  }, [followLive, projected, run, runViewV2]);
+  const [selectedCandidate, setSelectedCandidate] = useState<string | null>(null);
+  // One evidence-on-intent implementation, shared with the family shell.
+  // Nothing is fetched while the user is watching the aggregate.
+  const cursor = useHistoricalCursor({
+    run,
+    injectedEvents,
+    runViewV2,
+    evidence: props.evidence,
+    history: props.history,
+    evidenceState,
+    tailCursor: props.tailCursor ?? run.cursorSeq
+  });
+  const { followLive, timelineEvents, displayed } = cursor;
 
   if (!payload && !props.run) {
     return (
@@ -245,10 +192,18 @@ export function Shell(props: ShellProps) {
         testId="visual-optimizer-run"
         footer="optimizer.run.v1"
       >
-        <section className="sv-section" role="alert" data-testid="optimizer-run-view-v2-unavailable">
-          <div className="sv-section-head"><h3>Canonical run view unavailable</h3></div>
-          <p className="sv-lede">Live optimizer state requires OptimizerRunViewV2. Raw events are available only after selecting a historical cursor.</p>
-        </section>
+        {!followLive && (cursor.loading || cursor.hydrating) ? (
+          <section className="sv-section" role="status" data-testid="optimizer-history-loading">
+            <div className="sv-section-head"><h3>Loading run history</h3></div>
+            <p className="sv-lede">The projection at this point is being folded from the durable journal. Live metrics remain current.</p>
+            <button type="button" className="sv-button" onClick={cursor.onFollowLive}>Back to live</button>
+          </section>
+        ) : (
+          <section className="sv-section" role="alert" data-testid="optimizer-run-view-v2-unavailable">
+            <div className="sv-section-head"><h3>Canonical run view unavailable</h3></div>
+            <p className="sv-lede">Live optimizer state requires OptimizerRunViewV2. Raw events are available only after selecting a historical cursor.</p>
+          </section>
+        )}
       </VisualChrome>
     );
   }
@@ -291,29 +246,43 @@ export function Shell(props: ShellProps) {
         otherwise read as "this run produced nothing", which is a different and
         wrong claim.
       */}
-      {(hydrating || evidenceLoading) && timelineEvents.length === 0 ? (
+      {cursor.hydrating && timelineEvents.length === 0 ? (
         <p className="sv-lede" role="status" data-testid="optimizer-evidence-hydrating">
           Loading run history for time travel. Metrics above are already current.
         </p>
       ) : (
         <GlobalTimeline
-          events={displayed.timeline.map((e) => ({
+          events={(followLive ? displayed.timeline : timelineEvents.map((e) => ({
+            sequence: e.sequenceNumber,
+            type: e.type,
+            occurredAt: e.occurredAt
+          }))).map((e) => ({
             sequence: Number(e.sequence),
             type: String(e.type),
             occurredAt: String(e.occurredAt)
           }))}
-          cursorIndex={cursorIndex}
-          onScrub={(index) => {
-            setFollowLive(false);
-            setCursorIndex(index);
-          }}
+          cursorIndex={cursor.cursorIndex}
+          onScrub={cursor.onScrub}
           followLive={followLive}
-          onFollowLive={() => {
-            setFollowLive(true);
-            setCursorIndex(Math.max(0, timelineEvents.length - 1));
-          }}
+          onFollowLive={cursor.onFollowLive}
         />
       )}
+      {!followLive && cursor.historySource === "backend" ? (
+        <p className="sv-mono" role="status" data-testid="optimizer-history-source">
+          history · backend checkpoint fold{cursor.loading ? " · loading" : ""}
+          {cursor.canLoadEarlier ? (
+            <>
+              {" · "}
+              <button type="button" className="sv-link" onClick={cursor.loadEarlier} disabled={cursor.loading}>
+                load earlier events
+              </button>
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      {cursor.error ? (
+        <p className="sv-lede" role="alert" data-testid="optimizer-history-error">{cursor.error}</p>
+      ) : null}
 
       {run.algorithmId === "gepa" ? (
         <GepaOverlay

@@ -186,8 +186,11 @@ impl Commands {
     pub const OPTIMIZERS_RUN_VIEW_V2: &'static str = "optimizers_run_view_v2";
     pub const OPTIMIZERS_RUN_VIEW: &'static str = "optimizers_run_view";
     pub const OPTIMIZERS_EVIDENCE_PAGE: &'static str = "optimizers_evidence_page";
-    pub const OPTIMIZERS_VISUAL_RENDER_RECEIPT: &'static str =
-        "optimizers_visual_render_receipt";
+    pub const OPTIMIZERS_RUN_SUMMARY: &'static str = "optimizers_run_summary";
+    pub const OPTIMIZERS_RUN_COLLECTION: &'static str = "optimizers_run_collection";
+    pub const OPTIMIZERS_RUN_COLLECTION_ITEM: &'static str = "optimizers_run_collection_item";
+    pub const OPTIMIZERS_PROJECTION_AT: &'static str = "optimizers_projection_at";
+    pub const OPTIMIZERS_VISUAL_RENDER_RECEIPT: &'static str = "optimizers_visual_render_receipt";
     pub const OPTIMIZERS_CREATE: &'static str = "optimizers_create";
     pub const OPTIMIZERS_REFRESH: &'static str = "optimizers_refresh";
     pub const OPTIMIZERS_EVENTS_AFTER: &'static str = "optimizers_events_after";

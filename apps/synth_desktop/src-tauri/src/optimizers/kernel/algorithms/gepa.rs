@@ -3,6 +3,7 @@
 //! A rollout ceiling is a budget, not a fixed work denominator.
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::optimizers::kernel::error::{KernelError, KernelErrorCode, KernelResult};
@@ -28,6 +29,15 @@ pub struct GepaCandidate {
     pub source: Option<String>,
     #[serde(default)]
     pub digest: Option<String>,
+    /// Durable candidate levers (for GEPA, normally the proposed prompt).
+    /// This is bounded by the candidate count and lets the live visual render
+    /// content/diffs without replaying the entire optimizer journal.
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub values: Value,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
+    pub proposal_index: Option<u64>,
     #[serde(default)]
     pub heldout_reward: Option<f64>,
     #[serde(default)]
@@ -70,7 +80,17 @@ pub struct GepaProjection {
     pub evaluations: Vec<GepaEvaluationSummary>,
     #[serde(default)]
     pub proposer_calls: Vec<GepaProposerCallSummary>,
-    #[serde(skip)]
+    /// Compact product-facing setup facts reduced from the durable journal.
+    /// This deliberately excludes task rows, prompts, and credentials.
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub contract: Value,
+    /// Latest observed execution shape. Capacity is kept distinct from
+    /// measured parallelism and throughput.
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub runtime: Value,
+    #[serde(default)]
     #[specta(skip)]
     seen_evaluations: BTreeSet<String>,
 }
@@ -147,10 +167,147 @@ impl GepaProjection {
                         .and_then(|v| v.as_str())
                         .map(str::to_string);
                 }
+                if entry.values.is_null() {
+                    entry.values = payload.get("values").cloned().unwrap_or(Value::Null);
+                }
+                if entry.digest.is_none() {
+                    entry.digest = payload
+                        .get("digest")
+                        .or_else(|| payload.get("candidate_digest"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                }
+                if entry.proposal_index.is_none() {
+                    entry.proposal_index = payload.get("proposal_index").and_then(Value::as_u64);
+                }
                 if entry.source.as_deref() == Some("seed") {
                     self.seed_candidate_id.get_or_insert(id);
                 }
                 self.phase = Some(RunPhase::Selection);
+            }
+            "gepa.run.started" => {
+                let container = nested_object_mut(&mut self.contract, "container");
+                copy_string(payload, "container_url", container, "url");
+            }
+            "container.task_info.loaded" => {
+                let task = payload.get("task").and_then(Value::as_object);
+                if let Some(task) = task {
+                    let target = nested_object_mut(&mut self.contract, "task");
+                    copy_string_map(task, "id", target, "id");
+                    copy_string_map(task, "name", target, "name");
+                    copy_string_map(task, "description", target, "description");
+                    copy_string_map(task, "task_family", target, "family");
+                    copy_string_map(task, "version", target, "version");
+                }
+                copy_dataset(payload.get("dataset"), &mut self.contract);
+            }
+            "container.program.loaded" => {
+                let program = nested_object_mut(&mut self.contract, "program");
+                copy_string(payload, "program_id", program, "id");
+                if let Some(fields) = payload.get("mutable_fields").and_then(Value::as_array) {
+                    program.insert("mutableFields".into(), Value::Array(fields.clone()));
+                }
+            }
+            "objective_set.declared" => {
+                let objective = nested_object_mut(&mut self.contract, "objectiveSet");
+                copy_string(payload, "objective_set_id", objective, "id");
+                copy_string(payload, "objective_set_hash", objective, "hash");
+                copy_string(payload, "frontier_type", objective, "frontierType");
+                copy_string(
+                    payload,
+                    "selection_objective",
+                    objective,
+                    "selectionObjective",
+                );
+                if let Some(items) = payload.get("objectives").and_then(Value::as_array) {
+                    objective.insert("objectives".into(), Value::Array(items.clone()));
+                }
+            }
+            "taskset.tasks.loaded" => {
+                let splits = nested_object_mut(&mut self.contract, "splits");
+                copy_number(payload, "minibatch_rows", splits, "minibatch");
+                copy_number(payload, "reflection_rows", splits, "reflection");
+                copy_number(payload, "pareto_rows", splits, "pareto");
+                copy_number(payload, "heldout_rows", splits, "heldout");
+                if let Some(rows) = payload.get("pareto_rows").and_then(Value::as_u64) {
+                    splits.insert("train".into(), json!(rows));
+                }
+            }
+            "container.contract.verified" => {
+                copy_dataset(payload.get("dataset"), &mut self.contract);
+                let container = nested_object_mut(&mut self.contract, "container");
+                container.insert("verified".into(), Value::Bool(true));
+                copy_string(payload, "container_spec_id", container, "specId");
+                copy_string(payload, "workshop_instance", container, "workshopInstance");
+                copy_string(payload, "credential_mode", container, "credentialMode");
+                copy_string(payload, "runtime_family", container, "runtimeFamily");
+                copy_string(payload, "target_id", container, "targetId");
+                copy_string(payload, "reward_authority", container, "rewardAuthority");
+                copy_string(payload, "retention", container, "retention");
+                copy_number(payload, "scale_leases", container, "scaleLeases");
+                let evaluator_id = payload
+                    .get("evaluator_id")
+                    .or_else(|| payload.get("evaluation_plan_ref"))
+                    .and_then(Value::as_str);
+                if let Some(evaluator_id) = evaluator_id {
+                    container.insert("evaluatorId".into(), json!(evaluator_id));
+                }
+                if let Some(policy) = payload
+                    .get("policy_refs")
+                    .and_then(Value::as_array)
+                    .and_then(|refs| refs.first())
+                    .and_then(Value::as_object)
+                {
+                    copy_string_map(policy, "harness", container, "policyHarness");
+                    copy_string_map(policy, "config", container, "policyConfig");
+                    copy_string_map(policy, "model", container, "policyModel");
+                }
+            }
+            "runtime.job.completed" | "runtime.throughput.warning" => {
+                let runtime = object_mut(&mut self.runtime);
+                copy_number(
+                    payload,
+                    "configured_rollout_workers",
+                    runtime,
+                    "configuredRolloutWorkers",
+                );
+                copy_number(
+                    payload,
+                    "static_rollout_workers",
+                    runtime,
+                    "staticRolloutWorkers",
+                );
+                copy_number(
+                    payload,
+                    "estimated_effective_concurrency",
+                    runtime,
+                    "estimatedEffectiveConcurrency",
+                );
+                copy_string(
+                    payload,
+                    "rollout_submission_mode",
+                    runtime,
+                    "rolloutSubmissionMode",
+                );
+                copy_number(
+                    payload,
+                    "max_dispatch_chunk_size",
+                    runtime,
+                    "maxDispatchChunkSize",
+                );
+                copy_number(payload, "wall_seconds", runtime, "latestWallSeconds");
+                let observed = payload
+                    .get("observed_uncached_rollouts_per_second")
+                    .and_then(Value::as_f64)
+                    .map(|per_second| per_second * 60.0)
+                    .or_else(|| {
+                        let misses = payload.get("cache_misses").and_then(Value::as_f64)?;
+                        let seconds = payload.get("wall_seconds").and_then(Value::as_f64)?;
+                        (misses > 0.0 && seconds > 0.0).then_some(misses * 60.0 / seconds)
+                    });
+                if let Some(rollouts_per_minute) = observed {
+                    runtime.insert("rolloutsPerMinute".into(), json!(rollouts_per_minute));
+                }
             }
             "optimizer.candidate_evaluation.allocated" => {
                 self.rollouts_allocated += 1;
@@ -189,10 +346,27 @@ impl GepaProjection {
                 }
             }
             "optimizer.evaluation_result.received" => {
-                if let Some(evaluation_id) = payload.get("evaluation_id").and_then(|v| v.as_str()) {
-                    if !self.seen_evaluations.insert(evaluation_id.to_string()) {
-                        return Ok(());
-                    }
+                let evaluation_key = payload
+                    // A producer may emit an early partial result with an
+                    // evaluation id and later finalize the same provider call
+                    // without that field. Both records retain rollout_id, so
+                    // it is the durable identity for exactly-once scoring.
+                    .get("rollout_id")
+                    .or_else(|| payload.get("evaluation_id"))
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        Some(format!(
+                            "{}:{}:{}",
+                            payload.get("candidate_id")?.as_str()?,
+                            payload.get("stage")?.as_str()?,
+                            payload.get("example_id")?.as_str()?
+                        ))
+                    })
+                    .unwrap_or_else(|| format!("event:{}", event.aggregate_sequence));
+                if !self.seen_evaluations.insert(evaluation_key) {
+                    return Ok(());
                 }
                 match payload.get("reward").and_then(|v| v.as_f64()) {
                     Some(_) => self.rollouts_scored += 1,
@@ -474,6 +648,81 @@ impl GepaProjection {
     }
 }
 
+fn object_mut(value: &mut Value) -> &mut Map<String, Value> {
+    if !value.is_object() {
+        *value = json!({});
+    }
+    value.as_object_mut().expect("object initialized above")
+}
+
+fn nested_object_mut<'a>(value: &'a mut Value, key: &str) -> &'a mut Map<String, Value> {
+    let root = object_mut(value);
+    object_mut(root.entry(key.to_string()).or_insert_with(|| json!({})))
+}
+
+fn copy_string(
+    source: &Value,
+    source_key: &str,
+    target: &mut Map<String, Value>,
+    target_key: &str,
+) {
+    if let Some(value) = source.get(source_key).and_then(Value::as_str) {
+        target.insert(target_key.to_string(), json!(value));
+    }
+}
+
+fn copy_string_map(
+    source: &Map<String, Value>,
+    source_key: &str,
+    target: &mut Map<String, Value>,
+    target_key: &str,
+) {
+    if let Some(value) = source.get(source_key).and_then(Value::as_str) {
+        target.insert(target_key.to_string(), json!(value));
+    }
+}
+
+fn copy_number(
+    source: &Value,
+    source_key: &str,
+    target: &mut Map<String, Value>,
+    target_key: &str,
+) {
+    if let Some(value) = source.get(source_key).and_then(Value::as_f64) {
+        target.insert(target_key.to_string(), json!(value));
+    }
+}
+
+fn copy_dataset(source: Option<&Value>, contract: &mut Value) {
+    let Some(source) = source.and_then(Value::as_object) else {
+        return;
+    };
+    let dataset = nested_object_mut(contract, "dataset");
+    copy_string_map(source, "source", dataset, "source");
+    copy_string_map(source, "config", dataset, "config");
+    copy_string_map(source, "revision", dataset, "revision");
+    copy_string_map(source, "dataset_digest", dataset, "digest");
+    if let Some(value) = source.get("row_count").and_then(Value::as_u64) {
+        dataset.insert("rowCount".into(), json!(value));
+    }
+    if let Some(value) = source.get("label_count").and_then(Value::as_u64) {
+        dataset.insert("labelCount".into(), json!(value));
+    }
+    if let Some(source_splits) = source.get("splits").and_then(Value::as_object) {
+        let splits = object_mut(dataset.entry("splits").or_insert_with(|| json!({})));
+        for name in ["train", "selection", "heldout"] {
+            if let Some(count) = source_splits
+                .get(name)
+                .and_then(Value::as_object)
+                .and_then(|split| split.get("count"))
+                .and_then(Value::as_u64)
+            {
+                splits.insert(name.into(), json!(count));
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum GepaVerdict {
@@ -656,12 +905,45 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_result_deduplication_survives_projection_persistence() {
+        let payload = json!({
+            "candidate_id": "seed",
+            "stage": "seed_full_train",
+            "example_id": "train:0",
+            "evaluation_id": "seed:train:0",
+            "rollout_id": "roll_0",
+            "reward": 1.0
+        });
+        let mut projection = GepaProjection::default();
+        projection
+            .apply(&committed(
+                "optimizer.evaluation_result.received",
+                payload.clone(),
+                1,
+            ))
+            .unwrap();
+        let mut restored: GepaProjection =
+            serde_json::from_value(serde_json::to_value(projection).unwrap()).unwrap();
+        let mut finalized = payload;
+        finalized.as_object_mut().unwrap().remove("evaluation_id");
+        restored
+            .apply(&committed(
+                "optimizer.evaluation_result.received",
+                finalized,
+                2,
+            ))
+            .unwrap();
+        assert_eq!(restored.rollouts_scored, 1);
+        assert_eq!(restored.evaluations.len(), 1);
+    }
+
+    #[test]
     fn current_gepa_events_preserve_minibatch_proposer_and_heldout_evidence() {
         let mut projection = GepaProjection::default();
         let events = [
             (
                 "candidate.registered",
-                json!({"candidate_id":"seed","source":"seed"}),
+                json!({"candidate_id":"seed","source":"seed","values":{"classification_system_prompt":"Classify into one label."}}),
             ),
             (
                 "candidate.evaluated",
@@ -669,7 +951,7 @@ mod tests {
             ),
             (
                 "candidate.registered",
-                json!({"candidate_id":"child","source":"reflector:parent_variation","parent_id":"seed","generation":0}),
+                json!({"candidate_id":"child","source":"reflector:parent_variation","parent_id":"seed","generation":0,"proposal_index":0,"values":{"classification_system_prompt":"Classify precisely into one canonical label."}}),
             ),
             (
                 "proposer.completed",
@@ -702,6 +984,70 @@ mod tests {
         assert_eq!(projection.candidates["child"].gate_accepted, Some(false));
         assert_eq!(projection.candidates["seed"].train_reward, Some(0.8025));
         assert_eq!(projection.candidates["seed"].heldout_reward, Some(0.7985));
+        assert_eq!(
+            projection.candidates["child"].values["classification_system_prompt"],
+            json!("Classify precisely into one canonical label.")
+        );
+        assert_eq!(projection.candidates["child"].proposal_index, Some(0));
+    }
+
+    #[test]
+    fn live_projection_keeps_setup_and_measured_runtime_facts() {
+        let mut projection = GepaProjection::default();
+        let events = [
+            (
+                "gepa.run.started",
+                json!({"container_url":"http://127.0.0.1:8127"}),
+            ),
+            (
+                "container.task_info.loaded",
+                json!({
+                    "task":{"id":"banking77-intents-v1","name":"Banking77 intent classification","task_family":"banking77","version":"v1"},
+                    "dataset":{"source":"PolyAI/banking77","config":"test","revision":"evals:abc","dataset_digest":"sha256:data","row_count":3080,"label_count":77,"splits":{"train":{"count":2114},"selection":{"count":623},"heldout":{"count":343}}}
+                }),
+            ),
+            (
+                "container.program.loaded",
+                json!({"program_id":"banking77-classifier-v1","mutable_fields":["classification_system_prompt"]}),
+            ),
+            (
+                "taskset.tasks.loaded",
+                json!({"minibatch_rows":40,"reflection_rows":100,"pareto_rows":100,"heldout_rows":100}),
+            ),
+            (
+                "container.contract.verified",
+                json!({"container_spec_id":"banking77-gepa-b-v6","workshop_instance":"B","credential_mode":"workshop_ephemeral_proxy","runtime_family":"banking77","evaluator_id":"banking77-evaluator-v1","retention":"run","policy_refs":[{"model":"openai/gpt-5.6-luna","config":"chatgpt_proxy"}]}),
+            ),
+            (
+                "runtime.job.completed",
+                json!({"configured_rollout_workers":50,"static_rollout_workers":50,"estimated_effective_concurrency":17.5,"cache_misses":50,"wall_seconds":5.0,"rollout_submission_mode":"async","max_dispatch_chunk_size":50}),
+            ),
+        ];
+        for (index, (kind, payload)) in events.into_iter().enumerate() {
+            projection
+                .apply(&committed(kind, payload, index as u64 + 1))
+                .unwrap();
+        }
+        assert_eq!(
+            projection.contract["task"]["id"],
+            json!("banking77-intents-v1")
+        );
+        assert_eq!(projection.contract["dataset"]["labelCount"], json!(77));
+        assert_eq!(projection.contract["splits"]["heldout"], json!(100.0));
+        assert_eq!(
+            projection.contract["container"]["url"],
+            json!("http://127.0.0.1:8127")
+        );
+        assert_eq!(
+            projection.contract["container"]["workshopInstance"],
+            json!("B")
+        );
+        assert_eq!(projection.runtime["configuredRolloutWorkers"], json!(50.0));
+        assert_eq!(
+            projection.runtime["estimatedEffectiveConcurrency"],
+            json!(17.5)
+        );
+        assert_eq!(projection.runtime["rolloutsPerMinute"], json!(600.0));
     }
 
     #[test]

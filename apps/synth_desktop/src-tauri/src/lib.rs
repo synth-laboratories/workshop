@@ -1677,10 +1677,7 @@ async fn optimizers_visual_render_receipt(
 ) -> Result<Option<crate::optimizers::models::VisualRenderReceipt>, AppError> {
     state
         .optimizers()
-        .visual_render_receipt(
-            visual_id,
-            visual_revision.map(|value| value.0).unwrap_or(0),
-        )
+        .visual_render_receipt(visual_id, visual_revision.map(|value| value.0).unwrap_or(0))
         .await
         .map_err(AppError::from)
 }
@@ -1721,6 +1718,71 @@ async fn optimizers_run_view(
     state
         .optimizers()
         .run_view_envelope(optimizer_run_id, if_newer_than.map(|value| value.0))
+        .await
+        .map_err(AppError::from)
+}
+
+/// The bounded run summary: what every live card, dialog, and visual mounts
+/// from. Conditional on `if_newer_than` like `optimizers_run_view`.
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_summary(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    if_newer_than: Option<contract::specta::OpaqueInteger<u64>>,
+) -> Result<crate::optimizers::kernel::OptimizerRunSummaryEnvelope, AppError> {
+    state
+        .optimizers()
+        .run_summary(optimizer_run_id, if_newer_than.map(|value| value.0))
+        .await
+        .map_err(AppError::from)
+}
+
+/// One keyset page of a durable run collection. Every page has an explicit,
+/// clamped limit; there is no "all rows" form.
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_collection(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    collection: crate::optimizers::kernel::RunCollection,
+    query: Option<crate::optimizers::kernel::RunCollectionQuery>,
+) -> Result<crate::optimizers::kernel::RunCollectionPage, AppError> {
+    state
+        .optimizers()
+        .run_collection(optimizer_run_id, collection, query.unwrap_or_default())
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_collection_item(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    collection: crate::optimizers::kernel::RunCollection,
+    item_id: String,
+) -> Result<Option<crate::optimizers::kernel::RunCollectionRow>, AppError> {
+    state
+        .optimizers()
+        .run_collection_item(optimizer_run_id, collection, item_id)
+        .await
+        .map_err(AppError::from)
+}
+
+/// The projection as it stood at `sequence`, folded backend-side from the
+/// nearest reducer checkpoint. The historical scrubber reads this instead of
+/// reducing the journal in the renderer.
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_projection_at(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    sequence: contract::specta::OpaqueInteger<u64>,
+) -> Result<crate::optimizers::kernel::HistoricalProjection, AppError> {
+    state
+        .optimizers()
+        .projection_at(optimizer_run_id, sequence.0)
         .await
         .map_err(AppError::from)
 }

@@ -740,6 +740,55 @@ test("first paint does not wait for the journal: the projection publishes before
 	assert.equal(last.cursor, 3);
 });
 
+test("projection-only subscribers never read or retain the raw journal", async () => {
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ status: "completed", cursorSeq: 7_177 }) },
+		pages: { "run-a": Array.from({ length: 7_177 }, (_, index) => event(index + 1)) },
+		views: { "run-a": { ...runView(7_177, "terminal"), algorithm: "gepa" } }
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot), { evidence: "projection" });
+	await settle();
+	assert.equal(transport.calls.eventsAfter, 0, "aggregate surfaces must not deserialize the journal");
+	assert.equal(seen.at(-1).state, "terminal");
+	assert.equal(seen.at(-1).cursor, 7_177);
+	assert.deepEqual(seen.at(-1).events, []);
+});
+
+test("a notification storm coalesces to one newest-state refresh", async () => {
+	let release;
+	const gate = new Promise((resolve) => { release = resolve; });
+	const listeners = new Set();
+	let reads = 0;
+	const transport = {
+		async get() { return runRecord({ cursorSeq: 0 }); },
+		async runView() {
+			reads += 1;
+			if (reads === 1) await gate;
+			return {
+				unchanged: false,
+				view: { ...runView(reads), algorithm: "gepa" },
+				run: runRecord({ cursorSeq: 0 }),
+				projectionRevision: reads,
+				tailCursor: 0
+			};
+		},
+		async eventsAfter() { throw new Error("projection-only subscription read evidence"); },
+		async refresh() { return undefined; },
+		onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+	};
+	setRunProgressTransport(transport);
+	subscribeToRun("run-a", () => undefined, { evidence: "projection" });
+	await settle();
+	for (let index = 0; index < 1_000; index += 1) {
+		for (const listener of listeners) listener({ payload: { optimizerRunId: "run-a" } });
+	}
+	release();
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(reads, 2, "1,000 stale wakeups become one follow-up durable read");
+});
+
 test("one read, not three: the envelope carries the run record and the tail", async () => {
 	const transport = envelopeTransport({
 		runs: { "run-a": runRecord({ cursorSeq: 2 }) },
@@ -948,4 +997,69 @@ test("a probe that changes nothing is counted as carrying nothing", async () => 
 	);
 	stop();
 	setRunProgressPollInterval(3_600_000);
+});
+
+test("projection-first runs open under auto without reading the raw journal: GEPA, SFT, CISPO", async () => {
+	for (const algorithm of ["gepa", "sft", "cispo"]) {
+		resetRunProgressStore();
+		const transport = fakeTransport({
+			runs: { "run-a": runRecord({ algorithmId: algorithm, cursorSeq: 900 }) },
+			pages: { "run-a": Array.from({ length: 900 }, (_, index) => event(index + 1)) },
+			views: { "run-a": { algorithm, header: { lifecycle: "running", projectionRevision: 4, asOfSequence: 900 }, projection: {} } }
+		});
+		setRunProgressTransport(transport);
+		const seen = [];
+		const unsubscribe = subscribeToRun("run-a", (snapshot) => seen.push(snapshot), { evidence: "auto" });
+		await settle();
+		assert.equal(transport.calls.eventsAfter, 0, `${algorithm} auto mount must not page the journal`);
+		assert.equal(seen.at(-1).events.length, 0);
+		assert.equal(seen.at(-1).evidence, "ready");
+		assert.equal(seen.at(-1).cursor, 900, "the durable cursor is still reported for evidence readers");
+		unsubscribe();
+	}
+	// Eval still hydrates under auto until its projection is complete.
+	resetRunProgressStore();
+	const evalTransport = fakeTransport({
+		runs: { "run-a": runRecord({ algorithmId: "eval", cursorSeq: 3 }) },
+		pages: { "run-a": [event(1), event(2), event(3)] },
+		views: { "run-a": { algorithm: "eval", header: { lifecycle: "running", projectionRevision: 1, asOfSequence: 3 }, projection: {} } }
+	});
+	setRunProgressTransport(evalTransport);
+	const unsubscribeEval = subscribeToRun("run-a", () => undefined, { evidence: "auto" });
+	await settle();
+	assert.ok(evalTransport.calls.eventsAfter > 0);
+	unsubscribeEval();
+});
+
+test("an active full-evidence consumer retains a bounded window and reports the shortfall", async () => {
+	resetRunProgressStore();
+	const total = 50_000 + 1_500;
+	const pages = Array.from({ length: total }, (_, index) => ({ sequenceNumber: index + 1, type: "x", optimizerRunId: "run-a", algorithmId: "gepa" }));
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: total }) },
+		pages: { "run-a": pages },
+		views: { "run-a": { algorithm: "gepa", header: { lifecycle: "running", projectionRevision: 9, asOfSequence: total }, projection: {} } }
+	});
+	setRunProgressTransport(transport);
+	const reports = [];
+	installRunProgressDiagnostics((report) => reports.push(report));
+	const seen = [];
+	const unsubscribe = subscribeToRun("run-a", (snapshot) => seen.push(snapshot), { evidence: "full" });
+	await new Promise((resolve) => setTimeout(resolve, 300));
+	const last = seen.at(-1);
+	assert.equal(last.events.length, 50_000, "retention is bounded to the ceiling");
+	assert.equal(last.events[0].sequenceNumber, 1_501, "the newest window is what stays");
+	assert.equal(last.cursor, total, "the cursor still reflects everything read");
+	assert.equal(last.gap, true);
+	assert.equal(last.evidence, "partial", "missing evidence is missing, never an empty history");
+	assert.equal(last.state, "subscribed", "a bounded window is an evidence-lane fact, not a lifecycle fact");
+	assert.ok(reports.some((report) => report.event === "run_progress.evidence.bounded" && report.details?.dropped === 1_500));
+	// A later wakeup resumes from the cursor rather than replaying from zero
+	// to rebuild what was deliberately trimmed.
+	const before = transport.calls.eventsAfter;
+	transport.emit("run-a");
+	await settle();
+	assert.ok(transport.calls.eventsAfter - before <= 2, "no replay from zero after a bounded window");
+	unsubscribe();
+	installRunProgressDiagnostics(() => undefined);
 });

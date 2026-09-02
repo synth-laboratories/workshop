@@ -91,6 +91,14 @@ import type {
 	VisualRenderReceipt,
 	OptimizerRunViewEnvelope,
 	OptimizerRunViewV2,
+	OptimizerRunSummary,
+	OptimizerRunSummaryEnvelope,
+	RunCollection,
+	RunCollectionFilter,
+	RunCollectionQuery,
+	RunCollectionPage,
+	RunCollectionRow,
+	HistoricalProjection,
 	OptimizerFrameContent,
 	OptimizerFrameDelta,
 	OptimizerFrameRef,
@@ -183,6 +191,14 @@ export type {
 	VisualRenderReceipt,
 	OptimizerRunViewEnvelope,
 	OptimizerRunViewV2,
+	OptimizerRunSummary,
+	OptimizerRunSummaryEnvelope,
+	RunCollection,
+	RunCollectionFilter,
+	RunCollectionQuery,
+	RunCollectionPage,
+	RunCollectionRow,
+	HistoricalProjection,
 	OptimizerFrameContent,
 	OptimizerFrameDelta,
 	OptimizerFrameRef,
@@ -684,6 +700,7 @@ export type PluginLifecycleOperation =
 	| "disable"
 	| "install"
 	| "start"
+	| "restart"
 	| "stop"
 	| "update"
 	| "remove";
@@ -931,6 +948,17 @@ export type OptimizersBridge = {
 	 * to get `unchanged` back instead of the same bytes again.
 	 */
 	runView(optimizerRunId: string, ifNewerThan?: number | null): Promise<OptimizerRunViewEnvelope>;
+	/**
+	 * The bounded, algorithm-neutral run summary — the only read an ordinary
+	 * mount performs. Conditional on `ifNewerThan` like `runView`.
+	 */
+	runSummary(optimizerRunId: string, ifNewerThan?: number | null): Promise<OptimizerRunSummaryEnvelope>;
+	/** One keyset page of a durable collection. The limit is always explicit. */
+	runCollection(optimizerRunId: string, collection: RunCollection, query: RunCollectionQuery): Promise<RunCollectionPage>;
+	/** One row's durable detail — a candidate's content, one evaluation. */
+	runCollectionItem(optimizerRunId: string, collection: RunCollection, itemId: string): Promise<RunCollectionRow | null>;
+	/** The projection at `sequence`, folded backend-side from a checkpoint. */
+	projectionAt(optimizerRunId: string, sequence: number): Promise<HistoricalProjection>;
 	/**
 	 * Everything in `window` the caller does not already hold. `held` is the
 	 * coverage from the previous answer, sent back verbatim.

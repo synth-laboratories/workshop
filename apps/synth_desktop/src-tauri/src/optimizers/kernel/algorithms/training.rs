@@ -1,0 +1,269 @@
+//! Durable, bounded training series shared by the SFT and CISPO reducers.
+//!
+//! Before this module the training projections carried only the *latest*
+//! loss and step. Every surface that wanted a curve or a checkpoint scorecard
+//! — `TrainingWorkspace` most visibly — re-read the whole event prefix on a
+//! timer and rebuilt the series in the renderer. The series now lives in the
+//! projection, where it is written once per fold and read by page.
+//!
+//! Both series are bounded by construction:
+//!
+//!   · evaluations are bounded by the number of checkpoint evaluations a run
+//!     performs, which is a configuration fact rather than a step count;
+//!   · metric points are decimated once they pass a fixed ceiling, doubling the
+//!     stride each time, so a 100,000-step run keeps a deterministic
+//!     downsampled curve rather than 100,000 rows in the primary projection.
+//!     The most recent point is always retained so "latest" is never lost.
+//!
+//! Decimation is a function of the event order alone, so replaying the journal
+//! reproduces the same series byte for byte.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Ceiling on retained metric points before decimation halves the series.
+pub const METRIC_SERIES_CEILING: usize = 2_000;
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TrainingEvaluationSummary {
+    /// Stable identity: the checkpoint id when reported, else the phase+step.
+    pub id: String,
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
+    pub step: Option<u64>,
+    #[serde(default)]
+    pub score: Option<f64>,
+    #[serde(default)]
+    pub loss: Option<f64>,
+    #[serde(default)]
+    pub delta: Option<f64>,
+    #[serde(default)]
+    pub checkpoint_id: Option<String>,
+    #[serde(default)]
+    pub artifact_digest: Option<String>,
+    #[serde(default)]
+    pub evaluator: Option<String>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
+    pub sample_count: Option<u64>,
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Child eval run when the evaluation ran as its own optimizer run.
+    #[serde(default)]
+    pub child_run_id: Option<String>,
+    /// Sequence of the event that reported it; the durable evidence pointer.
+    #[specta(type = specta_typescript::Number)]
+    pub sequence: u64,
+}
+
+impl TrainingEvaluationSummary {
+    /// Decode the `evaluation` object a `training.evaluation.completed` event
+    /// carries. Absent or non-object evaluations produce `None`; the reducer
+    /// then records the completion on the work item without inventing a score.
+    pub fn from_payload(payload: &Value, sequence: u64) -> Option<Self> {
+        let evaluation = payload.get("evaluation")?.as_object()?;
+        let get = |key: &str| evaluation.get(key);
+        let string = |keys: &[&str]| {
+            keys.iter()
+                .find_map(|key| get(key).and_then(Value::as_str))
+                .map(str::to_string)
+        };
+        let number = |keys: &[&str]| keys.iter().find_map(|key| get(key).and_then(Value::as_f64));
+        let integer = |keys: &[&str]| keys.iter().find_map(|key| get(key).and_then(Value::as_u64));
+        let phase = string(&["phase"]);
+        let step = integer(&["step"]);
+        let checkpoint_id = string(&["checkpoint_id", "checkpointId"]);
+        let child_run_id = payload
+            .get("optimizerRunId")
+            .or_else(|| payload.get("childEvalRunId"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let id = checkpoint_id.clone().unwrap_or_else(|| {
+            format!(
+                "{}:{}",
+                phase.as_deref().unwrap_or("checkpoint"),
+                step.map(|value| value.to_string())
+                    .unwrap_or_else(|| format!("seq{sequence}"))
+            )
+        });
+        Some(Self {
+            id,
+            phase,
+            step,
+            score: number(&["score"]),
+            loss: number(&["loss"]),
+            delta: number(&["delta"]),
+            checkpoint_id,
+            artifact_digest: string(&["artifact_digest", "artifactDigest", "digest"]),
+            evaluator: string(&["evaluator"]),
+            sample_count: integer(&["sample_count", "sampleCount"]),
+            status: string(&["status"]),
+            child_run_id,
+            sequence,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TrainingMetricPoint {
+    #[specta(type = specta_typescript::Number)]
+    pub step: u64,
+    #[serde(default)]
+    pub loss: Option<f64>,
+    #[serde(default)]
+    pub learning_rate: Option<f64>,
+    #[serde(default)]
+    pub reward: Option<f64>,
+    #[serde(default)]
+    pub advantage: Option<f64>,
+    #[serde(default)]
+    pub tokens_per_second: Option<f64>,
+    #[specta(type = specta_typescript::Number)]
+    pub sequence: u64,
+}
+
+impl TrainingMetricPoint {
+    pub fn from_payload(payload: &Value, sequence: u64) -> Option<Self> {
+        let number = |keys: &[&str]| {
+            keys.iter()
+                .find_map(|key| payload.get(key).and_then(Value::as_f64))
+        };
+        let step = payload.get("step").and_then(Value::as_u64)?;
+        Some(Self {
+            step,
+            loss: number(&["trainLoss", "train_loss", "loss"]),
+            learning_rate: number(&["learningRate", "learning_rate", "lr"]),
+            reward: number(&["meanReward", "mean_reward", "reward"]),
+            advantage: number(&["meanAdvantage", "mean_advantage", "advantage"]),
+            tokens_per_second: number(&["tokensPerSecond", "tokens_per_second"]),
+            sequence,
+        })
+    }
+}
+
+/// A bounded, deterministically downsampled metric series.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricSeries {
+    pub points: Vec<TrainingMetricPoint>,
+    /// Current decimation stride. 1 until the ceiling is first reached.
+    #[serde(default = "default_stride")]
+    #[specta(type = specta_typescript::Number)]
+    pub stride: u64,
+    /// Every point ever offered, including the ones decimation dropped.
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
+    pub observed: u64,
+}
+
+fn default_stride() -> u64 {
+    1
+}
+
+impl MetricSeries {
+    pub fn push(&mut self, point: TrainingMetricPoint) {
+        if self.stride == 0 {
+            self.stride = 1;
+        }
+        self.observed += 1;
+        // The newest point always lands so `latest()` is exact; a point that
+        // does not sit on the stride is replaced by the next one rather than
+        // accumulating.
+        if let Some(last) = self.points.last() {
+            if last.step % self.stride != 0 && last.step != point.step {
+                self.points.pop();
+            }
+        }
+        self.points.push(point);
+        if self.points.len() > METRIC_SERIES_CEILING {
+            self.stride *= 2;
+            let stride = self.stride;
+            let last = self.points.len() - 1;
+            let mut index = 0;
+            self.points
+                .retain(|point| {
+                    let keep = index == last || point.step % stride == 0;
+                    index += 1;
+                    keep
+                });
+        }
+    }
+
+    pub fn latest(&self) -> Option<&TrainingMetricPoint> {
+        self.points.last()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn point(step: u64) -> TrainingMetricPoint {
+        TrainingMetricPoint {
+            step,
+            loss: Some(1.0 / (step as f64 + 1.0)),
+            sequence: step + 1,
+            ..TrainingMetricPoint::default()
+        }
+    }
+
+    #[test]
+    fn series_stays_under_the_ceiling_and_keeps_the_newest_point() {
+        let mut series = MetricSeries::default();
+        for step in 0..100_000u64 {
+            series.push(point(step));
+        }
+        assert!(series.points.len() <= METRIC_SERIES_CEILING);
+        assert_eq!(series.latest().map(|p| p.step), Some(99_999));
+        assert_eq!(series.observed, 100_000);
+        assert!(series.stride > 1);
+        let steps: Vec<u64> = series.points.iter().map(|p| p.step).collect();
+        let mut sorted = steps.clone();
+        sorted.sort_unstable();
+        assert_eq!(steps, sorted, "decimation preserves order");
+    }
+
+    #[test]
+    fn decimation_is_a_function_of_input_order_only() {
+        let mut once = MetricSeries::default();
+        let mut twice = MetricSeries::default();
+        for step in 0..9_000u64 {
+            once.push(point(step));
+        }
+        for step in 0..9_000u64 {
+            twice.push(point(step));
+        }
+        assert_eq!(once, twice);
+        assert_eq!(
+            serde_json::to_string(&once).unwrap(),
+            serde_json::to_string(&twice).unwrap()
+        );
+    }
+
+    #[test]
+    fn evaluation_summary_decodes_the_nested_evaluation_object() {
+        let summary = TrainingEvaluationSummary::from_payload(
+            &json!({
+                "optimizerRunId": "eval_child_1",
+                "evaluation": {
+                    "phase": "checkpoint", "step": 40, "score": 0.81, "loss": 0.42,
+                    "checkpoint_id": "ckpt-40", "evaluator": "banking77", "sample_count": 200,
+                    "status": "completed"
+                }
+            }),
+            77,
+        )
+        .unwrap();
+        assert_eq!(summary.id, "ckpt-40");
+        assert_eq!(summary.step, Some(40));
+        assert_eq!(summary.score, Some(0.81));
+        assert_eq!(summary.child_run_id.as_deref(), Some("eval_child_1"));
+        assert_eq!(summary.sequence, 77);
+        assert!(TrainingEvaluationSummary::from_payload(&json!({}), 1).is_none());
+    }
+}

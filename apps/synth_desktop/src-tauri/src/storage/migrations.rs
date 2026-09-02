@@ -228,6 +228,14 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("optimizer_run_artifacts", MIGRATION_56),
     ("optimizer_projection_outbox", PROJECTION_OUTBOX_CREATE_ONLY),
     (
+        "optimizer_run_collection_rows",
+        OPTIMIZER_READ_MODEL_CREATE_ONLY,
+    ),
+    (
+        "optimizer_projection_checkpoints",
+        OPTIMIZER_READ_MODEL_CREATE_ONLY,
+    ),
+    (
         "paid_compute_conversation_budgets",
         PAID_COMPUTE_BUDGET_CREATE_ONLY,
     ),
@@ -241,6 +249,8 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("rubric_results", MIGRATION_63),
     ("annotation_reviews", MIGRATION_63),
     ("annotation_provisional_findings", LIVE_ANNOTATION_CREATE_ONLY),
+    ("optimizer_run_collection_rows", OPTIMIZER_READ_MODEL_CREATE_ONLY),
+    ("optimizer_projection_checkpoints", OPTIMIZER_READ_MODEL_CREATE_ONLY),
 ];
 
 /// Lane C: provisional findings relayed from a rollout's live annotation
@@ -278,6 +288,45 @@ CREATE INDEX IF NOT EXISTS annotation_provisional_findings_run ON annotation_pro
 CREATE INDEX IF NOT EXISTS annotation_provisional_findings_label ON annotation_provisional_findings(run_id, kind, label);
 "#;
 const MIGRATION_64: &str = LIVE_ANNOTATION_CREATE_ONLY;
+/// Shared optimizer read model: materialized collection rows and reducer
+/// checkpoints. CREATE-only for the same reason as the kernel tables above.
+pub const OPTIMIZER_READ_MODEL_CREATE_ONLY: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_run_collection_rows (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    collection TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    sequence INTEGER NOT NULL,
+    revision INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT,
+    parent_id TEXT,
+    score REAL,
+    cost_usd REAL,
+    status TEXT,
+    details_version TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, collection, item_id)
+);
+CREATE INDEX IF NOT EXISTS optimizer_run_collection_rows_ordinal
+ON optimizer_run_collection_rows(optimizer_run_id, collection, ordinal);
+CREATE INDEX IF NOT EXISTS optimizer_run_collection_rows_parent
+ON optimizer_run_collection_rows(optimizer_run_id, collection, parent_id, ordinal);
+CREATE INDEX IF NOT EXISTS optimizer_run_collection_rows_revision
+ON optimizer_run_collection_rows(optimizer_run_id, collection, revision);
+
+CREATE TABLE IF NOT EXISTS optimizer_projection_checkpoints (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    as_of_sequence INTEGER NOT NULL,
+    reducer_version TEXT NOT NULL,
+    projection_revision INTEGER NOT NULL,
+    state_json TEXT NOT NULL,
+    byte_len INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, as_of_sequence)
+);
+"#;
 
 const PROJECTION_OUTBOX_CREATE_ONLY: &str = r#"
 CREATE TABLE IF NOT EXISTS optimizer_projection_outbox (

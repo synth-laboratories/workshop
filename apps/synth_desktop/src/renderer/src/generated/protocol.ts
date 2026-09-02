@@ -97,6 +97,60 @@ export const commands = {
 	 */
 	optimizersEvidencePage: (optimizerRunId: string, window: EvidenceRange, held: EvidenceRange[] | null, limit: number | null) => typedError<EvidencePage_Serialize, AppError_Serialize>(__TAURI_INVOKE("optimizers_evidence_page", { optimizerRunId, window, held, limit })),
 	/**
+	 *  The bounded run summary: what every live card, dialog, and visual mounts
+	 *  from. Conditional on `if_newer_than` like `optimizers_run_view`.
+	 */
+	optimizersRunSummary: (optimizerRunId: string, ifNewerThan: number | null) => typedError<OptimizerRunSummaryEnvelope_Serialize, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_summary", { optimizerRunId, ifNewerThan })),
+	/**
+	 *  One keyset page of a durable run collection. Every page has an explicit,
+	 *  clamped limit; there is no "all rows" form.
+	 */
+	optimizersRunCollection: (optimizerRunId: string, collection: RunCollection, query: {
+	/**  Opaque keyset cursor from the previous page's `next_cursor`. */
+	cursor?: string | null,
+	/**
+	 *  Rows requested. Clamped to [`COLLECTION_PAGE_MAX_ROWS`]; absent means
+	 *  [`COLLECTION_PAGE_DEFAULT_ROWS`].
+	 */
+	limit?: number | null,
+	filter?: RunCollectionFilter | null,
+	/**  Newest ordinals first. Default is append order. */
+	descending?: boolean,
+} | null) => typedError<RunCollectionPage_Serialize, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_collection", { optimizerRunId, collection, query })),
+	optimizersRunCollectionItem: (optimizerRunId: string, collection: RunCollection, itemId: string) => typedError<{
+	schemaVersion: string,
+	runId: string,
+	algorithm: AlgorithmKind,
+	collection: RunCollection,
+	itemId: string,
+	/**
+	 *  Position in the collection's append order. Keyset cursor; stable
+	 *  across concurrent appends because appends only ever add higher ones.
+	 */
+	ordinal: number,
+	/**
+	 *  Aggregate sequence the projection had reached when this row was
+	 *  written or last changed.
+	 */
+	sequence: number,
+	/**  Projection revision that wrote or last changed this row. */
+	revision: number,
+	kind: string,
+	label?: string | null,
+	parentId?: string | null,
+	score?: number | null,
+	costUsd?: number | null,
+	status?: string | null,
+	detailsVersion: string,
+	details: unknown,
+} | null, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_collection_item", { optimizerRunId, collection, itemId })),
+	/**
+	 *  The projection as it stood at `sequence`, folded backend-side from the
+	 *  nearest reducer checkpoint. The historical scrubber reads this instead of
+	 *  reducing the journal in the renderer.
+	 */
+	optimizersProjectionAt: (optimizerRunId: string, sequence: number) => typedError<HistoricalProjection, AppError_Serialize>(__TAURI_INVOKE("optimizers_projection_at", { optimizerRunId, sequence })),
+	/**
 	 *  One coherent read for a visual's first paint: the durable projection, the
 	 *  run record the templates still read compatibility fields from, and the
 	 *  journal tail an evidence reader pages against.
@@ -816,6 +870,12 @@ export type CispoProjection = {
 	childEvalRunIds: string[],
 	noLearningSignal: boolean,
 	policyCheckpointId: string | null,
+	/**  Checkpoint evaluation scorecards; see `SftProjection::evaluations`. */
+	evaluations?: TrainingEvaluationSummary[],
+	/**  Bounded reward/advantage/loss curve keyed by training step. */
+	metrics?: MetricSeries,
+	/**  Clip configuration as reported by the producer. Compact facts only. */
+	clipConfig?: unknown,
 };
 
 export type CispoResult = {
@@ -1663,9 +1723,27 @@ export type GepaCandidate = {
 	generation?: number,
 	source?: string | null,
 	digest?: string | null,
+	/**
+	 *  Durable candidate levers (for GEPA, normally the proposed prompt).
+	 *  This is bounded by the candidate count and lets the live visual render
+	 *  content/diffs without replaying the entire optimizer journal.
+	 */
+	values?: unknown,
+	proposalIndex?: number,
 	heldoutReward?: number | null,
 	trainReward?: number | null,
+	minibatchReward?: number | null,
 	gateAccepted?: boolean | null,
+};
+
+export type GepaEvaluationSummary = {
+	id: string,
+	candidateId?: string | null,
+	stage?: string | null,
+	exampleId?: string | null,
+	rolloutId?: string | null,
+	reward?: number | null,
+	costUsd?: number | null,
 };
 
 export type GepaProjection = {
@@ -1685,6 +1763,30 @@ export type GepaProjection = {
 	proposalsReturned: number,
 	maxActiveWorkers: number,
 	rolloutBudget: number,
+	/**
+	 *  Durable, bounded summaries used by the live visual. These are not raw
+	 *  traces; the journal remains the authority for full inspection.
+	 */
+	evaluations?: GepaEvaluationSummary[],
+	proposerCalls?: GepaProposerCallSummary[],
+	/**
+	 *  Compact product-facing setup facts reduced from the durable journal.
+	 *  This deliberately excludes task rows, prompts, and credentials.
+	 */
+	contract?: unknown,
+	/**
+	 *  Latest observed execution shape. Capacity is kept distinct from
+	 *  measured parallelism and throughput.
+	 */
+	runtime?: unknown,
+};
+
+export type GepaProposerCallSummary = {
+	generation: number,
+	model?: string | null,
+	provider?: string | null,
+	proposalCount: number,
+	costUsd?: number | null,
 };
 
 export type GepaResult = {
@@ -1728,6 +1830,19 @@ export type GoExRunView = {
 	header: OptimizerRunHeader,
 	projection: GoExProjection,
 	result: GoExResult | null,
+};
+
+/**  A projection as it stood at a requested sequence. */
+export type HistoricalProjection = {
+	schemaVersion: string,
+	runId: string,
+	requestedSequence: number,
+	asOfSequence: number,
+	/**  Checkpoint the fold started from; absent when it started from zero. */
+	checkpointSequence?: number | null,
+	/**  Events folded after the checkpoint to reach the requested sequence. */
+	replayedEvents: number,
+	view: OptimizerRunViewV2,
 };
 
 export type HostedTrainingModel = {
@@ -2042,6 +2157,15 @@ export type MeasurementKind = "decode" |
  *  measurement: see migration 21.
  */
 "legacy_observed_stream_estimate" | "end_to_end" | "provider_reported";
+
+/**  A bounded, deterministically downsampled metric series. */
+export type MetricSeries = {
+	points: TrainingMetricPoint[],
+	/**  Current decimation stride. 1 until the ceiling is first reached. */
+	stride?: number,
+	/**  Every point ever offered, including the ones decimation dropped. */
+	observed?: number,
+};
 
 export type MigrationApplyRequest = {
 	confirmationToken: string,
@@ -2551,6 +2675,75 @@ export type OptimizerRunStatus =
 "interrupted" | "infrastructure_lost" |
 /**  Stopped because a spend or step ceiling was reached. */
 "cap_reached";
+
+/**
+ *  The algorithm-neutral, byte-budgeted run summary every live surface
+ *  mounts from. Growing collections are counted here and paged elsewhere.
+ */
+export type OptimizerRunSummary = {
+	schemaVersion: string,
+	runId: string,
+	algorithm: AlgorithmKind,
+	/**  Compatibility status string the run record carries. */
+	status: string,
+	lifecycle: RunLifecycle,
+	phase?: RunPhase | null,
+	condition: RunCondition,
+	placement: ExecutionPlacement,
+	terminal?: RunTerminalSummary | null,
+	failureRef?: string | null,
+	specId: string,
+	specDigest: string,
+	reducerVersion: string,
+	projectionRevision: number,
+	asOfSequence: number,
+	tailCursor: number,
+	source: string,
+	objective?: string | null,
+	sessionRef?: string | null,
+	createdAt: string,
+	startedAt?: string | null,
+	finishedAt?: string | null,
+	elapsedMs?: number | null,
+	concurrency: RunConcurrencySummary,
+	work: WorkSummary,
+	usage: UsageCompleteness,
+	/**  Whether the cost figure is complete according to the run record. */
+	costComplete: boolean,
+	throughput?: RunThroughputSummary | null,
+	result?: RunResultSummary | null,
+	collections: RunCollectionSummary[],
+	executionBindings: OptimizerExecutionBinding[],
+	/**
+	 *  Compact setup facts (dataset, container, models) as the projection
+	 *  reduced them. Never task rows, prompts, or credentials.
+	 */
+	setup: unknown,
+	/**  Latest observed execution shape (workers, job state). */
+	runtime: unknown,
+	evidence: RunEvidenceSummary,
+	artifactCount: number,
+	inputRefCount: number,
+	outputRefCount: number,
+	visualRefCount: number,
+	budget: RunSummaryBudget,
+};
+
+export type OptimizerRunSummaryEnvelope = OptimizerRunSummaryEnvelope_Serialize | OptimizerRunSummaryEnvelope_Deserialize;
+
+export type OptimizerRunSummaryEnvelope_Deserialize = {
+	unchanged: boolean,
+	summary?: OptimizerRunSummary | null,
+	projectionRevision: number,
+	tailCursor: number,
+};
+
+export type OptimizerRunSummaryEnvelope_Serialize = {
+	unchanged: boolean,
+	summary?: OptimizerRunSummary | null,
+	projectionRevision: number,
+	tailCursor: number,
+};
 
 /**
  *  One coherent read of everything a visual needs to mount.
@@ -3183,8 +3376,121 @@ export type RolloutEvidenceEntry = {
  */
 export type RolloutEvidenceState = "open" | "sealed_complete" | "sealed_partial" | "aborted" | "missing";
 
+export type RunCollection = "candidates" | "rollouts" | "evaluations" | "metric_points" | "proposer_calls" | "artifacts" | "evidence_refs";
+
+export type RunCollectionFilter = {
+	/**
+	 *  Rows whose `parent_id` equals this (candidate for evaluations, trial
+	 *  for rollouts, checkpoint for training evaluations).
+	 */
+	parentId?: string | null,
+	/**  Rows whose `label` equals this (GEPA stage, training phase, model). */
+	label?: string | null,
+	status?: string | null,
+	kind?: string | null,
+	/**  Rows written or changed after this projection revision. */
+	changedAfterRevision?: number | null,
+};
+
+export type RunCollectionPage = RunCollectionPage_Serialize | RunCollectionPage_Deserialize;
+
+export type RunCollectionPage_Deserialize = {
+	runId: string,
+	collection: RunCollection,
+	rows: RunCollectionRow[],
+	/**  Present when more rows match; absent means the page reached the end. */
+	nextCursor?: string | null,
+	/**  Rows matching the filter across all pages, as of this read. */
+	total: number,
+	projectionRevision: number,
+	asOfSequence: number,
+	/**  The page ended on the byte budget before reaching `limit`. */
+	truncatedByBytes: boolean,
+	/**  Rows requested after clamping. */
+	limit: number,
+};
+
+export type RunCollectionPage_Serialize = {
+	runId: string,
+	collection: RunCollection,
+	rows: RunCollectionRow[],
+	/**  Present when more rows match; absent means the page reached the end. */
+	nextCursor?: string | null,
+	/**  Rows matching the filter across all pages, as of this read. */
+	total: number,
+	projectionRevision: number,
+	asOfSequence: number,
+	/**  The page ended on the byte budget before reaching `limit`. */
+	truncatedByBytes: boolean,
+	/**  Rows requested after clamping. */
+	limit: number,
+};
+
+export type RunCollectionQuery = {
+	/**  Opaque keyset cursor from the previous page's `next_cursor`. */
+	cursor?: string | null,
+	/**
+	 *  Rows requested. Clamped to [`COLLECTION_PAGE_MAX_ROWS`]; absent means
+	 *  [`COLLECTION_PAGE_DEFAULT_ROWS`].
+	 */
+	limit?: number | null,
+	filter?: RunCollectionFilter | null,
+	/**  Newest ordinals first. Default is append order. */
+	descending?: boolean,
+};
+
+/**
+ *  One row of a durable collection. The common envelope is deliberately
+ *  small; algorithm-specific detail lives in `details` under its own version.
+ */
+export type RunCollectionRow = {
+	schemaVersion: string,
+	runId: string,
+	algorithm: AlgorithmKind,
+	collection: RunCollection,
+	itemId: string,
+	/**
+	 *  Position in the collection's append order. Keyset cursor; stable
+	 *  across concurrent appends because appends only ever add higher ones.
+	 */
+	ordinal: number,
+	/**
+	 *  Aggregate sequence the projection had reached when this row was
+	 *  written or last changed.
+	 */
+	sequence: number,
+	/**  Projection revision that wrote or last changed this row. */
+	revision: number,
+	kind: string,
+	label?: string | null,
+	parentId?: string | null,
+	score?: number | null,
+	costUsd?: number | null,
+	status?: string | null,
+	detailsVersion: string,
+	details: unknown,
+};
+
+export type RunCollectionSummary = {
+	collection: RunCollection,
+	count: number,
+	/**  Highest projection revision that wrote or changed a row. */
+	latestRevision: number,
+};
+
+export type RunConcurrencySummary = {
+	configured?: number | null,
+	observedMax?: number | null,
+};
+
 /**  Execution health, stored beside lifecycle rather than as a status. */
 export type RunCondition = "healthy" | "environment_unreachable" | "waiting_for_producer" | "producer_sequence_blocked";
+
+export type RunEvidenceSummary = {
+	completeness: EvidenceCompleteness,
+	reason?: string | null,
+	refCount: number,
+};
 
 /**
  *  Common execution lifecycle. Algorithm phase and execution health are not
@@ -3197,6 +3503,39 @@ export type RunLifecycle = "queued" | "starting" | "running" | "paused" | "cance
  *  lifecycle peer.
  */
 export type RunPhase = "validating" | "provisioning" | "waiting_for_viewer" | "training" | "selection" | "checkpoint_evaluation" | "heldout_evaluation" | "materializing";
+
+export type RunResultSummary = {
+	schema: string,
+	verdict?: string | null,
+	selectedItemId?: string | null,
+	bestScore?: number | null,
+	/**
+	 *  The settled algorithm result. Small by construction: counts, ids,
+	 *  usage. Never candidate content or rollout detail.
+	 */
+	value: unknown,
+};
+
+export type RunSummaryBudget = {
+	bytes: number,
+	limit: number,
+	within: boolean,
+};
+
+export type RunTerminalSummary = {
+	kind: TerminalKind,
+	reason?: TerminalReason | null,
+	finalSequence: number,
+	sealedAt: string,
+	failureRef?: string | null,
+	evidence: RunEvidenceSummary,
+};
+
+export type RunThroughputSummary = {
+	unit: string,
+	perMinute: number | null,
+	measuredOverMs: number,
+};
 
 /**
  *  One About row. Serialised from the same table the code enforces — a
@@ -3414,6 +3753,14 @@ export type SftProjection = {
 	childEvalRunIds: string[],
 	producedAdapter: string | null,
 	trainLoss: number | null,
+	/**
+	 *  Checkpoint evaluation scorecards, bounded by the evaluation schedule.
+	 *  Served through the `evaluations` collection; the renderer never
+	 *  rebuilds these from raw `training.evaluation.completed` events.
+	 */
+	evaluations?: TrainingEvaluationSummary[],
+	/**  Bounded, deterministically downsampled loss/step curve. */
+	metrics?: MetricSeries,
 };
 
 export type SftResult = {
@@ -3617,6 +3964,35 @@ export type TrainingArtifact = {
 	integrity: string,
 	compatibleInference: string[],
 	createdAt: string,
+};
+
+export type TrainingEvaluationSummary = {
+	/**  Stable identity: the checkpoint id when reported, else the phase+step. */
+	id: string,
+	phase?: string | null,
+	step?: number,
+	score?: number | null,
+	loss?: number | null,
+	delta?: number | null,
+	checkpointId?: string | null,
+	artifactDigest?: string | null,
+	evaluator?: string | null,
+	sampleCount?: number,
+	status?: string | null,
+	/**  Child eval run when the evaluation ran as its own optimizer run. */
+	childRunId?: string | null,
+	/**  Sequence of the event that reported it; the durable evidence pointer. */
+	sequence: number,
+};
+
+export type TrainingMetricPoint = {
+	step: number,
+	loss?: number | null,
+	learningRate?: number | null,
+	reward?: number | null,
+	advantage?: number | null,
+	tokensPerSecond?: number | null,
+	sequence: number,
 };
 
 export type TrainingModelHit = {

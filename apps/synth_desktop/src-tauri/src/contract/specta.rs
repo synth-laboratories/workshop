@@ -140,6 +140,10 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::optimizers_run_view,
             crate::optimizers_run_view_v2,
             crate::optimizers_evidence_page,
+            crate::optimizers_run_summary,
+            crate::optimizers_run_collection,
+            crate::optimizers_run_collection_item,
+            crate::optimizers_projection_at,
             crate::optimizers_visual_render_receipt,
             crate::optimizers_create,
             crate::optimizers_refresh,
@@ -531,8 +535,11 @@ mod tests {
         // 289 → 293: native annotation evidence, findings, campaign, and
         // review commands. These replace browser-only loopback requests in
         // Desktop without exposing its IPC capability token to the renderer.
+        // 293 → 297: the shared optimizer read model — bounded run summary,
+        // keyset-paged collections (page + item), and the checkpoint-backed
+        // historical projection the scrubber reads instead of the journal.
         assert_eq!(
-            exported, 293,
+            exported, 297,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

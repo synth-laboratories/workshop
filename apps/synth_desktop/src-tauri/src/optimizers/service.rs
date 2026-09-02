@@ -1498,6 +1498,249 @@ impl OptimizerService {
         .await
     }
 
+    /// The bounded, algorithm-neutral run summary every live surface mounts
+    /// from. Conditional on projection revision exactly like
+    /// [`Self::run_view_envelope`], and byte-budgeted by construction: growing
+    /// collections are counted here and paged through
+    /// [`Self::run_collection`].
+    pub async fn run_summary(
+        &self,
+        optimizer_run_id: String,
+        if_newer_than: Option<u64>,
+    ) -> Result<super::kernel::OptimizerRunSummaryEnvelope> {
+        let db = self.db.clone();
+        let run_id = optimizer_run_id.clone();
+        let read = db
+            .run_read(move |conn| read_run_summary(conn, &run_id, if_newer_than))
+            .await?;
+        if let Some(envelope) = read {
+            return Ok(envelope);
+        }
+        self.repair_kernel_projection(optimizer_run_id.clone())
+            .await?;
+        let db = self.db.clone();
+        db.run_read(move |conn| {
+            read_run_summary(conn, &optimizer_run_id, None)?.ok_or_else(|| {
+                anyhow!("optimizer run {optimizer_run_id} did not produce a saved kernel projection")
+            })
+        })
+        .await
+    }
+
+    /// One keyset page of a durable collection. Rows and the projection
+    /// revision they belong to are read in the same transaction; there is no
+    /// unbounded "all rows" answer.
+    pub async fn run_collection(
+        &self,
+        optimizer_run_id: String,
+        collection: super::kernel::RunCollection,
+        query: super::kernel::RunCollectionQuery,
+    ) -> Result<super::kernel::RunCollectionPage> {
+        use super::kernel::read_model;
+        let db = self.db.clone();
+        db.run_read(move |conn| {
+            let run = load_run(conn, &optimizer_run_id)?;
+            let algorithm = super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id)
+                .map_err(|error| anyhow!("{error}"))?;
+            let (revision, as_of_sequence) = projection_position(conn, &optimizer_run_id)?;
+            match collection {
+                read_model::RunCollection::Artifacts => {
+                    let state = super::kernel::persist::load_state(conn, &optimizer_run_id)?
+                        .ok_or_else(|| anyhow!("optimizer run {optimizer_run_id} has no projection"))?;
+                    let artifacts = super::artifacts::list_all(conn, &optimizer_run_id)?;
+                    read_model::page_rows_in_memory(
+                        &optimizer_run_id,
+                        collection,
+                        read_model::artifact_rows(&state, &artifacts),
+                        &query,
+                        state.projection_revision,
+                        state.aggregate_sequence,
+                    )
+                }
+                read_model::RunCollection::EvidenceRefs => {
+                    let state = super::kernel::persist::load_state(conn, &optimizer_run_id)?
+                        .ok_or_else(|| anyhow!("optimizer run {optimizer_run_id} has no projection"))?;
+                    read_model::page_rows_in_memory(
+                        &optimizer_run_id,
+                        collection,
+                        read_model::evidence_ref_rows(&state),
+                        &query,
+                        state.projection_revision,
+                        state.aggregate_sequence,
+                    )
+                }
+                projected => read_model::query_collection_rows(
+                    conn,
+                    &optimizer_run_id,
+                    algorithm,
+                    projected,
+                    &query,
+                    revision,
+                    as_of_sequence,
+                ),
+            }
+        })
+        .await
+    }
+
+    /// One collection row by identity — a candidate's durable content, one
+    /// evaluation, one proposer call — without paging its neighbours.
+    pub async fn run_collection_item(
+        &self,
+        optimizer_run_id: String,
+        collection: super::kernel::RunCollection,
+        item_id: String,
+    ) -> Result<Option<super::kernel::RunCollectionRow>> {
+        use super::kernel::read_model;
+        let db = self.db.clone();
+        db.run_read(move |conn| {
+            let run = load_run(conn, &optimizer_run_id)?;
+            let algorithm = super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id)
+                .map_err(|error| anyhow!("{error}"))?;
+            match collection {
+                read_model::RunCollection::Artifacts | read_model::RunCollection::EvidenceRefs => {
+                    let state = super::kernel::persist::load_state(conn, &optimizer_run_id)?
+                        .ok_or_else(|| anyhow!("optimizer run {optimizer_run_id} has no projection"))?;
+                    let rows = if collection == read_model::RunCollection::Artifacts {
+                        let artifacts = super::artifacts::list_all(conn, &optimizer_run_id)?;
+                        read_model::artifact_rows(&state, &artifacts)
+                    } else {
+                        read_model::evidence_ref_rows(&state)
+                    };
+                    Ok(rows.into_iter().find(|row| row.item_id == item_id))
+                }
+                projected => read_model::load_collection_row(
+                    conn,
+                    &optimizer_run_id,
+                    algorithm,
+                    projected,
+                    &item_id,
+                ),
+            }
+        })
+        .await
+    }
+
+    /// The projection as it stood at `sequence`, folded from the nearest
+    /// reducer checkpoint plus the suffix up to the requested point.
+    ///
+    /// This is what the historical scrubber reads. The renderer never fetches
+    /// the journal to reduce it; the backend folds a bounded suffix, and when
+    /// a run predates checkpoints — so the first scrub had to replay a long
+    /// prefix — it leaves a checkpoint behind so the next one does not.
+    pub async fn projection_at(
+        &self,
+        optimizer_run_id: String,
+        sequence: u64,
+    ) -> Result<super::kernel::HistoricalProjection> {
+        use super::kernel::read_model;
+        let db = self.db.clone();
+        let run_id = optimizer_run_id.clone();
+        let (historical, backfill) = db
+            .run_read(move |conn| {
+                let run = load_run(conn, &run_id)?;
+                let algorithm = super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id)
+                    .map_err(|error| anyhow!("{error}"))?;
+                let placement =
+                    super::kernel::bridge::placement_from_run_source(algorithm, &run.source);
+                let spec_digest: String = conn
+                    .query_row(
+                        "SELECT spec_digest FROM optimizer_run_specs WHERE optimizer_run_id = ?1",
+                        [&run.id],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .filter(|value: &String| !value.trim().is_empty())
+                    .ok_or_else(|| anyhow!("optimizer run {} is missing its admitted spec", run.id))?;
+                let tail = durable_tail_cursor(conn, &run_id)?;
+                let requested = sequence;
+                let sequence = sequence.min(tail);
+                let checkpoint = read_model::load_checkpoint_at_or_before(
+                    conn,
+                    &run_id,
+                    algorithm.reducer_version(),
+                    sequence,
+                )?;
+                let (base, from) = match checkpoint {
+                    Some(state) => {
+                        let from = state.aggregate_sequence;
+                        (Some(state), from)
+                    }
+                    None => (None, 0),
+                };
+                let mut events = load_events_between(conn, &run_id, from, sequence)?;
+                let mut from = from;
+                let mut base = base;
+                if from > 0 && batch_forces_full_replay(&events) {
+                    // Settlement-rewriting events keep the replay-from-zero
+                    // semantics the live fold uses for them.
+                    events = load_events_between(conn, &run_id, 0, sequence)?;
+                    from = 0;
+                    base = None;
+                }
+                let replayed = events.len() as u64;
+                // A long suffix — a run that predates checkpoints, or a bulk
+                // import folded in one batch — is folded one interval at a
+                // time, and every boundary state is kept so the next scrub
+                // pays for one interval rather than the whole prefix again.
+                // Settlement-rewriting suffixes replay as one commit, exactly
+                // as the live path would, and leave no intermediate marks.
+                let interval = read_model::CHECKPOINT_EVENT_INTERVAL as usize;
+                let mut backfill: Vec<super::kernel::RunKernelState> = Vec::new();
+                let state = if from == 0 && batch_forces_full_replay(&events) {
+                    super::kernel::bridge::reduce_envelopes(
+                        &run_id,
+                        algorithm,
+                        placement,
+                        &spec_digest,
+                        &events,
+                    )
+                    .map_err(|error| anyhow!("historical replay failed for {run_id}: {error}"))?
+                } else {
+                    let mut state = base.unwrap_or_else(|| {
+                        super::kernel::RunKernelState::new(&run_id, algorithm, placement, &spec_digest)
+                    });
+                    for chunk in events.chunks(interval) {
+                        state = super::kernel::bridge::fold_envelopes(state, &run_id, chunk)
+                            .map_err(|error| anyhow!("historical fold failed for {run_id}: {error}"))?;
+                        if chunk.len() == interval {
+                            backfill.push(state.clone());
+                        }
+                    }
+                    state
+                };
+                let context = run_view_context(conn, &run)?;
+                let view = super::kernel::project_view_with_context(&state, &context);
+                Ok((
+                    super::kernel::HistoricalProjection {
+                        schema_version: read_model::HISTORICAL_PROJECTION_SCHEMA_VERSION.into(),
+                        run_id: run_id.clone(),
+                        requested_sequence: requested,
+                        as_of_sequence: state.aggregate_sequence,
+                        checkpoint_sequence: (from > 0).then_some(from),
+                        replayed_events: replayed,
+                        view,
+                    },
+                    backfill,
+                ))
+            })
+            .await?;
+        if !backfill.is_empty() {
+            // Best effort: a checkpoint is an accelerator, never truth. Failing
+            // to leave one behind must not fail the read that produced it.
+            let db = self.db.clone();
+            let _ = db
+                .run(move |conn| {
+                    for state in &backfill {
+                        read_model::write_checkpoint(conn, state)?;
+                    }
+                    Ok(())
+                })
+                .await;
+        }
+        Ok(historical)
+    }
+
     /// Rebuild a missing kernel projection by replaying the durable journal.
     ///
     /// Only reachable for rows written before the kernel owned admission —
@@ -5071,10 +5314,7 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
 /// This is the restart-safe counterpart to the live broker's chain seal: a
 /// crash can erase the in-memory chain after the capability row was revoked,
 /// but it must not leave a terminal run claiming that authority is granted.
-fn seal_durable_credential_chain(
-    conn: &Connection,
-    run: &mut OptimizerRunRecord,
-) -> Result<()> {
+fn seal_durable_credential_chain(conn: &Connection, run: &mut OptimizerRunRecord) -> Result<()> {
     let Some(chain) = run
         .summary
         .get_mut("credentialChain")
@@ -5101,10 +5341,7 @@ fn seal_durable_credential_chain(
     };
     chain.insert("capabilityStatus".into(), json!(status));
     chain.insert("revokedAt".into(), json!(revoked_at));
-    chain.insert(
-        "capabilityRevoked".into(),
-        json!(status == "revoked"),
-    );
+    chain.insert("capabilityRevoked".into(), json!(status == "revoked"));
     Ok(())
 }
 
@@ -5419,6 +5656,92 @@ fn load_cached_slice(
     Ok(payload.map(|raw| serde_json::from_str(&raw)).transpose()?)
 }
 
+/// Events in `(after, upto]`, in sequence order.
+fn load_events_between(
+    conn: &Connection,
+    run_id: &str,
+    after: u64,
+    upto: u64,
+) -> Result<Vec<OptimizerEventEnvelope>> {
+    if upto <= after {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT payload_json FROM optimizer_events
+         WHERE optimizer_run_id = ?1 AND sequence_number > ?2 AND sequence_number <= ?3
+         ORDER BY sequence_number ASC",
+    )?;
+    let rows = stmt.query_map(params![run_id, after as i64, upto as i64], |row| {
+        row.get::<_, String>(0)
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(serde_json::from_str(&row?)?);
+    }
+    Ok(out)
+}
+
+/// `(projection_revision, aggregate_sequence)` from the run row: the two
+/// integers a collection page needs to stamp itself, without loading the
+/// projection payload the page exists to avoid.
+fn projection_position(conn: &Connection, run_id: &str) -> Result<(u64, u64)> {
+    let (revision, sequence): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT projection_revision, aggregate_sequence FROM optimizer_runs WHERE id = ?1",
+            params![run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("optimizer run not found"))?;
+    Ok((
+        revision.unwrap_or(0).max(0) as u64,
+        sequence.unwrap_or(0).max(0) as u64,
+    ))
+}
+
+/// The summary read. `None` means no durable projection exists yet and the
+/// caller should repair it in a write transaction of its own.
+fn read_run_summary(
+    conn: &Connection,
+    run_id: &str,
+    if_newer_than: Option<u64>,
+) -> Result<Option<super::kernel::OptimizerRunSummaryEnvelope>> {
+    use super::kernel::read_model;
+    if let Some(cached_revision) = if_newer_than {
+        if let Some(durable) = super::kernel::persist::load_projection_revision(conn, run_id)? {
+            if durable == cached_revision {
+                return Ok(Some(super::kernel::OptimizerRunSummaryEnvelope {
+                    unchanged: true,
+                    summary: None,
+                    projection_revision: durable,
+                    tail_cursor: durable_tail_cursor(conn, run_id)?,
+                }));
+            }
+        }
+    }
+    let run = load_run(conn, run_id)?;
+    let Some(state) = super::kernel::persist::load_state(conn, run_id)? else {
+        return Ok(None);
+    };
+    let context = run_view_context(conn, &run)?;
+    let tail_cursor = durable_tail_cursor(conn, run_id)?;
+    let counts = read_model::collection_counts(conn, &state, context.artifacts.len() as u64)?;
+    let summary = read_model::summarize(
+        &state,
+        &run,
+        &context,
+        counts,
+        tail_cursor,
+        Utc::now().timestamp_millis(),
+    );
+    Ok(Some(super::kernel::OptimizerRunSummaryEnvelope {
+        unchanged: false,
+        projection_revision: state.projection_revision,
+        tail_cursor,
+        summary: Some(summary),
+    }))
+}
+
 fn load_events_upto(
     conn: &Connection,
     run_id: &str,
@@ -5643,9 +5966,7 @@ fn paid_compute_settlement_outcome(
     }
     match run.usage.cost_usd.and_then(micros_from_reported_cost) {
         Some(cost_usd_micros) => Ok(SettlementOutcome::Exact { cost_usd_micros }),
-        None => Ok(SettlementOutcome::Exact {
-            cost_usd_micros: 0,
-        }),
+        None => Ok(SettlementOutcome::Exact { cost_usd_micros: 0 }),
     }
 }
 
@@ -8709,6 +9030,194 @@ pub(in crate::optimizers) mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    /// The shared read model end to end on a real GEPA journal: a bounded
+    /// summary, keyset-paged collections consistent with the projection
+    /// revision, and historical projections folded from checkpoints that
+    /// match a from-zero replay exactly.
+    #[tokio::test]
+    async fn read_model_serves_summary_pages_and_checkpointed_history_for_gepa() {
+        use super::super::kernel::read_model::{
+            RunCollection, RunCollectionFilter, RunCollectionQuery, CHECKPOINT_EVENT_INTERVAL,
+            COLLECTION_PAGE_MAX_ROWS, SUMMARY_BYTE_BUDGET,
+        };
+
+        let (svc, _dir, _rx) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_read_model",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Ten candidates and enough scored rollouts to cross several
+        // checkpoint intervals, in the producer's real event vocabulary.
+        let mut events = vec![gepa_draft("optimizer.run.started", json!({}))];
+        for index in 0..10 {
+            events.push(gepa_draft(
+                "candidate.registered",
+                json!({
+                    "candidate_id": format!("cand_{index}"),
+                    "parent_id": if index == 0 { Value::Null } else { json!("cand_0") },
+                    "generation": index / 3,
+                    "source": if index == 0 { "seed" } else { "reflector:parent_variation" },
+                    "values": { "prompt": format!("Classify the Banking77 intent. Variant {index}.") }
+                }),
+            ));
+        }
+        for index in 0..1_200u64 {
+            let candidate = format!("cand_{}", index % 10);
+            let stage = ["candidate_minibatch", "candidate_full_train", "heldout"][(index % 3) as usize];
+            events.push(gepa_draft(
+                "optimizer.evaluation_result.received",
+                json!({
+                    "candidate_id": candidate,
+                    "stage": stage,
+                    "evaluation_id": format!("eval_{index}"),
+                    "rollout_id": format!("rollout_{index}"),
+                    "example_id": format!("train:{}", index % 50),
+                    "reward": (index % 5) as f64 / 5.0,
+                    "cost_usd": 0.0004,
+                    "active_workers": 4
+                }),
+            ));
+        }
+        events.push(gepa_draft("proposer.completed", json!({ "proposal_count": 3, "generation": 1, "model": "gpt-5.6-luna" })));
+        svc.append_event_payloads(run.id.clone(), events).await.unwrap();
+
+        // Summary: bounded, counted, conditional.
+        let envelope = svc.run_summary(run.id.clone(), None).await.unwrap();
+        assert!(!envelope.unchanged);
+        let summary = envelope.summary.clone().expect("summary");
+        let bytes = serde_json::to_vec(&summary).unwrap().len();
+        assert!(bytes <= SUMMARY_BYTE_BUDGET, "summary is {bytes} bytes");
+        assert!(summary.budget.within);
+        assert_eq!(summary.lifecycle, super::super::kernel::RunLifecycle::Running);
+        let count_of = |collection: RunCollection| {
+            summary
+                .collections
+                .iter()
+                .find(|item| item.collection == collection)
+                .map(|item| item.count)
+                .unwrap_or(0)
+        };
+        assert_eq!(count_of(RunCollection::Candidates), 10);
+        assert_eq!(count_of(RunCollection::Rollouts), 1_200);
+        assert_eq!(count_of(RunCollection::Evaluations), 1_200);
+        assert_eq!(count_of(RunCollection::ProposerCalls), 1);
+        assert_eq!(summary.concurrency.observed_max, Some(4));
+        let probe = svc
+            .run_summary(run.id.clone(), Some(envelope.projection_revision))
+            .await
+            .unwrap();
+        assert!(probe.unchanged, "an up-to-date revision costs no payload");
+        assert!(probe.summary.is_none());
+
+        // Collections: every page has an explicit clamped limit and a stable
+        // keyset cursor; the walk covers each row exactly once.
+        let mut cursor = None;
+        let mut seen = Vec::new();
+        loop {
+            let page = svc
+                .run_collection(
+                    run.id.clone(),
+                    RunCollection::Rollouts,
+                    RunCollectionQuery { cursor: cursor.clone(), limit: Some(1_000), ..Default::default() },
+                )
+                .await
+                .unwrap();
+            assert_eq!(page.limit, COLLECTION_PAGE_MAX_ROWS);
+            assert!(page.rows.len() as u32 <= COLLECTION_PAGE_MAX_ROWS);
+            assert_eq!(page.projection_revision, envelope.projection_revision, "rows describe the revision the summary reported");
+            seen.extend(page.rows.iter().map(|row| row.item_id.clone()));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(seen.len(), 1_200);
+        assert_eq!(seen[0], "eval_0");
+        assert_eq!(seen[1_199], "eval_1199");
+
+        let filtered = svc
+            .run_collection(
+                run.id.clone(),
+                RunCollection::Evaluations,
+                RunCollectionQuery {
+                    filter: Some(RunCollectionFilter { parent_id: Some("cand_3".into()), label: Some("heldout".into()), ..Default::default() }),
+                    limit: Some(50),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(filtered.total > 0);
+        assert!(filtered.rows.iter().all(|row| row.parent_id.as_deref() == Some("cand_3") && row.label.as_deref() == Some("heldout")));
+
+        let candidate = svc
+            .run_collection_item(run.id.clone(), RunCollection::Candidates, "cand_4".into())
+            .await
+            .unwrap()
+            .expect("candidate row");
+        assert_eq!(candidate.parent_id.as_deref(), Some("cand_0"));
+        assert!(candidate.details["values"]["prompt"].as_str().unwrap_or("").contains("Variant 4"), "candidate content is durable: {}", candidate.details);
+
+        // History: the checkpoint fold equals a from-zero replay, and once
+        // checkpoints exist no scrub replays more than one interval.
+        let all = svc.events_after(run.id.clone(), 0, Some(2000)).await.unwrap();
+        let tail = all.len() as u64;
+        assert!(tail > 2 * CHECKPOINT_EVENT_INTERVAL);
+        let placement = super::super::kernel::bridge::placement_from_run_source(super::super::kernel::AlgorithmKind::Gepa, &run.source);
+        // The journal arrived as one bulk batch, so the only checkpoint is
+        // the batch's tail. The first scrub into the prefix pays once and
+        // leaves a checkpoint at every interval behind it.
+        let first = svc.projection_at(run.id.clone(), tail - 1).await.unwrap();
+        assert!(first.replayed_events > CHECKPOINT_EVENT_INTERVAL, "a legacy prefix replays once");
+        for probe_sequence in [1u64, 250, CHECKPOINT_EVENT_INTERVAL + 7, tail - 3, tail] {
+            let historical = svc.projection_at(run.id.clone(), probe_sequence).await.unwrap();
+            assert_eq!(historical.as_of_sequence, probe_sequence);
+            assert!(historical.replayed_events <= CHECKPOINT_EVENT_INTERVAL, "scrub to {probe_sequence} replayed {} events", historical.replayed_events);
+            let prefix: Vec<_> = all.iter().take(probe_sequence as usize).cloned().collect();
+            let expected = super::super::kernel::bridge::reduce_envelopes(&run.id, super::super::kernel::AlgorithmKind::Gepa, placement, &historical.view.header().spec_digest, &prefix).unwrap();
+            let expected_view = super::super::kernel::project_view(&expected);
+            assert_eq!(historical.view.projection_json(), expected_view.projection_json(), "checkpoint fold diverged from replay at {probe_sequence}");
+            assert_eq!(historical.view.header().work, expected_view.header().work);
+        }
+        let beyond = svc.projection_at(run.id.clone(), tail + 500).await.unwrap();
+        assert_eq!(beyond.as_of_sequence, tail, "a sequence past the tail clamps to the tail");
+
+        // Terminal: the seal checkpoints, the summary turns terminal, and the
+        // collections remain consistent with the sealed revision.
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                gepa_draft("frontier.snapshot", json!({ "best_candidate_id": "cand_4" })),
+                gepa_draft("gepa.run.finished", json!({ "state": "completed" })),
+                gepa_draft("optimizer.run.completed", json!({})),
+            ],
+        )
+        .await
+        .unwrap();
+        let sealed = svc.run_summary(run.id.clone(), None).await.unwrap().summary.unwrap();
+        assert_eq!(sealed.lifecycle, super::super::kernel::RunLifecycle::Terminal);
+        assert!(sealed.terminal.is_some());
+        assert!(sealed.result.is_some(), "a sealed run settles a bounded result");
+        assert!(serde_json::to_vec(&sealed).unwrap().len() <= SUMMARY_BYTE_BUDGET);
+        let final_page = svc
+            .run_collection(run.id.clone(), RunCollection::Candidates, RunCollectionQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(final_page.total, 10);
+        assert_eq!(final_page.projection_revision, sealed.projection_revision);
+        let at_seal = svc.projection_at(run.id.clone(), sealed.as_of_sequence).await.unwrap();
+        assert_eq!(at_seal.replayed_events, 0, "the terminal boundary always leaves a checkpoint");
+        assert_eq!(at_seal.view.header().lifecycle, super::super::kernel::RunLifecycle::Terminal);
     }
 
     /// Evidence is fetched by range, and nothing is sent twice.
