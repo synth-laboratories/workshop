@@ -192,6 +192,49 @@ impl CredentialBroker {
         self.state.receipts.clone()
     }
 
+    /// Read Shoal's side-effect-free lifecycle projection through the same
+    /// session-bound credential lease used for inference. The renderer never
+    /// receives either the upstream origin or the real provider credential.
+    pub async fn hosted_inference_status(&self, session_id: &str, model: &str) -> Result<Value> {
+        let token = self
+            .state
+            .by_session
+            .read()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+            .context("this cloud session has no active provider lease")?;
+        let lease = self
+            .state
+            .lookup(&token)
+            .context("this cloud session's provider lease is no longer valid")?;
+        let mut url = reqwest::Url::parse(&lease.upstream_origin)
+            .context("the Synth Cloud lifecycle origin is invalid")?;
+        url.set_path("");
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| anyhow::anyhow!("the Synth Cloud lifecycle origin cannot carry a path"))?;
+            // Synth Cloud's public gateway is rooted at /api/v1 (the same
+            // path apply_synth_cloud_provider gives Codex through this proxy).
+            segments.extend(["api", "v1", "models", model]);
+        }
+        let response = self
+            .state
+            .http
+            .get(url)
+            .bearer_auth(&lease.api_key)
+            .send()
+            .await
+            .context("Synth Cloud lifecycle status is unavailable")?
+            .error_for_status()
+            .context("Synth Cloud rejected the lifecycle status request")?;
+        response
+            .json::<Value>()
+            .await
+            .context("Synth Cloud returned an invalid lifecycle status")
+    }
+
     /// Bind subsequent relayed requests for a session to one turn scope.
     pub fn begin_turn(&self, session_id: &str, turn_scope: &str) {
         self.state
@@ -1036,6 +1079,28 @@ mod tests {
             "the lease token must not be forwarded upstream"
         );
         assert!(request.starts_with("POST /api/v1/responses "));
+    }
+
+    #[tokio::test]
+    async fn hosted_lifecycle_status_uses_the_session_lease_and_gateway_path() {
+        let body = r#"{"inference_lifecycle":{"protocol_version":"synth.inference.lifecycle.v3","phase":"warming"}}"#;
+        let (upstream, seen) = spawn_upstream(body);
+        let (broker, _listener) = CredentialBroker::bind(empty_receipts()).unwrap();
+        broker.lease("session-status", &upstream, SENTINEL);
+
+        let status = broker
+            .hosted_inference_status("session-status", "synth_internal/laguna-xs")
+            .await
+            .unwrap();
+        assert_eq!(
+            status.pointer("/inference_lifecycle/phase").and_then(Value::as_str),
+            Some("warming")
+        );
+        let request = seen.lock().unwrap().first().cloned().unwrap();
+        assert!(request.starts_with(
+            "GET /api/v1/models/synth_internal%2Flaguna-xs HTTP/1.1"
+        ));
+        assert!(request.contains(&format!("authorization: Bearer {SENTINEL}")));
     }
 
     #[tokio::test]

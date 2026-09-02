@@ -53,6 +53,7 @@ import { useShellLayout } from "./useShellLayout";
 import { useCodexEventBridge, type CodexUsageSnapshot } from "./useCodexEventBridge";
 import { useForeignSessionEventBridge } from "./useForeignSessionEventBridge";
 import { useModelPerformanceLabels } from "./useModelPerformanceLabels";
+import { useHostedInferenceLifecycle } from "./useHostedInferenceLifecycle";
 import {
 	buildLandingState,
 	executionTargetToUiId,
@@ -1207,6 +1208,12 @@ export function useAppController() {
 		? selectSessionRunning(activeChatSession, eventsBySession[activeChat.id] ?? [], presentationLiveTurns)
 			|| activeChatSubmittingLocal
 		: false;
+	const activeHostedInference = useHostedInferenceLifecycle(
+		activeChatSession?.target.kind === "cloud" ? activeChatSession.id : null,
+		activeChatSession?.target.kind === "cloud" ? activeChatSession.target.model : null,
+		activeChatSession?.target.kind === "cloud",
+		activeChatRunning
+	);
 	const activeChatInferencePhase = chatInferencePhase({
 		running: activeChatRunning,
 		targetKind: activeChatSession?.target.kind ?? null,
@@ -1214,7 +1221,8 @@ export function useAppController() {
 		lastMessageRole: activeChat?.messages.at(-1)?.role ?? null,
 		localPhase: laguna?.phase ?? null,
 		localLoadedModel: laguna?.loadedModel ?? null,
-		localResident: inferenceMonitor.snapshot?.resident ?? null
+		localResident: inferenceMonitor.snapshot?.resident ?? null,
+		hostedPhase: activeHostedInference?.phase ?? null
 	});
 	const activeChatWarmingUp = activeChatInferencePhase === "warming";
 	const activeLocalModel = activeChatSession?.target.kind === "local";
@@ -2345,6 +2353,8 @@ export function useAppController() {
 		activeChatSession,
 		activeChatRunning,
 		activeChatWarmingUp,
+		activeHostedInferencePhase: activeHostedInference?.phase ?? null,
+		activeHostedInference,
 		activeLocalModel,
 		activeSync,
 		showSidePanel,

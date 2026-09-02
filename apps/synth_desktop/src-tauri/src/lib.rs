@@ -5024,6 +5024,22 @@ async fn codex_turn_send(
     state.send_turn(app, request).await
 }
 
+/// Side-effect-free hosted inference lifecycle read. Credential custody stays
+/// in the native broker; only Shoal's public status projection crosses IPC.
+#[tauri::command]
+#[specta::specta]
+async fn synth_cloud_inference_status(
+    broker: State<'_, Arc<credential_broker::CredentialBroker>>,
+    session_id: String,
+    model: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    broker
+        .hosted_inference_status(&session_id, &model)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn codex_session_start(

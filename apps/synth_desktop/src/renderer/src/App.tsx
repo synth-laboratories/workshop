@@ -217,6 +217,8 @@ export default function App() {
 						activeChatSession={c.activeChatSession}
 						activeChatRunning={c.activeChatRunning}
 						activeChatWarmingUp={c.activeChatWarmingUp}
+						activeHostedInferencePhase={c.activeHostedInferencePhase}
+						activeHostedInference={c.activeHostedInference}
 						activeLocalModel={Boolean(c.activeLocalModel)}
 						activeSessionId={c.activeSessionId}
 						openArtifact={c.openArtifact}

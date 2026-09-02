@@ -557,6 +557,11 @@ export const commands = {
 	 *  which stranded the UI in `Working` with a live `Stop`.
 	 */
 	codexTurnSend: (request: CodexTurnSendRequest) => typedError<CodexSessionInfo, CodexTurnFailure>(__TAURI_INVOKE("codex_turn_send", { request })),
+	/**
+	 *  Side-effect-free hosted inference lifecycle read. Credential custody stays
+	 *  in the native broker; only Shoal's public status projection crosses IPC.
+	 */
+	synthCloudInferenceStatus: (sessionId: string, model: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("synth_cloud_inference_status", { sessionId, model })),
 	codexTurnInterrupt: (request: CodexSessionRequest) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("codex_turn_interrupt", { request })),
 	codexThreadCompact: (request: CodexSessionStartRequest) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("codex_thread_compact", { request })),
 	codexThreadRead: (request: CodexThreadReadRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("codex_thread_read", { request })),

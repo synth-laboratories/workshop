@@ -349,6 +349,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::codex_session_start,
             crate::codex_turn_start,
             crate::codex_turn_send,
+            crate::synth_cloud_inference_status,
             crate::codex_turn_interrupt,
             crate::codex_thread_compact,
             crate::codex_thread_read,
@@ -543,8 +544,9 @@ mod tests {
         // historical projection the scrubber reads instead of the journal.
         // 297 → 300: experiment update plus the standalone research-journal
         // list and append commands.
+        // 300 → 301: side-effect-free Synth Cloud inference lifecycle read.
         assert_eq!(
-            exported, 300,
+            exported, 301,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

@@ -21,6 +21,13 @@ test("hosted Laguna leaves warmup when model output begins", () => {
 	assert.equal(chatIsWarmingUp({ ...base, lastMessageRole: "assistant" }), false);
 });
 
+test("authoritative Shoal lifecycle replaces first-token inference", () => {
+	assert.equal(chatInferencePhase({ ...base, lastMessageRole: "assistant", hostedPhase: "provisioning" }), "warming");
+	assert.equal(chatInferencePhase({ ...base, lastMessageRole: "user", hostedPhase: "warming" }), "warming");
+	assert.equal(chatInferencePhase({ ...base, lastMessageRole: "user", hostedPhase: "ready" }), "working");
+	assert.equal(chatInferencePhase({ ...base, lastMessageRole: "user", hostedPhase: "running" }), "working");
+});
+
 test("unrelated cloud models never claim a Laguna warmup", () => {
 	assert.equal(chatIsWarmingUp({ ...base, targetModel: "gpt-5.6-luna" }), false);
 });

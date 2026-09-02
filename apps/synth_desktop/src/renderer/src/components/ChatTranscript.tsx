@@ -14,6 +14,7 @@ import { contextCompactionTokenSummary } from "../runtime/sessionView";
 import { runProgressItemsByMessage } from "../runtime/runProgress/transcript";
 import { bridges } from "../runtime/desktopBridge";
 import { useTurnPerformanceLabels } from "../hooks/useTurnPerformanceLabels";
+import { hostedCooldownLabel, hostedLifecycleLabel, type HostedInferenceLifecycle } from "../runtime/hostedInferenceLifecycle";
 import { outputContainerIds as chatOutputContainerIds, primaryVisualId, useChatOutputs } from "../hooks/useChatOutputs";
 import { RunProgressCard } from "./runProgress/RunProgressCard";
 import { ComposerLayoutHost } from "./ComposerLayout";
@@ -35,6 +36,8 @@ type Props = {
 	onReject?: (approvalId: string) => void;
 	running?: boolean;
 	warmingUp?: boolean;
+	hostedInferencePhase?: string | null;
+	hostedInference?: HostedInferenceLifecycle | null;
 	/** Live Laguna phase. Intentionally omitted for hosted targets. */
 	localInferencePhase?: "loading" | "prefill" | null;
 	onStop?: () => void;
@@ -852,6 +855,8 @@ export function ChatTranscript({
 	onReject,
 	running = false,
 	warmingUp = false,
+	hostedInferencePhase = null,
+	hostedInference = null,
 	localInferencePhase = null,
 	onStop,
 	onAdvanced,
@@ -1171,6 +1176,12 @@ export function ChatTranscript({
 							/>
 						))}
 						{inlineApprovals.map((line) => renderActivityLine(line, [], false, false))}
+						{!running && hostedCooldownLabel(hostedInference) ? (
+							<div className="hosted-lifecycle-note" role="status" data-testid="hosted-lifecycle-cooldown">
+								<span className="hosted-lifecycle-dot" aria-hidden />
+								{hostedCooldownLabel(hostedInference)}
+							</div>
+						) : null}
 						{running ? (
 							<div
 								className="model-working"
@@ -1184,8 +1195,12 @@ export function ChatTranscript({
 									? "Loading…"
 									: session?.target.kind === "local" && localInferencePhase === "prefill"
 										? "Prefilling…"
+										: session?.target.kind === "cloud" && hostedLifecycleLabel(hostedInferencePhase)
+											? hostedLifecycleLabel(hostedInferencePhase)
 										: warmingUp
-											? session?.target.kind === "local" ? "Waiting on local…" : "Waiting on cloud…"
+											? session?.target.kind === "local"
+												? "Waiting on local…"
+												: hostedLifecycleLabel(hostedInferencePhase) ?? "Waiting on cloud…"
 											: "Working…"}</span>
 								{turnTpsLabels.live ? <small className="model-working-throughput" data-testid="model-working-generation-tps">{turnTpsLabels.live}</small> : null}
 								{onStop ? <button type="button" onClick={onStop} aria-label="Stop generating">Stop</button> : null}

@@ -16,6 +16,7 @@ import type { DesktopPreferences, ToolActivityMode } from "./preferences";
 import { applyPreferencesToDocument } from "./preferences";
 import type { LagunaStatus, ModelPerformanceSummary, PluginPermission, PluginStatus, SynthAccountSummary, SynthBackendSettings } from "./bridge";
 import type { LagunaPolicy } from "./bridge/types";
+import type { HostedInferenceLifecycle } from "./runtime/hostedInferenceLifecycle";
 import type { ComputerUseView } from "./runtime/computerUse";
 import type { InferenceMonitor } from "./components/InferencePanel";
 import type { ApprovalMode, ApprovalPolicy, SandboxMode } from "./runtime/nativeCodex";
@@ -141,6 +142,8 @@ export type MainRoutesProps = {
 	activeChatSession: Session | undefined;
 	activeChatRunning: boolean;
 	activeChatWarmingUp: boolean;
+	activeHostedInferencePhase: string | null;
+	activeHostedInference: HostedInferenceLifecycle | null;
 	activeLocalModel: boolean;
 	activeSessionId: string | null;
 	openArtifact: ArtifactRef | null;
@@ -216,6 +219,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		activeChatSession,
 		activeChatRunning,
 		activeChatWarmingUp,
+		activeHostedInferencePhase,
+		activeHostedInference,
 		activeLocalModel,
 		openArtifact,
 		openArtifactId,
@@ -576,6 +581,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						onReject={(approvalId) => void controlActive("reject", { approvalId })}
 						running={activeChatRunning}
 						warmingUp={activeChatWarmingUp}
+						hostedInferencePhase={activeHostedInferencePhase}
+						hostedInference={activeHostedInference}
 						localInferencePhase={activeChatSession?.target.kind === "local"
 							? inferenceMonitor.snapshot?.active?.phase === "loading" || inferenceMonitor.snapshot?.active?.phase === "prefill"
 								? inferenceMonitor.snapshot.active.phase
