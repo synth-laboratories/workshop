@@ -369,13 +369,15 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
                 .error(payload.clone())
         }
         "sft.step.metrics" | "sft.training.metrics" | "training.step.metrics" => {
-            OptimizerEventDraft::new("sft.training.metrics", algorithm).delta(sft_metric_delta(payload))
+            OptimizerEventDraft::new("sft.training.metrics", algorithm)
+                .delta(sft_metric_delta(payload))
         }
         "cispo.update.completed"
         | "cispo.step.metrics"
         | "cispo.training.metrics"
         | "cispo.importance_ratio.measured" => {
-            OptimizerEventDraft::new("training.metrics", algorithm).delta(cispo_metric_delta(payload))
+            OptimizerEventDraft::new("training.metrics", algorithm)
+                .delta(cispo_metric_delta(payload))
         }
         "cispo.rollout_group.completed" => {
             let mut delta = payload.as_object().cloned().unwrap_or_default();
@@ -392,7 +394,10 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
                 delta.insert("workItemId".into(), group_id.clone());
             }
             if let Some(advantages) = payload.get("advantages").and_then(Value::as_array) {
-                let values = advantages.iter().filter_map(Value::as_f64).collect::<Vec<_>>();
+                let values = advantages
+                    .iter()
+                    .filter_map(Value::as_f64)
+                    .collect::<Vec<_>>();
                 if !values.is_empty() {
                     delta.insert(
                         "meanAdvantage".into(),
@@ -408,6 +413,15 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
         }
         "sft.checkpoint.created" | "sft.checkpoint.ready" | "cispo.checkpoint.created" => {
             checkpoint_ready_draft(algorithm, payload)
+        }
+        "sft.checkpoint.promoted" => {
+            let mut delta = payload.as_object().cloned().unwrap_or_default();
+            if !delta.contains_key("checkpointId") {
+                if let Some(id) = payload.get("checkpoint_id").or_else(|| payload.get("id")) {
+                    delta.insert("checkpointId".into(), id.clone());
+                }
+            }
+            OptimizerEventDraft::new("sft.checkpoint.promoted", algorithm).delta(delta)
         }
         "sft.checkpoint_eval.completed"
         | "sft.heldout_eval.completed"
@@ -431,6 +445,7 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
                 if let Some(id) = payload
                     .get("adapter_id")
                     .or_else(|| payload.get("artifact_id"))
+                    .or_else(|| payload.get("checkpoint_id"))
                     .or_else(|| payload.get("id"))
                 {
                     delta.insert("adapterId".into(), id.clone());
@@ -453,18 +468,36 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
 fn sft_metric_delta(payload: &Value) -> Map<String, Value> {
     Map::from_iter([
         ("step".into(), metric_step(payload)),
-        ("train_loss".into(), metric_number(payload, &["train_loss", "trainLoss", "loss"])),
-        ("learning_rate".into(), metric_number(payload, &["learning_rate", "learningRate", "lr"])),
-        ("throughput".into(), metric_number(payload, &["tokens_per_second", "tokensPerSecond"])),
+        (
+            "train_loss".into(),
+            metric_number(payload, &["train_loss", "trainLoss", "loss"]),
+        ),
+        (
+            "learning_rate".into(),
+            metric_number(payload, &["learning_rate", "learningRate", "lr"]),
+        ),
+        (
+            "throughput".into(),
+            metric_number(payload, &["tokens_per_second", "tokensPerSecond"]),
+        ),
     ])
 }
 
 fn cispo_metric_delta(payload: &Value) -> Map<String, Value> {
     Map::from_iter([
         ("step".into(), metric_step(payload)),
-        ("train_loss".into(), metric_number(payload, &["train_loss", "trainLoss", "loss"])),
-        ("reward".into(), metric_number(payload, &["reward_mean", "mean_reward", "reward"])),
-        ("mean_reward".into(), metric_number(payload, &["reward_mean", "mean_reward", "reward"])),
+        (
+            "train_loss".into(),
+            metric_number(payload, &["train_loss", "trainLoss", "loss"]),
+        ),
+        (
+            "reward".into(),
+            metric_number(payload, &["reward_mean", "mean_reward", "reward"]),
+        ),
+        (
+            "mean_reward".into(),
+            metric_number(payload, &["reward_mean", "mean_reward", "reward"]),
+        ),
         (
             "reward_variance".into(),
             metric_number(payload, &["reward_variance", "rewardVariance"]),
@@ -477,16 +510,25 @@ fn cispo_metric_delta(payload: &Value) -> Map<String, Value> {
             "advantage_std".into(),
             metric_number(payload, &["advantage_std", "advantageStd"]),
         ),
-        ("group_size".into(), metric_number(payload, &["group_size", "groupSize", "group_count"])),
+        (
+            "group_size".into(),
+            metric_number(payload, &["group_size", "groupSize", "group_count"]),
+        ),
         (
             "optimizer_step".into(),
-            metric_number(payload, &["optimizer_step", "optimizerStep", "update", "step"]),
+            metric_number(
+                payload,
+                &["optimizer_step", "optimizerStep", "update", "step"],
+            ),
         ),
     ])
 }
 
 fn clip_delta(payload: &Value) -> Map<String, Value> {
-    let clip = payload.get("clip").cloned().unwrap_or_else(|| payload.clone());
+    let clip = payload
+        .get("clip")
+        .cloned()
+        .unwrap_or_else(|| payload.clone());
     Map::from_iter([
         ("clip".into(), clip.clone()),
         (
@@ -694,7 +736,10 @@ mod tests {
         .unwrap();
         assert_eq!(checkpoint.draft.event_type, "sft.checkpoint.ready");
         assert_eq!(checkpoint.draft.delta["checkpointId"], "ckpt_1_inference");
-        assert_eq!(checkpoint.draft.item.as_ref().unwrap()["sha256"], "sha256:abc");
+        assert_eq!(
+            checkpoint.draft.item.as_ref().unwrap()["sha256"],
+            "sha256:abc"
+        );
     }
 
     #[test]
@@ -710,6 +755,33 @@ mod tests {
         .unwrap();
         assert_eq!(dataset.draft.event_type, "sft.dataset.validated");
         assert_eq!(dataset.draft.delta["dataset_digest"], "sha256:banking77");
+    }
+
+    #[test]
+    fn public_sft_terminal_artifacts_map_to_kernel_event_shapes() {
+        let promoted = adapt_source_fact(
+            "sft",
+            &native_event(
+                39,
+                "sft.checkpoint.promoted",
+                json!({"checkpoint_id": "ckpt_10_inference", "digest": "sha256:chosen"}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(promoted.draft.event_type, "sft.checkpoint.promoted");
+        assert_eq!(promoted.draft.delta["checkpointId"], "ckpt_10_inference");
+
+        let materialized = adapt_source_fact(
+            "sft",
+            &native_event(
+                41,
+                "sft.model.materialized",
+                json!({"checkpoint_id": "ckpt_10_inference", "digest": "sha256:model"}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(materialized.draft.event_type, "sft.model.materialized");
+        assert_eq!(materialized.draft.delta["adapterId"], "ckpt_10_inference");
     }
 
     #[test]
