@@ -626,6 +626,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							onSelectedRunIdChange={(selectedRunId) => persistLayoutSnapshot({ optimizers: { selectedRunId } })}
 							selectedContainerId={openContainer?.id ?? null}
 							onRefreshPlugins={refreshPluginStatuses}
+							accessibilityHidden={visualPaneVisible}
 							onStartAgent={(guide) => startOptimizerAgent(`Plan a ${guide.name} optimization`, guide.prompt)}
 							onOpenVisual={(visualId) => {
 								void (async () => {

@@ -82,6 +82,14 @@ type Props = {
 	onRefreshPlugins?: () => Promise<void>;
 	initialRunId?: string | null;
 	onSelectedRunIdChange?: (runId: string | null) => void;
+	/**
+	 * The inventory remains visually available beside an open visual, but it is
+	 * not the active accessibility surface. Keeping both large trees exposed
+	 * makes WebKit rebuild the full run list and inspector whenever assistive
+	 * technology reads the visual. The visual owns the close affordance, so the
+	 * inventory becomes available again as soon as that pane closes.
+	 */
+	accessibilityHidden?: boolean;
 };
 
 function isWorkspaceBaselineEval(recipe: OptimizerRecipeInfo): boolean {
@@ -234,7 +242,8 @@ export function OptimizersPage({
 	pluginStatuses = null,
 	onRefreshPlugins,
 	initialRunId = null,
-	onSelectedRunIdChange
+	onSelectedRunIdChange,
+	accessibilityHidden = false
 }: Props) {
 	const [tab, setTab] = useState<OptimizersTab>("runs");
 	const [runs, setRuns] = useState<OptimizerRunRecord[]>([]);
@@ -934,7 +943,11 @@ export function OptimizersPage({
 	};
 
 	return (
-		<div className="inventory-page optimizers-page" data-testid="optimizers-page">
+		<div
+			className="inventory-page optimizers-page"
+			data-testid="optimizers-page"
+			aria-hidden={accessibilityHidden || undefined}
+		>
 			<header className="inventory-head optimizer-head">
 				<button type="button" className="optimizer-back-button" aria-label="Back" onClick={onBack}>←</button>
 				<div className="optimizer-head-copy">
