@@ -9619,7 +9619,7 @@ html.visual-expanded .sidebar {
 .experiments-page p { margin:0; color:var(--color-text-muted); }
 .research-sections { display:flex; flex-wrap:wrap; gap:4px; margin:-8px 0 20px; padding:4px; width:fit-content; max-width:100%; border:1px solid var(--color-border); border-radius:var(--radius-md); background:var(--color-bg-subtle); }
 .research-sections button { white-space:nowrap; }
-.research-sections button { border:0; border-radius:calc(var(--radius-md) - 3px); padding:8px 13px; background:transparent; color:var(--color-text-muted); font:inherit; font-weight:650; cursor:pointer; }
+.research-sections button { border:0; border-radius:var(--radius-sm); padding:8px 13px; background:transparent; color:var(--color-text-muted); font:inherit; font-weight:650; cursor:pointer; }
 .research-sections button:hover { color:var(--color-text); }
 .research-sections button.active { background:var(--color-surface); color:var(--color-text); box-shadow:var(--shadow-xs); }
 .research-log-workspace { display:grid; grid-template-columns:minmax(260px,360px) minmax(0,1fr); gap:16px; align-items:start; }
@@ -9645,7 +9645,7 @@ html.visual-expanded .sidebar {
 .research-log-entry p { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.5; }
 .research-log-entry footer { margin-top:12px; justify-content:flex-start; }
 .research-log-tags { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
-.research-log-tags span { padding:3px 7px; border-radius:999px; background:var(--color-bg-subtle); color:var(--color-text-muted); font-size:var(--fs-micro); }
+.research-log-tags span { padding:3px 7px; border-radius:var(--radius-pill); background:var(--color-bg-subtle); color:var(--color-text-muted); font-size:var(--fs-micro); }
 .research-reports-list { display:grid; gap:10px; }
 .research-reports-list > article { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:17px 18px; border:1px solid var(--color-border); border-radius:var(--radius-lg); background:var(--color-surface); }
 .research-reports-list h2 { margin:4px 0; font-size:var(--fs-body); }
