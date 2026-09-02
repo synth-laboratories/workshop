@@ -1826,6 +1826,10 @@ async fn drive_hosted_sft_job(
             .unwrap_or("running")
         {
             "succeeded" | "completed" => {
+                if page.get("terminal").and_then(Value::as_bool) != Some(true) {
+                    sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
                     job.status = TrainingJobStatus::Succeeded;
@@ -1923,6 +1927,10 @@ async fn drive_hosted_cispo_job(
             .unwrap_or("running")
         {
             "succeeded" | "completed" => {
+                if page.get("terminal").and_then(Value::as_bool) != Some(true) {
+                    sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
                     job.status = TrainingJobStatus::Succeeded;
