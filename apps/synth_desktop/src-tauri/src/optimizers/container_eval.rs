@@ -564,6 +564,10 @@ async fn start_eval(
         "expectedVisual": effective_contract.primary_visual.template_id.clone(),
         "effectiveContract": effective_contract,
         "policyRef": { "harness": spec.harness, "config": spec.policy_config },
+        "policySourceRevision": spec.policy_source_revision,
+        "policyConfigurationDigest": spec.policy_configuration_digest,
+        "provider": spec.provider,
+        "model": spec.model,
         "taskPools": { "train": spec.train.len(), "heldout": spec.heldout.len() },
         "concurrency": spec.concurrency,
         "costCeilingUsd": spec.cost_ceiling_usd,
@@ -1026,7 +1030,14 @@ async fn mint_live_annotation_visual(
             session_ref: run.session_ref.clone(),
             template_id: LIVE_ANNOTATION_TEMPLATE.into(),
             title: format!("{} · live annotations", spec.title),
-            bindings: crate::visuals::pending_stream_bindings(),
+            bindings: json!({
+                "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+                "inputs": [{
+                    "input": "stream", "kind": "inline", "schema": "synth.trace-stream-event.v1", "data": { "events": [] }
+                }, {
+                    "input": "optimizer_run", "kind": "optimizer_run", "source": run.id,
+                }]
+            }),
             metadata: json!({
                 "optimizerRunId": run.id,
                 "recipeId": spec.recipe_id,
@@ -9540,5 +9551,23 @@ mod live_annotation_binding_tests {
         ];
         let merged = merge_live_stream_bindings(&merged, &second).unwrap();
         assert_eq!(merged["inputs"].as_array().unwrap().len(), 3, "a re-offered source is not duplicated");
+    }
+
+    #[test]
+    fn merge_preserves_optimizer_authority_while_replacing_the_placeholder() {
+        let initial = json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "inputs": [{ "input": "stream", "kind": "inline", "data": { "events": [] } }, {
+                "input": "optimizer_run", "kind": "optimizer_run", "source": "opt_eval_runebench_1"
+            }]
+        });
+        let merged = merge_live_stream_bindings(
+            &initial,
+            &[live_stream_descriptor("http://127.0.0.1:1/rollouts/a/stream", "http://127.0.0.1:1/rollouts/a/events")],
+        ).unwrap();
+        let inputs = merged["inputs"].as_array().unwrap();
+        assert!(inputs.iter().any(|row| row["kind"] == "optimizer_run" && row["source"] == "opt_eval_runebench_1"));
+        assert!(inputs.iter().any(|row| row["kind"] == "live_sse"));
+        assert!(!inputs.iter().any(|row| row["kind"] == "inline"));
     }
 }

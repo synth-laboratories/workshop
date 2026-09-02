@@ -22,6 +22,46 @@ type StreamPayload = { run_id?: string; events?: LiveEvalEvent[]; sse_url?: stri
 type Feed = "all" | "annotations" | "rollout";
 type DetailTab = "rollout" | "trace" | "verifier";
 
+type RunConfiguration = { container: string; containerDetail: string; policy: string; policyDetail: string; model: string; modelDetail: string };
+function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
+function text(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
+function abbreviated(value: string | undefined): string | undefined { return value && value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }
+
+export function runConfiguration(events: LiveEvalEvent[], rawOptimizer: unknown): RunConfiguration {
+  const slot = record(rawOptimizer);
+  const run = Object.keys(record(slot.run)).length ? record(slot.run) : slot;
+  const summary = record(run.summary);
+  const bindings = Array.isArray(run.execution_bindings) ? run.execution_bindings.map(record) : [];
+  const containerBinding = bindings.find((row) => row.kind === "container_http" || row.kind === "container") ?? {};
+  const containerMeta = record(containerBinding.metadata);
+  const unwrapped = events.map(unwrapRelayed);
+  const opened = unwrapped.find((event) => event.kind === "trace.opened");
+  const policyPayload = record(unwrapped.find((event) => event.kind === "policy.session.opened")?.payload);
+  const policyRef = Object.keys(record(summary.policyRef)).length ? record(summary.policyRef) : record(opened?.payload.policy_ref);
+  const containerId = text(summary.containerId) ?? text(containerBinding.id);
+  const imageDigest = text(summary.containerImageDigest) ?? text(containerMeta.imageDigest);
+  const harness = text(policyRef.harness) ?? text(policyPayload.harness);
+  const config = text(policyRef.config) ?? text(policyPayload.config);
+  const policyRevision = text(summary.policySourceRevision);
+  const policyDigest = text(summary.policyConfigurationDigest);
+  const provider = text(summary.provider) ?? text(policyPayload.provider);
+  const model = text(summary.model) ?? text(policyPayload.model);
+  const reasoning = text(policyPayload.reasoning_effort);
+  return {
+    container: containerId ?? "not reported",
+    containerDetail: imageDigest ? `image ${abbreviated(imageDigest)}` : "image digest not reported",
+    policy: [harness, config].filter(Boolean).join(" / ") || "not reported",
+    policyDetail: policyRevision ? `revision ${abbreviated(policyRevision)}` : policyDigest ? `digest ${abbreviated(policyDigest)}` : "revision not reported",
+    model: model ?? "not reported",
+    modelDetail: [provider, reasoning].filter(Boolean).join(" · ") || "provider not reported",
+  };
+}
+
+function RunConfigurationStrip({ configuration }: { configuration: RunConfiguration }) {
+  const cells = [{ label: "Container", value: configuration.container, detail: configuration.containerDetail }, { label: "Policy", value: configuration.policy, detail: configuration.policyDetail }, { label: "Model", value: configuration.model, detail: configuration.modelDetail }];
+  return <section data-testid="run-configuration" aria-label="Run configuration" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, marginBottom: 12 }}>{cells.map((cell) => <div key={cell.label} style={{ minWidth: 0, padding: "9px 11px", border: "1px solid var(--sv-border)", borderRadius: 8, background: "var(--sv-canvas)" }}><span style={{ display: "block", marginBottom: 3, color: "var(--sv-text-faint)", fontSize: 9, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase" }}>{cell.label}</span><strong className="sv-mono" title={cell.value} style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>{cell.value}</strong><span className="sv-mono" title={cell.detail} style={{ display: "block", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--sv-text-faint)", fontSize: 9 }}>{cell.detail}</span></div>)}</section>;
+}
+
 const KIND_COLOR: Record<string, string> = {
   achievement: "#39a46b",
   milestone: "#2f6fdd",
@@ -165,7 +205,7 @@ function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: 
   </article>;
 }
 
-export type ShellProps = LiveTemplateProps & { title?: string; lede?: string; stream?: StreamPayload };
+export type ShellProps = LiveTemplateProps & { title?: string; lede?: string; stream?: StreamPayload; optimizer_run?: unknown };
 
 export function Shell(props: ShellProps) {
   const stream = props.stream ?? {};
@@ -186,6 +226,7 @@ export function Shell(props: ShellProps) {
   const [showHistory, setShowHistory] = useState(false);
   const [selectedRollout, setSelectedRollout] = useState<string | null>(null);
   const timeline = useMemo(() => logicalTimeline(events), [events]);
+  const configuration = useMemo(() => runConfiguration(events, props.optimizer_run), [events, props.optimizer_run]);
   const selectedGlobal = globalCursor == null ? timeline.length - 1 : Math.max(0, Math.min(globalCursor, timeline.length - 1));
   const selectedMoment = timeline[selectedGlobal];
   const visibleTimeline = useMemo(() => timeline.slice(0, selectedGlobal + 1), [timeline, selectedGlobal]);
@@ -229,6 +270,7 @@ export function Shell(props: ShellProps) {
   };
 
   return <VisualChrome kicker="Container eval · annotated rollouts" live={live} title={props.title ?? "Annotated Rollouts"} lede={props.lede ?? "Rollout evidence and provisional annotations on one replay clock. Choose a rollout for task-specific detail; return to All rollouts for the aggregate."} testId="visual-live-annotated-rollouts" footer="Annotated Rollouts · live.annotated_rollouts.v1 · synth.trace-stream-event.v1 + synth.live-annotation-stream.v1">
+    <RunConfigurationStrip configuration={configuration} />
     <MetricStrip metrics={[
       { label: "Rollouts", value: `${done}/${lanes.length || "—"} done` },
       { label: "Achievements", value: String(counts.achievement ?? 0) },

@@ -47,6 +47,13 @@
       "required": true,
       "multiple": true,
       "schema": "synth.trace-stream-event.v1"
+    },
+    {
+      "name": "optimizer_run",
+      "description": "Authoritative run configuration: registered container, approved policy material, provider, and model pins",
+      "accepts": ["optimizer_run"],
+      "required": false,
+      "schema": "synth.optimizer-run-document.v1"
     }
   ]
 }

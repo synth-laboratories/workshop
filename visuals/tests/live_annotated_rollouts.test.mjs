@@ -54,13 +54,24 @@ function laneEvents(id) {
   ];
 }
 
-test("template declares one multi-stream input and no terminal requirement", () => {
+test("template declares streams plus optional authoritative run configuration", () => {
   const meta = JSON.parse(readFileSync(join(root, "families/first_class_example_containers/live.annotated_rollouts.v1/template.json"), "utf8"));
   assert.equal(meta.id, "live.annotated_rollouts.v1");
-  assert.deepEqual(meta.inputs.map((input) => input.name), ["stream"]);
+  assert.deepEqual(meta.inputs.map((input) => input.name), ["stream", "optimizer_run"]);
   assert.equal(meta.inputs[0].multiple, true);
   assert.equal(meta.inputs[0].required, true);
+  assert.equal(meta.inputs[1].required, false);
   assert.equal(meta.observationContract.readiness.requireTerminal, false);
+});
+
+test("run configuration strip reads optimizer authority with event fallbacks", () => {
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.annotated_rollouts.v1/shell.tsx"), "utf8");
+  assert.match(shell, /data-testid="run-configuration"/);
+  assert.match(shell, /summary\.containerId/);
+  assert.match(shell, /summary\.policyRef/);
+  assert.match(shell, /summary\.model/);
+  assert.match(shell, /policy\.session\.opened/);
+  assert.match(shell, /not reported/);
 });
 
 test("rollout and annotation streams fold into one lane with a summary layer over the underlying events", () => {
