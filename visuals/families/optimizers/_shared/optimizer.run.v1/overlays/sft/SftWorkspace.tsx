@@ -520,7 +520,7 @@ function EvaluationSummaries({ sft }: { sft: SftState }) {
         <td className="sv-mono">{String(evaluation.step ?? "—")}</td>
         <td className="sv-mono">{String(evaluation.metric ?? (evaluation.calibration_accuracy != null ? "calibration accuracy" : evaluation.accuracy != null ? "accuracy" : "—"))}</td>
         <td className="sv-mono">{String(evaluation.score ?? evaluation.calibration_accuracy ?? evaluation.accuracy ?? "—")}</td>
-        <td className="sv-mono">{String(evaluation.n ?? "—")}</td>
+        <td className="sv-mono">{String(evaluation.n ?? evaluation.sampleCount ?? evaluation.sample_count ?? "—")}</td>
       </tr>
     ));
   return (

@@ -185,11 +185,10 @@ impl OptimizerRunViewV2 {
         }
     }
 
-    /// Remove collection-shaped data before this view crosses the IPC
-    /// boundary. The durable projection keeps the complete reducer state;
-    /// product readers page these rows through the shared collection API.
-    /// Counts, selected identities, setup, and latest scalar facts stay here
-    /// so first paint remains useful and bounded.
+    /// Remove unbounded collection-shaped data before this view crosses the
+    /// IPC boundary. Checkpoint evaluation summaries are already bounded by
+    /// the declared evaluation schedule, so they stay in first paint; detailed
+    /// rows remain pageable through the shared collection API.
     pub fn into_bounded_wire(mut self) -> Self {
         match &mut self {
             Self::Eval(view) => {
@@ -215,13 +214,11 @@ impl OptimizerRunViewV2 {
             }
             Self::Sft(view) => {
                 view.projection.work_items.clear();
-                view.projection.evaluations.clear();
                 view.projection.metrics.points.clear();
                 view.projection.curation_candidates.clear();
             }
             Self::Cispo(view) => {
                 view.projection.work_items.clear();
-                view.projection.evaluations.clear();
                 view.projection.metrics.points.clear();
             }
         }

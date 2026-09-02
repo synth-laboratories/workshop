@@ -477,7 +477,15 @@ function sftProjection(base: ProjectedState, view: OptimizerRunViewV2Like): void
       ready: true,
       selected: id === projection.selectedCheckpointId
     })),
-    evaluations: strings(projection.childEvalRunIds).map((optimizerRunId) => ({ optimizerRunId })),
+    evaluations: [
+      ...records(projection.evaluations).map((evaluation) => ({
+        ...evaluation,
+        role: evaluation.phase ?? "selection",
+        checkpoint_id: evaluation.checkpointId ?? evaluation.checkpoint_id,
+        n: evaluation.sampleCount ?? evaluation.sample_count
+      })),
+      ...strings(projection.childEvalRunIds).map((optimizerRunId) => ({ optimizerRunId }))
+    ],
     // Eval campaigns are not a runtime concept in V2.
     campaigns: [],
     dataset: {

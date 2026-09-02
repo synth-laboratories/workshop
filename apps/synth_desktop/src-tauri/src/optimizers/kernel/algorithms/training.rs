@@ -37,6 +37,8 @@ pub struct TrainingEvaluationSummary {
     #[serde(default)]
     pub score: Option<f64>,
     #[serde(default)]
+    pub metric: Option<String>,
+    #[serde(default)]
     pub loss: Option<f64>,
     #[serde(default)]
     pub delta: Option<f64>,
@@ -73,7 +75,19 @@ impl TrainingEvaluationSummary {
         };
         let number = |keys: &[&str]| keys.iter().find_map(|key| get(key).and_then(Value::as_f64));
         let integer = |keys: &[&str]| keys.iter().find_map(|key| get(key).and_then(Value::as_u64));
-        let phase = string(&["phase"]);
+        let kind = payload
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let phase = string(&["phase"]).or_else(|| {
+            if kind.contains("checkpoint") {
+                Some("checkpoint".into())
+            } else if kind.contains("heldout") || kind.contains("final") {
+                Some("heldout".into())
+            } else {
+                None
+            }
+        });
         let step = integer(&["step"]);
         let checkpoint_id = string(&["checkpoint_id", "checkpointId"]);
         let child_run_id = payload
@@ -93,13 +107,22 @@ impl TrainingEvaluationSummary {
             id,
             phase,
             step,
-            score: number(&["score"]),
+            score: number(&["score", "calibration_accuracy", "accuracy"]),
+            metric: string(&["metric"]).or_else(|| {
+                if get("calibration_accuracy").is_some() {
+                    Some("calibration_accuracy".into())
+                } else if get("accuracy").is_some() {
+                    Some("accuracy".into())
+                } else {
+                    None
+                }
+            }),
             loss: number(&["loss"]),
             delta: number(&["delta"]),
             checkpoint_id,
             artifact_digest: string(&["artifact_digest", "artifactDigest", "digest"]),
             evaluator: string(&["evaluator"]),
-            sample_count: integer(&["sample_count", "sampleCount"]),
+            sample_count: integer(&["sample_count", "sampleCount", "n"]),
             status: string(&["status"]),
             child_run_id,
             sequence,
@@ -136,6 +159,7 @@ impl TrainingEvaluationSummary {
             phase: Some(phase.into()),
             step: integer(&["step", "steps", "step_count"]),
             score: number(&["score", "reward", "total_reward"]),
+            metric: string(&["metric"]),
             loss: number(&["loss"]),
             delta: number(&["delta", "lift"]),
             checkpoint_id: string(&["checkpointId", "checkpoint_id"]),
@@ -327,10 +351,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(summary.id, "ckpt-40");
+        assert_eq!(summary.metric.as_deref(), None);
         assert_eq!(summary.step, Some(40));
         assert_eq!(summary.score, Some(0.81));
         assert_eq!(summary.child_run_id.as_deref(), Some("eval_child_1"));
         assert_eq!(summary.sequence, 77);
         assert!(TrainingEvaluationSummary::from_payload(&json!({}), 1).is_none());
+    }
+
+    #[test]
+    fn evaluation_summary_normalizes_fixture_accuracy() {
+        let checkpoint = TrainingEvaluationSummary::from_payload(
+            &json!({
+                "kind": "sft.checkpoint_eval.completed",
+                "evaluation": {
+                    "checkpoint_id": "ckpt-10",
+                    "step": 10,
+                    "calibration_accuracy": 0.0,
+                    "n": 1
+                }
+            }),
+            14,
+        )
+        .unwrap();
+        assert_eq!(checkpoint.phase.as_deref(), Some("checkpoint"));
+        assert_eq!(checkpoint.metric.as_deref(), Some("calibration_accuracy"));
+        assert_eq!(checkpoint.score, Some(0.0));
+        assert_eq!(checkpoint.sample_count, Some(1));
+
+        let heldout = TrainingEvaluationSummary::from_payload(
+            &json!({
+                "kind": "sft.heldout_eval.completed",
+                "evaluation": {"accuracy": 0.5, "n": 2}
+            }),
+            40,
+        )
+        .unwrap();
+        assert_eq!(heldout.phase.as_deref(), Some("heldout"));
+        assert_eq!(heldout.metric.as_deref(), Some("accuracy"));
+        assert_eq!(heldout.score, Some(0.5));
+        assert_eq!(heldout.sample_count, Some(2));
     }
 }

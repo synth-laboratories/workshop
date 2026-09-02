@@ -73,6 +73,45 @@ test("SFT V2 projection marks durable checkpoints ready and selected", () => {
   assert.equal(projected.sft.checkpoints.find((row) => row.id === "ckpt_10").selected, true);
 });
 
+test("SFT V2 projection keeps bounded evaluation summaries in first paint", () => {
+  const projected = projectRunViewV2(
+    { ...RUN, status: "completed" },
+    {
+      algorithm: "sft",
+      header: {
+        runId: RUN.id,
+        algorithm: "sft",
+        lifecycle: "terminal",
+        condition: "healthy",
+        placement: "hosted",
+        specId: "spec-1",
+        specDigest: "sha256:spec",
+        executionBindings: [], inputRefs: [], outputRefs: [], visualRefs: [],
+        usage: { steps: 30 },
+        evidence: { completeness: "complete", refs: [] },
+        terminal: { kind: "completed", finalSequence: 44, sealedAt: "2026-09-02T17:58:06Z" },
+        projectionSchemaVersion: "sft_projection.v1",
+        asOfSequence: 44,
+        projectionRevision: 44
+      },
+      projection: {
+        checkpoints: ["ckpt_10"],
+        selectedCheckpointId: "ckpt_10",
+        evaluations: [
+          { id: "ckpt_10", phase: "checkpoint", checkpointId: "ckpt_10", step: 10, metric: "calibration_accuracy", score: 0, sampleCount: 1 },
+          { id: "heldout:40", phase: "heldout", metric: "accuracy", score: 0, sampleCount: 1 }
+        ]
+      }
+    }
+  );
+  assert.equal(projected.sft.evaluations.length, 2);
+  assert.equal(projected.sft.evaluations[0].role, "checkpoint");
+  assert.equal(projected.sft.evaluations[0].checkpoint_id, "ckpt_10");
+  assert.equal(projected.sft.evaluations[1].role, "heldout");
+  const stages = sftStages(projected.sft, "completed", undefined);
+  assert.equal(stages.find((stage) => stage.id === "evaluation").status, "completed");
+});
+
 test("SFT stages: ready checkpoint is never presented as promoted", () => {
   const projected = projectAtCursor(RUN, hostedSftEvents());
   const stages = sftStages(projected.sft, "running", undefined);
