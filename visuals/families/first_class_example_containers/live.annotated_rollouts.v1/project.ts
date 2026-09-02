@@ -65,6 +65,19 @@ export type LaneEvent = {
   verifier: boolean;
 };
 
+export type LlmCall = {
+  callId: string;
+  role: "policy" | "annotator";
+  model?: string;
+  provider?: string;
+  status: "running" | "completed" | "failed";
+  startedAt?: number;
+  endedAt?: number;
+  sourceSequences: number[];
+  events: LaneEvent[];
+  findings: Finding[];
+};
+
 export type Lane = {
   name: string;
   /** Task family is advisory presentation metadata, never evidence. */
@@ -438,6 +451,88 @@ export function projectLanes(events: LiveEvalEvent[]): Lane[] {
 
 export function activeFindings(lane: Lane): Finding[] {
   return lane.findings.filter((row) => row.status === "provisional");
+}
+
+function identityValues(payload: Record<string, unknown>): string[] {
+  return ["request_id", "call_id", "model_call_id", "policy_call_id", "span_id", "invocation_id", "id", "call"]
+    .map((key) => payload[key])
+    .filter((value): value is string | number => typeof value === "string" || typeof value === "number")
+    .map(String);
+}
+
+/**
+ * Reconstruct inspectable LLM calls and attach only annotations with provenance.
+ * Explicit call/request identities win; cited rollout/source sequences are the
+ * fallback. A finding is never attached merely because it happened nearby.
+ */
+export function llmCalls(lane: Lane): LlmCall[] {
+  const calls: LlmCall[] = [];
+  let policy: LlmCall | undefined;
+  const annotators = new Map<string, LlmCall>();
+  for (const row of lane.trace) {
+    if (row.stream === "rollout" && (row.kind === "span.policy.opened" || (row.kind === "span.policy.plan" && !policy))) {
+      policy = {
+        callId: identityValues(row.payload)[0] ?? `policy:${row.sequence ?? calls.length + 1}`,
+        role: "policy",
+        model: str(row.payload.model),
+        provider: str(row.payload.provider),
+        status: "running",
+        startedAt: row.logicalTime,
+        sourceSequences: [],
+        events: [],
+        findings: [],
+      };
+      calls.push(policy);
+    }
+    if (policy && row.stream === "rollout") {
+      policy.events.push(row);
+      if (row.sequence != null && !policy.sourceSequences.includes(row.sequence)) policy.sourceSequences.push(row.sequence);
+      policy.model ??= str(row.payload.model);
+      policy.provider ??= str(row.payload.provider);
+      if (row.kind === "span.policy.closed") {
+        policy.status = str(row.payload.status) === "failed" ? "failed" : "completed";
+        policy.endedAt = row.logicalTime;
+        policy = undefined;
+      }
+    }
+    if (row.kind === "annotation.model.requested") {
+      const id = identityValues(row.payload)[0] ?? `annotator:${row.sequence ?? calls.length + 1}`;
+      const call: LlmCall = {
+        callId: id,
+        role: "annotator",
+        model: str(row.payload.model),
+        provider: str(row.payload.provider),
+        status: "running",
+        startedAt: row.logicalTime,
+        sourceSequences: row.sourceSequence == null ? [] : [row.sourceSequence],
+        events: [row],
+        findings: [],
+      };
+      annotators.set(id, call);
+      calls.push(call);
+    } else if (row.kind === "annotation.model.completed" || row.kind === "annotation.model.failed") {
+      const id = identityValues(row.payload)[0];
+      const call = (id ? annotators.get(id) : undefined) ?? [...annotators.values()].reverse().find((candidate) => candidate.status === "running");
+      if (call) {
+        call.events.push(row);
+        if (row.sourceSequence != null && !call.sourceSequences.includes(row.sourceSequence)) call.sourceSequences.push(row.sourceSequence);
+        call.status = row.kind.endsWith("failed") ? "failed" : "completed";
+        call.endedAt = row.logicalTime;
+      }
+    }
+  }
+  for (const call of calls) {
+    const callIds = new Set([call.callId, ...call.events.flatMap((row) => identityValues(row.payload))]);
+    const cited = new Set(call.sourceSequences);
+    for (const finding of lane.findings) {
+      const findingIds = identityValues(finding.detail);
+      const explicit = findingIds.some((id) => callIds.has(id));
+      const sequence = finding.sequences.some((value) => cited.has(value))
+        || (finding.sourceSequence != null && cited.has(finding.sourceSequence));
+      if (explicit || sequence) call.findings.push(finding);
+    }
+  }
+  return calls;
 }
 
 export function countByKind(findings: Finding[]): Record<string, number> {

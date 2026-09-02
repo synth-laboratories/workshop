@@ -10,6 +10,7 @@ import {
   countByKind,
   eventDetail,
   labelTally,
+  llmCalls,
   logicalTimeline,
   projectLanes,
   type Finding,
@@ -162,6 +163,24 @@ function RubricEvidence({ lane }: { lane: Lane }) {
   </div>;
 }
 
+function LlmCallCards({ lane, showHistory }: { lane: Lane; showHistory: boolean }) {
+  const calls = llmCalls(lane);
+  return <section aria-label="LLM calls and associated annotations" style={{ display: "grid", gap: 8, marginBottom: 14 }}>
+    <div className="sv-section-head" style={{ marginBottom: 0 }}><div><h4 style={{ margin: 0, fontSize: 11 }}>LLM calls</h4><span style={{ fontSize: 9, color: "var(--sv-text-faint)" }}>Annotations appear only when call IDs or cited source sequences establish the link.</span></div><span className="sv-mono">{calls.length} calls</span></div>
+    {calls.map((call, index) => {
+      const outputEvent = [...call.events].reverse().find((row) => ["action", "span.policy.closed", "annotation.model.completed"].includes(row.kind));
+      const output = outputEvent ? text(outputEvent.payload.response) ?? text(outputEvent.payload.text) ?? text(outputEvent.payload.content) ?? text(outputEvent.payload.action) ?? text(outputEvent.payload.label) : undefined;
+      return <article key={`${call.role}-${call.callId}-${index}`} style={{ padding: 10, border: "1px solid var(--sv-border)", borderRadius: 8, background: "var(--sv-surface)", display: "grid", gap: 7 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}><div><strong style={{ fontSize: 11 }}>{index + 1}. {call.role === "annotator" ? "Annotator call" : "Policy call"}</strong><span className="sv-mono" style={{ marginLeft: 8, color: "var(--sv-text-faint)", fontSize: 9 }}>{call.model ?? "model not reported"}{call.provider ? ` · ${call.provider}` : ""}</span></div><span className="sv-mono" style={{ color: call.status === "failed" ? "#c2553f" : call.status === "completed" ? "#238a57" : "var(--sv-accent)", fontSize: 9 }}>{call.status} · {call.startedAt != null ? `t=${call.startedAt}` : "t=—"}{call.endedAt != null && call.endedAt !== call.startedAt ? `–${call.endedAt}` : ""}</span></div>
+        <div className="sv-mono" style={{ display: "flex", gap: 10, flexWrap: "wrap", color: "var(--sv-text-faint)", fontSize: 9 }}><span>id {call.callId}</span><span>{call.events.length} events</span>{call.sourceSequences.length ? <span>source seq {call.sourceSequences.join(", ")}</span> : null}</div>
+        {output ? <div style={{ padding: "7px 9px", borderRadius: 6, background: "var(--sv-canvas)", fontSize: 10 }}><strong className="sv-mono" style={{ marginRight: 7, color: "var(--sv-text-faint)", fontSize: 9 }}>OUTPUT</strong>{output}</div> : null}
+        {call.findings.length ? <div style={{ display: "grid", gap: 6, paddingTop: 7, borderTop: "1px solid var(--sv-border)" }}><strong style={{ fontSize: 10 }}>Associated annotations · {call.findings.length}</strong>{call.findings.map((finding) => <div key={finding.findingId} style={{ display: "grid", gap: 4 }}><div><FindingChip finding={finding} showHistory={showHistory} /></div>{typeof finding.detail.rationale === "string" ? <span style={{ color: "var(--sv-text-muted)", fontSize: 10 }}>{finding.detail.rationale}</span> : null}<span className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 9 }}>{finding.logicalTime != null ? `annotation t=${finding.logicalTime}` : "annotation time unavailable"}{finding.sequences.length ? ` · evidence seq ${finding.sequences.join(", ")}` : finding.sourceSequence != null ? ` · source seq ${finding.sourceSequence}` : ""}</span></div>)}</div> : <span style={{ color: "var(--sv-text-faint)", fontSize: 9 }}>No annotations cite this call.</span>}
+      </article>;
+    })}
+    {!calls.length ? <p style={{ margin: 0, color: "var(--sv-text-faint)", fontSize: 10 }}>No explicit LLM call boundaries were emitted for this rollout.</p> : null}
+  </section>;
+}
+
 function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: boolean; streamBase: URL | null }) {
   const [tab, setTab] = useState<DetailTab>("rollout");
   const pct = lane.total ? Math.min(100, lane.done / lane.total * 100) : 0;
@@ -200,7 +219,7 @@ function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: 
       <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }} aria-label={`Findings for ${lane.name}`}>{ordered.map((finding) => <FindingChip key={finding.findingId} finding={finding} showHistory={showHistory} />)}{!lane.findings.length ? <span style={{ fontSize: 10, color: "var(--sv-text-faint)" }}>{lane.protocol ? "no findings yet" : "no protocol bound"}</span> : null}</div>
       <span className="sv-mono" style={{ fontSize: 10, color: "var(--sv-text-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>◌ {lane.lastAnnotation}{lane.protocol?.revisionId ? ` · ${lane.protocol.protocolId ?? "protocol"} ${lane.protocol.revisionId}` : ""}</span>
     </section> : null}
-    {tab === "trace" ? <section aria-label="Rollout trace"><div className="sv-section-head"><div><h4 style={{ margin: 0, fontSize: 11 }}>Rollout trace</h4><span style={{ fontSize: 9, color: "var(--sv-text-faint)" }}>Policy, environment, action, observation, and lifecycle evidence in logical order.</span></div><span className="sv-mono">{rolloutTrace.length} events</span></div><TraceList rows={rolloutTrace} empty="No rollout trace events have arrived." /></section> : null}
+    {tab === "trace" ? <section aria-label="Rollout trace"><LlmCallCards lane={lane} showHistory={showHistory} /><div className="sv-section-head"><div><h4 style={{ margin: 0, fontSize: 11 }}>Rollout trace</h4><span style={{ fontSize: 9, color: "var(--sv-text-faint)" }}>Policy, environment, action, observation, and lifecycle evidence in logical order.</span></div><span className="sv-mono">{rolloutTrace.length} events</span></div><TraceList rows={rolloutTrace} empty="No rollout trace events have arrived." /></section> : null}
     {tab === "verifier" ? <section aria-label="Verifier and rubric information" style={{ display: "grid", gap: 14 }}><div className="sv-section-head" style={{ marginBottom: 0 }}><div><h4 style={{ margin: 0, fontSize: 11 }}>Verifier & rubric</h4><span style={{ fontSize: 9, color: "var(--sv-text-faint)" }}>Structured criteria first; verifier and grader calls remain inspectable below.</span></div><span className="sv-mono">{outcomeLabel(lane)}</span></div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 8, padding: 9, border: "1px solid var(--sv-border)", borderRadius: 7 }}><span><strong style={{ display: "block", fontSize: 9, color: "var(--sv-text-faint)" }}>PROTOCOL</strong><span className="sv-mono" style={{ fontSize: 10 }}>{lane.protocol?.protocolId ?? "not bound"}</span></span><span><strong style={{ display: "block", fontSize: 9, color: "var(--sv-text-faint)" }}>REVISION</strong><span className="sv-mono" style={{ fontSize: 10 }}>{lane.protocol?.revisionId ?? "—"}</span></span><span><strong style={{ display: "block", fontSize: 9, color: "var(--sv-text-faint)" }}>MODEL</strong><span className="sv-mono" style={{ fontSize: 10 }}>{lane.protocol?.model ?? "deterministic / unspecified"}</span></span><span><strong style={{ display: "block", fontSize: 9, color: "var(--sv-text-faint)" }}>CALLS</strong><span className="sv-mono" style={{ fontSize: 10 }}>{lane.model.completed}/{lane.model.requested} complete</span></span></div><RubricEvidence lane={lane} /><div><div className="sv-section-head"><h4 style={{ margin: 0, fontSize: 11 }}>Verifier trace</h4><span className="sv-mono">{verifierTrace.length} events</span></div><TraceList rows={verifierTrace} empty="No separate verifier or grader trace was emitted for this rollout." /></div></section> : null}
   </article>;
 }
