@@ -213,7 +213,7 @@ impl PaidComputeAutoApprovalSettings {
         Self {
             enabled: false,
             max_request_usd: "0.10".into(),
-            max_conversation_usd: "1.00".into(),
+            max_conversation_usd: "10.00".into(),
             providers: Vec::new(),
         }
     }
@@ -1902,6 +1902,7 @@ operations = { "rollouts.prepare" = false }
         let defaults = desktop_permission_settings_at(&path).unwrap();
         assert_eq!(defaults.approval_policy, "untrusted");
         assert_eq!(defaults.sandbox_mode, "workspace-write");
+        assert_eq!(defaults.paid_compute.max_conversation_usd, "10.00");
         assert_eq!(
             defaults.paid_compute,
             PaidComputeAutoApprovalSettings::disabled()

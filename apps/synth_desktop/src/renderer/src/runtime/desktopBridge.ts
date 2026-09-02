@@ -636,7 +636,7 @@ window.synthConfig ??= isTauri
 				configPath: "~/.synth-desktop/config.toml",
 				approvalPolicy: "untrusted",
 				sandboxMode: "workspace-write",
-				paidCompute: { enabled: false, maxRequestUsd: "0.10", maxConversationUsd: "1.00", providers: [] }
+				paidCompute: { enabled: false, maxRequestUsd: "0.10", maxConversationUsd: "10.00", providers: [] }
 			}),
 			updateDesktopPermissions: async () => { throw new Error("Desktop permission settings require Synth Desktop"); }
 		};

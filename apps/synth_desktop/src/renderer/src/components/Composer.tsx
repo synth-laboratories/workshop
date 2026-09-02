@@ -153,7 +153,7 @@ const SANDBOX_CHIP_LABEL: Record<SandboxMode, string> = { "read-only": "Read", "
 const DEFAULT_PAID_COMPUTE: PaidComputeAutoApprovalSettings = {
 	enabled: false,
 	maxRequestUsd: "0.10",
-	maxConversationUsd: "1.00",
+	maxConversationUsd: "10.00",
 	providers: []
 };
 const PAID_COMPUTE_PROVIDERS = [

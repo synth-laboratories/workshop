@@ -14,7 +14,7 @@ const PROVIDER_IDS = new Set(PROVIDER_OPTIONS.map(({ id }) => id));
 const DEFAULT_SETTINGS: PaidComputeAutoApprovalSettings = {
 	enabled: false,
 	maxRequestUsd: "0.10",
-	maxConversationUsd: "1.00",
+	maxConversationUsd: "10.00",
 	providers: []
 };
 
