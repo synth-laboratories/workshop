@@ -142,6 +142,13 @@ export const commands = {
 	costUsd?: number | null,
 	status?: string | null,
 	detailsVersion: string,
+	/**
+	 *  True only on a collection page when this row's detail alone exceeds
+	 *  the page byte budget. The common envelope remains visible; callers
+	 *  fetch the full detail through `run_collection_item` on selection.
+	 */
+	detailsDeferred?: boolean,
+	detailsBytes: number,
 	details: unknown,
 } | null, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_collection_item", { optimizerRunId, collection, itemId })),
 	/**
@@ -870,6 +877,10 @@ export type CispoProjection = {
 	warmStartId: string | null,
 	clipIdentity: string | null,
 	meanAdvantage: number | null,
+	advantageStd?: number | null,
+	rewardVariance?: number | null,
+	groupSize?: number | null,
+	optimizerSteps?: number,
 	checkpoints: string[],
 	childEvalRunIds: string[],
 	noLearningSignal: boolean,
@@ -1361,6 +1372,15 @@ export type EvalProjection = {
 	 *  projections replay forward instead of becoming unreadable.
 	 */
 	evidenceLedger?: RolloutEvidenceEntry[],
+	trials?: EvalTrialSummary[],
+	scorecards?: EvalScorecardSummary[],
+	/**
+	 *  Immutable plan/setup and sealed seed ledger are compact configuration
+	 *  facts, not growing trial collections.
+	 */
+	setup?: unknown,
+	seedLedger?: unknown,
+	selection?: unknown,
 };
 
 export type EvalResult = {
@@ -1377,11 +1397,48 @@ export type EvalRunView = {
 	result: EvalResult | null,
 };
 
+/**  Candidate/stage scorecard emitted by the evaluator. */
+export type EvalScorecardSummary = {
+	id: string,
+	candidateId: string,
+	label?: string | null,
+	stage?: string | null,
+	isBaseline: boolean,
+	score?: number | null,
+	costUsd?: number | null,
+	status?: string | null,
+	details: unknown,
+	sequence: number,
+};
+
 export type EvalSelection = "promotion_not_applicable" | "inconclusive";
 
 export type EvalStageCandidatesRequest = {
 	sessionRef: string,
 	candidates: EvalCandidateSource[],
+};
+
+/**
+ *  Durable measured result for one Eval trial. Long trace bodies remain
+ *  referenced; this row is sufficient for score/result browsers after a
+ *  restart without replaying the event journal.
+ */
+export type EvalTrialSummary = {
+	id: string,
+	candidateId?: string | null,
+	stage?: string | null,
+	seed?: number | null,
+	scenario?: string | null,
+	status: string,
+	benchmarkStatus?: string | null,
+	valid?: boolean | null,
+	reward?: number | null,
+	metrics?: unknown,
+	missingGates?: string[],
+	missingArtifacts?: string[],
+	evidenceDir?: string | null,
+	refs?: EvidenceRef[],
+	sequence: number,
 };
 
 export type EventSource = "local" | "remote" | "intern" | "codex" | "system" | "mlx" | "visual" | "report";
@@ -1821,6 +1878,27 @@ export type GepaRunView = {
 
 export type GepaVerdict = "measured_improvement" | "no_measured_improvement" | "inconclusive" | "failed";
 
+export type GoExCandidateSummary = {
+	id: string,
+	status?: string | null,
+	score?: number | null,
+	selected: boolean,
+	parentId?: string | null,
+	values: unknown,
+	details: unknown,
+	sequence: number,
+};
+
+export type GoExChildSummary = {
+	id: string,
+	candidateId?: string | null,
+	status?: string | null,
+	reward?: number | null,
+	costUsd?: number | null,
+	details: unknown,
+	sequence: number,
+};
+
 export type GoExProjection = {
 	workItems: WorkItem[],
 	phase: RunPhase | null,
@@ -1830,6 +1908,22 @@ export type GoExProjection = {
 	selectedCandidateId: string | null,
 	remoteStatus: string | null,
 	childEvalRunIds: string[],
+	candidates?: GoExCandidateSummary[],
+	proposerCalls?: GoExProposerSummary[],
+	childRollouts?: GoExChildSummary[],
+	board?: unknown,
+	frontier?: unknown,
+	dataEngine?: unknown,
+	agents?: unknown,
+};
+
+export type GoExProposerSummary = {
+	id: string,
+	status: string,
+	model?: string | null,
+	costUsd?: number | null,
+	details: unknown,
+	sequence: number,
 };
 
 export type GoExResult = {
@@ -3514,6 +3608,13 @@ export type RunCollectionRow = {
 	costUsd?: number | null,
 	status?: string | null,
 	detailsVersion: string,
+	/**
+	 *  True only on a collection page when this row's detail alone exceeds
+	 *  the page byte budget. The common envelope remains visible; callers
+	 *  fetch the full detail through `run_collection_item` on selection.
+	 */
+	detailsDeferred?: boolean,
+	detailsBytes: number,
 	details: unknown,
 };
 
@@ -3807,6 +3908,11 @@ export type SftProjection = {
 	evaluations?: TrainingEvaluationSummary[],
 	/**  Bounded, deterministically downsampled loss/step curve. */
 	metrics?: MetricSeries,
+	datasetSummary?: unknown,
+	computeSummary?: unknown,
+	curationSummary?: unknown,
+	curationCandidates?: unknown[],
+	comparisonSummary?: unknown,
 };
 
 export type SftResult = {
@@ -4037,6 +4143,10 @@ export type TrainingMetricPoint = {
 	learningRate?: number | null,
 	reward?: number | null,
 	advantage?: number | null,
+	advantageStd?: number | null,
+	rewardVariance?: number | null,
+	groupSize?: number | null,
+	optimizerStep?: number | null,
 	tokensPerSecond?: number | null,
 	sequence: number,
 };

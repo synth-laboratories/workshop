@@ -24,6 +24,16 @@ pub struct CispoProjection {
     pub warm_start_id: Option<String>,
     pub clip_identity: Option<String>,
     pub mean_advantage: Option<f64>,
+    #[serde(default)]
+    pub advantage_std: Option<f64>,
+    #[serde(default)]
+    pub reward_variance: Option<f64>,
+    #[serde(default)]
+    #[specta(type = Option<specta_typescript::Number>)]
+    pub group_size: Option<u64>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
+    pub optimizer_steps: u64,
     pub checkpoints: Vec<String>,
     pub child_eval_run_ids: Vec<String>,
     pub no_learning_signal: bool,
@@ -69,11 +79,18 @@ impl CispoProjection {
                 if let Some(step) = payload.get("step").and_then(|v| v.as_u64()) {
                     self.usage.steps = Some(step);
                 }
-                if let Some(point) = TrainingMetricPoint::from_payload(payload, event.aggregate_sequence)
+                if let Some(point) =
+                    TrainingMetricPoint::from_payload(payload, event.aggregate_sequence)
                 {
                     if let Some(advantage) = point.advantage {
                         self.mean_advantage = Some(advantage);
                     }
+                    self.advantage_std = point.advantage_std.or(self.advantage_std);
+                    self.reward_variance = point.reward_variance.or(self.reward_variance);
+                    self.group_size = point.group_size.or(self.group_size);
+                    self.optimizer_steps = self
+                        .optimizer_steps
+                        .max(point.optimizer_step.unwrap_or(point.step));
                     self.metrics.push(point);
                 }
             }

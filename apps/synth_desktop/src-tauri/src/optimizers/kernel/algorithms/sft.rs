@@ -4,6 +4,7 @@
 //! reference child eval runs; they do not create eval_campaign aggregates.
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use crate::optimizers::kernel::error::{KernelError, KernelErrorCode, KernelResult};
 use crate::optimizers::kernel::evidence::{EvidenceState, UsageCompleteness};
@@ -36,6 +37,21 @@ pub struct SftProjection {
     /// Bounded, deterministically downsampled loss/step curve.
     #[serde(default)]
     pub metrics: MetricSeries,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub dataset_summary: Value,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub compute_summary: Value,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub curation_summary: Value,
+    #[serde(default)]
+    #[specta(type = Vec<specta_typescript::Unknown>)]
+    pub curation_candidates: Vec<Value>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub comparison_summary: Value,
 }
 
 impl SftProjection {
@@ -43,12 +59,45 @@ impl SftProjection {
         let payload = &event.producer.payload;
         match event.producer.event_type.as_str() {
             "sft.dataset.validated" => {
+                self.dataset_summary = payload.clone();
                 self.dataset_digest = payload
                     .get("dataset_digest")
                     .or_else(|| payload.get("digest"))
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
                 self.phase = Some(RunPhase::Validating);
+            }
+            "sft.compute.updated" => {
+                self.compute_summary = payload.clone();
+            }
+            "sft.baseline_rollout.completed" => {
+                self.upsert_direct_evaluation(payload, "baseline", event.aggregate_sequence);
+            }
+            "sft.heldout_rollout.completed" => {
+                self.upsert_direct_evaluation(payload, "heldout", event.aggregate_sequence);
+            }
+            "sft.baseline_evaluation.completed" | "sft.baseline_eval.completed" => {
+                self.comparison_summary = json!({ "baseline": payload });
+            }
+            "sft.curation.candidate_evaluated" | "sft.curation.case_completed" => {
+                let id = value_string(payload, &["id", "candidate_id", "rollout_id", "trace_id"])
+                    .unwrap_or_else(|| format!("curation:{}", event.aggregate_sequence));
+                match self.curation_candidates.iter_mut().find(|row| {
+                    value_string(row, &["id", "candidate_id", "rollout_id", "trace_id"]).as_deref()
+                        == Some(id.as_str())
+                }) {
+                    Some(existing) => *existing = payload.clone(),
+                    None => self.curation_candidates.push(payload.clone()),
+                }
+            }
+            "sft.curation.completed" | "sft.curation.validated" => {
+                self.curation_summary = payload.clone();
+                if let Some(summary) = self.curation_summary.as_object_mut() {
+                    summary.remove("candidates");
+                }
+                if let Some(rows) = payload.get("candidates").and_then(Value::as_array) {
+                    self.curation_candidates = rows.clone();
+                }
             }
             "sft.training.metrics" | "sft.step.metrics" | "training.step.metrics" => {
                 self.phase = Some(RunPhase::Training);
@@ -60,7 +109,8 @@ impl SftProjection {
                 if let Some(step) = payload.get("step").and_then(|v| v.as_u64()) {
                     self.usage.steps = Some(step);
                 }
-                if let Some(point) = TrainingMetricPoint::from_payload(payload, event.aggregate_sequence)
+                if let Some(point) =
+                    TrainingMetricPoint::from_payload(payload, event.aggregate_sequence)
                 {
                     self.metrics.push(point);
                 }
@@ -110,7 +160,27 @@ impl SftProjection {
             }
             "sft.checkpoint_evaluation.completed"
             | "sft.heldout_evaluation.completed"
+            | "sft.heldout_eval.completed"
             | "training.evaluation.completed" => {
+                if event.producer.event_type.contains("heldout") {
+                    let base = payload.get("base");
+                    let trained = payload
+                        .get("trained")
+                        .or_else(|| payload.get("sft"))
+                        .or_else(|| payload.get("promoted"));
+                    self.comparison_summary = json!({
+                        "split_digest": payload.get("split_digest").or_else(|| payload.get("seed_manifest_digest")),
+                        "base_label": base.and_then(|value| value.get("label")),
+                        "trained_label": trained.and_then(|value| value.get("label")),
+                        "base_count": arm_rows(base).len(),
+                        "trained_count": arm_rows(trained).len(),
+                        "score": payload.get("score"),
+                        "delta": payload.get("delta").or_else(|| payload.get("lift")),
+                    });
+                    self.ingest_arm(base, "heldout_base", event.aggregate_sequence);
+                    self.ingest_arm(trained, "heldout_trained", event.aggregate_sequence);
+                    self.upsert_direct_evaluation(payload, "heldout", event.aggregate_sequence);
+                }
                 if let Some(child) = payload
                     .get("optimizerRunId")
                     .or_else(|| payload.get("childEvalRunId"))
@@ -154,6 +224,24 @@ impl SftProjection {
         }
         apply_usage(&mut self.usage, event);
         Ok(())
+    }
+
+    fn upsert_direct_evaluation(&mut self, payload: &Value, phase: &str, sequence: u64) {
+        let Some(summary) =
+            TrainingEvaluationSummary::from_direct_payload(payload, phase, sequence)
+        else {
+            return;
+        };
+        match self.evaluations.iter_mut().find(|row| row.id == summary.id) {
+            Some(existing) => *existing = summary,
+            None => self.evaluations.push(summary),
+        }
+    }
+
+    fn ingest_arm(&mut self, arm: Option<&Value>, phase: &str, sequence: u64) {
+        for row in arm_rows(arm) {
+            self.upsert_direct_evaluation(row, phase, sequence);
+        }
     }
 
     pub fn work_summary(&self) -> WorkSummary {
@@ -221,6 +309,25 @@ fn apply_usage(usage: &mut UsageCompleteness, event: &CommittedEvent) {
         payload.get("promptTokens").and_then(|v| v.as_u64()),
         payload.get("completionTokens").and_then(|v| v.as_u64()),
     );
+}
+
+fn value_string(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(key).and_then(Value::as_str))
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn arm_rows(arm: Option<&Value>) -> Vec<&Value> {
+    let Some(arm) = arm else {
+        return Vec::new();
+    };
+    arm.get("details")
+        .or_else(|| arm.get("seeds"))
+        .or_else(|| arm.get("rollouts"))
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().collect())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

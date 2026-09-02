@@ -1,6 +1,7 @@
 //! Eval: immutable trial plan, per-trial evidence, scorecards, selection.
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use crate::optimizers::kernel::error::{KernelError, KernelErrorCode, KernelResult};
 use crate::optimizers::kernel::evidence::{EvidenceRef, EvidenceState, UsageCompleteness};
@@ -44,6 +45,67 @@ pub struct RolloutEvidenceEntry {
     pub refs: Vec<EvidenceRef>,
 }
 
+/// Durable measured result for one Eval trial. Long trace bodies remain
+/// referenced; this row is sufficient for score/result browsers after a
+/// restart without replaying the event journal.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalTrialSummary {
+    pub id: String,
+    #[serde(default)]
+    pub candidate_id: Option<String>,
+    #[serde(default)]
+    pub stage: Option<String>,
+    #[serde(default)]
+    #[specta(type = Option<specta_typescript::Number>)]
+    pub seed: Option<i64>,
+    #[serde(default)]
+    pub scenario: Option<String>,
+    pub status: String,
+    #[serde(default)]
+    pub benchmark_status: Option<String>,
+    #[serde(default)]
+    pub valid: Option<bool>,
+    #[serde(default)]
+    pub reward: Option<f64>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub metrics: Value,
+    #[serde(default)]
+    pub missing_gates: Vec<String>,
+    #[serde(default)]
+    pub missing_artifacts: Vec<String>,
+    #[serde(default)]
+    pub evidence_dir: Option<String>,
+    #[serde(default)]
+    pub refs: Vec<EvidenceRef>,
+    #[specta(type = specta_typescript::Number)]
+    pub sequence: u64,
+}
+
+/// Candidate/stage scorecard emitted by the evaluator.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalScorecardSummary {
+    pub id: String,
+    pub candidate_id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub stage: Option<String>,
+    pub is_baseline: bool,
+    #[serde(default)]
+    pub score: Option<f64>,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub details: Value,
+    #[specta(type = specta_typescript::Number)]
+    pub sequence: u64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EvalProjection {
@@ -72,6 +134,21 @@ pub struct EvalProjection {
     /// projections replay forward instead of becoming unreadable.
     #[serde(default)]
     pub evidence_ledger: Vec<RolloutEvidenceEntry>,
+    #[serde(default)]
+    pub trials: Vec<EvalTrialSummary>,
+    #[serde(default)]
+    pub scorecards: Vec<EvalScorecardSummary>,
+    /// Immutable plan/setup and sealed seed ledger are compact configuration
+    /// facts, not growing trial collections.
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub setup: Value,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub seed_ledger: Value,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub selection: Value,
 }
 
 pub const EVAL_AGGREGATE_SCHEMA_VERSION: &str = "eval.aggregate.v1";
@@ -131,6 +208,15 @@ impl EvalProjection {
                 for (xi, scenario) in scenarios.iter().enumerate() {
                     let id = format!("eval:{candidate}:{seed}:{scenario}:{ci}:{si}:{xi}");
                     items.push(WorkItem::planned(id, WorkItemKind::EvalTrial)?);
+                    self.trials.push(EvalTrialSummary {
+                        id: format!("eval:{candidate}:{seed}:{scenario}:{ci}:{si}:{xi}"),
+                        candidate_id: Some(candidate.clone()),
+                        seed: Some(*seed),
+                        scenario: Some(scenario.clone()),
+                        status: "planned".into(),
+                        metrics: json!({}),
+                        ..EvalTrialSummary::default()
+                    });
                 }
             }
         }
@@ -154,6 +240,22 @@ impl EvalProjection {
         match event.producer.event_type.as_str() {
             "eval.run.planned" => {
                 let payload = &event.producer.payload;
+                self.setup = compact_object(
+                    payload,
+                    &[
+                        "plannedTrials",
+                        "planned_trials",
+                        "parallelism",
+                        "globalCapacity",
+                        "global_capacity",
+                        "manifestDigest",
+                        "manifest_digest",
+                        "candidateSetId",
+                        "candidate_set_id",
+                        "dataset",
+                        "container",
+                    ],
+                );
                 let work_item_ids = string_list(payload, "workItemIds");
                 if !work_item_ids.is_empty() {
                     if !self.work_items.is_empty() {
@@ -166,6 +268,12 @@ impl EvalProjection {
                         self.work_items
                             .push(WorkItem::planned(id.clone(), WorkItemKind::EvalTrial)?);
                         self.ensure_evidence_entry(&id);
+                        self.trials.push(EvalTrialSummary {
+                            id,
+                            status: "planned".into(),
+                            metrics: json!({}),
+                            ..EvalTrialSummary::default()
+                        });
                     }
                     self.promotion_applicable = false;
                     apply_usage(&mut self.usage, event);
@@ -187,6 +295,12 @@ impl EvalProjection {
                         self.work_items
                             .push(WorkItem::planned(id.clone(), WorkItemKind::EvalTrial)?);
                         self.ensure_evidence_entry(&id);
+                        self.trials.push(EvalTrialSummary {
+                            id,
+                            status: "planned".into(),
+                            metrics: json!({}),
+                            ..EvalTrialSummary::default()
+                        });
                     }
                     self.promotion_applicable = self.candidates.len() > 1;
                 } else if candidates.is_empty() || seeds.is_empty() || scenarios.is_empty() {
@@ -199,9 +313,11 @@ impl EvalProjection {
                 }
             }
             "eval.trial.queued" => {
+                self.update_trial(&event.producer.payload, "queued", event.aggregate_sequence);
                 self.advance_named(event, WorkItemLifecycle::Queued)?;
             }
             "eval.trial.started" | "optimizer.work.started" => {
+                self.update_trial(&event.producer.payload, "running", event.aggregate_sequence);
                 self.advance_named(event, WorkItemLifecycle::Running)?;
                 if let Some(id) = work_id(event) {
                     let entry = self.ensure_evidence_entry(&id);
@@ -335,6 +451,50 @@ impl EvalProjection {
                     .map(str::to_string);
                 entry.refs = terminal_refs;
                 entry.state = rollout_evidence_state(&event.producer.payload, cancelled, valid);
+                self.update_trial(
+                    &event.producer.payload,
+                    if cancelled {
+                        "cancelled"
+                    } else if valid {
+                        "completed"
+                    } else {
+                        "failed"
+                    },
+                    event.aggregate_sequence,
+                );
+            }
+            "eval.candidate.scored" => {
+                self.update_scorecard(&event.producer.payload, event.aggregate_sequence);
+            }
+            "eval.selection.completed" => {
+                self.selection = event
+                    .producer
+                    .payload
+                    .get("selection")
+                    .cloned()
+                    .unwrap_or_else(|| event.producer.payload.clone());
+            }
+            "eval.seed_ledger.sealed" => {
+                let ledger = event
+                    .producer
+                    .payload
+                    .get("seedLedger")
+                    .or_else(|| event.producer.payload.get("seed_ledger"))
+                    .unwrap_or(&event.producer.payload);
+                self.seed_ledger = compact_object(
+                    ledger,
+                    &[
+                        "count",
+                        "seedCount",
+                        "seed_count",
+                        "digest",
+                        "manifestDigest",
+                        "manifest_digest",
+                        "status",
+                        "sealedAt",
+                        "sealed_at",
+                    ],
+                );
             }
             _ => {}
         }
@@ -390,6 +550,9 @@ impl EvalProjection {
             {
                 entry.work_item_id = id.to_string();
             }
+            if let Some(trial) = self.trials.iter_mut().find(|trial| trial.id == reserved_id) {
+                trial.id = id.to_string();
+            }
             return Ok(&mut self.work_items[index]);
         }
         if self.work_items.is_empty() {
@@ -423,6 +586,97 @@ impl EvalProjection {
         self.evidence_ledger
             .last_mut()
             .expect("evidence entry was just appended")
+    }
+
+    fn update_trial(&mut self, payload: &Value, status: &str, sequence: u64) {
+        let Some(id) = value_string(
+            payload,
+            &["workItemId", "work_item_id", "trialId", "trial_id", "id"],
+        ) else {
+            return;
+        };
+        let index = self.trials.iter().position(|trial| trial.id == id);
+        if index.is_none() {
+            self.trials.push(EvalTrialSummary {
+                id: id.clone(),
+                status: status.to_string(),
+                metrics: json!({}),
+                sequence,
+                ..EvalTrialSummary::default()
+            });
+        }
+        let index = index.unwrap_or_else(|| self.trials.len() - 1);
+        let trial = &mut self.trials[index];
+        trial.status = status.to_string();
+        trial.sequence = sequence;
+        trial.candidate_id = value_string(payload, &["candidateId", "candidate_id"])
+            .or_else(|| trial.candidate_id.clone());
+        trial.stage = value_string(payload, &["stage"]).or_else(|| trial.stage.clone());
+        trial.seed = value_i64(payload, &["seed"]).or(trial.seed);
+        trial.scenario = value_string(payload, &["scenario"]).or_else(|| trial.scenario.clone());
+        trial.benchmark_status = value_string(payload, &["benchmarkStatus", "benchmark_status"])
+            .or_else(|| trial.benchmark_status.clone());
+        trial.valid = payload
+            .get("valid")
+            .and_then(Value::as_bool)
+            .or(trial.valid);
+        trial.reward = value_f64(payload, &["reward"]).or(trial.reward);
+        if let Some(metrics) = payload.get("metrics").filter(|value| value.is_object()) {
+            trial.metrics = metrics.clone();
+        }
+        let missing_gates = value_strings(payload, &["missingGates", "missing_gates"]);
+        if !missing_gates.is_empty() {
+            trial.missing_gates = missing_gates;
+        }
+        let missing_artifacts = value_strings(payload, &["missingArtifacts", "missing_artifacts"]);
+        if !missing_artifacts.is_empty() {
+            trial.missing_artifacts = missing_artifacts;
+        }
+        trial.evidence_dir = value_string(payload, &["evidenceDir", "evidence_dir"])
+            .or_else(|| trial.evidence_dir.clone());
+        let refs = evidence_refs(payload);
+        if !refs.is_empty() {
+            trial.refs = refs;
+        }
+    }
+
+    fn update_scorecard(&mut self, payload: &Value, sequence: u64) {
+        let Some(candidate_id) = value_string(payload, &["candidateId", "candidate_id", "id"])
+        else {
+            return;
+        };
+        let stage = value_string(payload, &["stage"]);
+        let id = format!("{}:{}", stage.as_deref().unwrap_or("all"), candidate_id);
+        let score = value_f64(
+            payload,
+            &[
+                "pairedLift",
+                "paired_lift",
+                "score",
+                "meanReward",
+                "mean_reward",
+            ],
+        );
+        let summary = EvalScorecardSummary {
+            id: id.clone(),
+            candidate_id,
+            label: value_string(payload, &["label"]),
+            stage,
+            is_baseline: payload
+                .get("isBaseline")
+                .or_else(|| payload.get("is_baseline"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            score,
+            cost_usd: value_f64(payload, &["costUsd", "cost_usd"]),
+            status: value_string(payload, &["status", "eliminatedAt", "eliminated_at"]),
+            details: payload.clone(),
+            sequence,
+        };
+        match self.scorecards.iter_mut().find(|row| row.id == id) {
+            Some(existing) => *existing = summary,
+            None => self.scorecards.push(summary),
+        }
     }
 
     fn observe_trial_evidence(&mut self, payload: &serde_json::Value) {
@@ -707,6 +961,51 @@ fn string_field(value: &serde_json::Value, camel: &str, snake: &str) -> Option<S
         .map(str::to_string)
 }
 
+fn value_string(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(key).and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn value_i64(value: &Value, keys: &[&str]) -> Option<i64> {
+    keys.iter()
+        .find_map(|key| value.get(key).and_then(Value::as_i64))
+}
+
+fn value_f64(value: &Value, keys: &[&str]) -> Option<f64> {
+    keys.iter()
+        .find_map(|key| value.get(key).and_then(Value::as_f64))
+}
+
+fn value_strings(value: &Value, keys: &[&str]) -> Vec<String> {
+    keys.iter()
+        .find_map(|key| value.get(key).and_then(Value::as_array))
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn compact_object(value: &Value, keys: &[&str]) -> Value {
+    let Some(source) = value.as_object() else {
+        return Value::Null;
+    };
+    Value::Object(
+        keys.iter()
+            .filter_map(|key| {
+                source
+                    .get(*key)
+                    .map(|field| ((*key).to_string(), field.clone()))
+            })
+            .collect(),
+    )
+}
+
 fn rollout_evidence_state(
     payload: &serde_json::Value,
     cancelled: bool,
@@ -976,5 +1275,48 @@ mod tests {
             projection.evidence_state().completeness,
             EvidenceCompleteness::Partial
         );
+    }
+
+    #[test]
+    fn durable_trial_scorecard_and_selection_survive_without_raw_events() {
+        let mut projection = EvalProjection::default();
+        projection
+            .apply(&committed(
+                "eval.run.planned",
+                json!({"plannedTrials": 1, "parallelism": 8, "dataset": {"name": "craftax"}}),
+                1,
+            ))
+            .unwrap();
+        projection
+            .apply(&committed(
+                "eval.trial.terminal",
+                json!({
+                    "workItemId": "eval:trial:0", "candidateId": "policy-a", "stage": "heldout",
+                    "seed": 17, "scenario": "default", "valid": true, "reward": 3.5,
+                    "metrics": {"achievements": 4},
+                    "artifactRefs": [{"kind": "trace_v5", "id": "trace:17", "digest": "sha256:17"}]
+                }),
+                2,
+            ))
+            .unwrap();
+        projection.apply(&committed(
+            "eval.candidate.scored",
+            json!({"id": "policy-a", "stage": "heldout", "label": "Policy A", "pairedLift": 0.5, "costUsd": 0.07}),
+            3,
+        )).unwrap();
+        projection
+            .apply(&committed(
+                "eval.selection.completed",
+                json!({"selection": {"status": "selected", "winner_id": "policy-a"}}),
+                4,
+            ))
+            .unwrap();
+
+        assert_eq!(projection.trials.len(), 1);
+        assert_eq!(projection.trials[0].reward, Some(3.5));
+        assert_eq!(projection.trials[0].refs[0].id, "trace:17");
+        assert_eq!(projection.scorecards[0].score, Some(0.5));
+        assert_eq!(projection.selection["winner_id"], "policy-a");
+        assert_eq!(projection.setup["parallelism"], 8);
     }
 }

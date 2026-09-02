@@ -414,7 +414,7 @@ function invalidateRun(runId: string, revision: number, summary: OptimizerRunSum
 	for (const entry of items.values()) {
 		if (entry.runId !== runId) continue;
 		const changed = changedCollections(summary, entry.revision);
-		const collection = entry.key.split(" ")[1] as RunCollection;
+		const [, collection] = JSON.parse(entry.key) as [string, RunCollection, string];
 		if (changed && !changed.has(collection)) continue;
 		if (entry.listeners.size > 0 && api) {
 			void loadItem(entry, api);
@@ -462,12 +462,22 @@ function canonicalQuery(query: RunCollectionQuery): string {
 }
 
 function pageKey(runId: string, collection: RunCollection, query: RunCollectionQuery): string {
-	return `${runId} ${collection} ${canonicalQuery(query)}`;
+	return JSON.stringify([runId, collection, canonicalQuery(query)]);
+}
+
+/** Pure cache snapshot for React's external-store contract. Never starts I/O. */
+export function runCollectionState(
+	runId: string,
+	collection: RunCollection,
+	query: RunCollectionQuery
+): RunCollectionState | undefined {
+	return pages.get(pageKey(runId, collection, query))?.state;
 }
 
 async function loadPage(entry: CacheEntry<RunCollectionState>, api: RunReadTransport): Promise<void> {
 	const epoch = ++entry.epoch;
-	const query = JSON.parse(entry.key.split(" ")[2]) as ReturnType<typeof JSON.parse>;
+	const [, , queryJson] = JSON.parse(entry.key) as [string, RunCollection, string];
+	const query = JSON.parse(queryJson) as ReturnType<typeof JSON.parse>;
 	const request: RunCollectionQuery = {
 		cursor: query.cursor,
 		limit: query.limit,
@@ -560,12 +570,21 @@ export function subscribeRunCollection(
 }
 
 function itemKey(runId: string, collection: RunCollection, itemId: string): string {
-	return `${runId} ${collection} ${itemId}`;
+	return JSON.stringify([runId, collection, itemId]);
+}
+
+/** Pure cache snapshot for React's external-store contract. Never starts I/O. */
+export function runCollectionItemState(
+	runId: string,
+	collection: RunCollection,
+	itemId: string
+): RunItemState | undefined {
+	return items.get(itemKey(runId, collection, itemId))?.state;
 }
 
 async function loadItem(entry: CacheEntry<RunItemState>, api: RunReadTransport): Promise<void> {
 	const epoch = ++entry.epoch;
-	const [runId, collection, itemId] = entry.key.split(" ") as [string, RunCollection, string];
+	const [runId, collection, itemId] = JSON.parse(entry.key) as [string, RunCollection, string];
 	if (entry.state.row) {
 		entry.state = { ...entry.state, stale: true, status: "stale", version: entry.state.version + 1 };
 		deliver(entry.listeners, entry.state);
@@ -637,6 +656,15 @@ export function subscribeRunCollectionItem(
 
 export type HistoryState = { status: RunReadStatus; projection: HistoricalProjection | null; error?: string; version: number };
 
+function historyKey(runId: string, sequence: number): string {
+	return JSON.stringify([runId, "history", Math.max(0, Math.floor(sequence))]);
+}
+
+/** Pure cache snapshot for React's external-store contract. Never starts I/O. */
+export function projectionAtState(runId: string, sequence: number): HistoryState | undefined {
+	return histories.get(historyKey(runId, sequence))?.state;
+}
+
 /**
  * The projection at `sequence`, from the backend checkpoint fold. Terminal
  * history never changes, so a cached answer is reused as long as the budget
@@ -645,7 +673,7 @@ export type HistoryState = { status: RunReadStatus; projection: HistoricalProjec
  */
 export function subscribeProjectionAt(runId: string, sequence: number, listener: Listener<HistoryState>): () => void {
 	const api = transport();
-	const key = `${runId} history ${Math.max(0, Math.floor(sequence))}`;
+	const key = historyKey(runId, sequence);
 	if (!api) {
 		listener({ status: "unavailable", projection: null, error: "Historical projections are unavailable", version: 0 });
 		return () => undefined;

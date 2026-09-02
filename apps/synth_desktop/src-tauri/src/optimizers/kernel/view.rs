@@ -184,6 +184,49 @@ impl OptimizerRunViewV2 {
             Self::Cispo(view) => serde_json::to_value(&view.projection).unwrap_or_default(),
         }
     }
+
+    /// Remove collection-shaped data before this view crosses the IPC
+    /// boundary. The durable projection keeps the complete reducer state;
+    /// product readers page these rows through the shared collection API.
+    /// Counts, selected identities, setup, and latest scalar facts stay here
+    /// so first paint remains useful and bounded.
+    pub fn into_bounded_wire(mut self) -> Self {
+        match &mut self {
+            Self::Eval(view) => {
+                view.projection.work_items.clear();
+                view.projection.evidence_ledger.clear();
+                view.projection.trials.clear();
+                view.projection.scorecards.clear();
+                view.projection.evidence_refs.clear();
+            }
+            Self::Gepa(view) => {
+                view.projection.evaluations.clear();
+                view.projection.proposer_calls.clear();
+            }
+            Self::GoEx(view) => {
+                view.projection.candidate_ids.clear();
+                view.projection.candidates.clear();
+                view.projection.proposer_calls.clear();
+                view.projection.child_rollouts.clear();
+                view.projection.child_eval_run_ids.clear();
+                if let Some(result) = &mut view.result {
+                    result.child_eval_run_ids.clear();
+                }
+            }
+            Self::Sft(view) => {
+                view.projection.work_items.clear();
+                view.projection.evaluations.clear();
+                view.projection.metrics.points.clear();
+                view.projection.curation_candidates.clear();
+            }
+            Self::Cispo(view) => {
+                view.projection.work_items.clear();
+                view.projection.evaluations.clear();
+                view.projection.metrics.points.clear();
+            }
+        }
+        self
+    }
 }
 
 pub fn project_view(state: &RunKernelState) -> OptimizerRunViewV2 {

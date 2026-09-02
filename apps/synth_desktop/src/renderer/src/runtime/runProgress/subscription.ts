@@ -167,14 +167,16 @@ const MAX_PARKED_EVENTS = 20_000;
  * stays visibly missing; it is never rendered as an empty history.
  */
 const MAX_ACTIVE_EVENTS = 50_000;
-/**
- * Algorithms whose durable projection is a complete product read model, so
- * an `auto` consumer opens projection-only and raw evidence is read on
- * intent. Eval and GoEx still eagerly hydrate under `auto` until their
- * projections carry scorecards, trial results, and candidate content
- * (handoff phases 3 and 5).
- */
-export const PROJECTION_FIRST_ALGORITHMS: ReadonlySet<string> = new Set(["gepa", "sft", "cispo"]);
+/** Every first-class optimizer family has a durable projection/collection
+ * read model. `auto` therefore never hydrates the journal on mount; raw
+ * evidence is reserved for explicit history/inspect/export intent. */
+export const PROJECTION_FIRST_ALGORITHMS: ReadonlySet<string> = new Set([
+	"eval",
+	"gepa",
+	"go-ex",
+	"sft",
+	"cispo"
+]);
 
 type Entry = {
 	runId: string;
@@ -464,8 +466,8 @@ function enqueue(entry: Entry, api: RunProgressTransport, snapshot: boolean): vo
 function shouldHydrateEvidence(entry: Entry, viewV2?: OptimizerRunViewV2): boolean {
 	for (const mode of entry.evidenceModes.values()) {
 		if (mode === "full") return true;
-		if (mode === "auto" && (!viewV2 || !PROJECTION_FIRST_ALGORITHMS.has(viewV2.algorithm))) return true;
 	}
+	void viewV2;
 	return false;
 }
 

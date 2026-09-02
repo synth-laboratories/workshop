@@ -105,6 +105,54 @@ impl TrainingEvaluationSummary {
             sequence,
         })
     }
+
+    /// Decode a directly reported per-seed/per-rollout measurement used by
+    /// SFT baseline and paired-heldout phases.
+    pub fn from_direct_payload(payload: &Value, phase: &str, sequence: u64) -> Option<Self> {
+        let string = |keys: &[&str]| {
+            keys.iter()
+                .find_map(|key| payload.get(key).and_then(Value::as_str))
+                .map(str::to_string)
+        };
+        let number = |keys: &[&str]| {
+            keys.iter()
+                .find_map(|key| payload.get(key).and_then(Value::as_f64))
+        };
+        let integer = |keys: &[&str]| {
+            keys.iter()
+                .find_map(|key| payload.get(key).and_then(Value::as_u64))
+        };
+        let seed = payload.get("seed").and_then(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| value.as_i64().map(|value| value.to_string()))
+        });
+        let identity = string(&["rolloutId", "rollout_id", "id"])
+            .or_else(|| seed.as_ref().map(|seed| format!("seed:{seed}")))?;
+        let id = format!("{phase}:{identity}");
+        Some(Self {
+            id,
+            phase: Some(phase.into()),
+            step: integer(&["step", "steps", "step_count"]),
+            score: number(&["score", "reward", "total_reward"]),
+            loss: number(&["loss"]),
+            delta: number(&["delta", "lift"]),
+            checkpoint_id: string(&["checkpointId", "checkpoint_id"]),
+            artifact_digest: string(&[
+                "traceDigest",
+                "trace_digest",
+                "trace_v5_digest",
+                "artifactDigest",
+                "artifact_digest",
+            ]),
+            evaluator: string(&["evaluator"]),
+            sample_count: Some(1),
+            status: string(&["status"]).or_else(|| Some("completed".into())),
+            child_run_id: string(&["optimizerRunId", "childEvalRunId"]),
+            sequence,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
@@ -120,6 +168,16 @@ pub struct TrainingMetricPoint {
     pub reward: Option<f64>,
     #[serde(default)]
     pub advantage: Option<f64>,
+    #[serde(default)]
+    pub advantage_std: Option<f64>,
+    #[serde(default)]
+    pub reward_variance: Option<f64>,
+    #[serde(default)]
+    #[specta(type = Option<specta_typescript::Number>)]
+    pub group_size: Option<u64>,
+    #[serde(default)]
+    #[specta(type = Option<specta_typescript::Number>)]
+    pub optimizer_step: Option<u64>,
     #[serde(default)]
     pub tokens_per_second: Option<f64>,
     #[specta(type = specta_typescript::Number)]
@@ -139,6 +197,16 @@ impl TrainingMetricPoint {
             learning_rate: number(&["learningRate", "learning_rate", "lr"]),
             reward: number(&["meanReward", "mean_reward", "reward"]),
             advantage: number(&["meanAdvantage", "mean_advantage", "advantage"]),
+            advantage_std: number(&["advantageStd", "advantage_std", "advantage_sd"]),
+            reward_variance: number(&["rewardVariance", "reward_variance"]),
+            group_size: payload
+                .get("groupSize")
+                .or_else(|| payload.get("group_size"))
+                .and_then(Value::as_u64),
+            optimizer_step: payload
+                .get("optimizerStep")
+                .or_else(|| payload.get("optimizer_step"))
+                .and_then(Value::as_u64),
             tokens_per_second: number(&["tokensPerSecond", "tokens_per_second"]),
             sequence,
         })
@@ -184,12 +252,11 @@ impl MetricSeries {
             let stride = self.stride;
             let last = self.points.len() - 1;
             let mut index = 0;
-            self.points
-                .retain(|point| {
-                    let keep = index == last || point.step % stride == 0;
-                    index += 1;
-                    keep
-                });
+            self.points.retain(|point| {
+                let keep = index == last || point.step % stride == 0;
+                index += 1;
+                keep
+            });
         }
     }
 
