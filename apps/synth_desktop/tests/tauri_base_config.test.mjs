@@ -37,6 +37,10 @@ test("the main window opens centered at a desktop-friendly size", () => {
 	assert.equal(main.height, 900);
 	assert.equal(main.center, true);
 	assert.equal(main.maximized, false);
+	const rust = readFileSync(join(appRoot, "src-tauri/src/lib.rs"), "utf8");
+	assert.doesNotMatch(rust, /window\.maximize\(\)/, "page load must not override the configured window size");
+	const instance = readFileSync(join(repoRoot, "scripts/desktop-instance.sh"), "utf8");
+	assert.match(instance, /"height": 900,[\s\S]*?"center": true,[\s\S]*?"maximized": false/);
 });
 
 test("tauri.package.json is the one place packaged resources are declared", () => {

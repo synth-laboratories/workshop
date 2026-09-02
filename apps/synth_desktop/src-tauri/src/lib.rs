@@ -5335,7 +5335,6 @@ pub fn run() {
                 && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
             {
                 let window = webview.window();
-                let _ = window.maximize();
                 let _ = window.show();
                 // Diagnostics start here, not in setup: the index is a
                 // background convenience and must never sit in front of the
