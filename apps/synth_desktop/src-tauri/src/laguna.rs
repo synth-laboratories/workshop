@@ -870,15 +870,23 @@ for shard in sorted(shards):
             .await
             .context("Laguna model load returned an unreadable payload")?;
         if !status.is_success() {
-            let code = serde_json::from_slice::<Value>(&body)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .pointer("/error/code")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
+            let payload = serde_json::from_slice::<Value>(&body).ok();
+            let code = payload
+                .as_ref()
+                .and_then(|value| value.pointer("/error/code"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
                 .unwrap_or_else(|| "load_failed".into());
+            if code == "insufficient_memory" {
+                if let Some(requirement) =
+                    payload.as_ref().and_then(Self::memory_requirement_message)
+                {
+                    anyhow::bail!(
+                        "Laguna model load returned {} ({code}): {requirement}",
+                        status.as_u16()
+                    );
+                }
+            }
             anyhow::bail!("Laguna model load returned {} ({code})", status.as_u16());
         }
         let outcome: LagunaLoadOutcome = serde_json::from_slice(&body)
@@ -887,6 +895,40 @@ for shard in sorted(shards):
             anyhow::bail!("Laguna model load completed without resident weights");
         }
         Ok(())
+    }
+
+    fn memory_requirement_message(payload: &Value) -> Option<String> {
+        let details = payload.pointer("/error/details")?;
+        let required = details.get("required_bytes").and_then(Value::as_u64);
+        let required_available = details
+            .get("required_available_bytes")
+            .and_then(Value::as_u64);
+        let available = details.get("available_bytes").and_then(Value::as_u64);
+        if required.is_none() && required_available.is_none() {
+            return None;
+        }
+
+        let gib = |bytes: u64| bytes as f64 / 1024_f64.powi(3);
+        let mut needs = Vec::new();
+        if let Some(bytes) = required {
+            needs.push(format!("{:.1} GiB total unified memory", gib(bytes)));
+        }
+        if let Some(bytes) = required_available {
+            needs.push(format!("{:.1} GiB available to load", gib(bytes)));
+        }
+        let mut message = format!("requires {}", needs.join(" and "));
+        if let Some(bytes) = available {
+            message.push_str(&format!("; {:.1} GiB is currently available", gib(bytes)));
+            if let Some(required_now) = required_available.or(required) {
+                if required_now > bytes {
+                    message.push_str(&format!(
+                        " ({:.1} GiB more needed)",
+                        gib(required_now - bytes)
+                    ));
+                }
+            }
+        }
+        Some(message)
     }
 
     async fn probe(&self, base_url: &str, api_key: &str) -> Option<LagunaStatus> {
@@ -2155,7 +2197,7 @@ mod tests {
     async fn model_load_failure_is_typed_and_does_not_echo_daemon_detail() {
         let (base_url, credential, server) = serve_model_load(
             503,
-            r#"{"error":{"code":"insufficient_memory","message":"sensitive daemon detail"}}"#,
+            r#"{"error":{"code":"insufficient_memory","message":"sensitive daemon detail","details":{"required_bytes":34359738368,"required_available_bytes":25769803776,"available_bytes":8589934592}}}"#,
         )
         .await;
         let error = LagunaManager::new()
@@ -2164,6 +2206,10 @@ mod tests {
             .expect_err("a rejected load must fail the turn preflight")
             .to_string();
         assert!(error.contains("503 (insufficient_memory)"));
+        assert!(error.contains("32.0 GiB total unified memory"));
+        assert!(error.contains("24.0 GiB available to load"));
+        assert!(error.contains("8.0 GiB is currently available"));
+        assert!(error.contains("16.0 GiB more needed"));
         assert!(!error.contains("sensitive daemon detail"));
         assert!(!error.contains(&credential));
         server.await.unwrap();
