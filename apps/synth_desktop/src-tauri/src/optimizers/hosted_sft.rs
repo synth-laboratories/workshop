@@ -217,6 +217,34 @@ fn banking77_slot_url() -> String {
         .unwrap_or_else(|| LOCAL_BANKING77_SLOT.into())
 }
 
+fn normalize_banking77_row(line: &str) -> Result<String> {
+    let mut row: serde_json::Value =
+        serde_json::from_str(line).context("decode Banking77 SFT row")?;
+    let object = row
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Banking77 SFT row must be a JSON object"))?;
+    if !object.get("text").is_some_and(serde_json::Value::is_string) {
+        let text = object
+            .get("query")
+            .filter(|value| value.is_string())
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Banking77 SFT row is missing text/query"))?;
+        object.insert("text".into(), text);
+    }
+    if !object
+        .get("category")
+        .is_some_and(serde_json::Value::is_string)
+    {
+        let category = object
+            .get("expected")
+            .filter(|value| value.is_string())
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Banking77 SFT row is missing category/expected"))?;
+        object.insert("category".into(), category);
+    }
+    serde_json::to_string(&row).context("encode normalized Banking77 SFT row")
+}
+
 /// Materialize one allowlisted shard under the instance data root. Two shards
 /// are disjoint halves of the pinned corpus, so two runs train on genuinely
 /// different data and the producer digests them differently.
@@ -232,11 +260,12 @@ fn materialize_banking77_shard(shard: &str) -> Result<std::path::PathBuf> {
         })?;
     let source = banking77_source()?;
     let text = std::fs::read_to_string(&source).context("read Banking77 SFT corpus")?;
-    let rows: Vec<&str> = text
+    let rows: Vec<String> = text
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .collect();
+        .map(normalize_banking77_row)
+        .collect::<Result<_>>()?;
     if rows.len() < BANKING77_SHARDS.len() {
         bail!("Banking77 SFT corpus is too small to shard");
     }
@@ -986,6 +1015,26 @@ mod tests {
             .to_string();
         assert!(error.contains("unknown Banking77 dataset shard"), "{error}");
         assert_eq!(BANKING77_SHARDS.len(), 2);
+    }
+
+    #[test]
+    fn banking77_rows_are_normalized_for_the_public_trainer() {
+        let normalized = normalize_banking77_row(
+            r#"{"id":"mipro_1","query":"My card is declined","expected":"card_not_working"}"#,
+        )
+        .unwrap();
+        let row: Value = serde_json::from_str(&normalized).unwrap();
+        assert_eq!(row["id"], "mipro_1");
+        assert_eq!(row["text"], "My card is declined");
+        assert_eq!(row["category"], "card_not_working");
+    }
+
+    #[test]
+    fn banking77_rows_without_labels_fail_closed() {
+        let error = normalize_banking77_row(r#"{"query":"My card is declined"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("category/expected"), "{error}");
     }
 
     #[test]
