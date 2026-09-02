@@ -1198,8 +1198,14 @@ export function useAppController() {
 		if (activeChatTargetId) setSelectedTargetId(activeChatTargetId);
 	}, [activeChat?.id, activeChatTargetId]);
 	// Session status + event arbitration — single selector, not an App.tsx IIFE.
+	const activeChatSubmittingLocal = Boolean(
+		busy
+		&& activeChatSession?.target.kind === "local"
+		&& activeChat?.messages.at(-1)?.role === "user"
+	);
 	const activeChatRunning = activeChat
 		? selectSessionRunning(activeChatSession, eventsBySession[activeChat.id] ?? [], presentationLiveTurns)
+			|| activeChatSubmittingLocal
 		: false;
 	const activeChatInferencePhase = chatInferencePhase({
 		running: activeChatRunning,
