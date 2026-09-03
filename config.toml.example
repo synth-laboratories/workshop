@@ -32,7 +32,7 @@ local = "http://127.0.0.1:8000"
 # folders are available to Codex sessions using workspace-write.
 # Configure these from Settings → Runtime → Agent workspace access.
 [workspace]
-allowed_roots = ["/Users/you/Documents/GitHub"]
+allowed_roots = ["/path/to/your/projects"]
 
 # Optional overrides for the provider-independent model presets shown in
 # Desktop Settings. Omit an entry to use its built-in preset.
