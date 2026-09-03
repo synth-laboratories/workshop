@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   activeFindings,
   countByKind,
+  durableAnnotatedRolloutEvents,
   eventDetail,
   isAnnotationEvent,
   labelTally,
@@ -207,6 +208,48 @@ test("relayed optimizer envelopes unwrap to the same reducer inputs", () => {
   assert.equal(activeFindings(lanes[0]).length, 1);
   assert.equal(eventDetail(unwrapRelayed(container)), "observation · step 2");
   assert.equal(eventDetail(event), "achievement · collect_wood");
+});
+
+test("durable optimizer journal reopens annotated rollouts without lifecycle noise", () => {
+  const envelope = (sequenceNumber, producerSequence, kind, payload, stream = "rollout") => ({
+    eventId: `evt_${sequenceNumber}`,
+    optimizerRunId: "opt_eval_1",
+    sequenceNumber,
+    occurredAt: `2026-09-01T00:00:${String(sequenceNumber).padStart(2, "0")}Z`,
+    type: "eval.trial.event",
+    delta: {
+      trial_id: "trial:banking77:0",
+      stream,
+      container_event: {
+        rollout_id: "roll_banking77_0",
+        stream_id: stream === "annotation" ? "stream:roll_banking77_0:annotations" : "stream:roll_banking77_0",
+        sequence: producerSequence,
+        kind,
+        payload,
+      },
+    },
+  });
+  const durable = durableAnnotatedRolloutEvents([
+    { eventId: "lifecycle", optimizerRunId: "opt_eval_1", sequenceNumber: 1, type: "optimizer.run.started" },
+    envelope(2, 1, "trace.opened", { family: "banking77" }),
+    envelope(3, 2, "action", { response: "cash_withdrawal" }),
+  ], [
+    envelope(4, 1, "annotation.finding", { finding_id: "f1", kind: "note", label: "correct intent", source_sequence: 2 }, "annotation"),
+    // A retried enrichment page must not duplicate a retained journal event.
+    envelope(4, 1, "annotation.finding", { finding_id: "f1", kind: "note", label: "correct intent", source_sequence: 2 }, "annotation"),
+  ]);
+  assert.equal(durable?.length, 3);
+  assert.deepEqual(durable?.map((event) => unwrapRelayed(event).kind), ["trace.opened", "action", "annotation.finding"]);
+  const lanes = projectLanes(durable ?? []);
+  assert.deepEqual(lanes.map((lane) => lane.name), ["roll_banking77_0"]);
+  assert.equal(lanes[0].findings[0].label, "correct intent");
+});
+
+test("annotated shell chooses retained optimizer events over dead live transports", () => {
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.annotated_rollouts.v1/shell.tsx"), "utf8");
+  assert.match(shell, /durableAnnotatedRolloutEvents\(props\.events, props\.enrichmentEvents\)/);
+  assert.match(shell, /replay: durableEvents \? undefined : props\.replay/);
+  assert.match(shell, /const error = durableEvents \? null : liveStream\.error/);
 });
 
 test("rollout and annotation streams receive one deterministic logical clock", () => {

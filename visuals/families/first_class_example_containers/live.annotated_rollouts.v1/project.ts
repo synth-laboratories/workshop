@@ -130,8 +130,58 @@ function obj(value: unknown): Record<string, unknown> {
 function str(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
+
+/**
+ * Select the rollout envelopes retained by the optimizer journal.
+ *
+ * The journal also contains run lifecycle, usage, and selection records. Those
+ * are useful to the host, but feeding them to the rollout reducer invents a
+ * synthetic lane named after the optimizer run. Keep only the relayed producer
+ * envelopes and de-duplicate by the journal's durable identity before replay.
+ */
+export function durableAnnotatedRolloutEvents(
+  terminalEvents: unknown[] | undefined,
+  enrichmentEvents: unknown[] | undefined,
+): LiveEvalEvent[] | undefined {
+  const combined = [...(terminalEvents ?? []), ...(enrichmentEvents ?? [])];
+  const seen = new Set<string>();
+  const retained = combined.filter((candidate) => {
+    const host = obj(candidate);
+    const payload = obj(host.payload);
+    const type = str(host.type) ?? str(host.kind) ?? str(payload.type);
+    if (type !== "eval.trial.event") return false;
+    const eventId = str(host.eventId) ?? str(host.event_id);
+    const optimizerRunId = str(host.optimizerRunId) ?? str(host.optimizer_run_id);
+    const sequence = num(host.sequenceNumber) ?? num(host.sequence_number);
+    const delta = Object.keys(obj(host.delta)).length ? obj(host.delta) : obj(payload.delta);
+    const inner = obj(delta.container_event ?? delta.containerEvent);
+    const fallback = [
+      str(inner.rollout_id) ?? str(inner.rolloutId) ?? str(delta.trial_id) ?? str(delta.trialId) ?? "rollout",
+      str(inner.stream_id) ?? str(inner.streamId) ?? str(delta.stream) ?? "rollout",
+      num(inner.sequence) ?? num(inner.sequence_number) ?? num(inner.sequenceNumber) ?? "—",
+      str(inner.kind) ?? str(inner.type) ?? "event",
+    ].join(":");
+    const identity = eventId
+      ? `event:${eventId}`
+      : optimizerRunId && sequence != null
+        ? `journal:${optimizerRunId}:${sequence}`
+        : `producer:${fallback}`;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return Object.keys(inner).length > 0;
+  });
+  if (!retained.length) return undefined;
+  return retained.sort((left, right) => {
+    const leftRecord = obj(left);
+    const rightRecord = obj(right);
+    return (num(leftRecord.sequenceNumber) ?? num(leftRecord.sequence_number) ?? Number.MAX_SAFE_INTEGER)
+      - (num(rightRecord.sequenceNumber) ?? num(rightRecord.sequence_number) ?? Number.MAX_SAFE_INTEGER);
+  }) as LiveEvalEvent[];
+}
+
 export function timestamp(event: LiveEvalEvent): string {
-  return event.occurred_at ?? event.ts ?? "";
+  const host = obj(event);
+  return event.occurred_at ?? event.ts ?? str(host.occurredAt) ?? "";
 }
 export function eventLogicalTime(event: LiveEvalEvent): number | undefined {
   return num((event as LiveEvalEvent & { logical_time?: unknown }).logical_time);
@@ -146,23 +196,26 @@ export function laneName(event: LiveEvalEvent): string {
  * its delta. Unwrap so the reducer sees one wire shape.
  */
 export function unwrapRelayed(event: LiveEvalEvent): LiveEvalEvent {
-  const type = event.type ?? (typeof event.payload.type === "string" ? (event.payload.type as string) : undefined);
+  const host = obj(event);
+  const payload = obj(host.payload);
+  const type = str(host.type) ?? str(host.kind) ?? str(payload.type);
   if (type !== "eval.trial.event") return event;
-  const delta = obj(event.payload.delta);
-  const inner = obj(delta.container_event);
+  const delta = Object.keys(obj(host.delta)).length ? obj(host.delta) : obj(payload.delta);
+  const inner = obj(delta.container_event ?? delta.containerEvent);
   if (!Object.keys(inner).length) return event;
-  const kind = str(inner.kind) ?? event.kind;
+  const kind = str(inner.kind) ?? str(inner.type) ?? event.kind;
   // Annotation rows ride the same carrier, tagged by `delta.stream` and the
   // envelope's own stream identity (`stream:<rollout>:annotations`).
-  const streamId = str(inner.stream_id) ?? (delta.stream === "annotation" && str(inner.rollout_id) ? `stream:${inner.rollout_id}:annotations` : undefined);
+  const rolloutId = str(inner.rollout_id) ?? str(inner.rolloutId) ?? str(delta.rollout_id) ?? str(delta.rolloutId);
+  const streamId = str(inner.stream_id) ?? str(inner.streamId) ?? (delta.stream === "annotation" && rolloutId ? `stream:${rolloutId}:annotations` : undefined);
   return {
     ...event,
     kind,
-    sequence: num(inner.sequence) ?? event.sequence,
-    occurred_at: str(inner.occurred_at) ?? event.occurred_at,
+    sequence: num(inner.sequence) ?? num(inner.sequence_number) ?? num(inner.sequenceNumber) ?? event.sequence,
+    occurred_at: str(inner.occurred_at) ?? str(inner.occurredAt) ?? event.occurred_at ?? str(host.occurredAt),
     payload: obj(inner.payload),
-    lane: str(inner.rollout_id) ?? event.lane,
-    ...(str(inner.rollout_id) ? { rollout_id: inner.rollout_id as string } : {}),
+    lane: rolloutId ?? event.lane,
+    ...(rolloutId ? { rollout_id: rolloutId } : {}),
     ...(streamId ? { stream_id: streamId } : {}),
   } as LiveEvalEvent;
 }

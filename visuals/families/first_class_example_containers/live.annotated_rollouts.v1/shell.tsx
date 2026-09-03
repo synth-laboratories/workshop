@@ -9,6 +9,7 @@ import {
   FINDING_KIND_ORDER,
   activeFindings,
   countByKind,
+  durableAnnotatedRolloutEvents,
   eventDetail,
   labelTally,
   llmCalls,
@@ -277,20 +278,43 @@ function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: 
   </article>;
 }
 
-export type ShellProps = LiveTemplateProps & { title?: string; lede?: string; stream?: StreamPayload; optimizer_run?: unknown };
+type RunLifecycle = { terminal?: boolean; status?: string };
+export type ShellProps = LiveTemplateProps & {
+  title?: string;
+  lede?: string;
+  stream?: StreamPayload;
+  optimizer_run?: unknown;
+  run?: unknown;
+  /** Durable optimizer journal supplied by VisualHost. */
+  events?: unknown[];
+  enrichmentEvents?: unknown[];
+  runLifecycle?: RunLifecycle;
+};
 
 export function Shell(props: ShellProps) {
   const stream = props.stream ?? {};
   const declaredStreamCount = props.replay?.streams.length ?? 0;
-  const { events, state, error, ready } = useLiveEvalStream({
-    replay: props.replay,
-    fixtureEvents: declaredStreamCount > 0 ? undefined : stream.events,
+  const durableEvents = useMemo(
+    () => durableAnnotatedRolloutEvents(props.events, props.enrichmentEvents),
+    [props.events, props.enrichmentEvents],
+  );
+  const liveStream = useLiveEvalStream({
+    // Once the optimizer journal has retained producer envelopes it is the
+    // reopen-safe authority. Do not keep polling dead container endpoints.
+    replay: durableEvents ? undefined : props.replay,
+    fixtureEvents: durableEvents || declaredStreamCount > 0 ? undefined : stream.events,
     replayMs: 240,
     visualId: props.visualId,
     revision: props.revision,
   });
+  const events = durableEvents ?? liveStream.events;
+  const state = durableEvents
+    ? props.runLifecycle?.terminal ? "terminal" : "live"
+    : liveStream.state;
+  const error = durableEvents ? null : liveStream.error;
+  const ready = durableEvents ? true : liveStream.ready;
   const live = state === "live";
-  const hasSource = declaredStreamCount > 0 || Boolean(stream.events);
+  const hasSource = Boolean(durableEvents) || declaredStreamCount > 0 || Boolean(stream.events);
   const [globalCursor, setGlobalCursor] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -298,7 +322,7 @@ export function Shell(props: ShellProps) {
   const [showHistory, setShowHistory] = useState(false);
   const [selectedRollout, setSelectedRollout] = useState<string | null>(null);
   const timeline = useMemo(() => logicalTimeline(events), [events]);
-  const configuration = useMemo(() => runConfiguration(events, props.optimizer_run), [events, props.optimizer_run]);
+  const configuration = useMemo(() => runConfiguration(events, props.optimizer_run ?? props.run), [events, props.optimizer_run, props.run]);
   const selectedGlobal = globalCursor == null ? timeline.length - 1 : Math.max(0, Math.min(globalCursor, timeline.length - 1));
   const selectedMoment = timeline[selectedGlobal];
   const visibleTimeline = useMemo(() => timeline.slice(0, selectedGlobal + 1), [timeline, selectedGlobal]);
