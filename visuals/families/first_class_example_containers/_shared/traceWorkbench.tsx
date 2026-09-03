@@ -307,6 +307,25 @@ function RunAggregateHeader({
     };
   }).sort((a, b) => b.seeds - a.seeds || a.name.localeCompare(b.name));
 
+  /**
+   * Whether this run has an environment at all, decided run-wide.
+   *
+   * A Banking77 classification run was shown an "Environment steps" card and
+   * an achievements table reading "No achievements achieved." -- a game's
+   * scoreboard reporting nothing, over a task that has no environment to
+   * report. The per-rollout `environmentless` flag cannot answer this: it
+   * describes the selected rollout, and the aggregate header describes the run.
+   *
+   * Every clause requires an authoritative fact. Absent evidence must keep the
+   * cards visible and saying so, because "we know there were no steps" and "we
+   * were told nothing about steps" are different claims and only the first one
+   * licenses dropping the card.
+   */
+  const noEnvironmentReported = terminalCount > 0
+    && stepUsage.authoritative && (stepUsage.value ?? 0) === 0
+    && frameUsage.authoritative && (frameUsage.value ?? 0) === 0
+    && achievementFacts.authoritative && achievements.length === 0;
+
   const formatDuration = (seconds: number | null) => seconds === null
     ? "unavailable"
     : `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
@@ -401,7 +420,7 @@ function RunAggregateHeader({
           {!providerCallsReconciled
             ? usageCard("Model calls", callUsage, callLimit)
             : usageCard("Provider calls", providerSummary(providerCalls), callLimit, exactCount, { valueSuffix: " billed", coverage: "run-level receipt", source: "Workshop proxy" })}
-          {usageCard("Environment steps", stepUsage, stepLimit)}
+          {noEnvironmentReported ? null : usageCard("Environment steps", stepUsage, stepLimit)}
           {usageCard("Runtime tokens", terminalFacts.runtimeTokens === null ? tokenUsage : { ...tokenUsage, value: terminalFacts.runtimeTokens }, tokenLimit, exactCount, { coverage: `${terminalFacts.reportedTokenRollouts || tokenUsage.present}/${rolloutCount} terminal records`, source: "container runtime" })}
           {providerTokens === null ? null : usageCard("Provider tokens", providerSummary(providerTokens), tokenLimit, exactCount, { valueSuffix: " billed", coverage: `${exactCount(providerPromptTokens ?? 0)} prompt + ${exactCount(providerCompletionTokens ?? 0)} completion`, source: "Workshop proxy" })}
           {runLifecycle?.usage.costSource === "workshop_proxy"
@@ -419,7 +438,7 @@ function RunAggregateHeader({
               ))}
             </div>
           </div>
-          <div>
+          {noEnvironmentReported ? null : <div>
             <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)", textTransform: "uppercase" }}>Achievements · unique seeds / eligible · occurrences · first · best</div>
             <div style={{ display: "grid", gap: 3, maxHeight: 76, overflowY: "auto", marginTop: 4 }}>
               {achievementFacts.authoritative && achievementFacts.value === null ? (
@@ -432,7 +451,7 @@ function RunAggregateHeader({
               )) : <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-meta)" }}>{achievementFacts.authoritative ? "No achievements achieved." : "No achievements reported yet."}</span>}
               <FactMetadata summary={achievementFacts} />
             </div>
-          </div>
+          </div>}
         </div>
       </details>
     </section>

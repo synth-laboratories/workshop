@@ -86,6 +86,25 @@ function percent(value: number | null | undefined, digits = 0): string {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
+/**
+ * A difference between two rates, in percentage points.
+ *
+ * The heldout panel reported the same accuracy three ways: the selection score
+ * as `80.3%`, the base and promoted arms as `0.80` and `0.82`, and the uplift
+ * between those arms as `+0.02`. A reader then has to know that the `+0.02`
+ * under two percentages means two points, and that it is not two percent.
+ *
+ * So rates render as rates and their differences render in points. The unit is
+ * spelled out because "+2%" and "+2 pp" mean different things and only one of
+ * them is true here. Reward means keep their own raw scale -- they are not
+ * rates, and `signed` still serves them.
+ */
+function points(value: number | null | undefined, digits = 1): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "±";
+  return `${sign}${Math.abs(value * 100).toFixed(digits)} pp`;
+}
+
 function direction(value: number | null | undefined): "up" | "down" | "flat" | "unknown" {
   if (typeof value !== "number" || !Number.isFinite(value)) return "unknown";
   if (value > 0) return "up";
@@ -462,19 +481,19 @@ function ComparisonPanel({
         <div className="sv-arms">
           <div className="sv-arm" data-arm="base">
             <span className="sv-micro-label">unchanged base · heldout</span>
-            <strong>{formatMissingNumber(aggregate.baseScore)}</strong>
+            <strong>{percent(aggregate.baseScore, 1)}</strong>
           </div>
           <div className="sv-arm" data-arm="trained">
             <span className="sv-micro-label">{aggregate.checkpointId ?? "selected checkpoint"}</span>
-            <strong>{formatMissingNumber(aggregate.trainedScore)}</strong>
+            <strong>{percent(aggregate.trainedScore, 1)}</strong>
           </div>
         </div>
         <dl className="sv-kv" data-testid="sft-uplift">
           <dt>Paired examples</dt><dd>{aggregate.paired}</dd>
           <dt>Accuracy uplift</dt>
-          <dd><span className="sv-delta" data-dir={direction(aggregate.absoluteUplift)}>{signed(aggregate.absoluteUplift)}</span></dd>
+          <dd><span className="sv-delta" data-dir={direction(aggregate.absoluteUplift)}>{points(aggregate.absoluteUplift)}</span></dd>
           <dt>95% paired CI</dt>
-          <dd>{aggregate.upliftCi ? `${signed(aggregate.upliftCi[0])} … ${signed(aggregate.upliftCi[1])}` : "—"}</dd>
+          <dd>{aggregate.upliftCi ? `${points(aggregate.upliftCi[0])} … ${points(aggregate.upliftCi[1])}` : "—"}</dd>
           <dt>Verdict</dt><dd>{aggregate.verdict ?? "not reported"}</dd>
           <dt>Uplift claim</dt><dd>{aggregate.claimReady ? "supported" : "not established"}</dd>
         </dl>
@@ -987,7 +1006,7 @@ export function SftWorkspace({
       ? "Training failed"
       : heldoutSummary
         ? heldoutSummary.claimReady
-          ? `Heldout uplift ${signed(heldoutSummary.absoluteUplift)} over ${heldoutSummary.paired} paired examples`
+          ? `Heldout uplift ${points(heldoutSummary.absoluteUplift)} over ${heldoutSummary.paired} paired examples`
           : `Completed · heldout ${heldoutSummary.verdict ?? "inconclusive"} — no uplift claimed`
       : upliftClaimed && comparison
         ? `Heldout uplift ${signed(comparison.absoluteUplift)} over ${comparison.paired} paired seeds`
@@ -1029,8 +1048,11 @@ export function SftWorkspace({
     {
       tier: "primary",
       label: "Heldout uplift",
+      // Two different units share this slot: a paired accuracy difference is
+      // in points, a paired reward-mean difference is not a rate at all. The
+      // titles below already say which one is being reported.
       value: heldoutSummary
-        ? signed(heldoutSummary.absoluteUplift)
+        ? points(heldoutSummary.absoluteUplift)
         : comparison
           ? signed(comparison.absoluteUplift)
           : "not measured",

@@ -302,6 +302,12 @@ export type GepaState = {
     sequence?: number;
     terminal: boolean;
   };
+  /**
+   * Why the search failed, in one line, when it failed. Undefined on a run
+   * that did not fail or that failed without saying why -- the panel that
+   * reads this must stay silent rather than invent a reason.
+   */
+  failureDetail?: string;
   incumbentId?: string;
   best?: { candidateId?: string; trainReward?: number; heldoutReward?: number };
   heldout?: { candidateId?: string; reward?: number; skipped?: boolean; blocked?: boolean; reason?: string };
@@ -584,6 +590,8 @@ export type CispoState = {
     rewardVariance: number | null;
     size: number;
     sequence: number;
+    /** Completion is independent of whether the bounded first paint carries reward detail. */
+    completed?: boolean;
   }>;
   zeroAdvantageGroups: number;
   learningSignalGroups: number;
@@ -968,6 +976,21 @@ export function projectAtCursor(
   const projectDag = isDagAlgorithm(run.algorithmId);
   let status = run.status;
   let summary = { ...(run.summary ?? {}) };
+  /**
+   * Why the run failed, taken from the stream rather than from the caller.
+   *
+   * `run.error` is only ever populated by a host that already knows the
+   * failure, and the live stream is not that host: a GEPA search refused
+   * before it proposed anything reached the workspace as `status: "failed"`
+   * with `error: undefined`, so the "Why this search failed" panel tested
+   * `optimizerFailureDetail(run.error)`, got nothing, and rendered nothing.
+   * The reader was left with a failed run and empty panels below it -- the
+   * exact state the panel exists to explain.
+   *
+   * Failure events carry the reason; keep the first one, because the earliest
+   * failure is the cause and anything after it is fallout.
+   */
+  let streamError: unknown;
 
   const candidateIdFrom = (event: OptimizerEvent): string | undefined => {
     const value = event.item?.id ?? event.delta?.candidate_id ?? event.delta?.candidateId;
@@ -1376,6 +1399,18 @@ export function projectAtCursor(
       (event.type === "goex.run_failed" ? "failed" : undefined)
     ) as string | undefined;
     if (nextStatus) status = nextStatus;
+    if (streamError === undefined) {
+      // A failure reason may travel on the event itself or inside its delta or
+      // snapshot, depending on which producer emitted it. Accept a bare string
+      // as readily as a structured payload -- optimizerFailureDetail already
+      // handles both, and refusing a string here would drop the commonest form.
+      const candidate = event.error
+        ?? (event.delta?.error ?? event.snapshot?.error)
+        ?? (runLifecycleEvent && nextStatus === "failed"
+          ? event.delta?.message ?? event.delta?.reason ?? event.snapshot?.message
+          : undefined);
+      if (candidate !== undefined && candidate !== null) streamError = candidate;
+    }
     if (event.type === "rollout.circuit_breaker.tripped") {
       const rollingFailureRate = missingNumber(event.delta?.rolling_failure_rate);
       const tolerance = missingNumber(event.delta?.tolerance);
@@ -2880,7 +2915,7 @@ export function projectAtCursor(
       activity: {
         phase: activityPhase,
         label: activityLabel,
-        detail: failed ? optimizerFailureDetail(run.error) ?? activityDetail : activityDetail,
+        detail: failed ? optimizerFailureDetail(run.error ?? streamError) ?? activityDetail : activityDetail,
         proposalActive,
         evaluationActive,
         evaluationStage,
@@ -2890,6 +2925,7 @@ export function projectAtCursor(
         sequence: activitySequence,
         terminal
       },
+      failureDetail: failed ? optimizerFailureDetail(run.error ?? streamError) : undefined,
       incumbentId,
       best,
       heldout,

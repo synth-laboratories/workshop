@@ -516,14 +516,16 @@ export function GepaWorkspace({
         the prompt was bad, the budget ran out, or it never started at all.
         SftWorkspace already states its failure this way.
       */}
-      {run.status === "failed" && optimizerFailureDetail(run.error) ? (
+      {/* `run.error` is set only when the host already knew the failure; the
+          projection recovers the reason from the stream for every other case. */}
+      {run.status === "failed" && (optimizerFailureDetail(run.error) ?? gepa.failureDetail) ? (
         <section className="sv-panel" aria-label="Why this run failed" data-testid="gepa-failure">
           <div className="sv-panel-head">
             <h4>Why this search failed</h4>
             <span className="sv-mono">no candidate was proposed</span>
           </div>
           <div className="sv-panel-body">
-            <p className="sv-failure-detail">{optimizerFailureDetail(run.error)}</p>
+            <p className="sv-failure-detail">{optimizerFailureDetail(run.error) ?? gepa.failureDetail}</p>
             <p className="sv-empty">
               The panels below are empty because the search was refused before it
               began, not because it ran and found nothing.

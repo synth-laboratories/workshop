@@ -64,3 +64,28 @@ test("the environment-absence banner reads as a sentence", () => {
   assert.doesNotMatch(source, /achievement either/);
   assert.match(source, /recorded an environment action or an achievement, so the per-call environment section is not shown/);
 });
+
+test("a run with no environment is shown no environment scoreboard", () => {
+  const source = read(WORKBENCH);
+  // A Banking77 classification run carried an "Environment steps" card and an
+  // achievements table reading "No achievements achieved." -- a game's
+  // scoreboard reporting nothing, over a task with no environment.
+  assert.match(source, /\{noEnvironmentReported \? null : usageCard\("Environment steps"/);
+  assert.match(source, /\{noEnvironmentReported \? null : <div>\s*\n\s*<div[^\n]*>Achievements · unique seeds/);
+});
+
+test("an environment is only ruled out on authoritative facts, never on silence", () => {
+  const source = read(WORKBENCH);
+  // "We know there were no steps" and "we were told nothing about steps" are
+  // different claims; only the first licenses dropping the card. Every clause
+  // of the predicate must therefore require an authoritative fact.
+  const predicate = source.slice(
+    source.indexOf("const noEnvironmentReported"),
+    source.indexOf("const formatDuration")
+  );
+  assert.match(predicate, /stepUsage\.authoritative/);
+  assert.match(predicate, /frameUsage\.authoritative/);
+  assert.match(predicate, /achievementFacts\.authoritative/);
+  // A run with nothing terminal has reported nothing yet either way.
+  assert.match(predicate, /terminalCount > 0/);
+});
