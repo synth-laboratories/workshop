@@ -74,6 +74,15 @@ pub fn classify_live_eval_family(
             tokens.push(value.to_ascii_lowercase());
         }
     }
+    if let Some(value) = info.pointer("/liveEval/family").and_then(Value::as_str) {
+        tokens.push(value.to_ascii_lowercase());
+    }
+    if let Some(value) = info
+        .pointer("/metadata/liveEval/family")
+        .and_then(Value::as_str)
+    {
+        tokens.push(value.to_ascii_lowercase());
+    }
     if let Some(chain) = info.get("adapter_chain").and_then(Value::as_array) {
         for item in chain {
             if let Some(value) = item.as_str() {
@@ -151,7 +160,16 @@ pub fn assert_harbor_live_frames(info: &Value) -> Result<()> {
     let Some(frames) = advertised_live_frames(info) else {
         return Ok(());
     };
-    if frames.eq_ignore_ascii_case("native") || frames.eq_ignore_ascii_case("true") {
+    let content_reference = [
+        "/liveEval/frameTransport",
+        "/metadata/liveEval/frameTransport",
+    ]
+    .iter()
+    .filter_map(|path| info.pointer(path).and_then(Value::as_str))
+    .any(|transport| transport.eq_ignore_ascii_case("content-reference"));
+    if (frames.eq_ignore_ascii_case("native") || frames.eq_ignore_ascii_case("true"))
+        && !content_reference
+    {
         bail!(
             "Harbor must not advertise live_frames={frames}; refusing registration of a \
              contradictory capability declaration"
@@ -382,7 +400,14 @@ pub fn live_eval_bind_metadata(
     bind.insert("slot".into(), json!(LIVE_EVAL_SLOT));
     match family {
         LiveEvalFamily::Harbor => {
-            bind.insert("liveFrames".into(), json!("unsupported"));
+            let live_frames = if advertised_live_frames(info).is_some_and(|frames| {
+                frames.eq_ignore_ascii_case("native") || frames.eq_ignore_ascii_case("true")
+            }) {
+                "supported"
+            } else {
+                "unsupported"
+            };
+            bind.insert("liveFrames".into(), json!(live_frames));
         }
         LiveEvalFamily::Craftax => {
             if let Some(frames) = info.get("live_frames") {
@@ -486,6 +511,13 @@ mod tests {
             Some(LiveEvalFamily::Harbor)
         );
         assert_eq!(
+            classify_live_eval_family(
+                &json!({"liveEval": {"family": "harbor", "templateId": "live.harbor_eval.v1"}}),
+                None
+            ),
+            Some(LiveEvalFamily::Harbor)
+        );
+        assert_eq!(
             classify_live_eval_family(&json!({"target_id": "craftax_engine"}), None),
             Some(LiveEvalFamily::Craftax)
         );
@@ -520,6 +552,11 @@ mod tests {
         )
         .is_err());
         assert!(assert_harbor_live_frames(&json!({"live_frames": false})).is_ok());
+        assert!(assert_harbor_live_frames(&json!({
+            "capabilities": {"live_frames": true},
+            "liveEval": {"frameTransport": "content-reference"}
+        }))
+        .is_ok());
         assert!(assert_harbor_live_frames(&json!({})).is_ok());
         let pins = harbor_policy_pins(None).unwrap();
         assert_eq!(pins.len(), 2);
@@ -570,6 +607,16 @@ mod tests {
             None
         )
         .is_err());
+        let content_reference_bind = live_eval_bind_metadata(
+            LiveEvalFamily::Harbor,
+            &json!({
+                "capabilities": {"live_frames": true},
+                "liveEval": {"frameTransport": "content-reference"}
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(content_reference_bind["liveFrames"], "supported");
         assert!(assert_live_eval_slot(bind["slot"].as_str().unwrap()).is_ok());
     }
 
