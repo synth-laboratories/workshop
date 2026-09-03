@@ -766,7 +766,7 @@ export function Shell(props: ShellProps) {
   const aggregateTimelinePanel = config.showPlots ? (
     <section className="cv-plots cv-surface-replay cv-aggregate-plots" data-visual-landmark="aggregate-outcomes">
       <article className="cv-panel cv-aggregate-timeline" data-testid="craftax-aggregate-timeline">
-        <div className="cv-heading"><div><p className="cv-eyebrow">Overall · all rollouts</p><h3>Cumulative reward and achievement unlocks</h3></div><strong>{aggregateTimeline.length} rollout{aggregateTimeline.length === 1 ? "" : "s"}</strong></div>
+        <div className="cv-heading"><div><p className="cv-eyebrow">Overall · all rollouts</p><h3>Cumulative reward and achievement unlocks</h3></div><strong>{aggregateTimeline.length === 0 ? "nothing to plot" : `${aggregateTimeline.length} plotted`}</strong></div>
         <div className="cv-aggregate-legend" aria-label="Aggregate rollout lines">
           {aggregateTimeline.map((timeline, index) => {
             const terminal = terminalByLane.get(timeline.lane);
@@ -775,6 +775,17 @@ export function Shell(props: ShellProps) {
             </button>;
           })}
         </div>
+        {aggregateTimeline.length === 0 ? (
+          // Empty axes over a run that completed read as a broken chart. Say
+          // which rollouts reported no steps instead of drawing a grid with
+          // nothing on it and a header that appears to contradict the summary
+          // panel directly below.
+          <p className="cv-empty" data-testid="craftax-aggregate-timeline-empty">
+            No rollout in this run reported environment steps, so there is no
+            cumulative-reward series to draw. The evaluation summary below is
+            unaffected.
+          </p>
+        ) : (
         <svg viewBox="0 0 760 250" role="img" aria-label={`Cumulative reward by environment step for ${aggregateTimeline.length} rollouts, with achievement unlock icons`}>
           <line className="cv-grid-line" x1="42" y1="216" x2="742" y2="216" />
           <line className="cv-grid-line" x1="42" y1="22" x2="42" y2="216" />
@@ -797,6 +808,7 @@ export function Shell(props: ShellProps) {
             })}
           </g>)}
         </svg>
+        )}
         <p className="cv-aggregate-note">Shared environment-step scale. Icons mark the first retained evidence for each achievement; select a line above to open that rollout.</p>
       </article>
     </section>
