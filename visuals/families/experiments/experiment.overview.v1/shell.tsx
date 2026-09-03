@@ -395,13 +395,26 @@ function ProgressPanel({ progress, status }: { progress?: Progress; status?: str
   const percent = determinate ? Math.max(0, Math.min(100, completed / total * 100)) : 0;
   const terminal = ["completed", "failed", "cancelled", "canceled", "terminated", "finished", "succeeded"]
     .includes((progress?.phase ?? status ?? "").trim().toLowerCase());
+  // Read from `status`, not from `progress.phase`: the phase of a failed run
+  // is still "Finished", which is exactly how the bar came to look successful.
+  const failed = ["failed", "cancelled", "canceled", "terminated", "degraded"]
+    .includes((status ?? "").trim().toLowerCase());
   return <section className="sv-section" aria-label="Experiment progress">
     <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "baseline" }}>
       <div><span style={{ fontSize: 10, color: "var(--sv-text-faint)", textTransform: "uppercase", letterSpacing: ".08em" }}>Progress</span><h3 style={{ margin: "3px 0 0", fontSize: 15 }}>{progress?.phase ?? status ?? "Planned"}</h3></div>
       <strong style={{ fontFamily: "var(--sv-mono)", fontSize: 12 }}>{determinate ? `${completed}/${total}` : MISSING}</strong>
     </div>
     <div role="progressbar" aria-valuemin={0} aria-valuemax={determinate ? total : undefined} aria-valuenow={determinate ? completed : undefined} aria-label="Experiment completion" style={{ height: 8, borderRadius: 99, overflow: "hidden", background: "#e8ebef", marginTop: 12 }}>
-      <span style={{ display: "block", height: "100%", width: `${percent}%`, background: "#f05f22", transition: "width 180ms ease" }} />
+      {/*
+        A failed run drew a full-width accent bar under the word "Finished".
+        The bar is the largest thing on the panel, so a Banking77 evaluation
+        whose four rollouts were all cancelled read as a completed success:
+        only the small status line and one red word in the variants row said
+        otherwise. Progress reaching the end is not the same as the run having
+        gone well, and the bar has to carry that. The rollout bars in
+        live.annotated_rollouts already tone failure this way.
+      */}
+      <span style={{ display: "block", height: "100%", width: `${percent}%`, background: failed ? "#d84b3f" : "#f05f22", transition: "width 180ms ease" }} />
     </div>
     {progress?.stateCounts ? <div aria-label="Rollout states" style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 9 }}>
       {Object.entries(progress.stateCounts).filter(([, count]) => Number(count) > 0).map(([state, count]) => <span key={state} style={{ padding: "3px 7px", border: "1px solid var(--sv-border)", borderRadius: 99, background: state === "running" ? "#fff7ed" : state === "failed" || state === "degraded" ? "#fff1f0" : "var(--sv-surface-muted)", color: statusTone(state), fontFamily: "var(--sv-mono)", fontSize: 9, textTransform: "capitalize" }}>{count} {state}</span>)}

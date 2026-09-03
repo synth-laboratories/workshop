@@ -319,3 +319,19 @@ export function formatMissingUsd(value: unknown): string {
   const n = missingNumber(value);
   return n == null ? "—" : `$${n.toFixed(n >= 0.01 ? 2 : 4)}`;
 }
+
+/**
+ * `1 trace` / `2 traces`, from a singular noun.
+ *
+ * A count and the noun it counts are formatted together so no call site can
+ * get one right and the other wrong. Written by hand, each site got it wrong
+ * in its own way: `0 loss sampless` from pluralizing an already-plural noun,
+ * `1 durable records` and `1 unlocks` from hardcoding the "s", and
+ * `1 grader + 1 traces` from a fix that named the units but not the number.
+ *
+ * Lives here, beside the other formatters, because three families needed it
+ * and each had grown its own copy.
+ */
+export function counted(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}

@@ -1410,8 +1410,14 @@ fn experiment_bindings(
         "degraded" => format!(
             "The run is terminal but partial: {completed} of {total} rollouts completed and {failed_rollouts} failed."
         ),
+        // Counted positively, because the negative form inverts its own
+        // meaning at zero. A run whose four rollouts were all *cancelled* has
+        // `failed_rollouts == 0`, and "0 of 4 rollouts did not complete
+        // successfully" then asserts that all four did -- on a surface whose
+        // own status line says the evaluation failed. How many completed is
+        // the number the reader wants anyway, and it cannot flip.
         "failed" => format!(
-            "The evaluation failed: {failed_rollouts} of {total} rollouts did not complete successfully."
+            "The evaluation failed: {completed} of {total} rollouts completed successfully."
         ),
         "failed_evidence" => {
             "The rollouts stopped, but required evaluator evidence is missing or unusable."

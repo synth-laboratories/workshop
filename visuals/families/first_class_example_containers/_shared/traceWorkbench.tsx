@@ -40,6 +40,7 @@ import {
   type TraceStep,
   type TrialView
 } from "../../../runtime/craftaxTraceView.ts";
+import { counted } from "../../../runtime/liveStream.ts";
 import { NO_MEDIA, type LoadedMedia, type MediaClient } from "../../../runtime/mediaClient.ts";
 import {
   evalAggregateV1,
@@ -331,14 +332,6 @@ function RunAggregateHeader({
     : `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
   const exactCount = (value: number) => value.toLocaleString("en-US", { maximumFractionDigits: 0 });
   const exactUsd = (value: number) => `$${value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
-  /**
-   * `1 trace` / `2 traces`, from a singular noun. A count and the noun it
-   * counts are formatted together so no call site can get one right and the
-   * other wrong -- naming the units inline is what stops `2 + 2` from being
-   * read as arithmetic, and it is only an improvement if it also reads as
-   * English at one.
-   */
-  const counted = (value: number, noun: string) => `${exactCount(value)} ${noun}${value === 1 ? "" : "s"}`;
   const providerSummary = (value: number | null): ReportedFactSummary<number> => ({
     authoritative: true,
     value,

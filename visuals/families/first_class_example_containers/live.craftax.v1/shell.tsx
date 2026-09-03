@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Identifier } from "../../../chrome/Identifier.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
-import { formatMissingNumber, formatMissingUsd } from "../../../runtime/liveStream.ts";
+import { counted, formatMissingNumber, formatMissingUsd } from "../../../runtime/liveStream.ts";
 import { mediaRefFrom, type LoadedMedia } from "../../../runtime/mediaClient.ts";
 import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
 import { callForSequence, projectAgentTurns, reconcileCallSelection, type EvidenceField } from "../../../runtime/agentTranscript.ts";
@@ -809,7 +809,13 @@ export function Shell(props: ShellProps) {
           </g>)}
         </svg>
         )}
-        <p className="cv-aggregate-note">Shared environment-step scale. Icons mark the first retained evidence for each achievement; select a line above to open that rollout.</p>
+        {/*
+          Instructions for a chart that was not drawn. Under "nothing to plot"
+          this told the reader to "select a line above" when there are no lines
+          and no axes, describing a shared step scale that nothing is drawn on.
+          The empty state above already says what happened and why.
+        */}
+        {aggregateTimeline.length === 0 ? null : <p className="cv-aggregate-note">Shared environment-step scale. Icons mark the first retained evidence for each achievement; select a line above to open that rollout.</p>}
       </article>
     </section>
   ) : null;
@@ -855,7 +861,7 @@ export function Shell(props: ShellProps) {
           <OverviewStat label="Environment steps" value={formatMissingNumber(runAggregate.totalSteps, 0)} detail={`${rangeLabel(runAggregate.minSteps, runAggregate.maxSteps, "steps")} · ${runAggregate.reportedSteps}/${runAggregate.rollouts.length} reported`} />
           <OverviewStat label="Provider calls" value={callValue} detail={callDetail} />
           <OverviewStat label="Provider tokens" value={tokenValue == null ? "Not emitted" : `${formatMissingNumber(tokenValue, 0)}${receiptTokens == null ? "" : " billed"}`} detail={tokenDetail} />
-          <OverviewStat label="Achievements" value={runAggregate.totalAchievements == null ? "Not emitted" : `${runAggregate.totalAchievements} unlocks`} detail={runAggregate.totalAchievements == null ? `${runAggregate.reportedAchievements}/${runAggregate.rollouts.length} terminal records reported` : `median ${formatMissingNumber(runAggregate.achievementMedian)} · range ${formatMissingNumber(runAggregate.minAchievements, 0)}–${formatMissingNumber(runAggregate.maxAchievements, 0)} · ${runAggregate.achievementNames.length} unique · ${runAggregate.reportedAchievements}/${runAggregate.rollouts.length} reported`} />
+          <OverviewStat label="Achievements" value={runAggregate.totalAchievements == null ? "Not emitted" : counted(runAggregate.totalAchievements, "unlock")} detail={runAggregate.totalAchievements == null ? `${runAggregate.reportedAchievements}/${runAggregate.rollouts.length} terminal records reported` : `median ${formatMissingNumber(runAggregate.achievementMedian)} · range ${formatMissingNumber(runAggregate.minAchievements, 0)}–${formatMissingNumber(runAggregate.maxAchievements, 0)} · ${runAggregate.achievementNames.length} unique · ${runAggregate.reportedAchievements}/${runAggregate.rollouts.length} reported`} />
         </div>
         <div className="cv-cost-line" data-cost-authority={props.runLifecycle?.usage.costSource}><span>Run cost</span><strong>{runCost.value}</strong><small>{runCost.detail}</small></div>
         {runAggregate.achievementNames.length ? <div className="cv-coverage" aria-label="Achievements unlocked across all rollouts"><span>Across run</span>{runAggregate.achievementNames.map((name) => <i key={name}>{name}</i>)}</div> : null}

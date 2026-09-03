@@ -28,11 +28,15 @@ test("the evidence stat names its units instead of reading as arithmetic", () =>
   assert.match(source, /counted\(aggregate\.traceCount, "trace"\)/);
 });
 
-test("a counted noun is singular at one", () => {
-  const source = read(WORKBENCH);
+test("a counted noun is singular at one, from one shared formatter", () => {
   // Naming the unit inline is only an improvement if it also reads as English
-  // at one: the first cut of the fix shipped `1 grader + 1 traces`.
-  assert.match(source, /const counted = \(value: number, noun: string\)[^\n]*value === 1 \? "" : "s"/);
+  // at one: the first cut of the fix shipped `1 grader + 1 traces`. The rule
+  // lives in runtime/ because three families had each grown their own copy and
+  // each got a different case wrong.
+  assert.match(read("runtime/liveStream.ts"), /export function counted\(count: number, noun: string\): string \{\s*\n\s*return `\$\{count\} \$\{noun\}\$\{count === 1 \? "" : "s"\}`;/);
+  assert.match(read(WORKBENCH), /import \{ counted \} from "\.\.\/\.\.\/\.\.\/runtime\/liveStream\.ts";/);
+  // No family re-declares it locally.
+  assert.doesNotMatch(read(WORKBENCH), /const counted = /);
 });
 
 test("a zero call count beside real money is reported as unreconciled, not as zero", () => {
