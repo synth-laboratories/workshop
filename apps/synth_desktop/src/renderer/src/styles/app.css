@@ -7629,6 +7629,13 @@ html.visual-expanded .composer-dock {
 	overflow: hidden;
 }
 
+/* The shared page primitive intentionally bounds prose-heavy pages to a
+   readable measure. Visuals is a two-pane workbench, so carrying that cap
+   into its list/preview grid strands unused space beside the preview. */
+.visuals-page.plugin-page > * {
+	max-width: none;
+}
+
 .visuals-page-head {
 	display: flex;
 	justify-content: space-between;
