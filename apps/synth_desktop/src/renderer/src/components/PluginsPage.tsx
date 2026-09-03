@@ -17,7 +17,7 @@ export function PluginsPage({ preferences, pluginStatuses, onPreferencesChange, 
 			<div className="plugins-page-layout">
 				<button type="button" className="ws-back" onClick={onBack}>← Back</button>
 				<div className="plugins-page-content">
-					<header className="ws-page-head-text"><h1 className="ws-title">Plugins</h1><p className="ws-lede">Open Workshop capabilities and choose which ones stay in the sidebar.</p></header>
+					<header className="ws-page-head-text"><h1 className="ws-title">Integrations</h1><p className="ws-lede">Open Workshop capabilities and choose which ones stay in the sidebar.</p></header>
 					<div className="ws-list plugins-catalog" data-testid="plugin-viewer-list">
 						{PLUGIN_NAV.map((entry) => {
 							const presentation = entry.kind === "managed" && entry.pluginId

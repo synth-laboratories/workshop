@@ -17,7 +17,7 @@ export function PluginVisibilitySettings({
 	return (
 		<div className="settings-card plugin-visibility-settings" data-testid="plugin-visibility-settings">
 			<div className="settings-card-head">
-				<div><h3>Sidebar plugins</h3><p>Choose which plugin destinations appear in the primary sidebar.</p></div>
+				<div><h3>Sidebar integrations</h3><p>Choose which integration destinations appear in the primary sidebar.</p></div>
 			</div>
 			<div className="settings-card-body plugin-visibility-list">
 				{PLUGIN_NAV.map((entry) => {

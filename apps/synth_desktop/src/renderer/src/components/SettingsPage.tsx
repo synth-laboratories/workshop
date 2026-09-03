@@ -132,7 +132,7 @@ const SECTIONS = [
 	{ id: "models", label: "Models", icon: IconChip },
 	{ id: "inference", label: "Inference", icon: IconGauge },
 	{ id: "voice", label: "Voice", icon: IconMic },
-	{ id: "plugins", label: "Plugins", icon: IconChip },
+	{ id: "plugins", label: "Integrations", icon: IconChip },
 	{ id: "account", label: "Account", icon: IconPerson },
 	{ id: "secrets", label: "Secrets", icon: IconKey },
 	{ id: "about", label: "About", icon: IconInfo }

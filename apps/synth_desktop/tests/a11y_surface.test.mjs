@@ -22,7 +22,7 @@ test("stable accessibility testids remain on core surfaces", () => {
     "components/VisualsPage.tsx",
     "components/DataPage.tsx",
     "components/CloudDesk.tsx",
-    // The Plugins section's test ids are declared once as data and rendered
+    // The Integrations section's test ids are declared once as data and rendered
     // through `data-testid={entry.testId}`, so the declaration is the surface.
     "runtime/pluginNav.ts",
   ];
@@ -62,7 +62,13 @@ test("installed desktop authorizes its declared window drag regions", () => {
 
 test("plugin navigation announces the active page and hides impossible pre-install actions", () => {
   const sidebar = read("components/Sidebar.tsx");
+  const catalog = read("components/PluginsPage.tsx");
+  const settings = read("components/SettingsPage.tsx");
   const optimizers = read("components/OptimizersPage.tsx");
+  assert.match(sidebar, />\s*Integrations\s*</);
+  assert.match(sidebar, /Collapse integrations/);
+  assert.match(catalog, /<h1 className="ws-title">Integrations<\/h1>/);
+  assert.match(settings, /id: "plugins", label: "Integrations"/);
   assert.match(sidebar, /aria-current=\{active \? "page" : undefined\}/);
   assert.match(optimizers, /operation: "enable"[\s\S]*status\.phase !== "not_installed" && !status\.enabled/);
   assert.match(optimizers, /operation: "disable"[\s\S]*status\.phase !== "not_installed" && status\.enabled/);
