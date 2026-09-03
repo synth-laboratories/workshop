@@ -254,6 +254,24 @@ function markdown(manifest) {
 		}
 		lines.push("");
 	}
+	if (manifest.sessionId) {
+		lines.push("## Run outcome", "");
+		const produced = manifest.captures.filter((capture) => capture.name.startsWith("visual-")).length;
+		if (produced === 0) {
+			// A clean report over an app that never ran anything is not evidence
+			// about the job surfaces; it is evidence that the job never started.
+			lines.push(
+				"**No product visual was produced by this run.** Whatever the findings below say,",
+				"they describe the app at rest and not the job surfaces this run was meant to",
+				"exercise. Read the agent's own account before drawing any conclusion:",
+				""
+			);
+		} else {
+			lines.push(`${produced} product visual(s) were produced and photographed.`, "");
+		}
+		const text = manifest.terminal?.event?.payload?.outcome?.item?.text;
+		lines.push("```", (text ?? "(the run reported no terminal text)").trim().slice(0, 1800), "```", "");
+	}
 	lines.push("## Captures", "");
 	for (const capture of manifest.captures) {
 		const status =
