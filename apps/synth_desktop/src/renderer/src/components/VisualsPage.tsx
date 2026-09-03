@@ -190,6 +190,14 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 		type ReviewRequest = { active?: boolean; visualId?: string };
 		const applyReviewRequest = (request: ReviewRequest | undefined) => {
 			if (!request?.active || typeof request.visualId !== "string") return;
+			// Clear the filters as well as setting the id. `selected` is found in
+			// `filtered`, not in `visuals`, and falls back to `filtered[0]` -- so a
+			// request naming a visual the active tab or search excludes selected a
+			// *different* visual, or none, and reported neither. A capture then
+			// photographed whatever was on screen. An explicit request to review
+			// one visual outranks a filter the request never knew about.
+			setTab("all");
+			setSearch("");
 			setSelectedId(request.visualId);
 			setFocusVisualId(request.visualId);
 		};
@@ -199,7 +207,12 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 		window.addEventListener("synth:visual-review-capture", onReviewCapture);
 		applyReviewRequest((window as Window & { __synthVisualReviewCapture?: ReviewRequest }).__synthVisualReviewCapture);
 		return () => window.removeEventListener("synth:visual-review-capture", onReviewCapture);
-	}, []);
+		// `visuals` is a dependency because the request can arrive before the
+		// registry has loaded -- on a cold app the host asks for a visual while
+		// this list is still empty, `filtered` has nothing to select, and the
+		// one-shot apply never ran again. Re-applying when the list arrives is
+		// what makes a capture on a freshly started instance work at all.
+	}, [visuals]);
 
 	useEffect(() => {
 		if (!focusVisualId || selected?.id !== focusVisualId) return;

@@ -910,8 +910,23 @@ fn set_review_capture_mode(app: &AppHandle, visual_id: &str, active: bool) -> Re
 /// This acknowledgement closes the remaining cold-start race: React may still
 /// be mounting the requested visual when that delay expires.
 #[cfg(target_os = "macos")]
-async fn wait_for_review_capture_surface(app: &AppHandle, visual_id: &str) -> Result<()> {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+async fn wait_for_review_capture_surface(app: &AppHandle, visual_id: &str) -> Result<bool> {
+    // Three seconds was enough for a warm app and not for a cold one. On a
+    // freshly launched instance the first heavy template -- a trace workstation
+    // or an optimizer workspace -- had not mounted before the deadline, so the
+    // wait gave up and the capture proceeded with the visual still closed.
+    //
+    // Waiting longer is safe now that a scope mismatch is an error: the loop
+    // still returns the instant the renderer acknowledges, so a surface that is
+    // already open pays nothing, and a surface that never opens fails loudly at
+    // the end rather than yielding a picture of whatever was on screen.
+    //
+    // Eight seconds, not twenty. The visuals IPC is single-threaded, so this
+    // wait holds it: at twenty seconds a run of failing captures made every
+    // other call on the socket return EAGAIN, turning one broken capture into
+    // an unusable control plane. Eight covers a cold mount with room to spare
+    // and bounds what one bad request can cost everything else.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
     loop {
         let window = app
             .get_webview_window("main")
@@ -937,15 +952,16 @@ async fn wait_for_review_capture_surface(app: &AppHandle, visual_id: &str) -> Re
             tokio::time::timeout(std::time::Duration::from_millis(250), receiver).await
         {
             if value.contains(visual_id) {
-                return Ok(());
+                return Ok(true);
             }
         }
         if tokio::time::Instant::now() >= deadline {
             // Some already-focused routes do not rerun their React effect when
             // the capture request repeats. The conservative settle window has
             // elapsed; capture instead of rejecting a valid visual solely for
-            // lack of a duplicate acknowledgement.
-            return Ok(());
+            // lack of a duplicate acknowledgement -- but report that nothing
+            // acknowledged, so the caller can check the surface another way.
+            return Ok(false);
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
@@ -1413,8 +1429,19 @@ pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Val
     // any early return from this span leaves it that way.
     tokio::time::sleep(REVIEW_CAPTURE_SETTLE).await;
 
+    // Whether the renderer positively acknowledged the requested visual. The
+    // scope check below needs this because the two ways a visual can be "open"
+    // are different states: `openArtifactId` is the artifact pane, set by
+    // toggleArtifact, while a review capture drives the visuals page and
+    // publishes `synthReviewCaptureReady`. Comparing only against the pane
+    // rejected correct captures of a visual reviewed through the page.
+    let mut review_acknowledged = false;
     let snapshot = match &scope {
-        CaptureScope::Visual(id) => wait_for_review_capture_surface(app, id).await,
+        CaptureScope::Visual(id) => wait_for_review_capture_surface(app, id)
+            .await
+            .map(|acknowledged| {
+                review_acknowledged = acknowledged;
+            }),
         other => wait_for_capture_surface(app, other).await,
     }
     .and_then(|()| {
@@ -1514,7 +1541,7 @@ pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Val
                     .get("openVisualId")
                     .and_then(Value::as_str)
                     .unwrap_or("none");
-                if opened != target.as_str() {
+                if !review_acknowledged && opened != target.as_str() {
                     return Err(anyhow::anyhow!(
                         "capture_scope_mismatch: asked for visual `{target}` but the renderer \
                          had `{opened}` open; the image would not be of the requested surface"
