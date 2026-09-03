@@ -22,7 +22,7 @@ buildSync({
 	jsx: "automatic"
 });
 
-const { countLabel } = await import(pathToFileURL(compiled).href);
+const { countLabel, taskMetadata } = await import(pathToFileURL(compiled).href);
 
 test("cached instance counts are labeled cached, never as live readiness", () => {
 	assert.equal(countLabel(5, true, "cached"), "5 cached");
@@ -30,4 +30,13 @@ test("cached instance counts are labeled cached, never as live readiness", () =>
 	assert.equal(countLabel(5, true, "live"), "5 live");
 	assert.equal(countLabel(5, true, "unavailable"), "Not reported");
 	assert.equal(countLabel(5, false, "cached"), "Not reported");
+});
+
+test("missing task metadata is unavailable rather than malformed", () => {
+	assert.deepEqual(taskMetadata(undefined, undefined), { tasks: [], instances: [], error: null });
+	assert.deepEqual(taskMetadata(undefined, null), { tasks: [], instances: [], error: null });
+});
+
+test("reported empty task metadata remains an actionable schema error", () => {
+	assert.equal(taskMetadata(undefined, {}).error, "invalid task info: expected an object");
 });
