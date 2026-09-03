@@ -2,7 +2,9 @@
 
 **Date:** 2026-09-03
 **Impact:** container-backed GEPA on every task. No GEPA cell can start.
-**Fix location:** `optimizers` repo (`~/GitHub/optimizers`, branch `v0.7`), not Workshop.
+**Fix location:** `optimizers` repo (`~/GitHub/optimizers`), not Workshop.
+**Status:** fixed and verified in 0.2.20 — see [Outcome](#outcome). GEPA now
+clears this check and stops at the next one, which is still open.
 
 ## Symptom
 
@@ -88,3 +90,66 @@ The pipeline itself is unaffected and was exercised by this failure: the run
 produced 22 captures with 0 failures and a report that states the run failed,
 claims no uplift, and reports `0 allocated, 0 scored` rather than presenting
 silence as health.
+
+## Outcome
+
+The fix shipped as `synth-optimizers` 0.2.20 and is verified in production.
+
+Run `gepa_gepa_banking77_qa_v1_3f4f6b07` executed from
+`data/optimizers/versions/0.2.20/runtime` and cleared the
+`capabilities.metadata` validation that had killed every previous attempt,
+failing instead at the *next* statement of the same preflight function:
+
+```
+File ".../versions/0.2.20/runtime/.../synth_optimizers/gepa.py", line 1631
+ValueError: container GET /program failed with HTTP 404
+```
+
+That progression is the proof: reaching `/program` is only possible once the
+metadata check passes.
+
+Getting there took a version cut, because Workshop installs the sidecar by
+pinned version and seals it with a digest and an instance-local signature.
+Three defects sat between the fix and a run, each hiding the next:
+
+1. **The floor was not a floor.** `ensure_ready` installed the pinned sidecar
+   only when *nothing* was installed, never comparing the installed version
+   against `min_supported`. Raising the pin shipped a wheel no existing
+   instance would ever install: a run on a binary built from the 0.2.20 commit
+   reported `algorithmVersion: synth-optimizers-0.2.19` and failed at the
+   preflight 0.2.20 fixes.
+2. **The pin was restated where it could drift.** `manager.rs` holds the
+   embedded distribution's source revision and lock sha; the staging script
+   restated both. Bumping only the script staged 0.2.20 while the app still
+   demanded `686f41c4`, and the install failed with `embedded Optimizers
+   distribution does not match the release pin`.
+3. **Idempotency returned a dead run as a start.** A rerun mapped to the
+   already-terminal failed run and never started the sidecar at all, so the
+   run reported zero rollouts without executing anything. `optimizer_evaluation_start`
+   documents the remedy: a new key for an intentional rerun.
+
+All three are fixed in `6bbae6bb`.
+
+## The next gate: `GET /program`
+
+`_preflight_container_capabilities` validates `ProgramPayload` from the
+container's `/program` route immediately after the metadata check. No evals
+image serves it:
+
+```
+curl -o /dev/null -w '%{http_code}' http://127.0.0.1:8099/program   # 404
+```
+
+This is a second contract requirement the images do not implement, and unlike
+the first it is not an over-strict validator — GEPA genuinely needs the
+program definition it is asked to rewrite. Closing it means implementing the
+route in the container images, which is work in the `evals` repo rather than a
+loosened check here.
+
+## Loose end
+
+The run mirror records `algorithmVersion: synth-optimizers-0.2.19` while the
+stderr log proves `versions/0.2.20/runtime` executed. A record naming a
+version that did not produce it is the same class of provenance defect the
+container revision gates exist to catch, and it is worth fixing before any
+evidence is read back with trust.
