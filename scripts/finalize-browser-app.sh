@@ -13,7 +13,19 @@ die() { echo "[browser-bundle] ERROR: $*" >&2; exit 1; }
 note() { echo "[browser-bundle] $*"; }
 
 [[ -d "$APP" && "$APP" == *.app ]] || die "application bundle is missing: $APP"
-[[ -f "$SOURCE_RUNTIME/manifest.json" ]] || die "assembled browser runtime is missing"
+# The assembled runtime is a large unversioned artifact. A checkout that has
+# never built it cannot package at all today, which blocks QA instances that
+# drive no browser. Opting out is explicit and per-invocation: the default is
+# still to fail closed, because a release bundle that silently shipped without
+# its browser runtime would be worse than one that refused to build.
+if [[ ! -f "$SOURCE_RUNTIME/manifest.json" ]]; then
+  if [[ "${SYNTH_BROWSER_RUNTIME_OPTIONAL:-0}" == "1" ]]; then
+    note "no assembled browser runtime; continuing without it (SYNTH_BROWSER_RUNTIME_OPTIONAL=1)"
+    note "the bundle will not be able to drive a browser"
+    exit 0
+  fi
+  die "assembled browser runtime is missing (set SYNTH_BROWSER_RUNTIME_OPTIONAL=1 for a build that drives no browser)"
+fi
 
 # Tauri's generic resource copier cannot preserve the assembled runtime's
 # executable/framework layout. The runtime is deliberately omitted from the
