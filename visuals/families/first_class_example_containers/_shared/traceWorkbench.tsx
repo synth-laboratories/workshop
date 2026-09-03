@@ -803,7 +803,11 @@ function CallDetail({
     whiteSpace: "pre-wrap"
   };
   return (
-    <div style={{ display: "grid", gap: "var(--sv-sp-3)", overflowY: "auto", minHeight: 0 }}>
+    // Stacked from the top, never spread. Grid rows stretch into leftover
+    // space by default, so a short inspector padded every section with blank
+    // pixels after its text — the same false gap the rail had, one level down,
+    // and it grows as the rail gives space back.
+    <div style={{ display: "grid", gap: "var(--sv-sp-3)", alignContent: "start", overflowY: "auto", minHeight: 0 }}>
       <div>
         <p style={heading}>Observed</p>
         <p style={{ ...body, color: "var(--sv-text-muted)" }}>
@@ -1462,7 +1466,17 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
             className="trace-workbench-call-column"
             style={{
               display: "grid",
-              gridTemplateRows: "var(--tw-call-rows, minmax(140px, 40%) 1fr)",
+              // Beside a frame viewer the rail is worth a fixed share of a tall
+              // column. Once the frame column is gone the same 40% floor became
+              // a hole: a one-call Banking77 rollout drew its single chip and
+              // then held roughly two hundred empty pixels before "Observed",
+              // which reads as a rendering fault rather than as spacing.
+              // fit-content keeps the ceiling — a long trajectory still grows to
+              // 40% and scrolls inside the rail — while a short one takes only
+              // the height its calls actually need.
+              gridTemplateRows: streamOnly
+                ? "var(--tw-call-rows, fit-content(40%) minmax(0, 1fr))"
+                : "var(--tw-call-rows, minmax(140px, 40%) 1fr)",
               gap: "var(--sv-sp-3)",
               minHeight: 0
             }}

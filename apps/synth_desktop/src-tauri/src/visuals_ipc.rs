@@ -689,6 +689,9 @@ async fn dispatch_request(
         return crate::annotations_ipc::dispatch_annotations(method, path, json_body, core, app)
             .await;
     }
+    if path.starts_with("/v1/human-annotations") {
+        return dispatch_human_annotations(method, path, json_body, core, app).await;
+    }
     if path.starts_with("/v1/diagnostics") {
         return dispatch_diagnostics(method, path, json_body, core).await;
     }
@@ -699,6 +702,74 @@ async fn dispatch_request(
         return dispatch_container_restart(path, json_body, core, app).await;
     }
     dispatch(method, path, json_body, core).await
+}
+
+async fn dispatch_human_annotations(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+    app: &AppHandle,
+) -> Result<Value> {
+    use crate::human_annotations::models::{
+        HumanAnnotationCancelRequest, HumanAnnotationCreateRequest, HumanAnnotationExportRequest,
+        HumanAnnotationListQuery,
+    };
+    let service = crate::human_annotations::from_core(core);
+    match (method, path) {
+        ("POST", "/v1/human-annotations/create") => Ok(serde_json::to_value(
+            service
+                .create(serde_json::from_value::<HumanAnnotationCreateRequest>(
+                    body,
+                )?)
+                .await?,
+        )?),
+        ("POST", "/v1/human-annotations/show") => {
+            let session_id = body
+                .get("sessionId")
+                .or_else(|| body.get("session_id"))
+                .and_then(Value::as_str)
+                .context("sessionId required")?
+                .to_owned();
+            let view = service.open(session_id.clone()).await?;
+            app.emit(
+                "human-annotation:show",
+                serde_json::json!({"sessionId":session_id}),
+            )?;
+            Ok(serde_json::to_value(view)?)
+        }
+        ("POST", "/v1/human-annotations/get") => {
+            let id = body
+                .get("taskId")
+                .or_else(|| body.get("task_id"))
+                .or_else(|| body.get("sessionId"))
+                .or_else(|| body.get("session_id"))
+                .and_then(Value::as_str)
+                .context("taskId required")?
+                .to_owned();
+            Ok(serde_json::to_value(service.status(id).await?)?)
+        }
+        ("POST", "/v1/human-annotations/list") => Ok(Value::Array(
+            service
+                .list(serde_json::from_value::<HumanAnnotationListQuery>(body)?)
+                .await?,
+        )),
+        ("POST", "/v1/human-annotations/cancel") => Ok(serde_json::to_value(
+            service
+                .cancel(serde_json::from_value::<HumanAnnotationCancelRequest>(
+                    body,
+                )?)
+                .await?,
+        )?),
+        ("POST", "/v1/human-annotations/export") => Ok(serde_json::to_value(
+            service
+                .export(serde_json::from_value::<HumanAnnotationExportRequest>(
+                    body,
+                )?)
+                .await?,
+        )?),
+        _ => anyhow::bail!("unsupported human annotation IPC route {method} {path}"),
+    }
 }
 
 fn dispatch_display_plugins(
@@ -1357,11 +1428,9 @@ pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Val
     let snapshot = match snapshot {
         Ok(()) => match app.get_webview_window("main") {
             Some(window) => {
-                let first = crate::visuals::snapshot::capture_webview_png(
-                    &window,
-                    REVIEW_CAPTURE_TIMEOUT,
-                )
-                .await;
+                let first =
+                    crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT)
+                        .await;
                 let attempt = match first {
                     Err(_) => {
                         crate::visuals::snapshot::capture_webview_png(
@@ -1430,6 +1499,28 @@ pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Val
         )),
         (Ok(_), Ok(_), Ok(()), Err(write)) => Err(write),
         (Ok(bytes), Ok(_), Ok(()), Ok(())) => {
+            // A scoped capture must photograph the surface it was asked for.
+            //
+            // `scope: visual` asks the renderer to open a visual and then
+            // photographs the window. When that open silently does not happen
+            // -- a full page reload had just reset the route to chat -- the
+            // capture returned a PNG of the chat view, `ok`, with the requested
+            // id in `target` and `openVisualId: null` two lines below it. Every
+            // claim built on these captures assumes the picture is of what its
+            // name says, so a mismatch has to be an error rather than something
+            // a reader might notice in the metadata.
+            if let CaptureScope::Visual(target) = &scope {
+                let opened = app_state
+                    .get("openVisualId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("none");
+                if opened != target.as_str() {
+                    return Err(anyhow::anyhow!(
+                        "capture_scope_mismatch: asked for visual `{target}` but the renderer \
+                         had `{opened}` open; the image would not be of the requested surface"
+                    ));
+                }
+            }
             let (width, height) = png_dimensions(&bytes).unwrap_or((0, 0));
             let diagnostics = crate::instance::diagnostics();
             Ok(json!({
