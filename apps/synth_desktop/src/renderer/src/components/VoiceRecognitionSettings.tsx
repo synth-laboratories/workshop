@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { WhisperDownloadProgress, WhisperModelHit } from "../bridge";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 
 function formatBytes(bytes: number): string {
 	if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -20,6 +21,8 @@ const STATIC_CATALOG: WhisperModelHit[] = [
 		multilingual: true,
 		downloadBytes: 75 * 1024 ** 2,
 		selected: false,
+		installedBytes: 0,
+		path: null,
 		modelsRoot: DEFAULT_MODELS_ROOT
 	},
 	{
@@ -30,6 +33,8 @@ const STATIC_CATALOG: WhisperModelHit[] = [
 		multilingual: true,
 		downloadBytes: 142 * 1024 ** 2,
 		selected: false,
+		installedBytes: 0,
+		path: null,
 		modelsRoot: DEFAULT_MODELS_ROOT
 	},
 	{
@@ -40,6 +45,8 @@ const STATIC_CATALOG: WhisperModelHit[] = [
 		multilingual: true,
 		downloadBytes: 466 * 1024 ** 2,
 		selected: false,
+		installedBytes: 0,
+		path: null,
 		modelsRoot: DEFAULT_MODELS_ROOT
 	},
 	{
@@ -50,6 +57,8 @@ const STATIC_CATALOG: WhisperModelHit[] = [
 		multilingual: true,
 		downloadBytes: 1620 * 1024 ** 2,
 		selected: false,
+		installedBytes: 0,
+		path: null,
 		modelsRoot: DEFAULT_MODELS_ROOT
 	}
 ];
@@ -67,7 +76,7 @@ export function VoiceRecognitionSettings() {
 			const listed = (await bridges.whisper?.listModels()) ?? [];
 			setHits(listed);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setLoaded(true);
 		}
@@ -94,7 +103,7 @@ export function VoiceRecognitionSettings() {
 				await bridges.whisper?.downloadModel(id);
 				await refresh();
 			} catch (reason) {
-				setError(reason instanceof Error ? reason.message : String(reason));
+				setError(publicError(reason));
 			} finally {
 				setBusyId(null);
 				setDownloadProgress(null);
@@ -111,7 +120,7 @@ export function VoiceRecognitionSettings() {
 				await bridges.whisper?.clearModel(id);
 				await refresh();
 			} catch (reason) {
-				setError(reason instanceof Error ? reason.message : String(reason));
+				setError(publicError(reason));
 			} finally {
 				setBusyId(null);
 			}
@@ -127,7 +136,7 @@ export function VoiceRecognitionSettings() {
 				await bridges.whisper?.setSelected(id);
 				await refresh();
 			} catch (reason) {
-				setError(reason instanceof Error ? reason.message : String(reason));
+				setError(publicError(reason));
 			} finally {
 				setBusyId(null);
 			}

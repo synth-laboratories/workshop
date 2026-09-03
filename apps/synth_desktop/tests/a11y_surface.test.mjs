@@ -22,6 +22,9 @@ test("stable accessibility testids remain on core surfaces", () => {
     "components/VisualsPage.tsx",
     "components/DataPage.tsx",
     "components/CloudDesk.tsx",
+    // The Plugins section's test ids are declared once as data and rendered
+    // through `data-testid={entry.testId}`, so the declaration is the surface.
+    "runtime/pluginNav.ts",
   ];
   const blob = files
     .filter((f) => existsSync(join(renderer, f)))
@@ -40,7 +43,12 @@ test("stable accessibility testids remain on core surfaces", () => {
     "visuals-page",
     "open-visuals",
   ]) {
-    assert.ok(blob.includes(`data-testid="${id}"`) || blob.includes(`'${id}'`), id);
+    // Accept a declared id as well as an inline attribute: ids rendered from
+    // data still have to exist, and quote style is not the invariant.
+    assert.ok(
+      blob.includes(`data-testid="${id}"`) || blob.includes(`'${id}'`) || blob.includes(`"${id}"`),
+      id
+    );
   }
 });
 
@@ -52,13 +60,34 @@ test("installed desktop authorizes its declared window drag regions", () => {
   assert.match(permissions, /core:window:allow-start-dragging/);
 });
 
+test("plugin navigation announces the active page and hides impossible pre-install actions", () => {
+  const sidebar = read("components/Sidebar.tsx");
+  const optimizers = read("components/OptimizersPage.tsx");
+  assert.match(sidebar, /aria-current=\{active \? "page" : undefined\}/);
+  assert.match(optimizers, /operation: "enable"[\s\S]*status\.phase !== "not_installed" && !status\.enabled/);
+  assert.match(optimizers, /operation: "disable"[\s\S]*status\.phase !== "not_installed" && status\.enabled/);
+  assert.match(optimizers, /data-testid="optimizer-setup-card"/);
+  assert.match(optimizers, /data-testid="optimizer-setup-action"/);
+  assert.match(optimizers, /Install and start Optimizers/);
+});
+
+test("hosted CISPO launches the admitted Tinker recipe without an SFT warm-start form", () => {
+  const optimizers = read("components/OptimizersPage.tsx");
+  assert.doesNotMatch(optimizers, /data-testid="hosted-cispo-warm-start"/);
+  assert.match(optimizers, /data-testid="start-cispo-hosted"/);
+  assert.match(optimizers, /cispo\.banking77\.tinker\.v1/);
+  assert.match(optimizers, /Never draft HostedOptimizerClient\.launch_training/);
+  assert.doesNotMatch(optimizers, /algorithm_config\.initial_state_path/);
+  assert.doesNotMatch(optimizers, /never defaults to latest/);
+});
+
 test("execution targets include Laguna local + OpenRouter Luna/Laguna + Synth Cloud + Intern", () => {
   const types = read("types/landing.ts");
   const composer = read("components/Composer.tsx");
   const bridge = read("runtime/desktopBridge.ts");
   const capabilities = read("runtime/modelCapabilities.ts");
   assert.ok(types.includes("local-laguna") || types.includes("Laguna XS"));
-  assert.ok(types.includes('label: "GPT 5.6 Luna"'));
+  assert.ok(types.includes('label: "GPT-5.6 Luna"'));
   assert.ok(types.includes("laguna-s-2.1") || types.includes("Laguna S"));
   assert.ok(types.includes("synth-cloud-laguna-s"));
   assert.ok(types.includes("Synth Cloud · usage tracked"));
@@ -84,7 +113,7 @@ test("v0.1 exposes remote Muse Spark while excluding local Muse Glimmer, GGUF, a
   ];
   const modelSurface = files.map(read).join("\n");
   assert.match(modelSurface, /Muse Spark 1\.2/);
-  assert.match(modelSurface, /openrouter-muse-spark/);
+  assert.match(modelSurface, /synth-cloud-muse-spark/);
   assert.doesNotMatch(modelSurface, /Muse Glimmer|muse-glimmer|GGUF|DFlash/i);
 });
 
@@ -92,7 +121,7 @@ test("model knobs are registered once and consumed without model-specific UI or 
   const registry = read("runtime/modelCapabilities.ts");
   const composer = read("components/Composer.tsx");
   const controller = read("hooks/useAppController.ts");
-  for (const target of ["local-laguna", "openrouter-luna", "openrouter-laguna-s", "synth-cloud-laguna-s"]) {
+  for (const target of ["local-laguna", "chatgpt-luna", "synth-cloud-laguna-s", "synth-cloud-muse-spark"]) {
     assert.ok(registry.includes(`targetId: "${target}"`), target);
   }
   assert.ok(composer.includes("modelCapabilitiesForTarget(state.selectedTargetId)"));
@@ -116,11 +145,11 @@ test("renderer keeps the HTTP runtime bridge browser-only", () => {
 
 test("renderer uses Tauri commands for desktop capabilities", () => {
   const bridge = read("runtime/desktopBridge.ts");
-  const constants = read("bridge/protocolConstants.ts");
-  assert.ok(constants.includes("WORKSPACE_CHOOSE_DIRECTORY"));
-  assert.ok(constants.includes("LAGUNA_GET_STATUS"));
-  assert.ok(constants.includes("INTERN_SESSION_EVENTS_AFTER"));
-  assert.ok(constants.includes("CODEX_SESSIONS_LIST"));
+  const protocol = read("generated/protocol.ts");
+  assert.ok(protocol.includes("workspaceChooseDirectory"));
+  assert.ok(protocol.includes("lagunaGetStatus"));
+  assert.ok(protocol.includes("internSessionEventsAfter"));
+  assert.ok(protocol.includes("codexSessionsList"));
   assert.ok(!bridge.includes('"core_projects_list"'));
   assert.ok(bridge.includes("EVENT_CHANNELS.RUNTIME") || bridge.includes("listen<AppEvent>(EVENT_CHANNELS.RUNTIME"));
 });
@@ -217,10 +246,11 @@ test("migrated demo async pins cannot mask the Rust singleton", () => {
 
 test("renderer exposes CoreRuntime visual registry bridge commands", () => {
   const bridge = read("runtime/desktopBridge.ts");
+  const protocol = read("generated/protocol.ts");
   const constants = read("bridge/protocolConstants.ts");
-  assert.ok(constants.includes("VISUALS_LIST"));
-  assert.ok(constants.includes("VISUALS_CREATE"));
-  assert.ok(constants.includes("VISUALS_SHOW"));
+  assert.ok(protocol.includes("visualsList"));
+  assert.ok(protocol.includes("visualsCreate"));
+  assert.ok(protocol.includes("visualsShow"));
   assert.ok(bridge.includes("window.synthVisuals ??="));
   assert.ok(constants.includes("VISUAL_SHOW"));
 });
@@ -236,16 +266,16 @@ test("Rust run counts remain projected without a Runtime Settings surface", () =
 
 test("v0.2 Intern bridge remains typed while v0.1 creation stays unreachable", () => {
   const bridge = read("runtime/desktopBridge.ts");
-  const constants = read("bridge/protocolConstants.ts");
+  const protocol = read("generated/protocol.ts");
   const controller = read("hooks/useAppController.ts");
   const foreignBridge = read("hooks/useForeignSessionEventBridge.ts");
   for (const command of [
-    "INTERN_SESSIONS_LIST",
-    "INTERN_SESSION_CREATE",
-    "INTERN_SESSION_SEND",
-    "INTERN_SESSION_CONTROL",
-    "INTERN_SESSION_EVENTS_AFTER",
-  ]) assert.ok(constants.includes(command), command);
+    "internSessionsList",
+    "internSessionCreate",
+    "internSessionSend",
+    "internSessionControl",
+    "internSessionEventsAfter",
+  ]) assert.ok(protocol.includes(command), command);
   assert.ok(bridge.includes("EVENT_CHANNELS.RUNTIME") || bridge.includes("listen<AppEvent>(EVENT_CHANNELS.RUNTIME"));
 	assert.ok(controller.includes("nativeIntern.createSession"));
 	assert.ok(!controller.includes('setSelectedTargetId("intern-sync")'));

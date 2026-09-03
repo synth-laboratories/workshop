@@ -1,8 +1,9 @@
-//! Tauri invoke command names. Keep in sync with
-//! `src/renderer/src/bridge/protocolConstants.ts`.
+//! Tauri invoke command names.
 //!
 //! Names match `#[tauri::command]` / `generate_handler!` identifiers.
-//! Drift: `scripts/check-desktop-contract-drift.sh`.
+//! TypeScript call sites use specta-generated `commands.*` in
+//! `src/renderer/src/generated/protocol.ts`. `export_specta_protocol_bindings`
+//! diff-checks that file.
 
 /// Const map of bridge-facing command names.
 pub struct Commands;
@@ -11,6 +12,8 @@ impl Commands {
     pub const CORE_DIAGNOSTICS: &'static str = "core_diagnostics";
     pub const CORE_EVENTS_AFTER: &'static str = "core_events_after";
     pub const CORE_SESSION_EVENTS_AFTER: &'static str = "core_session_events_after";
+    pub const CORE_SESSION_EVENTS_TAIL: &'static str = "core_session_events_tail";
+    pub const CORE_SESSION_EVENTS_BEFORE: &'static str = "core_session_events_before";
     pub const INTERN_SESSIONS_LIST: &'static str = "intern_sessions_list";
     pub const INTERN_SESSION_CREATE: &'static str = "intern_session_create";
     pub const INTERN_SESSION_SEND: &'static str = "intern_session_send";
@@ -23,6 +26,8 @@ impl Commands {
     pub const CODEX_TURN_SEND: &'static str = "codex_turn_send";
     pub const CODEX_TURN_INTERRUPT: &'static str = "codex_turn_interrupt";
     pub const CODEX_THREAD_COMPACT: &'static str = "codex_thread_compact";
+    pub const CODEX_THREAD_READ: &'static str = "codex_thread_read";
+    pub const CODEX_THREAD_ITEMS_LIST: &'static str = "codex_thread_items_list";
     pub const CODEX_TURN_STEER: &'static str = "codex_turn_steer";
     pub const CODEX_APPROVAL_RESOLVE: &'static str = "codex_approval_resolve";
     pub const CODEX_SESSION_CLOSE: &'static str = "codex_session_close";
@@ -41,6 +46,8 @@ impl Commands {
     pub const CODEX_OAUTH_CANCEL: &'static str = "codex_oauth_cancel";
     pub const SYNTH_CONFIG_GET: &'static str = "synth_config_get";
     pub const SYNTH_CONFIG_UPDATE: &'static str = "synth_config_update";
+    pub const MODEL_CATALOG_GET: &'static str = "model_catalog_get";
+    pub const MODEL_CATALOG_REFRESH: &'static str = "model_catalog_refresh";
     pub const MODEL_MULTI_AGENT_LIST: &'static str = "model_multi_agent_list";
     pub const MODEL_MULTI_AGENT_UPDATE: &'static str = "model_multi_agent_update";
     pub const WORKSPACE_ACCESS_GET: &'static str = "workspace_access_get";
@@ -55,6 +62,10 @@ impl Commands {
     pub const WORKSPACE_SCOPE_DENY_REQUEST: &'static str = "workspace_scope_deny_request";
     pub const LAGUNA_GET_STATUS: &'static str = "laguna_get_status";
     pub const LAGUNA_RELOAD: &'static str = "laguna_reload";
+    pub const LAGUNA_REGISTER_POLICY: &'static str = "laguna_register_policy";
+    pub const LAGUNA_POLICIES: &'static str = "laguna_policies";
+    pub const LAGUNA_ADAPTER_STATUS: &'static str = "laguna_adapter_status";
+    pub const LAGUNA_ADAPTER_DOWNLOAD: &'static str = "laguna_adapter_download";
     pub const LAGUNA_MODELS_LIST: &'static str = "laguna_models_list";
     pub const LAGUNA_MODEL_DOWNLOAD: &'static str = "laguna_model_download";
     pub const LAGUNA_MODEL_UNLOAD: &'static str = "laguna_model_unload";
@@ -63,6 +74,15 @@ impl Commands {
     pub const LAGUNA_INFERENCE_SNAPSHOT: &'static str = "laguna_inference_snapshot";
     pub const LAGUNA_SETTINGS_SNAPSHOT: &'static str = "laguna_settings_snapshot";
     pub const LAGUNA_SETTINGS_UPDATE: &'static str = "laguna_settings_update";
+    pub const TRAINING_MODELS_LIST: &'static str = "training_models_list";
+    pub const TRAINING_MODELS_DOWNLOAD: &'static str = "training_models_download";
+    pub const TRAINING_MODELS_DELETE: &'static str = "training_models_delete";
+    pub const TRAINING_ARTIFACTS_LIST: &'static str = "training_artifacts_list";
+    pub const TRAINING_ARTIFACTS_GET: &'static str = "training_artifacts_get";
+    pub const TRAINING_ARTIFACTS_LAUNCH_INFERENCE: &'static str =
+        "training_artifacts_launch_inference";
+    pub const TRAINING_ARTIFACTS_EXPORT: &'static str = "training_artifacts_export";
+    pub const TRAINING_ARTIFACTS_DELETE: &'static str = "training_artifacts_delete";
     pub const WHISPER_RUNTIME_STATUS: &'static str = "whisper_runtime_status";
     pub const WHISPER_RUNTIME_WARM: &'static str = "whisper_runtime_warm";
     pub const WHISPER_MODELS_LIST: &'static str = "whisper_models_list";
@@ -76,11 +96,18 @@ impl Commands {
     pub const TERMINAL_SNAPSHOT: &'static str = "terminal_snapshot";
     pub const TERMINAL_WRITE: &'static str = "terminal_write";
     pub const TERMINAL_RESIZE: &'static str = "terminal_resize";
+    pub const TERMINAL_GHOSTTY_MOUNT: &'static str = "terminal_ghostty_mount";
+    pub const TERMINAL_GHOSTTY_SET_FRAME: &'static str = "terminal_ghostty_set_frame";
+    pub const TERMINAL_GHOSTTY_SET_VISIBLE: &'static str = "terminal_ghostty_set_visible";
+    pub const TERMINAL_GHOSTTY_FOCUS: &'static str = "terminal_ghostty_focus";
+    pub const TERMINAL_GHOSTTY_UNMOUNT: &'static str = "terminal_ghostty_unmount";
     pub const TERMINAL_CLOSE: &'static str = "terminal_close";
     pub const DATA_CONTAINERS_LIST: &'static str = "data_containers_list";
     pub const DATA_CONTAINERS_GET: &'static str = "data_containers_get";
     pub const DATA_CONTAINERS_REGISTER: &'static str = "data_containers_register";
     pub const DATA_CONTAINERS_PROBE: &'static str = "data_containers_probe";
+    pub const DATA_CONTAINERS_RECONCILE: &'static str = "data_containers_reconcile";
+    pub const DATA_CONTAINERS_RESTART: &'static str = "data_containers_restart";
     pub const DATA_TRACES_LIST: &'static str = "data_traces_list";
     pub const DATA_TRACES_GET: &'static str = "data_traces_get";
     pub const DATA_TRACES_INGEST: &'static str = "data_traces_ingest";
@@ -88,17 +115,35 @@ impl Commands {
     pub const DATA_USAGE_LIST: &'static str = "data_usage_list";
     pub const DATA_COUNTS: &'static str = "data_counts";
     pub const MODEL_PERFORMANCE_SUMMARY: &'static str = "model_performance_summary";
+    pub const MODEL_PERFORMANCE_TURN_SAMPLES: &'static str = "model_performance_turn_samples";
     pub const MODEL_PERFORMANCE_GET: &'static str = "model_performance_get";
     pub const USAGE_SUMMARY: &'static str = "usage_summary";
     pub const TARIFF_CATALOG: &'static str = "tariff_catalog";
     pub const UPDATE_STATUS: &'static str = "update_status";
     pub const UPDATE_OPEN_DOWNLOAD: &'static str = "update_open_download";
     pub const SKILLS_LIST: &'static str = "skills_list";
+    pub const CONTEXT_SNAPSHOT: &'static str = "context_snapshot";
+    pub const CONTEXT_WORKSPACE_AGENTS_UPDATE: &'static str = "context_workspace_agents_update";
+    pub const CONTEXT_SKILL_UPDATE: &'static str = "context_skill_update";
+    pub const CONTEXT_MCP_GROUP_UPDATE: &'static str = "context_mcp_group_update";
+    pub const CONTEXT_COOKBOOKS_INSTALL: &'static str = "context_cookbooks_install";
+    pub const CONTEXT_COOKBOOKS_CANCEL: &'static str = "context_cookbooks_cancel";
+    pub const CONTEXT_COOKBOOKS_SET_ENABLED: &'static str = "context_cookbooks_set_enabled";
+    pub const CONTEXT_COOKBOOKS_UNINSTALL: &'static str = "context_cookbooks_uninstall";
     pub const VISUALS_TEMPLATES_LIST: &'static str = "visuals_templates_list";
     pub const VISUALS_TEMPLATES_GET: &'static str = "visuals_templates_get";
     pub const VISUALS_LIST: &'static str = "visuals_list";
     pub const VISUALS_GET: &'static str = "visuals_get";
+    pub const VISUALS_OBSERVATION_REPORT: &'static str = "visuals_observation_report";
     pub const VISUALS_REVISIONS: &'static str = "visuals_revisions";
+    pub const VISUALS_ANNOTATIONS_LIST: &'static str = "visuals_annotations_list";
+    pub const VISUALS_ANNOTATION_CREATE: &'static str = "visuals_annotation_create";
+    pub const VISUALS_SEALS_LIST: &'static str = "visuals_seals_list";
+    pub const VISUALS_SEAL: &'static str = "visuals_seal";
+    pub const VISUALS_SEAL_GET: &'static str = "visuals_seal_get";
+    pub const VISUALS_UPLOAD_STATUS: &'static str = "visuals_upload_status";
+    pub const VISUALS_SHARE_SEAL: &'static str = "visuals_share_seal";
+    pub const VISUALS_OPEN_SHARED: &'static str = "visuals_open_shared";
     pub const VISUALS_CREATE: &'static str = "visuals_create";
     pub const VISUALS_UPDATE: &'static str = "visuals_update";
     pub const VISUALS_SAVE: &'static str = "visuals_save";
@@ -109,14 +154,53 @@ impl Commands {
     pub const VISUALS_RENDITIONS: &'static str = "visuals_renditions";
     pub const VISUALS_RENDITION: &'static str = "visuals_rendition";
     pub const VISUALS_RENDER: &'static str = "visuals_render";
+    pub const REPORTS_LIST: &'static str = "reports_list";
+    pub const REPORTS_GET: &'static str = "reports_get";
+    pub const REPORTS_REVISION_GET: &'static str = "reports_revision_get";
+    pub const REPORTS_VALIDATE: &'static str = "reports_validate";
+    pub const REPORTS_PIN_ALL: &'static str = "reports_pin_all";
+    pub const REPORTS_CREATE: &'static str = "reports_create";
+    pub const REPORTS_UPDATE: &'static str = "reports_update";
+    pub const REPORTS_ARCHIVE: &'static str = "reports_archive";
+    pub const REPORTS_RESTORE: &'static str = "reports_restore";
+    pub const REPORTS_VISIBILITY_REQUESTS: &'static str = "reports_visibility_requests";
+    pub const REPORTS_VISIBILITY_REQUEST: &'static str = "reports_visibility_request";
+    pub const REPORTS_VISIBILITY_DECIDE: &'static str = "reports_visibility_decide";
+    pub const REPORTS_SEAL: &'static str = "reports_seal";
+    pub const REPORTS_SEALS_LIST: &'static str = "reports_seals_list";
+    pub const REPORTS_SEAL_GET: &'static str = "reports_seal_get";
+    pub const REPORTS_SEALS_COMPARE: &'static str = "reports_seals_compare";
+    pub const REPORTS_EXPERIMENTS_LIST: &'static str = "reports_experiments_list";
+    pub const REPORTS_EXPERIMENT_UPSERT: &'static str = "reports_experiment_upsert";
+    pub const REPORTS_LOG_LIST: &'static str = "reports_log_list";
+    pub const REPORTS_LOG_APPEND: &'static str = "reports_log_append";
+    pub const REPORTS_UPLOAD_STATUS: &'static str = "reports_upload_status";
+    pub const REPORTS_SHARE: &'static str = "reports_share";
+    pub const REPORTS_AUDIENCE_SET: &'static str = "reports_audience_set";
+    pub const REPORTS_AUDIENCE_REVOKE: &'static str = "reports_audience_revoke";
+    pub const REPORTS_PROMOTE: &'static str = "reports_promote";
+    pub const REPORTS_OPEN_SHARED: &'static str = "reports_open_shared";
+    pub const REPORTS_COMMENTS_LIST: &'static str = "reports_comments_list";
+    pub const REPORTS_COMMENT_CREATE: &'static str = "reports_comment_create";
     pub const OPTIMIZERS_ALGORITHMS_LIST: &'static str = "optimizers_algorithms_list";
     pub const OPTIMIZERS_RECIPES_LIST: &'static str = "optimizers_recipes_list";
     pub const OPTIMIZERS_RECIPE_START: &'static str = "optimizers_recipe_start";
+    pub const OPTIMIZERS_STAGE_EVAL_CANDIDATES: &'static str = "optimizers_stage_eval_candidates";
     pub const OPTIMIZERS_LIST: &'static str = "optimizers_list";
     pub const OPTIMIZERS_GET: &'static str = "optimizers_get";
+    pub const OPTIMIZERS_RUN_VIEW_V2: &'static str = "optimizers_run_view_v2";
+    pub const OPTIMIZERS_RUN_VIEW: &'static str = "optimizers_run_view";
+    pub const OPTIMIZERS_EVIDENCE_PAGE: &'static str = "optimizers_evidence_page";
+    pub const OPTIMIZERS_RUN_SUMMARY: &'static str = "optimizers_run_summary";
+    pub const OPTIMIZERS_RUN_COLLECTION: &'static str = "optimizers_run_collection";
+    pub const OPTIMIZERS_RUN_COLLECTION_ITEM: &'static str = "optimizers_run_collection_item";
+    pub const OPTIMIZERS_PROJECTION_AT: &'static str = "optimizers_projection_at";
+    pub const OPTIMIZERS_VISUAL_RENDER_RECEIPT: &'static str = "optimizers_visual_render_receipt";
     pub const OPTIMIZERS_CREATE: &'static str = "optimizers_create";
     pub const OPTIMIZERS_REFRESH: &'static str = "optimizers_refresh";
     pub const OPTIMIZERS_EVENTS_AFTER: &'static str = "optimizers_events_after";
+    pub const OPTIMIZERS_ARTIFACTS_LIST: &'static str = "optimizers_artifacts_list";
+    pub const OPTIMIZERS_ARTIFACT_READ_RANGE: &'static str = "optimizers_artifact_read_range";
     pub const OPTIMIZERS_GET_STATE: &'static str = "optimizers_get_state";
     pub const OPTIMIZERS_GET_STATE_BATCH: &'static str = "optimizers_get_state_batch";
     pub const OPTIMIZERS_CANCEL: &'static str = "optimizers_cancel";
@@ -126,6 +210,38 @@ impl Commands {
     pub const OPTIMIZERS_IMPORT_LOCAL: &'static str = "optimizers_import_local";
     pub const OPTIMIZERS_RECONCILE_CLOUD: &'static str = "optimizers_reconcile_cloud";
     pub const OPTIMIZERS_LIST_CLOUD: &'static str = "optimizers_list_cloud";
+    pub const OPTIMIZERS_SAVED_LORAS_SEARCH: &'static str = "optimizers_saved_loras_search";
+    pub const OPTIMIZERS_RUN_CHECKPOINTS_LIST: &'static str = "optimizers_run_checkpoints_list";
+    pub const OPTIMIZERS_RUN_OUTPUTS: &'static str = "optimizers_run_outputs";
+    pub const OPTIMIZERS_TRAINING_MODELS: &'static str = "optimizers_training_models";
+    pub const OPTIMIZERS_SAVED_LORA_ARCHIVE: &'static str = "optimizers_saved_lora_archive";
+    pub const OPTIMIZERS_SAVED_LORA_DOWNLOAD: &'static str = "optimizers_saved_lora_download";
+    pub const OPTIMIZERS_SAVED_LORA_IMPORT: &'static str = "optimizers_saved_lora_import";
+    pub const OPTIMIZERS_CHECKPOINT_INFER: &'static str = "optimizers_checkpoint_infer";
+    pub const OPTIMIZERS_SAVED_LORA_PATCH: &'static str = "optimizers_saved_lora_patch";
+    pub const OPTIMIZERS_SAVED_LORA_PUBLISH: &'static str = "optimizers_saved_lora_publish";
+    pub const OPTIMIZERS_TRAINING_RECONCILE: &'static str = "optimizers_training_reconcile";
+    pub const PLUGINS_STATUS: &'static str = "plugins_status";
+    pub const PLUGINS_LIST: &'static str = "plugins_list";
+    pub const COMPUTER_USE_STATUS: &'static str = "computer_use_status";
+    pub const COMPUTER_USE_INSTALL: &'static str = "computer_use_install";
+    pub const COMPUTER_USE_REMOVE: &'static str = "computer_use_remove";
+    pub const COMPUTER_USE_REVOKE_APP: &'static str = "computer_use_revoke_app";
+    pub const COMPUTER_USE_OPEN_SETTINGS: &'static str = "computer_use_open_settings";
+    pub const BROWSER_RUNTIME_STATUS: &'static str = "browser_runtime_status";
+    pub const BROWSER_POLICY_ALLOW_ORIGIN: &'static str = "browser_policy_allow_origin";
+    pub const BROWSER_POLICY_REVOKE_ORIGIN: &'static str = "browser_policy_revoke_origin";
+    pub const PLUGINS_MANAGE: &'static str = "plugins_manage";
+    pub const PLUGINS_SET_RELEASE_CHANNEL: &'static str = "plugins_set_release_channel";
+    pub const VISUAL_SUBSCRIPTION_READY: &'static str = "visual_subscription_ready";
+    pub const VISUAL_STREAM_POLL: &'static str = "visual_stream_poll";
+    pub const VISUAL_MEDIA_READ: &'static str = "visual_media_read";
+    pub const DIAGNOSTICS_REPORT: &'static str = "diagnostics_report";
+    pub const DIAGNOSTICS_STATUS: &'static str = "diagnostics_status";
+    pub const DIAGNOSTICS_QUERY: &'static str = "diagnostics_query";
+    pub const DIAGNOSTICS_EXPLAIN: &'static str = "diagnostics_explain";
+    pub const DIAGNOSTICS_BUNDLE: &'static str = "diagnostics_bundle";
+    pub const DIAGNOSTICS_CLEAR_INDEX: &'static str = "diagnostics_clear_index";
     pub const OPTIMIZER_SIDECAR_STATUS: &'static str = "optimizer_sidecar_status";
     pub const OPTIMIZER_SIDECAR_INSTALL: &'static str = "optimizer_sidecar_install";
     pub const OPTIMIZER_SIDECAR_START: &'static str = "optimizer_sidecar_start";
@@ -144,6 +260,30 @@ impl Commands {
     pub const MIGRATION_PREPARE: &'static str = "migration_prepare";
     pub const MIGRATION_APPLY: &'static str = "migration_apply";
     pub const MIGRATION_CANCEL: &'static str = "migration_cancel";
+    pub const SECRETS_LIST: &'static str = "secrets_list";
+    pub const SECRETS_WORKSPACE_ROOTS_LIST: &'static str = "secrets_workspace_roots_list";
+    pub const SECRETS_BINDINGS_LIST: &'static str = "secrets_bindings_list";
+    pub const SECRETS_LOCATORS_LIST: &'static str = "secrets_locators_list";
+    pub const SECRETS_LOCATOR_REMEMBER_EXTERNAL: &'static str = "secrets_locator_remember_external";
+    pub const SECRETS_LOCATOR_REGISTER: &'static str = "secrets_locator_register";
+    pub const SECRETS_LOCATOR_FORGET: &'static str = "secrets_locator_forget";
+    pub const SECRETS_CREATE: &'static str = "secrets_create";
+    pub const SECRETS_REPLACE: &'static str = "secrets_replace";
+    pub const SECRETS_DELETE: &'static str = "secrets_delete";
+    pub const SECRETS_TEST: &'static str = "secrets_test";
+    pub const SECRETS_REQUEST_USE: &'static str = "secrets_request_use";
+    pub const SECRETS_GRANT_USE: &'static str = "secrets_grant_use";
+    pub const SECRETS_DENY_USE: &'static str = "secrets_deny_use";
+    pub const SECRETS_CAPABILITIES_LIST: &'static str = "secrets_capabilities_list";
+    pub const SECRETS_REVOKE_CAPABILITY: &'static str = "secrets_revoke_capability";
+    pub const SECRETS_REQUEST_ENV_IMPORT: &'static str = "secrets_request_env_import";
+    pub const SECRETS_COMMIT_ENV_IMPORT: &'static str = "secrets_commit_env_import";
+    pub const SECRETS_AUDIT_LIST: &'static str = "secrets_audit_list";
+    pub const SECRETS_PROXY_STATUS: &'static str = "secrets_proxy_status";
+    pub const SECRETS_PENDING: &'static str = "secrets_pending";
+    pub const SECRETS_DENY_ENV_IMPORT: &'static str = "secrets_deny_env_import";
+    pub const PRODUCT_TELEMETRY_GET_POLICY: &'static str = "product_telemetry_get_policy";
+    pub const PRODUCT_TELEMETRY_SET_OPT_OUT: &'static str = "product_telemetry_set_opt_out";
 }
 
 /// Alias matching the TS `COMMANDS` export shape.

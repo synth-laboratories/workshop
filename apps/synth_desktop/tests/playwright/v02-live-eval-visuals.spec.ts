@@ -1,6 +1,6 @@
 /**
- * v0.2 live-eval visual families: fixture replay of Craftax, Harbor, and
- * dig.bench. Proves visual-first slot `stream`, missing ≠ 0, campaign
+ * v0.2 live-eval visual families: fixture replay of Craftax and Harbor.
+ * Proves visual-first slot `stream`, missing ≠ 0, campaign
  * isolation, and no invented frames. Paid providers are not used.
  */
 import { readFileSync } from "node:fs";
@@ -27,7 +27,7 @@ function envelope(kind: string, sequence: number | null, payload: Record<string,
 }
 
 test("[v0.2] Craftax live visual replays fixture evidence and keeps missing usage missing", async ({ page }) => {
-	const events = loadEvents("templates/live.craftax.v1/examples/events.json");
+	const events = loadEvents("families/first_class_example_containers/live.craftax.v1/examples/events.json");
 	await installVisuals(page, [liveVisual({
 		id: "vis_v02_craftax",
 		templateId: "live.craftax.v1",
@@ -42,6 +42,20 @@ test("[v0.2] Craftax live visual replays fixture evidence and keeps missing usag
 	await expect(viewer).toContainText("not emitted", { timeout: 15_000 });
 	await expect(viewer).not.toContainText("$0.00");
 	await expect(viewer).not.toContainText("stream.subscribed");
+	const paneBody = pane.locator(".visual-pane-body");
+	await paneBody.evaluate((element) => {
+		Object.assign((element as HTMLElement).style, {
+			alignSelf: "flex-end",
+			flex: "0 0 340px",
+			width: "340px",
+			maxWidth: "340px"
+		});
+	});
+	await expect(viewer.locator(".cv-surfaces")).toHaveCSS("display", "grid");
+	const overviewColumns = await viewer.locator(".cv-overview-grid").evaluate((element) =>
+		getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length
+	);
+	expect(overviewColumns).toBe(1);
 });
 
 test("[v0.2] Harbor live visual fails closed when reward.txt is missing", async ({ page }) => {
@@ -68,60 +82,6 @@ test("[v0.2] Harbor live visual fails closed when reward.txt is missing", async 
 	await expect(viewer).not.toContainText("$0.00");
 });
 
-test("Harbor DeepSWE visual projects package release, verifier phase, and native zero", async ({ page }) => {
-	const events = [
-		envelope("env.episode.opened", 1, {
-			trial_image_id: "deepswe/anko-default-function-arguments",
-			environment_release: {
-				environment_release_id: "harbor:anko-default-function-arguments:cf581da7b586a18d",
-				status: "certified",
-				prewarm: { state: "required" },
-				runnable: false
-			}
-		}),
-		envelope("nested.workspace.extracted", 2),
-		envelope("span.policy.opened", 3),
-		envelope("nested.collected", 4, { step: 0, exit_code: 0 }),
-		envelope("span.verifier.opened", 5),
-		envelope("nested.verified", 6, { exit_code: 0 }),
-		envelope("reward_signal", 7, { value: 0, authority: "verifier" }),
-		envelope("status", 8, { status: "completed" })
-	];
-	await installVisuals(page, [liveVisual({
-		id: "vis_deepswe_anko",
-		templateId: "live.harbor_eval.v1",
-		title: "DeepSWE · anko-default-function-arguments",
-		bindings: streamBinding(events)
-	})]);
-	const pane = await openVisual(page, "vis_deepswe_anko");
-	const viewer = pane.getByTestId("visual-live-harbor-eval");
-	await expect(viewer).toBeVisible();
-	await expect(viewer.getByTestId("harbor-trials")).toContainText("harbor:anko-default-function-arguments:cf581da7b586a18d");
-	await expect(viewer.getByTestId("harbor-trials")).toContainText("prewarm required");
-	await expect(viewer.getByTestId("harbor-trials")).toContainText("scored");
-	await expect(viewer.getByTestId("harbor-trials")).toContainText("reward 0.00");
-	expect(await metricValue(viewer, "Reward")).toBe("0.00");
-});
-
-test("[v0.2] dig.bench live visual is text-only and keeps incomplete reward null", async ({ page }) => {
-	const events = loadEvents("templates/live.digbench.v1/examples/events.json");
-	await installVisuals(page, [liveVisual({
-		id: "vis_v02_digbench",
-		templateId: "live.digbench.v1",
-		title: "dig.bench P-1",
-		bindings: streamBinding(events)
-	})]);
-	const pane = await openVisual(page, "vis_v02_digbench");
-	const viewer = pane.getByTestId("visual-live-digbench");
-	await expect(viewer).toBeVisible();
-	await expect(viewer.getByTestId("digbench-observation")).toContainText("A locked door", { timeout: 25_000 });
-	await expect(viewer.getByTestId("digbench-legal-actions")).toContainText("inspect");
-	expect(await metricValue(viewer, "/reward")).toBe("pending");
-	await expect(viewer.locator("img")).toHaveCount(0);
-	await expect(viewer).not.toContainText("PNG");
-	await expect(viewer).not.toContainText("0.00");
-});
-
 test("[v0.2] guessed /events bindings fail closed instead of rendering a live visual", async ({ page }) => {
 	await installVisuals(page, [liveVisual({
 		id: "vis_v02_guessed",
@@ -129,7 +89,7 @@ test("[v0.2] guessed /events bindings fail closed instead of rendering a live vi
 		title: "Guessed stream",
 		bindings: {
 			schemaVersion: "synth.visual-bindings.v1",
-			slots: [{ slot: "stream", kind: "live_sse", source: "http://127.0.0.1:8298/events" }]
+			inputs: [{ input: "stream", kind: "live_sse", source: "http://127.0.0.1:8298/events" }]
 		}
 	})]);
 	const pane = await openVisual(page, "vis_v02_guessed");
@@ -170,4 +130,39 @@ test("[v0.2] two live visuals do not import each other's evidence", async ({ pag
 	await page.getByTestId("visuals-card-vis_v02_iso_b").getByRole("button", { name: "Open" }).click();
 	await expect(page.getByTestId("visual-pane").getByTestId("visual-live-craftax")).toContainText("BRAVO-ONLY observation", { timeout: 20_000 });
 	await expect(page.getByTestId("visual-pane").getByTestId("visual-live-craftax")).not.toContainText("ALPHA-ONLY observation");
+});
+
+test("[v0.2] live.eval_stream.v1 shortcut pane mounts advertised compose landmarks", async ({ page }) => {
+	const events = [
+		envelope("stream.subscribed", null, { "stream.id": "stream_eval_shortcut", ready: true }),
+		envelope("run_started", 1, { suite: "eval_acceptance" }),
+		envelope("rollout.finished", 2, { marker: "EVAL-REWARD-3.1", reward: 3.1 }),
+		envelope("run_finished", 3, { status: "completed", mean_reward: 3.1 })
+	];
+	await installVisuals(page, [liveVisual({
+		id: "vis_v02_eval_stream",
+		templateId: "live.eval_stream.v1",
+		title: "Eval stream shortcut",
+		bindings: {
+			schemaVersion: "synth.visual-bindings.v1",
+			inputs: [{ input: "stream", kind: "inline", data: { events } }]
+		}
+	})]);
+	const pane = await openVisual(page, "vis_v02_eval_stream");
+	const viewer = pane.getByTestId("visual-live-eval-stream");
+	await expect(viewer).toBeVisible();
+	await expect(viewer.getByTestId("compose-metrics")).toBeVisible();
+	await expect(viewer.getByTestId("compose-event-stream")).toBeVisible();
+	await expect(viewer.getByTestId("compose-scrubber")).toBeVisible();
+	await expect(viewer.getByRole("button", { name: /rollout\.finished/ })).toBeVisible({ timeout: 20_000 });
+	await expect(viewer.getByTestId("compose-metrics-count")).toHaveText("3", { timeout: 20_000 });
+	await expect(viewer.getByTestId("compose-metrics-scalar")).toContainText("3.1");
+	const slider = viewer.getByTestId("compose-scrubber-slider");
+	await expect(slider).toBeVisible();
+	await slider.fill("2");
+	await expect(viewer.getByTestId("compose-scrubber-sequence")).toHaveText("2");
+	await viewer.getByRole("button", { name: /rollout\.finished/ }).click();
+	const modal = viewer.getByTestId("compose-detail-modal");
+	await expect(modal).toBeVisible();
+	await expect(modal.getByTestId("compose-detail-payload")).toContainText("EVAL-REWARD-3.1");
 });

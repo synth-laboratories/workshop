@@ -6,10 +6,12 @@
 //! [`super::OptimizerService`]. Stopping or uninstalling a sidecar version must
 //! not delete runs, events, visuals, or retained template packages.
 
+use super::events::OptimizerEventDraft;
 use super::models::{
     OptimizerEventEnvelope, OptimizerExecutionBinding, OptimizerRunRecord,
     OPTIMIZER_EVENT_SCHEMA_VERSION,
 };
+use super::sidecar_training::TrainingRuntime;
 use super::OptimizerService;
 use crate::error::AppError;
 use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
@@ -21,28 +23,69 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    cell::Cell,
     collections::HashMap,
-    env, fs,
+    env,
+    ffi::OsString,
+    fs,
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex as StdMutex,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::State;
 use tokio::process::{Child, Command};
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 
-pub const DEFAULT_SIDECAR_VERSION: &str = "0.2.0";
-pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.0";
-pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = "gepa.recipe.v1";
+// Channel pins, the floor, and the vocabulary lists all resolve from the one
+// contract table so a version has a single place to be read and changed.
+use crate::contract::runtimes::{ReleaseChannel, OPTIMIZERS as OPTIMIZERS_CONTRACT};
+
+pub const OFFICIAL_SIDECAR_VERSION: &str = OPTIMIZERS_CONTRACT.official;
+pub const DEV_SIDECAR_VERSION: &str = OPTIMIZERS_CONTRACT.dev;
+pub const DEFAULT_SIDECAR_VERSION: &str = OFFICIAL_SIDECAR_VERSION;
+pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = OPTIMIZERS_CONTRACT.recipe_schema;
+/// `{package}-{official}`. Spelled out because `format!` is not const and ten
+/// call sites want `&'static str`; `algorithm_version_matches_the_contract`
+/// fails if it drifts from the table.
+pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.19";
 /// Optimizer-family visuals bind this slot. `live` and `jobs` are refused.
 pub const OPTIMIZER_VISUAL_SLOT: &str = "optimizer_run";
+const MAX_CONCURRENT_GEPA_RECIPES: usize = 2;
 const SELECTED_VERSION_FILE: &str = "selected_version";
 const SIGNING_KEY_FILE: &str = "signing.key";
 const API_KEY_FILE: &str = "api_key";
 const PAYLOAD_FILE: &str = "payload.json";
 const MANIFEST_FILE: &str = "manifest.json";
+const WHEELHOUSE_MANIFEST_FILE: &str = "wheelhouse-manifest.json";
+const EMBEDDED_DISTRIBUTION_MANIFEST_FILE: &str = "manifest.json";
+const EMBEDDED_DISTRIBUTION_SCHEMA: &str = "synth.optimizer-runtime-distribution.v1";
+const OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "686f41c413b9368e0dee5bcefa91bc89a2631084";
+const OPTIMIZER_DISTRIBUTION_LOCK_SHA256: &str =
+    "b2c0d9b7c9920ea2cc3d51619709f247b00e3f5919bf15538a6f9d41022e43dd";
+const RUNTIME_LEASE_FILE: &str = "runtime-lease.json";
+#[cfg(test)]
+const TEST_REAL_CHILD_SENTINEL: &str = ".test-real-child";
+
+thread_local! {
+    static TEST_FORCE_DIGEST_MISMATCH: Cell<bool> = const { Cell::new(false) };
+    static TEST_INTERRUPT_INSTALL: Cell<bool> = const { Cell::new(false) };
+    static TEST_CACHE_EMPTY_DURING_INSTALL: Cell<bool> = const { Cell::new(false) };
+}
+
+fn force_digest_mismatch() -> bool {
+    TEST_FORCE_DIGEST_MISMATCH.with(Cell::get)
+        || env::var("SYNTH_OPTIMIZER_FORCE_DIGEST_MISMATCH").as_deref() == Ok("1")
+}
+
+fn interrupt_install() -> bool {
+    TEST_INTERRUPT_INSTALL.with(Cell::get)
+        || env::var("SYNTH_OPTIMIZER_INTERRUPT_INSTALL").as_deref() == Ok("1")
+}
 
 #[derive(Debug)]
 struct OptimizerEventRunNotFound {
@@ -69,7 +112,7 @@ pub struct OptimizerSidecarStatus {
     pub version: Option<String>,
     pub digest: Option<String>,
     pub detail: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub updated_at: u64,
 }
 
@@ -107,6 +150,36 @@ pub struct OptimizerSidecarInstallSpec {
     pub template_ids: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct WheelArtifact {
+    file_name: String,
+    sha256: String,
+    size_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct WheelhouseManifest {
+    schema_version: String,
+    artifacts: Vec<WheelArtifact>,
+}
+
+/// The release asset carried inside the Workshop bundle. The installer still
+/// writes its own, instance-specific wheelhouse manifest after resolving the
+/// wheel's public dependencies; this manifest only establishes that the
+/// primary, release-pinned Synth wheel came from this signed application.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct EmbeddedOptimizerDistribution {
+    schema_version: String,
+    package: String,
+    version: String,
+    source_revision: String,
+    lock_sha256: String,
+    artifact: WheelArtifact,
+}
+
 impl Default for OptimizerSidecarInstallSpec {
     fn default() -> Self {
         catalog_spec(DEFAULT_SIDECAR_VERSION)
@@ -114,30 +187,43 @@ impl Default for OptimizerSidecarInstallSpec {
 }
 
 fn catalog_spec(version: &str) -> OptimizerSidecarInstallSpec {
+    let algorithm_version = format!("synth-optimizers-{version}");
     OptimizerSidecarInstallSpec {
         version: version.to_owned(),
         algorithm_id: "gepa".into(),
-        algorithm_version: DEFAULT_ALGORITHM_VERSION.into(),
+        algorithm_version: algorithm_version.clone(),
         recipe_schema_version: DEFAULT_RECIPE_SCHEMA_VERSION.into(),
         payload: json!({
             "sidecarVersion": version,
-            "algorithms": [{
-                "id": "gepa",
-                "version": DEFAULT_ALGORITHM_VERSION
-            }],
+            "algorithms": OPTIMIZERS_CONTRACT
+                .algorithms
+                .iter()
+                .map(|id| json!({ "id": id, "version": algorithm_version }))
+                .collect::<Vec<_>>(),
             "recipeSchemaVersion": DEFAULT_RECIPE_SCHEMA_VERSION,
-            "templates": ["optimizer.gepa.live.v1", "optimizer.run.v1"],
+            "templates": OPTIMIZERS_CONTRACT.templates,
+            // Desktop's expectation of the pinned version, not a claim about
+            // the artifact on disk. The install payload asserting
+            // `eventReplay: true` for a wheel that served no events route is
+            // how this incident was seeded; only the handshake settles it.
             "health": true,
             "cancellation": true,
             "eventReplay": true,
         }),
-        template_ids: vec!["optimizer.gepa.live.v1".into(), "optimizer.run.v1".into()],
+        template_ids: OPTIMIZERS_CONTRACT
+            .templates
+            .iter()
+            .map(|id| (*id).to_owned())
+            .collect(),
     }
 }
 
 struct SidecarRuntime {
+    generation: u64,
     proxy_task: tokio::task::JoinHandle<()>,
     child: Option<Child>,
+    child_pid: Option<u32>,
+    exit_watcher: Option<tokio::task::JoinHandle<()>>,
     upstream_task: Option<tokio::task::JoinHandle<()>>,
     base_url: String,
     api_key: String,
@@ -154,26 +240,42 @@ struct RunSpoolState {
 
 pub struct OptimizerManager {
     home: PathBuf,
-    status: RwLock<OptimizerSidecarStatus>,
+    /// Verified distributions are immutable for this process. Renderer status
+    /// polling must not re-hash the entire wheelhouse on every request.
+    discovery_cache: StdMutex<Option<Vec<OptimizerSidecarVersion>>>,
+    status: Arc<RwLock<OptimizerSidecarStatus>>,
     ensure_lock: Mutex<()>,
     updates: broadcast::Sender<OptimizerSidecarStatus>,
     runtime: Mutex<Option<SidecarRuntime>>,
+    /// Invalidates exit watchers before an intentional stop can signal their
+    /// child. A watcher from generation N must never overwrite generation
+    /// N+1's ready status during a restart.
+    runtime_generation: Arc<AtomicU64>,
+    /// First missed `/health` while the cached phase is still `ready`. After
+    /// `2 × OPTIMIZER_SIDECAR_HEALTH_TIMEOUT` the projection becomes `degraded`.
+    missed_ready_since: StdMutex<Option<tokio::time::Instant>>,
     /// Concurrent GEPA recipe workers, keyed by run id. Not a singleton.
     /// Process-group leaders for active recipe workers. Tracking only logical
     /// run ids is insufficient: a Tauri exit can outlive the task that owns
     /// the `Child`, leaving `uv` descendants orphaned. Every production worker
     /// is its own process group and the supervisor drains these groups first.
     gepa_workers: Mutex<HashMap<String, GepaWorkerState>>,
+    gepa_capacity: Arc<Semaphore>,
     run_spools: Arc<Mutex<HashMap<String, RunSpoolState>>>,
     client: Client,
+    /// Attached by the composition root once diagnostics exist.
+    diagnostics: Arc<std::sync::OnceLock<Arc<crate::diagnostics::DiagnosticsService>>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 enum GepaWorkerState {
     /// The run id is atomically reserved while its process is being spawned.
     Starting,
     /// The isolated process group is owned by this supervisor.
-    Running { pid: u32 },
+    Running {
+        pid: u32,
+        _permit: Option<OwnedSemaphorePermit>,
+    },
 }
 
 impl OptimizerManager {
@@ -185,21 +287,31 @@ impl OptimizerManager {
         let (updates, _) = broadcast::channel(32);
         Self {
             home,
-            status: RwLock::new(OptimizerSidecarStatus {
+            discovery_cache: StdMutex::new(None),
+            status: Arc::new(RwLock::new(OptimizerSidecarStatus {
                 phase: "unknown".into(),
                 base_url: None,
                 version: None,
                 digest: None,
                 detail: None,
                 updated_at: now_ms(),
-            }),
+            })),
             ensure_lock: Mutex::new(()),
             updates,
             runtime: Mutex::new(None),
+            runtime_generation: Arc::new(AtomicU64::new(0)),
+            missed_ready_since: StdMutex::new(None),
             gepa_workers: Mutex::new(HashMap::new()),
+            gepa_capacity: Arc::new(Semaphore::new(MAX_CONCURRENT_GEPA_RECIPES)),
             run_spools: Arc::new(Mutex::new(HashMap::new())),
             client: crate::http::http_client(),
+            diagnostics: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// Wire diagnostics in after both services exist. Idempotent.
+    pub fn attach_diagnostics(&self, service: Arc<crate::diagnostics::DiagnosticsService>) {
+        let _ = self.diagnostics.set(service);
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<OptimizerSidecarStatus> {
@@ -210,6 +322,30 @@ impl OptimizerManager {
         &self.home
     }
 
+    pub fn lease_database_digest(&self) -> Option<String> {
+        let raw = fs::read_to_string(runtime_lease_path(&self.home)).ok()?;
+        let value: Value = serde_json::from_str(&raw).ok()?;
+        value
+            .get("databaseDigest")
+            .and_then(Value::as_str)
+            .filter(|digest| !digest.is_empty())
+            .map(str::to_string)
+    }
+
+    pub async fn sidecar_child_pid(&self) -> Option<u32> {
+        self.runtime
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|runtime| runtime.child_pid)
+    }
+
+    #[cfg(test)]
+    pub fn enable_real_child_fixture(&self) -> Result<()> {
+        fs::write(self.home.join(TEST_REAL_CHILD_SENTINEL), b"1")
+            .context("enable fixture sidecar as a real child")
+    }
+
     /// One spool directory per `optimizer_run_id`. Two run ids never share a spool.
     pub fn spool_id(run_id: &str) -> String {
         format!("{OPTIMIZER_EVENT_SCHEMA_VERSION}:{run_id}")
@@ -217,6 +353,18 @@ impl OptimizerManager {
 
     pub async fn status(&self) -> OptimizerSidecarStatus {
         self.status.read().await.clone()
+    }
+
+    pub async fn is_running(&self) -> bool {
+        self.runtime.lock().await.is_some() && self.status().await.phase == "ready"
+    }
+
+    pub async fn sidecar_http(&self) -> Result<(String, String)> {
+        let runtime = self.runtime.lock().await;
+        let runtime = runtime
+            .as_ref()
+            .ok_or_else(|| anyhow!("optimizer sidecar is not running"))?;
+        Ok((runtime.base_url.clone(), runtime.api_key.clone()))
     }
 
     /// Read one durable, run-scoped cursor page from the managed sidecar.
@@ -252,6 +400,12 @@ impl OptimizerManager {
             .await
             .context("decode managed optimizer event page")?;
         if status == StatusCode::NOT_FOUND {
+            if events_not_found_is_missing_route(&body) {
+                bail!(
+                    "optimizer runtime does not serve the optimizer-events route; \
+                     install a sidecar version that implements it"
+                );
+            }
             return Err(OptimizerEventRunNotFound {
                 run_id: run_id.to_string(),
             }
@@ -278,10 +432,77 @@ impl OptimizerManager {
         error.downcast_ref::<OptimizerEventRunNotFound>().is_some()
     }
 
+    /// A gateway-class failure from the event endpoint: the observer could not
+    /// reach the producer's page this tick. It says nothing about the paid
+    /// work, which continues in its own process, so a poll loop tolerates it
+    /// for a bounded window instead of terminating the run on the first miss.
+    /// Anything else — a cross-run page, a corrupt body, a missing route — is
+    /// a contract violation and stays fatal.
+    pub(crate) fn optimizer_event_endpoint_temporarily_unavailable(error: &anyhow::Error) -> bool {
+        observer_error_is_transient_gateway(error)
+    }
+
+    /// Gateway-class HTTP statuses the observer may ride out. Anything else —
+    /// 4xx contract failures, a cross-run body — stays fatal on the first tick.
+    pub(crate) fn observer_http_status_is_transient(status: u16) -> bool {
+        matches!(status, 502 | 503 | 504)
+    }
+
     pub async fn set_status(&self, mut status: OptimizerSidecarStatus) {
         status.updated_at = now_ms();
-        *self.status.write().await = status.clone();
+        let previous = {
+            let mut current = self.status.write().await;
+            let previous = current.phase.clone();
+            *current = status.clone();
+            previous
+        };
+        // This runs on every renderer poll. Only a *transition* is news; the
+        // steady state is what `diagnostics_status` is for.
+        if previous != status.phase {
+            self.diagnose_phase(&previous, &status);
+        }
         let _ = self.updates.send(status);
+    }
+
+    fn diagnose_phase(&self, previous: &str, status: &OptimizerSidecarStatus) {
+        let Some(service) = self.diagnostics.get() else {
+            return;
+        };
+        let unavailable = matches!(
+            status.phase.as_str(),
+            "failed" | "error" | "unavailable" | "crashed" | "stopped"
+        );
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            if unavailable {
+                crate::diagnostics::Severity::Error
+            } else {
+                crate::diagnostics::Severity::Info
+            },
+            "optimizer-sidecar",
+            "optimizer.sidecar.phase",
+            if unavailable {
+                crate::diagnostics::codes::OPTIMIZER_SIDECAR_UNAVAILABLE
+            } else {
+                "optimizer_sidecar_phase"
+            },
+            status
+                .detail
+                .clone()
+                .unwrap_or_else(|| format!("optimizer sidecar is {}", status.phase)),
+        )
+        .retryable(unavailable);
+        input
+            .details
+            .insert("phase".into(), serde_json::json!(status.phase));
+        input
+            .details
+            .insert("previous_phase".into(), serde_json::json!(previous));
+        if let Some(version) = status.version.as_ref() {
+            input
+                .details
+                .insert("version".into(), serde_json::json!(version));
+        }
+        service.emit(input);
     }
 
     /// Discover installed versions, then probe a live sidecar if one is running.
@@ -290,12 +511,47 @@ impl OptimizerManager {
         let selected = discovered.iter().find(|hit| hit.selected).cloned();
         if self.runtime.lock().await.is_some() {
             if let Some(probed) = self.probe().await {
+                if let Ok(mut since) = self.missed_ready_since.lock() {
+                    *since = None;
+                }
                 self.set_status(probed).await;
                 return self.status().await;
             }
-            self.abort_runtime().await;
+            // Status is a read path. A transient missed probe must not SIGTERM
+            // a live paid run merely because the renderer polls this method.
+            // Cached `ready` may last at most two health timeouts; after that
+            // the projection is `degraded` until a probe succeeds or the
+            // child-exit watcher sets `error`.
+            let mut current = self.status().await;
+            if current.phase == "ready" {
+                let bound = crate::limits::OPTIMIZER_SIDECAR_HEALTH_TIMEOUT
+                    .checked_mul(2)
+                    .unwrap_or(crate::limits::OPTIMIZER_SIDECAR_HEALTH_TIMEOUT);
+                let expired = self
+                    .missed_ready_since
+                    .lock()
+                    .map(|mut since| {
+                        let started = *since.get_or_insert_with(tokio::time::Instant::now);
+                        started.elapsed() >= bound
+                    })
+                    .unwrap_or(true);
+                if expired {
+                    current.phase = "degraded".into();
+                    current.detail =
+                        Some("Optimizer health probe missed beyond the stale-ready bound".into());
+                } else {
+                    current.detail = Some(
+                        "Optimizer health probe was missed; retaining the managed runtime".into(),
+                    );
+                }
+            }
+            self.set_status(current).await;
+            return self.status().await;
         }
-        let phase = if selected.is_some() {
+        let leased_runtime = current_runtime_lease(&self.home);
+        let phase = if leased_runtime.is_some() {
+            "degraded"
+        } else if selected.is_some() {
             "stopped"
         } else if discovered.is_empty() {
             "not_installed"
@@ -310,6 +566,10 @@ impl OptimizerManager {
             detail: Some(match phase {
                 "not_installed" => "Optimizer sidecar is not installed".into(),
                 "stopped" => "Optimizer sidecar is installed and stopped".into(),
+                "degraded" => {
+                    "A sidecar from a previous Workshop process is still running; Start or Stop will reconcile it"
+                        .into()
+                }
                 _ => "Optimizer sidecar versions are installed; none selected".into(),
             }),
             updated_at: now_ms(),
@@ -320,6 +580,16 @@ impl OptimizerManager {
 
     pub fn discover(&self) -> Result<Vec<OptimizerSidecarVersion>> {
         let selected = read_selected_version(&self.home)?;
+        let mut cache_guard = self.discovery_cache.lock().ok();
+        if let Some(cache) = cache_guard.as_ref() {
+            if let Some(cached) = cache.as_ref() {
+                let mut hits = cached.clone();
+                for hit in &mut hits {
+                    hit.selected = selected.as_deref() == Some(hit.version.as_str());
+                }
+                return Ok(hits);
+            }
+        }
         let versions_root = self.home.join("versions");
         let Ok(entries) = fs::read_dir(&versions_root) else {
             return Ok(Vec::new());
@@ -336,14 +606,21 @@ impl OptimizerManager {
                     hits.push(hit);
                 }
                 Err(error) => {
-                    eprintln!(
-                        "synth-desktop: skip optimizer sidecar at {}: {error:#}",
-                        path.display()
+                    crate::platform::logging::report(
+                        "optimizers",
+                        "eprintln",
+                        format!(
+                            "synth-desktop: skip optimizer sidecar at {}: {error:#}",
+                            path.display()
+                        ),
                     );
                 }
             }
         }
         hits.sort_by(|a, b| a.version.cmp(&b.version));
+        if let Some(cache) = cache_guard.as_mut() {
+            **cache = Some(hits.clone());
+        }
         Ok(hits)
     }
 
@@ -356,6 +633,7 @@ impl OptimizerManager {
     }
 
     pub fn select_version(&self, version: &str) -> Result<OptimizerSidecarVersion> {
+        enforce_version_floor(version)?;
         let hit = self
             .discover()?
             .into_iter()
@@ -366,6 +644,11 @@ impl OptimizerManager {
             self.home.join(SELECTED_VERSION_FILE),
             format!("{version}\n"),
         )?;
+        // The stored handshake belongs to the version that proved it. Leaving it
+        // behind lets a previous install's capabilities satisfy the digest pin
+        // and template negotiation for a version that never completed a
+        // handshake of its own.
+        clear_stored_capabilities(&self.home);
         Ok(OptimizerSidecarVersion {
             selected: true,
             ..hit
@@ -374,56 +657,141 @@ impl OptimizerManager {
 
     pub fn install(&self, version: Option<&str>) -> Result<OptimizerSidecarVersion> {
         let version = version.unwrap_or(DEFAULT_SIDECAR_VERSION);
-        if version != DEFAULT_SIDECAR_VERSION {
+        if !matches!(version, OFFICIAL_SIDECAR_VERSION | DEV_SIDECAR_VERSION) {
             bail!("unknown optimizer sidecar version `{version}`");
         }
         self.install_spec(catalog_spec(version))
+    }
+
+    pub async fn set_status_phase(&self, phase: &str, detail: Option<&str>) {
+        let current = self.status().await;
+        self.set_status(OptimizerSidecarStatus {
+            phase: phase.into(),
+            detail: detail.map(str::to_string).or(current.detail),
+            updated_at: now_ms(),
+            ..current
+        })
+        .await;
+    }
+
+    pub fn advertised_capabilities(&self) -> Value {
+        let mut capabilities = read_capabilities(&self.home).unwrap_or_else(|| {
+            json!({
+                "algorithms": [],
+                "controls": [],
+                "replay": false,
+                "cancellation": false
+            })
+        });
+        if let Some(object) = capabilities.as_object_mut() {
+            if let Some(algorithms) = object.remove("algorithms") {
+                object.insert("optimization_algorithms".into(), algorithms);
+            }
+            object
+                .entry("optimization_algorithms")
+                .or_insert_with(|| json!([]));
+            object.insert(
+                "execution_capabilities".into(),
+                super::eval_recipes::execution_capability_projection(),
+            );
+        }
+        capabilities
+    }
+
+    pub fn has_offline_runtime(&self, version: &str) -> bool {
+        installed_runtime_bin(&self.home, version).is_ok()
     }
 
     pub fn install_spec(
         &self,
         spec: OptimizerSidecarInstallSpec,
     ) -> Result<OptimizerSidecarVersion> {
-        validate_version_id(&spec.version)?;
-        fs::create_dir_all(&self.home)?;
-        let signing_key = ensure_signing_key(&self.home)?;
-        let payload = serde_json::to_vec(&spec.payload).context("encode sidecar payload")?;
-        let digest = sha256_hex(&payload);
-        let signature = sign_manifest(&signing_key, &spec.version, &digest);
-        let dir = self.home.join("versions").join(&spec.version);
-        fs::create_dir_all(&dir)?;
-        fs::write(dir.join(PAYLOAD_FILE), &payload)?;
-        let manifest = json!({
-            "version": spec.version,
-            "digest": digest,
-            "signature": signature,
-            "algorithmId": spec.algorithm_id,
-            "algorithmVersion": spec.algorithm_version,
-            "recipeSchemaVersion": spec.recipe_schema_version,
-            "templates": spec.template_ids,
-        });
-        fs::write(
-            dir.join(MANIFEST_FILE),
-            serde_json::to_vec_pretty(&manifest)?,
-        )?;
-        for template_id in &spec.template_ids {
-            retain_template_package(&self.home, template_id, &spec.version, &digest)?;
+        if let Ok(mut cache) = self.discovery_cache.lock() {
+            *cache = None;
         }
-        self.select_version(&spec.version)
+        validate_version_id(&spec.version)?;
+        enforce_version_floor(&spec.version)?;
+        fs::create_dir_all(&self.home)?;
+        let previous_selected = read_selected_version(&self.home)?;
+        let staging_name = format!(
+            ".staging-{}-{}",
+            spec.version,
+            uuid::Uuid::new_v4().simple()
+        );
+        let staging = self.home.join("versions").join(&staging_name);
+        fs::create_dir_all(&staging)
+            .with_context(|| format!("create optimizer staging {}", staging.display()))?;
+        let installed = match materialize_verified_distribution(&self.home, &staging, &spec) {
+            Ok(hit) => hit,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&staging);
+                return Err(error);
+            }
+        };
+        if interrupt_install() {
+            bail!("install interrupted before activation");
+        }
+        let dest = self.home.join("versions").join(&spec.version);
+        if dest.exists() {
+            fs::remove_dir_all(&dest).with_context(|| {
+                format!("replace optimizer version directory {}", dest.display())
+            })?;
+        }
+        fs::rename(&staging, &dest)
+            .with_context(|| format!("activate optimizer version {}", dest.display()))?;
+        #[cfg(test)]
+        TEST_CACHE_EMPTY_DURING_INSTALL.with(|flag| {
+            if flag.get() {
+                if let Ok(mut cache) = self.discovery_cache.lock() {
+                    *cache = Some(Vec::new());
+                }
+            }
+        });
+        // A status refresh may have populated discovery_cache while the verified
+        // distribution was still under its hidden staging name. Invalidate once
+        // more after activation so selection observes the newly installed path.
+        if let Ok(mut cache) = self.discovery_cache.lock() {
+            *cache = None;
+        }
+        for template_id in &spec.template_ids {
+            retain_template_package(&self.home, template_id, &spec.version, &installed.digest)?;
+        }
+        let selected = self.select_version(&spec.version)?;
+        debug_assert_eq!(
+            read_selected_version(&self.home).ok().flatten(),
+            Some(spec.version.clone())
+        );
+        let _ = previous_selected;
+        Ok(selected)
     }
 
     pub async fn start(&self) -> Result<OptimizerSidecarStatus> {
         let _guard = self.ensure_lock.lock().await;
+        if self.runtime.lock().await.is_none() && runtime_lease_is_current(&self.home) {
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!(
+                "synth-desktop: reconciling optimizer runtime left by a previous boot before start"
+            ),
+            );
+            self.abort_runtime().await;
+        }
         let selected = read_selected_version(&self.home)?
             .ok_or_else(|| anyhow!("Optimizer sidecar is not installed"))?;
         let dir = self.home.join("versions").join(&selected);
         let hit = load_verified_manifest(&self.home, &dir)?;
         if let Some(status) = self.probe().await {
             if status.phase == "ready" && status.version.as_deref() == Some(hit.version.as_str()) {
-                self.set_status(status).await;
-                return Ok(self.status().await);
+                if credential_runtime_lease_is_current(&self.home, &hit.version) {
+                    self.set_status(status).await;
+                    return Ok(self.status().await);
+                }
+                self.abort_runtime().await;
+                let _ = std::fs::remove_file(self.home.join("runtime-lease.json"));
+            } else {
+                self.abort_runtime().await;
             }
-            self.abort_runtime().await;
         }
         self.set_status(OptimizerSidecarStatus {
             phase: "starting".into(),
@@ -445,52 +813,204 @@ impl OptimizerManager {
         let health = health_body(&hit);
         let serve_key = api_key.clone();
         let proxy_client = self.client.clone();
+        let training = TrainingRuntime::new();
         let proxy_task = tokio::spawn(async move {
-            let result = serve_json(listener, move |request| {
-                let token = serve_key.clone();
-                let body = health.clone();
-                let client = proxy_client.clone();
-                let upstream = upstream_base_url.clone();
-                async move { route_sidecar(request, &token, &upstream, &client, body).await }
-            })
-            .await;
+            let result =
+                serve_json(listener, move |request| {
+                    let token = serve_key.clone();
+                    let body = health.clone();
+                    let client = proxy_client.clone();
+                    let upstream = upstream_base_url.clone();
+                    let training = training.clone();
+                    async move {
+                        route_sidecar(request, &token, &upstream, &client, body, &training).await
+                    }
+                })
+                .await;
             if let Err(error) = result {
-                eprintln!("synth-desktop: optimizer auth proxy stopped: {error:#}");
+                crate::platform::logging::report(
+                    "optimizers",
+                    "eprintln",
+                    format!("synth-desktop: optimizer auth proxy stopped: {error:#}"),
+                );
             }
         });
+        let generation = self.runtime_generation.fetch_add(1, Ordering::SeqCst) + 1;
         *self.runtime.lock().await = Some(SidecarRuntime {
+            generation,
             proxy_task,
+            child_pid: child.as_ref().and_then(Child::id),
             child,
+            exit_watcher: None,
             upstream_task,
             base_url: base_url.clone(),
             api_key: api_key.clone(),
             version: hit.version.clone(),
             digest: hit.digest.clone(),
         });
-        write_env_sh(&self.home, &api_key, &base_url, &hit.version)?;
+        self.arm_child_exit_watcher().await;
+        // env.sh is written after the handshake, not here. Publishing the
+        // address before the service has proven anything is what left a
+        // convincing file pointing at a dead port.
+        let runtime_epoch = uuid::Uuid::new_v4().simple().to_string();
         let deadline = tokio::time::Instant::now() + crate::limits::OPTIMIZER_SIDECAR_READY_WAIT;
         while tokio::time::Instant::now() < deadline {
             if let Some(status) = self.probe().await {
                 if status.phase == "ready" {
+                    let capabilities = match self.fetch_handshake_capabilities().await {
+                        Ok(capabilities) => capabilities,
+                        Err(error) => {
+                            self.abort_runtime().await;
+                            self.set_status(OptimizerSidecarStatus {
+                                phase: "error".into(),
+                                base_url: None,
+                                version: Some(hit.version.clone()),
+                                digest: Some(hit.digest.clone()),
+                                detail: Some(format!(
+                                    "Capability check failed: {}",
+                                    diagnostic_error_message(&error)
+                                )),
+                                updated_at: now_ms(),
+                            })
+                            .await;
+                            return Err(error);
+                        }
+                    };
+                    self.store_handshake_capabilities(&capabilities)?;
+                    write_env_sh(
+                        &self.home,
+                        &api_key,
+                        &base_url,
+                        &hit.version,
+                        &runtime_epoch,
+                    )?;
+                    let child_pid = self.sidecar_child_pid().await;
+                    write_runtime_lease(
+                        &self.home,
+                        child_pid,
+                        &hit.version,
+                        &hit.digest,
+                        &runtime_epoch,
+                        &base_url,
+                    )?;
                     self.set_status(status).await;
                     return Ok(self.status().await);
                 }
+            }
+            if let Some(exit) = self.sidecar_exit_status().await {
+                let detail = optimizer_start_failure_detail(&self.home, &exit);
+                self.abort_runtime().await;
+                self.set_status(OptimizerSidecarStatus {
+                    phase: "error".into(),
+                    base_url: None,
+                    version: Some(hit.version),
+                    digest: Some(hit.digest),
+                    detail: Some(detail.clone()),
+                    updated_at: now_ms(),
+                })
+                .await;
+                bail!(detail);
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         self.abort_runtime().await;
         self.set_status(OptimizerSidecarStatus {
             phase: "error".into(),
-            base_url: Some(base_url.clone()),
+            base_url: None,
             version: Some(hit.version),
             digest: Some(hit.digest),
-            detail: Some(format!(
-                "Timed out waiting for optimizer sidecar at {base_url}"
-            )),
+            detail: Some("Timed out waiting for optimizer sidecar".into()),
             updated_at: now_ms(),
         })
         .await;
-        bail!("Timed out waiting for optimizer sidecar at {base_url}");
+        bail!("Timed out waiting for optimizer sidecar");
+    }
+
+    async fn sidecar_exit_status(&self) -> Option<std::process::ExitStatus> {
+        let mut runtime = self.runtime.lock().await;
+        runtime.as_mut()?.child.as_mut()?.try_wait().ok().flatten()
+    }
+
+    async fn fetch_handshake_capabilities(&self) -> Result<Value> {
+        let (base_url, api_key) = {
+            let runtime = self.runtime.lock().await;
+            let runtime = runtime
+                .as_ref()
+                .ok_or_else(|| anyhow!("optimizer runtime disappeared before handshake"))?;
+            (runtime.base_url.clone(), runtime.api_key.clone())
+        };
+        let response = self
+            .client
+            .get(format!("{base_url}/v1/optimizer/capabilities"))
+            .bearer_auth(api_key)
+            .send()
+            .await
+            .context("read optimizer capability handshake")?;
+        if !response.status().is_success() {
+            // A bare status was what made this failure so expensive to read:
+            // "HTTP 502" named neither the missing route nor the runtime that
+            // lacked it. Carry the proxy's reason through.
+            let status = response.status();
+            let detail = upstream_failure_detail(response).await;
+            if status == StatusCode::NOT_FOUND {
+                bail!(
+                    "optimizer_capability_route_missing: this sidecar version does not serve \
+                     /v1/optimizer/capabilities; install a version that does ({detail})"
+                );
+            }
+            bail!("optimizer capability handshake failed: {detail}");
+        }
+        let mut capabilities: Value = response
+            .json()
+            .await
+            .context("parse optimizer capability handshake")?;
+        {
+            let object = capabilities
+                .as_object_mut()
+                .ok_or_else(|| anyhow!("optimizer capability handshake was not an object"))?;
+            // A runtime answers only for itself. `recipes` and
+            // `compatibleTemplateIds` are Desktop vocabulary — those recipe ids
+            // and visual template ids are defined here and appear nowhere in
+            // the plugin — so requiring a runtime to echo them back proves only
+            // that it was told what to say, and would force a plugin release
+            // for every new host template. They are resolved host-side now;
+            // ask the runtime for the one list it can actually own.
+            let algorithms_valid = object
+                .get("algorithms")
+                .and_then(Value::as_array)
+                .is_some_and(|items| {
+                    !items.is_empty() && items.iter().all(|item| item.as_str().is_some())
+                });
+            if !algorithms_valid {
+                bail!("optimizer capability handshake omitted algorithms");
+            }
+            let algorithms = object.remove("algorithms").expect("validated algorithms");
+            object.insert("optimization_algorithms".into(), algorithms);
+            object.insert(
+                "execution_capabilities".into(),
+                super::eval_recipes::execution_capability_projection(),
+            );
+            for field in ["replay", "cancellation"] {
+                if object.get(field).and_then(Value::as_bool).is_none() {
+                    bail!("optimizer capability handshake omitted {field}");
+                }
+            }
+            object.remove("digest");
+        }
+        let digest = sha256_hex(&serde_json::to_vec(&capabilities)?);
+        capabilities
+            .as_object_mut()
+            .expect("validated capability object")
+            .insert("digest".into(), json!(format!("sha256:{digest}")));
+        Ok(capabilities)
+    }
+
+    fn store_handshake_capabilities(&self, capabilities: &Value) -> Result<()> {
+        fs::write(
+            self.home.join("capabilities.json"),
+            serde_json::to_vec_pretty(capabilities)?,
+        )?;
+        Ok(())
     }
 
     /// Install the product-pinned sidecar when needed and return only after
@@ -508,8 +1028,9 @@ impl OptimizerManager {
     /// only product-resolved paths and the one allowlisted credential; package
     /// version, executable, and subcommand stay owned by this manager.
     ///
-    /// Two `optimizer_run_id`s may be live at once. This is a map of workers,
-    /// not a singleton that would serialize campaigns.
+    /// At most two `optimizer_run_id`s execute at once. Additional submitted
+    /// runs wait here in their durable `queued` state instead of launching
+    /// colliding child processes against the same optimizer workspace.
     pub async fn spawn_gepa_recipe(
         &self,
         run_id: &str,
@@ -518,11 +1039,13 @@ impl OptimizerManager {
         stdout: fs::File,
         stderr: fs::File,
         openai_api_key: &str,
+        openai_base_url: Option<&str>,
+        extra_env: &[(String, String)],
     ) -> Result<Child> {
         validate_optimizer_run_id(run_id)?;
         if self.runtime.lock().await.is_none() {
             bail!(
-                "optimizer sidecar is not running; call ensure_ready before spawning a GEPA recipe"
+                "optimizer sidecar is not running; the Optimizers plugin must be started before spawning a GEPA recipe"
             );
         }
         let selected = self
@@ -539,13 +1062,28 @@ impl OptimizerManager {
             }
         }
         self.ensure_memory_spool(run_id).await;
+        let permit = self
+            .gepa_capacity
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow!("GEPA admission queue closed while `{run_id}` was waiting"))?;
+        if !matches!(
+            self.gepa_workers.lock().await.get(run_id),
+            Some(GepaWorkerState::Starting)
+        ) {
+            bail!("GEPA supervisor cancelled `{run_id}` while it was queued");
+        }
         match launch_gepa_recipe_process(
+            &self.home,
             &selected.version,
             cookbook,
             config_path,
             stdout,
             stderr,
             openai_api_key,
+            openai_base_url,
+            extra_env,
         ) {
             Ok(mut child) => {
                 let pid = child
@@ -555,7 +1093,10 @@ impl OptimizerManager {
                     let mut workers = self.gepa_workers.lock().await;
                     match workers.get_mut(run_id) {
                         Some(state @ GepaWorkerState::Starting) => {
-                            *state = GepaWorkerState::Running { pid };
+                            *state = GepaWorkerState::Running {
+                                pid,
+                                _permit: Some(permit),
+                            };
                             true
                         }
                         Some(GepaWorkerState::Running { .. }) | None => false,
@@ -584,7 +1125,7 @@ impl OptimizerManager {
 
     pub async fn terminate_gepa_recipe(&self, run_id: &str) {
         let state = self.gepa_workers.lock().await.remove(run_id);
-        if let Some(GepaWorkerState::Running { pid }) = state {
+        if let Some(GepaWorkerState::Running { pid, .. }) = state {
             terminate_process_groups(&[pid]).await;
         }
     }
@@ -635,6 +1176,18 @@ impl OptimizerManager {
     }
 
     async fn ensure_memory_spool(&self, run_id: &str) {
+        // The in-process sidecar stand-in registers a run the instant it is
+        // spawned, so under test every run is indexed immediately and the
+        // "service never sees this run" failure is unreachable — the same shape
+        // of blind spot as a fake that serves an endpoint the real artifact
+        // lacks. This makes the stand-in *less* generous on request, so that
+        // failure can be exercised. It only ever withholds; it never invents.
+        #[cfg(test)]
+        {
+            if std::env::var("SYNTH_OPTIMIZER_TEST_SUPPRESS_SPOOL").as_deref() == Ok("1") {
+                return;
+            }
+        }
         let mut spools = self.run_spools.lock().await;
         spools.entry(run_id.to_string()).or_insert(RunSpoolState {
             events: Vec::new(),
@@ -672,6 +1225,13 @@ impl OptimizerManager {
         }
         if selected.as_deref() == Some(version) {
             let _ = fs::remove_file(self.home.join(SELECTED_VERSION_FILE));
+            // Uninstalling the version that proved these capabilities must not
+            // leave them behind to vouch for whatever is installed next.
+            clear_stored_capabilities(&self.home);
+            clear_env_sh(&self.home);
+        }
+        if let Ok(mut cache) = self.discovery_cache.lock() {
+            *cache = None;
         }
         Ok(self.refresh().await)
     }
@@ -706,42 +1266,37 @@ impl OptimizerManager {
         self.ensure_memory_spool(&pin.optimizer_run_id).await;
         merge_pin_into_run(&mut run, &pin);
         service.persist_run(run.clone()).await?;
-        let event = OptimizerEventEnvelope {
-            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-            event_id: Some(format!("{}:sidecar-pin", run.id)),
-            event_type: "optimizer.run.pinned".into(),
-            sequence_number: run.cursor_seq + 1,
-            occurred_at: chrono::Utc::now().to_rfc3339(),
-            optimizer_run_id: run.id.clone(),
-            algorithm_id: run.algorithm_id.clone(),
-            level: Some("info".into()),
-            item: None,
-            delta: json!({
-                "sidecarVersion": pin.sidecar_version,
-                "algorithmVersion": pin.algorithm_version,
-                "recipeVersion": pin.recipe_version,
-                "sidecarDigest": pin.digest,
-                "spoolPath": pin.spool_path,
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-            snapshot: Some(
+        let draft = OptimizerEventDraft::new("optimizer.run.pinned", run.algorithm_id.clone())
+            // One pin per run: re-pinning re-offers the same fact rather than
+            // minting a second sequence for it.
+            .idempotency_key("sidecar-pin")
+            .level("info")
+            .delta(
+                json!({
+                    "sidecarVersion": pin.sidecar_version,
+                    "algorithmVersion": pin.algorithm_version,
+                    "recipeVersion": pin.recipe_version,
+                    "sidecarDigest": pin.digest,
+                    "spoolPath": pin.spool_path,
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            )
+            .snapshot(
                 json!({ "summary": run.summary.clone() })
                     .as_object()
                     .cloned()
                     .unwrap_or_default(),
-            ),
-            usage_delta: None,
-            artifact_refs: vec![],
-            error: None,
-            raw: json!({
+            )
+            .raw(json!({
                 "sidecarVersion": pin.sidecar_version,
                 "algorithmVersion": pin.algorithm_version,
                 "recipeVersion": pin.recipe_version
-            }),
-        };
-        let (run, _) = service.append_events(run.id.clone(), vec![event]).await?;
+            }));
+        let (run, _) = service
+            .append_event_payloads(run.id.clone(), vec![draft])
+            .await?;
         Ok((run, pin))
     }
 
@@ -774,7 +1329,11 @@ impl OptimizerManager {
         let (base_url, api_key, version, digest) = {
             let mut runtime = self.runtime.lock().await;
             let runtime = runtime.as_mut()?;
-            if let Some(child) = runtime.child.as_mut() {
+            if let Some(pid) = runtime.child_pid {
+                if !sidecar_pid_is_alive(pid) {
+                    return None;
+                }
+            } else if let Some(child) = runtime.child.as_mut() {
                 if child.try_wait().ok().flatten().is_some() {
                     return None;
                 }
@@ -812,6 +1371,28 @@ impl OptimizerManager {
     }
 
     async fn abort_runtime(&self) {
+        // Retire the watcher before signalling its child. Without this order,
+        // the intentional SIGTERM can win the restart race and publish an
+        // error over the replacement runtime's starting/ready state.
+        self.runtime_generation.fetch_add(1, Ordering::SeqCst);
+        let mut runtime = self.runtime.lock().await.take();
+        if let Some(task) = runtime
+            .as_mut()
+            .and_then(|runtime| runtime.exit_watcher.take())
+        {
+            task.abort();
+            let _ = task.await;
+        }
+        // The exported address describes a service that is about to stop
+        // existing. Every teardown goes through here.
+        clear_env_sh(&self.home);
+        // The durable lease is the ownership authority across app boots. Read
+        // it before clearing anything so Stop can terminate a sidecar whose
+        // in-memory Child belonged to a previous Workshop process.
+        let leased_pid = current_runtime_lease(&self.home).map(|lease| lease.pid);
+        if let Ok(mut since) = self.missed_ready_since.lock() {
+            *since = None;
+        }
         let worker_pids = self
             .gepa_workers
             .lock()
@@ -819,11 +1400,14 @@ impl OptimizerManager {
             .drain()
             .filter_map(|(_, state)| match state {
                 GepaWorkerState::Starting => None,
-                GepaWorkerState::Running { pid } => Some(pid),
+                GepaWorkerState::Running { pid, .. } => Some(pid),
             })
             .collect::<Vec<_>>();
         terminate_process_groups(&worker_pids).await;
-        if let Some(mut runtime) = self.runtime.lock().await.take() {
+        if let Some(pid) = leased_pid {
+            terminate_process_groups(&[pid]).await;
+        }
+        if let Some(mut runtime) = runtime {
             runtime.proxy_task.abort();
             if let Some(child) = runtime.child.as_mut() {
                 terminate_child(child).await;
@@ -832,6 +1416,72 @@ impl OptimizerManager {
                 task.abort();
             }
         }
+        clear_runtime_lease(&self.home);
+    }
+
+    async fn arm_child_exit_watcher(&self) {
+        let mut runtime = self.runtime.lock().await;
+        let Some(runtime) = runtime.as_mut() else {
+            return;
+        };
+        let Some(mut child) = runtime.child.take() else {
+            return;
+        };
+        runtime.child_pid = child.id().or(runtime.child_pid);
+        let generation = runtime.generation;
+        let runtime_generation = self.runtime_generation.clone();
+        let home = self.home.clone();
+        let status = self.status.clone();
+        let updates = self.updates.clone();
+        let diagnostics = self.diagnostics.clone();
+        runtime.exit_watcher = Some(tokio::spawn(async move {
+            let exit = child.wait().await;
+            if runtime_generation.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            clear_env_sh(&home);
+            clear_runtime_lease(&home);
+            let previous = status.read().await.clone();
+            let detail = match exit {
+                Ok(code) => format!("optimizer sidecar child exited with {code}"),
+                Err(error) => format!("optimizer sidecar child wait failed: {error}"),
+            };
+            let snapshot = OptimizerSidecarStatus {
+                phase: "error".into(),
+                base_url: None,
+                version: previous.version,
+                digest: previous.digest,
+                detail: Some(detail),
+                updated_at: now_ms(),
+            };
+            let previous_phase = {
+                let mut current = status.write().await;
+                let previous_phase = current.phase.clone();
+                *current = snapshot.clone();
+                previous_phase
+            };
+            let _ = updates.send(snapshot.clone());
+            if previous_phase != snapshot.phase {
+                if let Some(service) = diagnostics.get() {
+                    let mut input = crate::diagnostics::DiagnosticInput::new(
+                        crate::diagnostics::Severity::Error,
+                        "optimizer-sidecar",
+                        "optimizer.sidecar.child_exit",
+                        crate::diagnostics::codes::OPTIMIZER_SIDECAR_UNAVAILABLE,
+                        snapshot
+                            .detail
+                            .clone()
+                            .unwrap_or_else(|| "optimizer sidecar child exited".into()),
+                    )
+                    .retryable(false);
+                    input.details.insert("phase".into(), json!(snapshot.phase));
+                    input
+                        .details
+                        .insert("previous_phase".into(), json!(previous_phase));
+                    service.emit(input);
+                }
+            }
+        }));
     }
 }
 
@@ -868,7 +1518,7 @@ fn bind_addr() -> std::net::SocketAddr {
     std::net::SocketAddr::from(([127, 0, 0, 1], port))
 }
 
-fn resolve_uv() -> Result<PathBuf> {
+pub(crate) fn resolve_uv() -> Result<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = env::var_os("SYNTH_OPTIMIZER_UV_PATH") {
         candidates.push(PathBuf::from(path));
@@ -893,8 +1543,11 @@ fn resolve_uv() -> Result<PathBuf> {
     )
 }
 
-fn optimizer_project_root() -> Result<Option<PathBuf>> {
-    let Some(path) = env::var_os("SYNTH_OPTIMIZER_PROJECT_ROOT").map(PathBuf::from) else {
+pub(super) fn optimizer_project_root() -> Result<Option<PathBuf>> {
+    let Some(path) = env::var_os("SYNTH_OPTIMIZER_PROJECT_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
         return Ok(None);
     };
     let path = path
@@ -913,37 +1566,118 @@ fn optimizer_project_root() -> Result<Option<PathBuf>> {
     Ok(Some(path))
 }
 
-fn optimizer_command(version: &str) -> Result<Command> {
+fn optimizer_command(home: &Path, version: &str) -> Result<Command> {
     validate_version_id(version)?;
-    let uv = resolve_uv()?;
-    let mut command = Command::new(uv);
-    if let Some(project) = optimizer_project_root()? {
-        command.args(["run", "--project"]).arg(project);
-    } else {
+    if developer_uv_mode()? {
+        if let Some(project) = optimizer_project_root()? {
+            // `uv run` is a launcher, not the workload authority. Tracking it
+            // as the recipe leader lets the shim exit or receive SIGTERM while
+            // the real Python child survives re-parented; Workshop then seals
+            // a false failed run and leaks paid compute. Prefer a prepared
+            // project venv. A packaged CUA snapshot intentionally excludes
+            // `.venv`; in that lane supervise the immutable installed runtime
+            // directly and overlay only the staged, reviewed Python source.
+            return developer_project_command(home, version, &project);
+        }
+        let uv = resolve_uv()?;
+        let mut command = Command::new(uv);
         command.args([
             "run",
             "--no-project",
             "--with",
             &format!("synth-optimizers=={version}"),
         ]);
+        command.arg("synth-optimizers");
+        return Ok(command);
     }
-    command.arg("synth-optimizers");
+    let bin = installed_runtime_bin(home, version)?;
+    Ok(Command::new(bin))
+}
+
+fn developer_project_command(home: &Path, version: &str, project: &Path) -> Result<Command> {
+    for candidate in [
+        project.join(".venv/bin/synth-optimizers"),
+        project.join(".venv/Scripts/synth-optimizers.exe"),
+    ] {
+        if candidate.is_file() {
+            return Ok(Command::new(candidate));
+        }
+    }
+    let mut command = Command::new(installed_runtime_bin(home, version)?);
+    command.env("PYTHONPATH", project.join("src"));
     Ok(command)
 }
 
+fn optimizer_gepa_home(home: &Path) -> PathBuf {
+    home.join("runtime/gepa-home")
+}
+
+/// One SQLite path per instance. Callers must not invent a second filename
+/// (`gepa.sqlite3`, `gepa-service-<uuid>.sqlite`) — the service stores run
+/// requests, resolved configs, and terminal cursors here across restarts.
+pub(crate) fn gepa_db_path(home: &Path) -> PathBuf {
+    home.join("runtime/gepa.sqlite")
+}
+
+fn optimizer_gepa_db(home: &Path) -> PathBuf {
+    gepa_db_path(home)
+}
+
+fn developer_uv_mode() -> Result<bool> {
+    if env::var("SYNTH_OPTIMIZER_DEV_MODE").as_deref() == Ok("1") {
+        return Ok(true);
+    }
+    Ok(optimizer_project_root()?.is_some())
+}
+
+fn installed_runtime_bin(home: &Path, version: &str) -> Result<PathBuf> {
+    validate_version_id(version)?;
+    let runtime = home.join("versions").join(version).join("runtime");
+    for candidate in [
+        runtime.join("bin/synth-optimizers"),
+        runtime.join("Scripts/synth-optimizers.exe"),
+        runtime.join("synth-optimizers"),
+    ] {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    bail!("installed optimizer runtime for `{version}` is missing; install the plugin before start")
+}
+
 fn launch_gepa_recipe_process(
+    home: &Path,
     version: &str,
     cookbook: &Path,
     config_path: &Path,
     stdout: fs::File,
     stderr: fs::File,
     openai_api_key: &str,
+    openai_base_url: Option<&str>,
+    extra_env: &[(String, String)],
 ) -> Result<Child> {
     #[cfg(test)]
     {
         if env::var("SYNTH_OPTIMIZER_LIVE_SIDECAR").as_deref() != Ok("1") {
-            let _ = (version, cookbook, openai_api_key, config_path);
-            let mut command = Command::new("/usr/bin/true");
+            let _ = (
+                home,
+                version,
+                cookbook,
+                openai_api_key,
+                openai_base_url,
+                extra_env,
+            );
+            // The stand-in normally exits at once. Tests that need to observe
+            // what the supervisor does to a *live* child — the never-indexed
+            // bound, cancellation — ask for one that outlives the assertion.
+            let mut command = match env::var("SYNTH_OPTIMIZER_TEST_CHILD_SLEEP_SECS") {
+                Ok(seconds) if !seconds.is_empty() => {
+                    let mut sleeper = Command::new("/bin/sleep");
+                    sleeper.arg(seconds);
+                    sleeper
+                }
+                _ => Command::new("/usr/bin/true"),
+            };
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::from(stdout))
@@ -954,17 +1688,72 @@ fn launch_gepa_recipe_process(
                 .context("launch in-process GEPA recipe stand-in");
         }
     }
-    let mut command = optimizer_command(version)?;
+    let mut command = optimizer_command(home, version)?;
     isolate_process_group(&mut command);
     command
         .args(["gepa", "run", "--config"])
         .arg(config_path)
         .current_dir(cookbook)
-        .env("OPENAI_API_KEY", openai_api_key)
+        // The service discovers live child runs through GEPA_HOME/index.jsonl.
+        // Pin both processes to the same instance-owned directory instead of
+        // relying on whichever user-global HOME the Desktop inherited.
+        .env("GEPA_HOME", optimizer_gepa_home(home))
+        .env_remove("SYNTH_WORKSHOP_INSTANCE_ID")
+        .env("OPENAI_API_KEY", crate::secrets::API_KEY_SENTINEL);
+    if let Some(base_url) = openai_base_url {
+        command.env("OPENAI_BASE_URL", base_url);
+        if let Some(handle) = base_url
+            .split("/cap/")
+            .nth(1)
+            .and_then(|rest| rest.split('/').next())
+        {
+            command.env("WORKSHOP_CAPABILITY", handle);
+        }
+    }
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    if let Some(base_url) = openai_base_url {
+        command.env("OPENAI_BASE_URL", base_url);
+        if let Some(handle) = base_url
+            .split("/cap/")
+            .nth(1)
+            .and_then(|rest| rest.split('/').next())
+        {
+            command.env("WORKSHOP_CAPABILITY", handle);
+        }
+    }
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    let _ = openai_api_key;
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .kill_on_drop(true);
+    // The proposer runs Codex one process below Workshop. A Finder-launched
+    // app cannot assume the user's shell PATH, and the JS launcher alone is
+    // insufficient because Codex's unified-exec helpers must link the native
+    // binary shipped in the npm package. Publish both authorities explicitly.
+    if let Some(codex_bin) = env::var_os("SYNTH_CODEX_BIN").map(PathBuf::from) {
+        if let Some(parent) = codex_bin.parent() {
+            let mut paths = vec![parent.to_path_buf()];
+            if let Some(inherited) = env::var_os("PATH") {
+                paths.extend(env::split_paths(&inherited));
+            }
+            command.env(
+                "PATH",
+                env::join_paths(paths).context("build GEPA Codex PATH")?,
+            );
+        }
+        let resolved = codex_bin.canonicalize().unwrap_or(codex_bin);
+        if let Some(package_root) = resolved.parent().and_then(Path::parent) {
+            if package_root.join("package.json").is_file() {
+                command.env("CODEX_MANAGED_PACKAGE_ROOT", package_root);
+            }
+        }
+    }
     command
         .spawn()
         .context("launch Desktop-managed Banking77 GEPA recipe")
@@ -995,10 +1784,25 @@ async fn launch_sidecar_upstream(
                         if request.method == hyper::Method::GET && path == "/health" {
                             JsonHttpResponse::ok(body)
                         } else if request.method == hyper::Method::GET
+                            && path == "/v1/optimizer/capabilities"
+                        {
+                            JsonHttpResponse::ok(json!({
+                                "status": "ok",
+                                "algorithms": OPTIMIZERS_CONTRACT.algorithms,
+                                "contractVersion": "optimizer.contract.v1",
+                                "serviceVersion": OPTIMIZERS_CONTRACT.official,
+                                "replay": true,
+                                "cancellation": true
+                            }))
+                        } else if request.method == hyper::Method::GET
                             && path.starts_with("/runs/")
                             && path.ends_with("/optimizer-events")
                         {
-                            serve_in_process_spool_page(&run_spools, &request.path).await
+                            if let Some(fault) = injected_event_endpoint_fault(&request.path) {
+                                fault
+                            } else {
+                                serve_in_process_spool_page(&run_spools, &request.path).await
+                            }
                         } else {
                             JsonHttpResponse::error(StatusCode::NOT_FOUND, "not found")
                         }
@@ -1006,26 +1810,31 @@ async fn launch_sidecar_upstream(
                 })
                 .await;
             });
-            return Ok((None, upstream_base_url, Some(task)));
+            let child = Some(spawn_fixture_hold_child(home, &hit.version)?);
+            return Ok((child, upstream_base_url, Some(task)));
         }
     }
     let _ = run_spools;
-
     drop(listener);
-    let runtime_dir = home.join("runtime");
-    fs::create_dir_all(&runtime_dir)?;
+
+    let gepa_home = optimizer_gepa_home(home);
+    let db_path = optimizer_gepa_db(home);
+    fs::create_dir_all(&gepa_home)?;
+    let api_key = ensure_api_key(home)?;
     let log = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(home.join("sidecar.log"))?;
-    let mut command = optimizer_command(&hit.version)?;
+    let mut command = optimizer_command(home, &hit.version)?;
     isolate_process_group(&mut command);
     command
         .args(["gepa", "service", "--db"])
-        .arg(runtime_dir.join("gepa.sqlite"))
-        .arg("--bind")
-        .arg(addr.to_string())
-        .env("SYNTH_OPTIMIZER_API_KEY", ensure_api_key(home)?)
+        .arg(&db_path)
+        .args(["--bind", &addr.to_string()])
+        .args(["--instance-id", crate::instance::boot_epoch()])
+        .env("GEPA_HOME", &gepa_home)
+        .env_remove("SYNTH_WORKSHOP_INSTANCE_ID")
+        .env("SYNTH_OPTIMIZER_API_KEY", &api_key)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))
@@ -1036,30 +1845,132 @@ async fn launch_sidecar_upstream(
     Ok((Some(child), upstream_base_url, None))
 }
 
+fn optimizer_start_failure_detail(home: &Path, exit: &std::process::ExitStatus) -> String {
+    let prefix = format!("Optimizer sidecar exited during startup ({exit})");
+    let Ok(log) = fs::read_to_string(home.join("sidecar.log")) else {
+        return prefix;
+    };
+    let diagnostic = log
+        .lines()
+        .rev()
+        .find(|line| {
+            line.contains("already_running")
+                || line.contains("already running")
+                || line.contains("No space left on device")
+                || line.contains("database or disk is full")
+        })
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    diagnostic
+        .map(|line| format!("{prefix}: {line}"))
+        .unwrap_or(prefix)
+}
+
 #[cfg(unix)]
 fn isolate_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
     command.as_std_mut().process_group(0);
 }
 
+fn credential_runtime_lease_is_current(home: &Path, version: &str) -> bool {
+    let Ok(Some(lease)) =
+        crate::secrets::lease::read_runtime_lease(&home.join("runtime-lease.json"))
+    else {
+        return false;
+    };
+    if lease.version != version {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        if owned_process_group(lease.pid).is_none() {
+            return false;
+        }
+        let identity = crate::secrets::lease::process_start_identity(lease.pid);
+        if identity != lease.process_start_identity {
+            return false;
+        }
+    }
+    true
+}
+
+fn current_runtime_lease(home: &Path) -> Option<crate::secrets::OptimizerRuntimeLease> {
+    let lease = crate::secrets::lease::read_runtime_lease(&runtime_lease_path(home))
+        .ok()
+        .flatten()?;
+    if lease.instance_id != crate::instance::instance_id() {
+        return None;
+    }
+    if !sidecar_pid_is_alive(lease.pid) {
+        return None;
+    }
+    if crate::secrets::lease::process_start_identity(lease.pid) != lease.process_start_identity {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        let pgid = owned_process_group(lease.pid)?;
+        if lease
+            .process_group_id
+            .is_some_and(|expected| expected != pgid as u32)
+        {
+            return None;
+        }
+    }
+    Some(lease)
+}
+
 #[cfg(not(unix))]
 fn isolate_process_group(_command: &mut Command) {}
 
 #[cfg(unix)]
+fn owned_process_group(pid: u32) -> Option<libc::pid_t> {
+    // `kill(-1, signal)` broadcasts to every process the caller may signal.
+    // Never allow sentinel/system PIDs or a lossy u32 -> pid_t conversion to
+    // reach the negative-pid process-group API.
+    let pid = libc::pid_t::try_from(pid).ok().filter(|pid| *pid > 1)?;
+    unsafe {
+        // A recipe is spawned with process_group(0), so its pid must equal its
+        // pgid. Refuse stale, reused, or non-isolated PIDs instead of guessing.
+        let pgid = libc::getpgid(pid);
+        if pgid <= 1 || pgid != pid || pgid == libc::getpgrp() {
+            return None;
+        }
+        Some(pgid)
+    }
+}
+
+#[cfg(unix)]
 async fn terminate_process_groups(pids: &[u32]) {
-    for &pid in pids {
-        // Negative pid addresses the entire process group created at spawn.
+    let groups = pids
+        .iter()
+        .filter_map(|&pid| {
+            let group = owned_process_group(pid);
+            if group.is_none() {
+                crate::platform::logging::report(
+                    "optimizers",
+                    "eprintln",
+                    format!(
+                    "refusing to terminate optimizer process group for unsafe or unowned pid {pid}"
+                ),
+                );
+            }
+            group
+        })
+        .collect::<Vec<_>>();
+    for &pgid in &groups {
+        // Negative pid addresses only the verified isolated process group.
         unsafe {
-            libc::kill(-(pid as i32), libc::SIGTERM);
+            libc::kill(-pgid, libc::SIGTERM);
         }
     }
-    if !pids.is_empty() {
+    if !groups.is_empty() {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    for &pid in pids {
+    for &pgid in &groups {
         unsafe {
-            if libc::kill(-(pid as i32), 0) == 0 {
-                libc::kill(-(pid as i32), libc::SIGKILL);
+            if libc::kill(-pgid, 0) == 0 {
+                libc::kill(-pgid, libc::SIGKILL);
             }
         }
     }
@@ -1085,6 +1996,23 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Refuse a runtime older than the contract floor.
+///
+/// Install-time UX, not a safety property: it explains the refusal before a
+/// download instead of after a failed handshake. The handshake stays the gate,
+/// because a version number is the runtime's claim about itself and the
+/// capability response is the only thing that demonstrates anything.
+fn enforce_version_floor(version: &str) -> Result<()> {
+    if OPTIMIZERS_CONTRACT.meets_floor(version) {
+        return Ok(());
+    }
+    bail!(
+        "version_incompatible: optimizer sidecar `{version}` is older than the supported floor \
+         `{floor}`; install {floor} or newer",
+        floor = OPTIMIZERS_CONTRACT.min_supported
+    )
+}
+
 fn validate_version_id(version: &str) -> Result<()> {
     if version.is_empty()
         || version.len() > 64
@@ -1103,6 +2031,17 @@ fn validate_version_id(version: &str) -> Result<()> {
     Ok(())
 }
 
+/// True when an observer poll missed the producer for a gateway reason, not
+/// because the page itself was illegal. Shared by the GEPA, eval, and
+/// container-eval poll loops so a 502 is the same decision everywhere.
+pub(crate) fn observer_error_is_transient_gateway(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("returned 502")
+        || message.contains("returned 503")
+        || message.contains("returned 504")
+        || message.contains("poll managed optimizer event endpoint")
+}
+
 fn validate_optimizer_run_id(run_id: &str) -> Result<()> {
     if run_id.is_empty()
         || !run_id
@@ -1115,6 +2054,68 @@ fn validate_optimizer_run_id(run_id: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+/// What the in-process event endpoint does to one run's page, on request.
+///
+/// The stand-in normally answers every page. Observer-tolerance tests need it
+/// to *fail* in specific ways — a gateway outage that should be ridden out, a
+/// cross-run page that must stay fatal — without a real service to break.
+/// Keyed by run id so parallel tests cannot see each other's faults.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TestEventEndpointFault {
+    /// Answer with this HTTP status and no page.
+    Status(u16),
+    /// Answer 200 with a page for a different run.
+    CrossRun,
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_event_endpoint_fault(run_id: &str, fault: Option<TestEventEndpointFault>) {
+    let mut faults = test_event_endpoint_faults()
+        .lock()
+        .expect("event endpoint fault registry");
+    match fault {
+        Some(fault) => {
+            faults.insert(run_id.to_string(), fault);
+        }
+        None => {
+            faults.remove(run_id);
+        }
+    }
+}
+
+#[cfg(test)]
+fn test_event_endpoint_faults() -> &'static std::sync::Mutex<HashMap<String, TestEventEndpointFault>>
+{
+    static FAULTS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, TestEventEndpointFault>>> =
+        std::sync::OnceLock::new();
+    FAULTS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn injected_event_endpoint_fault(path_and_query: &str) -> Option<JsonHttpResponse> {
+    let (run_id, after_sequence, _) = parse_optimizer_events_request(path_and_query)?;
+    let fault = *test_event_endpoint_faults()
+        .lock()
+        .expect("event endpoint fault registry")
+        .get(&run_id)?;
+    Some(match fault {
+        TestEventEndpointFault::Status(code) => JsonHttpResponse::error(
+            StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY),
+            "injected event endpoint fault",
+        ),
+        TestEventEndpointFault::CrossRun => JsonHttpResponse::ok(json!({
+            "schema_version": "optimizer_event_page.v1",
+            "run_id": format!("{run_id}_someone_else"),
+            "after_sequence": after_sequence,
+            "next_sequence": after_sequence,
+            "terminal": false,
+            "slot": OPTIMIZER_VISUAL_SLOT,
+            "events": [],
+        })),
+    })
+}
+
 async fn serve_in_process_spool_page(
     run_spools: &Mutex<HashMap<String, RunSpoolState>>,
     path_and_query: &str,
@@ -1160,7 +2161,6 @@ async fn serve_in_process_spool_page(
     }))
 }
 
-#[cfg(test)]
 fn parse_optimizer_events_request(path_and_query: &str) -> Option<(String, u64, usize)> {
     let (path, query) = path_and_query
         .split_once('?')
@@ -1191,6 +2191,15 @@ fn parse_optimizer_events_request(path_and_query: &str) -> Option<(String, u64, 
 
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn distribution_digest(payload: &[u8], wheelhouse_manifest: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update((payload.len() as u64).to_be_bytes());
+    digest.update(payload);
+    digest.update((wheelhouse_manifest.len() as u64).to_be_bytes());
+    digest.update(wheelhouse_manifest);
+    format!("{:x}", digest.finalize())
 }
 
 fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
@@ -1283,13 +2292,170 @@ fn write_secret(path: &Path, value: &[u8], newline: bool) -> Result<()> {
     Ok(())
 }
 
-fn write_env_sh(home: &Path, api_key: &str, base_url: &str, version: &str) -> Result<()> {
+/// Export the live sidecar's address for a human or an agent to source.
+///
+/// Written only after the capability handshake succeeds, because this file is
+/// the most convincing thing in the directory and nothing else about it says
+/// whether the service behind it is alive. A copy left over from a previous
+/// run is what made the original incident read as "the sidecar never started":
+/// the port belonged to an in-process proxy that dies with the host, so after
+/// the fact it always looks dead. `writtenAt` and the epoch are here so a stale
+/// copy is self-evidently stale rather than merely wrong.
+///
+/// Mode 0600: it carries the bearer token in cleartext.
+fn write_env_sh(
+    home: &Path,
+    api_key: &str,
+    base_url: &str,
+    version: &str,
+    _epoch: &str,
+) -> Result<()> {
     fs::create_dir_all(home)?;
+    let written_at = chrono::Utc::now().to_rfc3339();
     let body = format!(
-        "export SYNTH_OPTIMIZER_HOST=\"127.0.0.1\"\nexport SYNTH_OPTIMIZER_BASE_URL=\"{base_url}\"\nexport SYNTH_OPTIMIZER_API_KEY=\"{api_key}\"\nexport SYNTH_OPTIMIZER_VERSION=\"{version}\"\n"
+        "# Written after a successful capability handshake. Removed on stop.\n\
+         # A copy of this file is not evidence that the service is running.\n\
+         export SYNTH_OPTIMIZER_HOST=\"127.0.0.1\"\n\
+         export SYNTH_OPTIMIZER_BASE_URL=\"{base_url}\"\n\
+         export SYNTH_OPTIMIZER_API_KEY=\"{api_key}\"\n\
+         export SYNTH_OPTIMIZER_VERSION=\"{version}\"\n\
+         export SYNTH_OPTIMIZER_WRITTEN_AT=\"{written_at}\"\n"
     );
-    fs::write(home.join("env.sh"), body)?;
-    Ok(())
+    write_secret(&home.join("env.sh"), body.as_bytes(), false)
+}
+
+/// Remove the exported address. Paired with every teardown path, so the file
+/// never outlives the service it describes.
+fn clear_env_sh(home: &Path) {
+    let _ = fs::remove_file(home.join("env.sh"));
+}
+
+fn runtime_lease_path(home: &Path) -> PathBuf {
+    home.join(RUNTIME_LEASE_FILE)
+}
+
+fn ensure_gepa_db(home: &Path) -> Result<PathBuf> {
+    let path = gepa_db_path(home);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if !path.is_file() {
+        fs::write(&path, b"")?;
+    }
+    Ok(path)
+}
+
+fn database_digest_of(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    Some(format!("sha256:{}", sha256_hex(&bytes)))
+}
+
+pub(crate) fn process_start_identity(pid: u32) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "lstart="])
+            .output()
+            .ok()?;
+        let identity = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return (!identity.is_empty()).then_some(identity);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        return stat.split_whitespace().nth(21).map(str::to_string);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+fn write_runtime_lease(
+    home: &Path,
+    pid: Option<u32>,
+    version: &str,
+    digest: &str,
+    epoch: &str,
+    service_url: &str,
+) -> Result<()> {
+    let db_path = ensure_gepa_db(home)?;
+    let pid = pid.ok_or_else(|| anyhow!("optimizer sidecar did not expose a child pid"))?;
+    let process_start_identity = crate::secrets::lease::process_start_identity(pid);
+    crate::secrets::lease::write_runtime_lease(
+        &runtime_lease_path(home),
+        &crate::secrets::OptimizerRuntimeLease {
+            schema_version: crate::secrets::lease::RUNTIME_LEASE_SCHEMA.into(),
+            pid,
+            process_start_identity,
+            process_group_id: runtime_process_group_id(pid),
+            service_url: service_url.into(),
+            database_digest: database_digest_of(&db_path)
+                .ok_or_else(|| anyhow!("optimizer database digest was unavailable"))?,
+            instance_id: crate::instance::instance_id(),
+            boot_epoch: crate::instance::boot_epoch().into(),
+            version: version.into(),
+            digest: digest.into(),
+            runtime_epoch: epoch.into(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+        },
+    )
+}
+
+#[cfg(unix)]
+fn runtime_process_group_id(pid: u32) -> Option<u32> {
+    owned_process_group(pid).map(|pgid| pgid as u32)
+}
+
+#[cfg(not(unix))]
+fn runtime_process_group_id(_pid: u32) -> Option<u32> {
+    None
+}
+
+fn clear_runtime_lease(home: &Path) {
+    let _ = fs::remove_file(runtime_lease_path(home));
+}
+
+pub(crate) fn runtime_lease_is_current(home: &Path) -> bool {
+    current_runtime_lease(home).is_some()
+}
+
+#[cfg(test)]
+fn want_real_child_fixture(home: &Path) -> bool {
+    home.join(TEST_REAL_CHILD_SENTINEL).is_file()
+}
+
+#[cfg(test)]
+fn spawn_fixture_hold_child(home: &Path, version: &str) -> Result<Child> {
+    let bin = installed_runtime_bin(home, version)?;
+    let mut command = Command::new(bin);
+    command
+        .arg("hold")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    isolate_process_group(&mut command);
+    command
+        .spawn()
+        .context("spawn fixture sidecar as a real child")
+}
+
+#[cfg(unix)]
+fn sidecar_pid_is_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid <= 1 {
+        return false;
+    }
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn sidecar_pid_is_alive(_pid: u32) -> bool {
+    false
 }
 
 fn read_selected_version(home: &Path) -> Result<Option<String>> {
@@ -1323,7 +2489,12 @@ fn load_verified_manifest(home: &Path, dir: &Path) -> Result<OptimizerSidecarVer
         .ok_or_else(|| anyhow!("sidecar manifest missing signature"))?
         .to_owned();
     let payload = fs::read(dir.join(PAYLOAD_FILE)).context("read sidecar payload")?;
-    let actual = sha256_hex(&payload);
+    let wheelhouse_manifest = fs::read(dir.join(WHEELHOUSE_MANIFEST_FILE))
+        .context("read optimizer wheelhouse manifest")?;
+    let wheelhouse: WheelhouseManifest = serde_json::from_slice(&wheelhouse_manifest)
+        .context("decode optimizer wheelhouse manifest")?;
+    verify_wheelhouse(dir, &wheelhouse)?;
+    let actual = distribution_digest(&payload, &wheelhouse_manifest);
     if actual != digest {
         bail!("optimizer sidecar `{version}` digest mismatch");
     }
@@ -1378,7 +2549,458 @@ fn retain_template_package(
             "retained": true,
         }))?,
     )?;
+    let staging_templates = home
+        .join("versions")
+        .join(format!("{sidecar_version}"))
+        .join("templates");
+    let _ = staging_templates;
     Ok(())
+}
+
+fn materialize_verified_distribution(
+    home: &Path,
+    staging: &Path,
+    spec: &OptimizerSidecarInstallSpec,
+) -> Result<OptimizerSidecarVersion> {
+    if force_digest_mismatch() {
+        fs::write(staging.join(PAYLOAD_FILE), b"tampered")?;
+        fs::write(
+            staging.join(WHEELHOUSE_MANIFEST_FILE),
+            serde_json::to_vec_pretty(&WheelhouseManifest {
+                schema_version: "synth.optimizer-wheelhouse.v1".into(),
+                artifacts: Vec::new(),
+            })?,
+        )?;
+        fs::write(
+            staging.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&json!({
+                "version": spec.version,
+                "digest": "deadbeef",
+                "signature": "invalid",
+            }))?,
+        )?;
+        return load_verified_manifest(home, staging);
+    }
+    let payload = serde_json::to_vec(&spec.payload).context("encode sidecar payload")?;
+    let artifacts = if fixture_install() {
+        materialize_fixture_runtime(staging, spec)?;
+        Vec::new()
+    } else {
+        materialize_uv_runtime(staging, spec)?
+    };
+    let wheelhouse = WheelhouseManifest {
+        schema_version: "synth.optimizer-wheelhouse.v1".into(),
+        artifacts,
+    };
+    let wheelhouse_manifest = serde_json::to_vec_pretty(&wheelhouse)?;
+    fs::write(staging.join(WHEELHOUSE_MANIFEST_FILE), &wheelhouse_manifest)?;
+    let digest = distribution_digest(&payload, &wheelhouse_manifest);
+    let signing_key = ensure_signing_key(home)?;
+    let signature = sign_manifest(&signing_key, &spec.version, &digest);
+    let manifest = json!({
+        "version": spec.version,
+        "digest": digest,
+        "signature": signature,
+        "algorithmId": spec.algorithm_id,
+        "algorithmVersion": spec.algorithm_version,
+        "recipeSchemaVersion": spec.recipe_schema_version,
+        "templates": spec.template_ids,
+        "package": "synth-optimizers",
+        "publisher": "Synth Laboratories",
+        "networkHost": "pypi.org",
+        "platform": std::env::consts::OS,
+        "workshopCompat": OPTIMIZERS_CONTRACT.workshop_compat,
+    });
+    fs::write(staging.join(PAYLOAD_FILE), &payload)?;
+    fs::write(
+        staging.join(MANIFEST_FILE),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
+    fs::write(
+        staging.join("package-lock.json"),
+        serde_json::to_vec_pretty(&json!({
+            "package": "synth-optimizers",
+            "version": spec.version,
+            "digest": format!("sha256:{digest}"),
+            "offline": true,
+            "wheelhouseManifest": WHEELHOUSE_MANIFEST_FILE,
+            "artifacts": wheelhouse.artifacts,
+        }))?,
+    )?;
+    let templates = staging.join("templates");
+    fs::create_dir_all(&templates)?;
+    for template_id in &spec.template_ids {
+        fs::write(
+            templates.join(format!("{template_id}.json")),
+            serde_json::to_vec_pretty(&json!({
+                "templateId": template_id,
+                "sidecarVersion": spec.version,
+                "digest": format!("sha256:{digest}"),
+            }))?,
+        )?;
+    }
+    prove_offline_version(staging, spec)?;
+    load_verified_manifest(home, staging)
+}
+
+fn fixture_install() -> bool {
+    if env::var("SYNTH_OPTIMIZER_LIVE_INSTALL").as_deref() == Ok("1") {
+        return false;
+    }
+    cfg!(test) || env::var("SYNTH_OPTIMIZER_FIXTURE_INSTALL").as_deref() == Ok("1")
+}
+
+fn materialize_fixture_runtime(staging: &Path, spec: &OptimizerSidecarInstallSpec) -> Result<()> {
+    let bin_dir = staging.join("runtime/bin");
+    fs::create_dir_all(&bin_dir)?;
+    let bin = bin_dir.join("synth-optimizers");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = \"--version\" ]; then echo synth-optimizers {}; exit 0; fi\n\
+                 if [ \"$1\" = \"hold\" ]; then exec /bin/sleep 3600; fi\n\
+                 exit 0\n",
+                spec.version
+            ),
+        )?;
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(&bin, spec.version.as_bytes())?;
+    }
+    Ok(())
+}
+
+fn materialize_uv_runtime(
+    staging: &Path,
+    spec: &OptimizerSidecarInstallSpec,
+) -> Result<Vec<WheelArtifact>> {
+    let uv = resolve_uv()?;
+    let runtime = staging.join("runtime");
+    let wheels = staging.join("wheels");
+    fs::create_dir_all(&wheels)?;
+    let status = std::process::Command::new(&uv)
+        .args(["venv", "--clear"])
+        .arg(&runtime)
+        .status()
+        .context("create optimizer runtime venv")?;
+    if !status.success() {
+        bail!("failed to create optimizer runtime venv");
+    }
+    let python = runtime.join("bin/python");
+    let package_source = optimizer_package_source(env::var_os("SYNTH_OPTIMIZER_WHEEL_FILE"), spec)?;
+    if package_source.is_absolute() && !package_source.is_file() {
+        bail!(
+            "optimizer wheel override does not exist: {}",
+            package_source.display()
+        );
+    }
+    let download = std::process::Command::new(&uv)
+        .args([
+            "run",
+            "--no-project",
+            "--with",
+            "pip",
+            "python",
+            "-m",
+            "pip",
+            "download",
+            "--only-binary=:all:",
+            "-d",
+        ])
+        .arg(&wheels)
+        .arg(&package_source)
+        .status()
+        .context("download optimizer wheel")?;
+    if !download.success() {
+        bail!("failed to download synth-optimizers=={}", spec.version);
+    }
+    let artifacts = collect_wheel_artifacts(&wheels)?;
+    let optimizer_prefix = format!("synth_optimizers-{}-", spec.version);
+    if !artifacts
+        .iter()
+        .any(|artifact| artifact.file_name.starts_with(&optimizer_prefix))
+    {
+        bail!(
+            "optimizer wheelhouse omitted synth-optimizers=={}",
+            spec.version
+        );
+    }
+    let install = std::process::Command::new(&uv)
+        .args([
+            "pip",
+            "install",
+            "--prerelease=allow",
+            "--offline",
+            "--no-index",
+            "--find-links",
+        ])
+        .arg(&wheels)
+        .arg("--python")
+        .arg(&python)
+        .arg(format!("synth-optimizers=={}", spec.version))
+        .status()
+        .context("install optimizer wheel offline")?;
+    if !install.success() {
+        bail!(
+            "failed to install synth-optimizers=={} offline",
+            spec.version
+        );
+    }
+    write_relocatable_optimizer_launcher(&runtime)?;
+    Ok(artifacts)
+}
+
+/// An isolated CUA launch deliberately forwards a small allowlist of optional
+/// inputs. Shells represent an omitted optional value as `NAME=""`, so an
+/// empty override must mean the same thing as no override. Passing it through
+/// to `pip download` succeeds without a requirement and leaves an empty
+/// wheelhouse, which makes the product's Install action fail later with a
+/// misleading integrity error.
+fn optimizer_wheel_override(override_path: Option<OsString>) -> Option<PathBuf> {
+    override_path
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn optimizer_package_source(
+    override_path: Option<OsString>,
+    spec: &OptimizerSidecarInstallSpec,
+) -> Result<PathBuf> {
+    if let Some(path) = optimizer_wheel_override(override_path) {
+        return Ok(path);
+    }
+    embedded_optimizer_wheel(spec)
+}
+
+fn embedded_optimizer_wheel(spec: &OptimizerSidecarInstallSpec) -> Result<PathBuf> {
+    let executable = std::env::current_exe().context("resolve Workshop executable")?;
+    let root = executable
+        .parent()
+        .and_then(Path::parent)
+        .map(|contents| contents.join("Resources/runtimes/optimizers"))
+        .ok_or_else(|| anyhow!("resolve Workshop Resources directory"))?;
+    read_embedded_optimizer_wheel(&root, spec)
+}
+
+fn read_embedded_optimizer_wheel(
+    root: &Path,
+    spec: &OptimizerSidecarInstallSpec,
+) -> Result<PathBuf> {
+    let distribution: EmbeddedOptimizerDistribution = serde_json::from_slice(
+        &fs::read(root.join(EMBEDDED_DISTRIBUTION_MANIFEST_FILE))
+            .context("read embedded Optimizers distribution manifest")?,
+    )
+    .context("decode embedded Optimizers distribution manifest")?;
+    if distribution.schema_version != EMBEDDED_DISTRIBUTION_SCHEMA
+        || distribution.package != "synth-optimizers"
+        || distribution.version != spec.version
+        || distribution.source_revision != OPTIMIZER_DISTRIBUTION_SOURCE_REVISION
+        || distribution.lock_sha256 != OPTIMIZER_DISTRIBUTION_LOCK_SHA256
+    {
+        bail!("embedded Optimizers distribution does not match the release pin");
+    }
+    let artifact = distribution.artifact;
+    if artifact.file_name.contains('/') || artifact.file_name.contains('\\') {
+        bail!("embedded Optimizers distribution has an unsafe wheel name");
+    }
+    let expected_prefix = format!("synth_optimizers-{}-", spec.version);
+    if !artifact.file_name.starts_with(&expected_prefix) {
+        bail!(
+            "embedded Optimizers distribution omitted synth-optimizers=={}",
+            spec.version
+        );
+    }
+    let wheel = root.join("wheels").join(&artifact.file_name);
+    let bytes = fs::read(&wheel)
+        .with_context(|| format!("read embedded Optimizers wheel {}", artifact.file_name))?;
+    if bytes.len() as u64 != artifact.size_bytes || sha256_hex(&bytes) != artifact.sha256 {
+        bail!("embedded Optimizers wheel failed digest verification");
+    }
+    Ok(wheel)
+}
+
+#[cfg(unix)]
+fn write_relocatable_optimizer_launcher(runtime: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let launcher = runtime.join("bin/synth-optimizers");
+    fs::write(
+        &launcher,
+        b"#!/bin/sh\nset -eu\nbin_dir=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nexec \"$bin_dir/python\" -m synth_optimizers.cli \"$@\"\n",
+    )
+    .context("write relocatable synth-optimizers launcher")?;
+    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755))
+        .context("mark relocatable synth-optimizers launcher executable")?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_relocatable_optimizer_launcher(_runtime: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn collect_wheel_artifacts(wheels: &Path) -> Result<Vec<WheelArtifact>> {
+    let mut artifacts = Vec::new();
+    for entry in fs::read_dir(wheels).context("read optimizer wheelhouse")? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("whl") {
+            continue;
+        }
+        let bytes =
+            fs::read(&path).with_context(|| format!("hash optimizer wheel {}", path.display()))?;
+        artifacts.push(WheelArtifact {
+            file_name: entry.file_name().to_string_lossy().into_owned(),
+            sha256: sha256_hex(&bytes),
+            size_bytes: bytes.len() as u64,
+        });
+    }
+    artifacts.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+    if artifacts.is_empty() {
+        bail!("optimizer wheelhouse is empty");
+    }
+    Ok(artifacts)
+}
+
+fn verify_wheelhouse(root: &Path, manifest: &WheelhouseManifest) -> Result<()> {
+    if manifest.schema_version != "synth.optimizer-wheelhouse.v1" {
+        bail!("optimizer wheelhouse manifest schema is unsupported");
+    }
+    for artifact in &manifest.artifacts {
+        if artifact.file_name.contains('/') || artifact.file_name.contains('\\') {
+            bail!("optimizer wheelhouse manifest contains an invalid file name");
+        }
+        let path = root.join("wheels").join(&artifact.file_name);
+        let bytes =
+            fs::read(&path).with_context(|| format!("read optimizer wheel {}", path.display()))?;
+        if bytes.len() as u64 != artifact.size_bytes || sha256_hex(&bytes) != artifact.sha256 {
+            bail!("optimizer wheel `{}` digest mismatch", artifact.file_name);
+        }
+    }
+    Ok(())
+}
+
+fn prove_offline_version(staging: &Path, spec: &OptimizerSidecarInstallSpec) -> Result<()> {
+    let bin = staging.join("runtime/bin/synth-optimizers");
+    if !bin.is_file() {
+        bail!("optimizer runtime omitted synth-optimizers executable");
+    }
+    if fixture_install() {
+        let output = std::process::Command::new(&bin)
+            .arg("--version")
+            .output()
+            .context("prove fixture optimizer runtime")?;
+        if !output.status.success()
+            || !String::from_utf8_lossy(&output.stdout).contains(&spec.version)
+        {
+            bail!(
+                "fixture optimizer runtime did not identify {}",
+                spec.version
+            );
+        }
+        return Ok(());
+    }
+    let python = staging.join("runtime/bin/python");
+    if !python.is_file() {
+        bail!("optimizer runtime omitted its Python executable");
+    }
+    let output = std::process::Command::new(&python)
+        .args([
+            "-c",
+            "import importlib.metadata as m; import synth_optimizers; print(m.version('synth-optimizers'))",
+        ])
+        .env("UV_OFFLINE", "1")
+        .env("UV_NO_NETWORK", "1")
+        .output()
+        .context("prove installed synth-optimizers metadata offline")?;
+    if !output.status.success() {
+        bail!("installed synth-optimizers import failed offline");
+    }
+    if String::from_utf8_lossy(&output.stdout).trim() != spec.version {
+        bail!(
+            "installed synth-optimizers metadata did not identify {}",
+            spec.version
+        );
+    }
+    let cli = std::process::Command::new(&bin)
+        .arg("--help")
+        .env("UV_OFFLINE", "1")
+        .env("UV_NO_NETWORK", "1")
+        .output()
+        .context("prove installed synth-optimizers CLI offline")?;
+    if !cli.status.success() {
+        bail!("installed synth-optimizers CLI failed offline");
+    }
+    Ok(())
+}
+
+fn read_capabilities(home: &Path) -> Option<Value> {
+    serde_json::from_slice(&fs::read(home.join("capabilities.json")).ok()?).ok()
+}
+
+/// Drop the stored handshake. Capabilities are evidence about one installed
+/// version; they are lifecycle state, not durable configuration, and outliving
+/// their version is how a stale attestation keeps satisfying gates.
+fn clear_stored_capabilities(home: &Path) {
+    let _ = fs::remove_file(home.join("capabilities.json"));
+}
+
+/// Does this 404 mean "no such route" rather than "no such run"?
+///
+/// The two arrive as the same status but mean opposite things for a live run:
+/// a run that is not indexed yet may appear at any moment, while a route that
+/// does not exist will never appear, so retrying it only pays for rollouts
+/// nobody can ingest. `synth-optimizers` 0.2.5 labels both `run_not_found` —
+/// its unknown-route fallback reuses the run code — so the distinction is only
+/// available from runtimes that report it, and absence means "assume the
+/// retryable one" rather than guessing.
+fn events_not_found_is_missing_route(body: &Value) -> bool {
+    body.get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str)
+        == Some("route_not_found")
+}
+
+/// Bound a diagnostic string and strip anything credential-shaped. Upstream
+/// bodies are echoed into errors and logs, and the sidecar's bearer token is
+/// the one secret in scope, so a stack trace that quotes a request must not
+/// carry it along.
+fn truncate_detail(detail: &str) -> String {
+    const LIMIT: usize = 320;
+    let redacted = redact_optimizer_secrets(detail.trim());
+    if redacted.chars().count() <= LIMIT {
+        return redacted;
+    }
+    let head: String = redacted.chars().take(LIMIT).collect();
+    format!("{head}… (truncated)")
+}
+
+fn redact_optimizer_secrets(detail: &str) -> String {
+    let mut out = detail.to_owned();
+    // The key is minted by this process, so redact the live value rather than
+    // pattern-matching a format that may change.
+    if let Ok(key) = env::var("SYNTH_OPTIMIZER_API_KEY") {
+        if key.len() >= 8 {
+            out = out.replace(&key, "[redacted]");
+        }
+    }
+    out
+}
+
+async fn upstream_failure_detail(response: reqwest::Response) -> String {
+    let status = response.status();
+    match response.text().await {
+        Ok(text) if !text.trim().is_empty() => {
+            format!("upstream {status}: {}", truncate_detail(&text))
+        }
+        _ => format!("upstream {status}"),
+    }
 }
 
 fn health_body(hit: &OptimizerSidecarVersion) -> Value {
@@ -1392,12 +3014,25 @@ fn health_body(hit: &OptimizerSidecarVersion) -> Value {
     })
 }
 
+fn truncate_diagnostic(value: &str, max_chars: usize) -> String {
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        truncated.push_str("… (truncated)");
+    }
+    truncated
+}
+
+fn diagnostic_error_message(error: &anyhow::Error) -> String {
+    truncate_diagnostic(&error.to_string(), 2_000)
+}
+
 async fn route_sidecar(
     request: JsonHttpRequest,
     token: &str,
     upstream_base_url: &str,
     client: &Client,
     mut health: Value,
+    training: &TrainingRuntime,
 ) -> JsonHttpResponse {
     let auth = request
         .authorization
@@ -1412,7 +3047,7 @@ async fn route_sidecar(
         .next()
         .unwrap_or(request.path.as_str());
     match (request.method.as_str(), path) {
-        ("GET", "/health") | ("GET", "/v1/optimizer/capabilities") => {
+        ("GET", "/health") => {
             let upstream = client
                 .get(format!("{upstream_base_url}/health"))
                 .timeout(crate::limits::OPTIMIZER_SIDECAR_HEALTH_TIMEOUT)
@@ -1448,6 +3083,46 @@ async fn route_sidecar(
             }
             JsonHttpResponse::ok(health)
         }
+        ("GET", "/v1/optimizer/capabilities") => {
+            let upstream = client
+                .get(format!("{upstream_base_url}/v1/optimizer/capabilities"))
+                .timeout(crate::limits::OPTIMIZER_SIDECAR_HEALTH_TIMEOUT)
+                .send()
+                .await;
+            let Ok(upstream) = upstream else {
+                return JsonHttpResponse::error(
+                    StatusCode::BAD_GATEWAY,
+                    "optimizer capability endpoint is unavailable",
+                );
+            };
+            // Preserve the upstream status. Collapsing everything to 502 made a
+            // runtime that never implemented this route indistinguishable from
+            // one that had crashed — the difference between "upgrade the
+            // plugin" and "restart the service", reported identically.
+            let status = upstream.status();
+            if !status.is_success() {
+                let detail = upstream_failure_detail(upstream).await;
+                if status == StatusCode::NOT_FOUND {
+                    return JsonHttpResponse::error(
+                        StatusCode::NOT_FOUND,
+                        format!("optimizer_capability_route_missing: {detail}"),
+                    );
+                }
+                return JsonHttpResponse::error(
+                    status,
+                    format!("optimizer capability endpoint failed: {detail}"),
+                );
+            }
+            match upstream.json::<Value>().await {
+                Ok(body) => {
+                    JsonHttpResponse::ok(super::sidecar_training::merge_training_capabilities(body))
+                }
+                Err(_) => JsonHttpResponse::error(
+                    StatusCode::BAD_GATEWAY,
+                    "optimizer service returned invalid capabilities",
+                ),
+            }
+        }
         ("GET", path) if path.starts_with("/runs/") && path.ends_with("/optimizer-events") => {
             let upstream = client
                 .get(format!("{upstream_base_url}{}", request.path))
@@ -1460,18 +3135,36 @@ async fn route_sidecar(
                     "optimizer event endpoint is unavailable",
                 );
             };
+            // A non-JSON body must not rewrite the status. Reporting a plain
+            // 404 as 502 turned a retryable "run not indexed yet" into a fatal
+            // error on the poll loop's first tick, killing runs that were only
+            // a moment from registering.
             let status = upstream.status();
-            let Ok(body) = upstream.json::<Value>().await else {
-                return JsonHttpResponse::error(
+            let text = upstream.text().await.unwrap_or_default();
+            let parsed = serde_json::from_str::<Value>(&text).ok();
+            match (status.is_success(), parsed) {
+                (true, Some(body)) => JsonHttpResponse::ok(body),
+                (true, None) => JsonHttpResponse::error(
                     StatusCode::BAD_GATEWAY,
                     "optimizer event endpoint returned invalid JSON",
-                );
-            };
-            if status.is_success() {
-                JsonHttpResponse::ok(body)
-            } else {
-                JsonHttpResponse::error(status, body.to_string())
+                ),
+                (false, Some(body)) => JsonHttpResponse::error(status, body.to_string()),
+                (false, None) => JsonHttpResponse::error(status, truncate_detail(&text)),
             }
+        }
+        (_, path)
+            if path
+                .split('?')
+                .next()
+                .unwrap_or(path)
+                .starts_with("/v1/training/")
+                || path
+                    .split('?')
+                    .next()
+                    .unwrap_or(path)
+                    .starts_with("/v1/inference/") =>
+        {
+            training.handle(&request).await
         }
         _ => JsonHttpResponse::error(StatusCode::NOT_FOUND, "not found"),
     }
@@ -1534,25 +3227,34 @@ pub async fn optimizer_sidecar_status(
 #[tauri::command]
 #[specta::specta]
 pub async fn optimizer_sidecar_install(
+    app: tauri::AppHandle,
     state: State<'_, Arc<OptimizerManager>>,
+    codex: State<'_, Arc<crate::codex::CodexManager>>,
     version: Option<String>,
 ) -> Result<OptimizerSidecarVersion, AppError> {
+    authorize_sidecar(&app, &codex, "install").await?;
     state.install(version.as_deref()).map_err(AppError::from)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn optimizer_sidecar_start(
+    app: tauri::AppHandle,
     state: State<'_, Arc<OptimizerManager>>,
+    codex: State<'_, Arc<crate::codex::CodexManager>>,
 ) -> Result<OptimizerSidecarStatus, AppError> {
+    authorize_sidecar(&app, &codex, "start").await?;
     state.start().await.map_err(AppError::from)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn optimizer_sidecar_stop(
+    app: tauri::AppHandle,
     state: State<'_, Arc<OptimizerManager>>,
+    codex: State<'_, Arc<crate::codex::CodexManager>>,
 ) -> Result<OptimizerSidecarStatus, AppError> {
+    authorize_sidecar(&app, &codex, "stop").await?;
     state.stop().await.map_err(AppError::from)
 }
 
@@ -1567,13 +3269,36 @@ pub async fn optimizer_sidecar_version(
 #[tauri::command]
 #[specta::specta]
 pub async fn optimizer_sidecar_uninstall(
+    app: tauri::AppHandle,
     state: State<'_, Arc<OptimizerManager>>,
     core: State<'_, Arc<crate::CoreRuntime>>,
+    codex: State<'_, Arc<crate::codex::CodexManager>>,
     version: String,
 ) -> Result<OptimizerSidecarStatus, AppError> {
+    authorize_sidecar(&app, &codex, "uninstall").await?;
     state
         .uninstall(&version, core.optimizers())
         .await
+        .map_err(AppError::from)
+}
+
+async fn authorize_sidecar(
+    app: &tauri::AppHandle,
+    codex: &crate::codex::CodexManager,
+    action: &str,
+) -> Result<(), AppError> {
+    codex
+        .approvals
+        .authorize_host(
+            app,
+            None,
+            crate::session::approval::ApprovalKind::SidecarLifecycle {
+                sidecar: "optimizers".into(),
+                action: action.into(),
+            },
+        )
+        .await
+        .map(|_| ())
         .map_err(AppError::from)
 }
 
@@ -1605,6 +3330,147 @@ mod tests {
     fn manager() -> (OptimizerManager, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         (OptimizerManager::with_home(dir.path().to_path_buf()), dir)
+    }
+
+    #[test]
+    fn developer_project_supervises_real_venv_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let bin = dir.path().join(".venv/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let executable = bin.join("synth-optimizers");
+        fs::write(&executable, b"prepared optimizer runtime").unwrap();
+
+        let command = developer_project_command(home.path(), "0.2.19", dir.path()).unwrap();
+        assert_eq!(Path::new(command.as_std().get_program()), executable);
+        assert_ne!(command.as_std().get_program(), std::ffi::OsStr::new("uv"));
+    }
+
+    #[test]
+    fn staged_project_without_venv_overlays_installed_runtime() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join("versions/0.2.19/runtime/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let executable = bin.join("synth-optimizers");
+        fs::write(&executable, b"installed optimizer runtime").unwrap();
+
+        let command = developer_project_command(home.path(), "0.2.19", project.path()).unwrap();
+        let expected_pythonpath = project.path().join("src");
+        assert_eq!(Path::new(command.as_std().get_program()), executable);
+        assert_eq!(
+            command
+                .as_std()
+                .get_envs()
+                .find(|(key, _)| *key == std::ffi::OsStr::new("PYTHONPATH"))
+                .and_then(|(_, value)| value),
+            Some(expected_pythonpath.as_os_str())
+        );
+    }
+
+    #[test]
+    fn blank_optimizer_wheel_override_is_not_a_package_source() {
+        assert_eq!(optimizer_wheel_override(Some(OsString::new())), None);
+    }
+
+    #[test]
+    fn optimizer_wheel_override_preserves_a_real_wheel_path() {
+        let path = PathBuf::from("/tmp/synth_optimizers-0.2.19.whl");
+        assert_eq!(
+            optimizer_wheel_override(Some(path.clone().into_os_string())),
+            Some(path)
+        );
+    }
+
+    #[test]
+    fn embedded_optimizer_wheel_requires_the_release_manifest_and_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let wheels = dir.path().join("wheels");
+        fs::create_dir_all(&wheels).unwrap();
+        let file_name = format!("synth_optimizers-{OFFICIAL_SIDECAR_VERSION}-test.whl");
+        let bytes = b"verified bundled wheel";
+        let wheel = wheels.join(&file_name);
+        fs::write(&wheel, bytes).unwrap();
+        let distribution = EmbeddedOptimizerDistribution {
+            schema_version: EMBEDDED_DISTRIBUTION_SCHEMA.into(),
+            package: "synth-optimizers".into(),
+            version: OFFICIAL_SIDECAR_VERSION.into(),
+            source_revision: OPTIMIZER_DISTRIBUTION_SOURCE_REVISION.into(),
+            lock_sha256: OPTIMIZER_DISTRIBUTION_LOCK_SHA256.into(),
+            artifact: WheelArtifact {
+                file_name,
+                sha256: sha256_hex(bytes),
+                size_bytes: bytes.len() as u64,
+            },
+        };
+        fs::write(
+            dir.path().join(EMBEDDED_DISTRIBUTION_MANIFEST_FILE),
+            serde_json::to_vec(&distribution).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_embedded_optimizer_wheel(dir.path(), &catalog_spec(OFFICIAL_SIDECAR_VERSION))
+                .unwrap(),
+            wheel
+        );
+
+        fs::write(&wheel, b"tampered bundled wheel").unwrap();
+        let error =
+            read_embedded_optimizer_wheel(dir.path(), &catalog_spec(OFFICIAL_SIDECAR_VERSION))
+                .unwrap_err();
+        assert!(error.to_string().contains("digest"));
+    }
+
+    #[tokio::test]
+    async fn gepa_admission_queue_bounds_concurrent_children() {
+        let (manager, _) = manager();
+        let first = manager.gepa_capacity.clone().acquire_owned().await.unwrap();
+        let second = manager.gepa_capacity.clone().acquire_owned().await.unwrap();
+        assert!(tokio::time::timeout(
+            Duration::from_millis(10),
+            manager.gepa_capacity.clone().acquire_owned()
+        )
+        .await
+        .is_err());
+        drop(first);
+        assert!(tokio::time::timeout(
+            Duration::from_millis(100),
+            manager.gepa_capacity.clone().acquire_owned()
+        )
+        .await
+        .is_ok());
+        drop(second);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn optimizer_launcher_survives_staging_activation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join(".staging-runtime");
+        let runtime = staging.join("runtime");
+        let bin = runtime.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let python = bin.join("python");
+        fs::write(&python, b"#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        fs::set_permissions(&python, fs::Permissions::from_mode(0o755)).unwrap();
+
+        write_relocatable_optimizer_launcher(&runtime).unwrap();
+        let activated = dir.path().join("0.2.9.dev20260814");
+        fs::rename(&staging, &activated).unwrap();
+        let output = std::process::Command::new(activated.join("runtime/bin/synth-optimizers"))
+            .arg("--help")
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("-m"));
+        assert!(stdout.contains("synth_optimizers.cli"));
+        assert!(stdout.contains("--help"));
+        assert!(!stdout.contains(".staging-runtime"));
     }
 
     async fn seed_run(service: &OptimizerService) -> OptimizerRunRecord {
@@ -1673,9 +3539,21 @@ mod tests {
         let (mgr, _home) = manager();
         let run = seed_run(&svc).await;
         mgr.install(None).unwrap();
+        assert!(!mgr.home().join("env.sh").exists());
         let started = mgr.start().await.unwrap();
         assert_eq!(started.phase, "ready");
         assert!(started.base_url.is_some());
+        let env_path = mgr.home().join("env.sh");
+        let env_body = fs::read_to_string(&env_path).unwrap();
+        assert!(env_body.contains("SYNTH_OPTIMIZER_WRITTEN_AT"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&env_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         let (pinned, pin) = mgr
             .pin_run(&svc, &run.id, "gepa.banking77.smoke.v1")
             .await
@@ -1684,6 +3562,7 @@ mod tests {
         assert!(Path::new(&pin.spool_path).join("identity.json").is_file());
         let stopped = mgr.stop().await.unwrap();
         assert_ne!(stopped.phase, "ready");
+        assert!(!env_path.exists());
         let kept = svc.get(run.id.clone()).await.unwrap();
         assert_eq!(kept.id, run.id);
         assert!(kept.cursor_seq >= 1);
@@ -1698,6 +3577,183 @@ mod tests {
             }
         }
         assert!(saw_bus, "pin must still publish optimizer.run.updated");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn intentional_restart_cannot_be_overwritten_by_retired_child_watcher() {
+        let (mgr, _home) = manager();
+        mgr.enable_real_child_fixture().unwrap();
+        mgr.install(None).unwrap();
+
+        assert_eq!(mgr.start().await.unwrap().phase, "ready");
+        let first_pid = mgr.sidecar_child_pid().await.unwrap();
+        assert_ne!(mgr.stop().await.unwrap().phase, "error");
+        assert_eq!(mgr.start().await.unwrap().phase, "ready");
+        let second_pid = mgr.sidecar_child_pid().await.unwrap();
+        assert_ne!(first_pid, second_pid);
+
+        // Give the SIGTERM from the retired generation enough time to be
+        // observed if its watcher was not invalidated and joined first.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let status = mgr.status().await;
+        assert_eq!(status.phase, "ready");
+        assert!(!status.detail.unwrap_or_default().contains("child exited"));
+        let _ = mgr.stop().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_group_cleanup_refuses_host_and_sentinel_pids() {
+        assert_eq!(owned_process_group(0), None);
+        assert_eq!(owned_process_group(1), None);
+        assert_eq!(owned_process_group(u32::MAX), None);
+        assert_eq!(owned_process_group(std::process::id()), None);
+
+        // This child inherits the test runner's process group. Cleanup must
+        // refuse it rather than signaling the test runner and its host apps.
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        assert_eq!(owned_process_group(pid), None);
+        terminate_process_groups(&[0, 1, u32::MAX, std::process::id(), pid]).await;
+        assert!(child.try_wait().unwrap().is_none());
+        child.kill().await.unwrap();
+        child.wait().await.unwrap();
+    }
+
+    /// P1-3. The fixture binary is a real OS child. SIGKILL of *that* pid —
+    /// not a name sweep — must flip status to `error` and delete the lease
+    /// within the health interval, not wait for the next renderer poll.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_exit_sets_error_and_clears_lease_within_3s() {
+        let (mgr, home) = manager();
+        mgr.enable_real_child_fixture().unwrap();
+        mgr.install(None).unwrap();
+        let started = mgr.start().await.unwrap();
+        assert_eq!(started.phase, "ready");
+        let lease = home.path().join(RUNTIME_LEASE_FILE);
+        assert!(lease.is_file(), "handshake must write runtime-lease.json");
+        assert!(
+            runtime_lease_is_current(home.path()),
+            "a live fixture child must make the runtime lease current"
+        );
+        let pid = mgr
+            .sidecar_child_pid()
+            .await
+            .expect("fixture sidecar must be a real child");
+        let pid = libc::pid_t::try_from(pid).expect("child pid");
+        unsafe {
+            assert_eq!(
+                libc::kill(pid, libc::SIGKILL),
+                0,
+                "kill -9 of spawned child"
+            );
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let status = mgr.status().await;
+            if status.phase == "error" && !lease.exists() {
+                assert!(
+                    status
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.contains("exited")),
+                    "error detail must name the exit, got {:?}",
+                    status.detail
+                );
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!(
+                    "child-exit watcher did not settle: phase={}, lease_exists={}",
+                    status.phase,
+                    lease.exists()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(!home.path().join("env.sh").exists());
+        let _ = mgr.stop().await;
+    }
+
+    /// A normal app process can disappear before its async RunEvent drain
+    /// completes. The next manager must use the durable lease to terminate the
+    /// previous boot's process before it starts a replacement.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fresh_boot_start_reconciles_leased_sidecar_before_replacement() {
+        let home = tempfile::tempdir().unwrap();
+        let first = OptimizerManager::with_home(home.path().to_path_buf());
+        first.enable_real_child_fixture().unwrap();
+        first.install(None).unwrap();
+        first.start().await.unwrap();
+        let first_pid = first.sidecar_child_pid().await.unwrap();
+        assert!(sidecar_pid_is_alive(first_pid));
+
+        // Constructing a new manager models a new Workshop boot: it has no
+        // in-memory Child, but it shares the instance-scoped durable lease.
+        let second = OptimizerManager::with_home(home.path().to_path_buf());
+        second.enable_real_child_fixture().unwrap();
+        let before = second.refresh().await;
+        assert_eq!(before.phase, "degraded");
+        assert!(before
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("previous Workshop process")));
+
+        second.start().await.unwrap();
+        let second_pid = second.sidecar_child_pid().await.unwrap();
+        assert_ne!(first_pid, second_pid);
+        assert!(!sidecar_pid_is_alive(first_pid));
+        assert!(sidecar_pid_is_alive(second_pid));
+        assert!(runtime_lease_is_current(home.path()));
+
+        second.stop().await.unwrap();
+        assert!(!sidecar_pid_is_alive(second_pid));
+        assert!(!home.path().join(RUNTIME_LEASE_FILE).exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fresh_boot_stop_terminates_leased_sidecar_without_in_memory_child() {
+        let home = tempfile::tempdir().unwrap();
+        let first = OptimizerManager::with_home(home.path().to_path_buf());
+        first.enable_real_child_fixture().unwrap();
+        first.install(None).unwrap();
+        first.start().await.unwrap();
+        let pid = first.sidecar_child_pid().await.unwrap();
+        assert!(sidecar_pid_is_alive(pid));
+
+        let second = OptimizerManager::with_home(home.path().to_path_buf());
+        second.stop().await.unwrap();
+        assert!(!sidecar_pid_is_alive(pid));
+        assert!(!home.path().join(RUNTIME_LEASE_FILE).exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn database_digest_is_some_after_start() {
+        let (mgr, _home) = manager();
+        mgr.enable_real_child_fixture().unwrap();
+        mgr.install(None).unwrap();
+        let started = mgr.start().await.unwrap();
+        assert_eq!(started.phase, "ready");
+        let digest = mgr.lease_database_digest();
+        assert!(
+            digest
+                .as_deref()
+                .is_some_and(|value| value.starts_with("sha256:")),
+            "lease must digest runtime/gepa.sqlite via gepa_db_path, got {digest:?}"
+        );
+        let _ = mgr.stop().await;
     }
 
     #[cfg(unix)]
@@ -1717,7 +3773,7 @@ mod tests {
         let pid = child.id().unwrap();
         manager.gepa_workers.lock().await.insert(
             "gepa_shutdown_probe".into(),
-            GepaWorkerState::Running { pid },
+            GepaWorkerState::Running { pid, _permit: None },
         );
 
         let supervisor = crate::services::ServiceSupervisor::new();
@@ -1755,7 +3811,7 @@ mod tests {
         let pid = child.id().unwrap();
         mgr.gepa_workers.lock().await.insert(
             "gepa_release_probe".into(),
-            GepaWorkerState::Running { pid },
+            GepaWorkerState::Running { pid, _permit: None },
         );
 
         mgr.release_gepa_recipe("gepa_release_probe").await;
@@ -1835,6 +3891,8 @@ mod tests {
         let visual_id = run.visual_refs[0].id.clone();
         mgr.install(None).unwrap();
         mgr.start().await.unwrap();
+        assert!(mgr.home().join("capabilities.json").is_file());
+        assert!(mgr.home().join("env.sh").is_file());
         let (pinned, pin) = mgr
             .pin_run(&svc, &run.id, "gepa.banking77.smoke.v1")
             .await
@@ -1853,6 +3911,8 @@ mod tests {
         svc.persist_run(completed).await.unwrap();
         mgr.uninstall(DEFAULT_SIDECAR_VERSION, &svc).await.unwrap();
         assert!(mgr.discover().unwrap().is_empty());
+        assert!(!mgr.home().join("capabilities.json").exists());
+        assert!(!mgr.home().join("env.sh").exists());
         let kept = svc.get(run.id.clone()).await.unwrap();
         assert_eq!(kept.id, run.id);
         let events = svc.events_after(run.id.clone(), 0, None).await.unwrap();
@@ -1939,6 +3999,7 @@ mod tests {
         });
         let client = crate::http::http_client();
         let health = json!({"status":"ok"});
+        let training = TrainingRuntime::new();
         let denied = route_sidecar(
             JsonHttpRequest {
                 method: hyper::Method::GET,
@@ -1946,11 +4007,13 @@ mod tests {
                 authorization: None,
                 body: Value::Null,
                 raw_headers: hyper::HeaderMap::new(),
+                peer: None,
             },
             "secret",
             &upstream,
             &client,
             health.clone(),
+            &training,
         )
         .await;
         assert_eq!(denied.status, StatusCode::UNAUTHORIZED);
@@ -1961,11 +4024,13 @@ mod tests {
                 authorization: Some("Bearer secret".into()),
                 body: Value::Null,
                 raw_headers: hyper::HeaderMap::new(),
+                peer: None,
             },
             "secret",
             &upstream,
             &client,
             health,
+            &training,
         )
         .await;
         assert_eq!(allowed.status, StatusCode::OK);
@@ -1976,11 +4041,13 @@ mod tests {
                 authorization: Some("Bearer secret".into()),
                 body: Value::Null,
                 raw_headers: hyper::HeaderMap::new(),
+                peer: None,
             },
             "secret",
             &upstream,
             &client,
             json!({"status":"ok"}),
+            &training,
         )
         .await;
         assert_eq!(events.status, StatusCode::OK);
@@ -2003,10 +4070,12 @@ mod tests {
                 stdout,
                 stderr,
                 "sk-test",
+                None,
+                &[],
             )
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("ensure_ready"), "{error:#}");
+        assert!(error.to_string().contains("plugin"), "{error:#}");
     }
 
     #[tokio::test]
@@ -2025,6 +4094,55 @@ mod tests {
         let _ = mgr.stop().await;
     }
 
+    /// A5. A missing route and a missing run share a status and must not share
+    /// a fate: one is worth retrying, the other is worth failing on. 0.2.5
+    /// cannot express the difference — its unknown-route fallback reuses the
+    /// `run_not_found` code — so an unlabelled 404 stays retryable and only an
+    /// explicit `route_not_found` short-circuits.
+    ///
+    /// Classification is asserted directly rather than through the in-process
+    /// fake: teaching the fake to emit a code the pinned artifact never emits
+    /// would make it diverge from the thing it stands in for, which is how this
+    /// subsystem's suite came to pass over a missing endpoint in the first
+    /// place. End-to-end coverage belongs to the real-artifact contract test.
+    #[test]
+    fn a_missing_route_is_distinguished_from_a_missing_run() {
+        assert!(events_not_found_is_missing_route(&json!({
+            "error": { "code": "route_not_found", "message": "route not found: GET /runs/x" }
+        })));
+
+        // What 0.2.5 actually returns for BOTH cases — verified live against the
+        // installed wheel. Must stay retryable, or every run on a current
+        // sidecar dies on its first poll.
+        assert!(!events_not_found_is_missing_route(&json!({
+            "error": { "code": "run_not_found", "message": "route not found: GET /runs/x" }
+        })));
+
+        // Nothing to go on: assume the retryable reading.
+        assert!(!events_not_found_is_missing_route(&json!({})));
+        assert!(!events_not_found_is_missing_route(&json!({ "error": {} })));
+    }
+
+    /// A5. Diagnostics quote upstream bodies, and the sidecar bearer token is
+    /// the one secret in scope.
+    #[test]
+    fn upstream_detail_is_bounded_and_redacted() {
+        let key = "synth-opt-0123456789abcdef0123456789abcdef";
+        env::set_var("SYNTH_OPTIMIZER_API_KEY", key);
+        let detail = truncate_detail(&format!("unauthorized for bearer {key} on /health"));
+        assert!(
+            !detail.contains(key),
+            "token leaked into a diagnostic: {detail}"
+        );
+        assert!(detail.contains("[redacted]"));
+        env::remove_var("SYNTH_OPTIMIZER_API_KEY");
+
+        let long = "x".repeat(4096);
+        let bounded = truncate_detail(&long);
+        assert!(bounded.chars().count() < 400);
+        assert!(bounded.ends_with("… (truncated)"));
+    }
+
     #[tokio::test]
     async fn two_gepa_recipe_spawns_are_not_serialized_behind_a_singleton_worker() {
         let (mgr, home) = manager();
@@ -2040,6 +4158,8 @@ mod tests {
                 fs::File::create(home.path().join("luna.out")).unwrap(),
                 fs::File::create(home.path().join("luna.err")).unwrap(),
                 "sk-test",
+                None,
+                &[],
             )
             .await
             .unwrap();
@@ -2051,6 +4171,8 @@ mod tests {
                 fs::File::create(home.path().join("sol.out")).unwrap(),
                 fs::File::create(home.path().join("sol.err")).unwrap(),
                 "sk-test",
+                None,
+                &[],
             )
             .await
             .unwrap();
@@ -2255,5 +4377,122 @@ mod tests {
             .join("identity.json")
             .is_file());
         let _ = pinned_sol;
+    }
+
+    #[test]
+    fn digest_mismatch_leaves_no_installed_version() {
+        let (mgr, home) = manager();
+        TEST_FORCE_DIGEST_MISMATCH.with(|flag| flag.set(true));
+        let error = mgr.install(None).unwrap_err();
+        TEST_FORCE_DIGEST_MISMATCH.with(|flag| flag.set(false));
+        assert!(error.to_string().contains("digest") || error.to_string().contains("signature"));
+        assert!(read_selected_version(home.path()).unwrap().is_none());
+        assert!(!home
+            .path()
+            .join("versions")
+            .join(DEFAULT_SIDECAR_VERSION)
+            .exists());
+    }
+
+    #[test]
+    fn interrupted_download_leaves_selected_version_unchanged() {
+        let (mgr, home) = manager();
+        mgr.install(None).unwrap();
+        assert_eq!(
+            read_selected_version(home.path()).unwrap().as_deref(),
+            Some(DEFAULT_SIDECAR_VERSION)
+        );
+        TEST_INTERRUPT_INSTALL.with(|flag| flag.set(true));
+        let error = mgr.install(None).unwrap_err();
+        TEST_INTERRUPT_INSTALL.with(|flag| flag.set(false));
+        assert!(error.to_string().contains("interrupted"));
+        assert_eq!(
+            read_selected_version(home.path()).unwrap().as_deref(),
+            Some(DEFAULT_SIDECAR_VERSION)
+        );
+        assert!(mgr.has_offline_runtime(DEFAULT_SIDECAR_VERSION));
+    }
+
+    #[test]
+    fn install_invalidates_a_discovery_refresh_racing_with_activation() {
+        let (mgr, _home) = manager();
+        TEST_CACHE_EMPTY_DURING_INSTALL.with(|flag| flag.set(true));
+        let installed = mgr.install(None);
+        TEST_CACHE_EMPTY_DURING_INSTALL.with(|flag| flag.set(false));
+        let installed = installed.unwrap();
+        assert_eq!(installed.version, DEFAULT_SIDECAR_VERSION);
+        assert!(installed.selected);
+    }
+
+    #[tokio::test]
+    async fn installed_service_has_offline_runtime() {
+        let (mgr, _home) = manager();
+        let installed = mgr.install(None).unwrap();
+        assert!(mgr.has_offline_runtime(&installed.version));
+        assert!(Path::new(&installed.path)
+            .join("runtime/bin/synth-optimizers")
+            .is_file());
+        assert!(Path::new(&installed.path)
+            .join("package-lock.json")
+            .is_file());
+        assert!(Path::new(&installed.path)
+            .join(WHEELHOUSE_MANIFEST_FILE)
+            .is_file());
+        let started = mgr.start().await.unwrap();
+        assert_eq!(started.phase, "ready");
+        let caps = mgr.advertised_capabilities();
+        assert_eq!(caps["optimization_algorithms"][0], "gepa");
+        assert!(caps["optimization_algorithms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "sft"));
+        assert!(caps["optimization_algorithms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "cispo"));
+        assert!(
+            caps.get("algorithms").is_none(),
+            "optimizer algorithms must remain separate from eval execution capabilities"
+        );
+        assert_eq!(caps["training"], true);
+        assert!(
+            caps.get("compatibleTemplateIds").is_none() && caps.get("recipes").is_none(),
+            "the runtime-authored handshake must not echo Desktop vocabulary"
+        );
+        assert_eq!(caps["contractVersion"], "optimizer.contract.v1");
+        assert_eq!(caps["serviceVersion"], OPTIMIZERS_CONTRACT.official);
+        assert!(caps["digest"].as_str().unwrap().starts_with("sha256:"));
+    }
+
+    #[test]
+    fn dev_catalog_version_installs_as_an_immutable_selection() {
+        let (mgr, home) = manager();
+        let installed = mgr.install(Some(DEV_SIDECAR_VERSION)).unwrap();
+        assert_eq!(installed.version, DEV_SIDECAR_VERSION);
+        assert_eq!(
+            read_selected_version(home.path()).unwrap().as_deref(),
+            Some(DEV_SIDECAR_VERSION)
+        );
+        assert!(home
+            .path()
+            .join("versions")
+            .join(DEV_SIDECAR_VERSION)
+            .join(MANIFEST_FILE)
+            .is_file());
+    }
+
+    #[test]
+    fn wheelhouse_manifest_tampering_fails_closed() {
+        let (mgr, _home) = manager();
+        let installed = mgr.install(None).unwrap();
+        fs::write(
+            Path::new(&installed.path).join(WHEELHOUSE_MANIFEST_FILE),
+            br#"{"schemaVersion":"tampered","artifacts":[]}"#,
+        )
+        .unwrap();
+        let error = load_verified_manifest(mgr.home(), Path::new(&installed.path)).unwrap_err();
+        assert!(error.to_string().contains("schema") || error.to_string().contains("digest"));
     }
 }

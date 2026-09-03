@@ -50,6 +50,10 @@
   --sv-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.synth-visual-root[data-layout="workspace"] {
+  padding: 0;
+}
+
 /* One keyboard-focus contract for every shared visual template. Individual
    genres may override the color, but must not remove the visible ring. */
 .synth-visual-root :where(button, input, select, textarea, summary, a[href], [tabindex]):focus-visible {
@@ -59,6 +63,9 @@
 
 .synth-visual-root {
   box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   color: var(--sv-text);
   background: var(--sv-surface);
   font-family: var(--sv-font);
@@ -72,6 +79,7 @@
 .synth-visual-root *::before,
 .synth-visual-root *::after {
   box-sizing: border-box;
+  min-width: 0;
 }
 
 .sv-kicker {
@@ -105,6 +113,7 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 10px;
 }
@@ -119,6 +128,7 @@
   color: var(--sv-text-faint);
   font-size: 11px;
   font-family: var(--sv-mono);
+  overflow-wrap: anywhere;
 }
 
 .sv-metrics {
@@ -229,13 +239,23 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
+  padding: 0 18px 20px;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+.sv-workspace > *,
+.sv-workspace-canvas > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .sv-workspace-header {
   position: sticky;
   top: 0;
   z-index: 6;
-  margin: -16px -18px 0;
+  margin: 0 -18px;
   padding: 12px 18px 10px;
   background: var(--sv-surface);
   border-bottom: 1px solid var(--sv-border);
@@ -247,6 +267,10 @@
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.sv-workspace-header-row > * {
+  max-width: 100%;
 }
 
 .sv-workspace-metrics {
@@ -280,12 +304,12 @@
 }
 
 .sv-terminal-receipt {
-  margin-top: 8px;
+  margin-top: var(--sv-sp-2);
   padding: 8px 10px;
-  border: 1px solid #d7a39f;
-  border-left: 4px solid #b23830;
-  border-radius: 9px;
-  background: #fff8f7;
+  border: 1px solid var(--sv-bad-edge);
+  border-left: 4px solid var(--sv-bad-fg);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-bad-bg);
 }
 
 .sv-terminal-receipt-provenance {
@@ -296,6 +320,17 @@
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sv-terminal-receipt .sv-section-head {
+  margin-bottom: var(--sv-sp-2);
+}
+
+.sv-terminal-receipt ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--sv-bad-fg);
+  font-size: var(--sv-fs-micro);
 }
 
 @media (max-width: 520px) {
@@ -458,6 +493,57 @@
   .sv-workspace-canvas { grid-template-columns: 1fr; }
 }
 
+@media (max-width: 1100px) {
+  .sv-workspace-canvas { grid-template-columns: 1fr; }
+}
+
+/* GEPA uses dense evidence receipts.  The desktop grid preserves comparison at
+   a glance; compact panes put the meter below its label and receipt instead of
+   forcing a horizontally scrollable pseudo-table. */
+.sv-gepa-limit-row {
+  grid-template-columns: minmax(0, 120px) minmax(0, 1fr) minmax(0, 180px);
+}
+
+.sv-gepa-explore-row {
+  grid-template-columns: minmax(0, 110px) minmax(0, 1fr) minmax(0, 135px);
+}
+
+.sv-gepa-frontier-grid {
+  grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr);
+}
+
+@media (max-width: 680px) {
+  .sv-gepa-contract-outcome {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 520px) {
+  .sv-gepa-limit-row,
+  .sv-gepa-explore-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 8px;
+    row-gap: 5px;
+  }
+
+  .sv-gepa-limit-meter,
+  .sv-gepa-explore-meter {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .sv-gepa-limit-receipt,
+  .sv-gepa-explore-receipt {
+    min-width: 0;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
+
+  .sv-gepa-frontier-grid {
+    grid-template-columns: minmax(0, .78fr) minmax(0, 1.22fr);
+  }
+}
+
 .sv-candidate-card {
   width: 100%;
   appearance: none;
@@ -559,6 +645,143 @@
   flex-direction: column;
   gap: var(--sv-sp-4);
   padding: var(--sv-sp-4);
+}
+
+/* Real-time Craftax evidence: engine-rendered frames plus rollout telemetry. */
+.sv-craftax-live-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.25fr) minmax(220px, 0.75fr);
+  gap: var(--sv-sp-4);
+  align-items: start;
+}
+
+.sv-craftax-frame {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius);
+  background: #05090d;
+}
+
+.sv-craftax-frame img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.sv-craftax-frame-empty {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  padding: var(--sv-sp-4);
+  color: var(--sv-text-muted);
+  text-align: center;
+}
+
+.sv-craftax-frame figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-sp-2);
+  align-items: center;
+  padding: var(--sv-sp-2) var(--sv-sp-3);
+  border-top: 1px solid var(--sv-border);
+  background: var(--sv-surface-muted);
+}
+
+.sv-craftax-telemetry { display: grid; gap: var(--sv-sp-3); }
+.sv-craftax-telemetry section { min-width: 0; }
+.sv-craftax-actions {
+  margin: 0;
+  color: var(--sv-accent);
+  font-family: var(--sv-mono);
+  overflow-wrap: anywhere;
+}
+
+.sv-craftax-stats,
+.sv-craftax-achievements {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-sp-2);
+}
+
+.sv-craftax-stats > span:not(.sv-empty) {
+  display: grid;
+  min-width: 68px;
+  padding: var(--sv-sp-2);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  color: var(--sv-text-muted);
+  font-size: var(--sv-text-xs);
+}
+
+.sv-craftax-stats strong { color: var(--sv-text); font-size: var(--sv-fs-title); }
+
+.sv-craftax-distribution { margin-top: var(--sv-sp-4); }
+.sv-craftax-bars {
+  display: flex;
+  align-items: end;
+  gap: var(--sv-sp-2);
+  min-height: 116px;
+  padding: var(--sv-sp-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius);
+  background: var(--sv-surface-muted);
+}
+
+.sv-craftax-bars > span:not(.sv-empty) {
+  display: grid;
+  grid-template-rows: 80px auto;
+  align-items: end;
+  min-width: 24px;
+  flex: 1 1 28px;
+  text-align: center;
+}
+
+.sv-craftax-bars i {
+  display: block;
+  width: 100%;
+  min-height: 4px;
+  border-radius: 3px 3px 0 0;
+  background: linear-gradient(to top, var(--sv-accent), color-mix(in srgb, var(--sv-accent), white 35%));
+}
+
+.sv-craftax-bars small { color: var(--sv-text-muted); font-family: var(--sv-font-mono); }
+
+.sv-craftax-rollout-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--sv-sp-2);
+  margin-top: var(--sv-sp-4);
+}
+
+.sv-craftax-rollout-strip article {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: var(--sv-sp-2);
+  min-width: 0;
+  padding: var(--sv-sp-2);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-muted);
+}
+
+.sv-craftax-rollout-strip article[data-status="running"] { border-color: var(--sv-accent); }
+.sv-craftax-rollout-strip img {
+  width: 52px;
+  height: 52px;
+  object-fit: cover;
+  image-rendering: pixelated;
+  border-radius: 3px;
+}
+.sv-craftax-rollout-strip article > div { display: grid; min-width: 0; }
+.sv-craftax-rollout-strip small { color: var(--sv-text-muted); }
+
+@media (max-width: 620px) {
+  .sv-craftax-live-grid { grid-template-columns: 1fr; }
+  .sv-craftax-rollout-strip { grid-template-columns: 1fr 1fr; }
 }
 
 /* Small uppercase label above a group. One per group, never per row. */
@@ -753,3 +976,113 @@
 }
 
 .sv-stack-tight { gap: var(--sv-sp-2); }
+
+/* ── Eval: candidate comparison and the trial matrix ─────────────────────── */
+
+/* Stage heading inside a panel that carries more than one stage. */
+.sv-subhead {
+  margin: var(--sv-sp-3) 0 var(--sv-sp-2);
+  font-size: var(--sv-fs-micro);
+  font-weight: 650;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--sv-text-faint);
+}
+.sv-subhead:first-child { margin-top: 0; }
+
+/* Inline qualifier on a candidate: baseline, winner, eliminated. */
+.sv-tag {
+  display: inline-block;
+  margin-left: var(--sv-sp-2);
+  padding: 0 var(--sv-sp-2);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-muted);
+  color: var(--sv-text-muted);
+  font-family: var(--sv-mono);
+  font-size: var(--sv-fs-micro);
+  font-weight: 500;
+  vertical-align: middle;
+}
+.sv-tag[data-tone="ok"] {
+  border-color: var(--sv-ok-edge);
+  background: var(--sv-ok-bg);
+  color: var(--sv-ok-fg);
+}
+.sv-tag[data-tone="warn"] {
+  border-color: var(--sv-warn-edge);
+  background: var(--sv-warn-bg);
+  color: var(--sv-warn-fg);
+}
+
+/* Parenthetical detail that must not compete with the number beside it. */
+.sv-hint { color: var(--sv-text-faint); font-size: var(--sv-fs-micro); }
+
+/* A statement about the evidence, not a decoration. */
+.sv-note {
+  margin: var(--sv-sp-3) 0 0;
+  padding: var(--sv-sp-2) var(--sv-sp-3);
+  border-left: 2px solid var(--sv-border-strong);
+  color: var(--sv-text-muted);
+  font-size: var(--sv-fs-meta);
+}
+.sv-note[data-tone="bad"] {
+  border-left-color: var(--sv-bad-edge);
+  background: var(--sv-bad-bg);
+  color: var(--sv-bad-fg);
+}
+
+/* One candidate's seeds across a stage. */
+.sv-matrix-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-sp-3);
+  padding: var(--sv-sp-1) 0;
+  min-width: 0;
+}
+.sv-matrix-label {
+  flex: 0 0 auto;
+  min-width: 8rem;
+  font-size: var(--sv-fs-meta);
+  color: var(--sv-text);
+}
+.sv-matrix-cells { display: flex; flex-wrap: wrap; gap: var(--sv-sp-1); min-width: 0; }
+
+/* Status is carried by form as well as colour: a failed trial is outlined,
+   an unfinished one is faint, so the matrix reads without relying on hue. */
+.sv-matrix-cell {
+  display: inline-grid;
+  place-items: center;
+  min-width: 2.25rem;
+  padding: 0 var(--sv-sp-1);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-muted);
+  color: var(--sv-text-muted);
+  font-family: var(--sv-mono);
+  font-size: var(--sv-fs-micro);
+  font-variant-numeric: tabular-nums;
+}
+.sv-matrix-cell[data-valid="true"] {
+  border-color: var(--sv-ok-edge);
+  background: var(--sv-ok-bg);
+  color: var(--sv-ok-fg);
+}
+.sv-matrix-cell[data-status="failed"],
+.sv-matrix-cell[data-status="timeout"] {
+  border-color: var(--sv-bad-edge);
+  border-style: dashed;
+  background: var(--sv-bad-bg);
+  color: var(--sv-bad-fg);
+}
+.sv-matrix-cell[data-status="running"] {
+  border-color: var(--sv-accent);
+  color: var(--sv-accent);
+}
+.sv-matrix-cell[data-status="cancelled"] { color: var(--sv-text-faint); }
+
+/* Lift direction, so a sign survives a greyscale screenshot. */
+.sv-table td[data-direction="up"] { color: var(--sv-ok-fg); }
+.sv-table td[data-direction="down"] { color: var(--sv-bad-fg); }
+.sv-table tr[data-winner="true"] th { font-weight: 700; }
+.sv-table tr[data-eliminated="true"] { color: var(--sv-text-faint); }

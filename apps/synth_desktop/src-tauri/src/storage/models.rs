@@ -4,7 +4,7 @@ use serde_json::Value;
 
 pub const APP_EVENT_SCHEMA_VERSION: &str = "synth.desktop-app-event.v1";
 /// Matches `storage/migrations.rs` `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 16;
 
 fn default_session_kind() -> String {
     "codex".into()
@@ -46,6 +46,7 @@ pub enum EventSource {
     System,
     Mlx,
     Visual,
+    Report,
 }
 
 impl EventSource {
@@ -58,6 +59,7 @@ impl EventSource {
             Self::System => "system",
             Self::Mlx => "mlx",
             Self::Visual => "visual",
+            Self::Report => "report",
         }
     }
 
@@ -69,6 +71,7 @@ impl EventSource {
             "system" => Self::System,
             "mlx" => Self::Mlx,
             "visual" => Self::Visual,
+            "report" => Self::Report,
             _ => Self::Local,
         }
     }
@@ -78,24 +81,24 @@ impl EventSource {
 #[serde(rename_all = "camelCase")]
 pub struct AppEvent {
     pub schema_version: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub sequence: i64,
     pub event_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(type = specta_typescript::Unknown)]
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
     pub session_sequence: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub run_id: Option<String>,
     pub source: EventSource,
     pub kind: String,
     #[specta(type = specta_typescript::Unknown)]
     pub payload: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(type = specta_typescript::Unknown)]
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
     pub remote_sequence: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub command_id: Option<String>,
     pub created_at: String,
 }
@@ -116,9 +119,9 @@ pub struct SessionRecord {
     pub remote_id: Option<String>,
     pub codex_thread_id: Option<String>,
     pub status: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub state_generation: Option<i64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub latest_cursor: i64,
     pub active_run_id: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
@@ -141,7 +144,7 @@ pub struct RunRecord {
     pub session_id: String,
     pub mode: String,
     pub status: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub latest_cursor: i64,
     #[specta(type = specta_typescript::Unknown)]
     pub checkpoint: Option<Value>,
@@ -170,7 +173,7 @@ pub struct CommandReceiptRecord {
     pub request: Value,
     #[specta(type = specta_typescript::Unknown)]
     pub response: Option<Value>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub remote_cursor: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
@@ -180,17 +183,46 @@ pub struct CommandReceiptRecord {
 #[serde(rename_all = "camelCase")]
 pub struct CoreDiagnostics {
     pub database_path: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub schema_version: i64,
     pub integrity_ok: bool,
     pub content_store_path: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub journal_head: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub session_count: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub run_count: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub visual_count: i64,
     pub migration_complete: bool,
+    /// Transaction lock-acquisition wait, split by intent.
+    ///
+    /// The interval between asking for a transaction and getting one — not
+    /// query, deserialize, or IPC time. It is the number that made a busy
+    /// producer look like a dead one from the renderer, and until now nothing
+    /// measured it. Reads should sit near zero: in WAL mode a deferred read
+    /// takes a snapshot rather than queueing, so a rising read wait means a
+    /// read path is still opening `Immediate` somewhere.
+    pub lock_wait: LockWaitDiagnostics,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LockWaitDiagnostics {
+    #[specta(type = specta_typescript::Number)]
+    pub read_transactions: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub read_wait_avg_us: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub read_wait_max_us: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub write_transactions: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub write_wait_avg_us: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub write_wait_max_us: i64,
+    /// Transactions that gave up rather than acquiring.
+    #[specta(type = specta_typescript::Number)]
+    pub timeouts: i64,
 }

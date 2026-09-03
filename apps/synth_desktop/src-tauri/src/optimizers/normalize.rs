@@ -1,7 +1,7 @@
-//! Normalize local OSS (GEPA) and hosted optimizers-beta (GELO/go-ex) payloads
+//! Normalize local OSS (GEPA) and hosted optimizers-beta (GO-EX) payloads
 //! into the shared `optimizer_event.v1` envelope.
 
-use super::models::{OptimizerEventEnvelope, OPTIMIZER_EVENT_SCHEMA_VERSION};
+use super::models::{OptimizerEventEnvelope, OptimizerRunStatus, OPTIMIZER_EVENT_SCHEMA_VERSION};
 use serde_json::{json, Map, Value};
 
 pub fn normalize_event(
@@ -107,13 +107,6 @@ fn normalize_canonical(
         .cloned()
         .unwrap_or_default();
     lift_child_resource_ref(&mut delta);
-    if event_type == "optimizer.state.transitioned" {
-        if let Some(status) = delta.get("to").cloned() {
-            if !delta.contains_key("status") {
-                delta.insert("status".to_string(), status);
-            }
-        }
-    }
     let usage_delta = obj
         .get("usage_delta")
         .or_else(|| obj.get("usageDelta"))
@@ -187,11 +180,6 @@ fn normalize_gepa_oss(
     lift_child_resource_ref(&mut delta);
     if let Some(message) = obj.get("message").and_then(Value::as_str) {
         delta.insert("message".into(), json!(message));
-    }
-    if event_type == "optimizer.state.transitioned" {
-        if let Some(status) = fields.get("to") {
-            delta.insert("status".into(), status.clone());
-        }
     }
     let item = infer_item_from_gepa(&event_type, &fields);
     let snapshot = gepa_snapshot(&event_type, &fields);
@@ -318,9 +306,11 @@ fn normalize_hosted_or_goex(
 
 pub fn normalize_algorithm_id(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
-        "gelo" | "goex" | "go_ex" | "go-ex" => "go-ex".into(),
+        "go-ex" => "go-ex".into(),
         "gepa" => "gepa".into(),
+        "eval" => "eval".into(),
         "sft" => "sft".into(),
+        "cispo" => "cispo".into(),
         other if !other.is_empty() => other.to_string(),
         _ => "unknown".into(),
     }
@@ -344,7 +334,8 @@ pub fn cloud_run_to_mirror(
     let status = obj
         .get("status")
         .and_then(Value::as_str)
-        .unwrap_or("unknown")
+        .and_then(OptimizerRunStatus::parse)?
+        .as_str()
         .to_string();
     let cursor_seq = as_u64(obj.get("cursor_seq")).unwrap_or(0);
     let objective = obj
@@ -610,18 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn enriches_canonical_gepa_status_and_runtime_usage() {
-        let transition = json!({
-            "schema_version": "optimizer_event.v1",
-            "type": "optimizer.state.transitioned",
-            "sequence_number": 69,
-            "optimizer_run_id": "gepa_live_1",
-            "algorithm_id": "gepa",
-            "delta": {"to": "completed"}
-        });
-        let event = normalize_event(&transition, "fallback", "gepa").unwrap();
-        assert_eq!(event.delta["status"], json!("completed"));
-
+    fn enriches_canonical_runtime_usage() {
         let completed = json!({
             "schema_version": "optimizer_event.v1",
             "type": "runtime.job.completed",
@@ -680,9 +660,10 @@ mod tests {
     }
 
     #[test]
-    fn maps_gelo_alias_to_go_ex() {
-        assert_eq!(normalize_algorithm_id("GELO"), "go-ex");
-        assert_eq!(normalize_algorithm_id("goex"), "go-ex");
+    fn preserves_noncanonical_algorithm_names_for_fail_closed_validation() {
+        assert_eq!(normalize_algorithm_id("GELO"), "gelo");
+        assert_eq!(normalize_algorithm_id("goex"), "goex");
+        assert_eq!(normalize_algorithm_id("go-ex"), "go-ex");
     }
 
     #[test]

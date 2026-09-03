@@ -3,13 +3,69 @@
  * Templates bind data through VisualBinding; Desktop renders VisualInstance shells.
  */
 
-/** How a template slot is fed at runtime. */
+/** How a template input is fed at runtime. */
 export const VISUAL_BINDINGS_SCHEMA_VERSION = "synth.visual-bindings.v1" as const;
-export type VisualBindingKind = "inline" | "trace_v5" | "local_cas" | "run_ref" | "live_sse" | "fixture" | "optimizer_run";
+export type VisualBindingKind =
+  | "inline"
+  | "trace_v5"
+  | "local_cas"
+  | "run_ref"
+  | "live_sse"
+  | "fixture"
+  | "optimizer_run"
+  | "query_snapshot"
+  | "annotation_evidence_head"
+  | "verifier_result_v2";
+
+/**
+ * Bind-point name: canonical `input`; `slot` still binds on stored envelopes.
+ * Both present and unequal is a conflict; callers must fail closed.
+ */
+export function resolveInputName(
+  canonical: unknown,
+  alias: unknown
+): { ok: true; name: string | undefined } | { ok: false; error: string } {
+  const input = typeof canonical === "string" && canonical.trim() ? canonical.trim() : undefined;
+  const slot = typeof alias === "string" && alias.trim() ? alias.trim() : undefined;
+  if (input && slot && input !== slot) {
+    return {
+      ok: false,
+      error: `input ${JSON.stringify(input)} and slot ${JSON.stringify(slot)} disagree; send one name`
+    };
+  }
+  return { ok: true, name: input ?? slot };
+}
+
+export function bindingInputName(binding: { input?: string; slot?: string }): string | undefined {
+  const resolved = resolveInputName(binding.input, binding.slot);
+  return resolved.ok ? resolved.name : undefined;
+}
+
+export function stampBindingInput<T extends VisualBinding>(binding: T, name: string): T {
+	const { slot: _compatSlot, ...rest } = binding;
+	return { ...rest, input: name } as T;
+}
+
+export function templateInputs(template: {
+  inputs?: VisualTemplateSlot[];
+  slots?: VisualTemplateSlot[];
+}): VisualTemplateSlot[] {
+  return template.inputs ?? template.slots ?? [];
+}
+
+export function bindingList(
+  bindings: VisualBinding[] | { inputs?: VisualBinding[]; slots?: VisualBinding[] } | undefined
+): VisualBinding[] {
+  if (!bindings) return [];
+  if (Array.isArray(bindings)) return bindings;
+  return bindings.inputs ?? bindings.slots ?? [];
+}
 
 export type VisualBinding = {
-  /** Slot name declared in template.json `slots`. */
-  slot: string;
+  /** Canonical bind-point name declared in template.json `inputs`. */
+  input?: string;
+  /** Read-only alias of `input` on stored envelopes. New writers omit this. */
+  slot?: string;
   kind: VisualBindingKind;
   /**
    * Kind-specific locator:
@@ -18,6 +74,10 @@ export type VisualBinding = {
    * - live_sse → absolute SSE URL
    * - fixture → relative path under visuals/fixtures/ or template examples/
    * - optimizer_run → cloud/local optimizer_run_id
+   * - query_snapshot → immutable trace query snapshot id
+   * - run_ref → run identity resolved by the host
+   * - annotation_evidence_head → sealed annotation evidence-head digest
+   * - verifier_result_v2 → VerifierResultV2 content digest
    */
   source?: string;
   /** Declared sibling poll endpoint for a normalized live stream. Never inferred. */
@@ -32,15 +92,29 @@ export type VisualBinding = {
 
 export type VisualBindings = {
   schemaVersion: typeof VISUAL_BINDINGS_SCHEMA_VERSION;
-  slots: VisualBinding[];
+  /** Canonical descriptor array. */
+  inputs?: VisualBinding[];
+  /** Read-only alias of `inputs` on stored envelopes. New writers omit this. */
+  slots?: VisualBinding[];
+};
+
+export type VisualComponentMeta = {
+  id: string;
+  kind: string;
+  protocolId: string;
+  consumes: string[];
+  emits?: string[];
+  description?: string;
 };
 
 export type VisualTemplateSlot = {
   name: string;
   description: string;
-  /** Accepted binding kinds for this slot. */
+  /** Accepted binding kinds for this input. */
   accepts: VisualBindingKind[];
   required?: boolean;
+  /** Allow several independently declared sources to feed one semantic input. */
+  multiple?: boolean;
   schema?: string;
 };
 
@@ -52,15 +126,41 @@ export type VisualTemplateMeta = {
   version: string;
   description: string;
   accent?: string;
+  rendererKind?: string;
+  kind?: string;
+  protocolId?: string;
+  /** Canonical bind-point list. */
+  inputs?: VisualTemplateSlot[];
+  /** Read-only echo of `inputs` for old `list_templates` readers. */
   slots: VisualTemplateSlot[];
   /** Relative path to the React shell from the template root. */
   shell: string;
   tags?: string[];
+  /** Advertised compose parts. Kind is the render contract; protocolId the bind dialect. */
+  components?: VisualComponentMeta[];
+  observationContract?: {
+    schemaVersion: "synth.visual-observation-contract.v1";
+    readiness: {
+      rejectTransportStates?: string[];
+      minimumRolloutCount?: number;
+      minimumRenderedFrameCount?: number;
+      minimumSemanticEventCount?: number;
+      requireTerminal?: boolean;
+    };
+  };
 };
+
+/**
+ * Where a template came from. `internal` templates are staged from ~/.synth
+ * into templates-internal/ at build time and never ship in a public release.
+ */
+export type VisualTemplateDistribution = "public" | "internal";
 
 export type VisualTemplate = VisualTemplateMeta & {
   /** Absolute or package-relative directory containing template.json. */
   root: string;
+  /** Derived from the template root, not self-declared. */
+  distribution?: VisualTemplateDistribution;
 };
 
 export type VisualInstanceStatus = "draft" | "bound" | "saved" | "open";
@@ -110,8 +210,12 @@ export const DEFAULT_CHROME: VisualChromeTheme = {
 export type LiveEvalEvent = {
   ts?: string;
   occurred_at?: string;
+  /** Stable, one-based order in which this viewer accepted the event. */
+  logical_time?: number;
   run_id: string;
   kind: string;
+  /** Optimizer envelopes use `type`; includeKinds matches kind or type. */
+  type?: string;
   lane?: string | null;
   source?: string;
   sequence?: number | string | null;

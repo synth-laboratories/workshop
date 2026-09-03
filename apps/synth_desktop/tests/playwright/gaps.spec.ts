@@ -146,7 +146,7 @@ test.describe("coverage gaps", () => {
 			send("turn/completed", { turn: { id: "turn-visual-create" } });
 		});
 		const transcript = page.getByTestId("chat-transcript");
-		await expect(transcript.locator("code.mcp-activity-name").getByText("synth_visuals.visual_manage")).toBeVisible();
+		await expect(transcript.getByText("Visual draft created", { exact: true })).toBeVisible();
 		const open = transcript.getByTestId("tool-visual-open-vis-originating-create");
 		await expect(open).toBeVisible();
 		await open.click();
@@ -154,15 +154,32 @@ test.describe("coverage gaps", () => {
 		await expect(visualPane).toBeVisible();
 		await expect(visualPane).toContainText("Originating chat visual");
 		await expect(visualPane.getByTestId("visual-craftax-eval-matrix")).toBeVisible();
+		for (const width of [1440, 1024, 860]) {
+			await page.setViewportSize({ width, height: 840 });
+			const geometry = await page.evaluate(() => {
+				const transcript = document.querySelector<HTMLElement>('[data-testid="chat-transcript"]')?.getBoundingClientRect();
+				const composer = document.querySelector<HTMLElement>('[data-testid="composer"]')?.getBoundingClientRect();
+				if (!transcript || !composer) throw new Error("Composer split geometry is unavailable");
+				return {
+					inside: composer.left >= transcript.left - 1 && composer.right <= transcript.right + 1,
+					centerDelta: Math.abs((composer.left + composer.width / 2) - (transcript.left + transcript.width / 2)),
+					overflow: document.documentElement.scrollWidth - window.innerWidth
+				};
+			});
+			expect(geometry.inside).toBe(true);
+			expect(geometry.centerDelta).toBeLessThanOrEqual(2);
+			expect(geometry.overflow).toBeLessThanOrEqual(1);
+		}
 	});
 
 	test("Intern is absent from every v0.1 navigation and setup surface", async ({ page }) => {
-		await page.getByTestId("model-picker").click();
-		const menu = page.getByTestId("model-dropdown");
+		await page.getByTestId("composer-model").click();
+		const menu = page.getByTestId("composer-model-menu");
+		await menu.getByTestId("composer-model-access-local").click();
 		await expect(menu).toBeVisible();
 		await expect(menu.getByText("Intern · Live", { exact: true })).toHaveCount(0);
 		await expect(menu.getByText("Intern · Background", { exact: true })).toHaveCount(0);
-		await expect(menu.getByTestId("model-option-local-laguna")).toBeVisible();
+		await expect(menu.getByTestId("composer-model-option-local-laguna")).toBeVisible();
 		await expect(page.getByTestId("cloud-list")).toHaveCount(0);
 		await expect(page.getByTestId("new-sync-session")).toHaveCount(0);
 		await expect(page.getByTestId("async-intern-pin")).toHaveCount(0);
@@ -180,6 +197,8 @@ test.describe("coverage gaps", () => {
 				},
 				async getContainer() { return (await this.listContainers())[0]; },
 				async probeContainer() { return (await this.listContainers())[0]; },
+				async reconcileContainer() { return (await this.listContainers())[0]; },
+				async restartContainer() { return (await this.listContainers())[0]; },
 				async listTraces() {
 					return [{ id: "rust-trace", digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", title: "Rust trace", source: "local", metrics: [], metadata: {}, createdAt: timestamp }];
 				},

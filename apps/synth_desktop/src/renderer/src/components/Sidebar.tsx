@@ -1,12 +1,27 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { type LandingState } from "../types/landing";
 import { ModelDownloadBar } from "./ModelDownloadBar";
 import { LocalModelResidency } from "./LocalModelResidency";
-import type { LagunaStatus } from "../bridge";
+import { WhisperResidency } from "./WhisperResidency";
+import type { LagunaStatus, WhisperRuntimeStatus } from "../bridge";
 import { type AccountViewModel } from "../runtime/accountView";
 import { ConversationContextMenu } from "./GeneralPreferencesSettings";
 import { PaneResizeHandle } from "./PaneResizeHandle";
 import { ProviderMark } from "./ProviderMark";
+import { PLUGIN_NAV, type PluginNavEntry } from "../runtime/pluginNav";
+import { findPluginStatus, pluginPresentation } from "../runtime/pluginPresentation";
+import type { PluginStatus } from "../bridge/types";
+import type { ChatPresence } from "@synth/runtime-protocol";
+
+/** One word per state. The chat row has no room for, and no need of, more. */
+const PRESENCE_LABELS: Record<ChatPresence, string> = {
+	idle: "Idle",
+	starting: "Starting",
+	working: "Working",
+	recovering: "Recovering",
+	interrupted: "Interrupted",
+	needsAttention: "Needs attention"
+};
 
 type CodexUsageSnapshot = {
 	usedPercent: number;
@@ -17,12 +32,24 @@ type CodexUsageSnapshot = {
 
 type Props = {
 	state: LandingState;
+	appVersion: string;
 	lagunaStatus?: LagunaStatus | null;
+	whisperStatus?: WhisperRuntimeStatus | null;
 	activeChatId?: string | null;
 	inventoryActive?: boolean;
+	inferenceActive?: boolean;
 	visualsActive?: boolean;
+	reportsActive?: boolean;
+	experimentsActive?: boolean;
 	optimizersActive?: boolean;
+	computerUseActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
+	/**
+	 * What each chat is doing, as opposed to what its stored status says. Only
+	 * `working` may render the live indicator; a chat whose owner died lands on
+	 * `recovering` / `needsAttention` and stays archivable.
+	 */
+	chatPresence?: Record<string, ChatPresence>;
 	activeLocalDecodeTps?: string | null;
 	unreadChatIds?: ReadonlySet<string>;
 	pinnedChatIds?: ReadonlySet<string>;
@@ -30,10 +57,18 @@ type Props = {
 	onNewConversation: () => void;
 	onOpenChat: (id: string) => void;
 	onOpenInventory: () => void;
+	onOpenInference: () => void;
 	onOpenVisuals: () => void;
+	onOpenReports: () => void;
+	onOpenExperiments: () => void;
 	onOpenOptimizers: () => void;
+	onOpenComputerUse: () => void;
+	onOpenPlugins: () => void;
+	visiblePluginIds?: readonly string[];
 	onSearch: () => void;
 	onSettings: () => void;
+	/** Canonical registry listing, owned by the app controller. */
+	pluginStatuses?: readonly PluginStatus[] | null;
 	/** Composed by the renderer from the host's account summary. */
 	account: AccountViewModel;
 	codexOauthConfigured?: boolean;
@@ -138,14 +173,82 @@ function IconInventory() {
 	);
 }
 
+// Four destinations sit adjacent in one section, so each needs its own mark:
+// Visuals used to share the Search glyph, and Reports and Optimizers were both
+// the Data box.
+function IconVisuals() {
+	return (
+		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="2.4" y="3" width="11.2" height="9" rx="1.4" stroke="currentColor" strokeWidth="1.25" />
+			<path d="M2.4 9.6l2.9-2.6 2.3 2 2.4-2.9 3.6 3.8" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+		</svg>
+	);
+}
+
+function IconReports() {
+	return (
+		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<path d="M4 2.2h5.2L12.4 5v8.1a.9.9 0 01-.9.9h-7.5a.9.9 0 01-.9-.9V3.1a.9.9 0 01.9-.9z" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" />
+			<path d="M9 2.4V5h3M5.8 8.4h4.4M5.8 10.8h3" stroke="currentColor" strokeWidth="1.15" strokeLinecap="round" />
+		</svg>
+	);
+}
+
+function IconOptimizers() {
+	return (
+		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<path d="M2.6 12.4l3.1-4.2 2.6 2.2 4.9-6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+			<circle cx="5.7" cy="8.2" r="1.15" stroke="currentColor" strokeWidth="1.15" />
+			<circle cx="8.3" cy="10.4" r="1.15" stroke="currentColor" strokeWidth="1.15" />
+		</svg>
+	);
+}
+
+function IconInference() {
+	return (
+		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="2.2" y="2.2" width="11.6" height="11.6" rx="2.2" stroke="currentColor" strokeWidth="1.2" />
+			<path d="M4.5 8h1.4l1-2.4L8.5 11l1.2-3h1.8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+		</svg>
+	);
+}
+
+/** A pointer over a window: the plugin drives another app's interface. */
+function IconComputerUse(): ReactElement {
+	return (
+		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="1.8" y="2.6" width="12.4" height="8.4" rx="1.4" stroke="currentColor" strokeWidth="1.2" />
+			<path d="M6.4 6.1l4.3 2.6-1.9.5-.7 1.9-1.7-5z" fill="currentColor" />
+			<path d="M5.6 13.4h4.8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+		</svg>
+	);
+}
+
+const PLUGIN_NAV_ICONS: Record<PluginNavEntry["id"], () => ReactElement> = {
+	visuals: IconVisuals,
+	reports: IconReports,
+	experiments: IconOptimizers,
+	optimizers: IconOptimizers,
+	inventory: IconInventory,
+	inference: IconInference,
+	"computer-use": IconComputerUse
+};
+
 export function Sidebar({
 	state,
+	appVersion,
 	lagunaStatus = null,
+	whisperStatus = null,
 	activeChatId = null,
 	inventoryActive = false,
+	inferenceActive = false,
 	visualsActive = false,
+	reportsActive = false,
+	experimentsActive = false,
 	optimizersActive = false,
+	computerUseActive = false,
 	workingChatIds = new Set<string>(),
+	chatPresence = {},
 	activeLocalDecodeTps = null,
 	unreadChatIds = new Set<string>(),
 	pinnedChatIds = new Set<string>(),
@@ -153,10 +256,17 @@ export function Sidebar({
 	onNewConversation,
 	onOpenChat,
 	onOpenInventory,
+	onOpenInference,
 	onOpenVisuals,
+	onOpenReports,
+	onOpenExperiments,
 	onOpenOptimizers,
+	onOpenComputerUse,
+	onOpenPlugins,
+	visiblePluginIds = [],
 	onSearch,
 	onSettings,
+	pluginStatuses = null,
 	account,
 	codexOauthConfigured = false,
 	codexUsage = null,
@@ -175,8 +285,7 @@ export function Sidebar({
 	sidebarVisible = true
 }: Props) {
 	const [chatsOpen, setChatsOpen] = useState(true);
-	const [inventoryOpen, setInventoryOpen] = useState(true);
-	const [researchOpen, setResearchOpen] = useState(true);
+	const [pluginsOpen, setPluginsOpen] = useState(true);
 	const [menu, setMenu] = useState<{ id: string; x: number; y: number; invoker: HTMLButtonElement } | null>(null);
 	const [renamingId, setRenamingId] = useState<string | null>(null);
 	const [renameDraft, setRenameDraft] = useState("");
@@ -190,8 +299,12 @@ export function Sidebar({
 	const codexReset = codexUsage
 		? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(codexUsage.resetsAt * 1_000))
 		: null;
-	const accountTitle = codexOauthConfigured ? "ChatGPT subscription" : account.title;
-	const accountSubtitle = codexOauthConfigured ? "OpenAI account" : account.subtitle;
+	const codexAccountEmail = state.codexOauthStatus?.accountHint?.trim() || null;
+	// The footer is the Workshop/Synth account surface. A connected Codex OAuth
+	// provider enables models, but it is not the user's Synth identity and must
+	// never replace signed-in or signed-out Synth account copy here.
+	const accountTitle = account.title;
+	const accountSubtitle = account.subtitle;
 
 	useEffect(() => {
 		if (!accountMenuOpen) return;
@@ -235,18 +348,43 @@ export function Sidebar({
 		if (aPinned !== bPinned) return aPinned ? -1 : 1;
 		return 0;
 	}), [pinnedChatIds, state.chats]);
-	const visibleChats = useMemo(() => {
-		if (showAllChats) return orderedChats;
+	const hiddenChatIds = useMemo(() => {
+		if (showAllChats) return new Set<string>();
 		const alwaysVisible = new Set([
 			...orderedChats.filter((chat) => pinnedChatIds.has(chat.id)).map((chat) => chat.id),
 			...orderedChats.filter((chat) => chat.id === activeChatId || workingChatIds.has(chat.id)).map((chat) => chat.id)
 		]);
-		const priority = orderedChats.filter((chat) => alwaysVisible.has(chat.id));
-		const remainder = orderedChats.filter((chat) => !alwaysVisible.has(chat.id));
-		return [...priority, ...remainder].slice(0, Math.max(10, priority.length));
+		const hidden = new Set<string>();
+		const floor = Math.max(10, alwaysVisible.size);
+		let shown = alwaysVisible.size;
+		for (const chat of orderedChats) {
+			if (alwaysVisible.has(chat.id)) continue;
+			if (shown >= floor) hidden.add(chat.id);
+			else shown += 1;
+		}
+		return hidden;
 	}, [activeChatId, orderedChats, pinnedChatIds, showAllChats, workingChatIds]);
-	const firstPinnedIndex = visibleChats.findIndex((chat) => pinnedChatIds.has(chat.id));
-	const firstRecentIndex = visibleChats.findIndex((chat) => !pinnedChatIds.has(chat.id));
+	const firstPinnedIndex = orderedChats.findIndex((chat) => pinnedChatIds.has(chat.id));
+	const firstRecentIndex = orderedChats.findIndex((chat) => !pinnedChatIds.has(chat.id));
+	const pluginRowActive: Record<PluginNavEntry["id"], boolean> = {
+		visuals: visualsActive,
+		reports: reportsActive,
+		experiments: experimentsActive,
+		optimizers: optimizersActive,
+		inventory: inventoryActive,
+		inference: inferenceActive,
+		"computer-use": computerUseActive
+	};
+	const pluginRowOpen: Record<PluginNavEntry["id"], () => void> = {
+		visuals: onOpenVisuals,
+		reports: onOpenReports,
+		experiments: onOpenExperiments,
+		optimizers: onOpenOptimizers,
+		inventory: onOpenInventory,
+		inference: onOpenInference,
+		"computer-use": onOpenComputerUse
+	};
+	const visiblePlugins = new Set(visiblePluginIds);
 
 	if (!sidebarVisible) return null;
 
@@ -298,16 +436,19 @@ export function Sidebar({
 							{orderedChats.length === 0 ? (
 								<p className="empty-hint">No local chats yet</p>
 							) : (
-								visibleChats.map((chat, chatIndex) => {
+								orderedChats.map((chat, chatIndex) => {
 									const title = conversationTitles[chat.id] ?? chat.title;
 									const pinned = pinnedChatIds.has(chat.id);
 									const working = workingChatIds.has(chat.id);
+								const presence = chatPresence[chat.id] ?? "idle";
+								const stalled =
+									presence === "recovering" || presence === "needsAttention" || presence === "interrupted";
 									const sectionLabel = chatIndex === firstPinnedIndex
 										? "Pinned"
 										: chatIndex === firstRecentIndex ? "Recents" : null;
 									if (renamingId === chat.id) {
 										return (
-											<div key={chat.id} className="chat-section-entry">
+											<div key={chat.id} className="chat-section-entry" hidden={hiddenChatIds.has(chat.id)} data-hidden={hiddenChatIds.has(chat.id) ? "true" : undefined}>
 												{sectionLabel ? <h3 className="chat-section-label">{sectionLabel}</h3> : null}
 											<form
 												className="chat-rename-form"
@@ -341,7 +482,7 @@ export function Sidebar({
 										);
 									}
 					return (
-						<div key={chat.id} className="chat-section-entry">
+						<div key={chat.id} className="chat-section-entry" hidden={hiddenChatIds.has(chat.id)} data-hidden={hiddenChatIds.has(chat.id) ? "true" : undefined}>
 							{sectionLabel ? <h3 className="chat-section-label">{sectionLabel}</h3> : null}
 						<div className="chat-row">
 						<button
@@ -376,6 +517,14 @@ export function Sidebar({
 														<span className="chat-working-rate" data-testid={`chat-working-rate-${chat.id}`}>{activeLocalDecodeTps}</span>
 													) : null}
 												</>
+											) : stalled ? (
+												<span
+													className={`chat-stalled-indicator${presence === "needsAttention" ? " attention" : ""}`}
+													aria-label={PRESENCE_LABELS[presence]}
+													title={PRESENCE_LABELS[presence]}
+													data-presence={presence}
+													data-testid={`chat-stalled-${chat.id}`}
+												/>
 											) : unreadChatIds.has(chat.id) ? (
 												<span className="chat-unread-indicator" aria-label="Finished, unviewed" title="Finished, unviewed" data-testid={`chat-unread-${chat.id}`} />
 											) : null}
@@ -408,7 +557,7 @@ export function Sidebar({
 									);
 								})
 							)}
-							{orderedChats.length > visibleChats.length ? (
+							{hiddenChatIds.size > 0 ? (
 								<button
 									type="button"
 									className="sidebar-show-more"
@@ -417,7 +566,7 @@ export function Sidebar({
 									aria-controls="sidebar-chats"
 									onClick={() => setShowAllChats(true)}
 								>
-									Show {orderedChats.length - visibleChats.length} more
+									Show {hiddenChatIds.size} more
 								</button>
 							) : showAllChats && orderedChats.length > 10 ? (
 								<button
@@ -441,84 +590,78 @@ export function Sidebar({
 				 * bridge, and CloudDesk component remain for v0.2 re-entry.
 				 */}
 
-				{/* ── Research = Visuals + Data ── */}
+				{/*
+				 * ── Plugins ──
+				 * One section for every capability the user can open. Built-in
+				 * surfaces and managed plugins share the shelf; only managed
+				 * rows carry lifecycle status, and a managed row is never
+				 * hidden — a plugin that is disabled, stopped, uninstalled, or
+				 * unhealthy still navigates to the page that explains it.
+				 */}
 				<div className="sidebar-section">
 					<div className="section-header">
 						<button
 							type="button"
 							className="section-header-label"
-							onClick={() => setResearchOpen((v) => !v)}
-							aria-expanded={researchOpen}
-							aria-controls="sidebar-research"
+								onClick={onOpenPlugins}
+								aria-expanded={pluginsOpen}
+							aria-controls="sidebar-plugins"
 						>
-							Research
-							<SectionChevron open={researchOpen} />
+							Plugins
+						</button>
+						<button type="button" className="section-action" aria-label={pluginsOpen ? "Collapse plugins" : "Expand plugins"} onClick={() => setPluginsOpen((value) => !value)}>
+							<SectionChevron open={pluginsOpen} />
 						</button>
 					</div>
-					{researchOpen ? (
-						<div id="sidebar-research" className="section-list" data-testid="research-nav">
-							<button
-								type="button"
-								className={`chat-item${visualsActive ? " active" : ""}`}
-								onClick={onOpenVisuals}
-								data-testid="open-visuals"
-							>
-								<IconSearch />
-								<span className="item-label">Visuals</span>
-							</button>
-							<button
-								type="button"
-								className={`chat-item${optimizersActive ? " active" : ""}`}
-								onClick={onOpenOptimizers}
-								data-testid="open-optimizers"
-							>
-								<IconInventory />
-								<span className="item-label">Optimizers</span>
-							</button>
-						</div>
-					) : null}
-				</div>
-
-				{/* ── Data = containers / traces / usage ── */}
-				<div className="sidebar-section">
-					<div className="section-header">
-						<button
-							type="button"
-							className="section-header-label"
-							onClick={() => setInventoryOpen((v) => !v)}
-							aria-expanded={inventoryOpen}
-							aria-controls="sidebar-inventory"
-						>
-							Data
-							<SectionChevron open={inventoryOpen} />
-						</button>
-					</div>
-					{inventoryOpen ? (
-						<div id="sidebar-inventory" className="section-list" data-testid="inventory-nav">
-							<button
-								type="button"
-								className={`chat-item${inventoryActive ? " active" : ""}`}
-								onClick={onOpenInventory}
-								data-testid="open-inventory"
-							>
-								<IconInventory />
-								<span className="item-label">Containers · Traces · Usage</span>
-							</button>
+					{pluginsOpen ? (
+						<div id="sidebar-plugins" className="section-list" data-testid="plugins-nav">
+							{PLUGIN_NAV.filter((entry) => visiblePlugins.has(entry.id)).map((entry) => {
+								const Icon = PLUGIN_NAV_ICONS[entry.id];
+								const active = pluginRowActive[entry.id];
+								const presentation = entry.kind === "managed" && entry.pluginId
+									? pluginPresentation(findPluginStatus(pluginStatuses, entry.pluginId))
+									: null;
+								return (
+									<button
+										key={entry.id}
+										type="button"
+										className={`chat-item${active ? " active" : ""}`}
+										onClick={pluginRowOpen[entry.id]}
+										aria-current={active ? "page" : undefined}
+										data-testid={entry.testId}
+										data-plugin-phase={presentation?.label ?? undefined}
+									>
+										<Icon />
+										<span className="item-label">{entry.label}</span>
+										{presentation?.label ? (
+											<span
+												className={`plugin-row-status tone-${presentation.tone}`}
+												data-testid={`plugin-status-${entry.id}`}
+											>
+												{presentation.isTransitional ? (
+													<span className="plugin-row-spinner" aria-hidden />
+												) : null}
+												<span aria-hidden>{presentation.label}</span>
+												<span className="sr-only">{presentation.a11yLabel}</span>
+											</span>
+										) : null}
+									</button>
+								);
+							})}
 						</div>
 					) : null}
 				</div>
 			</div>
 
 			<div className="sidebar-footer">
+				<WhisperResidency status={whisperStatus ?? null} />
 				<LocalModelResidency status={lagunaStatus} onFreeMemory={onFreeLocalMemory} />
 				<ModelDownloadBar state={state} onPauseToggle={onPauseToggle} />
 				<div className="account-footer" ref={accountMenuRef}>
 					{accountMenuOpen ? (
 						<div id="account-menu-panel" className="account-menu" role="menu" data-testid="account-menu">
 							<div className="account-menu-identity">
-								{codexOauthConfigured ? (
-									<span className="account-avatar account-avatar-openai" aria-label="OpenAI account"><ProviderMark kind="openai" className="account-openai-mark" /></span>
-								) : <span className="account-avatar" aria-hidden>{account.initial}</span>}
+								<span className="account-avatar" aria-hidden>{account.initial}</span>
 								<span>
 									<strong>{accountTitle}</strong>
 									<small data-testid="account-menu-subtitle">{accountSubtitle}</small>
@@ -585,6 +728,12 @@ export function Sidebar({
 									</button>
 									{codexUsageOpen ? (
 										<div id="account-codex-usage-panel" className="account-menu-panel account-codex-usage-panel" data-testid="account-codex-usage-panel">
+											{codexAccountEmail ? (
+												<p className="account-menu-fact" data-testid="account-codex-account-email">
+													<span>ChatGPT account</span>
+													<strong title={codexAccountEmail}>{codexAccountEmail}</strong>
+												</p>
+											) : null}
 											{codexUsage ? <>
 												<p className="account-menu-fact"><span>Remaining</span><strong>{codexRemaining}%</strong></p>
 												<p className="account-menu-fact"><span>Resets</span><strong>{codexReset}</strong></p>
@@ -622,13 +771,19 @@ export function Sidebar({
 						</div>
 					) : null}
 					<button ref={accountTriggerRef} type="button" className="account-trigger" onClick={() => setAccountMenuOpen((value) => !value)} aria-expanded={accountMenuOpen} aria-controls="account-menu-panel" aria-haspopup="menu" data-testid="account-menu-trigger">
-						{codexOauthConfigured ? (
-							<span className="account-avatar account-avatar-openai" aria-label="OpenAI account"><ProviderMark kind="openai" className="account-openai-mark" /></span>
-						) : <span className="account-avatar" aria-hidden>{account.initial}</span>}
+						<span className="account-avatar" aria-hidden>{account.initial}</span>
 						<span className="account-trigger-copy"><strong>{accountTitle}</strong><small>{accountSubtitle}</small></span>
 						<span className="account-help" aria-hidden>?</span>
 					</button>
 				</div>
+				<span
+					className="sidebar-version"
+					data-testid="app-version"
+					aria-label={`Synth Desktop version ${appVersion}`}
+					title={`Synth Desktop v${appVersion}`}
+				>
+					v{appVersion}
+				</span>
 			</div>
 			{onSidebarWidthChange ? (
 				<PaneResizeHandle

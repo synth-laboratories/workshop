@@ -132,22 +132,28 @@ test("sidebar seam is one hairline with an invisible resize hit target", async (
 	expect(seam.handleWidth).toBeGreaterThanOrEqual(6);
 });
 
-test("titlebar always shows the package version", async ({ page }) => {
+test("sidebar footer shows the package version at the bottom left", async ({ page }) => {
 	const version = page.getByTestId("app-version");
 	const expected = `v${desktopPackage.version}`;
 	await expect(version).toBeVisible();
 	await expect(version).toHaveText(expected);
 	await expect(version).toHaveAttribute("aria-label", `Synth Desktop version ${desktopPackage.version}`);
-
-	await page.getByTestId("account-menu-trigger").click();
-	await page.getByTestId("account-menu-settings").click();
-	await expect(page.getByTestId("settings-page")).toBeVisible();
-	await expect(version).toBeVisible();
-	await expect(version).toHaveText(expected);
+	const placement = await page.evaluate(() => {
+		const sidebar = document.querySelector<HTMLElement>('[data-testid="sidebar"]')!.getBoundingClientRect();
+		const footer = document.querySelector<HTMLElement>(".sidebar-footer")!.getBoundingClientRect();
+		const version = document.querySelector<HTMLElement>('[data-testid="app-version"]')!.getBoundingClientRect();
+		return {
+			leftInset: version.left - sidebar.left,
+			bottomInset: footer.bottom - version.bottom
+		};
+	});
+	expect(placement.leftInset).toBeLessThan(24);
+	expect(placement.bottomInset).toBeLessThan(8);
 });
 
-test("titlebar chrome stays trimmed to version and terminal controls", async ({ page }) => {
+test("titlebar chrome stays trimmed to terminal and panel controls", async ({ page }) => {
 	await expect(page.getByRole("button", { name: "Show terminal" })).toBeVisible();
+	await expect(page.getByTestId("titlebar").getByTestId("app-version")).toHaveCount(0);
 	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
 	await expect(page.getByTestId("open-account-settings")).toHaveCount(0);
 	await expect(page.getByTestId("open-models-settings")).toHaveCount(0);
@@ -157,11 +163,11 @@ test("the window has generous drag surfaces without swallowing titlebar controls
 	const dragRegions = page.locator("[data-tauri-drag-region]");
 	await expect(dragRegions).toHaveCount(4);
 	await expect(page.getByTestId("titlebar")).toHaveAttribute("data-tauri-drag-region", "");
-	await expect(page.getByRole("tab")).toHaveAttribute("data-tauri-drag-region", "");
+	await expect(page.getByRole("group", { name: /chat tab$/ })).toHaveAttribute("data-tauri-drag-region", "");
 
 	const regions = await page.evaluate(() => ({
 		titlebar: getComputedStyle(document.querySelector<HTMLElement>('[data-testid="titlebar"]')!).getPropertyValue("-webkit-app-region"),
-		tab: getComputedStyle(document.querySelector<HTMLElement>('[role="tab"]')!).getPropertyValue("-webkit-app-region"),
+		tab: getComputedStyle(document.querySelector<HTMLElement>('.titlebar [role="group"]')!).getPropertyValue("-webkit-app-region"),
 		close: getComputedStyle(document.querySelector<HTMLElement>('.tab-close')!).getPropertyValue("-webkit-app-region"),
 		terminal: getComputedStyle(document.querySelector<HTMLElement>('[aria-label="Show terminal"]')!).getPropertyValue("-webkit-app-region")
 	}));
@@ -169,6 +175,23 @@ test("the window has generous drag surfaces without swallowing titlebar controls
 	expect(regions.tab).toBe("drag");
 	expect(regions.close).toBe("no-drag");
 	expect(regions.terminal).toBe("no-drag");
+
+	const visibleSidebarInset = await page.evaluate(() => {
+		const titlebar = document.querySelector<HTMLElement>('[data-testid="titlebar"]')!.getBoundingClientRect();
+		const tab = document.querySelector<HTMLElement>('.titlebar [role="group"]')!.getBoundingClientRect();
+		return tab.left - titlebar.left;
+	});
+	expect(visibleSidebarInset).toBeLessThanOrEqual(12);
+
+	const hiddenSidebarInset = await page.evaluate(() => {
+		document.documentElement.classList.add("sidebar-hidden");
+		const titlebar = document.querySelector<HTMLElement>('[data-testid="titlebar"]')!.getBoundingClientRect();
+		const tab = document.querySelector<HTMLElement>('.titlebar [role="group"]')!.getBoundingClientRect();
+		const inset = tab.left - titlebar.left;
+		document.documentElement.classList.remove("sidebar-hidden");
+		return inset;
+	});
+	expect(hiddenSidebarInset).toBeGreaterThanOrEqual(78);
 });
 
 test("terminal panel is discoverable and toggles without changing the active surface", async ({ page }) => {
@@ -177,6 +200,16 @@ test("terminal panel is discoverable and toggles without changing the active sur
 	await expect(page.getByTestId("terminal-panel")).toBeVisible();
 	await expect(page.getByText("Terminal is available in the desktop app.")).toBeVisible();
 	await expect(page.getByTestId("landing-page")).toBeVisible();
+	const placement = await page.evaluate(() => {
+		const main = document.querySelector<HTMLElement>(".main-pane")!.getBoundingClientRect();
+		const terminal = document.querySelector<HTMLElement>("[data-testid=terminal-panel]")!.getBoundingClientRect();
+		const composer = document.querySelector<HTMLElement>("[data-testid=composer]")!.getBoundingClientRect();
+		return {
+			terminalFlushWithBottom: Math.abs(terminal.bottom - main.bottom) <= 1,
+			composerClearsTerminal: composer.bottom <= terminal.top - 16
+		};
+	});
+	expect(placement).toEqual({ terminalFlushWithBottom: true, composerClearsTerminal: true });
 	await page.keyboard.press("Meta+j");
 	await expect(page.getByTestId("terminal-panel")).toBeHidden();
 });
@@ -239,7 +272,12 @@ test("a long prompt never hides the active turn beneath the composer", async ({ 
 			startTurn: async () => ({ sessionId, threadId: "thread-long-prompt", turnId: "turn-long-prompt" }),
 			interrupt: async () => undefined,
 			close: async () => undefined,
-			onEvent: () => () => undefined
+			onEvent: (listener: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) => {
+				const timer = window.setTimeout(() => listener({
+					sessionId, method: "turn/started", params: { turnId: "turn-long-prompt" }
+				}), 100);
+				return () => window.clearTimeout(timer);
+			}
 		};
 		const rows = [
 			{ sequence: 1, sessionSequence: 1, kind: "message.created", payload: { messageId: "long-user-message", role: "user", content: longPrompt } },
@@ -270,26 +308,37 @@ test("a long prompt never hides the active turn beneath the composer", async ({ 
 		return {
 			collapsed: bubble.classList.contains("is-collapsed"),
 			atTail: transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight <= 2,
+			scrollViewportClearsComposer: transcript.getBoundingClientRect().bottom <= composer.top - 8,
 			workingClearsComposer: working.bottom <= composer.top - 8
 		};
 	});
-	expect(await tailGeometry()).toEqual({ collapsed: true, atTail: true, workingClearsComposer: true });
+	expect(await tailGeometry()).toEqual({
+		collapsed: true,
+		atTail: true,
+		scrollViewportClearsComposer: true,
+		workingClearsComposer: true
+	});
 
 	await page.getByRole("button", { name: "Show full message" }).click();
-	await expect.poll(tailGeometry).toEqual({ collapsed: false, atTail: true, workingClearsComposer: true });
+	await expect.poll(tailGeometry).toEqual({
+		collapsed: false,
+		atTail: true,
+		scrollViewportClearsComposer: true,
+		workingClearsComposer: true
+	});
 });
 
-// Model-picker containment (12:54 screenshot regression): while open, the
+// Composer model-menu containment: while open, the
 // dropdown must stay inside the viewport with an 8px inset, never overlap the
 // composer, scroll internally when tall, and flip above a low trigger.
 async function readPickerLayout(page: import("@playwright/test").Page) {
 	return page.evaluate(() => {
-		const picker = document.querySelector('[data-testid="model-dropdown"]');
+		const picker = document.querySelector('[data-testid="composer-model-menu"]');
 		const composer = document.querySelector('[data-testid="composer"]');
 		if (!picker) return { open: false as const };
 		const p = picker.getBoundingClientRect();
 		const c = composer?.getBoundingClientRect() ?? null;
-		const selected = picker.querySelector(".model-option.selected");
+		const selected = picker.querySelector(".composer-model-option.selected");
 		const s = selected?.getBoundingClientRect() ?? null;
 		return {
 			open: true as const,
@@ -311,31 +360,32 @@ async function readPickerLayout(page: import("@playwright/test").Page) {
 test("model picker stays contained at normal and short window sizes", async ({ page }) => {
 	for (const [width, height] of [[1728, 1117], [1100, 700], [960, 640]] as const) {
 		await page.setViewportSize({ width, height });
-		await page.getByTestId("model-picker").click();
-		await expect(page.getByTestId("model-dropdown")).toBeVisible();
+		await page.getByTestId("composer-model").click();
+		await expect(page.getByTestId("composer-model-menu")).toBeVisible();
 		const layout = await readPickerLayout(page);
 		if (!layout.open) throw new Error("model dropdown did not open");
 		expect(layout.rect.left, `left inset at ${width}x${height}`).toBeGreaterThanOrEqual(8);
 		expect(layout.rect.top, `top inset at ${width}x${height}`).toBeGreaterThanOrEqual(8);
 		expect(layout.rect.right, `right inset at ${width}x${height}`).toBeLessThanOrEqual(width - 8);
 		expect(layout.rect.bottom, `bottom inset at ${width}x${height}`).toBeLessThanOrEqual(height - 8);
-		expect(layout.overlapsComposer, `composer overlap at ${width}x${height}`).toBe(false);
-		expect(layout.scrollsInternally, `internal scroll at ${width}x${height}`).toBe(true);
 		expect(layout.selectedVisible, `selected visible at ${width}x${height}`).toBe(true);
 		expect(layout.bodyOverflowX, `horizontal overflow at ${width}x${height}`).toBe(false);
-		// All three provider groups stay reachable inside the scrollable dropdown.
-		await expect(page.getByTestId("model-dropdown")).toContainText("Local");
-		await expect(page.getByTestId("model-option-local-laguna")).toBeVisible();
+		// The first level is intentionally limited to the three access methods.
+		await expect(page.getByTestId("composer-model-access-local")).toBeVisible();
+		await expect(page.getByTestId("composer-model-access-api")).toBeVisible();
+		await expect(page.getByTestId("composer-model-access-chatgpt")).toBeVisible();
+		await page.getByTestId("composer-model-access-local").click();
+		await expect(page.getByTestId("composer-model-option-local-laguna")).toBeVisible();
 		await page.keyboard.press("Escape");
-		await expect(page.getByTestId("model-dropdown")).not.toBeVisible();
+		await expect(page.getByTestId("composer-model-menu")).not.toBeVisible();
 	}
 });
 
 test("opening and closing the model picker never moves the composer", async ({ page }) => {
 	await page.setViewportSize({ width: 1280, height: 840 });
 	const before = await readLayout(page);
-	await page.getByTestId("model-picker").click();
-	await expect(page.getByTestId("model-dropdown")).toBeVisible();
+	await page.getByTestId("composer-model").click();
+	await expect(page.getByTestId("composer-model-menu")).toBeVisible();
 	const during = await readLayout(page);
 	await page.keyboard.press("Escape");
 	const after = await readLayout(page);

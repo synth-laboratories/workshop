@@ -1,29 +1,33 @@
 # SFT
 
-Use SFT when the output is a trained adapter/checkpoint rather than a prompt candidate. Hosted SFT lives in optimizers-beta (`algorithm_id: "sft"`), not a public package and not `goex.sft.v1`. Workshop mirrors `optimizer_event_page.v1` and opens `optimizer.sft.live.v1`.
+Use SFT when the output is a trained adapter/checkpoint rather than a prompt candidate. SFT is a **training** algorithm. Local vs hosted is recipe placement, admitted by the Optimizers sidecar. Never dial `127.0.0.1:8787`, `127.0.0.1:8878`, or name `synth-mlx-rl` in a shell. The agent only sees `recipe_id` → `optimizer_run_id` → `watch_run` / `open_visual`.
 
-## Start the hosted fixture (streaming)
+Workshop mirrors `optimizer_event_page.v1` and opens `optimizer.sft.live.v1`. Held-out evaluation arrives as `sft.heldout_evaluation.completed`.
 
-Recipe: `sft.hosted.fixture.v1`.
+## This Mac (MLX · Qwen 2B)
 
-Requires a running optimizers-beta plus `SYNTH_OPTIMIZERS_BETA_URL` (or `OPTIMIZERS_BETA_URL`) and `OPTIMIZERS_BETA_SERVICE_TOKEN`. The fixture backend charges nothing. Two clicks with different training files are two jobs; one accelerator means the second job stays `queued`.
+Recipe: `sft.qwen35-2b.mlx.v1`.
 
-After explicit approval:
+Requires the Optimizers plugin/sidecar. Datasets: cookbook `cookbooks/optimizers/sft/qwen35_mlx/{train,eval}.jsonl` or explicit `SYNTH_MLX_SFT_TRAIN_JSONL` / `SYNTH_MLX_SFT_EVAL_JSONL`. Missing real datasets fail closed. Apple Silicon. The sidecar starts and probes `synth-mlx-rl`; do not tell a shell to dial `:8787`. No hosted provider charges.
+
+After explicit user instruction:
 
 ```json
-{"operation":"start_recipe","arguments":{"recipe_id":"sft.hosted.fixture.v1","open_visual":true}}
+{"operation":"start_workflow","arguments":{"recipe_id":"sft.qwen35-2b.mlx.v1","open_visual":true}}
 ```
 
-Follow `watch_run` from sequence 0. Expect `optimizer.visual.ready`, then `sft.training.metrics` (not `sft.step.metrics`). Null `validation_loss` stays missing (`—`). `sft.checkpoint.ready` is not promotion. Checkpoint-eval children start without reward/cost; `sft.checkpoint_rollout.completed` patches those fields. Missing stays `—`.
+Follow training metrics, `sft.checkpoint.ready`, and the paired `sft.heldout_evaluation.completed` receipt. Resume uses `resume_run`. Chat Completions and Responses against a catalog LoRA use `optimizer_manage` `infer_checkpoint` (`family=chat_completions|responses`) after `list_checkpoints`. Never wrap a `{message, reply}` helper and never name mlx-rl.
+
+`get_result` for SFT is typed from the durable event stream. It does not read `best_candidate.json` and is not GEPA-shaped. Missing scores stay `—`, never `0`.
 
 ## Craftax Nemotron 3.5 Lightning Tinker (hosted, local Craftax slot)
 
-Recipe: `sft.craftax.nemotron-nano.tinker.v1`. Available when `OPTIMIZERS_BETA_SERVICE_TOKEN` is set (URL defaults to `http://127.0.0.1:8879`). Student ids: workshop `docs/sft_tinker_base_models.toml` (default is 3.5 Lightning). Optional `base_model` must be an id from that file. Checkpoint evals hit the local Craftax façade (`CRAFTAX_URL` or `http://127.0.0.1:8080`). Training rows: `SYNTH_SFT_TRAIN_JSONL` on Desktop (copied into the recipe TOML) or on the beta process. Spec: workshop `docs/optimizers_beta_sft.md`. Do not present `goex.sft.v1` as this recipe. Tinker charges apply; say that before asking for approval.
+Recipe: `sft.craftax.nemotron-nano.tinker.v1`. Available when `SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN` is set (URL defaults to `http://127.0.0.1:8878`). Student ids: workshop `docs/sft_tinker_base_models.toml` (default is 3.5 Lightning). Optional `base_model` must be an id from that file. Checkpoint evals hit the local Craftax slot (`CRAFTAX_URL` or `http://127.0.0.1:8098`). Training rows come from `SYNTH_SFT_TRAIN_JSONL` on Desktop and are copied into the product-owned recipe. The public service owns any private executor handoff. Spec: workshop `docs/optimizers_beta_sft.md`. Do not present `goex.sft.v1` as this recipe. Tinker charges apply; say that before asking for approval.
 
 After explicit approval:
 
 ```json
-{"operation":"start_recipe","arguments":{"recipe_id":"sft.craftax.nemotron-nano.tinker.v1","open_visual":true}}
+{"operation":"start_workflow","arguments":{"recipe_id":"sft.craftax.nemotron-nano.tinker.v1","open_visual":true}}
 ```
 
 ## Start the pinned Craftax GPT-OSS smoke
@@ -33,16 +37,16 @@ Recipe: `sft.craftax.gpt-oss.smoke.v1`.
 The recipe fixes:
 
 - teacher: `openai/gpt-oss-120b` via Groq, seeds 101–104;
-- student: `openai/gpt-oss-20b` Tinker LoRA, rank 8, batch size 2, 4 training steps;
+- student: `openai/gpt-oss-20b` Tinker LoRA, rank 8 (`lora_r8`), batch size 2, 4 training steps;
 - held-out comparison: seeds 501–502, each evaluated on base and adapter;
 - ceilings: 4 teacher rollouts, 4 evaluation rollouts, 8 total environment rollouts.
 
-It requires the trusted Craftax binary and bridge runtime plus `GROQ_API_KEY` and `TINKER_API_KEY`. The Rust host reuses Craftax at `127.0.0.1:8080` when present; otherwise it starts and owns the catalog image for the duration of the run. Provider charges apply. This smoke is bounded by fixed rollouts and steps, not by a dollar ceiling; say that plainly before asking for approval.
+It requires the trusted Craftax binary and bridge runtime plus `GROQ_API_KEY` and `TINKER_API_KEY`. The Rust host reuses Craftax at `127.0.0.1:8098` when present; otherwise it starts and owns the trusted binary for the duration of the run. Provider charges apply. This smoke is bounded by fixed rollouts and steps, not by a dollar ceiling; say that plainly before asking for approval.
 
 After explicit approval:
 
 ```json
-{"operation":"start_recipe","arguments":{"recipe_id":"sft.craftax.gpt-oss.smoke.v1","open_visual":true}}
+{"operation":"start_workflow","arguments":{"recipe_id":"sft.craftax.gpt-oss.smoke.v1","open_visual":true}}
 ```
 
 Follow these slices:

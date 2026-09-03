@@ -22,6 +22,7 @@ const MODELS: MatrixModel[] = [
 	{ targetId: "openrouter-luna", reasoning: ["Low", "Medium", "High", "XHigh", "Max"], speed: [""] },
 	{ targetId: "openrouter-laguna-s", reasoning: ["None", "Max"], speed: [""] },
 	{ targetId: "openrouter-muse-spark", reasoning: ["Low", "Medium", "High", "XHigh"], speed: [""] },
+	{ targetId: "openrouter-gemini-flash", reasoning: ["Low", "Medium", "High", "XHigh", "Max"], speed: [""] },
 	{ targetId: "chatgpt-luna", reasoning: ["Low", "Medium", "High", "XHigh", "Max"], speed: ["Standard", "Fast"] },
 	{ targetId: "chatgpt-sol", reasoning: ["Low", "Medium", "High", "XHigh", "Max"], speed: ["Standard", "Fast"] },
 	{ targetId: "chatgpt-terra", reasoning: ["Low", "Medium", "High", "XHigh", "Max"], speed: ["Standard", "Fast"] },
@@ -103,8 +104,7 @@ const toolbar = extract((state: any) => {
 	const toolbarElement = document.querySelector<HTMLElement>(".composer-toolbar");
 	const toolbarRect = toolbarElement?.getBoundingClientRect() ?? null;
 	const controlSelectors = [
-		'[data-testid="composer-add-images"]',
-		'[data-testid="composer-slash-btn"]',
+		'[data-testid="composer-add-menu-trigger"]',
 		'[data-testid="approval-mode-select"]',
 		'[data-testid="composer-mascot"]',
 		'[data-testid="composer-model"]',
@@ -133,6 +133,20 @@ const toolbar = extract((state: any) => {
 		&& rect.top >= toolbarRect.top - 1
 		&& rect.bottom <= toolbarRect.bottom + 1
 	));
+	const rightControlSelectors = new Set([
+		'[data-testid="composer-model"]',
+		'[data-testid="reasoning-effort-select"]',
+		'[data-testid="service-tier-select"]',
+		'[data-testid="composer-mic"]',
+		'[data-testid="composer-send"]'
+	]);
+	const rightControls = controls
+		.filter(({ selector }) => rightControlSelectors.has(selector))
+		.sort((a, b) => a.rect.left - b.rect.left);
+	const largestRightControlGap = rightControls.reduce((largest, control, index) => {
+		if (index === 0) return largest;
+		return Math.max(largest, control.rect.left - rightControls[index - 1].rect.right);
+	}, 0);
 
 	return {
 		composerReady: Boolean(document.querySelector('[data-testid="composer"]')),
@@ -154,6 +168,7 @@ const toolbar = extract((state: any) => {
 		totalCount: COMBINATIONS.length,
 		overlapPairs,
 		controlsInsideToolbar,
+		largestRightControlGap,
 		permissionStacksVertically: Boolean(
 			document.querySelector<HTMLElement>('[data-testid="approval-mode-select"]')?.getBoundingClientRect().height! > 36
 		),
@@ -198,9 +213,9 @@ export const visit_every_model_speed_and_thinking_combination = actions<any>(() 
 	return ["Wait"];
 });
 
-export const all_49_model_speed_and_thinking_combinations_are_exercised = eventually(() =>
+export const all_54_model_speed_and_thinking_combinations_are_exercised = eventually(() =>
 	toolbar.current.visitedCount === toolbar.current.totalCount
-).within(40, "seconds");
+).within(50, "seconds");
 
 export const composer_controls_never_overlap_for_any_combination = always(() =>
 	toolbar.current.overlapPairs.length === 0
@@ -208,6 +223,10 @@ export const composer_controls_never_overlap_for_any_combination = always(() =>
 
 export const composer_controls_never_escape_the_toolbar = always(() =>
 	toolbar.current.controlsInsideToolbar
+);
+
+export const model_and_generation_controls_remain_a_compact_cluster = always(() =>
+	toolbar.current.largestRightControlGap <= 12
 );
 
 export const permission_control_never_stacks = always(() =>

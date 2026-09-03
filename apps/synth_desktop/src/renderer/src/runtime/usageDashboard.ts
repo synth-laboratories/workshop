@@ -9,10 +9,8 @@ export type { UsageBreakdown, UsageDayPoint };
  * lives apart from the component so the numbers can be tested without a
  * webview, and so the rules they encode are written down in one place:
  *
- *   · A dollar figure always says who vouches for it. Settled charges and
- *     tariff estimates are added — the ledger drops an estimate the moment its
- *     request settles, so the sum cannot double-count — but the split is never
- *     hidden.
+ *   · A dollar figure comes from a settled receipt or a Backend estimate.
+ *     Legacy/local tariff estimates are never counted as spend.
  *   · Missing telemetry is `null`, and renders "Unavailable". A real zero and
  *     an unreported field must not look alike.
  *   · On-device runs have no provider charge, so they carry tokens and no
@@ -66,6 +64,16 @@ export function usd(value: number | null | undefined): string {
 	return USD_CENTS.format(value);
 }
 
+/**
+ * Cost cell copy. A missing price is not a billed zero — "No charge" would
+ * claim the provider billed $0. On-device work is the one case with no
+ * provider invoice, so it says so; every other null is Unavailable.
+ */
+export function spendCopy(value: number | null | undefined, provider: string): string {
+	if (typeof value === "number" && Number.isFinite(value)) return usd(value);
+	return provider === "local-laguna" ? "No provider charge" : UNAVAILABLE;
+}
+
 /** Token counts at a glance: 48B, 1.27B, 142M, 12.4K, 940. */
 export function compactTokens(value: number | null | undefined): string {
 	if (typeof value !== "number" || !Number.isFinite(value)) return UNAVAILABLE;
@@ -116,8 +124,9 @@ export function longDay(day: string): string {
  * which is different from a priced zero (an on-device run).
  */
 export function spendUsd(row: UsageBreakdown): number | null {
-	if (row.billedCostUsd == null && row.estimatedCostUsd == null) return null;
-	return (row.billedCostUsd ?? 0) + (row.estimatedCostUsd ?? 0);
+	const backendEstimate = row.costSource === "synth_cloud" ? row.estimatedCostUsd : null;
+	if (row.billedCostUsd == null && backendEstimate == null) return null;
+	return (row.billedCostUsd ?? 0) + (backendEstimate ?? 0);
 }
 
 export type ProviderRoll = {
@@ -151,7 +160,10 @@ export function providerRollup(models: UsageBreakdown[]): ProviderRoll[] {
 			share: 0
 		};
 		next.billedUsd = addNullable(next.billedUsd, row.billedCostUsd);
-		next.estimatedUsd = addNullable(next.estimatedUsd, row.estimatedCostUsd);
+		next.estimatedUsd = addNullable(
+			next.estimatedUsd,
+			row.costSource === "synth_cloud" ? row.estimatedCostUsd : null
+		);
 		next.spendUsd = addNullable(next.billedUsd, next.estimatedUsd);
 		next.totalTokens += row.totalTokens;
 		next.requests += row.requests;
@@ -248,22 +260,45 @@ export type CostQualityRow = { key: string; label: string; amountUsd: number; sh
 
 const COST_AUTHORITY: Array<[string, string]> = [
 	["provider_reported", "Provider reported"],
-	["synth_cloud", "Synth Cloud"],
-	["tariff_estimate", "Tariff estimate"],
+	["synth_cloud", "Synth Cloud actual"],
+	["backend_estimate", "Backend estimate"],
 	["none", "Unpriced"]
 ];
 
+function rowIsUnpriced(row: UsageBreakdown): boolean {
+	return row.billedCostUsd == null && !(row.costSource === "synth_cloud" && row.estimatedCostUsd != null);
+}
+
+/** Tokens when the row carried any; otherwise the request count. */
+function coverageWeight(row: UsageBreakdown): number {
+	return row.totalTokens > 0 ? row.totalTokens : Math.max(row.requests, 0);
+}
+
 /**
- * Who vouches for the money on this page, by share of spend — the one panel
- * that answers "how much of this number should I trust". Every authority is
- * always listed, so a 0% row is a statement rather than a gap.
+ * Who vouches for the money on this page, by share of spend. Every authority
+ * is always listed, so a 0% row is a statement rather than a gap. When
+ * nothing was priced, Unpriced is the whole request/token population (100%)
+ * rather than a fabricated 0.0%.
  */
 export function costQuality(models: UsageBreakdown[]): CostQualityRow[] {
 	const totals = new Map<string, number>();
+	let unpricedWeight = 0;
 	for (const row of models) {
-		totals.set(row.costSource, (totals.get(row.costSource) ?? 0) + (spendUsd(row) ?? 0));
+		if (row.billedCostUsd != null) {
+			totals.set(row.costSource, (totals.get(row.costSource) ?? 0) + row.billedCostUsd);
+		}
+		if (row.costSource === "synth_cloud" && row.estimatedCostUsd != null) {
+			totals.set("backend_estimate", (totals.get("backend_estimate") ?? 0) + row.estimatedCostUsd);
+		}
+		if (rowIsUnpriced(row)) {
+			unpricedWeight += coverageWeight(row);
+		}
 	}
-	const total = [...totals.values()].reduce((sum, value) => sum + value, 0);
+	const pricedTotal = [...totals.values()].reduce((sum, value) => sum + value, 0);
+	if (pricedTotal <= 0 && unpricedWeight > 0) {
+		totals.set("none", unpricedWeight);
+	}
+	const total = pricedTotal > 0 ? pricedTotal : unpricedWeight;
 	return COST_AUTHORITY.map(([key, label]) => {
 		const amountUsd = totals.get(key) ?? 0;
 		return { key, label, amountUsd, share: total > 0 ? amountUsd / total : 0 };

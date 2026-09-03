@@ -6,7 +6,7 @@
  * documenting debt; flip to assert absence when the design is fixed.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -18,8 +18,10 @@ function read(rel) {
 	return readFileSync(join(renderer, rel), "utf8");
 }
 
-test("titlebar is trimmed; account entry lives in the sidebar footer", () => {
+test("titlebar is trimmed; account and version live in the sidebar footer", () => {
 	const app = read("App.tsx");
+	const titlebar = read("components/AppTitlebar.tsx");
+	const sidebar = read("components/Sidebar.tsx");
 	assert.doesNotMatch(app, /Account — stub/);
 	assert.doesNotMatch(app, /data-testid="open-account-settings"/);
 	assert.doesNotMatch(app, /data-testid="open-models-settings"/);
@@ -31,6 +33,9 @@ test("titlebar is trimmed; account entry lives in the sidebar footer", () => {
 	assert.doesNotMatch(app, /Expand — stub/);
 	assert.doesNotMatch(app, /aria-label="Account menu"/);
 	assert.doesNotMatch(app, /aria-label="Expand"/);
+	assert.doesNotMatch(titlebar, /data-testid="app-version"/);
+	assert.match(sidebar, /className="sidebar-version"/);
+	assert.match(sidebar, /data-testid="app-version"/);
 });
 
 test("Runtime settings no longer expose legacy Python migration UI", () => {
@@ -50,9 +55,32 @@ test("Landing Set up an agent card is removed; Laguna reload stays a typed bridg
 	assert.match(app, /onReloadLaguna=\{c\.onReloadLaguna\}/);
 	assert.doesNotMatch(app, /Reload Laguna — stub/);
 	const bridge = read("runtime/desktopBridge.ts");
-	assert.match(bridge, /invokeCommand<LagunaStatus>\(COMMANDS\.LAGUNA_RELOAD\)/);
+	assert.match(bridge, /fromGenerated\(spectaCommands\.lagunaReload\(\)\)/);
 	const rust = readFileSync(join(appRoot, "src-tauri/src/lib.rs"), "utf8");
 	assert.match(rust, /async fn laguna_reload/);
+});
+
+test("empty conversation keeps a quiet, icon-free model surface", () => {
+	const app = read("App.tsx");
+	const landing = read("components/LandingPage.tsx");
+	const composer = read("components/Composer.tsx");
+	const styles = read("styles/app.css");
+	assert.match(app, /showTabIcon=\{c\.view\.kind !== "landing"\}/);
+	assert.match(app, /showCloseTab=\{c\.view\.kind !== "landing"\}/);
+	assert.match(app, /c\.view\.kind === "landing" \? "New conversation"/);
+	assert.doesNotMatch(landing, /ProviderMark|providerMarkForTarget/);
+	assert.match(landing, /Start a new conversation with Workshop/);
+	assert.doesNotMatch(landing.slice(landing.indexOf("export function LandingPage")), /<ModelPicker/);
+	assert.doesNotMatch(composer, /ProviderMark|providerMarkForTarget/);
+	assert.match(composer, /data-testid="composer-add-menu-trigger"/);
+	assert.match(composer, /Commands and skills/);
+	const landingRule = styles.match(/\.landing \{[\s\S]*?\n\}/)?.[0] ?? "";
+	assert.doesNotMatch(landingRule, /background-image|background-size/);
+	assert.match(styles, /\.landing \.composer,[\s\S]*?max-width: 980px/);
+	assert.match(styles, /\.landing \.composer \{[\s\S]*?min-height: 148px;[\s\S]*?border-radius:var\(--radius-composer\)/);
+	assert.match(styles, /\.titlebar \{[\s\S]*?padding: 0 10px 0 0;/);
+	assert.match(styles, /html:not\(\.sidebar-hidden\):not\(\.visual-expanded\)[\s\S]*?border-top-left-radius: 0;/);
+	assert.doesNotMatch(styles, /#9bb5ed/);
 });
 
 test("design debt: CloudDesk leave-safe is projection-driven from AsyncInternPin", () => {
@@ -77,7 +105,7 @@ test("Async Intern Respond opens an intervention control instead of a stub toast
 });
 
 test("design debt: agent-authored analysis shell normalizes persisted type-block payloads", () => {
-	const shell = readFileSync(join(appRoot, "../../visuals/templates/analysis.visual.v1/shell.tsx"), "utf8");
+	const shell = readFileSync(join(appRoot, "../../visuals/families/analysis/analysis.visual.v1/shell.tsx"), "utf8");
 	assert.match(shell, /normalizeBlock/);
 	assert.match(shell, /block\.type/);
 	assert.match(shell, /if \(kind === "note"\)/);
@@ -95,10 +123,19 @@ test("composer approval policy control is wired and test-addressable", () => {
 	assert.match(composer, /data-testid="approval-mode-menu"/);
 });
 
-test("design debt: VisualHost still uses Craftax string heuristics for preview variants", () => {
+test("intended design: preview variants come from one template classifier, not inline heuristics", () => {
+	// The debt this used to track is paid: the Craftax substring heuristic was
+	// copied between VisualHost and sessionView, and harbor/live-eval surfaces
+	// fell to "generic" by omission. One classifier now decides, and both
+	// consumers read it.
 	const host = read("components/VisualHost.tsx");
-	assert.match(host, /templateId\.includes\("craftax"\)/);
-	assert.match(host, /templateId\.includes\("scrub"\)/);
+	assert.match(host, /previewVariantForTemplate/);
+	assert.ok(!host.includes('templateId.includes("craftax")'));
+	const classifier = read("runtime/templatePresentation.ts");
+	assert.match(classifier, /includes\("harbor"\)/);
+	assert.match(classifier, /includes\("craftax"\)/);
+	const session = read("runtime/sessionView.ts");
+	assert.match(session, /previewVariantForTemplate/);
 });
 
 test("intended design: deferred LoRA support leaves no fixture catalog or placeholder UI", () => {
@@ -118,7 +155,8 @@ test("intended design: Inventory Attach defaults to GameBench Craftax :8098", ()
 	const inventory = read("components/DataPage.tsx");
 	assert.match(inventory, /127\.0\.0\.1:8098/);
 	assert.match(inventory, /data-testid="attach-container"/);
-	assert.match(inventory, /data-testid="import-trace-v5"/);
+	assert.match(inventory, /open-trace-\$\{t\.id\}/);
+	assert.ok(!inventory.includes("data-testid=\"import-trace-v5\""), "v0.3 inspects sealed traces; it does not ship a catalog import control");
 	assert.ok(!inventory.includes("127.0.0.1:8100"), "demo :8100 placeholder should not be the Attach default");
 });
 
@@ -156,4 +194,103 @@ test("Codex thread compaction uses the native app glyph and divider", () => {
 	assert.match(transcript, /context-compaction-toggle/);
 	assert.match(transcript, /line\.placement !== "after"/);
 	assert.match(transcript, /line\.placement === "after"/);
+});
+
+test("Trace V5 viewer keeps async resolution revision-safe and failures explicit", () => {
+	const host = read("components/VisualHost.tsx");
+	assert.match(host, /bindTemplateSlots\(template, bindings, \{ loadTraceV5/);
+	assert.match(host, /resolveTraceProjection\(source, "rollout-inspector"\)/);
+	assert.match(host, /if \(cancelled\) return;/);
+	assert.match(host, /artifact\.revision/);
+	assert.match(host, /status: "loading", props: \{\}/);
+	for (const state of [
+		"Trace is quarantined",
+		"Unsupported trace schema",
+		"Trace extractor unavailable",
+		"Sealed trace archive missing",
+		"Trace resolver unavailable"
+	]) assert.match(host, new RegExp(state));
+});
+
+test("Data Inspect persists trace identity and digest binding without projection payload", () => {
+	// The binding shape itself moved to runtime/traceInspector.ts and is now
+	// asserted behaviourally in trace_inspector_identity.test.mjs — including
+	// that a re-sealed trace does not reuse the old archive's inspector, which
+	// matching source text could never have caught. What remains DataPage's own
+	// responsibility is checked here.
+	const inspector = read("runtime/traceInspector.ts");
+	assert.match(inspector, /templateId: TRACE_INSPECTOR_TEMPLATE/);
+	assert.match(inspector, /slot: "projection"/);
+	assert.match(inspector, /kind: "trace_v5"/);
+	assert.match(inspector, /source: trace\.digest/);
+	assert.match(inspector, /traceRecordId: trace\.id/);
+
+	const inventory = read("components/DataPage.tsx");
+	assert.match(inventory, /bridges\.visuals\.list\(\{ templateId: TRACE_INSPECTOR_TEMPLATE/);
+	// A projection payload must never be inlined into the visual: the sealed
+	// archive stays the source and the projection is resolved on demand.
+	assert.doesNotMatch(inventory, /payload:\s*projection/);
+	assert.doesNotMatch(inspector, /payload:\s*projection/);
+});
+
+/**
+ * P0-2 lock — the renderer does not write a run status.
+ *
+ * `TrainingWorkspace` marked a run `failed` when its *poll* threw, and
+ * `TerminalPanel` marked a shell `failed` when its *stream* errored. Neither
+ * knew anything about the process; both produced a durable-looking terminal
+ * word from a transport problem. Transport state belongs in a `connection`
+ * field, and the durable status has exactly one writer: the host.
+ */
+test("components never write a terminal status themselves", () => {
+	const componentsDir = join(renderer, "components");
+	const offenders = [];
+	for (const name of readdirSync(componentsDir)) {
+		if (!name.endsWith(".tsx") && !name.endsWith(".ts")) continue;
+		const source = readFileSync(join(componentsDir, name), "utf8");
+		source.split("\n").forEach((line, index) => {
+			// Prose about the rule is not a violation of it.
+			const code = line.replace(/\/\*.*?\*\//g, "").split("//")[0];
+			if (/^\s*\*/.test(line)) return;
+			if (/status:\s*"(failed|cancelled|completed)"/.test(code)) {
+				offenders.push(`components/${name}:${index + 1}: ${line.trim().slice(0, 120)}`);
+			}
+		});
+	}
+	assert.deepEqual(
+		offenders,
+		[],
+		`the renderer must not write a terminal run status; use a renderer-local \`connection\` field:\n  ${offenders.join("\n  ")}`
+	);
+});
+
+/**
+ * P0-2 lock — one status vocabulary, and it comes from Rust.
+ *
+ * `normalizeRunStatus` used to accept nine spellings no producer ever emitted
+ * and read anything unrecognised as `running`, which is how a settled run kept
+ * a spinner turning. The map is now keyed by the generated `OptimizerRunStatus`
+ * union so `tsc` refuses a status Rust does not have — and refuses to omit one
+ * Rust adds.
+ */
+test("run status normalization is keyed by the generated Rust union", () => {
+	const types = read("runtime/runProgress/types.ts");
+	assert.match(
+		types,
+		/import type \{ OptimizerRunStatus \} from "\.\.\/\.\.\/generated\/protocol"/,
+		"the producer vocabulary must come from the generated bindings"
+	);
+	assert.match(
+		types,
+		/const PRODUCER_STATUS: Record<OptimizerRunStatus, RunProgressStatus>/,
+		"the map must be exhaustive over the generated union"
+	);
+	assert.match(types, /return producer === null \? "unknown" : PRODUCER_STATUS\[producer\]/);
+	for (const consumerOnly of ["terminated", "disconnected", "stalled", "prepared"]) {
+		assert.doesNotMatch(
+			types,
+			new RegExp(`"${consumerOnly}"`),
+			`${consumerOnly} is not a status any producer writes; it must not be normalized`
+		);
+	}
 });

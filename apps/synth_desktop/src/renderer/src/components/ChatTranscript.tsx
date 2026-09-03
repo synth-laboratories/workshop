@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { ArtifactRef, LocalActivityLine, LocalChat } from "../types/landing";
+import { formatVisualAdmissionIdentity, type ArtifactRef, type LocalActivityLine, type LocalChat } from "../types/landing";
+import type { OptimizerRunRecord, RuntimeEvent, Session } from "@synth/runtime-protocol";
 import { FileTypeIcon, shortenPath } from "./FileTypeIcon";
 import { ContainerIcon } from "./ContainerPane";
+import { ManderPresence } from "./mander";
 import {
 	activityStatusAnnouncement,
 	pairActivityGroupLines,
@@ -9,59 +11,156 @@ import {
 	type ToolActivityMode
 } from "../preferences";
 import { contextCompactionTokenSummary } from "../runtime/sessionView";
+import { runProgressItemsByMessage } from "../runtime/runProgress/transcript";
+import { bridges } from "../runtime/desktopBridge";
+import { useTurnPerformanceLabels } from "../hooks/useTurnPerformanceLabels";
+import { hostedCooldownLabel, hostedLifecycleLabel, hostedThroughputLabel, hostedTtftLabel, type HostedInferenceLifecycle } from "../runtime/hostedInferenceLifecycle";
+import { outputContainerIds as chatOutputContainerIds, primaryVisualId, useChatOutputs } from "../hooks/useChatOutputs";
+import { RunProgressCard } from "./runProgress/RunProgressCard";
+import { ComposerLayoutHost } from "./ComposerLayout";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import "./PaidComputeApprovalModal.css";
 
 type Props = {
 	chat: LocalChat;
+	events?: RuntimeEvent[];
 	openArtifactId: string | null;
 	/** Pass artifact id to toggle open/closed; pass null to force close. */
 	onOpenArtifact: (id: string | null) => void;
 	openContainerId?: string | null;
 	onOpenContainer?: (id: string | null) => void;
-	onApprove?: (approvalId: string) => void;
+	onOpenReport?: (id: string) => void;
+	onOpenRun?: (run: OptimizerRunRecord) => void;
+	onApprove?: (approvalId: string, decision?: "remember-locator" | "register-source") => void;
 	onAlwaysAllow?: (approvalId: string) => void;
 	onReject?: (approvalId: string) => void;
 	running?: boolean;
 	warmingUp?: boolean;
+	hostedInferencePhase?: string | null;
+	hostedInference?: HostedInferenceLifecycle | null;
+	/** Live Laguna phase. Intentionally omitted for hosted targets. */
+	localInferencePhase?: "loading" | "prefill" | null;
 	onStop?: () => void;
+	onAdvanced?: () => void;
 	activityMode?: ToolActivityMode;
-	onActivityModeChange?: (mode: ToolActivityMode) => void;
-	/** Rolling model p50 throughput, shared by the live row and completed responses. */
-	medianTpsLabel?: string | null;
-	outputsOpen?: boolean;
-	onToggleOutputs?: () => void;
-	/** Opens a child conversation from an explicitly-linked delegation event. */
-	onOpenSubagent?: (agentId: string) => void;
-	/** Parent activity sequence to reveal after returning from a child conversation. */
-	focusActivitySequence?: number | null;
+	showMascot?: boolean;
+	session?: Session;
+	historyState?: TranscriptHistoryState;
+	onLoadOlder?: () => void;
+};
+
+function formatToolDuration(durationMs: number | undefined, status: LocalActivityLine["toolStatus"]): string | null {
+	if (status === "running" || durationMs == null || durationMs <= 15_000) return null;
+	const totalSeconds = Math.round(durationMs / 1_000);
+	if (totalSeconds < 60) return `${totalSeconds}s`;
+	const minutes = Math.floor(totalSeconds / 60);
+	const seconds = totalSeconds % 60;
+	return `${minutes}m${seconds ? ` ${seconds}s` : ""}`;
+}
+
+export type TranscriptHistoryState = {
+	state: "idle" | "loading" | "loaded" | "error";
+	hasMore: boolean;
+	error?: string;
 };
 
 export function outputContainerIds(chat: LocalChat): string[] {
-	return [...new Set(Object.values(chat.activityByMessageId ?? {}).flat().map((line) => line.containerId).filter((id): id is string => Boolean(id)))];
+	return chatOutputContainerIds(chat);
 }
 
-export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContainerId = null, onOpenContainer }: Pick<Props, "chat" | "openArtifactId" | "onOpenArtifact" | "openContainerId" | "onOpenContainer">) {
+export function OutputsPanel({
+	chat,
+	openArtifactId,
+	onOpenArtifact,
+	openContainerId = null,
+	onOpenContainer,
+	onOpenReport,
+	onOpenRun
+}: Pick<Props, "chat" | "openArtifactId" | "onOpenArtifact" | "openContainerId" | "onOpenContainer" | "onOpenReport" | "onOpenRun">) {
 	const artifacts = chat.artifacts ?? [];
-	const containerIds = outputContainerIds(chat);
-	const hasResources = containerIds.length > 0 || artifacts.length > 0;
+	const outputs = useChatOutputs(chat);
+	const newestFirst = <T extends { updatedAt?: string | null; createdAt?: string | null }>(rows: T[]) =>
+		[...rows].sort((left, right) => Date.parse(right.updatedAt ?? right.createdAt ?? "") - Date.parse(left.updatedAt ?? left.createdAt ?? ""));
+	const subagents = newestFirst(artifacts.filter((artifact) => artifact.templateId === "synth.subagents.v1"));
+	const analysis = newestFirst(artifacts.filter((artifact) => artifact.templateId === "analysis.annotation_workbench.v1"));
+	const visuals = newestFirst(artifacts.filter((artifact) => artifact.templateId !== "synth.subagents.v1" && artifact.templateId !== "analysis.annotation_workbench.v1"));
+	const reports = newestFirst(outputs.reports);
+	const runs = newestFirst(outputs.runs);
 	return <div id="chat-resource-shelf" className="resource-shelf resource-shelf-docked" aria-label="Outputs" data-testid="resource-shelf">
-		{!hasResources ? <div className="resource-shelf-empty" data-testid="resource-shelf-empty">
+		{!outputs.hasResources ? <div className="resource-shelf-empty" data-testid="resource-shelf-empty">
 			<span className="resource-shelf-empty-icon" aria-hidden>
 				<svg viewBox="0 0 24 24" fill="none"><path d="M7.5 3.75h6l3 3v13.5h-9z"/><path d="M13.5 3.75v3h3M9.75 11h4.5M9.75 14h4.5"/></svg>
 			</span>
-			<span className="resource-shelf-empty-copy"><strong>No outputs yet</strong><span>Files, visuals, and containers will appear here.</span></span>
+			<span className="resource-shelf-empty-copy"><strong>No outputs yet</strong><span>Files, visuals, runs, and containers will appear here.</span></span>
 		</div> : null}
-		{containerIds.length > 0 ? <section className="containers-rail" data-testid="containers-rail"><h3>Containers</h3>{containerIds.map((id) => (
+		{outputs.containerIds.length > 0 ? <section className="containers-rail" data-testid="containers-rail"><h3>Containers</h3>{outputs.containerIds.map((id) => (
 			<button key={id} type="button" className={`resource-shelf-row container-rail-btn${openContainerId === id ? " active" : ""}`} onClick={() => onOpenContainer?.(openContainerId === id ? null : id)} aria-pressed={openContainerId === id} aria-label={openContainerId === id ? "Hide container inspector" : "Open container inspector"} data-testid={`container-icon-${id}`}>
 				<span className="resource-shelf-icon"><ContainerIcon /></span><span><strong>Container</strong><code>{id}</code></span><span aria-hidden>›</span>
 			</button>
 		))}</section> : null}
-		{artifacts.length > 0 ? <section className="visuals-rail" data-testid="visuals-rail"><h3>Visuals</h3>{artifacts.map((artifact) => {
+		{subagents.length > 0 ? <section className="subagents-rail" data-testid="subagents-rail"><h3>Subagents</h3>{subagents.map((artifact) => {
 			const active = openArtifactId === artifact.id;
-			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${artifact.title}` : `Show ${artifact.title}`} aria-pressed={active} aria-label={active ? `Hide visual ${artifact.title}` : `Show visual ${artifact.title}`} data-testid={`visuals-icon-${artifact.id}`}>
-				<span className="resource-shelf-icon"><IconVisual /></span><span><strong>{artifact.title}</strong><code>{artifact.templateId ?? artifact.kind}</code></span><span aria-hidden>›</span>
+			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${artifact.title}` : `Show ${artifact.title}`} aria-pressed={active} aria-label={active ? `Hide subagents ${artifact.title}` : `Show subagents ${artifact.title}`} data-testid={`visuals-icon-${artifact.id}`}>
+				<span className="resource-shelf-icon"><IconSubagents /></span><span><strong>{artifact.title}</strong><code>{artifact.summary ?? artifact.templateId}</code></span><span aria-hidden>›</span>
+			</button>;
+		})}</section> : null}
+		{reports.length > 0 ? <section className="reports-rail" data-testid="reports-rail"><h3>Saved reports</h3>{reports.map((report) => (
+			<button key={report.id} type="button" className="resource-shelf-row" onClick={() => onOpenReport?.(report.id)} aria-label={`Open report ${report.title}`} data-testid={`report-output-${report.id}`}>
+				<span className="resource-shelf-icon"><FileTypeIcon path="report.md" /></span><span><strong>{report.title}</strong><code>{report.id} · {report.status}</code></span><span aria-hidden>›</span>
+			</button>
+		))}</section> : null}
+		{runs.length > 0 ? <section className="runs-rail" data-testid="runs-rail"><h3>Runs</h3>{runs.map((run) => {
+			const visualId = primaryVisualId(run);
+			const active = Boolean(visualId && openArtifactId === visualId);
+			return <button key={run.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenRun?.(run)} aria-pressed={active} aria-label={`Open ${run.algorithmId} run ${run.objective ?? run.id}`} data-testid={`run-output-${run.id}`}>
+				<span className="resource-shelf-icon"><IconVisual /></span><span><strong>{run.objective ?? run.algorithmId}</strong><code>{run.id} · {run.status}</code></span><span aria-hidden>›</span>
+			</button>;
+		})}</section> : null}
+		{outputs.checkpoints.length > 0 ? <section className="checkpoints-rail" data-testid="checkpoints-rail"><h3>Checkpoints</h3>{outputs.checkpoints.map(({ runId, ref }) => (
+			<button key={`${runId}:${ref.id}`} type="button" className="resource-shelf-row" onClick={() => {
+				const run = outputs.runs.find((candidate) => candidate.id === runId);
+				if (run) onOpenRun?.(run);
+			}} aria-label={`Inspect checkpoint ${ref.title ?? ref.id}`} data-testid={`checkpoint-output-${ref.id}`}>
+				<span className="resource-shelf-icon"><FileTypeIcon path="checkpoint.bin" /></span><span><strong>{ref.title ?? ref.id}</strong><code>{ref.id} · {ref.kind}</code></span><span aria-hidden>›</span>
+			</button>
+		))}</section> : null}
+		{analysis.length > 0 ? <section className="analysis-rail" data-testid="analysis-rail"><h3>Analysis</h3>{analysis.map((artifact) => {
+			const active = openArtifactId === artifact.id;
+			const identity = formatVisualAdmissionIdentity({
+				visualId: artifact.visualId ?? artifact.id,
+				revision: artifact.revision,
+				receiptDigest: artifact.receiptDigest,
+				contentDigest: artifact.contentDigest
+			});
+			const displayName = artifact.displayName?.trim() || artifact.title;
+			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${displayName}` : `Show ${displayName}`} aria-pressed={active} aria-label={active ? `Hide analysis ${displayName}` : `Show analysis ${displayName}`} data-testid={`analysis-icon-${artifact.id}`}>
+				<span className="resource-shelf-icon"><IconAnalysis /></span><span><strong>{displayName}</strong><code data-testid={`outputs-analysis-identity-${artifact.id}`}>{identity}</code></span><span aria-hidden>›</span>
+			</button>;
+		})}</section> : null}
+		{visuals.length > 0 ? <section className="visuals-rail" data-testid="visuals-rail"><h3>Visuals</h3>{visuals.map((artifact) => {
+			const active = openArtifactId === artifact.id;
+			const identity = formatVisualAdmissionIdentity({
+				visualId: artifact.visualId ?? artifact.id,
+				revision: artifact.revision,
+				receiptDigest: artifact.receiptDigest,
+				contentDigest: artifact.contentDigest
+			});
+			const displayName = artifact.displayName?.trim() || artifact.title;
+			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${displayName}` : `Show ${displayName}`} aria-pressed={active} aria-label={active ? `Hide visual ${displayName}` : `Show visual ${displayName}`} data-testid={`visuals-icon-${artifact.id}`}>
+				<span className="resource-shelf-icon"><IconVisual /></span><span><strong>{displayName}</strong><code data-testid={`outputs-visual-identity-${artifact.id}`}>{identity}</code></span><span aria-hidden>›</span>
 			</button>;
 		})}</section> : null}
 	</div>;
+}
+
+function IconAnalysis() {
+	return (
+		<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="2.5" y="2.5" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M5 10.2l2.1-2.4 1.6 1.5L12 6.4" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+			<circle cx="5.4" cy="5.4" r="0.9" fill="currentColor" />
+		</svg>
+	);
 }
 
 function IconVisual() {
@@ -79,6 +178,16 @@ function IconVisual() {
 	);
 }
 
+function IconSubagents() {
+	return (
+		<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<circle cx="8" cy="5" r="2.25" stroke="currentColor" strokeWidth="1.25" />
+			<path d="M3.5 13c.3-2.35 1.8-3.55 4.5-3.55s4.2 1.2 4.5 3.55" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+			<path d="M2.2 4.25h1.55M12.25 4.25h1.55M3 7.2l1.35-.65M13 7.2l-1.35-.65" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+		</svg>
+	);
+}
+
 /** Exact context-compaction glyph used by the installed Codex app. */
 function IconContextCompaction() {
 	return (
@@ -91,20 +200,11 @@ function IconContextCompaction() {
 	);
 }
 
-function ActivityDetails({ line }: { line: LocalActivityLine }) {
+function McpToolIcon() {
 	return (
-		<div className="activity-details">
-			{line.detail ? <pre className="local-activity-detail-copy">{line.detail}</pre> : null}
-			{line.inspectable?.map((entry, index) => (
-				<section className="activity-inspectable" key={`${entry.label}-${index}`}>
-					<div className="activity-inspectable-head">
-						<strong>{entry.label}</strong>
-						<span>{entry.unavailable ? "Not exposed" : entry.truncated ? "Truncated" : entry.format.toUpperCase()}</span>
-					</div>
-					<pre className={`activity-inspectable-value format-${entry.format}`}>{entry.value}</pre>
-				</section>
-			))}
-		</div>
+		<svg viewBox="0 0 20 20" fill="none" data-icon="mcp-wrench">
+			<path d="M11.75 3.1a4.15 4.15 0 0 0-4.9 5.4l-4.5 4.5a1.9 1.9 0 0 0 2.65 2.65l4.5-4.5a4.15 4.15 0 0 0 5.4-4.9l-2.55 2.5-2.1-.45-.45-2.1 2.5-2.55a4 4 0 0 0-.55-.55Z" />
+		</svg>
 	);
 }
 
@@ -117,7 +217,6 @@ function ActivityLine({
 	onApprove,
 	onAlwaysAllow,
 	onReject,
-	onOpenSubagent,
 	live: _live = false
 }: {
 	line: LocalActivityLine;
@@ -125,31 +224,23 @@ function ActivityLine({
 	onToggleVisual?: () => void;
 	containerOpen?: boolean;
 	onToggleContainer?: () => void;
-	onApprove?: (approvalId: string) => void;
+	onApprove?: (approvalId: string, decision?: "remember-locator" | "register-source") => void;
 	onAlwaysAllow?: (approvalId: string) => void;
 	onReject?: (approvalId: string) => void;
-	onOpenSubagent?: (agentId: string) => void;
 	live?: boolean;
 }) {
 	const [open, setOpen] = useState(false);
 	const isVisualCue = Boolean(onToggleVisual) || line.kind === "visual";
 	const isFile =
 		Boolean(line.path) || line.kind === "file_read" || line.kind === "file_write";
-	const expandable = Boolean(line.detail || line.inspectable?.length) && !isFile;
-	if (line.subagentId && onOpenSubagent) {
-		return (
-			<button
-				type="button"
-				className="local-activity subagent-activity"
-				onClick={() => onOpenSubagent(line.subagentId!)}
-				data-testid={`activity-${line.id}`}
-				data-activity-sequence={line.sequence}
-			>
-				<span className="local-activity-label">{line.label}</span>
-				<span className="local-activity-hint">Open</span>
-			</button>
-		);
-	}
+	const expandable = Boolean(line.detail) && !isVisualCue && !isFile;
+	const runningIndicator = line.toolStatus === "running"
+		? <span className="tool-running-indicator" role="img" aria-label="Tool call running" />
+		: null;
+	const durationLabel = formatToolDuration(line.durationMs, line.toolStatus);
+	const duration = durationLabel
+		? <span className="tool-duration" aria-label={`Tool call took ${durationLabel}`}>{durationLabel}</span>
+		: null;
 	if (line.kind === "approval" && line.approvalId) {
 		const approvalId = line.approvalId ?? line.id;
 		return (
@@ -171,6 +262,7 @@ function ActivityLine({
 		const showVerb = /^(Read|Wrote|Edit)/i.test(verb) ? verb.split(/\s/)[0] : "Read";
 		return (
 			<div className="local-activity file-activity" data-testid={`activity-${line.id}`}>
+				{runningIndicator}
 				<FileTypeIcon path={line.path} />
 				<span className="file-activity-text">
 					<span className="file-activity-verb">{showVerb}</span>{" "}
@@ -178,6 +270,7 @@ function ActivityLine({
 						{shortenPath(line.path)}
 					</code>
 				</span>
+				{duration}
 			</div>
 		);
 	}
@@ -187,6 +280,34 @@ function ActivityLine({
 			<div className="run-summary" data-testid={`activity-${line.id}`}>
 				<span aria-hidden>•••</span>
 				<span>{line.label}</span>
+			</div>
+		);
+	}
+
+	if (line.kind === "visual_lifecycle" && line.visualStage) {
+		const stageLabel = line.visualStage === "draft" ? "Draft"
+			: line.visualStage === "review" ? "In review"
+				: line.visualStage === "ready" ? "Ready" : "Needs attention";
+		return (
+			<div className={`visual-lifecycle stage-${line.visualStage}`} data-testid={`activity-${line.id}`}>
+				<span className="visual-lifecycle-mark" aria-hidden><IconVisual /></span>
+				<span className="visual-lifecycle-copy">
+					<strong>{line.label}</strong>
+					<span>Draft <i /> Review <i /> Ready</span>
+					{line.detail ? <span className="visual-lifecycle-detail">{line.detail}</span> : null}
+				</span>
+				<span className="visual-lifecycle-status">{stageLabel}</span>
+				{onToggleVisual ? (
+					<button
+						type="button"
+						className="visual-lifecycle-open"
+						onClick={onToggleVisual}
+						aria-label={visualOpen ? "Hide visual" : "Open visual"}
+						data-testid={line.artifactId ? `tool-visual-open-${line.artifactId}` : undefined}
+					>
+						{visualOpen ? "Hide" : "Open"}
+					</button>
+				) : null}
 			</div>
 		);
 	}
@@ -231,13 +352,13 @@ function ActivityLine({
 	if (line.kind === "command") {
 		return (
 			<div className="local-activity tool-activity command-activity" data-testid={`activity-${line.id}`}>
+				{runningIndicator}
 				<span className="tool-activity-icon" aria-hidden>&gt;_</span>
 				<span className="tool-activity-body">
 					<span className="tool-activity-label">{line.label}</span>
 					{line.detail ? <code title={line.detail}>{line.detail}</code> : null}
 				</span>
-				{expandable ? <button type="button" className="tool-activity-detail-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}>Details</button> : null}
-				{open ? <ActivityDetails line={line} /> : null}
+				{duration}
 			</div>
 		);
 	}
@@ -245,11 +366,13 @@ function ActivityLine({
 	if (line.kind === "search") {
 		return (
 			<div className="local-activity tool-activity search-activity" data-testid={`activity-${line.id}`}>
+				{runningIndicator}
 				<span className="tool-activity-icon" aria-hidden>⌕</span>
 				<span className="tool-activity-body">
 					<span className="tool-activity-label">{line.label}</span>
 					{line.detail ? <span className="tool-activity-detail">{line.detail}</span> : null}
 				</span>
+				{duration}
 			</div>
 		);
 	}
@@ -257,13 +380,14 @@ function ActivityLine({
 	if (line.toolStatus) {
 		return (
 			<div className="local-activity tool-activity mcp-activity" data-testid={`activity-${line.id}`}>
-				<span className="tool-activity-icon" aria-hidden>◆</span>
+				{runningIndicator}
+				<span className="tool-activity-icon" aria-hidden><McpToolIcon /></span>
 				<span className="tool-activity-body">
 					<code className="mcp-activity-name">{line.label}</code>
 					{line.detail ? <span className="tool-activity-detail">{line.detail}</span> : null}
-					<span className={`tool-status tool-status-${line.toolStatus}`}>{line.toolStatus === "running" ? "Running" : line.toolStatus === "completed" ? "Completed" : "Failed"}</span>
+					<span className={`tool-status tool-status-${line.toolStatus}`}>{line.toolStatus === "running" ? "Running" : line.toolStatus === "completed" ? "Completed" : line.toolStatus === "cancelled" ? "Cancelled" : "Failed"}</span>
 				</span>
-				{expandable ? <button type="button" className="tool-activity-detail-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}>Details</button> : null}
+				{duration}
 				{onToggleVisual ? (
 					<button
 						type="button"
@@ -290,7 +414,6 @@ function ActivityLine({
 						<ContainerIcon />
 					</button>
 				) : null}
-				{open ? <ActivityDetails line={line} /> : null}
 			</div>
 		);
 	}
@@ -320,7 +443,7 @@ function ActivityLine({
 
 	const isReasoning = line.kind === "thought";
 	return (
-		<div className={`local-activity expandable${isReasoning ? " reasoning-disclosure" : ""}${open ? " open" : ""}`} data-activity-sequence={line.sequence}>
+		<div className={`local-activity expandable${isReasoning ? " reasoning-disclosure" : ""}${open ? " open" : ""}`}>
 			<button
 				type="button"
 				className="local-activity-toggle"
@@ -338,14 +461,165 @@ function ActivityLine({
 				) : <span className="local-activity-hint">{open ? "Hide" : "Show"}</span>}
 			</button>
 			{open ? (
-				<div id={`activity-detail-${line.id}`} className="local-activity-detail" data-testid={`activity-detail-${line.id}`}>
-					<ActivityDetails line={line} />
-				</div>
+				<pre id={`activity-detail-${line.id}`} className="local-activity-detail" data-testid={`activity-detail-${line.id}`}>
+					{line.detail}
+				</pre>
 			) : !isReasoning ? (
 				<div className="local-activity-wave" aria-hidden />
 			) : null}
 		</div>
 	);
+}
+
+function PaidComputeApprovalModal({ line, onApprove, onReject }: {
+	line: LocalActivityLine;
+	onApprove?: (approvalId: string) => void;
+	onReject?: (approvalId: string) => void;
+}) {
+	const payload = line.approvalPayload;
+	const cap = payload?.requestedCap;
+	const estimated = payload?.estimatedCostUsdMicros;
+	const inline = payload?.operation === "optimizer.evaluation.inline.start" ? payload.parameters : undefined;
+	// Paid Trace V5 annotation (`annotation.annotation_start` / `verification_start` /
+	// `annotation_campaign`): the host attaches the owning container, the bound
+	// trace, the annotator and the resolved model so the person can see who is
+	// charging and for what before approving.
+	const annotation = payload?.operation?.startsWith("annotation.") ? payload.parameters : undefined;
+	const text = (value: unknown) => typeof value === "string" ? value : undefined;
+	const inlineContainer = inline?.container && typeof inline.container === "object" && !Array.isArray(inline.container)
+		? inline.container as Record<string, unknown> : undefined;
+	const inlineEvaluator = inline?.evaluator && typeof inline.evaluator === "object" && !Array.isArray(inline.evaluator)
+		? inline.evaluator as Record<string, unknown> : undefined;
+	const inlinePolicy = inline?.policy && typeof inline.policy === "object" && !Array.isArray(inline.policy)
+		? inline.policy as Record<string, unknown> : undefined;
+	const inlineModel = inline?.model && typeof inline.model === "object" && !Array.isArray(inline.model)
+		? inline.model as Record<string, unknown> : undefined;
+	const inlineCredential = inline?.credentialRoute && typeof inline.credentialRoute === "object" && !Array.isArray(inline.credentialRoute)
+		? inline.credentialRoute as Record<string, unknown> : undefined;
+	const paidJobCount = Array.isArray(annotation?.jobs)
+		? annotation.jobs.length
+		: typeof annotation?.jobs === "number"
+			? annotation.jobs
+			: undefined;
+	const estimate = annotation?.estimate && typeof annotation.estimate === "object" && !Array.isArray(annotation.estimate)
+		? annotation.estimate as Record<string, unknown> : undefined;
+	const formatUsd = (micros: number) => `$${(micros / 1_000_000).toFixed(2)}`;
+	const rolloutLimit = cap?.maxRollouts;
+	const callLimit = typeof inline?.maximumModelCallsPerRollout === "number" ? inline.maximumModelCallsPerRollout : undefined;
+	const stepLimit = typeof inline?.maximumStepsPerRollout === "number" ? inline.maximumStepsPerRollout : undefined;
+	const approveRef = useRef<HTMLButtonElement>(null);
+	useEffect(() => {
+		approveRef.current?.focus();
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key === "Escape") {
+				event.preventDefault();
+				onReject?.(line.approvalId!);
+			}
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [line.approvalId, onReject]);
+	return <div className="paid-compute-modal-backdrop" data-testid="paid-compute-approval-modal">
+		<section className="paid-compute-modal" role="dialog" aria-modal="true" aria-labelledby="paid-compute-title">
+			<div className="approval-card-kicker">Paid compute</div>
+			<h2 id="paid-compute-title">{inline && rolloutLimit != null ? `Run ${rolloutLimit.toLocaleString()} evaluation rollouts?` : annotation ? "Approve this paid annotation?" : "Approve this bounded run?"}</h2>
+			<dl className="paid-compute-summary">
+				{inline ? <div><dt>Model</dt><dd><code>{`${text(inlineModel?.provider) ?? "?"}/${text(inlineModel?.modelId) ?? "?"}`}</code></dd></div> : <>
+					<div><dt>Requesting agent</dt><dd>{payload?.requestingAgent ?? "Unknown agent"}</dd></div>
+					<div><dt>Operation</dt><dd><code>{payload?.operation ?? "optimizer recipe"}</code></dd></div>
+					{annotation ? <>
+						<div><dt>Container</dt><dd><code>{text(annotation.containerId) ?? "Missing"}</code></dd></div>
+						{text(annotation.traceDigest) ? <div><dt>Trace</dt><dd><code>{text(annotation.traceRowId) ?? text(annotation.traceId) ?? "?"}</code> · <code>{text(annotation.traceDigest)}</code></dd></div> : null}
+						{text(annotation.annotatorId) ? <div><dt>Annotator</dt><dd><code>{text(annotation.annotatorId)}</code></dd></div> : null}
+						{text(annotation.model) ? <div><dt>Model</dt><dd><code>{text(annotation.model)}</code></dd></div> : null}
+						{paidJobCount != null ? <div><dt>Paid jobs</dt><dd>{paidJobCount.toLocaleString()}</dd></div> : null}
+						{typeof estimate?.max_cost_usd === "number" ? <div><dt>Estimate</dt><dd>${estimate.max_cost_usd.toFixed(2)}</dd></div> : null}
+					</> : null}
+					{estimated != null ? <div><dt>Predicted spend</dt><dd>{formatUsd(estimated)}</dd></div> : null}
+				</>}
+				{cap?.maxCostUsdMicros != null ? <div><dt>Maximum charge</dt><dd>{formatUsd(cap.maxCostUsdMicros)}</dd></div> : null}
+				{!inline && rolloutLimit != null ? <div><dt>Rollout cap</dt><dd>{rolloutLimit.toLocaleString()}</dd></div> : null}
+				{inline ? <div><dt>Limits</dt><dd>{[
+					rolloutLimit != null ? `${rolloutLimit.toLocaleString()} rollouts` : null,
+					callLimit != null ? `${callLimit.toLocaleString()} calls each` : null,
+					stepLimit != null ? `${stepLimit.toLocaleString()} steps each` : null,
+				].filter(Boolean).join(" · ")}</dd></div> : null}
+			</dl>
+			{inline ? <details className="paid-compute-technical-details">
+				<summary>Technical details</summary>
+				<dl>
+					<div><dt>Requesting agent</dt><dd>{payload?.requestingAgent ?? "Unknown agent"}</dd></div>
+					<div><dt>Operation</dt><dd><code>{payload?.operation ?? "optimizer recipe"}</code></dd></div>
+					{estimated != null ? <div><dt>Predicted spend</dt><dd>{formatUsd(estimated)}</dd></div> : null}
+					<div><dt>Specification</dt><dd><code>{text(inline.executionSpecDigest) ?? "Missing digest"}</code></dd></div>
+					<div><dt>Container</dt><dd><code>{text(inlineContainer?.containerId) ?? "Missing"}</code></dd></div>
+					<div><dt>Declaration</dt><dd><code>{text(inlineContainer?.declarationDigest) ?? "Missing"}</code></dd></div>
+					<div><dt>Evaluator</dt><dd><code>{text(inlineEvaluator?.evaluatorId) ?? "Missing"}</code></dd></div>
+					<div><dt>Scoring contract</dt><dd><code>{text(inlineEvaluator?.scoringDigest) ?? "Missing"}</code></dd></div>
+					<div><dt>Policy</dt><dd><code>{`${text(inlinePolicy?.namespace) ?? "?"}/${text(inlinePolicy?.name) ?? "?"}@${text(inlinePolicy?.revision) ?? "?"}`}</code></dd></div>
+					<div><dt>Seeds</dt><dd>{Array.isArray(inline.seeds) ? inline.seeds.join(", ") : "Missing"}</dd></div>
+					<div><dt>Credentials</dt><dd>{text(inlineCredential?.kind) ?? "Missing"} · {text(inlineCredential?.provider) ?? "Missing"}</dd></div>
+				</dl>
+			</details> : null}
+			<div className="paid-compute-modal-actions">
+				<button type="button" className="approval-reject" onClick={() => onReject?.(line.approvalId!)}>Reject</button>
+				<button ref={approveRef} type="button" className="approval-approve" onClick={() => onApprove?.(line.approvalId!)}>Approve</button>
+			</div>
+		</section>
+	</div>;
+}
+
+function CredentialAccessApprovalModal({ line, onApprove, onReject }: {
+	line: LocalActivityLine;
+	onApprove?: (approvalId: string, decision?: "remember-locator" | "register-source") => void;
+	onReject?: (approvalId: string) => void;
+}) {
+	const payload = line.approvalPayload;
+	const consent = payload?.consent ?? "issue_lease";
+	const isRemember = consent === "remember_locator";
+	const isRegister = consent === "register_source";
+	const capability = !isRemember && !isRegister
+		? /^Issue a run-scoped Workshop proxy capability for recipe (.*), run (.*); operations=([^;]+); maxCalls=(\d+); maxCostUsd=([^;]+)$/.exec(payload?.purpose ?? "")
+		: null;
+	const approveRef = useRef<HTMLButtonElement>(null);
+	useEffect(() => {
+		approveRef.current?.focus();
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			event.preventDefault();
+			onReject?.(line.approvalId!);
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [line.approvalId, onReject]);
+	return <div className="paid-compute-modal-backdrop" data-testid="credential-access-approval-modal">
+		<section className="paid-compute-modal" role="dialog" aria-modal="true" aria-labelledby="credential-access-title">
+			<div className="approval-card-kicker">Credential access</div>
+			<h2 id="credential-access-title">{isRemember ? "Remember this location?" : isRegister ? "Register this credential source?" : "Allow this proxy capability?"}</h2>
+			<dl>
+				<div><dt>Connection</dt><dd><code>{payload?.provider ?? "Missing provider alias"}</code></dd></div>
+				{payload?.displayPath ? <div><dt>Location</dt><dd><code>{payload.displayPath}</code></dd></div> : null}
+				{payload?.variable ? <div><dt>Variable</dt><dd><code>{payload.variable}</code></dd></div> : null}
+				{capability ? <>
+					<div><dt>Operation</dt><dd><code>{capability[3]}</code></dd></div>
+					<div><dt>Call cap</dt><dd>{Number(capability[4]).toLocaleString()}</dd></div>
+					<div><dt>Cost cap</dt><dd>${Number(capability[5]).toFixed(2)}</dd></div>
+					<div><dt>Run</dt><dd><code>{capability[2]}</code></dd></div>
+				</> : <div><dt>Scope</dt><dd>{payload?.purpose ?? "Missing capability scope"}</dd></div>}
+			</dl>
+			{isRegister && payload?.switchFromDisplay ? <p className="paid-compute-consent">{payload.provider ?? "This provider"} is loaded from <code>{payload.switchFromDisplay}</code>. Register this location instead?</p> : null}
+			<p className="paid-compute-consent">{isRemember
+				? "Workshop remembers the location only. It does not read or load the credential value."
+				: isRegister
+					? "Workshop reads the named variable into process memory and serves it only through the provider proxy."
+					: "The agent receives a bounded Workshop proxy capability, never the credential value. This approval applies once and cannot be remembered."}</p>
+			<div className="paid-compute-modal-actions">
+				<button type="button" className="approval-reject" onClick={() => onReject?.(line.approvalId!)}>Cancel</button>
+				{isRegister ? <button type="button" className="approval-always" onClick={() => onApprove?.(line.approvalId!, "remember-locator")}>Remember only</button> : null}
+				<button ref={approveRef} type="button" className="approval-approve" onClick={() => onApprove?.(line.approvalId!, isRemember ? "remember-locator" : isRegister ? "register-source" : undefined)}>{isRemember ? "Remember location" : isRegister ? "Register" : "Allow once"}</button>
+			</div>
+		</section>
+	</div>;
 }
 
 function VisualCard({
@@ -357,6 +631,11 @@ function VisualCard({
 	active: boolean;
 	onToggle: () => void;
 }) {
+	const lifecycle = artifact.status === "live" ? "Live"
+		: artifact.status === "saved" ? "Saved"
+			: artifact.status === "failed" ? "Failed"
+				: artifact.status === "archived" ? "Archived"
+					: "Draft";
 	return (
 		<button
 			type="button"
@@ -371,12 +650,13 @@ function VisualCard({
 			data-testid={`artifact-chip-${artifact.id}`}
 		>
 			<span className="visual-card-icon">
-				<IconVisual />
+				{artifact.templateId === "synth.subagents.v1" ? <IconSubagents /> : <IconVisual />}
 			</span>
 			<span className="visual-card-body">
 				<span className="visual-card-title">{artifact.title}</span>
 				<span className="visual-card-meta">
-					{artifact.kind.replace(/_/g, " ")}
+					<span className={`visual-card-status status-${artifact.status ?? "draft"}`}>{lifecycle}</span>
+					{artifact.visualId || artifact.id.startsWith("vis_") ? ` · ${formatVisualAdmissionIdentity({ visualId: artifact.visualId ?? artifact.id, revision: artifact.revision, receiptDigest: artifact.receiptDigest, contentDigest: artifact.contentDigest })}` : null}
 					{active ? " · open" : " · click to open"}
 				</span>
 			</span>
@@ -489,6 +769,31 @@ function CopyMessageButton({ body }: { body: string }) {
 	);
 }
 
+function AssistantMessageBody({ body, onOpenVisual }: { body: string; onOpenVisual: (id: string) => void }) {
+	const linkPattern = /\[([^\]]+)]\(([^)\n]+)\)/g;
+	const parts: ReactNode[] = [];
+	let cursor = 0;
+	for (const match of body.matchAll(linkPattern)) {
+		const index = match.index ?? 0;
+		if (index > cursor) parts.push(body.slice(cursor, index));
+		const label = match[1] ?? "Open";
+		const rawTarget = (match[2] ?? "").trim();
+		const visualId = rawTarget.match(/^synth visual\s+`?([^`\s]+)`?$/i)?.[1];
+		if (visualId) {
+			parts.push(<button key={`${index}-visual`} type="button" className="assistant-resource-chip assistant-visual-chip" onClick={() => onOpenVisual(visualId)} title={`Open visual ${label}`}><span aria-hidden>◈</span><strong>{label}</strong></button>);
+		} else if (rawTarget.startsWith("/")) {
+			parts.push(<span key={`${index}-file`} className="assistant-file-link"><button type="button" className="assistant-resource-chip" onClick={() => void openPath(rawTarget)} title={rawTarget}><FileTypeIcon path={rawTarget} /><strong>{label}</strong></button><button type="button" className="assistant-file-reveal" onClick={() => void revealItemInDir(rawTarget)} aria-label={`Reveal ${label} in Finder`} title="Reveal in Finder">⌗</button></span>);
+		} else if (/^https?:\/\//i.test(rawTarget)) {
+			parts.push(<a key={`${index}-url`} href={rawTarget} target="_blank" rel="noreferrer">{label}</a>);
+		} else {
+			parts.push(match[0]);
+		}
+		cursor = index + match[0].length;
+	}
+	if (cursor < body.length) parts.push(body.slice(cursor));
+	return <p className="assistant-rich-body">{parts}</p>;
+}
+
 /**
  * A pasted brief can be important, but it must not turn the current turn into
  * a screen-height blue wall. Keep the full value in the DOM and make expansion
@@ -535,47 +840,9 @@ function UserMessage({ id, body, images, onExpansionChange }: { id: string; body
 	);
 }
 
-export function SubagentConversationHeader({
-	title,
-	status,
-	parentTitle,
-	model,
-	reasoningDisplay,
-	onBack
-}: {
-	title: string;
-	status: "starting" | "working" | "completed" | "interrupted" | "failed" | "stopped" | "unavailable";
-	parentTitle: string;
-	model: string | null;
-	reasoningDisplay: "none" | "summary" | "full";
-	onBack: () => void;
-}) {
-	const label = ({
-		starting: "Starting",
-		working: "Working",
-		completed: "Completed",
-		interrupted: "Interrupted",
-		failed: "Failed",
-		stopped: "Stopped",
-		unavailable: "Unavailable"
-	})[status];
-	const reasoning = reasoningDisplay === "none" ? "Reasoning · Not exposed" : `Reasoning · ${reasoningDisplay === "summary" ? "Summary" : "Full"}`;
-	return (
-		<header className="subagent-conversation-header" data-testid="subagent-conversation-header">
-			<button type="button" className="subagent-back" onClick={onBack} aria-label={`Back to ${parentTitle}`} data-testid="subagent-back">←</button>
-			<div className="subagent-conversation-title">
-				<span className="subagent-conversation-breadcrumb">{parentTitle}</span>
-				<strong>{title}</strong>
-			</div>
-			<span className={`subagent-conversation-status status-${status}`} data-testid="subagent-status">{label}</span>
-			{model ? <span className="subagent-conversation-meta">{model}</span> : null}
-			<span className="subagent-conversation-meta">{reasoning}</span>
-		</header>
-	);
-}
-
 export function ChatTranscript({
 	chat,
+	events = [],
 	openArtifactId,
 	onOpenArtifact,
 	openContainerId = null,
@@ -585,28 +852,43 @@ export function ChatTranscript({
 	onReject,
 	running = false,
 	warmingUp = false,
+	hostedInferencePhase = null,
+	hostedInference = null,
+	localInferencePhase = null,
 	onStop,
+	onAdvanced,
 	activityMode = "grouped",
-	onActivityModeChange,
-	medianTpsLabel = null,
-	outputsOpen = false,
-	onToggleOutputs,
-	onOpenSubagent,
-	focusActivitySequence = null
+	showMascot = false,
+	session,
+	historyState,
+	onLoadOlder
 }: Props) {
 	const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
-	const [modeMenuOpen, setModeMenuOpen] = useState(false);
-	const modeMenuRef = useRef<HTMLDivElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const followsTailRef = useRef(true);
+	const historyAnchorRef = useRef<{ chatId: string; scrollHeight: number } | null>(null);
+	const historyRequestPendingRef = useRef(false);
 	const previousChatIdRef = useRef(chat.id);
 	const previousActiveRef = useRef<LocalActivityLine[] | undefined>(undefined);
 	const [liveAnnouncement, setLiveAnnouncement] = useState("");
 	const activityByMessageId = chat.activityByMessageId ?? {};
 	const artifacts = chat.artifacts ?? [];
-	const containerIds = outputContainerIds(chat);
-	const hasResources = containerIds.length > 0 || artifacts.length > 0;
-	const transcriptMedianTpsLabel = medianTpsLabel?.replace(/\bp50\b/g, "median") ?? null;
+	const turnTpsLabels = useTurnPerformanceLabels(
+		chat,
+		events,
+		running,
+		bridges.modelPerformance?.turnSamples
+	);
+	// One card per run, anchored to the turn that first referenced it. Recomputed
+	// from activity rather than stored, so a reopened conversation reconstructs
+	// the same placement from its durable events.
+	const runProgressByMessage = useMemo(() => runProgressItemsByMessage(chat), [chat]);
+	const finalAssistantMessageId = useMemo(() => {
+		for (let index = chat.messages.length - 1; index >= 0; index -= 1) {
+			if (chat.messages[index]?.role === "assistant") return chat.messages[index]!.id;
+		}
+		return null;
+	}, [chat.messages]);
 	const activeLines = activityByMessageId.__active__ ?? [];
 	// A pending approval is a turn-level blocking condition, not ordinary
 	// message activity. Message-id rotation and replay ordering can attach it to
@@ -614,13 +896,15 @@ export function ChatTranscript({
 	// unresolved approvals at the live tail so a turn can never look like an
 	// inert "Working…" state while it is actually waiting for the operator.
 	const pendingApprovals = useMemo(() => {
-		if (!running) return [];
 		const byId = new Map<string, LocalActivityLine>();
 		for (const line of Object.values(activityByMessageId).flat()) {
 			if (line.kind === "approval" && line.approvalId) byId.set(line.approvalId, line);
 		}
 		return [...byId.values()];
-	}, [activityByMessageId, running]);
+	}, [activityByMessageId]);
+	const paidComputeApproval = pendingApprovals.find((line) => line.approvalKind === "paid_compute");
+	const credentialAccessApproval = pendingApprovals.find((line) => line.approvalKind === "credential_access");
+	const inlineApprovals = pendingApprovals.filter((line) => line.approvalKind !== "paid_compute" && line.approvalKind !== "credential_access");
 	const withoutPendingApproval = (line: LocalActivityLine) =>
 		!(line.kind === "approval" && line.approvalId);
 	const presentedActive = useMemo(
@@ -637,9 +921,15 @@ export function ChatTranscript({
 	useEffect(() => {
 		if (previousChatIdRef.current !== chat.id) {
 			followsTailRef.current = true;
+			historyAnchorRef.current = null;
+			historyRequestPendingRef.current = false;
 		}
 		previousChatIdRef.current = chat.id;
 	}, [chat.id]);
+
+	useEffect(() => {
+		if (historyState?.state !== "loading") historyRequestPendingRef.current = false;
+	}, [historyState?.state]);
 
 	/*
 	 * --composer-clearance is published by Composer.tsx onto .main-pane and
@@ -648,6 +938,14 @@ export function ChatTranscript({
 	 * (terminal open/close, pane changes) left a stale value and the last turn
 	 * scrolled under the composer. One owner, measured from the dock itself.
 	 */
+
+	useLayoutEffect(() => {
+		const anchor = historyAnchorRef.current;
+		const scroller = scrollRef.current;
+		if (!anchor || !scroller || anchor.chatId !== chat.id || historyState?.state === "loading") return;
+		scroller.scrollTop += scroller.scrollHeight - anchor.scrollHeight;
+		historyAnchorRef.current = null;
+	}, [chat.id, historyState?.state, transcriptContentKey]);
 
 	useLayoutEffect(() => {
 		if (!followsTailRef.current) return;
@@ -659,30 +957,19 @@ export function ChatTranscript({
 		return () => cancelAnimationFrame(frame);
 	}, [transcriptContentKey]);
 
-	useLayoutEffect(() => {
-		if (focusActivitySequence == null) return;
+	const requestOlderHistory = () => {
 		const scroller = scrollRef.current;
-		const target = scroller?.querySelector<HTMLElement>(`[data-activity-sequence="${focusActivitySequence}"]`);
-		if (!target) return;
-		followsTailRef.current = false;
-		target.scrollIntoView({ block: "center" });
-		target.focus?.({ preventScroll: true });
-	}, [chat.id, focusActivitySequence]);
+		if (!scroller || !onLoadOlder || !historyState?.hasMore || historyState.state === "loading" || historyRequestPendingRef.current) return;
+		historyRequestPendingRef.current = true;
+		historyAnchorRef.current = { chatId: chat.id, scrollHeight: scroller.scrollHeight };
+		onLoadOlder();
+	};
 
 	useEffect(() => {
 		const announcement = activityStatusAnnouncement(previousActiveRef.current, activeLines, running);
 		previousActiveRef.current = activeLines;
 		if (announcement) setLiveAnnouncement(announcement);
 	}, [activeLines, running]);
-
-	useEffect(() => {
-		if (!modeMenuOpen) return;
-		const close = (event: MouseEvent) => {
-			if (!modeMenuRef.current?.contains(event.target as Node)) setModeMenuOpen(false);
-		};
-		document.addEventListener("mousedown", close);
-		return () => document.removeEventListener("mousedown", close);
-	}, [modeMenuOpen]);
 
 	const toggleGroup = (id: string) => {
 		setExpandedGroupIds((current) => {
@@ -718,7 +1005,6 @@ export function ChatTranscript({
 				onApprove={onApprove}
 				onAlwaysAllow={onAlwaysAllow}
 				onReject={onReject}
-				onOpenSubagent={onOpenSubagent}
 				live={live && line.kind === "thought"}
 			/>
 		);
@@ -748,43 +1034,8 @@ export function ChatTranscript({
 	});
 
 	return (
-		<div className={`chat-transcript${outputsOpen ? " resources-open" : ""}`} data-testid="chat-transcript" data-activity-mode={activityMode}>
-			<div className="transcript-toolbar" data-testid="transcript-toolbar">
-			<div className="activity-mode-bar" ref={modeMenuRef}>
-				<button
-					type="button"
-					className="activity-mode-trigger"
-					aria-expanded={modeMenuOpen}
-					aria-controls="activity-mode-menu"
-					aria-haspopup="menu"
-					data-testid="activity-mode-menu-trigger"
-					onClick={() => setModeMenuOpen((open) => !open)}
-				>
-					Activity · {activityMode}
-				</button>
-				{modeMenuOpen ? (
-					<div id="activity-mode-menu" className="activity-mode-menu" role="menu" data-testid="activity-mode-menu">
-						{(["detailed", "grouped", "compact"] as ToolActivityMode[]).map((mode) => (
-							<button
-								key={mode}
-								type="button"
-								role="menuitemradio"
-								aria-checked={activityMode === mode}
-								className={activityMode === mode ? "selected" : ""}
-								data-testid={`activity-mode-option-${mode}`}
-								onClick={() => {
-									onActivityModeChange?.(mode);
-									setModeMenuOpen(false);
-								}}
-							>
-								{mode[0]!.toUpperCase() + mode.slice(1)}
-							</button>
-						))}
-					</div>
-				) : null}
-			</div>
-			<button type="button" className={`resource-shelf-trigger${outputsOpen ? " active" : ""}`} onClick={onToggleOutputs} aria-expanded={outputsOpen} aria-controls="workbench-side-panel" data-testid="resource-shelf-trigger"><span aria-hidden>☷</span> Outputs {hasResources ? <strong>{containerIds.length + artifacts.length}</strong> : null}</button>
-			</div>
+		<div className="chat-transcript" data-testid="chat-transcript" data-activity-mode={activityMode}>
+			{showMascot ? <ManderPresence session={session} chat={chat} running={running} /> : null}
 			<div className="sr-only" role="status" aria-live="polite" data-testid="activity-live-region">{liveAnnouncement}</div>
 
 			<div
@@ -792,11 +1043,21 @@ export function ChatTranscript({
 				ref={scrollRef}
 				onScroll={(event) => {
 					const node = event.currentTarget;
-					followsTailRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 96;
+					const followsTail = node.scrollHeight - node.scrollTop - node.clientHeight <= 96;
+					followsTailRef.current = followsTail;
+					if (node.scrollTop <= 96 && !followsTail) requestOlderHistory();
 				}}
 			>
 				<div className="chat-transcript-inner">
+					{historyState?.state === "loading" && chat.messages.length === 0 ? (
+						<div className="transcript-history-status" role="status">Loading conversation history…</div>
+					) : historyState?.state === "error" ? (
+						<div className="transcript-history-status transcript-history-error" role="alert">History unavailable: {historyState.error ?? "Unknown error"}</div>
+					) : historyState?.hasMore ? (
+						<button type="button" className="transcript-history-load" onClick={requestOlderHistory}>Load earlier history</button>
+					) : null}
 						{chat.messages.map((m) => {
+						const showAdvancedAtMessage = !running && onAdvanced && m.id === finalAssistantMessageId;
 						const messageArtifacts = artifacts.filter((a) => a.messageId === m.id);
 						const primaryArtifact = messageArtifacts[0];
 						const primaryOpen = primaryArtifact
@@ -819,15 +1080,26 @@ export function ChatTranscript({
 								) : m.role === "system" ? (
 									<div className="local-system"><p>{m.body}</p><div className="message-actions"><CopyMessageButton body={m.body} /></div></div>
 								) : (
-									<div className="local-assistant">
-										<p>{m.body}</p>
+									<div className={`local-assistant${showAdvancedAtMessage ? " local-assistant-with-advanced" : ""}`}>
+										<div className="local-assistant-content">
+											<AssistantMessageBody body={m.body} onOpenVisual={onOpenArtifact} />
+											{showAdvancedAtMessage ? <button type="button" className="message-advanced" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
+										</div>
 										<div className="assistant-message-footer">
-											{transcriptMedianTpsLabel ? <span className="message-throughput" data-testid={`assistant-median-tps-${m.id}`}>{transcriptMedianTpsLabel}</span> : null}
+											{turnTpsLabels.byMessageId[m.id] ? <small className="message-throughput" data-testid={`assistant-generation-tps-${m.id}`} title={turnTpsLabels.byMessageId[m.id]!.detail ?? undefined} aria-label={`${turnTpsLabels.byMessageId[m.id]!.generation}${turnTpsLabels.byMessageId[m.id]!.worked ? `. Elapsed work time ${turnTpsLabels.byMessageId[m.id]!.worked!.slice(7)}` : ""}`}>{turnTpsLabels.byMessageId[m.id]!.generation}{turnTpsLabels.byMessageId[m.id]!.worked ? ` · ${turnTpsLabels.byMessageId[m.id]!.worked}` : ""}</small> : null}
 											<div className="message-actions"><CopyMessageButton body={m.body} /></div>
 										</div>
 									</div>
 								)}
 								{m.role === "assistant" ? renderPresented(presentedAfter, [], false, running) : null}
+								{(runProgressByMessage[m.id] ?? []).map((item) => (
+									<RunProgressCard
+										key={item.runId}
+										runId={item.runId}
+										sessionRef={chat.id}
+										onOpenFullRun={onOpenArtifact}
+									/>
+								))}
 								{messageArtifacts.map((a) => (
 									<VisualCard
 										key={a.id}
@@ -840,17 +1112,53 @@ export function ChatTranscript({
 						);
 						})}
 						{renderPresented(presentedActive, [], false, running)}
-						{pendingApprovals.map((line) => renderActivityLine(line, [], false, false))}
+						{(runProgressByMessage.__active__ ?? []).map((item) => (
+							<RunProgressCard
+								key={item.runId}
+								runId={item.runId}
+								sessionRef={chat.id}
+								onOpenFullRun={onOpenArtifact}
+							/>
+						))}
+						{inlineApprovals.map((line) => renderActivityLine(line, [], false, false))}
+						{!running && hostedCooldownLabel(hostedInference) ? (
+							<div className="hosted-lifecycle-note" role="status" data-testid="hosted-lifecycle-cooldown">
+								<span className="hosted-lifecycle-dot" aria-hidden />
+								{hostedCooldownLabel(hostedInference)}
+								{hostedThroughputLabel(hostedInference) ? ` · ${hostedThroughputLabel(hostedInference)}` : null}
+								{hostedTtftLabel(hostedInference) ? ` · ${hostedTtftLabel(hostedInference)}` : null}
+							</div>
+						) : null}
 						{running ? (
-							<div className="model-working" role="status" aria-live="polite" data-testid="model-working">
+							<div
+								className="model-working"
+								role="status"
+								aria-live="polite"
+								data-testid="model-working"
+								data-waiting-on={warmingUp ? (session?.target.kind === "local" ? "local" : "cloud") : undefined}
+							>
 								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
-								<span>{warmingUp ? "Warming up…" : "Working…"}</span>
-								{transcriptMedianTpsLabel ? <span className="model-working-throughput" data-testid="model-working-median-tps">{transcriptMedianTpsLabel}</span> : null}
+								<span>{session?.target.kind === "local" && localInferencePhase === "loading"
+									? "Loading…"
+									: session?.target.kind === "local" && localInferencePhase === "prefill"
+										? "Prefilling…"
+										: session?.target.kind === "cloud" && hostedLifecycleLabel(hostedInferencePhase)
+											? hostedLifecycleLabel(hostedInferencePhase)
+										: warmingUp
+											? session?.target.kind === "local"
+												? "Waiting on local…"
+												: hostedLifecycleLabel(hostedInferencePhase) ?? "Waiting on cloud…"
+											: "Working…"}</span>
+								{turnTpsLabels.live ? <small className="model-working-throughput" data-testid="model-working-generation-tps">{turnTpsLabels.live}</small> : null}
 								{onStop ? <button type="button" onClick={onStop} aria-label="Stop generating">Stop</button> : null}
+								{onAdvanced ? <button type="button" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
 							</div>
 						) : null}
 					</div>
 			</div>
+			<ComposerLayoutHost />
+			{paidComputeApproval ? <PaidComputeApprovalModal line={paidComputeApproval} onApprove={onApprove} onReject={onReject} /> : null}
+			{!paidComputeApproval && credentialAccessApproval ? <CredentialAccessApprovalModal line={credentialAccessApproval} onApprove={onApprove} onReject={onReject} /> : null}
 		</div>
 	);
 }

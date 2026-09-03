@@ -4,7 +4,21 @@
 import json
 import os
 import pathlib
+import subprocess
 import sys
+
+if sys.argv[1:] == ["debug", "models", "--bundled"]:
+    print(json.dumps({
+        "models": [{
+            "slug": "fixture-fallback",
+            "base_instructions": "Fixture bundled model instructions.",
+            "context_window": 272000,
+            "max_context_window": 1000000,
+            "input_modalities": ["text", "image"],
+            "supports_image_detail_original": True,
+        }]
+    }))
+    raise SystemExit(0)
 
 
 home = pathlib.Path(os.environ["CODEX_HOME"])
@@ -18,6 +32,12 @@ turn_number = 0
 # attempt succeeds.
 exit_on_turn_start = home / "exit-on-turn-start"
 reject_thread_resume = home / "reject-thread-resume"
+request_approval_on_turn_start = home / "request-approval-on-turn-start"
+complete_before_turn_start_response = home / "complete-before-turn-start-response"
+final_answer_then_exit = home / "final-answer-then-exit"
+ignore_interrupt_and_spawn_sleeper = home / "ignore-interrupt-and-spawn-sleeper"
+sleeping_child_pid = home / "sleeping-child.pid"
+approval_response_path = home / "approval-response.json"
 
 
 def send(message: dict) -> None:
@@ -37,7 +57,19 @@ for raw in sys.stdin:
     method = message.get("method")
     request_id = message.get("id")
     params = message.get("params") or {}
+    if method is None and isinstance(request_id, int) and request_id >= 9000:
+        approval_response_path.write_text(json.dumps(message, separators=(",", ":")), encoding="utf-8")
+        send({
+            "jsonrpc": "2.0",
+            "method": "turn/completed",
+            "params": {"turn": {"id": "turn-fixture-approval", "status": "completed", "items": []}},
+        })
+        continue
     if request_id is None:
+        continue
+    # Desktop's answer to a server-originated approval request. It is already
+    # captured in the JSONL log above; there is no request method to dispatch.
+    if method is None:
         continue
 
     if method == "initialize":
@@ -65,7 +97,29 @@ for raw in sys.stdin:
                 exit_on_turn_start.unlink()
             sys.exit(0)
         turn_number += 1
-        result = {"turn": {"id": f"turn-fixture-{os.getpid()}-{turn_number}"}}
+        turn_id = f"turn-fixture-{os.getpid()}-{turn_number}"
+        if ignore_interrupt_and_spawn_sleeper.exists():
+            # Model the failure that matters in production: SIGTERM exits the
+            # app-server group leader while a shell/tool descendant ignores it.
+            # Stop must retain the already-verified PGID and escalate that same
+            # group after the leader no longer exists.
+            child = subprocess.Popen([
+                sys.executable,
+                "-c",
+                "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
+            ])
+            sleeping_child_pid.write_text(str(child.pid), encoding="utf-8")
+        if complete_before_turn_start_response.exists():
+            complete_before_turn_start_response.unlink()
+            send({
+                "jsonrpc": "2.0",
+                "method": "turn/completed",
+                "params": {
+                    "threadId": params.get("threadId", "thread-fixture"),
+                    "turn": {"id": turn_id, "status": "completed", "items": []},
+                },
+            })
+        result = {"turn": {"id": turn_id}}
     elif method == "turn/interrupt":
         result = {}
     elif method == "turn/steer":
@@ -81,6 +135,31 @@ for raw in sys.stdin:
         continue
 
     send({"jsonrpc": "2.0", "id": request_id, "result": result})
+    if method == "turn/start" and request_approval_on_turn_start.exists():
+        send({
+            "jsonrpc": "2.0",
+            "id": 9000 + turn_number,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "command": "printf fixture",
+                "cwd": str(home.parent),
+                "availableDecisions": ["decline", "accept", "acceptForSession"],
+            },
+        })
+    if method == "turn/start" and final_answer_then_exit.exists():
+        send({
+            "jsonrpc": "2.0",
+            "method": "item/agentMessage",
+            "params": {
+                "item": {
+                    "id": "message-final-fixture",
+                    "type": "agentMessage",
+                    "text": "FINAL_ANSWER_OK",
+                    "phase": "final_answer",
+                },
+            },
+        })
+        sys.exit(0)
     if method == "thread/compact/start":
         compact_turn_id = "compact-fixture-1"
         send({
@@ -103,7 +182,7 @@ for raw in sys.stdin:
                 },
             },
         })
-    if method == "turn/interrupt":
+    if method == "turn/interrupt" and not ignore_interrupt_and_spawn_sleeper.exists():
         send({
             "jsonrpc": "2.0",
             "method": "turn/interrupted",

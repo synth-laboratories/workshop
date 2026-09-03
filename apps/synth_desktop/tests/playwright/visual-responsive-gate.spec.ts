@@ -223,9 +223,14 @@ test.describe("GEPA workspace on the real Sol run", () => {
 
 	test("expanded workspace inspects candidate, evaluations, and trace at every breakpoint", async ({ page }) => {
 		await page.getByTestId("toggle-visual-expand").click();
+		await expect(page.getByTestId("gepa-workbench-controls")).toBeVisible();
+		await page.getByTestId("gepa-candidate-sort").selectOption("score");
+		await page.getByTestId("gepa-sort-direction").selectOption("desc");
 		await page.getByTestId("optimizer-candidate-gepa_d2b4f5433ce8").click();
+		await expect(page.getByTestId("gepa-linked-selection")).toContainText("gepa_d2b4f5433ce8");
 		await expect(page.getByTestId("gepa-selected-candidate")).toContainText("Rejected at the minibatch gate");
 		await expect(page.getByTestId("gepa-candidate-content")).toBeVisible();
+		await expect.poll(() => page.evaluate((runId) => window.localStorage.getItem(`synth.optimizer.gepa.presentation.v1:${runId}`), SOL_ID)).toContain('"sort":"score"');
 		await page.getByTestId("eval-filter-failures").click();
 		await expect(page.getByTestId("gepa-child-evaluations")).toBeVisible();
 		await expect(page.getByTestId("inspect-proposer-trace-0")).toContainText("Reflection context assembled");
@@ -235,21 +240,24 @@ test.describe("GEPA workspace on the real Sol run", () => {
 
 test.describe("Craftax semantic viewer", () => {
 	test("folds deltas, keeps hierarchy, and holds every breakpoint", async ({ page }) => {
-		// Fixture replay paces one durable event per 800ms; this run has ~45.
+		// Keep the synthetic replay fast; this gate measures the terminal visual,
+		// not transport pacing.
 		test.setTimeout(180_000);
 		const lane = "rollout_craftax_gate_2026_08_12";
+		const comparisonLane = "rollout_craftax_gate_2026_08_12_b";
 		const events: unknown[] = [];
 		let seq = 0;
-		const push = (kind: string, payload: Record<string, unknown> = {}) => {
+		const pushLane = (runId: string, kind: string, payload: Record<string, unknown> = {}) => {
 			seq += 1;
 			events.push({
 				kind,
 				sequence: seq,
 				occurred_at: new Date(Date.UTC(2026, 7, 12, 20, 0, 0, seq * 15)).toISOString(),
-				run_id: lane,
+				run_id: runId,
 				payload
 			});
 		};
+		const push = (kind: string, payload: Record<string, unknown> = {}) => pushLane(lane, kind, payload);
 		push("trace.opened");
 		push("observation", { readout: { env_steps: 0, observation_text: "Forest clearing", inventory: { health: 9, food: 8, drink: 7, energy: 9, wood: 2 } } });
 		push("span.policy.opened", { call: { provider: "openrouter", model: "gpt-5.6-luna" } });
@@ -261,9 +269,22 @@ test.describe("Craftax semantic viewer", () => {
 		push("span.policy.closed", { length: 2 });
 		push("reward_signal", { value: 1.0 });
 		push("span.step.closed", { step: 0, action: "up" });
+		push("frame", { step: 0, text: "frame 0" });
 		push("achievement_unlocked", { achievement: "collect_wood" });
 		push("span.step.closed", { step: 1, action: "left" });
+		const call1FrameIndex = events.length;
+		push("frame", { step: 1, text: "frame 1" });
+		push("span.policy.opened", { call_number: 2, call: { provider: "openrouter", model: "gpt-5.6-luna" } });
+		push("span.policy.data", { channel: "summary", reasoning: "second-call-reasoning", tool_arguments: '{"actions":["down"]}', usage: { total_tokens: 120 } });
+		push("span.policy.closed", { length: 1 });
+		push("span.step.closed", { step: 2, action: "down" });
+		const call2FrameIndex = events.length;
+		push("frame", { step: 2, text: "frame 2" });
 		push("trace.reconciled", { digest: "d".repeat(64) });
+		pushLane(comparisonLane, "trace.opened");
+		pushLane(comparisonLane, "snapshot", { step: 0, total_reward: 0 });
+		pushLane(comparisonLane, "snapshot", { step: 2, total_reward: 2, achievements: { collect_stone: 1 } });
+		pushLane(comparisonLane, "trace.reconciled", { digest: "e".repeat(64) });
 
 		const visual = {
 			schemaVersion: "synth.desktop-visual.v1",
@@ -280,7 +301,8 @@ test.describe("Craftax semantic viewer", () => {
 					kind: "inline",
 					data: {
 						events,
-						scope: { campaign_id: "campaign_gate", rollout_ids: [lane], selection: { initial_rollout_id: lane } }
+						replay_ms: 1,
+						scope: { campaign_id: "campaign_gate", rollout_ids: [lane, comparisonLane], selection: { initial_rollout_id: lane } }
 					}
 				}]
 			},
@@ -321,18 +343,59 @@ test.describe("Craftax semantic viewer", () => {
 		// The template also renders in the gallery preview; measure the pane instance.
 		const viewer = page.getByTestId("visual-pane").getByTestId("visual-live-craftax");
 		await expect(viewer).toBeVisible();
-		// Fixture replay is interval-based; wait for the sealed terminal state.
-		await expect(viewer).toContainText("sealed/reconciled", { timeout: 90_000 });
+		// Fixture replay is interval-based; assert the terminal contract rather
+		// than an older copy label that no longer names the transport state.
+		await expect(viewer).toHaveAttribute("data-visual-terminal", "true", { timeout: 90_000 });
+		await expect(viewer.locator(".cv-topbar h2")).toHaveCSS("color", "rgb(244, 238, 230)");
+		await expect(viewer.locator(".cv-topbar .cv-eyebrow")).toHaveCSS("color", "rgb(255, 106, 42)");
+		const aggregateTimeline = viewer.getByTestId("craftax-aggregate-timeline");
+		expect(await viewer.evaluate((root) => {
+			const overview = root.querySelector('[data-visual-landmark="run-overview"]');
+			const aggregate = root.querySelector('[data-testid="craftax-aggregate-timeline"]');
+			return Boolean(overview && aggregate && (aggregate.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING));
+		}), "aggregate outcomes should precede the run overview near the top").toBe(true);
+		await expect(aggregateTimeline.locator(".cv-rollout-line")).toHaveCount(2);
+		await expect(aggregateTimeline.locator(".cv-achievement-marker")).toHaveCount(2);
+		await expect(aggregateTimeline).toContainText("🪵");
+		mkdirSync(SHOT_DIR, { recursive: true });
+		await aggregateTimeline.screenshot({ path: join(SHOT_DIR, "craftax-aggregate-timeline.png") });
 
 		// One folded policy-call row, not thirty token rows.
 		const traceButtons = viewer.locator(".cv-trace li button");
 		const rowCount = await traceButtons.count();
 		expect(rowCount, `trace rows should be folded, got ${rowCount}`).toBeLessThan(20);
-		await expect(viewer).not.toContainText("token25");
+		// Transcript renders one normalized call card while preserving every
+		// delta under expandable Trace V5 evidence.
+		await viewer.getByRole("button", { name: "Agent transcript", exact: true }).click();
+		await expect(viewer.locator(".cv-call-list > li")).toHaveCount(2);
+		await expect(viewer.getByRole("heading", { name: "Agent transcript" })).toBeVisible();
+		await viewer.getByRole("button", { name: "Focus", exact: true }).click();
+		await expect(viewer.locator(".cv-call-list button[aria-current=true]")).toContainText("Call 1");
+		await expect(viewer.getByText("Raw Trace V5 evidence (34 envelopes)")).toHaveCount(1);
 		await expect(viewer).toContainText("Step 0");
 		await expect(viewer).toContainText("collect_wood");
 
+		await viewer.getByRole("button", { name: "Replay", exact: true }).click();
+		const frameCallPanel = viewer.getByTestId("craftax-frame-call-panel");
+		await expect(frameCallPanel).toBeVisible();
+		await expect(frameCallPanel).toContainText("Call 2");
+		await expect(frameCallPanel).toContainText("second-call-reasoning");
+		const rawEventSlider = viewer.getByRole("slider", { name: "Replay selected rollout by raw event" });
+		await rawEventSlider.fill(String(call1FrameIndex));
+		await expect(frameCallPanel).toContainText("Call 1");
+		await expect(frameCallPanel).toContainText("Policy reasoning");
+		await expect(frameCallPanel).toContainText("token0");
+		await expect(frameCallPanel).toContainText("Tool calls");
+		await expect(frameCallPanel).toContainText('"actions":["up","left"]');
+		await rawEventSlider.fill(String(call2FrameIndex));
+		await expect(frameCallPanel).toContainText("Call 2");
+		await expect(frameCallPanel).toContainText('"actions":["down"]');
+		const selectedAchievementTimeline = viewer.getByTestId("craftax-selected-achievement-timeline");
+		await expect(selectedAchievementTimeline.locator(".cv-selected-achievement-marker")).toHaveCount(1);
+		await expect(selectedAchievementTimeline).toContainText("🪵");
+		await expect(selectedAchievementTimeline).toContainText("collect wood");
 		await page.getByTestId("toggle-visual-expand").click();
 		await captureViewportSweep(page, "craftax");
+		await aggregateTimeline.screenshot({ path: join(SHOT_DIR, "craftax-aggregate-timeline-wide.png") });
 	});
 });

@@ -19,6 +19,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 const appRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const source = join(appRoot, "src/renderer/src/components/InferencePanel.tsx");
 const sourceText = readFileSync(source, "utf8");
+const appCss = readFileSync(join(appRoot, "src/renderer/src/styles/app.css"), "utf8");
 
 // Bundle into node_modules cache so relative ../bridge resolves, while bare
 // react / @tauri-apps stay external. Nothing generated lands in the tracked tree.
@@ -45,6 +46,10 @@ const {
 	formatMs,
 	formatQueue,
 	formatTps,
+	inferenceAuthorityLabel,
+	inferenceObservedAt,
+	INFERENCE_AUTHORITY_LOCAL,
+	INFERENCE_AUTHORITY_SHOAL,
 	reduceFeed,
 	sparklinePath,
 	HISTORY_LIMIT
@@ -56,6 +61,7 @@ const idleRolling = {
 	requestsCompleted: 31,
 	requestsFailed: 1,
 	requestsCancelled: 2,
+	lastFailureReason: "Unknown tool: container_list",
 	inputTokens: 41000,
 	outputTokens: 9100,
 	cachedTokens: 22000,
@@ -71,6 +77,7 @@ const blankRolling = {
 	requestsCompleted: null,
 	requestsFailed: null,
 	requestsCancelled: null,
+	lastFailureReason: null,
 	inputTokens: null,
 	outputTokens: null,
 	cachedTokens: null,
@@ -192,6 +199,45 @@ test("idle state says so and offers a working Free now control", () => {
 	assert.match(html, /no generation in flight/);
 	assert.doesNotMatch(html, /data-testid="inference-free"[^>]*disabled/);
 	assert.match(html, /Release the model weights now/);
+	assert.match(html, /data-testid="inference-authority">Local</);
+});
+
+test("idle telemetry is compact by default with diagnostics behind Advanced", () => {
+	const html = render({
+		monitor: monitor({
+			snapshot: snapshot(),
+			recent: [{
+				id: "recent-1",
+				status: "ok",
+				phase: "complete",
+				model: "poolside/Laguna-XS-2.1-NVFP4-mlx",
+				promptTokens: 19734,
+				outputTokens: 17,
+				cachedTokens: 0,
+				cacheHitRatio: 0,
+				ttftMs: 22430,
+				decodeTps: 28.8
+			}]
+		})
+	});
+	assert.match(html, /data-testid="inference-recent"/);
+	assert.match(html, /Recent requests/);
+	assert.match(html, /28\.8 tok\/s/);
+	assert.match(html, /ttft 22\.43 s/);
+	assert.match(html, /<details class="inference-advanced">/);
+	assert.match(html, /<summary>Advanced<\/summary>/);
+	assert.doesNotMatch(html, /<details class="inference-advanced" open/);
+});
+
+test("a pinned finetune is identified as a LoRA model while idle", () => {
+	const html = render({
+		monitor: monitor({ snapshot: snapshot() }),
+		selectedModel: "synth/Laguna-XS-2.1-ft"
+	});
+	assert.match(html, /Laguna XS 2\.1 ft/);
+	assert.match(html, /data-testid="inference-policy-kind"/);
+	assert.match(html, /data-finetuned="yes"/);
+	assert.match(html, /Fine-tuned model · LoRA attached/);
 });
 
 test("an active local turn is not labelled idle between inference calls", () => {
@@ -212,21 +258,23 @@ test("a cold local turn reports model warmup before generation telemetry begins"
 		warmingUp: true
 	});
 	assert.match(html, /data-phase="loading"/);
-	assert.match(html, /WARMING/);
+	assert.match(html, /LOADING/);
+	assert.match(html, /LOADING on Local/);
 	assert.match(html, /loading model weights/);
 	assert.doesNotMatch(html, /waiting for next inference call/);
 	assert.doesNotMatch(html, />IDLE</);
 });
 
-test("unloaded state reports no residency and disables Free now", () => {
+test("unloaded state reports no residency and omits the inapplicable memory action", () => {
 	const html = render({
 		monitor: monitor({ snapshot: snapshot({ resident: false, residentBytes: null }) })
 	});
 	assert.match(html, /data-phase="unloaded"/);
 	assert.match(html, /data-resident="no"/);
-	assert.match(html, /UNLOADED/);
-	assert.match(html, /data-testid="inference-free"[^>]*disabled/);
-	assert.match(html, /No weights are resident/);
+	assert.match(html, /UNLOADED on Local/);
+	assert.match(html, /NOT LOADED/);
+	assert.match(html, /model weights are not resident/);
+	assert.doesNotMatch(html, /data-testid="inference-free"/);
 });
 
 test("error state is announced and offers a retry", () => {
@@ -292,7 +340,8 @@ test("recent requests distinguish ok, failed and cancelled outcomes", () => {
 					cachedTokens: 0,
 					cacheHitRatio: 0,
 					ttftMs: 2100,
-					decodeTps: 9.2
+					decodeTps: 9.2,
+					failureReason: "Unknown tool: container_list"
 				},
 				{
 					id: "b",
@@ -312,6 +361,7 @@ test("recent requests distinguish ok, failed and cancelled outcomes", () => {
 	assert.match(html, /data-status="failed"/);
 	assert.match(html, /data-status="cancelled"/);
 	assert.match(html, /Laguna XS 2\.1/);
+	assert.match(html, /Unknown tool: container_list/);
 	assert.match(html, /2\.10 s/);
 });
 
@@ -450,6 +500,7 @@ test("a departing generation is classified from the rolling counter that moved",
 		})
 	);
 	assert.equal(failed.recent[0].status, "failed");
+	assert.equal(failed.recent[0].failureReason, "Unknown tool: container_list");
 
 	const completed = reduceFeed(first, snapshot({ active: null }));
 	assert.equal(completed.recent[0].status, "ok");
@@ -471,7 +522,7 @@ test("formatters answer Unavailable instead of inventing values", () => {
 	assert.equal(formatQueue(null, 8), "Unavailable");
 	assert.equal(formatQueue(2, null), "2");
 	assert.equal(formatQueue(0, 8), "0/8");
-	assert.equal(compactModelName("poolside/Laguna-XS-2.1-NVFP4-mlx"), "Laguna XS 2.1");
+	assert.equal(compactModelName("poolside/Laguna-XS-2.1-NVFP4-mlx"), "Laguna XS 2.1 · NVFP4");
 	assert.equal(compactModelName(null), "Local model");
 });
 
@@ -483,4 +534,52 @@ test("sparkline paths break at unavailable samples", () => {
 	assert.match(path, /^M/);
 	// Two moves: the opening point and the restart after the gap.
 	assert.equal((path.match(/M/g) ?? []).length, 2);
+});
+
+test("inference authority is Local for the on-device Laguna sidecar", () => {
+	assert.equal(inferenceAuthorityLabel({}), INFERENCE_AUTHORITY_LOCAL);
+	assert.equal(inferenceAuthorityLabel({ source: "local" }), "Local");
+	assert.equal(inferenceAuthorityLabel({ baseUrl: "http://127.0.0.1:7333" }), "Local");
+	assert.equal(inferenceAuthorityLabel({ source: "laguna", baseUrl: "http://localhost:7333" }), "Local");
+	assert.equal(inferenceObservedAt({}), null);
+	assert.equal(inferenceObservedAt({ updatedAt: Date.parse("2026-08-26T17:14:00.000Z") })?.iso, "2026-08-26T17:14:00.000Z");
+	const html = render({
+		monitor: monitor({ snapshot: snapshot() }),
+		status: { baseUrl: "http://127.0.0.1:7333", updatedAt: Date.parse("2026-08-26T17:14:00.000Z") }
+	});
+	assert.match(html, /data-testid="inference-authority">Local</);
+	assert.match(html, /data-testid="inference-observed-at"/);
+	assert.match(html, /dateTime="2026-08-26T17:14:00.000Z"/);
+	assert.doesNotMatch(html, /Synth Cloud · Shoal/);
+});
+
+test("inference authority is Synth Cloud · Shoal only when the observation is hosted", () => {
+	assert.equal(inferenceAuthorityLabel({ source: "shoal" }), INFERENCE_AUTHORITY_SHOAL);
+	assert.equal(inferenceAuthorityLabel({ source: "synth-cloud" }), "Synth Cloud · Shoal");
+	assert.equal(inferenceAuthorityLabel({ baseUrl: "https://inference.shoal.synth.dev" }), "Synth Cloud · Shoal");
+	const html = render({
+		monitor: monitor({
+			snapshot: snapshot({
+				resident: false,
+				residentBytes: null,
+				source: "shoal",
+				observedAt: "2026-08-26T17:14:00.000Z"
+			})
+		})
+	});
+	assert.match(html, /data-testid="inference-authority">Synth Cloud · Shoal</);
+	assert.match(html, /UNLOADED on Synth Cloud · Shoal/);
+	assert.match(html, /data-authority="shoal"/);
+	assert.doesNotMatch(html, />UNLOADED</);
+});
+
+test("inference panel fills the side panel and settings workspace", () => {
+	assert.match(sourceText, /className=\{shell\}/);
+	assert.match(sourceText, /"inference-panel"/);
+	assert.match(
+		appCss,
+		/\.workbench-side-panel-content \.inference-panel,[\s\S]*?\.settings-page \.inference-panel,[\s\S]*?width:\s*100%;[\s\S]*?max-width:\s*none/
+	);
+	assert.match(appCss, /\.inference-panel\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none/s);
+	assert.doesNotMatch(appCss, /\.inference-panel\s*\{[^}]*max-width:\s*390px/s);
 });

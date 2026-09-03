@@ -1,0 +1,20 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "../../../services/laguna-daemon/laguna_daemon": "services/laguna-daemon/laguna_daemon",
+      "../../../services/victoria-logs": "services/victoria-logs",
+      "../../../visuals/families": "visuals/families",
+      "../../../visuals/chrome": "visuals/chrome",
+      "../../../visuals/components": "visuals/components",
+      "../../../visuals/runtime": "visuals/runtime",
+      "../../../visuals/ambient.d.ts": "visuals/ambient.d.ts",
+      "../../../visuals/package.json": "visuals/package.json",
+      "../../../visuals/tsconfig.json": "visuals/tsconfig.json",
+      "../../../helpers/synth-computer-use/target/bundle/Synth Computer Use.app": "Synth Computer Use.app",
+      "../browser/playwright_backend.mjs": "browser/playwright_backend.mjs",
+      "../../../runtime-distributions/mlx-rl": "runtimes/mlx-rl",
+      "../../../runtime-distributions/optimizers": "runtimes/optimizers"
+    }
+  }
+}

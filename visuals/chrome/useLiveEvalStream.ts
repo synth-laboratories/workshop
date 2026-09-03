@@ -1,211 +1,113 @@
 import { useEffect, useRef, useState } from "react";
 import type { LiveEvalEvent } from "../runtime/types.ts";
-import {
-  emptyLiveIngest,
-  ingestLiveEnvelope,
-  ingestLiveEnvelopeBatch,
-  type LiveEnvelope
-} from "../runtime/liveStream.ts";
+import { emptyLiveIngest, ingestLiveEnvelopeBatch, type LiveEnvelope } from "../runtime/liveStream.ts";
+import type { ReplayClient, TransportState } from "../runtime/replayClient.ts";
+import { useLiveEvalStreams, type LiveEvalStreamsView } from "./useLiveEvalStreams.ts";
+
+/** A client with nothing declared. Stable so the hook below keeps one identity. */
+const NO_STREAMS: ReplayClient = {
+  streams: [],
+  poll: async () => {
+    throw new Error("no replay transport is declared for this visual");
+  }
+};
 
 /**
- * Replay fixture events on an interval, or attach a real EventSource when sseUrl is set.
- * Control records (`stream.subscribed`, heartbeats) set ready but are not evidence.
- * Duplicate identities are dropped (persist-before-publish / reconnect).
+ * One live stream, or a bundled fixture, for templates that show a single
+ * rollout.
+ *
+ * This is a thin adapter over `useLiveEvalStreams`: transport is the host's
+ * `ReplayClient`, and the only thing owned here is fixture playback, which is
+ * a local authoring aid rather than a transport. Templates no longer read
+ * bindings to discover URLs — deriving a transport inside a template is what
+ * let a visual declare ten streams and open none of them.
+ *
+ * See: docs/contracts/visual_replay_transport.md.
  */
 export function useLiveEvalStream(options: {
-  sseUrl?: string;
-  pollUrl?: string;
+  replay?: ReplayClient;
   fixtureEvents?: LiveEvalEvent[];
   replayMs?: number;
-}): { events: LiveEvalEvent[]; live: boolean; ready: boolean; recovering: boolean; recovered: number; error: string | null } {
-  const { sseUrl, pollUrl, fixtureEvents, replayMs = 800 } = options;
+  /** Identity for correlated diagnostics. Absent outside Workshop. */
+  visualId?: string | null;
+  revision?: number | null;
+}): LiveEvalStreamsView {
+  const { replay, fixtureEvents, replayMs = 800, visualId, revision } = options;
+  const declared = (replay?.streams.length ?? 0) > 0;
+  const live = useLiveEvalStreams(declared ? replay! : NO_STREAMS, { visualId, revision });
+  const fixture = useFixtureReplay(
+    declared ? undefined : fixtureEvents,
+    replayMs,
+    fixtureReplayIdentity(fixtureEvents, visualId, revision)
+  );
+  return declared ? live : fixture;
+}
+
+function fixtureReplayIdentity(events: LiveEvalEvent[] | undefined, visualId?: string | null, revision?: number | null): string {
+  const eventIdentity = (event: LiveEvalEvent | undefined) => event
+    ? `${event.kind}:${event.run_id ?? ""}:${event.sequence ?? (event as LiveEvalEvent & { sequence_number?: unknown }).sequence_number ?? ""}`
+    : "none";
+  return [visualId ?? "fixture", revision ?? "draft", events?.length ?? 0, eventIdentity(events?.[0]), eventIdentity(events?.at(-1))].join(":");
+}
+
+/**
+ * Replay a bundled fixture on an interval.
+ *
+ * A finite local fixture is already complete evidence, so it reports `ready`
+ * without waiting for a live-only `stream.subscribed` control envelope — and
+ * reaches `terminal` when it runs out, rather than resting in a pending state
+ * that reads as a stalled connection.
+ */
+function useFixtureReplay(
+  fixtureEvents: LiveEvalEvent[] | undefined,
+  replayMs: number,
+  fixtureIdentity: string
+): LiveEvalStreamsView {
   const [events, setEvents] = useState<LiveEvalEvent[]>([]);
-  const [live, setLive] = useState(false);
-  const [ready, setReady] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [recovering, setRecovering] = useState(false);
-  const [recovered, setRecovered] = useState(0);
-  const idx = useRef(0);
+  const [state, setState] = useState<TransportState>(() => fixtureEvents?.length ? "live" : "idle");
   const ingest = useRef(emptyLiveIngest());
+  const index = useRef(0);
+  const activeIdentity = useRef(fixtureIdentity);
+  const fixtureEventsRef = useRef(fixtureEvents);
+  fixtureEventsRef.current = fixtureEvents;
 
   useEffect(() => {
-    const fixtureReady = Boolean(!sseUrl && fixtureEvents?.length);
+    const replayEvents = fixtureEventsRef.current;
+    const identityChanged = activeIdentity.current !== fixtureIdentity;
+    activeIdentity.current = fixtureIdentity;
     ingest.current = emptyLiveIngest();
-    setEvents([]);
-    setError(null);
-    setReady(false);
-    setRecovering(false);
-    setRecovered(0);
-    idx.current = 0;
-
-    let frame: number | null = null;
-    const pending: LiveEnvelope[] = [];
-    const publish = () => {
-      frame = null;
-      if (pending.length) {
-        ingest.current = ingestLiveEnvelopeBatch(ingest.current, pending.splice(0));
-      }
-      // Fixture evidence does not contain the live transport's
-      // `stream.subscribed` control envelope. Keep its local-ready state while
-      // publishing each durable envelope instead of overwriting it to false.
-      setReady(fixtureReady || ingest.current.ready);
+    index.current = 0;
+    if (identityChanged) setEvents((current) => current.length ? [] : current);
+    if (!replayEvents?.length) {
+      if (identityChanged) setState((current) => current === "idle" ? current : "idle");
+      return;
+    }
+    if (identityChanged) setState((current) => current === "live" ? current : "live");
+    // Browsers cannot present more than roughly one visual update per frame.
+    // Coalesce faster fixture cadences so a dense trace does not force one
+    // React render per transport envelope (and trip React's nested-update
+    // guard) while preserving the fixture's requested average replay rate.
+    const batchSize = Math.max(1, Math.ceil(16 / Math.max(1, replayMs)));
+    const timer = window.setInterval(() => {
+      const end = Math.min(replayEvents.length, index.current + batchSize);
+      const next = replayEvents.slice(index.current, end) as LiveEnvelope[];
+      index.current = end;
+      ingest.current = ingestLiveEnvelopeBatch(ingest.current, next);
       setEvents(ingest.current.events as LiveEvalEvent[]);
-    };
-    const push = (parsed: LiveEnvelope) => {
-      pending.push(parsed);
-      if (frame == null) frame = window.requestAnimationFrame(publish);
-    };
-    const pushBatch = (rows: LiveEnvelope[]) => {
-      if (frame != null) {
-        window.cancelAnimationFrame(frame);
-        frame = null;
+      if (index.current >= replayEvents.length) {
+        window.clearInterval(timer);
+        setState("terminal");
       }
-      if (pending.length) rows = [...pending.splice(0), ...rows];
-      ingest.current = ingestLiveEnvelopeBatch(ingest.current, rows);
-      publish();
-    };
+    }, Math.max(replayMs, replayMs * batchSize));
+    return () => window.clearInterval(timer);
+  }, [fixtureIdentity, replayMs]);
 
-    if (sseUrl && typeof EventSource !== "undefined") {
-      setLive(true);
-      let es: EventSource | undefined;
-      const abort = new AbortController();
-      let recovery: Promise<void> | null = null;
-      const backfill = async () => {
-        if (!pollUrl || recovery || abort.signal.aborted) return recovery;
-        recovery = (async () => {
-          setRecovering(true);
-          try {
-            const before = ingest.current.events.length;
-            let after = [...ingest.current.lastSequenceByScope.values()].reduce((max, value) => Math.max(max, value), 0);
-            for (let pageNumber = 0; pageNumber < 1000; pageNumber++) {
-              const url = new URL(pollUrl, sseUrl);
-              url.searchParams.set("after", String(after));
-              url.searchParams.set("limit", "500");
-              const response = await fetch(url, { signal: abort.signal, headers: { Accept: "application/json" } });
-              if (!response.ok) throw new Error(`poll recovery HTTP ${response.status}`);
-              const body = await response.json() as {
-                events?: LiveEnvelope[];
-                page?: { events?: LiveEnvelope[] };
-                cursor?: { next?: number; high_water?: number; has_more?: boolean; closed?: boolean };
-              } | LiveEnvelope[];
-              const rows = Array.isArray(body) ? body : body.page?.events ?? body.events ?? [];
-              pushBatch(rows);
-              if (Array.isArray(body)) break;
-              const cursor = body.cursor;
-              const evidenceSequences = rows.map((row) => Number(row.sequence_number ?? row.sequence)).filter(Number.isFinite);
-              const next = cursor?.next ?? (evidenceSequences.length ? Math.max(...evidenceSequences) : after);
-              const highWater = cursor?.high_water;
-              const hasMore = cursor?.has_more ?? (highWater != null && next < highWater);
-              if (next < after) throw new Error(`poll recovery cursor regressed from ${after} to ${next}`);
-              if (!hasMore) break;
-              if (next === after) throw new Error(`poll recovery made no progress after sequence ${after}`);
-              after = next;
-              if (pageNumber === 999) throw new Error("poll recovery exceeded 1000 pages");
-            }
-            setRecovered((value) => value + Math.max(0, ingest.current.events.length - before));
-            if (ingest.current.conflicts.length) setError(ingest.current.conflicts.at(-1) ?? "Conflicting replay envelope");
-            else if (ingest.current.gaps.length) setError(`Evidence gap after sequence ${ingest.current.gaps.at(-1)?.after}`);
-            else setError(null);
-          } catch (e) {
-            if (!abort.signal.aborted) setError(e instanceof Error ? e.message : "poll recovery error");
-          } finally {
-            setRecovering(false);
-            recovery = null;
-          }
-        })();
-        return recovery;
-      };
-      const receive = (msg: MessageEvent<string>) => {
-        try {
-          const parsed = JSON.parse(msg.data) as LiveEnvelope;
-          push(parsed);
-          const kind = String(parsed.kind ?? parsed.type ?? "");
-          if (kind === "run_finished" || kind === "eval.stream.terminal" || kind === "eval.run.terminal") {
-            setLive(false);
-            es?.close();
-            abort.abort();
-          }
-        } catch (e) {
-          setError(e instanceof Error ? e.message : "SSE parse error");
-        }
-      };
-      try {
-        es = new EventSource(sseUrl);
-        es.onmessage = receive;
-        for (const kind of ["snapshot", "eval.run.terminal", "rollout.progress", "rollout.frame", "stream.subscribed"]) {
-          es.addEventListener(kind, receive as EventListener);
-        }
-        es.onerror = () => {
-          if (es?.readyState !== EventSource.CLOSED) {
-            setError("SSE connection interrupted");
-            void backfill();
-          }
-        };
-      } catch {
-        // WKWebView rejects EventSource from the tauri origin to loopback HTTP.
-        // Streaming fetch is allowed by the same CORS policy and preserves the
-        // standard SSE wire format, including named events.
-        void (async () => {
-          try {
-            const response = await fetch(sseUrl, { signal: abort.signal, headers: { Accept: "text/event-stream" } });
-            if (!response.ok || !response.body) throw new Error(`SSE HTTP ${response.status}`);
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = "";
-            while (!abort.signal.aborted) {
-              const { value, done } = await reader.read();
-              if (done) break;
-              buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
-              let boundary = buffer.indexOf("\n\n");
-              while (boundary >= 0) {
-                const block = buffer.slice(0, boundary);
-                buffer = buffer.slice(boundary + 2);
-                const data = block.split("\n").filter((line) => line.startsWith("data:"))
-                  .map((line) => line.slice(5).trimStart()).join("\n");
-                if (data) receive(new MessageEvent("message", { data }));
-                boundary = buffer.indexOf("\n\n");
-              }
-            }
-          } catch (e) {
-            if (!abort.signal.aborted) {
-              setError(e instanceof Error ? e.message : "SSE connection error");
-              await backfill();
-            }
-          }
-        })();
-      }
-      void backfill();
-      return () => {
-        if (frame != null) window.cancelAnimationFrame(frame);
-        es?.close();
-        abort.abort();
-        setLive(false);
-      };
-    }
-
-    if (fixtureEvents?.length) {
-      // A finite fixture is already available locally. It must not depend on a
-      // live-only `stream.subscribed` control envelope to leave "connecting".
-      setReady(true);
-      setLive(true);
-      const id = window.setInterval(() => {
-        if (idx.current >= fixtureEvents.length) {
-          window.clearInterval(id);
-          setLive(false);
-          return;
-        }
-        const next = fixtureEvents[idx.current++];
-        push(next as LiveEnvelope);
-      }, replayMs);
-      return () => {
-        if (frame != null) window.cancelAnimationFrame(frame);
-        window.clearInterval(id);
-        setLive(false);
-      };
-    }
-
-    return undefined;
-  }, [sseUrl, pollUrl, fixtureEvents, replayMs]);
-
-  return { events, live, ready, recovering, recovered, error };
+  return {
+    events,
+    state,
+    closed: state === "terminal" ? 1 : 0,
+    ready: Boolean(fixtureEvents?.length),
+    recovered: 0,
+    error: null
+  };
 }

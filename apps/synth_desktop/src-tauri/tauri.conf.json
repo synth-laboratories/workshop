@@ -1,50 +1,52 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Synth Desktop",
-  "version": "0.2.0",
+  "productName": "Synth Workshop",
+  "version": "0.9.5",
   "identifier": "com.synth.desktop",
   "build": {
     "beforeDevCommand": "npm run frontend:dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "npm run frontend:build",
+    "beforeBuildCommand": "npm run package:prepare",
     "frontendDist": "../dist"
   },
   "app": {
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: data: blob: http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; script-src 'self'"
+      "csp": "default-src 'self'; img-src 'self' asset: data: blob: http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; script-src 'self' data: 'unsafe-eval'; frame-src 'self'"
     },
     "windows": [
       {
         "label": "main",
-        "title": "Synth Desktop",
+        "title": "Synth Workshop",
         "width": 1280,
-        "height": 840,
+        "height": 900,
+        "center": true,
+        "maximized": false,
         "minWidth": 960,
         "minHeight": 640,
         "visible": false,
         "backgroundColor": "#f3f5f8",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 20, "y": 22 }
+        "trafficLightPosition": {
+          "x": 20,
+          "y": 22
+        }
       }
     ]
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["../resources/icon.png", "../resources/icon.icns"],
+    "icon": [
+      "../resources/icon.png",
+      "../resources/icon.icns"
+    ],
     "macOS": {
-      "minimumSystemVersion": "14.0"
-    },
-    "resources": {
-      "../../../services/laguna-daemon/laguna_daemon": "services/laguna-daemon/laguna_daemon",
-      "../../../visuals/templates": "visuals/templates",
-      "../../../visuals/chrome": "visuals/chrome",
-      "../../../visuals/components": "visuals/components",
-      "../../../visuals/runtime": "visuals/runtime",
-      "../../../visuals/ambient.d.ts": "visuals/ambient.d.ts",
-      "../../../visuals/package.json": "visuals/package.json",
-      "../../../visuals/tsconfig.json": "visuals/tsconfig.json"
+      "minimumSystemVersion": "14.0",
+      "frameworks": [
+        "generated-frameworks/libSynthGhosttyHost.dylib"
+      ],
+      "infoPlist": "Info.plist"
     }
   }
 }

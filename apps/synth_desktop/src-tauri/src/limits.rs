@@ -14,18 +14,32 @@ pub const CONTAINER_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Re-fetch task catalogs / metadata when older than this.
 pub const CONTAINER_METADATA_REFRESH: Duration = Duration::from_secs(300);
 
+/// Maximum accepted age of a container health + capability observation before
+/// `rollouts.prepare` refuses and asks for `container_probe`. Deliberately
+/// wider than `CONTAINER_METADATA_REFRESH` so a record that is merely due for
+/// its next `/info` refresh is not reported as stale.
+pub const CONTAINER_CAPABILITY_MAX_AGE: Duration = Duration::from_secs(900);
+
 /// Short visuals IPC hop to a registered loopback container.
 pub const VISUALS_IPC_HOP_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Longer visuals IPC hop (rollout / dataset pulls).
 pub const VISUALS_IPC_ROLL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Annotation IPC hops: an estimate or a campaign submit is bounded work (the container
+/// enqueues and returns 202); execution is polled, never awaited on the hop.
+pub const ANNOTATION_IPC_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// End-to-end live policy rollout budget. Containers may make several
 /// sequential provider calls (each with its own bounded timeout) while the
 /// subscribed visual continues to receive partial trace and frame events.
 /// This must not reuse the short dataset/engine hop timeout or a successful
 /// paid rollout will be reported to the MCP caller as a transport failure.
-pub const CONTAINER_POLICY_ROLLOUT_TIMEOUT: Duration = Duration::from_secs(900);
+// NanoHorizon may retry a transient provider limit up to 17 times with a
+// declared bounded backoff. Keep the host request alive through the run
+// capability's one-hour authority window; call and spend ceilings still fail
+// closed independently.
+pub const CONTAINER_POLICY_ROLLOUT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// Account snapshot HTTP budget.
 pub const ACCOUNT_CLOUD_TIMEOUT: Duration = Duration::from_secs(12);
@@ -63,6 +77,15 @@ pub const OPTIMIZER_SIDECAR_HEALTH_TIMEOUT: Duration = Duration::from_millis(120
 // complete instead of repeatedly killing the build at five seconds.
 pub const OPTIMIZER_SIDECAR_READY_WAIT: Duration = Duration::from_secs(60);
 
+/// How long a spawned recipe child may run without its run becoming visible to
+/// the optimizer service the host polls.
+// The producer registers its durable index shortly after spawn, so this only
+// has to outlast that registration. Past it the run is not merely slow: the
+// child is writing somewhere the polled service cannot see, and every further
+// second is paid rollouts whose events can never be ingested. Bounded here so
+// that a contract failure costs a known amount instead of a whole run.
+pub const OPTIMIZER_RUN_INDEX_WAIT: Duration = Duration::from_secs(90);
+
 /// Laguna generation / chat request.
 pub const LAGUNA_INFERENCE_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -84,5 +107,15 @@ pub const VISUALS_IPC_MAX_BODY_BYTES: usize = 1024 * 1024;
 /// Eval driver body cap (larger for trace bundles).
 pub const EVAL_DRIVER_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
+/// Provider-proxy request body cap. Oversized agent bodies fail closed.
+pub const SECRETS_PROXY_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// Default lifetime of a run capability issued by the local secrets broker.
+pub const SECRETS_CAPABILITY_TTL: Duration = Duration::from_secs(30 * 60);
+
 /// Desktop image preview size cap.
 pub const IMAGE_PREVIEW_MAX_BYTES: u64 = 20 * 1024 * 1024;
+
+/// Sealed trace artifact cap for a container import. Above this a trace belongs
+/// in a bundle the user moves deliberately, not in a loopback fetch.
+pub const MAX_IMPORTED_TRACE_BYTES: u64 = 256 * 1024 * 1024;

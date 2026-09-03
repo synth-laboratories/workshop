@@ -247,14 +247,16 @@ mod tests {
     }
 
     #[test]
-    fn persist_refuses_digbench_token_in_envelopes() {
+    fn persist_refuses_bearer_token_in_envelopes() {
         let dir = tempdir().unwrap();
         let store = ContentStore::new(dir.path());
         let err = persist_live_envelopes(
             &store,
             Some("stream_r1"),
             Some("r1"),
-            vec![json!({"kind": "observation", "payload": {"text": "DIGBENCH_API_TOKEN=secret"}})],
+            vec![
+                json!({"kind": "observation", "payload": {"text": "Authorization: Bearer secret"}}),
+            ],
         )
         .unwrap_err();
         assert!(err.to_string().contains("token"));

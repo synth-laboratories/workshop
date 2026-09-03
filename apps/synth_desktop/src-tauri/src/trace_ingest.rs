@@ -7,6 +7,8 @@
 use crate::data::{TraceBundleInspection, TraceRecord};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -30,6 +32,12 @@ pub struct TraceBundleIngestRequest {
     pub source_kind: Option<String>,
     pub title: Option<String>,
     pub source_uri: Option<String>,
+    /// Immutable registry id of the container that sealed this trace, when the
+    /// importer knows it (container-driven imports do; a bare file import does
+    /// not). Persisted on `traces.container_id` so paid annotation can name the
+    /// owning container on the approval card. Never a URL.
+    #[serde(default)]
+    pub container_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, specta::Type)]
@@ -79,6 +87,12 @@ pub(crate) async fn inspect_input(
     fs::create_dir_all(staging_root)?;
     let staging = staging_root.join(format!("inspect-{}", Uuid::new_v4().simple()));
     fs::create_dir(&staging)?;
+    if metadata.is_file() {
+        if let Some(lite) = harbor_lite_inspection(&source)? {
+            let _ = fs::remove_dir_all(&staging);
+            return Ok(lite);
+        }
+    }
     let archive_path = staging.join("bundle.zip");
     let cli = resolve_trace_cli()?;
     let output = Command::new(cli)
@@ -133,6 +147,95 @@ pub(crate) async fn inspect_input(
     result
 }
 
+fn is_harbor_lite_seal(payload: &serde_json::Value) -> bool {
+    let schema = payload
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if schema != "synth.trace.v5" && schema != "synth.trace.harbor-lite.v1" {
+        return false;
+    }
+    let stream = payload.get("stream").and_then(serde_json::Value::as_object);
+    let has_nested_stream = stream.is_some_and(|stream| {
+        stream
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+            && stream
+                .get("closed")
+                .and_then(serde_json::Value::as_bool)
+                .is_some()
+    });
+    // The Containers platform writes the same lite seal with flat keys —
+    // `stream.id` is a literal key, not a path, and `closed` sits beside it.
+    // Only recognizing the nested spelling sent this shape to the format CLI,
+    // which correctly rejected it as `trace_invalid`, so a sealed rollout could
+    // not be imported by any route at all.
+    let has_flat_stream = payload
+        .get("stream.id")
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+        && payload
+            .get("closed")
+            .and_then(serde_json::Value::as_bool)
+            .is_some();
+    let has_stream = has_nested_stream || has_flat_stream;
+    let events = payload.get("events").and_then(serde_json::Value::as_array);
+    let missing_identity = events.is_some_and(|events| {
+        events.iter().any(|event| {
+            event
+                .get("actor_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .is_empty()
+                || event
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .is_empty()
+        })
+    });
+    has_stream && events.is_some() && (schema == "synth.trace.harbor-lite.v1" || missing_identity)
+}
+
+fn harbor_lite_inspection(path: &Path) -> Result<Option<InspectedInput>> {
+    let bytes = fs::read(path)?;
+    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Ok(None);
+    };
+    if !is_harbor_lite_seal(&payload) {
+        return Ok(None);
+    }
+    let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+    let inspection_json = json!({
+        "schema_version": "synth.trace-inspection.v1",
+        "input_kind": "harbor_lite_seal",
+        "compatibility": "harbor_lite",
+        "source_bytes_digest": digest,
+        "bundle_digest": serde_json::Value::Null,
+        "archive_digest": serde_json::Value::Null,
+        "self_contained": false,
+        "trusted": false,
+        "validation": {
+            "valid": true,
+            "self_contained": false,
+            "code": "harbor_lite",
+            "message": "Harbor lite seal is not native Trace V5; identity fields were not synthesized"
+        },
+        "traces": [],
+        "assets": [],
+        "projections": []
+    });
+    let inspection: TraceBundleInspection =
+        serde_json::from_value(inspection_json.clone()).context("decode harbor lite inspection")?;
+    Ok(Some(InspectedInput {
+        inspection,
+        inspection_json,
+        archive_bytes: None,
+        raw_file_bytes: Some(bytes),
+    }))
+}
+
 /// Resolve the format-authority CLI without assuming a Finder-launched app has
 /// inherited the user's interactive shell PATH. A release must bundle its CLI;
 /// a local build must use the exact checked-in Containers version registered in
@@ -148,15 +251,43 @@ pub(crate) fn resolve_trace_cli() -> Result<PathBuf> {
     if let Some(home) = dirs::home_dir() {
         candidates.push(registered_trace_cli(&home));
     }
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .ok_or_else(|| {
-            anyhow!(
-                "synth-containers {} is not registered; run ./scripts/register-local-dev-build.sh in the Containers checkout",
-                synth_containers_version()
-            )
-        })
+    let mut rejected = Vec::new();
+    for candidate in candidates {
+        if !candidate.is_file() {
+            rejected.push(format!("{}: missing", candidate.display()));
+            continue;
+        }
+        match std::process::Command::new(&candidate)
+            .arg("version")
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let actual = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                if actual == synth_containers_version() {
+                    return Ok(candidate);
+                }
+                rejected.push(format!(
+                    "{}: version mismatch (expected {}, got {})",
+                    candidate.display(),
+                    synth_containers_version(),
+                    actual
+                ));
+            }
+            Ok(output) => rejected.push(format!(
+                "{}: version probe failed ({})",
+                candidate.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+            Err(error) => {
+                rejected.push(format!("{}: cannot execute ({error})", candidate.display()))
+            }
+        }
+    }
+    Err(anyhow!(
+        "synth-containers {} has no executable registered trace authority; run ./scripts/register-local-dev-build.sh in the Containers checkout; candidates: {}",
+        synth_containers_version(),
+        rejected.join("; ")
+    ))
 }
 
 fn registered_trace_cli(home: &Path) -> PathBuf {
@@ -317,6 +448,40 @@ mod tests {
                 .join(synth_containers_version())
                 .join("current/.venv/bin/synth-trace")
         );
-        assert_eq!(synth_containers_version(), "0.4.0.20260730");
+        assert_eq!(synth_containers_version(), "0.4.1.dev20260817");
+    }
+
+    /// The Containers platform seal spells its stream identity as the flat key
+    /// `stream.id`. Recognizing only the nested spelling sent it to the format
+    /// CLI, which rejects it as `trace_invalid`, leaving a sealed rollout with
+    /// no import route at all.
+    #[test]
+    fn a_flat_key_platform_seal_is_recognized_as_a_lite_seal() {
+        let seal = json!({
+            "schema_version": "synth.trace.v5",
+            "trace_id": "rollout_1",
+            "rollout_id": "rollout_1",
+            "stream.id": "stream_1",
+            "high_water": 2,
+            "closed": true,
+            "capture.closed": true,
+            "events": [
+                {"event_id": "1", "event_type": "rollout.started", "payload": {}},
+                {"event_id": "2", "event_type": "rollout.completed", "payload": {}}
+            ],
+        });
+        assert!(is_harbor_lite_seal(&seal));
+    }
+
+    #[test]
+    fn a_native_trace_with_identity_is_not_a_lite_seal() {
+        let native = json!({
+            "schema_version": "synth.trace.v5",
+            "stream": {"id": "stream_1", "closed": true},
+            "events": [
+                {"event_id": "1", "actor_id": "actor_1", "session_id": "session_1"}
+            ],
+        });
+        assert!(!is_harbor_lite_seal(&native));
     }
 }

@@ -7,14 +7,22 @@
 
 import type {
 	CodexBridge,
+	AnalysisBridge,
 	CodexOauthBridge,
+	ContextBridge,
 	CoreBridge,
 	DesktopInstanceDiagnostics,
 	InternBridge,
 	InventoryBridge,
 	LagunaBridge,
+	TrainingModelsBridge,
+	TrainingArtifactsBridge,
 	ModelPerformanceBridge,
 	OptimizersBridge,
+	ComputerUseBridge,
+	BrowserAdminBridge,
+	PluginsBridge,
+	ProductTelemetryBridge,
 	RuntimeBridge,
 	SemanticEvalApi,
 	SkillsBridge,
@@ -25,9 +33,12 @@ import type {
 	UpdatesBridge,
 	UsageBridge,
 	VisualsBridge,
+	ReportsBridge,
+	RegisteredInstance,
 	WhisperBridge,
 	WorkspaceScopeBridge,
-	ComposerImageAttachment
+	ComposerImageAttachment,
+	SecretsBridge
 } from "./bridge/types";
 
 export {};
@@ -39,12 +50,17 @@ declare global {
 			chooseWorkspaceDirectory(): Promise<string | null>;
 			chooseImageFiles(): Promise<ComposerImageAttachment[]>;
 			getInstanceDiagnostics(): Promise<DesktopInstanceDiagnostics>;
+			getInstances(): Promise<RegisteredInstance[]>;
 		};
 		/** Browser fixture/explicit compatibility bridge; not installed by Tauri. */
 		synthRuntime?: RuntimeBridge;
+		synthAnalysis?: AnalysisBridge;
 		synthLaguna?: LagunaBridge;
+		synthTrainingModels?: TrainingModelsBridge;
+		synthTrainingArtifacts?: TrainingArtifactsBridge;
 		synthWhisper?: WhisperBridge;
 		synthSkills?: SkillsBridge;
+		synthContext?: ContextBridge;
 		synthConfig?: SynthConfigBridge;
 		synthWorkspaceScope?: WorkspaceScopeBridge;
 		synthAccount?: SynthAccountBridge;
@@ -58,8 +74,14 @@ declare global {
 		synthTariffs?: TariffsBridge;
 		synthUpdates?: UpdatesBridge;
 		synthVisuals?: VisualsBridge;
+		synthPlugins?: PluginsBridge;
+		synthComputerUse?: ComputerUseBridge;
+		synthBrowserAdmin?: BrowserAdminBridge;
+		synthReports?: ReportsBridge;
 		synthOptimizers?: OptimizersBridge;
 		synthTerminal: TerminalBridge;
+		synthSecrets?: SecretsBridge;
+		synthTelemetry?: ProductTelemetryBridge;
 		/** Dev/test semantic eval API — tree-shaken from packaged production builds. */
 		__synthEval?: SemanticEvalApi;
 		__synthPreferences?: {

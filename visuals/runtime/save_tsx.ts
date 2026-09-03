@@ -51,8 +51,8 @@ export function renderInstanceTsx(instance: VisualInstance): string {
  * id: ${instance.id}
  * Do not edit by hand unless forking — prefer MCP visual_save_tsx / bind tools.
  */
-import { useMemo } from "react";
-import { Shell } from "../templates/${instance.templateId}/shell.tsx";
+import { lazy, Suspense, useMemo } from "react";
+import { getShellImporter } from "../registry/index.ts";
 import type { VisualBindings } from "../runtime/types.ts";
 
 export const instanceId = ${JSON.stringify(instance.id)};
@@ -63,6 +63,13 @@ export const bindings: VisualBindings = ${bindingsLiteral(instance.bindings)};
 
 export const instanceProps = ${propsLiteral(instance.props)} as Record<string, unknown>;
 
+const Shell = lazy(async () => {
+  const importer = getShellImporter(templateId);
+  if (!importer) throw new Error(\`Template \${templateId} has no TSX shell\`);
+  const module = await importer();
+  return { default: module.Shell ?? module.default };
+});
+
 export default function ${componentName}() {
   const props = useMemo(
     () => ({
@@ -72,7 +79,7 @@ export default function ${componentName}() {
     }),
     []
   );
-  return <Shell {...props} />;
+  return <Suspense fallback={<div role="status">Loading visual…</div>}><Shell {...props} /></Suspense>;
 }
 `;
 }

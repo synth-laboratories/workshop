@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -9,27 +9,44 @@ import {
   ingestLiveEnvelopes,
   isGuessedStreamUrl
 } from "../runtime/liveStream.ts";
-import { projectDigbenchLane, projectLiveEval } from "../runtime/liveEvalReducer.ts";
+import { projectLiveEval } from "../runtime/liveEvalReducer.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+function templatePath(id, directory = join(root, "families")) {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const path = join(directory, entry.name);
+    if (entry.name === id && existsSync(join(path, "template.json"))) return path;
+    if (!existsSync(join(path, "template.json"))) {
+      const nested = templatePath(id, path);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
 
 function loadEvents(rel) {
   const parsed = JSON.parse(readFileSync(join(root, rel), "utf8"));
   return parsed.events ?? parsed;
 }
 
-test("v0.2 live templates bind slot stream only", () => {
-  for (const id of ["live.craftax.v1", "live.harbor_eval.v1", "live.digbench.v1"]) {
-    const meta = JSON.parse(readFileSync(join(root, `templates/${id}/template.json`), "utf8"));
-    assert.deepEqual(meta.slots.map((slot) => slot.name), ["stream"]);
+test("v0.2 live templates keep stream as transport and Craftax may add optimizer lifecycle", () => {
+  for (const id of ["live.craftax.v1", "live.harbor_eval.v1"]) {
+    const meta = JSON.parse(readFileSync(join(templatePath(id), "template.json"), "utf8"));
+    assert.deepEqual(
+      (meta.inputs ?? meta.slots).map((slot) => slot.name),
+      id === "live.craftax.v1" ? ["stream", "optimizer_run"] : ["stream"]
+    );
     assert.equal(assertLiveEvalSlot("stream"), null);
+    if (id === "live.craftax.v1") assert.equal(assertLiveEvalSlot("optimizer_run", id), null);
     assert.match(assertLiveEvalSlot("live") ?? "", /Forbidden/);
     assert.match(assertLiveEvalSlot("jobs") ?? "", /Forbidden/);
   }
 });
 
 test("v0.2 Craftax fixture: control records are not evidence and missing usage stays missing", () => {
-  const events = loadEvents("templates/live.craftax.v1/examples/events.json");
+  const events = loadEvents("families/first_class_example_containers/live.craftax.v1/examples/events.json");
   const ingested = ingestLiveEnvelopes(events);
   assert.equal(ingested.ready, true);
   assert.ok(!ingested.events.some((event) => event.kind === "stream.subscribed"));
@@ -51,19 +68,6 @@ test("v0.2 Harbor missing reward.txt stays missing, never 0", () => {
   assert.equal(formatMissingNumber(projection.reward), "—");
 });
 
-test("v0.2 dig.bench fixture is text-only and incomplete reward is null", () => {
-  const events = loadEvents("templates/live.digbench.v1/examples/events.json");
-  assert.ok(!events.some((event) => event.kind === "frame"));
-  const laneEvents = events.filter((event) => event.run_id === "digbench_p1");
-  const projection = projectLiveEval(laneEvents);
-  const lane = projectDigbenchLane(laneEvents);
-  assert.equal(projection.has_live_frames, false);
-  assert.equal(projection.reward, null);
-  assert.equal(formatMissingNumber(projection.reward), "—");
-  assert.equal(lane.evidence_class, "stub");
-  assert.ok(laneEvents.some((event) => event.kind === "observation"));
-});
-
 test("v0.2 two run_ids stay isolated in live projections", () => {
   const mixed = [
     { kind: "observation", sequence: 1, run_id: "roll_a", payload: { text: "ALPHA-ONLY" } },
@@ -83,11 +87,12 @@ test("v0.2 two run_ids stay isolated in live projections", () => {
 
 test("v0.2 live shells read the bindings envelope, not bindings.find", () => {
   for (const rel of [
-    "templates/live.harbor_eval.v1/shell.tsx",
-    "templates/live.digbench.v1/shell.tsx",
-    "templates/live.eval_stream.v1/shell.tsx",
-    "templates/live.intern_acceptance.v1/shell.tsx",
-    "templates/live.craftax.v1/shell.tsx"
+    "families/first_class_example_containers/live.harbor_eval.v1/shell.tsx",
+    "families/first_class_example_containers/live.eval_stream.v1/shell.tsx",
+    "families/compatibility/live.intern_acceptance.v1/shell.tsx",
+    "families/first_class_example_containers/live.craftax.v1/shell.tsx",
+    "families/analysis/compose.visual.v1/shell.tsx",
+    "families/analysis/sourced.visual.v1/shell.tsx"
   ]) {
     const source = readFileSync(join(root, rel), "utf8");
     assert.equal(
@@ -101,4 +106,30 @@ test("v0.2 live shells read the bindings envelope, not bindings.find", () => {
 test("v0.2 guessed /events URLs remain refused", () => {
   assert.equal(isGuessedStreamUrl("http://127.0.0.1:8298/events"), true);
   assert.equal(isGuessedStreamUrl("http://127.0.0.1:8298/rollouts/r1/events?after=12"), false);
+});
+
+test("live.eval_stream.v1 is a shortcut pane on advertised compose parts", () => {
+  const path = templatePath("live.eval_stream.v1");
+  const meta = JSON.parse(readFileSync(join(path, "template.json"), "utf8"));
+  const example = JSON.parse(readFileSync(join(path, "examples/fixture_binding.json"), "utf8"));
+  assert.equal(meta.slots, undefined);
+  assert.deepEqual(meta.inputs.map((input) => input.name), ["stream"]);
+  assert.equal(meta.inputs[0].required, true);
+  assert.ok(!meta.inputs.some((input) => input.name === "optimizer_run"));
+  assert.deepEqual(
+    meta.components.map((row) => row.id).sort(),
+    ["detail_modal.v1", "event_stream.v1", "metrics.v1", "scrubber.v1"]
+  );
+  assert.ok(Array.isArray(example.inputs));
+  assert.equal(example.slots, undefined);
+  assert.equal(example.inputs[0].input, "stream");
+  assert.equal(example.inputs[0].slot, undefined);
+  const shell = readFileSync(join(path, "shell.tsx"), "utf8");
+  assert.match(shell, /components\/metrics\.v1\/Metrics\.tsx/);
+  assert.match(shell, /components\/scrubber\.v1\/Scrubber\.tsx/);
+  assert.match(shell, /components\/event_stream\.v1\/EventStream\.tsx/);
+  assert.match(shell, /components\/detail_modal\.v1\/DetailModal\.tsx/);
+  assert.equal(shell.includes("MetricStrip"), false);
+  assert.equal(shell.includes("optimizerEventsToLiveEval"), false);
+  assert.equal(shell.includes("parseComposeSpec"), false);
 });

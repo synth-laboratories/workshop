@@ -14,13 +14,59 @@ named operations directly; do not use shell or scan ports as a fallback.
 ## Discover the engine
 
 1. Call `container_list` in the `mcp__synth_containers` namespace.
-2. Select a registered container by task family and capabilities, not by a
-   guessed name or port.
+2. Select a registered container by task family and by its typed
+   `metadata.capabilities`, not by a guessed name or port.
 3. Refresh it with `container_probe` and read it with `container_get`.
 4. Treat `/health`, `/info`, or `/metadata` as engine discovery only. A ready
    engine is not a policy and proves no model was in the loop.
 5. Register a container only when the user or workspace gives an explicit URL.
    Use `container_register`; never infer a localhost port.
+
+## Select by capability, not by liveness
+
+Select only a currently healthy container advertising the normalized
+prepared-rollout protocol and the exact requested policy ref. If none exists,
+stop and report `compatible_runtime_unavailable`. Do not try raw engines,
+alternate ports, archived rollouts, or prior traces. Evidence must match the
+current invocation's rollout IDs and requested seeds. Missing sealed Trace V5
+means the requested task is incomplete.
+
+`metadata.capabilities` is the authority. It carries `protocol`, tri-state
+`operations` (`supported` / `unsupported` / `unknown`), advertised
+`policy_refs`, the capability `source`, and `observed_at`. Unknown is not
+supported, and it is never inferred:
+
+- `health` proves liveness, not workflow compatibility.
+- SSE support does not imply prepared-rollout support. A raw Gold `/info`
+  advertising `rollout_stream_sse` supports no normalized operation.
+- Never fall back from a selected policy pool to raw Gold, to another port, or
+  to a different policy config.
+- After a preflight failure, do not perform shell or repository archaeology as
+  a substitute for execution. Report the failure and its remediation.
+- Prior evidence may be reported as prior evidence only. It cannot satisfy a
+  new live request, whatever its seeds or rollout IDs.
+
+`container_prepare_rollout` refuses locally, before any request reaches the
+container, and returns a failed tool call with a stable code:
+
+- `container_unhealthy` — start or repair that registered pool, then
+  `container_probe`. Retryable.
+- `container_capabilities_stale` — call `container_probe` first. Retryable.
+- `container_capability_mismatch` — this record does not advertise the
+  operations or the requested `policy_ref`. Not retryable: read `missing` and
+  `available_policy_refs`, then select a compatible registered target or report
+  `compatible_runtime_unavailable`.
+
+Pass `require_trace_v5: true` when the request promises sealed Trace V5
+evidence; preflight then also requires an explicitly advertised
+`trace_v5.capture` rather than assuming SSE implies capture.
+
+You cannot declare a container's capabilities. Capability claims in
+`container_register` metadata are discarded: only the service's own `/info` or
+`/metadata` advertisement counts, or an operator's `config.toml` entry that you
+have no way to write. If a pool is genuinely compatible but silent, report that
+and ask the user to publish the advertisement or add the declaration — do not
+attempt a workaround.
 
 For a bounded **engine acceptance** run (fixed actions, not a model eval), call
 `container_run_rollouts` once with the registered `container_id`, an exact
@@ -32,6 +78,33 @@ For a live policy eval, follow `run-live-container-evals`: prepare, bind the
 declared stream on a task-family visual, then `container_start_prepared_rollout`
 with an explicit `policy_ref` (`harness` + `config`). The coding agent names
 the pin; the host does not default `luna_med`.
+
+After `container_prepare_rollout`, do not guess the compact visuals schema and
+do not call `list_templates`. Create and bind the advertised live visual in one
+call using the exact `templateId` from `container_probe.metadata.liveEval` and
+the exact `visual_binding` returned by preparation:
+
+```js
+const created = await tools.mcp__synth_visuals__visual_manage({
+  operation: "create_with_bind",
+  arguments: {
+    template_id: probe.container.metadata.liveEval.templateId,
+    title: rolloutId,
+    display_name: "Craftax Live Rollout",
+    input: "stream",
+    kind: prepared.visual_binding.kind,
+    source: prepared.visual_binding.source,
+    poll_url: prepared.visual_binding.poll_url,
+    schema: prepared.visual_binding.schema
+  }
+});
+```
+
+Use the returned visual ID for `show`, readiness review, and
+`container_start_prepared_rollout`. A `visual_manage` create request with
+`kind` in place of `template_id` is invalid; never retry it with speculative
+fields. If the atomic call fails, report its exact error instead of spending
+the turn exploring unrelated visual templates.
 
 Use only the normalized Containers contract: plural rollout routes,
 `snake_case` wire fields, and descriptor-nested transport URLs. Never consume

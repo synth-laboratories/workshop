@@ -5,8 +5,9 @@
 //! completion, usage, and billing metadata can each arrive separately, so
 //! every write is an idempotent upsert that only ever *fills in* facts —
 //! `COALESCE` keeps an earlier reported value over a later `NULL`, and a
-//! provider-reported settled charge always replaces a tariff estimate without
-//! creating a second row.
+//! provider-reported settled charge can arrive later without creating a
+//! second row. Legacy estimate columns remain migration-readable but are not
+//! used as spend.
 //!
 //! Both the Usage dashboard and the model performance summaries read from
 //! this table; there is deliberately no second aggregate to drift against it.
@@ -19,8 +20,8 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
-/// Who vouches for a request's dollar figure. Ordered by authority: a settled
-/// provider charge beats a Synth Cloud figure beats a tariff estimate.
+/// Who vouches for a request's dollar figure. `TariffEstimate` is retained
+/// solely to decode legacy rows; it is never surfaced as actual spend.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum CostSource {
@@ -96,21 +97,21 @@ pub struct UsageRecord {
 pub struct UsageBreakdown {
     pub provider: String,
     pub model_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub requests: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub input_tokens: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub cached_input_tokens: Option<i64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub non_cached_input_tokens: Option<i64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub cache_write_tokens: Option<i64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub reasoning_tokens: Option<i64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub output_tokens: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub total_tokens: i64,
     pub cache_hit_rate: Option<f64>,
     pub billed_cost_usd: Option<f64>,
@@ -122,7 +123,7 @@ pub struct UsageBreakdown {
     pub end_to_end_tps_p95: Option<f64>,
     pub ttft_ms_p50: Option<f64>,
     pub ttft_ms_p95: Option<f64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub perf_sample_count: i64,
 }
 
@@ -338,11 +339,10 @@ struct Bucket {
     cache_writes: Option<i64>,
     reasoning: Option<i64>,
     billed: Option<f64>,
-    estimated: Option<f64>,
+    backend_estimated: Option<f64>,
     any_provider_billed: bool,
     any_cloud_billed: bool,
     decode_tps: Vec<f64>,
-    e2e_tps: Vec<f64>,
     ttft: Vec<f64>,
 }
 
@@ -360,27 +360,24 @@ impl Bucket {
         add(&mut self.cached, row.cached);
         add(&mut self.cache_writes, row.cache_writes);
         add(&mut self.reasoning, row.reasoning);
-        match row.billed {
-            Some(billed) => {
+        match (row.billed, row.cost_source) {
+            (Some(billed), CostSource::ProviderReported | CostSource::SynthCloud) => {
                 self.billed = Some(self.billed.unwrap_or(0.0) + billed.max(0.0));
                 match row.cost_source {
                     CostSource::SynthCloud => self.any_cloud_billed = true,
                     _ => self.any_provider_billed = true,
                 }
             }
-            // An estimate only counts while its request has no settled
-            // charge; once billed, the estimate must not inflate totals.
-            None => {
-                if let Some(estimated) = row.estimated {
-                    self.estimated = Some(self.estimated.unwrap_or(0.0) + estimated.max(0.0));
-                }
+            _ => {}
+        }
+        if row.billed.is_none() && row.cost_source == CostSource::SynthCloud {
+            if let Some(estimate) = row.estimated {
+                self.backend_estimated =
+                    Some(self.backend_estimated.unwrap_or(0.0) + estimate.max(0.0));
             }
         }
         if let Some(v) = finite_positive(row.decode_tps) {
             self.decode_tps.push(v);
-        }
-        if let Some(v) = finite_positive(row.e2e_tps) {
-            self.e2e_tps.push(v);
         }
         if let Some(v) = finite_positive(row.ttft_ms) {
             self.ttft.push(v);
@@ -392,8 +389,8 @@ impl Bucket {
             CostSource::ProviderReported
         } else if self.any_cloud_billed {
             CostSource::SynthCloud
-        } else if self.estimated.is_some() {
-            CostSource::TariffEstimate
+        } else if self.backend_estimated.is_some() {
+            CostSource::SynthCloud
         } else {
             CostSource::None
         };
@@ -402,13 +399,8 @@ impl Bucket {
             _ => None,
         };
         let non_cached = self.cached.map(|cached| (self.input - cached).max(0));
-        let perf_sample_count = self
-            .decode_tps
-            .len()
-            .max(self.e2e_tps.len())
-            .max(self.ttft.len()) as i64;
+        let perf_sample_count = self.decode_tps.len().max(self.ttft.len()) as i64;
         let mut decode_p95 = self.decode_tps.clone();
-        let mut e2e_p95 = self.e2e_tps.clone();
         let mut ttft_p95 = self.ttft.clone();
         UsageBreakdown {
             provider,
@@ -423,12 +415,12 @@ impl Bucket {
             total_tokens: self.total,
             cache_hit_rate,
             billed_cost_usd: self.billed,
-            estimated_cost_usd: self.estimated,
+            estimated_cost_usd: self.backend_estimated,
             cost_source,
             decode_tps_p50: percentile(&mut self.decode_tps, 0.5),
             decode_tps_p95: percentile(&mut decode_p95, 0.95),
-            end_to_end_tps_p50: percentile(&mut self.e2e_tps, 0.5),
-            end_to_end_tps_p95: percentile(&mut e2e_p95, 0.95),
+            end_to_end_tps_p50: None,
+            end_to_end_tps_p95: None,
             ttft_ms_p50: percentile(&mut self.ttft, 0.5),
             ttft_ms_p95: percentile(&mut ttft_p95, 0.95),
             perf_sample_count,
@@ -458,7 +450,6 @@ struct SummaryRow {
     total: Option<i64>,
     ttft_ms: Option<f64>,
     decode_tps: Option<f64>,
-    e2e_tps: Option<f64>,
     billed: Option<f64>,
     estimated: Option<f64>,
     cost_source: CostSource,
@@ -473,7 +464,7 @@ fn summarize(
     // Failed and interrupted requests stay in: their tokens were consumed and
     // any charge for them is real. The window is judged on completion time.
     let mut statement = conn.prepare(
-        "SELECT provider,model_id,input_tokens,cached_input_tokens,cache_write_tokens,reasoning_tokens,output_tokens,total_tokens,ttft_ms,observed_output_tps,end_to_end_output_tps,billed_cost_usd,estimated_cost_usd,cost_source,completed_at_ms
+        "SELECT provider,model_id,input_tokens,cached_input_tokens,cache_write_tokens,reasoning_tokens,output_tokens,total_tokens,ttft_ms,observed_output_tps,billed_cost_usd,estimated_cost_usd,cost_source,completed_at_ms
          FROM usage_records
          WHERE completed_at_ms >= ?1",
     )?;
@@ -489,11 +480,10 @@ fn summarize(
             total: row.get(7)?,
             ttft_ms: row.get(8)?,
             decode_tps: row.get(9)?,
-            e2e_tps: row.get(10)?,
-            billed: row.get(11)?,
-            estimated: row.get(12)?,
-            cost_source: CostSource::parse(&row.get::<_, String>(13)?),
-            completed_at_ms: row.get(14)?,
+            billed: row.get(10)?,
+            estimated: row.get(11)?,
+            cost_source: CostSource::parse(&row.get::<_, String>(12)?),
+            completed_at_ms: row.get(13)?,
         })
     })?;
 
@@ -559,7 +549,7 @@ mod tests {
             session_id: None,
             run_id: None,
             request_id: request.into(),
-            measurement_kind: MeasurementKind::ObservedStream,
+            measurement_kind: MeasurementKind::ObservedStreamSegment,
             status: "completed".into(),
             started_at_ms: 1_000,
             first_output_at_ms: Some(1_200),
@@ -620,7 +610,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unsettled_openrouter_request_stays_a_labeled_estimate() {
+    async fn a_legacy_estimate_never_becomes_spend() {
         let (_t, repository) = open();
         let mut r = record("openrouter", "openai/gpt-5.6-luna", "req-1");
         r.estimated_cost_usd = Some(0.02);
@@ -628,8 +618,21 @@ mod tests {
         repository.record(r).await.unwrap();
         let summary = all_time(&repository).await;
         assert_eq!(summary.totals.billed_cost_usd, None);
-        assert_eq!(summary.totals.estimated_cost_usd, Some(0.02));
-        assert_eq!(summary.totals.cost_source, CostSource::TariffEstimate);
+        assert_eq!(summary.totals.estimated_cost_usd, None);
+        assert_eq!(summary.totals.cost_source, CostSource::None);
+    }
+
+    #[tokio::test]
+    async fn a_backend_shoal_estimate_keeps_backend_provenance() {
+        let (_t, repository) = open();
+        let mut r = record("synth-cloud", "synth_internal/laguna-xs-2.1-nvfp4", "req-1");
+        r.estimated_cost_usd = Some(0.008);
+        r.cost_source = CostSource::SynthCloud;
+        repository.record(r).await.unwrap();
+        let summary = all_time(&repository).await;
+        assert_eq!(summary.totals.billed_cost_usd, None);
+        assert_eq!(summary.totals.estimated_cost_usd, Some(0.008));
+        assert_eq!(summary.totals.cost_source, CostSource::SynthCloud);
     }
 
     #[tokio::test]
@@ -640,7 +643,7 @@ mod tests {
         r.cost_source = CostSource::TariffEstimate;
         repository.record(r.clone()).await.unwrap();
         // A replayed terminal event with sparser fields must not duplicate the
-        // request, wipe known facts, or double-count the estimate.
+        // request or wipe known facts. Legacy estimates are not spend.
         r.cached_input_tokens = None;
         r.reasoning_tokens = None;
         repository.record(r).await.unwrap();
@@ -648,7 +651,7 @@ mod tests {
         assert_eq!(summary.totals.requests, 1);
         assert_eq!(summary.totals.cached_input_tokens, Some(400));
         assert_eq!(summary.totals.reasoning_tokens, Some(50));
-        assert_eq!(summary.totals.estimated_cost_usd, Some(0.02));
+        assert_eq!(summary.totals.estimated_cost_usd, None);
     }
 
     #[tokio::test]
@@ -731,16 +734,15 @@ mod tests {
         );
         assert_eq!(
             by_model("poolside/laguna-s-2.1").cost_source,
-            CostSource::TariffEstimate
+            CostSource::None
         );
         assert_eq!(
             by_model("openrouter/poolside/laguna-s-2.1").cost_source,
             CostSource::None
         );
-        // The device totals keep settled and estimated money in separate
-        // columns rather than blending them into one figure.
+        // Only the settled receipt contributes money.
         assert_eq!(summary.totals.billed_cost_usd, Some(0.03));
-        assert_eq!(summary.totals.estimated_cost_usd, Some(0.01));
+        assert_eq!(summary.totals.estimated_cost_usd, None);
     }
 
     #[tokio::test]
@@ -828,7 +830,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            eastern.days.iter().map(|d| d.day.as_str()).collect::<Vec<_>>(),
+            eastern
+                .days
+                .iter()
+                .map(|d| d.day.as_str())
+                .collect::<Vec<_>>(),
             vec!["2026-08-09"]
         );
 
@@ -837,7 +843,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            berlin.days.iter().map(|d| d.day.as_str()).collect::<Vec<_>>(),
+            berlin
+                .days
+                .iter()
+                .map(|d| d.day.as_str())
+                .collect::<Vec<_>>(),
             vec!["2026-08-10"]
         );
     }
@@ -871,7 +881,11 @@ mod tests {
             summary
                 .days
                 .iter()
-                .map(|d| (d.day.as_str(), d.totals.provider.as_str(), d.totals.requests))
+                .map(|d| (
+                    d.day.as_str(),
+                    d.totals.provider.as_str(),
+                    d.totals.requests
+                ))
                 .collect::<Vec<_>>(),
             vec![
                 ("2026-08-10", "openrouter", 2),

@@ -31,24 +31,9 @@ pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub const AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 pub const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 pub const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
-const KEYCHAIN_SERVICE: &str = "synth-desktop";
-const KEYCHAIN_ACCOUNT: &str = PROVIDER_ID;
-const KEYCHAIN_SERVICE_ENV: &str = "SYNTH_DESKTOP_OAUTH_KEYCHAIN_SERVICE";
 const DEV_CREDENTIAL_FILE_ENV: &str = "SYNTH_DESKTOP_DEV_OAUTH_FILE";
 const DEV_CREDENTIAL_STATE_FILE_ENV: &str = "SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE";
-
-fn keychain_service() -> String {
-    std::env::var(KEYCHAIN_SERVICE_ENV)
-        .ok()
-        .filter(|value| {
-            !value.is_empty()
-                && value.len() <= 128
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-        })
-        .unwrap_or_else(|| KEYCHAIN_SERVICE.to_string())
-}
+const PACKAGED_QA_CREDENTIAL_ENV: &str = "SYNTH_DESKTOP_PACKAGED_QA_OAUTH";
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Credential {
@@ -86,22 +71,13 @@ pub trait CredentialStore: Send + Sync {
 
 pub trait RefreshLock: Send {}
 
-pub struct SystemKeychain {
-    service: String,
-}
-
-/// Named local Workshop instances are rebuilt frequently. They must not read
-/// the installed application's credential item: macOS binds that access to a
-/// code-signing requirement and would otherwise prompt after local rebuilds.
-struct LocalInstanceCredentialStore;
-
-/// Named debug instances read the canonical Codex file only as their initial
-/// seed. Successful refresh/re-auth and disconnect are persisted in one
-/// machine-local private overlay shared by named instances. This keeps the
-/// source read-only, survives rebuilds and new instance names, and never
-/// invokes Keychain.
-struct DevFileCredentialStore {
-    seed: PathBuf,
+/// Workshop OAuth state is stored in an app-owned file rather than the macOS
+/// Keychain. The OS Keychain binds reads to a code-signing requirement and can
+/// present an unavoidable password dialog after a local rebuild. Each named
+/// development instance already has a private state root, so the same store is
+/// safe for installed, packaged-QA, and local builds.
+struct PrivateFileCredentialStore {
+    seed: Option<PathBuf>,
     state: PathBuf,
 }
 
@@ -146,39 +122,44 @@ fn set_private_file(_path: &Path) -> Result<()> {
     Ok(())
 }
 
-impl CredentialStore for LocalInstanceCredentialStore {
+impl CredentialStore for PrivateFileCredentialStore {
     fn load(&self) -> Result<Option<Credential>> {
-        Ok(None)
-    }
-
-    fn save(&self, _credential: &Credential) -> Result<()> {
-        bail!("ChatGPT sign-in is unavailable in an isolated local Workshop instance")
-    }
-
-    fn delete(&self) -> Result<()> {
-        Ok(())
-    }
-}
-
-impl CredentialStore for DevFileCredentialStore {
-    fn load(&self) -> Result<Option<Credential>> {
-        match fs::read_to_string(&self.state) {
-            Ok(value) => {
-                return match serde_json::from_str::<InstanceCredentialState>(&value)
-                    .context("invalid instance-local Codex OAuth state")?
-                {
-                    InstanceCredentialState::Connected { credential } => Ok(Some(credential)),
-                    InstanceCredentialState::Disconnected => Ok(None),
-                };
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        let seed = self
+            .seed
+            .as_ref()
+            .map(|path| {
+                fs::read_to_string(path)
+                    .with_context(|| {
+                        format!(
+                            "ChatGPT development credential is missing: {}",
+                            path.display()
+                        )
+                    })
+                    .and_then(|value| parse_dev_auth_file(&value))
+            })
+            .transpose()?;
+        let cached = match fs::read_to_string(&self.state) {
+            Ok(value) => match serde_json::from_str::<InstanceCredentialState>(&value)
+                .context("invalid instance-local Codex OAuth state")?
+            {
+                InstanceCredentialState::Connected { credential } => Some(credential),
+                // An explicit development seed is launch authority. A stale
+                // disconnect marker must never turn a newly launched local
+                // Workshop into an unauthenticated app.
+                InstanceCredentialState::Disconnected => None,
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
-        }
-        match fs::read_to_string(&self.seed) {
-            Ok(value) => Ok(Some(parse_dev_auth_file(&value)?)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.into()),
-        }
+        };
+        Ok(match (seed, cached) {
+            (Some(seed), Some(cached)) => Some(if cached.last_refresh_ms > seed.last_refresh_ms {
+                cached
+            } else {
+                seed
+            }),
+            (Some(seed), None) => Some(seed),
+            (None, cached) => cached,
+        })
     }
 
     fn save(&self, credential: &Credential) -> Result<()> {
@@ -210,7 +191,7 @@ impl CredentialStore for DevFileCredentialStore {
     }
 }
 
-impl DevFileCredentialStore {
+impl PrivateFileCredentialStore {
     fn write_local(&self, state: &InstanceCredentialState) -> Result<()> {
         let parent = self
             .state
@@ -251,6 +232,7 @@ fn parse_dev_auth_file(value: &str) -> Result<Credential> {
             .ok_or_else(|| anyhow!("debug Codex OAuth file omitted {name}"))
     };
     let id_token = required("id_token")?;
+    let access_token = required("access_token")?;
     let claims = jwt_claims(&id_token)?;
     let account_id = tokens
         .get("account_id")
@@ -258,9 +240,13 @@ fn parse_dev_auth_file(value: &str) -> Result<Credential> {
         .map(str::to_owned)
         .or_else(|| account_id(&claims))
         .ok_or_else(|| anyhow!("debug Codex OAuth file omitted account_id"))?;
-    let expires_ms = claims
-        .get("exp")
-        .and_then(|value| value.as_i64())
+    // The access token governs API access and can outlive the ID token, which
+    // proves identity. Prefer its expiry while retaining the ID token as a
+    // compatibility fallback for providers that use opaque access tokens.
+    let expires_ms = jwt_claims(&access_token)
+        .ok()
+        .and_then(|claims| claims.get("exp").and_then(|value| value.as_i64()))
+        .or_else(|| claims.get("exp").and_then(|value| value.as_i64()))
         .unwrap_or_else(|| Utc::now().timestamp() + 3600)
         * 1000;
     let last_refresh_ms = auth
@@ -270,7 +256,7 @@ fn parse_dev_auth_file(value: &str) -> Result<Credential> {
         .map(|value| value.timestamp_millis())
         .unwrap_or_else(|| Utc::now().timestamp_millis());
     Ok(Credential {
-        access_token: required("access_token")?,
+        access_token,
         refresh_token: required("refresh_token")?,
         id_token,
         expires_ms,
@@ -278,43 +264,6 @@ fn parse_dev_auth_file(value: &str) -> Result<Credential> {
         account_hint: None,
         last_refresh_ms,
     })
-}
-
-impl SystemKeychain {
-    fn new(service: impl Into<String>) -> Self {
-        Self {
-            service: service.into(),
-        }
-    }
-
-    fn entry(&self) -> Result<keyring::Entry> {
-        keyring::Entry::new(&self.service, KEYCHAIN_ACCOUNT).map_err(Into::into)
-    }
-}
-
-impl CredentialStore for SystemKeychain {
-    fn load(&self) -> Result<Option<Credential>> {
-        match self.entry()?.get_password() {
-            Ok(value) => Ok(Some(
-                serde_json::from_str(&value).context("invalid Codex OAuth keychain entry")?,
-            )),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    fn save(&self, credential: &Credential) -> Result<()> {
-        self.entry()?
-            .set_password(&serde_json::to_string(credential)?)?;
-        Ok(())
-    }
-
-    fn delete(&self) -> Result<()> {
-        match self.entry()?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => Err(error.into()),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, specta::Type)]
@@ -387,18 +336,22 @@ pub struct Manager {
 
 impl Manager {
     pub fn production() -> Self {
-        let named_instance = std::env::var_os("SYNTH_DESKTOP_INSTANCE").is_some();
+        let named_instance = crate::instance::name().is_some();
         let dev_file = std::env::var_os(DEV_CREDENTIAL_FILE_ENV).map(PathBuf::from);
         let dev_state_file = std::env::var_os(DEV_CREDENTIAL_STATE_FILE_ENV).map(PathBuf::from);
+        let explicit_qa_file = std::env::var(PACKAGED_QA_CREDENTIAL_ENV).as_deref() == Ok("1");
+        let canonical_state = canonical_credential_path(&crate::instance::state_root());
         let store: Arc<dyn CredentialStore> = match credential_store_mode(
             named_instance,
-            cfg!(debug_assertions),
+            cfg!(debug_assertions) || explicit_qa_file,
             dev_file.is_some() && dev_state_file.is_some(),
         ) {
-            CredentialStoreMode::Canonical => Arc::new(SystemKeychain::new(keychain_service())),
-            CredentialStoreMode::Isolated => Arc::new(LocalInstanceCredentialStore),
-            CredentialStoreMode::DevFile => Arc::new(DevFileCredentialStore {
-                seed: dev_file.expect("debug credential file mode requires a path"),
+            CredentialStoreMode::PrivateFile => Arc::new(PrivateFileCredentialStore {
+                seed: None,
+                state: canonical_state,
+            }),
+            CredentialStoreMode::SeededPrivateFile => Arc::new(PrivateFileCredentialStore {
+                seed: Some(dev_file.expect("debug credential file mode requires a path")),
                 state: dev_state_file
                     .expect("debug credential file mode requires a shared state path"),
             }),
@@ -409,7 +362,7 @@ impl Manager {
     pub fn new(store: Arc<dyn CredentialStore>, authorize_url: &str, token_url: &str) -> Self {
         Self {
             store,
-            client: reqwest::Client::new(),
+            client: crate::http::http_client(),
             authorize_url: authorize_url.into(),
             token_url: token_url.into(),
             pending: Mutex::new(None),
@@ -750,65 +703,48 @@ impl Manager {
         self.status()
     }
 
-    /// Adopt tokens refreshed by Codex, then remove the session copy.
+    /// Remove the bounded session credential. The shell-enabled child is not
+    /// an authority for native credential rotation, so child-written tokens
+    /// are never adopted into Workshop's durable credential store.
     pub fn sync_from_session(&self, session_id: &str) -> Result<()> {
         let path = crate::session::codex::oauth_auth_path(session_id);
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            return Ok(());
-        };
-        let value: serde_json::Value =
-            serde_json::from_str(&body).context("Codex session auth file was invalid")?;
-        if value.get("auth_mode").and_then(|v| v.as_str()) != Some("chatgpt") {
-            return Ok(());
-        }
-        let tokens = value
-            .get("tokens")
-            .and_then(|v| v.as_object())
-            .ok_or_else(|| anyhow!("Codex session auth file omitted tokens"))?;
-        let mut credential = self
-            .store
-            .load()?
-            .ok_or_else(|| anyhow!("ChatGPT subscription was disconnected"))?;
-        let required = |name: &str| {
-            tokens
-                .get(name)
-                .and_then(|v| v.as_str())
-                .filter(|v| !v.is_empty())
-                .map(str::to_owned)
-                .ok_or_else(|| anyhow!("Codex session auth file omitted {name}"))
-        };
-        let account_id = required("account_id")?;
-        if account_id != credential.account_id {
-            bail!("Codex refreshed credentials for a different ChatGPT account");
-        }
-        credential.id_token = required("id_token")?;
-        credential.access_token = required("access_token")?;
-        credential.refresh_token = required("refresh_token")?;
-        credential.last_refresh_ms = Utc::now().timestamp_millis();
-        self.store.save(&credential)?;
-        std::fs::remove_file(path)?;
-        Ok(())
+        remove_session_auth_file(&path)
+    }
+}
+
+fn remove_session_auth_file(path: &std::path::Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CredentialStoreMode {
-    Canonical,
-    Isolated,
-    DevFile,
+    PrivateFile,
+    SeededPrivateFile,
+}
+
+fn canonical_credential_path(state_root: &Path) -> PathBuf {
+    state_root.join("credentials").join("codex-oauth.json")
 }
 
 fn credential_store_mode(
-    named_instance: bool,
+    _named_instance: bool,
     debug_build: bool,
     has_dev_file: bool,
 ) -> CredentialStoreMode {
-    if !named_instance {
-        CredentialStoreMode::Canonical
-    } else if debug_build && has_dev_file {
-        CredentialStoreMode::DevFile
+    // Undescriptored `tauri dev` binaries deliberately have canonical identity
+    // even when the launcher gives them an isolated data root. Requiring a
+    // named bundle here made every foreground development restart silently
+    // ignore its explicitly supplied ChatGPT credential seed. The seed and
+    // shared private-state paths are development-only, explicit authority;
+    // release builds still cannot enter this mode.
+    if debug_build && has_dev_file {
+        CredentialStoreMode::SeededPrivateFile
     } else {
-        CredentialStoreMode::Isolated
+        CredentialStoreMode::PrivateFile
     }
 }
 
@@ -949,9 +885,9 @@ mod tests {
     use std::sync::RwLock;
 
     #[derive(Default)]
-    struct MemoryKeychain(RwLock<Option<Credential>>);
+    struct MemoryCredentialStore(RwLock<Option<Credential>>);
 
-    impl CredentialStore for MemoryKeychain {
+    impl CredentialStore for MemoryCredentialStore {
         fn load(&self) -> Result<Option<Credential>> {
             Ok(self.0.read().unwrap().clone())
         }
@@ -968,47 +904,75 @@ mod tests {
     }
 
     #[test]
-    fn local_instance_store_never_touches_or_accepts_credentials() {
-        let store = LocalInstanceCredentialStore;
-        assert!(store.load().unwrap().is_none());
-        assert!(store.delete().is_ok());
-        assert!(store
-            .save(&Credential {
-                access_token: "access".into(),
-                refresh_token: "refresh".into(),
-                id_token: "id".into(),
-                expires_ms: 0,
-                account_id: "account".into(),
-                account_hint: None,
-                last_refresh_ms: 0,
-            })
-            .unwrap_err()
-            .to_string()
-            .contains("unavailable in an isolated local Workshop instance"));
-    }
-
-    #[test]
-    fn debug_oauth_file_is_explicit_named_debug_only() {
+    fn every_build_uses_a_private_file_and_only_explicit_qa_may_seed_it() {
         assert_eq!(
             credential_store_mode(false, true, true),
-            CredentialStoreMode::Canonical
+            CredentialStoreMode::SeededPrivateFile
         );
         assert_eq!(
             credential_store_mode(true, true, false),
-            CredentialStoreMode::Isolated
+            CredentialStoreMode::PrivateFile
         );
         assert_eq!(
             credential_store_mode(true, false, true),
-            CredentialStoreMode::Isolated
+            CredentialStoreMode::PrivateFile
         );
         assert_eq!(
             credential_store_mode(true, true, true),
-            CredentialStoreMode::DevFile
+            CredentialStoreMode::SeededPrivateFile
         );
     }
 
     #[test]
-    fn debug_file_store_seeds_then_persists_shared_private_state() {
+    fn canonical_store_path_is_scoped_to_the_instance_state_root() {
+        assert_eq!(
+            canonical_credential_path(Path::new("/private/instance")),
+            PathBuf::from("/private/instance/credentials/codex-oauth.json")
+        );
+    }
+
+    #[test]
+    fn private_file_store_persists_disconnect_and_uses_private_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = canonical_credential_path(temp.path());
+        let store = PrivateFileCredentialStore {
+            seed: None,
+            state: state.clone(),
+        };
+        let credential = Credential {
+            access_token: "access".into(),
+            refresh_token: "refresh".into(),
+            id_token: "id".into(),
+            expires_ms: 42,
+            account_id: "account".into(),
+            account_hint: None,
+            last_refresh_ms: 0,
+        };
+        assert!(store.load().unwrap().is_none());
+        store.save(&credential).unwrap();
+        assert_eq!(store.load().unwrap(), Some(credential));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&state).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(state.parent().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+        store.delete().unwrap();
+        assert!(store.load().unwrap().is_none());
+    }
+
+    #[test]
+    fn debug_file_store_always_has_seed_and_prefers_newer_shared_state() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("oauth.json");
         let id_token = format!(
@@ -1021,10 +985,16 @@ mod tests {
                 .unwrap()
             )
         );
+        let access_token = format!(
+            "x.{}.y",
+            URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(&serde_json::json!({"exp": 2_100_000_000_i64})).unwrap()
+            )
+        );
         let body = serde_json::json!({
             "auth_mode": "chatgpt",
             "tokens": {
-                "access_token": "file-access",
+                "access_token": access_token,
                 "refresh_token": "file-refresh",
                 "id_token": id_token,
                 "account_id": "file-account"
@@ -1034,16 +1004,17 @@ mod tests {
         fs::write(&path, serde_json::to_vec_pretty(&body).unwrap()).unwrap();
         let before = fs::read(&path).unwrap();
         let state = temp.path().join("shared/oauth/codex.json");
-        let store = DevFileCredentialStore {
-            seed: path.clone(),
+        let store = PrivateFileCredentialStore {
+            seed: Some(path.clone()),
             state: state.clone(),
         };
         let refresh_lock = store.lock_refresh().unwrap();
         drop(refresh_lock);
         let mut loaded = store.load().unwrap().unwrap();
-        assert_eq!(loaded.access_token, "file-access");
+        assert_eq!(loaded.expires_ms, 2_100_000_000_000);
         assert_eq!(loaded.account_id, "file-account");
         loaded.access_token = "instance-access".into();
+        loaded.last_refresh_ms += 1;
         store.save(&loaded).unwrap();
         assert_eq!(
             store.load().unwrap().unwrap().access_token,
@@ -1052,7 +1023,10 @@ mod tests {
         assert!(state.is_file());
         assert!(state.with_extension("lock").is_file());
         store.delete().unwrap();
-        assert!(store.load().unwrap().is_none());
+        assert_eq!(
+            store.load().unwrap().unwrap().access_token,
+            body["tokens"]["access_token"].as_str().unwrap()
+        );
         assert_eq!(fs::read(&path).unwrap(), before);
     }
 
@@ -1102,7 +1076,7 @@ mod tests {
 
     #[test]
     fn status_never_serializes_tokens() {
-        let store = Arc::new(MemoryKeychain::default());
+        let store = Arc::new(MemoryCredentialStore::default());
         store
             .save(&Credential {
                 access_token: "access-secret".into(),
@@ -1121,8 +1095,24 @@ mod tests {
     }
 
     #[test]
+    fn child_auth_is_deleted_instead_of_becoming_a_native_credential_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth_path = temp.path().join("auth.json");
+        std::fs::write(
+            &auth_path,
+            r#"{"tokens":{"refresh_token":"attacker-controlled"}}"#,
+        )
+        .unwrap();
+
+        remove_session_auth_file(&auth_path).unwrap();
+
+        assert!(!auth_path.exists());
+        remove_session_auth_file(&auth_path).unwrap();
+    }
+
+    #[test]
     fn expired_credentials_are_not_reported_as_usable() {
-        let store = Arc::new(MemoryKeychain::default());
+        let store = Arc::new(MemoryCredentialStore::default());
         store
             .save(&Credential {
                 access_token: "expired".into(),
@@ -1163,7 +1153,7 @@ mod tests {
     #[tokio::test]
     async fn begin_generates_pkce_and_cancel_is_safe() {
         let manager = Arc::new(Manager::new(
-            Arc::new(MemoryKeychain::default()),
+            Arc::new(MemoryCredentialStore::default()),
             AUTHORIZE_URL,
             TOKEN_URL,
         ));
@@ -1188,8 +1178,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manual_exchange_persists_only_in_keychain_and_disconnect_clears_it() {
-        let store = Arc::new(MemoryKeychain::default());
+    async fn manual_exchange_persists_only_in_store_and_disconnect_clears_it() {
+        let store = Arc::new(MemoryCredentialStore::default());
         let token_url = token_server(serde_json::json!({
             "access_token": "access-secret",
             "refresh_token": "refresh-secret",
@@ -1214,8 +1204,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn near_expiry_refreshes_and_rotates_the_keychain_entry() {
-        let store = Arc::new(MemoryKeychain::default());
+    async fn near_expiry_refreshes_and_rotates_the_private_store_entry() {
+        let store = Arc::new(MemoryCredentialStore::default());
         store
             .save(&Credential {
                 access_token: "old-access".into(),

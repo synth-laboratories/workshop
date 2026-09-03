@@ -16,7 +16,7 @@ import type { DeviceUsageSummary } from "./UsageSheet";
  * env file, key variable. Those are deployment knobs, not an account. The four
  * user-facing sections from `AUTH_BILLING_FLOW.md` come first —
  *
- *   Profile & organization · Plan & allowances · Usage · Devices & security
+ *   Synth account · Plan & allowances · Usage · Devices & security
  *
  * — and the endpoint/key editor is demoted into a collapsed Advanced connection
  * disclosure. Every number states its scope: Synth Cloud figures come from the
@@ -90,8 +90,8 @@ export function AccountPage({
 			</header>
 
 			<Section
-				title="Profile & organization"
-				description="Who this device is signed in as."
+				title="Synth account"
+				description="Connect this device with your browser or a Synth API key."
 				testId="account-page-profile"
 			>
 				<div className="account-page-identity">
@@ -117,6 +117,7 @@ export function AccountPage({
 						Local models work without an account. Sign in to use Synth Cloud and see a plan.
 					</p>
 				)}
+				<AccountSignIn />
 				{environment && environment !== "prod" ? (
 					<Row label="Environment" value={environment} testId="account-page-environment" />
 				) : null}
@@ -218,7 +219,7 @@ export function AccountPage({
 
 				<h4 className="account-page-subhead">This device</h4>
 				<Row label="Tokens this week" value={formatTokens(deviceUsage?.weeklyTokens)} testId="account-page-device-weekly" />
-				{showDollarFigures ? <Row label="Estimated cost this week" value={formatUsd(deviceUsage?.weeklyCostUsd)} /> : null}
+				{showDollarFigures ? <Row label="Backend-accounted cost this week" value={formatUsd(deviceUsage?.weeklyCostUsd)} /> : null}
 				<Row label="All tracked tokens" value={formatTokens(deviceUsage?.totalTokens)} />
 				<Row label="Tracked runs" value={formatTokens(deviceUsage?.entries)} />
 				<p className="account-page-note">Device totals are local runs on this Mac — not your Synth Cloud allowance.</p>
@@ -234,7 +235,6 @@ export function AccountPage({
 				description="This device's Synth Cloud session."
 				testId="account-page-devices"
 			>
-				<AccountSignIn />
 				<Row
 					label="Credential"
 					value={connection?.apiKeyConfigured
@@ -244,8 +244,8 @@ export function AccountPage({
 				/>
 				<Row label="Backend" value={connection?.backendUrl ?? "Loading…"} testId="account-page-backend" />
 				<p className="account-page-note">
-					The key is held by the native host and never reaches this window. Signing out clears
-					it; local history and the device ledger stay.
+					After connection, the key is held by the native host and is never returned to this
+					window. Signing out clears it; local history and the device ledger stay.
 				</p>
 			</Section>
 

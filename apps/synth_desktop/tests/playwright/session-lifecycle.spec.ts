@@ -1,5 +1,50 @@
 import { expect, test } from "./browser.fixture";
 
+test("crash recovery resumes the thread without replaying the abandoned prompt", async ({ page }) => {
+	await page.addInitScript(() => {
+		const sessionId = "recover-thread";
+		(window as typeof window & { synthLaguna?: unknown }).synthLaguna = {
+			getStatus: async () => ({ phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm", loadedModel: "poolside/Laguna-XS-2.1-NVFP4-mlx", detail: "Laguna XS ready", memoryBytes: null, updatedAt: Date.now() }),
+			onStatus: () => () => undefined,
+			listModels: async () => []
+		};
+		(window as typeof window & { __recoverySend?: { prompt: string; recoveryMode?: boolean } }).__recoverySend = undefined;
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "persisted-thread", workspace: "/workspaces/default",
+				model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
+				providerTitle: "Laguna XS Responses", baseUrl: "http://127.0.0.1:7333/v1",
+				status: "interrupted",
+				recovery: {
+					sessionId, runId: "abandoned-run", reason: "workshop_restarted",
+					recoveryAttempt: 1, restartable: true, needsAttention: false,
+					lastUserMessage: { text: "DANGEROUS ORIGINAL PROMPT" },
+					recoveredAt: "2026-08-27T10:00:00Z"
+				}
+			}],
+			start: async () => ({ sessionId, threadId: "persisted-thread" }),
+			startTurn: async () => ({ sessionId, threadId: "persisted-thread", turnId: "continued-turn" }),
+			sendTurn: async (_start: unknown, prompt: string, _effort: unknown, options: { recoveryMode?: boolean }) => {
+				(window as typeof window & { __recoverySend?: { prompt: string; recoveryMode?: boolean } }).__recoverySend = { prompt, recoveryMode: options?.recoveryMode };
+				return { sessionId, threadId: "persisted-thread", turnId: "continued-turn" };
+			},
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-recover-thread").click();
+	const resume = page.getByTestId("send-retry-button");
+	await expect(resume).toHaveText("Resume");
+	await resume.click();
+	const sent = await page.evaluate(() => (window as typeof window & { __recoverySend?: { prompt: string; recoveryMode?: boolean } }).__recoverySend);
+	expect(sent?.recoveryMode).toBe(true);
+	expect(sent?.prompt).toContain("Continue the interrupted task");
+	expect(sent?.prompt).not.toContain("DANGEROUS ORIGINAL PROMPT");
+});
+
 test("a local session process exit clears stale Working and Stop state", async ({ page }) => {
 	await page.addInitScript(() => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
@@ -26,6 +71,14 @@ test("a local session process exit clears stale Working and Stop state", async (
 	});
 	await page.reload();
 	await page.getByTestId("local-chat-detached-laguna").click();
+	await page.evaluate(() => {
+		(window as typeof window & { __emitSessionHealth: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void })
+			.__emitSessionHealth({
+				sessionId: "detached-laguna",
+				method: "turn/started",
+				params: { turnId: "turn-1" }
+			});
+	});
 	await expect(page.getByTestId("model-working")).toBeVisible();
 
 	await page.evaluate(() => {
@@ -122,9 +175,9 @@ test("a failed turn hidden inside a completed envelope never renders as blank su
 	await expect(transcript).not.toContainText("Worked");
 });
 
-// The exact screenshot state: a restored record still claims `running`, so the
-// transcript shows Working with a live Stop, and the very next send is rejected
-// because the owning app-server is already gone.
+// A restored record may still claim `running`, but without a live ownership
+// receipt it must not show Working or Stop. The next send reconnects and its
+// rejection remains actionable.
 test("a rejected turn start clears Working, keeps the typed text and retries", async ({ page }) => {
 	await page.addInitScript(() => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
@@ -181,13 +234,9 @@ test("a rejected turn start clears Working, keeps the typed text and retries", a
 	await page.reload();
 	await page.getByTestId("local-chat-922c25f7-0000-4000-8000-000000000001").click();
 
-	// Broken state as screenshotted.
-	await expect(page.getByTestId("model-working")).toBeVisible();
-	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
-	// Active-turn input now honestly enqueues. Stop the stale restored run before
-	// exercising the rejected fresh turn path.
-	await page.getByRole("button", { name: "Stop generating" }).click();
+	// The stale persisted status cannot resurrect controls for a dead worker.
 	await expect(page.getByTestId("model-working")).toHaveCount(0);
+	await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0);
 
 	await page.getByTestId("composer-input").fill("summarize the lifecycle handoff");
 	await page.getByTestId("composer-send").click();

@@ -12,6 +12,9 @@ export type TraceV5Item = {
   detail?: string;
   status?: string;
   candidateId?: string;
+  /** Keep evidence closed until the operator explicitly opens it. */
+  collapsible?: boolean;
+  openLabel?: string;
 };
 
 const META: Record<TraceV5Family, { label: string; glyph: string; tint: string }> = {
@@ -32,11 +35,15 @@ function clock(value?: string): string {
 export function TraceV5EventList({
   items,
   onSelectCandidate,
+  onSelectItem,
+  selectedItemId,
   defaultView = "focus",
   emptyToolText = "No structured tool-call events were captured by this transport."
 }: {
   items: TraceV5Item[];
   onSelectCandidate?: (id: string) => void;
+  onSelectItem?: (item: TraceV5Item) => void;
+  selectedItemId?: string | null;
   defaultView?: "focus" | "full";
   emptyToolText?: string;
 }) {
@@ -67,12 +74,12 @@ export function TraceV5EventList({
       <div style={{ display: "grid", gap: 8 }}>
         {visible.map((item) => {
           const meta = META[item.family];
-          const isLong = (item.body?.length ?? 0) > 520 || (item.detail?.length ?? 0) > 260;
+          const isLong = item.collapsible === true || (item.body?.length ?? 0) > 520 || (item.detail?.length ?? 0) > 260;
           const open = expanded.has(item.id);
           return (
-            <article key={item.id} data-testid={`trace-v5-item-${item.id}`} style={{ display: "grid", gridTemplateColumns: "42px minmax(0, 1fr)", gap: 8 }}>
+            <article key={item.id} data-testid={`trace-v5-item-${item.id}`} data-annotation-kind="trace_item" data-annotation-id={item.id} style={{ display: "grid", gridTemplateColumns: "42px minmax(0, 1fr)", gap: 8 }}>
               <aside style={{ paddingTop: 9, textAlign: "right", color: "var(--sv-text-faint)" }}><div className="sv-mono" style={{ fontSize: 9 }}>#{item.sequence}</div><time style={{ fontSize: 8 }}>{clock(item.occurredAt)}</time></aside>
-              <div style={{ border: "1px solid var(--sv-border)", borderRadius: 9, overflow: "hidden", background: "var(--sv-surface)" }}>
+              <div style={{ border: `1px solid ${selectedItemId === item.id ? "var(--sv-accent)" : "var(--sv-border)"}`, borderRadius: 9, overflow: "hidden", background: "var(--sv-surface)" }}>
                 <header style={{ display: "flex", alignItems: "center", gap: 7, padding: "7px 9px", background: meta.tint, borderBottom: "1px solid var(--sv-border)" }}>
                   <span className="sv-mono" aria-hidden style={{ fontWeight: 800 }}>{meta.glyph}</span><strong style={{ fontSize: 10.5 }}>{meta.label}</strong><span className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 8.5 }}>{item.kind}</span>{item.status ? <span style={{ marginLeft: "auto", fontSize: 9, fontWeight: 700 }}>{item.status}</span> : null}
                 </header>
@@ -81,7 +88,8 @@ export function TraceV5EventList({
                   {item.body ? <div style={{ marginTop: 5, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 11.5, lineHeight: 1.5, maxHeight: open ? "none" : item.family === "input" || item.family === "tool" ? 112 : 150, overflow: "hidden" }}>{item.body}</div> : null}
                   {item.detail ? <pre className="sv-mono" style={{ margin: "7px 0 0", padding: 8, borderRadius: 6, background: "var(--sv-surface-muted)", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 10.5, maxHeight: open ? 420 : 96, overflow: "auto" }}>{item.detail}</pre> : null}
                   <div style={{ display: "flex", gap: 6, marginTop: isLong || item.candidateId ? 7 : 0 }}>
-                    {isLong ? <button type="button" className="sv-btn" onClick={() => setExpanded((current) => { const next = new Set(current); next.has(item.id) ? next.delete(item.id) : next.add(item.id); return next; })} style={{ fontSize: 10 }}>{open ? "Show less" : "Show all"}</button> : null}
+                    {onSelectItem ? <button type="button" className="sv-btn" aria-pressed={selectedItemId === item.id} onClick={() => onSelectItem(item)} style={{ fontSize: 10 }}>{selectedItemId === item.id ? "Selected" : "Select"}</button> : null}
+                    {isLong ? <button type="button" className="sv-btn" aria-expanded={open} onClick={() => setExpanded((current) => { const next = new Set(current); next.has(item.id) ? next.delete(item.id) : next.add(item.id); return next; })} style={{ fontSize: 10 }}>{open ? "Close" : item.openLabel ?? "Show all"}</button> : null}
                     {item.candidateId ? <button type="button" className="sv-btn" onClick={() => onSelectCandidate?.(item.candidateId!)} data-testid={`trace-open-candidate-${item.candidateId}`} style={{ fontSize: 10 }}>Open candidate →</button> : null}
                   </div>
                 </div>

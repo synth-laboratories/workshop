@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ArtifactRef } from "../types/landing";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 
 function decodeBase64Utf8(base64: string): string {
 	const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
@@ -27,6 +28,9 @@ export function SystemsMapVisual({ artifact }: { artifact: ArtifactRef }) {
 	const [reload, setReload] = useState(0);
 	const [notice, setNotice] = useState<string | null>(null);
 	const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+	const stage = useRef<HTMLDivElement>(null);
+	const retryToken = useRef("");
+	retryToken.current = `${visualId}:${String(artifact.metadata?.currentRevision ?? artifact.metadata?.revision ?? "")}`;
 	const renderStatus = typeof artifact.metadata?.renderStatus === "string" ? artifact.metadata.renderStatus : "queued";
 	const renderError = typeof artifact.metadata?.renderError === "string" ? artifact.metadata.renderError : null;
 
@@ -48,7 +52,7 @@ export function SystemsMapVisual({ artifact }: { artifact: ArtifactRef }) {
 					setError(null);
 				}
 			} catch (reason) {
-				if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+				if (!cancelled) setError(publicError(reason));
 			}
 		})();
 		return () => { cancelled = true; };
@@ -71,9 +75,15 @@ export function SystemsMapVisual({ artifact }: { artifact: ArtifactRef }) {
 			link.click();
 			setNotice(`Exported ${link.download}`);
 		} catch (reason) {
-			setNotice(`Export failed: ${reason instanceof Error ? reason.message : String(reason)}`);
+			setNotice(`Export failed: ${publicError(reason)}`);
 		}
 	};
+	const endDrag = (pointerId?: number) => {
+		drag.current = null;
+		const target = stage.current;
+		if (target && pointerId !== undefined && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
+	};
+	useEffect(() => () => endDrag(), []);
 
 	return (
 		<div className="systems-visual" data-testid="visual-systems-map" data-render-status={renderStatus}>
@@ -86,14 +96,14 @@ export function SystemsMapVisual({ artifact }: { artifact: ArtifactRef }) {
 					<button type="button" onClick={() => setShowSource((value) => !value)}>{displaySource ? "Map" : "Source"}</button>
 					<button type="button" disabled={!source} onClick={() => { if (source) void navigator.clipboard.writeText(source); }}>Copy source</button>
 					<button type="button" disabled={!imageUrl} onClick={exportSvg}>Export SVG</button>
-					<button type="button" onClick={() => { void (async () => { await bridges.visuals?.render?.(visualId); setReload((value) => value + 1); })(); }}>Retry</button>
+					<button type="button" onClick={() => { const token = retryToken.current; void (async () => { await bridges.visuals?.render?.(visualId); if (retryToken.current === token) setReload((value) => value + 1); })(); }}>Retry</button>
 				</div>
 			</div>
 			{notice ? <p className="systems-visual-notice" role="status">{notice}</p> : null}
 			{displaySource ? (
 				<pre className="systems-visual-source" data-testid="visual-systems-map-source">{source ?? renderError ?? error ?? "Source unavailable."}</pre>
 			) : imageUrl ? (
-				<div className="systems-visual-stage" onPointerDown={(event) => { drag.current = { x: event.clientX, y: event.clientY, ox: offset.x, oy: offset.y }; event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={(event) => { if (drag.current) setOffset({ x: drag.current.ox + event.clientX - drag.current.x, y: drag.current.oy + event.clientY - drag.current.y }); }} onPointerUp={() => { drag.current = null; }}>
+				<div ref={stage} className="systems-visual-stage" onPointerDown={(event) => { drag.current = { x: event.clientX, y: event.clientY, ox: offset.x, oy: offset.y }; event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={(event) => { if (drag.current) setOffset({ x: drag.current.ox + event.clientX - drag.current.x, y: drag.current.oy + event.clientY - drag.current.y }); }} onPointerUp={(event) => endDrag(event.pointerId)} onPointerCancel={(event) => endDrag(event.pointerId)} onLostPointerCapture={() => { drag.current = null; }}>
 					<img src={imageUrl} alt={artifact.title} draggable={false} style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})` }} />
 				</div>
 			) : <p className="visual-loading">{renderError ?? error ?? "Rendering systems map…"}</p>}

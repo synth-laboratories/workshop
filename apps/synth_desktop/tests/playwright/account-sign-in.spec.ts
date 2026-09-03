@@ -109,6 +109,45 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	await expect(signedInSettings.getByTestId("sign-in-status")).toContainText("creates your Synth account");
 });
 
+test("account acquires credentials through native browser pairing, never renderer input", async ({ page }) => {
+	await page.addInitScript(() => {
+		const base = {
+			configPath: "/tmp/config.toml",
+			envFile: "/tmp/.env",
+			profile: "prod",
+			backendUrl: "https://api.usesynth.ai",
+			apiKeyEnv: "SYNTH_API_KEY",
+			workerKeyConfigured: false,
+			openrouterApiKeyConfigured: false
+		};
+		window.synthAccount = {
+			beginSignIn: async () => { throw new Error("unused"); },
+			pollSignIn: async () => ({ status: "pending" as const }),
+			cancelSignIn: async () => undefined,
+			signOut: async () => ({ ...base, apiKeyConfigured: false }),
+			getSummary: async () => ({ signedIn: false, state: "signed_out" as const, environment: "prod" as const })
+		};
+		window.synthConfig = {
+			get: async () => ({ ...base, apiKeyConfigured: false }),
+			update: async () => ({ ...base, apiKeyConfigured: false }),
+			listModelMultiAgent: async () => [],
+			updateModelMultiAgent: async () => [],
+			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
+			updateWorkspaceAccess: async () => ({ allowedRoots: [] })
+		};
+	});
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-menu").getByTestId("open-account-settings").click();
+
+	const profile = page.getByTestId("account-page-profile");
+	const signIn = profile.getByTestId("account-sign-in");
+	await expect(signIn.getByTestId("sign-in-begin")).toBeVisible();
+	await expect(signIn.getByTestId("api-key-toggle")).toHaveCount(0);
+	await expect(signIn.getByLabel("Synth API key")).toHaveCount(0);
+});
+
 test("first run offers local use and Synth sign-in as equal choices", async ({ page }) => {
 	await page.addInitScript(() => window.localStorage.removeItem("synth.accountChoiceMade"));
 	await page.reload();

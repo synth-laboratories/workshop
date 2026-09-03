@@ -91,5 +91,9 @@ mod tests {
             .is_err());
         assert!(catalog.resolve(Some("UNPINNED")).is_err());
         assert!(catalog.resolve(Some("")).unwrap().contains("Lightning"));
+        assert_eq!(
+            catalog.resolve(Some("openai/gpt-oss-20b")).unwrap(),
+            "openai/gpt-oss-20b"
+        );
     }
 }

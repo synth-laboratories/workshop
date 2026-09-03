@@ -1,5 +1,31 @@
 import { expect, test } from "./browser.fixture";
 
+test("account menu shows the connected ChatGPT email with Codex usage", async ({ page }) => {
+	await page.addInitScript(() => {
+		const ready = {
+			state: "ready" as const,
+			action: "reauthenticate" as const,
+			canUseModels: true,
+			guidance: "Ready",
+			configured: true,
+			accountHint: "person@example.com"
+		};
+		window.synthCodexOauth = {
+			begin: async () => ({ authorizeUrl: "https://auth.example.test", mode: "manual" as const }),
+			completeManual: async () => ready,
+			ensureReady: async () => ready,
+			status: async () => ready,
+			disconnect: async () => ({ ...ready, state: "disconnected" as const, configured: false, canUseModels: false }),
+			cancel: async () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-codex-usage-remaining").click();
+	await expect(page.getByTestId("account-codex-account-email")).toContainText("ChatGPT account");
+	await expect(page.getByTestId("account-codex-account-email")).toContainText("person@example.com");
+});
+
 test("ChatGPT subscription card connects, shows allowance copy, and disconnects", async ({ page }) => {
 	await page.addInitScript(() => {
 		let configured = false;
@@ -12,8 +38,13 @@ test("ChatGPT subscription card connects, shows allowance copy, and disconnects"
 				configured = true;
 				return { configured, accountHint: "person@example.com" };
 			},
-			status: async () => ({ configured, accountHint: configured ? "person@example.com" : null }),
-			disconnect: async () => ({ configured: configured = false }),
+			ensureReady: async () => configured
+				? ({ state: "ready" as const, action: "reauthenticate" as const, canUseModels: true, guidance: "Ready", configured, accountHint: "person@example.com" })
+				: ({ state: "disconnected" as const, action: "connect" as const, canUseModels: false, guidance: "Connect", configured }),
+			status: async () => configured
+				? ({ state: "ready" as const, action: "reauthenticate" as const, canUseModels: true, guidance: "Ready", configured, accountHint: "person@example.com" })
+				: ({ state: "disconnected" as const, action: "connect" as const, canUseModels: false, guidance: "Connect", configured }),
+			disconnect: async () => ({ state: "disconnected" as const, action: "connect" as const, canUseModels: false, guidance: "Connect", configured: configured = false }),
 			cancel: async () => undefined
 		};
 	});
@@ -46,7 +77,8 @@ test("subscription targets are grouped and gated without OAuth", async ({ page }
 	await page.reload();
 	await page.getByTestId("composer-model").click();
 	const menu = page.getByTestId("composer-model-menu");
-	await expect(menu).toContainText("ChatGPT · subscription");
+	await menu.getByTestId("composer-model-access-chatgpt").click();
+	await expect(menu).toContainText("ChatGPT");
 	const option = menu.getByTestId("composer-model-option-chatgpt-luna");
 	await expect(option.getByRole("option")).toHaveAttribute("aria-disabled", "true");
 	await expect(option).toContainText("Connect in Settings → Models");
@@ -64,5 +96,71 @@ test("subscription UI is available by default", async ({ page }) => {
 	});
 	await page.reload();
 	await page.getByTestId("composer-model").click();
-	await expect(page.getByTestId("composer-model-menu")).toContainText("ChatGPT · subscription");
+	const menu = page.getByTestId("composer-model-menu");
+	await menu.getByTestId("composer-model-access-chatgpt").click();
+	await expect(menu).toContainText("ChatGPT");
+});
+
+test("the first ChatGPT message verifies readiness once and reaches atomic sendTurn", async ({ page }) => {
+	await page.addInitScript(() => {
+		const testWindow = window as typeof window & {
+			__oauthReadinessChecks?: number;
+			__chatgptSends?: string[];
+		};
+		testWindow.__oauthReadinessChecks = 0;
+		testWindow.__chatgptSends = [];
+		const ready = {
+			state: "ready" as const,
+			action: "reauthenticate" as const,
+			canUseModels: true,
+			guidance: "Ready",
+			configured: true,
+			accountHint: "person@example.com"
+		};
+		window.synthCodexOauth = {
+			begin: async () => ({ authorizeUrl: "https://auth.example.test", mode: "manual" as const }),
+			completeManual: async () => ready,
+			ensureReady: async () => {
+				testWindow.__oauthReadinessChecks! += 1;
+				return ready;
+			},
+			status: async () => ready,
+			disconnect: async () => ({ configured: false }),
+			cancel: async () => undefined
+		};
+		window.synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [],
+			start: async () => { throw new Error("sendTurn owns first-message startup"); },
+			startTurn: async () => { throw new Error("sendTurn owns the first turn"); },
+			sendTurn: async (request: { sessionId: string }, prompt: string) => {
+				testWindow.__chatgptSends!.push(prompt);
+				return { sessionId: request.sessionId, threadId: "chatgpt-thread", turnId: "chatgpt-turn" };
+			},
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-chatgpt").click();
+	await page.getByTestId("composer-model-option-chatgpt-luna").click();
+	const readinessBeforeSend = await page.evaluate(() => (
+		window as typeof window & { __oauthReadinessChecks?: number }
+	).__oauthReadinessChecks ?? 0);
+	await page.getByTestId("composer-input").fill("first ChatGPT message");
+	await page.getByTestId("composer-send").click();
+	await expect(page.getByTestId("model-working")).toBeVisible();
+	const calls = await page.evaluate((readinessAtSubmit) => {
+		const testWindow = window as typeof window & {
+			__oauthReadinessChecks?: number;
+			__chatgptSends?: string[];
+		};
+		return {
+			readinessDuringSend: (testWindow.__oauthReadinessChecks ?? 0) - readinessAtSubmit,
+			sends: testWindow.__chatgptSends
+		};
+	}, readinessBeforeSend);
+	expect(calls).toEqual({ readinessDuringSend: 1, sends: ["first ChatGPT message"] });
 });

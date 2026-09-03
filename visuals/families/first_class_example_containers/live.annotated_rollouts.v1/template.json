@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "live.annotated_rollouts.v1",
+  "title": "Annotated Rollouts",
+  "genre": "live",
+  "family": "eval",
+  "version": "1.0.0",
+  "description": "A task-neutral aggregate and per-rollout viewer that folds rollout evidence together with the provisional live annotations produced beside it. Task adapters add RuneScape skill progress and game frames, Craftax state, Banking77 intent facts, HealthBench rubric outcomes, or DeepSWE execution details without changing the shared replay clock.",
+  "accent": "#FF5C00",
+  "shell": "shell.tsx",
+  "tags": [
+    "live",
+    "sse",
+    "container",
+    "eval",
+    "rollout",
+    "annotation",
+    "runescape",
+    "runebench",
+    "craftax",
+    "banking77",
+    "healthbench",
+    "deepswe"
+  ],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": [
+        "idle",
+        "declared",
+        "error"
+      ],
+      "minimumRolloutCount": 1,
+      "minimumSemanticEventCount": 1,
+      "requireTerminal": false
+    }
+  },
+  "inputs": [
+    {
+      "name": "stream",
+      "description": "Declared rollout streams (synth.trace-stream-event.v1) and annotation sibling streams (synth.live-annotation-stream.v1). Bind both per rollout; rows fold by rollout_id and de-duplicate by stream_id.",
+      "accepts": [
+        "live_sse",
+        "fixture",
+        "inline"
+      ],
+      "required": true,
+      "multiple": true,
+      "schema": "synth.trace-stream-event.v1"
+    },
+    {
+      "name": "optimizer_run",
+      "description": "Authoritative run configuration: registered container, approved policy material, provider, and model pins",
+      "accepts": ["optimizer_run"],
+      "required": false,
+      "schema": "synth.optimizer-run-document.v1"
+    }
+  ]
+}

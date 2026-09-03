@@ -22,7 +22,7 @@ Live eval evidence stays on `live.*.v1`. Optimizer runs stay on `optimizer.*.v1`
 
 1. State the visual claim, then choose a mode from the selection rules below. The common path does not require template discovery, MCP resources, or filesystem search.
 2. Read only the matching reference: [families.md](references/families.md), [systems-map.md](references/systems-map.md), or [dynamic-systems.md](references/dynamic-systems.md).
-3. Call `mcp__synth_visuals__visual_manage` directly with `operation: "create"` and **new** `content` in `arguments`. Do not put source in `props`.
+3. Call `mcp__synth_visuals__visual_manage` directly with `operation: "create"`, a descriptive `title`, a short sensible `display_name` (2–6 words, unique in the task, no raw IDs), and **new** `content` in `arguments`. Do not put source in `props`.
 4. Read the returned `visual.id`, then call the same tool with `operation: "show"` and that ID so the visual lands in the right pane of this chat.
 5. Call `authoring_context`. Treat every `automatedFindings` entry as revision feedback, not a warning to ignore.
 6. Inspect the actual rendered Desktop visual—not the JSON source. For UML/Mermaid, static 2D systems maps, and Benjamin Dicken Style dynamic visuals alike, call `capture_review` at wide and compact viewport sizes; it returns each real PNG as tool image content and its absolute `screenshot_path`. Look at both attached images, check text collisions, truncation, hierarchy, edge crossings, and focal density, then revise the same ID with `update` + new `content`. Do not shell-search for screenshots.
@@ -39,6 +39,7 @@ const created = await tools.mcp__synth_visuals__visual_manage({
   arguments: {
     template_id: "diagram.mermaid.v1",
     title: "Exact request order",
+    display_name: "Request Flow",
     content: "sequenceDiagram\n  Agent->>MCP: request\n  MCP->>Registry: create",
     presentation: "pane"
   }
@@ -68,7 +69,7 @@ Then call `visual_manage` again with `{"operation":"show","arguments":{"visual_i
 
 - `diagram.mermaid.v1` content is UTF-8 Mermaid. `diagram.systems.v1` and `diagram.systems.dynamic.v1` content is bounded UTF-8 JSON. Never paste arbitrary SVG, HTML, or JavaScript into a canvas.
 - Default `presentation` is `"pane"`.
-- Never bind slot `stream`.
+- Never bind input `stream`.
 - Missing `content` fails closed. Do not retry as `blank.canvas.v1`.
 - Preserve stable IDs across revisions. In 2D/4D sources, every group and node has an explicit finite rectangle and every edge references existing nodes.
 - Prefer 5–7 focal elements per beat. Stage secondary evidence through later beats instead of showing every node and connector in the poster state.
@@ -80,6 +81,10 @@ Then call `visual_manage` again with `{"operation":"show","arguments":{"visual_i
 - **Mermaid/UML** (`diagram.mermaid.v1`): exact call order or concurrency → sequence; lifecycle → state; types/interfaces/inheritance → class; entities/cardinality → ER. Use Mermaid flowchart/C4 when the user wants a conventional, automatically laid-out topology or context view.
 - **Static 2D systems map** (`diagram.systems.v1`): broad topology, whole-repository maps, ownership/deployment/trust boundaries, before/after, placement, containment, missing edges, dormant/unproven/planned paths, or Monodraw/Excalidraw-style composition.
 - **Benjamin Dicken Style dynamic explanation** (`diagram.systems.dynamic.v1`): data/work/failure/load/control moving through time; intermediate states; queues, shards, retries, replication, optimizer steps, animated graphs; or explicit Benjamin Dicken Style/dynamic/animated/interactive/4D wording.
+
+For this family, load `author-time-dynamic-explainers` before authoring. It is
+the composition, motion, and screenshot-review authority; this skill remains the
+template-selection and source-contract authority.
 - **Both (or a focused set):** use a 2D overview plus Mermaid sequence/state detail when spatial context and exact behavior are both material. Add 4D only for the mechanism whose evolution is the lesson. Do not create all three by reflex.
 - Explicit wording wins. “UML,” “sequence,” and “state machine” stay Mermaid; “systems map,” “2D,” “before/after architecture,” and “Monodraw/Excalidraw style” prefer static 2D.
 

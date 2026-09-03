@@ -45,6 +45,24 @@ pub const STATE_CANCELED: &str = "canceled";
 pub const STATE_ERROR: &str = "error";
 pub const STATE_UNKNOWN: &str = "unknown";
 
+pub const SESSION_LOCAL_ONLY: &str = "local_only";
+pub const SESSION_SIGNED_OUT: &str = "signed_out";
+pub const SESSION_ACTIVE: &str = "active";
+pub const SESSION_REVOKED: &str = "revoked";
+pub const SESSION_OFFLINE: &str = "offline";
+pub const SESSION_MALFORMED: &str = "malformed";
+
+pub const FAILURE_NONE: &str = "none";
+pub const FAILURE_AUTH: &str = "auth";
+pub const FAILURE_ENTITLEMENT: &str = "entitlement";
+pub const FAILURE_QUOTA: &str = "quota";
+pub const FAILURE_OUTAGE: &str = "outage";
+pub const FAILURE_MALFORMED: &str = "malformed";
+
+pub const RECONCILIATION_OK: &str = "ok";
+pub const RECONCILIATION_STALE: &str = "stale";
+pub const RECONCILIATION_FAILED: &str = "failed";
+
 pub const SOURCE_CLOUD: &str = "cloud";
 pub const SOURCE_DEV_SEED: &str = "dev_seed";
 pub const SOURCE_NONE: &str = "none";
@@ -53,21 +71,21 @@ pub const SOURCE_NONE: &str = "none";
 #[serde(rename_all = "camelCase")]
 pub struct AccountPlan {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub tier: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub state: Option<String>,
     /// False when the backend reports no dollar limit for this account: the UI
     /// must then omit allowance figures instead of showing zeros.
     pub metered: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub monthly_allowance_usd: Option<f64>,
     pub used_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub remaining_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub resets_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub renews_at: Option<String>,
     /// `cloud` or `dev_seed`; the UI labels the stand-in explicitly.
     pub source: String,
@@ -77,18 +95,26 @@ pub struct AccountPlan {
 #[serde(rename_all = "camelCase")]
 pub struct AccountOrganization {
     pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub display_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub role: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountUsageWindow {
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub events: i64,
+    /// Finalized billed dollars. Never the sum of pending + billed.
     pub cost_usd: f64,
+    pub finalized_usd: f64,
+    /// Nominal minus billed for this window. Live estimates, not ledger truth.
+    pub pending_usd: f64,
+    #[specta(type = specta_typescript::Number)]
+    pub tokens: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub runtime_seconds: i64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, specta::Type)]
@@ -102,11 +128,11 @@ pub struct AccountCloudUsage {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountBilling {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub checkout_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub portal_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub upgrade_tier: Option<String>,
 }
 
@@ -127,26 +153,33 @@ pub struct AccountSummary {
     pub environment: String,
     /// Where the rendered plan came from, so the UI can label a dev stand-in.
     pub source: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub account_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub display_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub email: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub organization: Option<AccountOrganization>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub plan: Option<AccountPlan>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub cloud_usage: Option<AccountCloudUsage>,
     pub billing: AccountBilling,
     pub catalog: Vec<AccountPlanOption>,
     /// When the rendered cloud facts were fetched, for a `Last updated` line.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub last_updated: Option<String>,
     pub stale: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub error: Option<String>,
+    /// `local_only` | `signed_out` | `active` | `revoked` | `offline` | `malformed`
+    pub session_health: String,
+    /// `none` | `auth` | `entitlement` | `quota` | `outage` | `malformed`
+    pub failure_kind: String,
+    pub quota_exhausted: bool,
+    /// `ok` | `stale` | `failed` — hosted usage vs the last successful snapshot.
+    pub reconciliation: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -201,14 +234,19 @@ fn usd(cents: i64) -> f64 {
 
 fn used_cents_since(storage: &Storage, since: DateTime<Utc>) -> Result<i64> {
     let floor = since.to_rfc3339();
-    // One ledger: settled charge first, else its labeled estimate. Legacy
-    // `usage_ledger` rows were folded into `usage_records` by migration 11.
+    // One ledger: count authoritative settled charges, or a Backend-owned
+    // Synth Cloud estimate when settlement has not arrived yet. Legacy local
+    // tariff estimates are deliberately excluded.
     let used_usd: f64 = storage.database().with_conn(|conn| {
         let mut statement = conn.prepare(
-            "SELECT COALESCE(SUM(COALESCE(billed_cost_usd, estimated_cost_usd)), 0)
+            "SELECT COALESCE(SUM(CASE
+                         WHEN cost_source IN ('provider_reported', 'synth_cloud')
+                              AND billed_cost_usd IS NOT NULL THEN billed_cost_usd
+                         WHEN cost_source = 'synth_cloud' THEN estimated_cost_usd
+                         ELSE NULL
+                     END), 0)
              FROM usage_records
-             WHERE COALESCE(billed_cost_usd, estimated_cost_usd) IS NOT NULL
-               AND created_at >= ?1",
+             WHERE created_at >= ?1",
         )?;
         let value: f64 = statement.query_row([&floor], |row| row.get(0))?;
         Ok(value)
@@ -321,9 +359,17 @@ fn plan_from_snapshot(snapshot: &CloudSnapshot) -> AccountPlan {
 }
 
 fn usage_from_snapshot(snapshot: &CloudSnapshot) -> AccountCloudUsage {
-    let window = |source: &crate::account_cloud::CloudUsageWindow| AccountUsageWindow {
-        events: source.events,
-        cost_usd: usd(source.billed_cents),
+    let window = |source: &crate::account_cloud::CloudUsageWindow| {
+        let finalized = usd(source.billed_cents);
+        let pending = usd((source.nominal_cents - source.billed_cents).max(0));
+        AccountUsageWindow {
+            events: source.events,
+            cost_usd: finalized,
+            finalized_usd: finalized,
+            pending_usd: pending,
+            tokens: source.tokens,
+            runtime_seconds: source.runtime_seconds,
+        }
     };
     AccountCloudUsage {
         today: window(&snapshot.usage.today),
@@ -343,14 +389,23 @@ fn state_from_snapshot(status: &str) -> String {
     .into()
 }
 
-fn signed_out_summary(storage: &Storage, environment: &str) -> AccountSummary {
+fn signed_out_summary(
+    storage: &Storage,
+    environment: &str,
+    cloud: &SnapshotRead,
+) -> AccountSummary {
+    let paired = has_paired_before(storage);
+    let auth_failure = cloud.failure_kind.as_deref() == Some(FAILURE_AUTH);
+    let (state, session_health) = if !paired {
+        (STATE_LOCAL_ONLY, SESSION_LOCAL_ONLY)
+    } else if auth_failure {
+        (STATE_SIGNED_OUT, SESSION_REVOKED)
+    } else {
+        (STATE_SIGNED_OUT, SESSION_SIGNED_OUT)
+    };
     AccountSummary {
         signed_in: false,
-        state: if has_paired_before(storage) {
-            STATE_SIGNED_OUT.into()
-        } else {
-            STATE_LOCAL_ONLY.into()
-        },
+        state: state.into(),
         environment: environment.into(),
         source: SOURCE_NONE.into(),
         account_id: None,
@@ -363,7 +418,18 @@ fn signed_out_summary(storage: &Storage, environment: &str) -> AccountSummary {
         catalog: Vec::new(),
         last_updated: None,
         stale: false,
-        error: None,
+        error: cloud.error.clone(),
+        session_health: session_health.into(),
+        failure_kind: cloud
+            .failure_kind
+            .clone()
+            .unwrap_or_else(|| FAILURE_NONE.into()),
+        quota_exhausted: false,
+        reconciliation: if cloud.error.is_some() {
+            RECONCILIATION_FAILED.into()
+        } else {
+            RECONCILIATION_OK.into()
+        },
     }
 }
 
@@ -382,14 +448,45 @@ pub fn summary(
 ) -> Result<AccountSummary> {
     let environment = environment_from_origin(origin);
     if !signed_in {
-        return Ok(signed_out_summary(storage, environment));
+        return Ok(signed_out_summary(storage, environment, cloud));
     }
 
     if let Some(snapshot) = cloud.snapshot.as_ref() {
         let identity = &snapshot.account;
+        let state = state_from_snapshot(&snapshot.status);
+        let quota_exhausted = state == STATE_LIMITED
+            || snapshot
+                .allowance
+                .remaining_cents
+                .is_some_and(|cents| cents <= 0);
+        let failure_kind = if quota_exhausted {
+            FAILURE_QUOTA
+        } else if cloud.failure_kind.as_deref() == Some("malformed") {
+            FAILURE_MALFORMED
+        } else if cloud.stale {
+            FAILURE_OUTAGE
+        } else if snapshot.status == "canceled" || snapshot.status == "past_due" {
+            FAILURE_ENTITLEMENT
+        } else {
+            FAILURE_NONE
+        };
+        let session_health = if cloud.stale {
+            SESSION_OFFLINE
+        } else if cloud.failure_kind.as_deref() == Some("malformed") {
+            SESSION_MALFORMED
+        } else {
+            SESSION_ACTIVE
+        };
+        let reconciliation = if cloud.stale {
+            RECONCILIATION_STALE
+        } else if cloud.error.is_some() && !cloud.stale {
+            RECONCILIATION_FAILED
+        } else {
+            RECONCILIATION_OK
+        };
         return Ok(AccountSummary {
             signed_in: true,
-            state: state_from_snapshot(&snapshot.status),
+            state,
             environment: environment.into(),
             source: SOURCE_CLOUD.into(),
             account_id: Some(identity.id.clone()),
@@ -426,6 +523,10 @@ pub fn summary(
             last_updated: cloud.fetched_at.map(|at| at.to_rfc3339()),
             stale: cloud.stale,
             error: cloud.error.clone(),
+            session_health: session_health.into(),
+            failure_kind: failure_kind.into(),
+            quota_exhausted,
+            reconciliation: reconciliation.into(),
         });
     }
 
@@ -435,6 +536,14 @@ pub fn summary(
     // dollars at all.
     let seed_eligible = is_local_only_profile(profile);
     let plan = dev_seed_plan(storage, profile, now)?;
+    let malformed = cloud.failure_kind.as_deref() == Some("malformed");
+    let session_health = if malformed {
+        SESSION_MALFORMED
+    } else if cloud.failure_kind.as_deref() == Some("outage") || cloud.error.is_some() {
+        SESSION_OFFLINE
+    } else {
+        SESSION_ACTIVE
+    };
     Ok(AccountSummary {
         signed_in: true,
         state: if plan.is_some() {
@@ -459,6 +568,17 @@ pub fn summary(
         last_updated: None,
         stale: false,
         error: cloud.error.clone(),
+        session_health: session_health.into(),
+        failure_kind: cloud
+            .failure_kind
+            .clone()
+            .unwrap_or_else(|| FAILURE_NONE.into()),
+        quota_exhausted: false,
+        reconciliation: if cloud.error.is_some() {
+            RECONCILIATION_FAILED.into()
+        } else {
+            RECONCILIATION_OK.into()
+        },
     })
 }
 
@@ -539,16 +659,19 @@ mod tests {
                     events: 2,
                     billed_cents: 15,
                     nominal_cents: 15,
+                    ..Default::default()
                 },
                 seven_days: CloudUsageWindow {
                     events: 9,
                     billed_cents: 120,
                     nominal_cents: 120,
+                    ..Default::default()
                 },
                 thirty_days: CloudUsageWindow {
                     events: 40,
                     billed_cents: 1_300,
                     nominal_cents: 1_300,
+                    ..Default::default()
                 },
             },
             billing_actions: CloudBillingActions {
@@ -572,6 +695,7 @@ mod tests {
             error: None,
             fetched_at: Some(now()),
             unauthenticated: false,
+            failure_kind: None,
         }
     }
 
@@ -667,6 +791,8 @@ mod tests {
         let plan = summary.plan.unwrap();
         assert_eq!(plan.remaining_usd, Some(0.0));
         assert!(plan.metered);
+        assert!(summary.quota_exhausted);
+        assert_eq!(summary.failure_kind, FAILURE_QUOTA);
     }
 
     #[test]
@@ -706,6 +832,8 @@ mod tests {
         assert_eq!(summary.state, STATE_ACTIVE);
         assert!(summary.error.is_some());
         assert!(summary.last_updated.is_some());
+        assert_eq!(summary.session_health, SESSION_OFFLINE);
+        assert_eq!(summary.reconciliation, RECONCILIATION_STALE);
     }
 
     #[test]
@@ -850,6 +978,32 @@ mod tests {
     }
 
     #[test]
+    fn only_backend_owned_estimates_count_toward_cloud_usage() {
+        let (_root, storage) = open_storage();
+        storage
+            .database()
+            .with_conn(|conn| {
+                for (id, source) in [("backend", "synth_cloud"), ("legacy", "tariff_estimate")] {
+                    conn.execute(
+                        "INSERT INTO usage_records(
+                            id,provider,model_id,request_id,measurement_kind,status,
+                            started_at_ms,completed_at_ms,input_tokens,output_tokens,
+                            billed_cost_usd,estimated_cost_usd,cost_source,source,created_at
+                         ) VALUES(
+                            ?1,'synth','laguna-xs',?1,'provider_reported','completed',
+                            0,0,10,10,NULL,1.25,?2,'test','2026-08-06T00:00:00+00:00'
+                         )",
+                        rusqlite::params![id, source],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(used_cents_since(&storage, month_start(now())).unwrap(), 125);
+    }
+
+    #[test]
     fn the_dev_stand_in_clamps_at_zero_when_usage_exceeds_the_allowance() {
         let (_root, storage) = open_storage();
         charge(&storage, "big", 250.0, "2026-08-02T00:00:00+00:00");
@@ -879,5 +1033,89 @@ mod tests {
             next_monthly_reset(now()),
             Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap()
         );
+    }
+
+    #[test]
+    fn a_revoked_session_stays_signed_out_and_keeps_the_auth_error() {
+        let (_root, storage) = open_storage();
+        mark_paired(&storage, now()).unwrap();
+        let cloud = SnapshotRead {
+            unauthenticated: true,
+            error: Some(
+                "Synth Cloud rejected this device's key. Sign in again to continue.".into(),
+            ),
+            failure_kind: Some(FAILURE_AUTH.into()),
+            ..SnapshotRead::default()
+        };
+        let summary = summary(
+            &storage,
+            "https://www.usesynth.ai",
+            "prod",
+            false,
+            now(),
+            &cloud,
+        )
+        .unwrap();
+        assert!(!summary.signed_in);
+        assert_eq!(summary.state, STATE_SIGNED_OUT);
+        assert_eq!(summary.session_health, SESSION_REVOKED);
+        assert_eq!(summary.failure_kind, FAILURE_AUTH);
+        assert_eq!(summary.reconciliation, RECONCILIATION_FAILED);
+        assert!(summary.error.as_deref().unwrap().contains("Sign in again"));
+        assert!(summary.plan.is_none());
+    }
+
+    #[test]
+    fn pending_usage_is_not_added_into_finalized_cost() {
+        let (_root, storage) = open_storage();
+        let mut cloud = cloud_snapshot("active", Some(20_000), 4_250);
+        if let Some(snapshot) = cloud.snapshot.as_mut() {
+            snapshot.usage.today.billed_cents = 15;
+            snapshot.usage.today.nominal_cents = 40;
+        }
+        let summary = summary(
+            &storage,
+            "https://www.usesynth.ai",
+            "prod",
+            true,
+            now(),
+            &cloud,
+        )
+        .unwrap();
+        let today = summary.cloud_usage.unwrap().today;
+        assert_eq!(today.cost_usd, 0.15);
+        assert_eq!(today.finalized_usd, 0.15);
+        assert_eq!(today.pending_usd, 0.25);
+        assert_eq!(today.tokens, 0);
+        assert_eq!(today.runtime_seconds, 0);
+        assert_ne!(today.cost_usd, today.finalized_usd + today.pending_usd);
+        assert_eq!(summary.session_health, SESSION_ACTIVE);
+        assert_eq!(summary.reconciliation, RECONCILIATION_OK);
+    }
+
+    #[test]
+    fn a_malformed_snapshot_without_cache_is_a_malformed_session() {
+        let (_root, storage) = open_storage();
+        let cloud = SnapshotRead {
+            error: Some(
+                "Synth Cloud sent an account snapshot Synth Desktop could not read.".into(),
+            ),
+            failure_kind: Some(FAILURE_MALFORMED.into()),
+            ..SnapshotRead::default()
+        };
+        let summary = summary(
+            &storage,
+            "https://www.usesynth.ai",
+            "prod",
+            true,
+            now(),
+            &cloud,
+        )
+        .unwrap();
+        assert_eq!(summary.state, STATE_ERROR);
+        assert_eq!(summary.session_health, SESSION_MALFORMED);
+        assert_eq!(summary.failure_kind, FAILURE_MALFORMED);
+        assert_eq!(summary.reconciliation, RECONCILIATION_FAILED);
+        assert!(summary.plan.is_none());
     }
 }

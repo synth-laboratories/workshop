@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "trace.workbench.v1",
+  "title": "Trace workstation",
+  "genre": "trace",
+  "version": "1.0.0",
+  "description": "Family-agnostic trace workstation: the complete policy-call trajectory and per-call evidence for one container-eval run, live while it runs and from its sealed trace afterwards. Frames render when the family produces them; a frame-free or imported run shows stream events only.",
+  "accent": "#F05F22",
+  "shell": "shell.tsx",
+  "tags": [
+    "trace",
+    "replay",
+    "eval",
+    "live"
+  ],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": [
+        "idle",
+        "declared",
+        "error",
+        "connecting",
+        "reconnecting"
+      ],
+      "minimumRolloutCount": 1,
+      "minimumSemanticEventCount": 1,
+      "requireTerminal": false
+    }
+  },
+  "inputs": [
+    {
+      "name": "optimizer_run",
+      "description": "The container-eval run whose relayed trials this workstation replays",
+      "accepts": [
+        "optimizer_run"
+      ],
+      "required": true,
+      "schema": "synth.optimizer-run-document.v1"
+    }
+  ]
+}

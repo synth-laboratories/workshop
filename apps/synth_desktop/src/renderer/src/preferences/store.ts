@@ -123,6 +123,13 @@ export function setShowMascot(showMascot: boolean): DesktopPreferences {
 	}));
 }
 
+export function setVisiblePluginIds(visiblePluginIds: Iterable<string>): DesktopPreferences {
+	return updatePreferences((current) => ({
+		...current,
+		navigation: { visiblePluginIds: [...new Set(visiblePluginIds)] }
+	}));
+}
+
 export function saveLayout(last: LayoutSnapshot): DesktopPreferences {
 	return updatePreferences((current) => ({
 		...current,

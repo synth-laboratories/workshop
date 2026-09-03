@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./browser.fixture";
+import { BROWSER_MODEL_CATALOG } from "../../src/renderer/src/runtime/modelCatalog";
 
 async function openSettings(page: Page) {
 	await page.getByTestId("account-menu-trigger").click();
@@ -36,7 +37,12 @@ async function installLagunaFixture(page: Page, phase: LagunaPhase): Promise<voi
 				selectedPath = path;
 				return hits()[0];
 			},
-			clearModelDirectory: async () => undefined
+			clearModelDirectory: async () => undefined,
+			policies: async () => [
+				{ modelId: "synth/Laguna-XS-2.1-sft-banking", title: "Banking77 SFT", isBase: false, digest: "sha256:banking", tokensPerSecondP10: null, deltaVsBasePct: null, deltaIsResolvable: false, tokenSamples: 0 },
+				{ modelId: "poolside/Laguna-XS-2.1-NVFP4-mlx", title: "Base", isBase: true, digest: null, tokensPerSecondP10: null, deltaVsBasePct: null, deltaIsResolvable: false, tokenSamples: 0 },
+				{ modelId: "synth/Laguna-XS-2.1-sft-math", title: "MATH SFT", isBase: false, digest: "sha256:math", tokensPerSecondP10: null, deltaVsBasePct: null, deltaIsResolvable: false, tokenSamples: 0 }
+			]
 		};
 	}, phase);
 	await page.reload();
@@ -44,7 +50,7 @@ async function installLagunaFixture(page: Page, phase: LagunaPhase): Promise<voi
 }
 
 async function installConfiguredOpenRouter(page: Page): Promise<void> {
-	await page.addInitScript(() => {
+	await page.addInitScript((catalog) => {
 		window.synthConfig = {
 			get: async () => ({
 				configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
@@ -52,12 +58,14 @@ async function installConfiguredOpenRouter(page: Page): Promise<void> {
 				apiKeyConfigured: false, workerKeyConfigured: false,
 				openrouterApiKeyConfigured: true
 			}),
+			modelCatalog: async () => catalog,
+			refreshModelCatalog: async () => catalog,
 			update: async () => { throw new Error("unused"); },
 			listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
 			updateWorkspaceAccess: async () => ({ allowedRoots: [] })
 		};
-	});
+	}, BROWSER_MODEL_CATALOG);
 }
 
 test("native Laguna readiness overrides missing legacy runtime health", async ({ page }) => {
@@ -66,8 +74,162 @@ test("native Laguna readiness overrides missing legacy runtime health", async ({
 	await expect(page.getByTestId("composer-input")).toBeEnabled();
 	await expect(page.getByTestId("composer-input")).toHaveAttribute("placeholder", "Ask Laguna something…");
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName(/Laguna XS 2\.1/);
+	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-local").click();
+	const localModels = page.getByTestId("composer-model-menu").getByRole("option");
+	await expect(localModels).toHaveCount(3);
+	await expect(localModels.nth(0)).toContainText("Laguna XS 2.1");
+	await expect(localModels.nth(0)).toContainText("Original model");
+	await expect(localModels.nth(1)).toContainText("Banking77 SFT");
+	await expect(localModels.nth(1)).toContainText("SFT variant");
+	await expect(localModels.nth(2)).toContainText("MATH SFT");
+	await page.getByTestId("composer-model").click();
 	await expect(page.getByTestId("composer-model")).not.toHaveAccessibleName(/offline|starting/i);
 	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
+});
+
+test("an empty Laguna chat gives the first prompt to atomic sendTurn", async ({ page }) => {
+	await page.addInitScript(() => {
+		const calls = { starts: 0, sends: [] as string[] };
+		(window as typeof window & { __firstLagunaCalls?: typeof calls }).__firstLagunaCalls = calls;
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [],
+			start: async () => {
+				calls.starts += 1;
+				throw new Error("first send must not pre-start a detached session");
+			},
+			startTurn: async () => { throw new Error("sendTurn owns the first send"); },
+			sendTurn: async (request: { sessionId: string }, prompt: string) => {
+				calls.sends.push(prompt);
+				return { sessionId: request.sessionId, threadId: "laguna-first-thread", turnId: "laguna-first-turn" };
+			},
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+	});
+	await installLagunaFixture(page, "ready");
+
+	await page.getByTestId("composer-input").fill("first Laguna message");
+	await page.getByTestId("composer-send").click();
+	await expect.poll(() => page.evaluate(() =>
+		(window as typeof window & { __firstLagunaCalls: { starts: number; sends: string[] } }).__firstLagunaCalls
+	)).toEqual({ starts: 0, sends: ["first Laguna message"] });
+	await expect(page.getByText("first Laguna message")).toBeVisible();
+	await expect(page.getByText("Loading conversation history…")).toHaveCount(0);
+});
+
+test("transcript and Advanced share one durable journal hydration", async ({ page }) => {
+	await page.addInitScript(() => {
+		const sessionId = "shared-hydration-session";
+		const testWindow = window as typeof window & {
+			__tailHydrationCalls?: number;
+			__tailHydrationLimits?: number[];
+			__releaseTailHydration?: () => void;
+			synthLaguna?: unknown;
+			synthCodex?: unknown;
+			synthCore?: unknown;
+		};
+		testWindow.__tailHydrationCalls = 0;
+		testWindow.__tailHydrationLimits = [];
+		const pendingTailReads: Array<() => void> = [];
+		testWindow.__releaseTailHydration = () => pendingTailReads.splice(0).forEach((resolve) => resolve());
+		testWindow.synthLaguna = {
+			getStatus: async () => ({ phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm", loadedModel: "poolside/Laguna-XS-2.1-NVFP4-mlx", detail: "Laguna XS ready", memoryBytes: null, updatedAt: Date.now() }),
+			onStatus: () => () => undefined,
+			listModels: async () => []
+		};
+		testWindow.synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "shared-hydration-thread", workspace: "/workspaces/default",
+				model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
+				providerTitle: "Laguna XS", baseUrl: "http://127.0.0.1:7333/v1", status: "ready",
+				title: "Shared hydration fixture"
+			}],
+			start: async () => ({ sessionId, threadId: "shared-hydration-thread" }),
+			startTurn: async () => ({ sessionId, threadId: "shared-hydration-thread", turnId: "turn-shared" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		const rows = [
+			...Array.from({ length: 213 }, (_, index) => ({
+				sequence: index + 1,
+				sessionSequence: index + 1,
+				kind: index === 199 ? "item/completed" : "account/rateLimits/updated",
+				payload: index === 199
+					? { item: { id: "large-command", output: "x".repeat(145_000) } }
+					: { primary: { usedPercent: index % 100 } }
+			})),
+			{ sequence: 214, sessionSequence: 214, kind: "message.created", payload: { messageId: "shared-user", role: "user", content: "hydrate this once" } },
+			{ sequence: 215, sessionSequence: 215, kind: "message.created", payload: { messageId: "shared-assistant", role: "assistant", content: "hydrated without interference" } }
+		].map((row) => ({
+			schemaVersion: "synth.desktop-app-event.v1" as const,
+			eventId: `shared-event-${row.sequence}`,
+			sessionId,
+			source: "codex" as const,
+			createdAt: `2026-08-15T17:12:2${row.sequence}.000Z`,
+			...row
+		}));
+		testWindow.synthCore = {
+			diagnostics: async () => ({ databasePath: "/tmp/core.sqlite3", schemaVersion: 1, integrityOk: true, contentStorePath: "/tmp/content", journalHead: 215, sessionCount: 1, runCount: 0, visualCount: 0, migrationComplete: true }),
+			eventsAfter: async () => [],
+			sessionEventsAfter: async () => rows,
+			sessionEventsTail: async (_sessionId: string, limit: number) => {
+				testWindow.__tailHydrationCalls! += 1;
+				testWindow.__tailHydrationLimits!.push(limit);
+				await new Promise<void>((resolve) => pendingTailReads.push(resolve));
+				return rows;
+			},
+			sessionEventsBefore: async () => [],
+			onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-shared-hydration-session").click();
+
+	await expect(page.getByText("Loading conversation history…")).toBeVisible();
+	// Leave while the read is pending. View lifecycle cleanup must not cancel a
+	// session-owned journal hydration or force a competing Advanced replay.
+	await openSettings(page);
+	await page.evaluate(() =>
+		(window as typeof window & { __releaseTailHydration: () => void }).__releaseTailHydration()
+	);
+	await page.getByRole("button", { name: "← Back" }).click();
+	await page.getByRole("button", { name: "Shared hydration fixture", exact: true }).click();
+	await expect(page.getByText("hydrated without interference")).toBeVisible();
+	await expect(page.getByText("Loading conversation history…")).toHaveCount(0);
+	await expect.poll(() => page.evaluate(() =>
+		({
+			calls: (window as typeof window & { __tailHydrationCalls: number }).__tailHydrationCalls,
+			limits: (window as typeof window & { __tailHydrationLimits: number[] }).__tailHydrationLimits
+		})
+	)).toEqual({ calls: 1, limits: [251] });
+
+	const advancedOpenMs = await page.evaluate(async () => {
+		const trigger = document.querySelector<HTMLButtonElement>('button[aria-label="Open advanced trace"]');
+		if (!trigger) throw new Error("Advanced trigger missing");
+		const startedAt = performance.now();
+		trigger.click();
+		await new Promise(requestAnimationFrame);
+		await new Promise(requestAnimationFrame);
+		return performance.now() - startedAt;
+	});
+	expect(advancedOpenMs).toBeLessThan(250);
+	const advanced = page.getByTestId("workbench-side-panel");
+	await expect(advanced).toContainText("message.created");
+	await expect(advanced).not.toContainText(/loading/i);
+	const virtualRows = advanced.locator(".responses-trace-row");
+	await expect(virtualRows).not.toHaveCount(0);
+	expect(await virtualRows.count()).toBeLessThanOrEqual(18);
+	await expect(advanced).not.toContainText("hydrate this once");
+	const accessibilityStartedAt = Date.now();
+	await advanced.ariaSnapshot();
+	expect(Date.now() - accessibilityStartedAt).toBeLessThan(1_000);
+	await virtualRows.last().click();
+	await expect(advanced).toContainText("hydrated without interference");
 });
 
 test("new conversation keeps the configured machine permission defaults", async ({ page }) => {
@@ -92,6 +254,7 @@ for (const phase of ["starting", "loading"] as const) {
 	test(`the model menu describes ${phase} without fake download progress`, async ({ page }) => {
 		await installLagunaFixture(page, phase);
 		await page.getByTestId("composer-model").click();
+		await page.getByTestId("composer-model-access-local").click();
 
 		const menu = page.getByTestId("composer-model-menu");
 		await expect(menu).toBeVisible();
@@ -104,15 +267,19 @@ test("a blocked local startup does not trap remote or cloud target selection", a
 	await installConfiguredOpenRouter(page);
 	await installLagunaFixture(page, "starting");
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-local").click();
 
 	const local = page.getByRole("option", { name: /Laguna XS 2\.1/ }).first();
 	await expect(local).toBeDisabled();
+	await page.getByTestId("composer-model-access-back").click();
+	await page.getByTestId("composer-model-access-api").click();
 	await page.getByTestId("composer-model-option-openrouter-luna").click();
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName(/GPT 5\.6 Luna/);
-	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Reasoning effort: Medium");
+	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Reasoning effort: XHigh");
 	await expect(page.getByTestId("composer-input")).toBeEnabled();
 
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-api").click();
 	await page.getByTestId("composer-model-option-openrouter-laguna-s").click();
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName(/Laguna S 2\.1/);
 	await expect(page.getByTestId("composer-input")).toBeEnabled();
@@ -155,7 +322,7 @@ test("Settings offers and completes a real model-download bridge when weights ar
 	await page.reload();
 	await openSettings(page);
 	await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
-	await page.getByTestId("settings-page").getByRole("button", { name: "Download", exact: true }).click();
+	await page.getByTestId("download-laguna-xs-2.1").click();
 	const locations = page.getByTestId("laguna-model-locations");
 	await expect(locations).toContainText("/models/poolside/Laguna-XS-2.1-NVFP4-mlx");
 	await expect(locations.getByText("In use")).toBeVisible();
@@ -171,9 +338,10 @@ test("Settings identifies the exact running desktop build", async ({ page }) => 
 });
 
 test("Models lists only credentialed remote providers with pricing", async ({ page }) => {
-	await page.addInitScript(() => {
+	await page.addInitScript((catalog) => {
 		window.synthConfig = {
 			get: async () => ({ configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod", backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY", apiKeyConfigured: true, workerKeyConfigured: false, openrouterApiKeyConfigured: true }),
+			modelCatalog: async () => catalog, refreshModelCatalog: async () => catalog,
 			update: async () => { throw new Error("unused"); }, listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }), updateWorkspaceAccess: async () => ({ allowedRoots: [] })
 		};
@@ -181,10 +349,11 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 			catalog: async () => [
 				{ provider: "openrouter", modelId: "openai/gpt-5.6-luna", inputUsdPerM: 0.20, outputUsdPerM: 1.20, cachedInputUsdPerM: 0.02, cacheWriteUsdPerM: 0.25 },
 				{ provider: "openrouter", modelId: "poolside/laguna-s-2.1", inputUsdPerM: 0.10, outputUsdPerM: 0.20, cachedInputUsdPerM: null, cacheWriteUsdPerM: null },
-				{ provider: "openrouter", modelId: "meta/muse-spark-1.2", inputUsdPerM: 1.25, outputUsdPerM: 4.25, cachedInputUsdPerM: 0.15, cacheWriteUsdPerM: null }
+				{ provider: "openrouter", modelId: "meta/muse-spark-1.2", inputUsdPerM: 1.25, outputUsdPerM: 4.25, cachedInputUsdPerM: 0.15, cacheWriteUsdPerM: null },
+				{ provider: "openrouter", modelId: "google/gemini-3.7-flash", inputUsdPerM: 0.375, outputUsdPerM: 1.875, cachedInputUsdPerM: 0.0375, cacheWriteUsdPerM: 0.02085 }
 			]
 		};
-	});
+	}, BROWSER_MODEL_CATALOG);
 	await page.reload();
 	await openSettings(page);
 	await page.getByRole("button", { name: "Models" }).click();
@@ -196,9 +365,10 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 	await expect(luna).toContainText("Cache write / 1M$0.25");
 	await expect(models.getByTestId("authorized-model-openrouter-laguna-s")).toContainText("$0.20");
 	await expect(models.getByTestId("authorized-model-openrouter-muse-spark")).toContainText("$4.25");
+	await expect(models.getByTestId("authorized-model-openrouter-gemini-flash")).toContainText("$1.875");
 	await expect(models.getByTestId("authorized-model-synth-cloud-laguna-s")).toContainText("Plan");
 	const marks = models.locator(".authorized-model-mark");
-	await expect(marks).toHaveCount(5);
+	await expect(marks).toHaveCount(8);
 	const markBoxes = await marks.evaluateAll((elements) => elements.map((element) => {
 		const box = element.getBoundingClientRect();
 		return { width: box.width, height: box.height, centerX: box.left + box.width / 2 };
@@ -214,7 +384,7 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 			return { fontSize: Number.parseFloat(style.fontSize), family: style.fontFamily };
 		})
 	);
-	expect(slugStyles).toHaveLength(5);
+	expect(slugStyles).toHaveLength(8);
 	for (const style of slugStyles) {
 		expect(style.fontSize, "model slugs stay subordinate to provider labels").toBeLessThanOrEqual(10);
 		expect(style.family).toMatch(/SFMono|Menlo|Monaco|Consolas|monospace/i);
@@ -280,7 +450,7 @@ test("Settings can force and reset a model multi-agent preset", async ({ page })
 	});
 	await installLagunaFixture(page, "ready");
 	await openSettings(page);
-	await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
+	await page.getByTestId("settings-page").getByRole("button", { name: "Context" }).click();
 
 	const controls = page.getByRole("group", { name: "Laguna XS 2.1 multi-agent compatibility" });
 	const row = controls.locator("..");
@@ -457,6 +627,69 @@ test("V2 child lifecycle uses the same transcript route and isolates sibling out
 	await expect(child).toContainText("Agent exceeded its task budget.");
 });
 
+test("two V2 children overlap in wall-clock and keep a dedicated Subagents rail", async ({ page }) => {
+	await page.addInitScript(() => {
+		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
+		let listener: ((event: Event) => void) | undefined;
+		(window as typeof window & { __emitCodexOverlap?: (event: Event) => void }).__emitCodexOverlap = (event) => listener?.(event);
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId: "subagent-overlap-session", threadId: "parent-overlap-thread", workspace: "/workspaces/default",
+				model: "openai/gpt-5.6-terra", providerName: "openrouter", providerTitle: "OpenRouter",
+				baseUrl: "https://openrouter.ai/api/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId: "subagent-overlap-session", threadId: "parent-overlap-thread" }),
+			startTurn: async () => ({ sessionId: "subagent-overlap-session", threadId: "parent-overlap-thread", turnId: "turn-1" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: (next: (event: Event) => void) => { listener = next; return () => { listener = undefined; }; }
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-subagent-overlap-session").click();
+
+	const wallStart = Date.now();
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCodexOverlap: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexOverlap;
+		const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "subagent-overlap-session", method, params });
+		send("agentMessage/completed", { messageId: "parent-overlap", content: "I’ll run two reviews in parallel." });
+		send("item/started", { item: {
+			id: "spawn-a", type: "subAgentActivity", kind: "started", agentThreadId: "child-overlap-a", agentPath: "/root/api_boundary"
+		} });
+		send("turn/started", { threadId: "child-overlap-a", turn: { id: "turn-a" } });
+	});
+	await page.waitForTimeout(1500);
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCodexOverlap: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexOverlap;
+		const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "subagent-overlap-session", method, params });
+		send("item/started", { item: {
+			id: "spawn-b", type: "subAgentActivity", kind: "started", agentThreadId: "child-overlap-b", agentPath: "/root/readme_location"
+		} });
+		send("turn/started", { threadId: "child-overlap-b", turn: { id: "turn-b" } });
+	});
+	await expect(page.getByTestId("visual-subagents")).toBeVisible();
+	await page.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("subagents-rail")).toBeVisible();
+	await expect(page.getByTestId("visual-subagents")).toContainText("Working · 2");
+	await page.waitForTimeout(1500);
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCodexOverlap: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexOverlap;
+		emit({ sessionId: "subagent-overlap-session", method: "turn/completed", params: { threadId: "child-overlap-a", turn: { status: "completed", lastAgentMessage: "API boundary review done." } } });
+		emit({ sessionId: "subagent-overlap-session", method: "turn/completed", params: { threadId: "child-overlap-b", turn: { status: "completed", lastAgentMessage: "README location confirmed." } } });
+	});
+	const wallMs = Date.now() - wallStart;
+	await expect(page.getByTestId("visual-subagents")).toContainText("Completed · 2");
+	await expect(page.getByTestId("chat-transcript")).not.toContainText("API boundary review done.");
+	await expect(page.getByTestId("chat-transcript")).not.toContainText("README location confirmed.");
+	await page.getByTestId("subagent-row-child-overlap-a").click();
+	await expect(page.getByTestId("subagents-detail")).toBeVisible();
+	await page.getByTestId("subagents-back").click();
+	await expect(page.getByTestId("subagent-row-child-overlap-b")).toBeVisible();
+	expect(wallMs).toBeLessThan(5000);
+	expect(wallMs).toBeGreaterThan(2500);
+});
+
 test("Codex thread name updates rename the durable sidebar session", async ({ page }) => {
 	await page.addInitScript(() => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
@@ -576,7 +809,7 @@ test("Rust Inventory navigation never replaces native Codex sessions with legacy
 	});
 	await installLagunaFixture(page, "ready");
 	await expect(page.getByTestId("local-chat-native-session")).toBeVisible();
-	await page.getByRole("button", { name: "Containers · Traces · Usage" }).click();
+	await page.getByTestId("open-inventory").click();
 	await page.waitForTimeout(3_000);
 	await expect(page.getByTestId("local-chat-native-session")).toBeVisible();
 });
@@ -632,12 +865,13 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 	await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0);
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.models.local-laguna.reasoning"))).toBe("none");
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-api").click();
 	await page.getByTestId("composer-model-option-openrouter-luna").click();
 	// Chip fiddle stays in the same chat; compact/rebind wait for send.
 	await expect(page.getByTestId("chat-transcript")).toBeVisible();
 	await expect(page.getByText("Start a new conversation using")).toHaveCount(0);
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName("Model: GPT 5.6 Luna");
-	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Reasoning effort: Medium");
+	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Reasoning effort: XHigh");
 	await page.getByTestId("reasoning-effort-select").click();
 	const effortMenu = page.getByTestId("reasoning-effort-menu");
 	await expect(effortMenu.getByRole("option")).toHaveCount(5);
@@ -652,9 +886,10 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 		threadId: "local-thread"
 	});
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ sessionId: string; prompt: string; effort?: string }> }).__providerTurns.at(-1))).toMatchObject({ sessionId: "bound-local", prompt: "hello Luna", effort: "high" });
-	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.reasoningEffort"))).toBe("high");
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.models.openrouter-luna.reasoning"))).toBe("high");
 
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-api").click();
 	await page.getByTestId("composer-model-option-openrouter-laguna-s").click();
 	await expect(page.getByTestId("chat-transcript")).toBeVisible();
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName("Model: Laguna S 2.1");
@@ -792,9 +1027,17 @@ test("resident model disappears immediately when Laguna reports automatic unload
 	await expect(page.getByText(/Frees automatically in now/i)).toHaveCount(0);
 });
 
-test("a cold local turn says Warming up until model residency is reported", async ({ page }) => {
+test("a cold local turn says it is waiting on local until model residency is reported", async ({ page }) => {
 	await page.addInitScript(() => {
-		const testWindow = window as typeof window & { synthLaguna?: unknown; synthCodex?: unknown };
+		const testWindow = window as typeof window & {
+			synthLaguna?: unknown;
+			synthCodex?: unknown;
+			__emitColdTurn?: () => void;
+		};
+		let turnListener: ((event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) | undefined;
+		testWindow.__emitColdTurn = () => turnListener?.({
+			sessionId: "cold-session", method: "turn/started", params: { turnId: "turn-cold" }
+		});
 		testWindow.synthLaguna = {
 			getStatus: async () => ({
 				phase: "loading", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm",
@@ -817,12 +1060,17 @@ test("a cold local turn says Warming up until model residency is reported", asyn
 			startTurn: async () => { throw new Error("unused"); },
 			interrupt: async () => undefined,
 			close: async () => undefined,
-			onEvent: () => () => undefined
+			onEvent: (listener: typeof turnListener) => {
+				turnListener = listener;
+				return () => { turnListener = undefined; };
+			}
 		};
 	});
 	await page.reload();
 	await page.getByTestId("local-chat-cold-session").click();
-	await expect(page.getByTestId("model-working")).toContainText("Warming up…");
+	await page.evaluate(() => (window as typeof window & { __emitColdTurn: () => void }).__emitColdTurn());
+	await expect(page.getByTestId("model-working")).toContainText("Waiting on local…");
+	await expect(page.getByTestId("model-working")).toHaveAttribute("data-waiting-on", "local");
 	await expect(page.getByTestId("model-working")).not.toContainText("Working…");
 	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
 });
@@ -831,12 +1079,15 @@ test("native Codex deltas form one readable message with working and stop state"
 	await page.addInitScript(() => {
 		let listener: ((event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) | undefined;
 		let interrupts = 0;
+		let subscriptions = 0;
 		const testWindow = window as typeof window & {
 			__emitConversationCodex?: typeof listener;
 			__conversationInterrupts?: () => number;
+			__conversationSubscriptions?: () => number;
 			synthCodex?: unknown;
 		};
 		testWindow.__conversationInterrupts = () => interrupts;
+		testWindow.__conversationSubscriptions = () => subscriptions;
 		testWindow.synthCodex = {
 			defaultWorkspace: async () => "/workspaces/default",
 			list: async () => [{
@@ -849,6 +1100,7 @@ test("native Codex deltas form one readable message with working and stop state"
 			interrupt: async () => { interrupts += 1; },
 			close: async () => undefined,
 			onEvent: (next: typeof listener) => {
+				subscriptions += 1;
 				listener = next;
 				testWindow.__emitConversationCodex = next;
 				return () => { listener = undefined; };
@@ -857,6 +1109,9 @@ test("native Codex deltas form one readable message with working and stop state"
 	});
 	await installLagunaFixture(page, "ready");
 	await page.getByTestId("local-chat-stream-session").click();
+	const subscriptionCountAfterMount = await page.evaluate(() =>
+		(window as typeof window & { __conversationSubscriptions: () => number }).__conversationSubscriptions()
+	);
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitConversationCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitConversationCodex;
@@ -925,6 +1180,10 @@ test("native Codex deltas form one readable message with working and stop state"
 	await expect(transcript).not.toContainText("remoteControl/status/changed");
 	await expect(transcript).not.toContainText("model-metadata");
 	await expect(transcript).not.toContainText("account/rateLimits/updated");
+	// Rendering each event must not tear down and asynchronously recreate the
+	// native listener. That race dropped burst completions in the desktop app
+	// even though CoreRuntime had durably journaled them.
+	expect(await page.evaluate(() => (window as typeof window & { __conversationSubscriptions: () => number }).__conversationSubscriptions())).toBe(subscriptionCountAfterMount);
 	await expect(thought).toBeVisible();
 	await expect(transcript).toContainText("Checking the relevant renderer state.");
 
@@ -982,6 +1241,11 @@ test("native Codex deltas form one readable message with working and stop state"
 	const secondCommand = transcript.locator(".command-activity").last();
 	await expect(secondCommand).toContainText("pwd");
 	expect((await secondCommand.boundingBox())!.y).toBeGreaterThan((await secondUser.boundingBox())!.y);
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitConversationCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitConversationCodex;
+		emit({ sessionId: "stream-session", method: "turn/started", params: { turn: { id: "turn-stream-2" } } });
+	});
+	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
 	await page.getByRole("button", { name: "Stop generating" }).click();
 	expect(await page.evaluate(() => (window as typeof window & { __conversationInterrupts: () => number }).__conversationInterrupts())).toBe(1);
 	await expect(page.getByTestId("workbench-side-panel")).toBeVisible();
@@ -991,7 +1255,11 @@ test("native Codex deltas form one readable message with working and stop state"
 	await expect(page.getByTestId("workbench-side-panel")).toBeHidden();
 	await page.getByTestId("toggle-inference-rail").click();
 	await expect(page.getByTestId("workbench-side-panel")).toBeVisible();
-	const inferenceGeometry = await page.getByTestId("inference-panel").evaluate((panel) => {
+	// Composer clearance is deliberately published by a coalesced animation
+	// frame after the workbench grid mutates. Visibility can become true before
+	// that frame, so assert the settled geometry rather than sampling the one
+	// transient frame in which the reopened rail and old dock offsets coexist.
+	await expect.poll(() => page.getByTestId("inference-panel").evaluate((panel) => {
 		const rail = panel.parentElement!.getBoundingClientRect();
 		const panelRect = panel.getBoundingClientRect();
 		const composer = document.querySelector<HTMLElement>("[data-testid=composer]")!.getBoundingClientRect();
@@ -1001,8 +1269,7 @@ test("native Codex deltas form one readable message with working and stop state"
 			composerClearsRail: composer.right <= rail.left + 1,
 			overflow: document.documentElement.scrollWidth > window.innerWidth + 1
 		};
-	});
-	expect(inferenceGeometry).toEqual({ contained: true, hasInset: true, composerClearsRail: true, overflow: false });
+	})).toEqual({ contained: true, hasInset: true, composerClearsRail: true, overflow: false });
 });
 
 test("closed-model reasoning renders only a provider summary disclosure", async ({ page }) => {
@@ -1193,7 +1460,18 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 			baseUrl: "http://127.0.0.1:8098", taskFamily: "craftax-singleplayer",
 			lastRolloutId: "rollout-latest", health: { payload: { sessions: 2 } },
 			metadata: {
-				info: { lane: "rust", capabilities: ["rollout", "checkpoint", "task_catalog", "task_info"], action_names: ["noop", "left", "right", "do"] },
+				taskCatalogFreshness: { kind: "live", observedAt: "2026-08-09T10:00:00Z" },
+				interfaceFreshness: { kind: "live", observedAt: "2026-08-09T10:00:00Z" },
+				info: {
+					lane: "rust",
+					capabilities: {
+						protocol: "synth.container.live-eval.v1",
+						rollout_modes: ["blocking"],
+						policy_refs: [{ namespace: "nanohorizon", name: "glm-5.3-flash" }],
+						metadata: { retained: true }
+					},
+					action_names: ["noop", "left", "right", "do"]
+				},
 				taskCatalog: {
 					tasks: [{ task_id: "manual", name: "Craftax single-player", description: "Explore and survive.", default: true }],
 					instances: [
@@ -1207,9 +1485,34 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 			},
 			createdAt: "2026-08-09T10:00:00Z", updatedAt: "2026-08-09T10:00:00Z"
 		};
+		let probeCount = 0;
 		testWindow.synthInventory = {
 			getContainer: async () => craftax,
-			probeContainer: async () => craftax
+			probeContainer: async () => {
+				probeCount += 1;
+				if (probeCount === 1) return {
+					...craftax,
+					metadata: {
+						...craftax.metadata,
+						taskCatalog: {
+							...craftax.metadata.taskCatalog,
+							instances: [
+								...craftax.metadata.taskCatalog.instances,
+								{ task_instance_id: "craftax:test:3", task_id: "manual", split: "test", metadata: { output_label: "mine_stone", seed: 3 } }
+							]
+						}
+					}
+				};
+				return {
+					...craftax,
+					metadata: {
+						...craftax.metadata,
+						taskCatalog: { schema_version: "synth.container.task-catalog.v999", tasks: {}, instances: [] }
+					}
+				};
+			},
+			reconcileContainer: async () => craftax,
+			restartContainer: async () => craftax
 		};
 		testWindow.synthCodex = {
 			defaultWorkspace: async () => "/workspaces/default",
@@ -1263,7 +1566,12 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(containerPane).toBeVisible();
 	await expect(containerPane).toContainText("Craftax Rust");
 	await expect(containerPane).toContainText("craftax-singleplayer");
-	await expect(containerPane).toContainText("2 active sessions");
+	await expect(containerPane).toContainText("2 sessions");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("protocol");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("rollout_modes:blocking");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("policy_refs:1");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("metadata");
+	await expect(containerPane).not.toContainText("[object Object]");
 	await expect(containerPane.getByRole("button", { name: /Craftax single-player/ })).toBeVisible();
 	await expect(containerPane).toContainText("Advance through the technology tree.");
 	await expect(containerPane).toContainText("achievements_unlocked");
@@ -1285,6 +1593,12 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(containerPane).toContainText("collect_wood");
 	await containerPane.getByTestId("container-pane-expand").click();
 	await expect(page.locator(".workbench")).toHaveClass(/container-expanded/);
+	await containerPane.getByRole("button", { name: "Refresh", exact: true }).click();
+	await expect(containerPane).toContainText("1 of 3 instances");
+	await expect(containerPane.locator(".container-facts")).toContainText("Definitions1");
+	await expect(containerPane.locator(".container-facts")).toContainText("Instances3 live");
+	await containerPane.getByRole("button", { name: "Refresh", exact: true }).click();
+	await expect(containerPane.getByRole("alert")).toContainText("Task metadata error: invalid task catalog: unsupported schema_version");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitToolCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitToolCodex;
@@ -1317,9 +1631,10 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(transcript.getByText("App.tsx")).toBeVisible();
 	await expect(transcript.getByText("Searched the web")).toBeVisible();
 	await expect(transcript.locator("code.mcp-activity-name").getByText("synth_containers.container_probe")).toBeVisible();
-	await expect(transcript.locator("code.mcp-activity-name").getByText("synth_visuals.visual_create")).toHaveCount(2);
-	await expect(transcript.getByText("Completed")).toHaveCount(2);
-	await expect(transcript.getByText("Failed")).toBeVisible();
+	await expect(transcript.getByText("Visual update failed", { exact: true })).toBeVisible();
+	await expect(transcript.getByText("Visual draft created", { exact: true })).toBeVisible();
+	await expect(transcript.getByText("Completed", { exact: true })).toHaveCount(2);
+	await expect(transcript.getByText("Needs attention", { exact: true })).toBeVisible();
 	await expect(transcript).toContainText("template id craftax.rollout.v1 · title Craftax rollout · 2ms");
 	await transcript.getByTestId("resource-shelf-trigger").click();
 	const resourceShelf = page.getByTestId("resource-shelf");
@@ -1336,11 +1651,9 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(visualPane.getByTestId("visual-craftax-eval-matrix")).toBeVisible();
 	await page.getByTestId("activity-mode-menu-trigger").click();
 	await page.getByTestId("activity-mode-option-grouped").click();
-	const groupedWithContext = transcript.locator(".activity-group").first();
-	await groupedWithContext.locator(".activity-group-toggle").click();
-	const contextualStep = groupedWithContext.locator(".activity-group-step.has-context").first();
-	expect((await contextualStep.locator(".activity-group-action").boundingBox())!.y)
-		.toBeGreaterThanOrEqual((await contextualStep.locator(".activity-group-context").boundingBox())!.y);
+	const groupedActions = transcript.locator(".activity-group").first();
+	await groupedActions.locator(".activity-group-toggle").click();
+	await expect(groupedActions.locator(".activity-group-step")).toHaveCount(4);
 	await expect(transcript.getByText(/Worked .*ran 1 command, read 1 file, searched once, used 4 tools/)).toBeVisible();
 	await expect(transcript).not.toContainText("super-secret-value");
 	await expect(transcript).not.toContainText("raw command output");
@@ -1375,7 +1688,9 @@ test("approval modes configure new native sessions and pending requests resolve 
 			startTurn: async (sessionId: string) => ({ sessionId, threadId: "thread-approval", turnId: "turn-approval" }),
 			interrupt: async () => undefined,
 			resolveApproval: async (sessionId: string, approvalId: string, decision: string) => {
+				if (approvalId === "approval-paid-already") throw new Error(`approval is no longer pending: ${approvalId}`);
 				decisions.push({ sessionId, approvalId, decision });
+				if (approvalId === "approval-paid-1") return;
 				listener?.({ sessionId, method: decision === "reject" ? "approval.rejected" : "approval.granted", params: { approvalId, decision } });
 			},
 			close: async () => undefined,
@@ -1419,6 +1734,171 @@ test("approval modes configure new native sessions and pending requests resolve 
 	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
 		{ sessionId, approvalId: "approval-1", decision: "once" }
 	]);
+
+	await page.evaluate((id) => {
+		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
+			sessionId: id,
+			method: "approval.requested",
+			params: {
+				approvalId: "approval-paid-1",
+				kind: "paid_compute",
+				operation: "optimizer.recipe.start",
+				requestingAgent: "Agent session approval-test",
+				estimatedCostUsdMicros: 2450000,
+				requestedCap: { maxCostUsdMicros: 2450000, maxRollouts: 240 },
+				parameters: { recipeId: "gepa.banking77.luna.v1", task: "banking77" },
+				alwaysSupported: false
+			}
+		});
+	}, sessionId);
+	const modal = page.getByTestId("paid-compute-approval-modal");
+	await expect(modal).toBeVisible();
+	await expect(modal).toContainText("Agent session approval-test");
+	await expect(modal).toContainText("$2.45");
+	await expect(modal).toContainText("240");
+	await expect(page.locator(".approval-card")).toHaveCount(0);
+	await modal.getByRole("button", { name: "Approve", exact: true }).click();
+	await expect(modal).toBeHidden();
+	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
+		{ sessionId, approvalId: "approval-1", decision: "once" },
+		{ sessionId, approvalId: "approval-paid-1", decision: "once" }
+	]);
+
+	await page.evaluate((id) => {
+		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
+			sessionId: id,
+			method: "approval.requested",
+			params: {
+				approvalId: "approval-credential-1",
+				kind: "credential_access",
+				provider: "openrouter",
+				purpose: "Issue a run-scoped Workshop proxy capability for recipe inline, run run-1; operations=chat.completions.create; maxCalls=50; maxCostUsd=2.45",
+				alwaysSupported: false
+			}
+		});
+	}, sessionId);
+	const credentialModal = page.getByTestId("credential-access-approval-modal");
+	await expect(credentialModal).toBeVisible();
+	await expect(credentialModal).toContainText("openrouter");
+	await expect(credentialModal).toContainText("Call cap50");
+	await expect(credentialModal).toContainText("Cost cap$2.45");
+	await expect(credentialModal.locator("dd").first()).toHaveCSS("color", "rgb(244, 246, 248)");
+	await expect(credentialModal).toContainText("never the credential value");
+	await credentialModal.getByRole("button", { name: "Allow once" }).click();
+	await expect(credentialModal).toBeHidden();
+	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
+		{ sessionId, approvalId: "approval-1", decision: "once" },
+		{ sessionId, approvalId: "approval-paid-1", decision: "once" },
+		{ sessionId, approvalId: "approval-credential-1", decision: "once" }
+	]);
+
+	await page.evaluate((id) => {
+		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
+			sessionId: id,
+			method: "approval.requested",
+			params: {
+				approvalId: "approval-paid-already",
+				kind: "paid_compute",
+				operation: "optimizer.evaluation.inline.start",
+				requestedCap: { maxCostUsdMicros: 2450000, maxRollouts: 5 },
+				parameters: { rolloutCount: 5 },
+				alwaysSupported: false
+			}
+		});
+	}, sessionId);
+	await expect(modal).toBeVisible();
+	await modal.getByRole("button", { name: "Approve", exact: true }).click();
+	await expect(modal).toBeHidden();
+	await expect(page.getByText(/approval is no longer pending/i)).toHaveCount(0);
+});
+
+test("paid compute Reject writes a durable decision and restart expiry closes the modal", async ({ page }) => {
+	await page.addInitScript(() => {
+		let listener: ((event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) | undefined;
+		let started: Record<string, unknown> | undefined;
+		const decisions: Array<{ sessionId: string; approvalId: string; decision: string }> = [];
+		const testWindow = window as typeof window & {
+			__approvalStarted?: () => Record<string, unknown> | undefined;
+			__approvalDecisions?: () => typeof decisions;
+			__emitApproval?: typeof listener;
+			synthCodex?: unknown;
+		};
+		testWindow.__approvalStarted = () => started;
+		testWindow.__approvalDecisions = () => decisions;
+		testWindow.synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [],
+			start: async (request: Record<string, unknown>) => {
+				started = request;
+				return { sessionId: request.sessionId, threadId: "thread-paid-reject" };
+			},
+			startTurn: async (sessionId: string) => ({ sessionId, threadId: "thread-paid-reject", turnId: "turn-paid-reject" }),
+			interrupt: async () => undefined,
+			resolveApproval: async (sessionId: string, approvalId: string, decision: string) => {
+				decisions.push({ sessionId, approvalId, decision });
+				listener?.({ sessionId, method: decision === "reject" ? "approval.rejected" : "approval.granted", params: { approvalId, decision } });
+			},
+			close: async () => undefined,
+			onEvent: (next: typeof listener) => { listener = next; testWindow.__emitApproval = next; return () => { listener = undefined; }; }
+		};
+	});
+	await installLagunaFixture(page, "ready");
+	await page.getByTestId("approval-mode-select").click();
+	await page.getByTestId("approval-mode-menu").getByRole("option", { name: /Always ask/ }).click();
+	await page.getByTestId("composer-input").fill("start_recipe gepa.banking77.luna.v1");
+	await page.getByTestId("composer-send").click();
+	const started = await page.evaluate(() => (window as typeof window & { __approvalStarted: () => Record<string, unknown> }).__approvalStarted());
+	const sessionId = String(started?.sessionId);
+	await page.evaluate((id) => {
+		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
+			sessionId: id,
+			method: "approval.requested",
+			params: {
+				approvalId: "approval-paid-reject",
+				kind: "paid_compute",
+				operation: "optimizer.recipe.start",
+				requestingAgent: "Agent session paid-reject",
+				estimatedCostUsdMicros: 2450000,
+				requestedCap: { maxCostUsdMicros: 2450000, maxRollouts: 240 },
+				parameters: { recipeId: "gepa.banking77.luna.v1", task: "banking77" },
+				alwaysSupported: false
+			}
+		});
+	}, sessionId);
+	const modal = page.getByTestId("paid-compute-approval-modal");
+	await expect(modal).toBeVisible();
+	await expect(modal).toContainText("$2.45");
+	await expect(modal).toContainText("240");
+	await modal.getByRole("button", { name: "Reject" }).click();
+	await expect(modal).toBeHidden();
+	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
+		{ sessionId, approvalId: "approval-paid-reject", decision: "reject" }
+	]);
+	await page.evaluate((id) => {
+		const emit = (window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval;
+		emit({
+			sessionId: id,
+			method: "approval.requested",
+			params: {
+				approvalId: "approval-paid-restart",
+				kind: "paid_compute",
+				operation: "optimizer.recipe.start",
+				estimatedCostUsdMicros: 2450000,
+				requestedCap: { maxCostUsdMicros: 2450000, maxRollouts: 240 },
+				parameters: { recipeId: "gepa.banking77.luna.v1" },
+				alwaysSupported: false
+			}
+		});
+	}, sessionId);
+	await expect(modal).toBeVisible();
+	await page.evaluate((id) => {
+		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
+			sessionId: id,
+			method: "approval.expired",
+			params: { approvalId: "approval-paid-restart", decision: "expired", reason: "origin_interrupted" }
+		});
+	}, sessionId);
+	await expect(modal).toBeHidden();
 });
 
 test("a recent folder can create and attach to a conversation from the landing composer", async ({ page }) => {
@@ -1467,6 +1947,7 @@ test("a recent folder can create and attach to a conversation from the landing c
 	});
 	await installLagunaFixture(page, "ready");
 
+	await page.getByTestId("composer-add-menu-trigger").click();
 	await page.getByTestId("composer-slash-btn").click();
 	await page.getByTestId("slash-command-item-workspace").click();
 	const addFolder = page.getByTestId("workspace-scope-menu").getByRole("menuitem", { name: "Add folder…" });

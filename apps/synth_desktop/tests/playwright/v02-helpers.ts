@@ -7,7 +7,7 @@ export function liveVisual(overrides: Partial<VisualRecord> & Pick<VisualRecord,
 		currentRevision: 1,
 		status: "saved",
 		rendererKind: "template",
-		bindings: { schemaVersion: "synth.visual-bindings.v1", slots: [] },
+		bindings: { schemaVersion: "synth.visual-bindings.v1", inputs: [] },
 		sessionId: null,
 		messageId: null,
 		runId: null,
@@ -27,17 +27,29 @@ export function liveVisual(overrides: Partial<VisualRecord> & Pick<VisualRecord,
 export function streamBinding(events: unknown[], extra: Record<string, unknown> = {}) {
 	return {
 		schemaVersion: "synth.visual-bindings.v1" as const,
-		slots: [{
-			slot: "stream",
+		inputs: [{
+			input: "stream",
 			kind: "inline" as const,
 			data: { events, ...extra }
 		}]
 	};
 }
 
-export async function installVisuals(page: Page, visuals: VisualRecord[]): Promise<void> {
-	await page.addInitScript((rows) => {
+export async function installVisuals(
+	page: Page,
+	visuals: VisualRecord[],
+	contentById: Record<string, string> = {}
+): Promise<void> {
+	await page.addInitScript(({ rows, content }) => {
 		const store = [...rows] as VisualRecord[];
+		const encode = (text: string) => {
+			const bytes = new TextEncoder().encode(text);
+			let binary = "";
+			bytes.forEach((value) => {
+				binary += String.fromCharCode(value);
+			});
+			return btoa(binary);
+		};
 		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
 			listTemplates: async () => rows.map((row) => ({ id: row.templateId, title: row.title, genre: "live" })),
 			getTemplate: async (templateId: string) => ({ id: templateId, title: templateId }),
@@ -58,10 +70,24 @@ export async function installVisuals(page: Page, visuals: VisualRecord[]): Promi
 				if (!hit) throw new Error(`missing visual ${visualId}`);
 				return hit;
 			},
+			content: async (visualId: string) => {
+				const hit = store.find((row) => row.id === visualId);
+				if (!hit) throw new Error(`missing visual ${visualId}`);
+				const source = content[visualId];
+				if (typeof source !== "string") throw new Error(`missing content ${visualId}`);
+				return {
+					visualId,
+					revision: hit.currentRevision,
+					format: "source",
+					mediaType: "text/tsx",
+					digest: hit.contentDigest ?? "sha256:test",
+					base64: encode(source)
+				};
+			},
 			onEvent: () => () => undefined,
 			onShow: () => () => undefined
 		};
-	}, visuals);
+	}, { rows: visuals, content: contentById });
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 }

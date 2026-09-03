@@ -7,6 +7,7 @@ import {
 	niceCeil,
 	percent,
 	providerRollup,
+	spendCopy,
 	spendUsd,
 	usd
 } from "../../src/renderer/src/runtime/usageDashboard";
@@ -60,6 +61,16 @@ test("dollars keep sub-cent amounts legible and say Unavailable when unpriced", 
 	expect(usd(Number.NaN)).toBe("Unavailable");
 });
 
+test("a null price is Unavailable, never No charge; local work has no provider invoice", () => {
+	expect(spendCopy(null, "openrouter")).toBe("Unavailable");
+	expect(spendCopy(null, "synth-cloud")).toBe("Unavailable");
+	expect(spendCopy(Number.NaN, "openrouter")).toBe("Unavailable");
+	expect(spendCopy(null, "local-laguna")).toBe("No provider charge");
+	expect(spendCopy(0, "local-laguna")).toBe("$0.00");
+	expect(spendCopy(1.5, "openrouter")).toBe("$1.50");
+	expect(spendCopy(null, "openrouter")).not.toBe("No charge");
+});
+
 test("token counts read at a glance and never fake a zero", () => {
 	expect(compactTokens(48_000_000_000)).toBe("48B");
 	expect(compactTokens(1_270_000_000)).toBe("1.27B");
@@ -76,13 +87,12 @@ test("percentages report Unavailable rather than 0% for an unreported rate", () 
 	expect(percent(null)).toBe("Unavailable");
 });
 
-// ── Spend: authority is added, never blended away ──
+// ── Spend: only authoritative receipts count ──
 
-test("spend adds settled and estimated but stays null when nothing was priced", () => {
-	// The ledger drops an estimate the moment its request settles, so summing
-	// the two cannot double-count a request.
-	expect(spendUsd(breakdown({ billedCostUsd: 0.42, estimatedCostUsd: 0.07 }))).toBeCloseTo(0.49);
+test("spend ignores estimates and stays null without an actual receipt", () => {
+	expect(spendUsd(breakdown({ billedCostUsd: 0.42, estimatedCostUsd: 0.07 }))).toBeCloseTo(0.42);
 	expect(spendUsd(breakdown({ billedCostUsd: 0.42 }))).toBeCloseTo(0.42);
+	expect(spendUsd(breakdown({ estimatedCostUsd: 0.07 }))).toBeNull();
 	expect(spendUsd(breakdown())).toBeNull();
 	// A local run is priced at zero, which is not the same as never priced.
 	expect(spendUsd(breakdown({ provider: "local-laguna", billedCostUsd: 0 }))).toBe(0);
@@ -96,10 +106,10 @@ test("the provider rollup ranks by spend and leaves an unpriced provider unprice
 		breakdown({ provider: "local-laguna", totalTokens: 14_000 })
 	]);
 	expect(rolls.map((roll) => roll.provider)).toEqual(["openrouter", "synth-cloud", "local-laguna"]);
-	expect(rolls[0].spendUsd).toBeCloseTo(0.40);
+	expect(rolls[0].spendUsd).toBeCloseTo(0.30);
 	expect(rolls[0].totalTokens).toBe(198_000);
-	expect(rolls[0].share).toBeCloseTo(2 / 3);
-	expect(rolls[1].share).toBeCloseTo(1 / 3);
+	expect(rolls[0].share).toBeCloseTo(0.6);
+	expect(rolls[1].share).toBeCloseTo(0.4);
 	// On-device work carries tokens and no dollars, and is not charged $0.00.
 	expect(rolls[2].spendUsd).toBeNull();
 	expect(rolls[2].totalTokens).toBe(14_000);
@@ -165,21 +175,45 @@ test("cost quality reports the share of spend behind each authority", () => {
 	const rows = costQuality([
 		breakdown({ billedCostUsd: 6, costSource: "provider_reported" }),
 		breakdown({ billedCostUsd: 3, costSource: "synth_cloud" }),
-		breakdown({ estimatedCostUsd: 1, costSource: "tariff_estimate" }),
+		breakdown({ provider: "synth-cloud", estimatedCostUsd: 1, costSource: "synth_cloud" }),
+		breakdown({ estimatedCostUsd: 99, costSource: "tariff_estimate" }),
 		breakdown({ provider: "local-laguna", costSource: "none" })
 	]);
 	const byKey = Object.fromEntries(rows.map((row) => [row.key, row]));
 	expect(byKey.provider_reported.share).toBeCloseTo(0.6);
 	expect(byKey.synth_cloud.share).toBeCloseTo(0.3);
-	expect(byKey.tariff_estimate.share).toBeCloseTo(0.1);
+	expect(byKey.backend_estimate.share).toBeCloseTo(0.1);
 	expect(byKey.none.share).toBe(0);
+	expect(byKey.none.label).toBe("Unpriced");
 	// Every authority is always listed, so a 0% row is a statement, not a gap.
 	expect(rows.map((row) => row.label)).toEqual([
 		"Provider reported",
-		"Synth Cloud",
-		"Tariff estimate",
+		"Synth Cloud actual",
+		"Backend estimate",
 		"Unpriced"
 	]);
+});
+
+test("an all-unpriced window is 100% Unpriced, not a fabricated 0.0%", () => {
+	const tokenRows = costQuality([
+		breakdown({
+			modelId: "openai/gpt-5.6-luna",
+			requests: 6,
+			totalTokens: 675_000,
+			costSource: "none"
+		})
+	]);
+	const byKey = Object.fromEntries(tokenRows.map((row) => [row.key, row]));
+	expect(byKey.none.label).toBe("Unpriced");
+	expect(byKey.none.share).toBe(1);
+	expect(byKey.provider_reported.share).toBe(0);
+	expect(byKey.synth_cloud.share).toBe(0);
+	expect(byKey.backend_estimate.share).toBe(0);
+
+	const requestOnly = costQuality([
+		breakdown({ provider: "openrouter", requests: 6, totalTokens: 0, costSource: "none" })
+	]);
+	expect(requestOnly.find((row) => row.key === "none")?.share).toBe(1);
 });
 
 // ── The rendered page ──
@@ -296,10 +330,10 @@ test("the usage dashboard leads with spend, a daily chart, and a labelled breakd
 	const panel = page.getByTestId("usage-panel");
 	await expect(panel).toBeVisible();
 
-	// The hero is the sum of both authorities, and the footnote names the split.
-	await expect(page.getByTestId("usage-hero-value")).toHaveText("$46.00");
+	// The hero includes only authoritative settled receipts.
+	await expect(page.getByTestId("usage-hero-value")).toHaveText("$42.60");
 	await expect(page.getByTestId("usage-hero-note")).toContainText("$42.60 settled");
-	await expect(page.getByTestId("usage-hero-note")).toContainText("$3.40 estimated");
+	await expect(page.getByTestId("usage-hero-note")).not.toContainText("estimated");
 
 	// Identity is never colour-alone: every provider is named in the legend…
 	const legend = page.getByTestId("usage-legend");
@@ -314,13 +348,14 @@ test("the usage dashboard leads with spend, a daily chart, and a labelled breakd
 	await expect(page.getByTestId("usage-stat-total")).toContainText("39M");
 	await expect(page.getByTestId("usage-stat-cached")).toContainText("30M");
 	await expect(page.getByTestId("usage-stat-output")).toContainText("includes 1.2M reasoning");
-	// $33.60 of the $42.60 the model rows can attribute — the hero's extra
-	// $3.40 of estimate is not attributed to a model, and is not invented here.
+	// $33.60 of the $42.60 model rows attribute to provider-reported receipts.
 	await expect(page.getByTestId("usage-quality-provider_reported")).toContainText("78.9%");
 
 	const table = page.getByTestId("usage-breakdown-table");
 	await expect(table).toContainText("openai/gpt-5.6-luna");
 	await expect(table).toContainText("$33.60");
+	const localCost = table.locator("tr", { hasText: "poolside/Laguna-XS-2.1-NVFP4-mlx" }).locator("td").first();
+	await expect(localCost).toHaveText("No provider charge");
 
 	// The Day view is the chart's table equivalent, so the series is readable
 	// without relying on colour or hover.
@@ -391,4 +426,63 @@ test("a device with no usage says so instead of drawing an empty chart", async (
 	await expect(page.getByTestId("usage-chart-empty")).toBeVisible();
 	// Unreported cache traffic is named, never rendered as a confident zero.
 	await expect(page.getByTestId("usage-stat-cached")).toContainText("Unavailable");
+});
+
+test("unpriced requests say Unavailable in the breakdown and 100% Unpriced, not No charge", async ({ page }) => {
+	await page.addInitScript(() => {
+		const row = (overrides: Record<string, unknown>) => ({
+			provider: "openrouter",
+			modelId: "openai/gpt-5.6-luna",
+			requests: 6,
+			inputTokens: 500_000,
+			cachedInputTokens: null,
+			nonCachedInputTokens: null,
+			cacheWriteTokens: null,
+			reasoningTokens: null,
+			outputTokens: 175_000,
+			totalTokens: 675_000,
+			cacheHitRate: null,
+			billedCostUsd: null,
+			estimatedCostUsd: null,
+			costSource: "none",
+			decodeTpsP50: null,
+			decodeTpsP95: null,
+			endToEndTpsP50: null,
+			endToEndTpsP95: null,
+			ttftMsP50: null,
+			ttftMsP95: null,
+			perfSampleCount: 0,
+			...overrides
+		});
+		(window as unknown as { synthUsage: unknown }).synthUsage = {
+			summary: async (usageWindow: string) => ({
+				window: usageWindow,
+				totals: row({ provider: "all", modelId: "all" }),
+				models: [row({})],
+				days: [
+					{
+						day: "2026-08-12",
+						totals: row({ provider: "openrouter", modelId: "all", requests: 6 })
+					}
+				],
+				generatedAt: "2026-08-12T12:00:00+00:00"
+			})
+		};
+	});
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await page.getByTestId("open-inventory").click();
+	await page.getByTestId("inventory-tab-usage").click();
+
+	await expect(page.getByTestId("usage-hero-value")).toHaveText("Unavailable");
+	await expect(page.getByTestId("usage-hero-note")).toContainText("No request in this window carried a price");
+	await expect(page.getByTestId("usage-provider-openrouter")).toContainText("Unavailable");
+	await expect(page.getByTestId("usage-stat-requests")).toContainText("6");
+	await expect(page.getByTestId("usage-stat-total")).toContainText("675K");
+
+	const costCell = page.getByTestId("usage-breakdown-table").locator("tbody tr").first().locator("td").first();
+	await expect(costCell).toHaveText("Unavailable");
+	await expect(costCell).not.toHaveText("No charge");
+	await expect(page.getByTestId("usage-quality-none")).toContainText("Unpriced");
+	await expect(page.getByTestId("usage-quality-none")).toContainText("100.0%");
 });

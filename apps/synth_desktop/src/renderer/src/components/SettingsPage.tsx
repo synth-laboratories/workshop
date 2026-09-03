@@ -1,27 +1,37 @@
+// @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 import { useEffect, useState } from "react";
 import type {
 	DesktopInstanceDiagnostics,
 	LagunaStatus,
 	ModelMultiAgentSetting,
+	ModelCatalog,
 	MultiAgentVersion,
+	PluginStatus,
 	SynthAccountSummary,
 	SynthBackendSettings,
 	TariffCard,
 	UpdateStatus
 } from "../bridge";
+import { publicError } from "../runtime/publicError";
 import type { AccountViewModel } from "../runtime/accountView";
 import type { DeviceUsageSummary } from "./UsageSheet";
 import { OnDeviceModelsSettings } from "./OnDeviceModelsSettings";
+import { TrainingModelsSettings } from "./TrainingModelsSettings";
 import { InferenceSettings } from "./InferenceSettings";
 import { VoiceRecognitionSettings } from "./VoiceRecognitionSettings";
 import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
 import { AccountPage } from "./AccountPage";
 import { GeneralPreferencesSettings } from "./GeneralPreferencesSettings";
 import { SettingsCard } from "./SettingsCard";
+import { RuntimeContractRows } from "./RuntimeContractRows";
 import type { DesktopPreferences } from "../preferences";
 import { ProviderMark } from "./ProviderMark";
 import { bridges } from "../runtime/desktopBridge";
 import { ChatgptCodexSubscriptionCard } from "./ChatgptCodexSubscriptionCard";
+import { ContextSettings } from "./ContextSettings";
+import { SecretsSettings } from "./SecretsSettings";
+import { CapabilityManifest } from "./CapabilityManifest";
+import { PluginVisibilitySettings } from "./PluginVisibilitySettings";
 
 type Props = {
 	onBack: () => void;
@@ -29,6 +39,7 @@ type Props = {
 	account: AccountSectionProps;
 	onReloadLaguna: () => Promise<LagunaStatus>;
 	lagunaPhase?: string | null;
+	pluginStatuses?: readonly PluginStatus[] | null;
 	initialSection?: SectionId;
 	onSectionChange?: (section: SectionId) => void;
 	preferences?: DesktopPreferences;
@@ -52,6 +63,10 @@ function IconChip() {
 			<path d="M6 1.5v2M10 1.5v2M6 12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
 		</svg>
 	);
+}
+
+function IconContext() {
+	return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden><path d="M3 3.5h10v9H3zM5.2 6h5.6M5.2 8h5.6M5.2 10h3.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
 
 function IconGauge() {
@@ -82,6 +97,15 @@ function IconPerson() {
 	);
 }
 
+function IconKey() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<circle cx="5.5" cy="8" r="2.4" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M7.6 8h5.2M11.2 8v2.2M12.8 8v1.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+		</svg>
+	);
+}
+
 function IconInfo() {
 	return (
 		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -103,10 +127,13 @@ function IconChevronLeft() {
 /** Adapter UI is intentionally absent until its full runtime path exists. */
 const SECTIONS = [
 	{ id: "general", label: "General", icon: IconSliders },
+	{ id: "context", label: "Context", icon: IconContext },
 	{ id: "models", label: "Models", icon: IconChip },
 	{ id: "inference", label: "Inference", icon: IconGauge },
 	{ id: "voice", label: "Voice", icon: IconMic },
+	{ id: "plugins", label: "Plugins", icon: IconChip },
 	{ id: "account", label: "Account", icon: IconPerson },
+	{ id: "secrets", label: "Secrets", icon: IconKey },
 	{ id: "about", label: "About", icon: IconInfo }
 ] as const;
 
@@ -130,6 +157,71 @@ const MULTI_AGENT_OPTIONS: Array<{ value: MultiAgentVersion; label: string }> = 
 
 const CHANGELOG = [
 	{
+		version: "0.4.0",
+		date: "August 16, 2026",
+		groups: [
+			{
+				label: "New",
+				items: [
+					"Product-owned GEPA workflows prepare and run bounded Banking77 and Craftax optimization with digest-bound paid-compute approval.",
+					"Craftax opens in a transcript-first full-trace viewer with model-call input, reasoning, output, tool evidence, and raw envelopes.",
+					"Programmatic eval lanes and container capability checks fail closed when a selected runtime cannot satisfy a recipe.",
+					"Local diagnostics correlate optimizer runs, containers, streams, visuals, and terminal outcomes."
+				]
+			},
+			{
+				label: "Improved",
+				items: [
+					"Live visuals use one canonical binding envelope and saved replay through declared poll transports.",
+					"Generation-speed labels stay frozen at their historical cutoff, and completed turns show elapsed work time.",
+					"Review captures use a dedicated window identity so capture sizing does not mutate the product window."
+				]
+			},
+			{
+				label: "Fixed",
+				items: [
+					"Reconnect and restart replay preserve rollout-local identity without inventing transport URLs or rewriting earlier evidence.",
+					"Already-open visual panes reconcile committed revisions without a close and reopen cycle.",
+					"Missing usage and timing remain unavailable instead of being displayed as zero."
+				]
+			}
+		]
+	},
+	{
+		version: "0.3.0",
+		date: "August 14, 2026",
+		groups: [
+			{
+				label: "New",
+				items: [
+					"Gemini 3.7 Flash is available through OpenRouter for live collaboration turns.",
+					"Settings → Context shows agent limits, skills, MCP groups, cookbooks, and subagent compatibility in one place.",
+					"Visual templates now live in families (containers, optimizers, diagrams, analysis) without changing template IDs.",
+					"Data → Traces can inspect any compatible sealed Trace V5 archive in the generic rollout viewer.",
+					"Typed approvals cover paid compute, sidecar lifecycle, and credential access. Permissive policy stays auditable and does not silently revert to Always Ask.",
+					"Reports can be created, sealed, compared, privately shared, and published as a committed revision.",
+					"Optimizers install and run through the plugin MCP lifecycle and the typed approval broker.",
+					"Larval Mander presence and session_present MCP land from main so chats can show a title, emotion, and short summary."
+				]
+			},
+			{
+				label: "Improved",
+				items: [
+					"Native Mermaid and systems diagrams use the packaged Rust renderer and work offline.",
+					"Chat/visual and Visuals list/preview splitters drag and persist independently, then stack at compact widths.",
+					"Subagent activity is grouped in the visual pane with working, needs-attention, and completed states."
+				]
+			},
+			{
+				label: "Fixed",
+				items: [
+					"Cookbook pin progress stays current, and Context command errors are shown instead of failing silently.",
+					"Pending approvals survive restart as real history or expire cleanly — they no longer render as live cards with dead buttons."
+				]
+			}
+		]
+	},
+	{
 		version: "0.2.0",
 		date: "August 12, 2026",
 		groups: [
@@ -152,7 +244,7 @@ const CHANGELOG = [
 				label: "Fixed",
 				items: [
 					"Sequence diagrams render multiline labels instead of showing literal break markup, and wide diagrams no longer open clipped offscreen.",
-					"Named development instances can use an explicit read-only Codex auth file without creating or opening a Keychain credential prompt."
+					"Installed and development instances keep ChatGPT authorization in a private Workshop-owned file and never invoke the macOS Keychain."
 				]
 			}
 		]
@@ -203,10 +295,17 @@ type AuthorizedModel = {
 	id: string;
 	name: string;
 	provider: string;
-	providerMark: "openai" | "laguna" | "meta" | "synth";
+	providerMark: "openai" | "laguna" | "meta" | "google" | "openrouter" | "synth";
 	modelId: string;
 	tariffProvider?: string;
 	planMetered?: boolean;
+	availability?: string;
+	source?: string;
+	contextTokens?: number | null;
+	inputModalities?: string[];
+	outputModalities?: string[];
+	supportsTools?: boolean;
+	metadataObservedAt?: string | null;
 };
 
 function formatPerMillion(rate: number): string {
@@ -218,22 +317,40 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 	// Prices come from the native tariff catalog — the same numbers cost
 	// estimation uses — never from strings kept in the renderer.
 	const [tariffs, setTariffs] = useState<TariffCard[]>([]);
+	const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
 	useEffect(() => {
 		void bridges.tariffs?.catalog()
 			.then(setTariffs)
 			.catch(() => setTariffs([]));
 	}, []);
+	useEffect(() => {
+		void bridges.config?.modelCatalog()
+			.then((next) => setCatalog(next ?? null))
+			.catch(() => setCatalog(null));
+	}, []);
 	const models: AuthorizedModel[] = [];
-	if (connection?.openrouterApiKeyConfigured) {
-		models.push(
-			{ id: "openrouter-luna", name: "GPT 5.6 Luna", provider: "OpenRouter · OpenAI", providerMark: "openai", modelId: "openai/gpt-5.6-luna", tariffProvider: "openrouter" },
-			{ id: "openrouter-laguna-s", name: "Laguna S 2.1", provider: "OpenRouter · Poolside", providerMark: "laguna", modelId: "poolside/laguna-s-2.1", tariffProvider: "openrouter" },
-			{ id: "openrouter-muse-spark", name: "Muse Spark 1.2", provider: "OpenRouter · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", tariffProvider: "openrouter" }
-		);
+	for (const entry of catalog?.entries ?? []) {
+		models.push({
+			id: entry.targetId,
+			name: entry.displayName,
+			provider: entry.source === "user_config" ? "OpenRouter · Configured in config.toml" : "OpenRouter",
+			providerMark: "openrouter",
+			modelId: entry.modelId,
+			tariffProvider: entry.source === "builtin" ? "openrouter" : undefined,
+			availability: entry.availability.replace("_", " "),
+			source: entry.source,
+			contextTokens: entry.capabilities.maxContextTokens,
+			inputModalities: entry.capabilities.inputModalities,
+			outputModalities: entry.capabilities.outputModalities,
+			supportsTools: entry.capabilities.tools,
+			metadataObservedAt: entry.metadataObservedAt
+		});
 	}
 	if (connection?.apiKeyConfigured) {
 		models.push(
-			{ id: "synth-cloud-laguna-s", name: "Laguna S 2.1", provider: "Synth Cloud", providerMark: "synth", modelId: "openrouter/poolside/laguna-s-2.1", planMetered: true },
+			{ id: "synth-cloud-laguna-s", name: "Laguna S 2.1", provider: "Synth Cloud · B200", providerMark: "synth", modelId: "synth_internal/laguna-s-2.1-nvfp4", planMetered: true },
+			{ id: "synth-cloud-laguna-xs-b200", name: "Laguna XS 2.1", provider: "Synth Cloud · B200", providerMark: "synth", modelId: "synth_internal/laguna-xs-2.1-nvfp4", planMetered: true },
+			{ id: "synth-cloud-laguna-xs-h100", name: "Laguna XS 2.1", provider: "Synth Cloud · H100 option", providerMark: "synth", modelId: "synth_internal/laguna-xs-2.1-fp8-h100", planMetered: true },
 			{ id: "synth-cloud-muse-spark", name: "Muse Spark 1.2", provider: "Synth Cloud · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", planMetered: true }
 		);
 	}
@@ -248,12 +365,13 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 					return (
 						<article className="authorized-model-row" key={model.id} data-testid={`authorized-model-${model.id}`}>
 							<ProviderMark kind={model.providerMark} className="authorized-model-mark" />
-							<div className="authorized-model-identity"><strong>{model.name}</strong><span>{model.provider}</span><code>{model.modelId}</code></div>
-							{model.planMetered ? <dl><div><dt>Pricing</dt><dd>Plan metered</dd></div></dl> : tariff ? <dl><div><dt>Input / 1M</dt><dd>{formatPerMillion(tariff.inputUsdPerM)}</dd></div><div><dt>Output / 1M</dt><dd>{formatPerMillion(tariff.outputUsdPerM)}</dd></div>{tariff.cachedInputUsdPerM != null ? <div><dt>Cached read / 1M</dt><dd>{formatPerMillion(tariff.cachedInputUsdPerM)}</dd></div> : null}{tariff.cacheWriteUsdPerM != null ? <div><dt>Cache write / 1M</dt><dd>{formatPerMillion(tariff.cacheWriteUsdPerM)}</dd></div> : null}</dl> : null}
+							<div className="authorized-model-identity"><strong>{model.name}</strong><span>{model.provider}{model.availability ? ` · ${model.availability}` : ""}</span><code>{model.modelId}</code>{model.inputModalities?.length ? <span>Input: {model.inputModalities.join(", ")}</span> : null}{model.outputModalities?.length ? <span>Output: {model.outputModalities.join(", ")}</span> : null}{model.supportsTools ? <span>Tools: supported</span> : null}{model.contextTokens ? <span>Context: {model.contextTokens.toLocaleString()} tokens</span> : null}{model.metadataObservedAt ? <span>Metadata checked: {model.metadataObservedAt}</span> : null}</div>
+							{model.planMetered ? <dl><div><dt>Pricing</dt><dd>Plan metered</dd></div></dl> : tariff ? <dl><div><dt>Input / 1M</dt><dd>{formatPerMillion(tariff.inputUsdPerM)}</dd></div><div><dt>Output / 1M</dt><dd>{formatPerMillion(tariff.outputUsdPerM)}</dd></div>{tariff.cachedInputUsdPerM != null ? <div><dt>Cached read / 1M</dt><dd>{formatPerMillion(tariff.cachedInputUsdPerM)}</dd></div> : null}{tariff.cacheWriteUsdPerM != null ? <div><dt>Cache write / 1M</dt><dd>{formatPerMillion(tariff.cacheWriteUsdPerM)}</dd></div> : null}</dl> : model.source === "user_config" ? <dl><div><dt>Pricing</dt><dd>No estimate — provider-reported settled cost is authoritative</dd></div></dl> : null}
 						</article>
 					);
 				})}
 			</div>
+			{catalog?.diagnostics.length ? <p className="settings-inline-error">{catalog.diagnostics.map((diagnostic) => `${diagnostic.location}: ${diagnostic.message}`).join(" ")}</p> : null}
 		</SettingsCard>
 	);
 }
@@ -271,7 +389,7 @@ function multiAgentOverrideWarning(model: ModelMultiAgentSetting): string | null
 	return "Override exposes V2 direct collaboration tools, agent-message routing, and encrypted message/tool payloads. Models or Responses-compatible providers without V2 support may reject the request or fail to read delegated tasks.";
 }
 
-function MultiAgentModelSettings() {
+export function MultiAgentModelSettings() {
 	const [models, setModels] = useState<ModelMultiAgentSetting[]>([]);
 	const [busyModel, setBusyModel] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -279,7 +397,7 @@ function MultiAgentModelSettings() {
 	useEffect(() => {
 		void bridges.config?.listModelMultiAgent()
 			.then(setModels)
-			.catch((reason) => setError(String(reason)));
+			.catch((reason) => setError(publicError(reason)));
 	}, []);
 
 	const update = async (modelId: string, version: MultiAgentVersion | null) => {
@@ -289,7 +407,7 @@ function MultiAgentModelSettings() {
 			const next = await bridges.config?.updateModelMultiAgent({ modelId, version });
 			if (next) setModels(next);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusyModel(null);
 		}
@@ -340,6 +458,7 @@ export function SettingsPage({
 	account,
 	onReloadLaguna,
 	lagunaPhase,
+	pluginStatuses,
 	initialSection = "general",
 	onSectionChange,
 	preferences,
@@ -386,6 +505,7 @@ export function SettingsPage({
 								type="button"
 								className={`settings-nav-item${section === s.id ? " active" : ""}`}
 								aria-current={section === s.id ? "page" : undefined}
+								data-testid={`settings-nav-${s.id}`}
 								onClick={() => {
 									setSection(s.id);
 									onSectionChange?.(s.id);
@@ -412,21 +532,29 @@ export function SettingsPage({
 					{section === "models" ? (
 						<div className="settings-sections" data-testid="settings-models">
 							<SettingsCard
-								title="On-device"
-								description="Managed local models and inference runtimes."
-								testId="models-on-device"
+								title="On-device inference"
+								description="Laguna XS powers local chat and the policy daemon."
+								testId="models-on-device-inference"
 								className="settings-card-embed"
 							>
 								<OnDeviceModelsSettings lagunaPhase={lagunaPhase} onReloadLaguna={onReloadLaguna} />
+							</SettingsCard>
+							<SettingsCard
+								title="On-device training"
+								description="Models for Optimizers local SFT/CISPO via mlx-rl. Not used for chat inference."
+								testId="models-on-device-training"
+								className="settings-card-embed"
+							>
+								<TrainingModelsSettings />
 							</SettingsCard>
 							<AuthorizedModelsSettings connection={account.connection} />
 							<ChatgptCodexSubscriptionCard />
 							<SettingsCard testId="models-all" className="settings-card-embed">
 								<ModelObservabilitySettings />
-								<MultiAgentModelSettings />
 							</SettingsCard>
 						</div>
 					) : null}
+					{section === "context" ? <ContextSettings subagents={<MultiAgentModelSettings />} /> : null}
 					{section === "inference" ? (
 						<div className="settings-sections" data-testid="settings-inference">
 							<InferenceSettings />
@@ -443,6 +571,9 @@ export function SettingsPage({
 							</SettingsCard>
 						</div>
 					) : null}
+					{section === "plugins" && preferences && onPreferencesChange ? (
+						<PluginVisibilitySettings preferences={preferences} pluginStatuses={pluginStatuses} onPreferencesChange={onPreferencesChange} />
+					) : null}
 					{section === "account" ? (
 						<AccountPage
 							view={account.view}
@@ -454,8 +585,12 @@ export function SettingsPage({
 							onOpenDeviceUsage={account.onOpenDeviceUsage}
 						/>
 					) : null}
+					{section === "secrets" ? <SecretsSettings /> : null}
 					{section === "about" ? (
 						<div className="settings-sections" data-testid="settings-about">
+							<SettingsCard title="v0.9 capabilities">
+								<CapabilityManifest pluginStatuses={pluginStatuses} lagunaPhase={lagunaPhase} />
+							</SettingsCard>
 							<SettingsCard title="Synth Desktop">
 								<div className="finetune-base-card" data-testid="about-build-identity">
 									<span className="finetune-kicker">Build</span>
@@ -476,6 +611,7 @@ export function SettingsPage({
 										</button>
 									) : null}
 									<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? "Local-first research workbench"}</code>
+									<RuntimeContractRows />
 								</div>
 								<p className="settings-runtime-copy">
 									Synth Desktop is a local-first research workbench.

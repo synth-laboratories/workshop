@@ -49,6 +49,12 @@ impl ContentStore {
         let mut file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
+        let actual = hex_sha256(&bytes);
+        if actual != digest.to_ascii_lowercase() {
+            bail!(
+                "content-addressed blob failed digest verification: expected {digest}, got {actual}"
+            );
+        }
         Ok(bytes)
     }
 
@@ -72,7 +78,17 @@ fn hex_sha256(bytes: &[u8]) -> String {
 
 fn validate_kind(kind: &str) -> Result<()> {
     match kind {
-        "blobs" | "previews" | "traces" | "trace_imports" | "exports" => Ok(()),
+        "blobs" | "previews" | "traces" | "trace_imports" | "exports" | "artifact_bundles"
+        | "report_bundles"
+        // Native environment frames relayed off a running container. Their own
+        // kind so a PNG is never served where a JSON document is expected, and
+        // so frame retention can be dropped without touching any other
+        // evidence a run produced.
+        | "eval_frames"
+        // Computer-use captures. Kept in their own kinds so an accessibility
+        // tree is never served as an image, and so retention can drop a
+        // session's captures without touching anything else.
+        | "computer_use_ax" | "computer_use_screenshots" => Ok(()),
         _ => bail!("unsupported content store kind: {kind}"),
     }
 }
@@ -110,5 +126,22 @@ mod tests {
             .unwrap();
         assert!(store.exists("trace_imports", &digest));
         assert!(!store.exists("traces", &digest));
+    }
+
+    #[test]
+    fn reads_fail_closed_when_stored_bytes_are_tampered() {
+        let dir = tempdir().unwrap();
+        let store = ContentStore::new(dir.path());
+        let digest = store.put_bytes("report_bundles", b"sealed report").unwrap();
+        fs::write(
+            store.path_for("report_bundles", &digest),
+            b"tampered report",
+        )
+        .unwrap();
+
+        let error = store
+            .get_bytes("report_bundles", &digest)
+            .expect_err("tampered CAS bytes must not be returned");
+        assert!(error.to_string().contains("digest verification"));
     }
 }

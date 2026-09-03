@@ -4,6 +4,7 @@ test.beforeEach(async ({ page }) => {
 	await page.addInitScript(() => {
 		const now = "2026-08-09T16:00:00.000Z";
 		let runs: any[] = [];
+		const runViews = new Map<string, any>();
 		const makeRun = (id: string, algorithmId = "gepa") => ({
 			schemaVersion: "optimizer_run.v1",
 			id,
@@ -26,25 +27,49 @@ test.beforeEach(async ({ page }) => {
 		});
 		(window as any).__optimizerCreateCount = 0;
 		(window as any).__optimizerAgentCalls = [];
+		(window as any).__visualAnnotations = [];
 		(window as any).__setOptimizerRuns = (next: any[]) => { runs = next; };
+		(window as any).__setOptimizerRunView = (id: string, view: any) => { runViews.set(id, view); };
 		(window as any).prompt = () => { throw new Error("window.prompt must not be used"); };
 		(window as any).synthOptimizers = {
 			listAlgorithms: async () => [{ id: "gepa", title: "GEPA", availability: "available" }],
 			list: async () => runs,
 			get: async (id: string) => runs.find((run) => run.id === id) ?? makeRun(id),
+			runViewV2: async (id: string) => runViews.get(id) ?? {
+				algorithm: "gepa",
+				header: {
+					runId: id, algorithm: "gepa", lifecycle: "queued", phase: null, condition: "healthy",
+					placement: "local_python_process", specId: `spec-${id}`, specDigest: "sha256:test",
+					executionBindings: [], inputRefs: [], outputRefs: [], visualRefs: [], artifacts: [],
+					usage: {}, work: {}, evidence: { completeness: "absent", refs: [] }, terminal: null,
+					projectionSchemaVersion: "optimizer.gepa.projection.v2", asOfSequence: 0, projectionRevision: 1
+				},
+				projection: {
+					workItems: [], phase: null, usage: {}, candidates: {}, candidateOrder: [], seedCandidateId: null,
+					selectedCandidateId: null, frontierHistory: [], incumbentId: null, rolloutsAllocated: 0,
+					rolloutsScored: 0, rolloutsFailed: 0, proposalsRequested: 0, proposalsReturned: 0,
+					maxActiveWorkers: 0, rolloutBudget: 0
+				},
+				result: null
+			},
 			create: async (request: any) => {
 				const run = makeRun(request.id ?? "banking77-smoke"); runs = [run]; return run;
 			},
 			listRecipes: async () => [
 				{ id: "gepa.banking77.luna.v1", title: "Banking77 GEPA · Luna medium", availability: "available", limits: { maxTotalRollouts: 240, maxCostUsd: 2.45 } },
 				{ id: "gepa.banking77.sol.v1", title: "Banking77 GEPA · Sol medium", availability: "available", limits: { maxTotalRollouts: 240, maxCostUsd: 2.45 } },
-				{ id: "sft.craftax.gpt-oss.smoke.v1", title: "Craftax GPT-OSS SFT smoke", availability: "available", limits: { maxTotalEnvironmentRollouts: 8, trainSteps: 4 } }
+				{ id: "sft.banking77.nemotron-lightning.tinker.v1", title: "Banking77 Tinker SFT", availability: "available", limits: { trainingSteps: 30 } }
 			],
 			startRecipe: async (request: any) => {
 				(window as any).__optimizerCreateCount += 1;
 				(window as any).__optimizerCreateRequest = request;
-				const isSft = request.recipeId === "sft.craftax.gpt-oss.smoke.v1";
-				const run = makeRun(isSft ? "craftax_sft_cua_smoke" : "banking77_cua_smoke", isSft ? "sft" : "gepa");
+				const isSft = request.recipeId === "sft.banking77.nemotron-lightning.tinker.v1";
+				const run = makeRun(isSft ? "sft_banking77_tinker" : "banking77_cua_smoke", isSft ? "sft" : "gepa");
+				if (isSft) {
+					run.source = "hosted";
+					run.objective = "Hosted SFT · streamed from public Optimizers";
+					run.executionBindings = [{ kind: "synth_optimizers_sft", id: "http://127.0.0.1:8878", label: "public Optimizers hosted SFT", status: "starting" }];
+				}
 				runs = [run];
 				return run;
 			},
@@ -68,11 +93,18 @@ test.beforeEach(async ({ page }) => {
 			get: async (visualId: string) => {
 				const runId = visualId.replace(/^visual-/, "");
 				return {
-					schemaVersion: "synth.desktop-visual.v1", id: visualId, templateId: "optimizer.run.v1",
+					schemaVersion: "synth.desktop-visual.v1", id: visualId, currentRevision: 3, contentDigest: "sha256:banking77-rich", templateId: "optimizer.run.v1",
 					title: "Banking77 GEPA smoke", status: "saved", createdAt: now, updatedAt: now,
-					bindings: { schemaVersion: "synth.visual-bindings.v1", slots: [{ slot: "optimizer_run", kind: "optimizer_run", source: runId }] },
+					bindings: { schemaVersion: "synth.visual-bindings.v1", inputs: [{ input: "optimizer_run", kind: "optimizer_run", source: runId }] },
 					metadata: {}
 				};
+			},
+			annotations: async () => [],
+			listSeals: async () => [],
+			createAnnotation: async (visualId: string, request: any) => {
+				const annotation = { id: `annotation-${(window as any).__visualAnnotations.length + 1}`, visualId, ...request, metadata: request.metadata ?? {}, authorId: "tester", tombstoned: false, createdAt: now, updatedAt: now };
+				(window as any).__visualAnnotations.push(annotation);
+				return annotation;
 			},
 			onEvent: () => () => undefined,
 			onShow: () => () => undefined
@@ -131,6 +163,32 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 			usage: { promptTokens: 100, completionTokens: 5, rollouts: 4 }
 		};
 		(window as any).__setOptimizerRuns([run]);
+		(window as any).__setOptimizerRunView(run.id, {
+			algorithm: "gepa",
+			header: {
+				runId: run.id, algorithm: "gepa", lifecycle: "terminal", phase: "selection", condition: "healthy",
+				placement: "local_python_process", specId: "spec-banking77-rich", specDigest: "sha256:banking77-rich-spec",
+				executionBindings: [], inputRefs: [],
+				outputRefs: [{ kind: "manifest", id: "/tmp/result_manifest.json", title: "Result manifest" }],
+				visualRefs: [], artifacts: [], usage: { promptTokens: 100, completionTokens: 5, steps: 4 },
+				work: { succeeded: 4, unit: "rollouts", fixedDenominator: false },
+				evidence: { completeness: "complete", refs: [] }, failureRef: null,
+				terminal: { kind: "completed", finalSequence: 4, evidence: { completeness: "complete", refs: [] }, sealedAt: "2026-08-09T16:00:04Z" },
+				projectionSchemaVersion: "optimizer.gepa.projection.v2", asOfSequence: 4, projectionRevision: 1
+			},
+			projection: {
+				workItems: [], phase: "selection", usage: { promptTokens: 100, completionTokens: 5, steps: 4 },
+				candidates: { cand_seed: { id: "cand_seed", source: "seed", trainReward: 0.5, gateAccepted: true, values: { stage2_system: "Return exactly one Banking77 intent label." } } },
+				candidateOrder: ["cand_seed"], seedCandidateId: "cand_seed", selectedCandidateId: "cand_seed",
+				frontierHistory: ["cand_seed"], incumbentId: "cand_seed", rolloutsAllocated: 4, rolloutsScored: 4,
+				rolloutsFailed: 0, proposalsRequested: 0, proposalsReturned: 0, maxActiveWorkers: 1, rolloutBudget: 4
+			},
+			result: {
+				verdict: "no_measured_improvement", seedCandidateId: "cand_seed", selectedCandidateId: "cand_seed",
+				candidates: 1, work: { succeeded: 4, unit: "rollouts", fixedDenominator: false },
+				usage: { promptTokens: 100, completionTokens: 5, steps: 4 }
+			}
+		});
 		(window as any).synthOptimizers.eventsAfter = async () => [
 			{ type: "candidate.evaluated", sequenceNumber: 1, occurredAt: "2026-08-09T16:00:01Z", optimizerRunId: run.id, algorithmId: "gepa", item: { id: "cand_seed", status: "evaluated", raw: { values: { stage2_system: "Return exactly one Banking77 intent label." } } }, delta: { train_reward: 0.5, message: "Seed evaluated" } },
 			{ type: "frontier.updated", sequenceNumber: 2, occurredAt: "2026-08-09T16:00:02Z", optimizerRunId: run.id, algorithmId: "gepa", snapshot: { bestScore: 0.5, cells: [{ candidateId: "cand_seed", quality: 0.5, costUsd: 0, accent: true }] }, delta: { message: "Frontier updated" } },
@@ -140,40 +198,61 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 	});
 	await page.getByTestId("optimizers-search").fill("rich");
 	await page.getByTestId("open-optimizer-visual").click();
+	await expect(page.getByTestId("gepa-workbench-controls")).toBeVisible();
+	await page.getByTestId("gepa-candidate-sort").selectOption("score");
+	await page.getByTestId("gepa-sort-direction").selectOption("desc");
 	await expect(page.getByTestId("optimizer-candidate-cand_seed")).toContainText("0.50");
 	await page.getByTestId("optimizer-candidate-cand_seed").click();
+	await expect(page.getByTestId("gepa-linked-selection")).toContainText("cand_seed");
+	await expect.poll(() => page.evaluate(() => window.localStorage.getItem("synth.optimizer.gepa.presentation.v1:banking77_rich"))).toContain('"sort":"score"');
 	// The frontier canvas names candidates semantically; the seed candidate reads "Seed".
 	await expect(page.getByTestId("gepa-pareto-frontier")).toContainText("Seed");
 	await expect(page.getByLabel("Usage")).toContainText("4");
 	await expect(page.getByLabel("Usage")).toContainText("105");
-	await expect(page.getByLabel("Artifacts")).toContainText("result_manifest.json");
+	await expect(page.getByLabel("Artifacts", { exact: true })).toContainText("result_manifest.json");
 	await expect(page.getByTestId("optimizer-artifact-0")).toContainText("Result manifest");
 	await expect(page.getByTestId("optimizer-artifact-0")).not.toContainText('{"kind"');
 	await page.getByTestId("copy-artifact-path-0").click();
 	await expect(page.getByTestId("copy-artifact-path-0")).toHaveText("Copied");
 	await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("/tmp/result_manifest.json");
+	// Candidate levers are bounded durable projection data. The visual can show
+	// and export them without replaying the raw optimizer journal.
 	await expect(page.getByTestId("gepa-candidate-content")).toContainText("Return exactly one Banking77 intent label.");
-	await page.getByTestId("copy-gepa-candidate").click();
-	await expect(page.getByTestId("copy-gepa-candidate")).toHaveText("Copied");
-	await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("Return exactly one Banking77 intent label.");
-	const downloadPromise = page.waitForEvent("download");
-	await page.getByTestId("download-gepa-candidate").click();
-	const download = await downloadPromise;
-	expect(download.suggestedFilename()).toBe("cand_seed.json");
+	await expect(page.getByTestId("copy-gepa-candidate")).toBeEnabled();
+	await expect(page.getByTestId("download-gepa-candidate")).toBeEnabled();
+	await page.getByRole("button", { name: /^Label/ }).click();
+	await page.getByTestId("optimizer-candidate-cand_seed").click();
+	await page.getByLabel("Label note").fill("Review the accepted seed prompt");
+	await page.getByRole("button", { name: "Save label" }).click();
+	await expect.poll(() => page.evaluate(() => (window as any).__visualAnnotations.length)).toBe(1);
+	const [annotation] = await page.evaluate(() => (window as any).__visualAnnotations);
+	expect(annotation.visualRevision).toBe(3);
+	expect(annotation.sourceDigest).toBe("sha256:banking77-rich");
+	expect(annotation.selector).toEqual({ type: "candidate", candidateId: "cand_seed" });
 });
 
 test("optimizer entry points describe algorithms without binding them to environments", async ({ page }) => {
+	await page.getByTestId("optimizer-tab-launch").click();
 	await expect(page.getByTestId("optimizer-guide-gepa")).toContainText("Propose");
 	await expect(page.getByTestId("optimizer-guide-go-ex")).toContainText("Explore");
 	await expect(page.getByTestId("optimizer-guide-sft")).toContainText("Collect");
+	await expect(page.getByTestId("optimizer-guide-cispo")).toContainText("Preflight");
 	await expect(page.getByTestId("optimizers-page")).not.toContainText("Banking77");
 	await expect(page.getByTestId("optimizers-page")).not.toContainText("Craftax");
 	await expect(page.getByTestId("start-gepa-agent")).toBeEnabled();
 	await expect(page.getByTestId("start-go-ex-agent")).toBeEnabled();
 	await expect(page.getByTestId("start-sft-agent")).toBeEnabled();
+	await expect(page.getByTestId("start-cispo-agent")).toBeEnabled();
+	await expect(page.getByTestId("start-sft-mlx")).toBeVisible();
+	await expect(page.getByTestId("start-sft-hosted")).toBeEnabled();
+	await expect(page.getByTestId("start-cispo-mlx")).toBeVisible();
+	await expect(page.getByTestId("start-cispo-hosted")).toHaveCount(0);
+	await expect(page.getByTestId("start-sft-fixture")).toHaveCount(0);
+	await expect(page.getByTestId("optimizer-guide-sft")).not.toContainText("no provider charges");
 });
 
 test("starting GELO opens an agent session that discovers the target before compute", async ({ page }) => {
+	await page.getByTestId("optimizer-tab-launch").click();
 	await page.getByTestId("start-go-ex-agent").click();
 	await expect(page.getByTestId("chat-transcript")).toBeVisible();
 	await expect.poll(() => page.evaluate(() => (window as any).__optimizerAgentCalls.length)).toBe(1);

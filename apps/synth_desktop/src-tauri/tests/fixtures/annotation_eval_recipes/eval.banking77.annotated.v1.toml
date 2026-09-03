@@ -1,0 +1,22 @@
+id = "eval.banking77.annotated.v1"
+algorithm = "eval"
+container = "banking77"
+provider = "none"
+model = "dataset_gold"
+locality = "container"
+train_seeds = [0]
+
+[bounds]
+max_cost_usd = 0.50
+max_total_rollouts = 1
+
+[annotation]
+annotators = [
+  "banking77.prediction_vs_label",
+  "banking77.response_form",
+  "banking77.episode_integrity",
+]
+label = "post_rollout"
+
+[annotation.throughput]
+deterministic = 4

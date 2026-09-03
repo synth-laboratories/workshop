@@ -1,6 +1,37 @@
 import type { ReactNode } from "react";
 import "./tokens.css";
 
+/** What a template says it actually rendered.
+ *
+ * Workshop harvests these as DOM data and decides readiness itself; nothing
+ * here is a passing boolean, it is a count and a transport state. A template
+ * that declares an `observationContract` in its manifest must publish one of
+ * these on a rendered element, or `capture_review` has no evidence to attach
+ * and the visual can never be certified.
+ *
+ * Static projections (a sealed trace, a finished report) are `terminal` the
+ * moment they render: nothing further is coming.
+ */
+export type SurfaceObservation = {
+  transportState: string;
+  rolloutCount?: number;
+  renderedFrameCount?: number;
+  semanticEventCount?: number;
+  terminal?: boolean;
+  error?: string | null;
+};
+
+export function surfaceObservationAttributes(observation: SurfaceObservation) {
+  return {
+    "data-visual-transport-state": observation.transportState,
+    "data-visual-rollout-count": observation.rolloutCount ?? 0,
+    "data-visual-rendered-frame-count": observation.renderedFrameCount ?? 0,
+    "data-visual-semantic-event-count": observation.semanticEventCount ?? 0,
+    "data-visual-terminal": observation.terminal ? "true" : "false",
+    "data-visual-error": observation.error ?? ""
+  };
+}
+
 export type VisualChromeProps = {
   kicker?: string;
   title: string;
@@ -9,6 +40,8 @@ export type VisualChromeProps = {
   footer?: ReactNode;
   children: ReactNode;
   testId?: string;
+  observation?: SurfaceObservation;
+  layout?: "document" | "workspace";
 };
 
 /** Shared light chrome wrapper for all genre templates. */
@@ -19,11 +52,21 @@ export function VisualChrome({
   live,
   footer,
   children,
-  testId
+  testId,
+  observation,
+  layout = "document"
 }: VisualChromeProps) {
   return (
-    <div className="synth-visual-root" data-testid={testId} data-synth-visual="">
-      <header>
+    <div
+      className="synth-visual-root"
+      data-testid={testId}
+      data-synth-visual=""
+      data-layout={layout}
+      role={layout === "workspace" ? "region" : undefined}
+      aria-label={layout === "workspace" ? title : undefined}
+      {...(observation ? surfaceObservationAttributes(observation) : {})}
+    >
+      {layout === "document" ? <header>
         {kicker ? (
           <p className="sv-kicker">
             {live ? <span className="sv-live-dot" aria-hidden="true" /> : null}
@@ -32,7 +75,7 @@ export function VisualChrome({
         ) : null}
         <h2 className="sv-title">{title}</h2>
         {lede ? <p className="sv-lede">{lede}</p> : null}
-      </header>
+      </header> : null}
       {children}
       {footer ? (
         <footer

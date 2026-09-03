@@ -6,16 +6,19 @@ import type {
 	Session,
 	VisualInstanceRecord
 } from "@synth/runtime-protocol";
+import { LOCAL_BASE_POLICY } from "./lagunaPolicies";
+import { optimizerRunIdFromBindings } from "./visualBindings";
+import { previewVariantForTemplate } from "./templatePresentation";
 import {
-	OPENROUTER_LAGUNA_S_MODEL,
-	OPENROUTER_LUNA_MODEL,
-	OPENROUTER_MUSE_SPARK_MODEL,
 	CHATGPT_LUNA_MODEL,
 	CHATGPT_SOL_MODEL,
 	CHATGPT_TERRA_MODEL,
 	SYNTH_CLOUD_LAGUNA_S_MODEL,
+	SYNTH_CLOUD_LAGUNA_XS_B200_MODEL,
+	SYNTH_CLOUD_LAGUNA_XS_H100_MODEL,
 	SYNTH_CLOUD_MUSE_SPARK_MODEL,
 	type ActivityEvent,
+	parseArtifactRefStatus,
 	type ArtifactRef,
 	type AsyncInternPin,
 	type AsyncPhase,
@@ -28,7 +31,15 @@ import {
 	type SyncSessionStatus
 } from "../types/landing";
 import { assertLocalActivityPlacementInvariant } from "./activityPlacementInvariant";
+import { formatUsdMicros } from "./paidComputeUsd";
 import { modelCapabilitiesForExecutionTarget } from "./modelCapabilities";
+import {
+	modelCatalogEntry,
+	modelCatalogEntryForModel,
+	rememberHistoricalOpenRouterTarget,
+	targetOptionForId,
+	unknownOpenRouterTargetId
+} from "./modelCatalog";
 
 /** Transcript divider copy for `thread/compacted` events. */
 export function contextCompactionLabel(source: string): string {
@@ -71,8 +82,28 @@ function tokenTotalFromPayload(payload: Record<string, unknown>): number | undef
 	return undefined;
 }
 
-export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
-	const adapter = null;
+export function targetIdToExecutionTarget(targetId: string, adapter: string | null = null): ExecutionTarget {
+	const remoteAdapter = null;
+	const catalogTarget = modelCatalogEntry(targetId);
+	if (catalogTarget?.provider === "openrouter") {
+		return {
+			kind: "remote",
+			provider: "openrouter",
+			model: catalogTarget.modelId,
+			adapter: remoteAdapter,
+			targetId: catalogTarget.targetId
+		};
+	}
+	const retainedTarget = targetOptionForId(targetId);
+	if (retainedTarget?.group === "remote" && retainedTarget.modelId) {
+		return {
+			kind: "remote",
+			provider: "openrouter",
+			model: retainedTarget.modelId,
+			adapter: remoteAdapter,
+			targetId
+		};
+	}
 
 	switch (targetId) {
 		case "chatgpt-luna":
@@ -82,41 +113,31 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 				kind: "remote",
 				provider: "openai-codex-oauth",
 				model: targetId === "chatgpt-sol" ? CHATGPT_SOL_MODEL : targetId === "chatgpt-terra" ? CHATGPT_TERRA_MODEL : CHATGPT_LUNA_MODEL,
-				adapter
-			};
-		case "openrouter-luna":
-			return {
-				kind: "remote",
-				provider: "openrouter",
-				model: OPENROUTER_LUNA_MODEL,
-				adapter
-			};
-		case "openrouter-laguna-s":
-		case "openrouter-poolside":
-			return {
-				kind: "remote",
-				provider: "openrouter",
-				model: OPENROUTER_LAGUNA_S_MODEL,
-				adapter
-			};
-		case "openrouter-muse-spark":
-			return {
-				kind: "remote",
-				provider: "openrouter",
-				model: OPENROUTER_MUSE_SPARK_MODEL,
-				adapter
+				adapter: remoteAdapter
 			};
 		case "synth-cloud-laguna-s":
 			return {
 				kind: "cloud",
 				model: SYNTH_CLOUD_LAGUNA_S_MODEL,
-				adapter
+				adapter: remoteAdapter
+			};
+		case "synth-cloud-laguna-xs-b200":
+			return {
+				kind: "cloud",
+				model: SYNTH_CLOUD_LAGUNA_XS_B200_MODEL,
+				adapter: remoteAdapter
+			};
+		case "synth-cloud-laguna-xs-h100":
+			return {
+				kind: "cloud",
+				model: SYNTH_CLOUD_LAGUNA_XS_H100_MODEL,
+				adapter: remoteAdapter
 			};
 		case "synth-cloud-muse-spark":
 			return {
 				kind: "cloud",
 				model: SYNTH_CLOUD_MUSE_SPARK_MODEL,
-				adapter
+				adapter: remoteAdapter
 			};
 		case "intern-sync":
 			return { kind: "intern", mode: "sync" };
@@ -126,8 +147,8 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 		default:
 			return {
 				kind: "local",
-				model: "laguna-xs-2.1",
-				adapter
+				model: adapter ?? LOCAL_BASE_POLICY,
+				adapter: null
 			};
 	}
 }
@@ -138,6 +159,8 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 		return target.mode === "async" ? "intern-async" : "intern-sync";
 	}
 	if (target.kind === "cloud") {
+		if (target.model === SYNTH_CLOUD_LAGUNA_XS_B200_MODEL) return "synth-cloud-laguna-xs-b200";
+		if (target.model === SYNTH_CLOUD_LAGUNA_XS_H100_MODEL) return "synth-cloud-laguna-xs-h100";
 		return target.model === SYNTH_CLOUD_MUSE_SPARK_MODEL
 			? "synth-cloud-muse-spark"
 			: "synth-cloud-laguna-s";
@@ -145,11 +168,15 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 	if (target.provider === "openai-codex-oauth") {
 		return target.model === CHATGPT_SOL_MODEL ? "chatgpt-sol" : target.model === CHATGPT_TERRA_MODEL ? "chatgpt-terra" : "chatgpt-luna";
 	}
-	if (target.model === OPENROUTER_LUNA_MODEL || target.model.includes("kimi")) {
-		return "openrouter-luna";
+	if (target.targetId) {
+		if (!modelCatalogEntry(target.targetId)) rememberHistoricalOpenRouterTarget(target, target.targetId);
+		return target.targetId;
 	}
-	if (target.model === OPENROUTER_MUSE_SPARK_MODEL) return "openrouter-muse-spark";
-	return "openrouter-laguna-s";
+	const catalogMatch = modelCatalogEntryForModel(target.model);
+	if (catalogMatch) return catalogMatch.targetId;
+	const unknown = unknownOpenRouterTargetId(target.model);
+	rememberHistoricalOpenRouterTarget(target, unknown);
+	return unknown;
 }
 
 export function sessionIsLocalChat(session: Session): boolean {
@@ -198,16 +225,14 @@ function mapAsyncPhase(status: Session["status"], events: RuntimeEvent[] = []): 
 	}
 }
 
-export function eventsToMessages(
-	events: RuntimeEvent[],
-	options: { excludedThreadIds?: ReadonlySet<string> } = {}
-): ChatMessage[] {
+export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 	const byId = new Map<string, ChatMessage>();
 	const order: string[] = [];
-	const subagentIds = options.excludedThreadIds ?? new Set(eventsToSubagents(events).map((agent) => agent.id));
+	const subagentIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
 	let activeAssistantId: string | null = null;
 	let producedAssistantForTurn = false;
 	let compactedDuringTurn = false;
+	let terminalSeenForTurn = false;
 
 	for (const event of events) {
 		const payload = event.payload ?? {};
@@ -221,6 +246,7 @@ export function eventsToMessages(
 			activeAssistantId = null;
 			producedAssistantForTurn = false;
 			compactedDuringTurn = false;
+			terminalSeenForTurn = false;
 		}
 		if (event.eventKind === "thread/compacted") {
 			compactedDuringTurn = true;
@@ -309,6 +335,7 @@ export function eventsToMessages(
 				if (!isInternAgentMessage && role === "user") {
 					activeAssistantId = null;
 					producedAssistantForTurn = false;
+					terminalSeenForTurn = false;
 				}
 				continue;
 		}
@@ -379,20 +406,58 @@ export function eventsToMessages(
 			event.eventKind === "run.failed" ||
 			event.eventKind === "run.cancelled"
 		) {
-			if (!producedAssistantForTurn && !compactedDuringTurn) {
+			// The live app-server event and the durable run.status_changed event
+			// can both project the same turn terminal. Only the first terminal owns
+			// transcript fallback synthesis; replaying it after an assistant answer
+			// must not manufacture a contradictory "no response" message.
+			if (terminalSeenForTurn) continue;
+			terminalSeenForTurn = true;
+			const userCancelled = event.eventKind === "run.cancelled"
+				&& (payload.reason === "operator_cancelled" || payload.cancelledBy === "user");
+			if (userCancelled) {
+				const message = "You stopped this response.";
+				const previous = order.length ? byId.get(order[order.length - 1]) : undefined;
+				if (previous?.role !== "system" || previous.body !== message) {
+					const id = `terminal-${event.sequence}`;
+					order.push(id);
+					byId.set(id, { id, role: "system", body: message, at: event.createdAt });
+				}
+			}
+			// A typed final agent item can be the terminal run payload when the
+			// app-server closes immediately after its final answer. Preserve that
+			// authoritative content as an assistant message before deciding that
+			// the provider returned no answer.
+			if (!producedAssistantForTurn && event.eventKind === "run.completed") {
+				const terminalAnswer = eventResultPreview(payload, objectValue(payload.item) ?? {});
+				if (terminalAnswer) {
+					const id = `terminal-answer-${event.sequence}`;
+					order.push(id);
+					byId.set(id, { id, role: "assistant", body: terminalAnswer, at: event.createdAt });
+					producedAssistantForTurn = true;
+				}
+			}
+			if (!userCancelled && !producedAssistantForTurn && !compactedDuringTurn) {
 				const detail = terminalTurnDetail(event.payload ?? {});
+				const providerLimitMessage = providerLimitMessageFor(event.payload ?? {});
 				const failureDetail = detail ? `: ${detail.replace(/[.!?]+$/, "")}.` : ".";
 				const message = event.eventKind === "run.failed"
-					? `The provider could not produce a response${failureDetail} Try again.`
+					? providerLimitMessage
+						? providerLimitMessage
+						: `The provider could not produce a response${failureDetail} Try again.`
 					: event.eventKind === "run.cancelled"
 						? "The response was stopped before the provider returned an answer."
 						: "The provider ended the turn without a response. Please try again.";
-				const id = `terminal-${event.sequence}`;
-				order.push(id);
-				byId.set(id, { id, role: "system", body: message, at: event.createdAt });
+				const previous = order.length ? byId.get(order[order.length - 1]) : undefined;
+				// Some provider bridges publish the same terminal envelope more than
+				// once. A transport retry is one user-visible failure, not a wall of
+				// identical system messages.
+				if (previous?.role !== "system" || previous.body !== message) {
+					const id = `terminal-${event.sequence}`;
+					order.push(id);
+					byId.set(id, { id, role: "system", body: message, at: event.createdAt });
+				}
 			}
 			activeAssistantId = null;
-			producedAssistantForTurn = false;
 			compactedDuringTurn = false;
 		}
 	}
@@ -407,8 +472,56 @@ function terminalTurnDetail(payload: Record<string, unknown>): string | undefine
 	const error = turn.error && typeof turn.error === "object"
 		? turn.error as Record<string, unknown>
 		: payload.error && typeof payload.error === "object" ? payload.error as Record<string, unknown> : undefined;
-	const message = typeof error?.message === "string" ? error.message : undefined;
-	return message?.trim() || undefined;
+	const message = typeof error?.message === "string" ? error.message.trim() : "";
+	if (!message) return undefined;
+
+	// Provider adapters can put a full nested HTTP response in `message`. Never
+	// expose that implementation payload in the transcript; preserve the useful
+	// reason when it is recognizable and otherwise keep the failure concise.
+	if (message.includes("Requests ending with a model turn are not supported")) {
+		return "The provider rejected a request ending with a model turn";
+	}
+	if (message.toLowerCase().includes("temporarily rate-limited")) {
+		return "Gemini is temporarily rate-limited";
+	}
+	if (message.startsWith("{") || message.length > 240) {
+		return "The provider rejected the request";
+	}
+	return message.replace(/\s+/g, " ");
+}
+
+function providerLimitMessageFor(payload: Record<string, unknown>): string | undefined {
+	const turn = payload.turn && typeof payload.turn === "object"
+		? payload.turn as Record<string, unknown>
+		: payload;
+	const error = turn.error && typeof turn.error === "object"
+		? turn.error as Record<string, unknown>
+		: payload.error && typeof payload.error === "object" ? payload.error as Record<string, unknown> : undefined;
+	const code = typeof error?.codexErrorInfo === "string" ? error.codexErrorInfo.toLowerCase() : "";
+	const rawMessage = typeof error?.message === "string" ? error.message.trim() : "";
+	const message = rawMessage.toLowerCase();
+	const provider = typeof payload.provider === "string" ? payload.provider.toLowerCase() : "";
+	if (code === "usagelimitexceeded" || message.includes("hit your usage limit")) {
+		const reset = /try again at\s+(.+?)(?:\.+)?$/i.exec(rawMessage)?.[1]?.trim();
+		return reset
+			? `Your ChatGPT usage limit has been reached. You are still signed in; use another model or try again at ${reset}.`
+			: "Your ChatGPT usage limit has been reached. You are still signed in; use another model or try again after your limit resets.";
+	}
+	if (
+		provider === "openrouter" ||
+		message.includes("openrouter") ||
+		/(insufficient[_ ](?:credits|funds)|credit balance|no credits|payment required)/.test(message)
+	) {
+		return "Your OpenRouter credits are unavailable or exhausted. Add credits or choose another model, then retry.";
+	}
+	if (
+		provider === "synth" || provider === "synth-cloud" ||
+		message.includes("synth cloud") || message.includes("synth allowance") ||
+		/(allowance (?:is )?(?:used up|exhausted)|billing (?:needs attention|limit))/.test(message)
+	) {
+		return "Your Synth Cloud allowance is unavailable. Manage billing or choose a local/API-key model, then retry.";
+	}
+	return undefined;
 }
 
 export function eventsToActivity(
@@ -483,7 +596,7 @@ function activityKind(eventKind: string): LocalActivityLine["kind"] {
 	return "working";
 }
 
-type SafeToolActivity = Pick<LocalActivityLine, "label" | "detail" | "path" | "kind" | "toolStatus" | "artifactId" | "containerId" | "inspectable"> & { key: string };
+type SafeToolActivity = Pick<LocalActivityLine, "label" | "detail" | "path" | "kind" | "toolStatus" | "durationMs" | "visualStage" | "artifactId" | "containerId" | "optimizerRunId" | "runKind"> & { key: string };
 
 const VISUAL_MUTATION_TOOLS = new Set([
 	"visual_manage",
@@ -515,79 +628,32 @@ function redactCommand(command: string): string {
 		.slice(0, 800);
 }
 
-const MAX_INSPECTABLE_CHARS = 24_000;
-
-/**
- * Convert unknown wire payloads into bounded text before rendering them.
- * Runtime events come from several protocol versions, so this is deliberately
- * defensive: circular values, bigint values, and malformed JSON all remain
- * inspectable without leaking a browser coercion such as `[object Object]`.
- */
-function inspectablePayload(
-	label: string,
-	value: unknown,
-	format: "json" | "text" = "json"
-): NonNullable<LocalActivityLine["inspectable"]>[number] | undefined {
-	if (value === undefined || value === null) return undefined;
-	let rendered: string;
-	let resolvedFormat = format;
-	if (typeof value === "string") {
-		const trimmed = value.trim();
-		if (format === "json" && trimmed) {
-			try {
-				rendered = JSON.stringify(JSON.parse(trimmed), null, 2);
-			} catch {
-				rendered = value;
-				resolvedFormat = "text";
-			}
-		} else {
-			rendered = value;
-		}
-	} else {
-		const seen = new WeakSet<object>();
-		try {
-			rendered = JSON.stringify(value, (_key, candidate) => {
-				if (typeof candidate === "bigint") return candidate.toString();
-				if (typeof candidate === "object" && candidate !== null) {
-					if (seen.has(candidate)) return "[Circular]";
-					seen.add(candidate);
-				}
-				if (typeof candidate === "function" || typeof candidate === "symbol") return String(candidate);
-				return candidate;
-			}, 2) ?? "—";
-		} catch {
-			rendered = "Not exposed";
-			resolvedFormat = "text";
-		}
-	}
-	const truncated = rendered.length > MAX_INSPECTABLE_CHARS;
-	return {
-		label,
-		value: truncated ? `${rendered.slice(0, MAX_INSPECTABLE_CHARS)}\n… truncated` : rendered,
-		format: resolvedFormat,
-		truncated,
-		unavailable: rendered === "Not exposed"
-	};
-}
-
-function inspectableToolPayloads(item: Record<string, unknown>, args: Record<string, unknown>): LocalActivityLine["inspectable"] {
-	const values: NonNullable<LocalActivityLine["inspectable"]> = [];
-	const argumentPayload = Object.keys(args).length ? inspectablePayload("Arguments", args) : undefined;
-	if (argumentPayload) values.push(argumentPayload);
-	const result = item.result ?? item.output ?? item.response;
-	const error = item.error ?? (objectValue(result)?.error);
-	const resultPayload = result === undefined ? undefined : inspectablePayload(error ? "Result" : "Result", result);
-	if (resultPayload) values.push(resultPayload);
-	const errorPayload = error === undefined ? undefined : inspectablePayload("Error", error);
-	if (errorPayload && !values.some((entry) => entry.label === "Error" && entry.value === errorPayload.value)) values.push(errorPayload);
-	return values.length ? values : undefined;
-}
-
-function safeToolStatus(item: Record<string, unknown>): LocalActivityLine["toolStatus"] {
+function safeToolStatus(item: Record<string, unknown>, eventKind = ""): LocalActivityLine["toolStatus"] {
 	const status = (stringField(item, "status") ?? "").toLowerCase();
-	if (/failed|error|cancelled|rejected/.test(status)) return "failed";
-	if (/completed|success|done/.test(status)) return "completed";
+	const lifecycle = `${status} ${eventKind}`.toLowerCase();
+	// An MCP result carrying isError is a failed call even when the provider
+	// reported the turn item itself as completed.
+	if (objectValue(item.result)?.isError === true) return "failed";
+	if (/failed|error|cancelled|rejected/.test(lifecycle)) return "failed";
+	if (/completed|success|done/.test(lifecycle)) return "completed";
 	return "running";
+}
+
+function safeToolFailure(item: Record<string, unknown>): string | undefined {
+	const result = objectValue(item.result);
+	const structured = result && objectValue(result.structuredContent);
+	// A structured application failure keeps its stable code and remediation so
+	// the transcript says what to do next, not just that something failed.
+	const coded = structured ? objectValue(structured.structuredError) : undefined;
+	const codedMessage = coded
+		? [stringField(coded, "code"), stringField(coded, "remediation")].filter(Boolean).join(" · ")
+		: undefined;
+	const structuredError = structured ? stringField(structured, "error", "message", "detail", "code") : undefined;
+	// Provider error text is not a trusted transcript surface: it can contain
+	// prompts, credentials, or arbitrary tool output. Only the structured,
+	// application-owned failure envelope is safe to render.
+	const message = codedMessage || structuredError;
+	return message ? redactCommand(message).slice(0, 320) : undefined;
 }
 
 function compactToolArgs(args: Record<string, unknown>, fields: string[]): string | undefined {
@@ -677,12 +743,43 @@ function visualIdForTool(
 	return stringField(args, "visual_id", "visualId", "instance_id", "instanceId", "id");
 }
 
+/** Workflows chat has a run-progress card for. Others stream but get no card. */
+const CARDED_RUN_KINDS = new Set(["eval", "gepa", "sft", "environment"]);
+
+/**
+ * The durable run a `synth_optimizers` call started or acted on.
+ *
+ * Read from the tool *result* — the run record the host returned — and only
+ * secondarily from the arguments, because an argument is a request and a result
+ * is a fact. Nothing is inferred from surrounding prose: a run id in an
+ * assistant sentence is text, not a subscription.
+ */
+function optimizerRunForTool(
+	item: Record<string, unknown>,
+	args: Record<string, unknown>
+): { optimizerRunId?: string; runKind?: LocalActivityLine["runKind"] } {
+	const structured = toolStructuredContent(item);
+	const run = structured ? nestedObject(structured, "run", "optimizerRun") ?? structured : undefined;
+	const id = (run && stringField(run, "id", "optimizerRunId", "optimizer_run_id"))
+		?? stringField(args, "optimizer_run_id", "optimizerRunId")
+		?? stringField(nestedObject(args, "arguments") ?? {}, "optimizer_run_id", "optimizerRunId");
+	if (!id) return {};
+	const algorithm = (run && stringField(run, "algorithmId", "algorithm_id")) ?? undefined;
+	return {
+		optimizerRunId: id,
+		...(algorithm && CARDED_RUN_KINDS.has(algorithm)
+			? { runKind: algorithm as LocalActivityLine["runKind"] }
+			: {})
+	};
+}
+
 function mcpToolActivity(
 	item: Record<string, unknown>,
 	args: Record<string, unknown>,
 	id: string,
 	itemType: string,
-	tool: string
+	tool: string,
+	eventKind: string
 ): SafeToolActivity | undefined {
 	if (!["mcptoolcall", "dynamictoolcall", "toolcall"].includes(itemType)) return undefined;
 	const server = (stringField(item, "server", "pluginId", "plugin_id") ?? "").toLowerCase();
@@ -697,7 +794,7 @@ function mcpToolActivity(
 		"synth_visuals.visual_create": ["template_id", "title"],
 		"synth_visuals.visual_create_from_template": ["template_id", "title"],
 		"synth_visuals.visual_update": ["visual_id", "instance_id", "title", "status"],
-		"synth_visuals.visual_bind_data_source": ["visual_id", "instance_id", "slot"],
+		"synth_visuals.visual_bind_data_source": ["visual_id", "instance_id", "input", "slot"],
 		"synth_visuals.visual_save": ["visual_id", "instance_id"],
 		"synth_visuals.visual_save_tsx": ["visual_id", "instance_id"],
 		"synth_visuals.visual_fork": ["visual_id", "instance_id", "title"],
@@ -720,8 +817,8 @@ function mcpToolActivity(
 		"status",
 		"limit"
 	];
-	const duration = typeof item.durationMs === "number" && Number.isFinite(item.durationMs)
-		? `${Math.max(0, Math.round(item.durationMs))}ms`
+	const durationMs = typeof item.durationMs === "number" && Number.isFinite(item.durationMs)
+		? Math.max(0, item.durationMs)
 		: undefined;
 	const nestedArgs = objectValue(args.arguments) ?? {};
 	const argsLabel = [compactToolArgs(args, fields), compactToolArgs(nestedArgs, fields)]
@@ -729,15 +826,42 @@ function mcpToolActivity(
 		.join(" · ") || undefined;
 	const artifactId = server === "synth_visuals" ? visualIdForTool(item, args, tool) : undefined;
 	const containerId = server === "synth_containers" ? containerIdForTool(item, args, tool) : undefined;
+	const optimizerRun = server === "synth_optimizers" ? optimizerRunForTool(item, args) : {};
+	const visualOperation = server === "synth_visuals"
+		? (tool === "visual_manage" ? stringField(args, "operation") : tool.replace(/^visual_/, ""))
+		: undefined;
+	const toolStatus = safeToolStatus(item, eventKind);
+	const failure = toolStatus === "failed" ? safeToolFailure(item) : undefined;
+	const visualStage: LocalActivityLine["visualStage"] = toolStatus === "failed" && visualOperation
+		? "failed"
+		: visualOperation === "create"
+			? "draft"
+			: visualOperation === "capture_review" || visualOperation === "review"
+				? "review"
+				: visualOperation === "mark_ready"
+					? "ready"
+					: undefined;
+	const lifecycleLabel = visualStage === "draft"
+		? "Visual draft created"
+		: visualStage === "review"
+			? "Visual review"
+			: visualStage === "ready"
+				? "Visual ready"
+				: visualStage === "failed"
+					? "Visual update failed"
+					: undefined;
+	const visualDuration = visualStage && durationMs != null ? `${durationMs}ms` : undefined;
 	return {
 		key: `mcp:${id}`,
-		label: [server, tool].filter(Boolean).join(".") || "Tool call",
-		detail: [argsLabel, duration].filter(Boolean).join(" · ") || undefined,
-		kind: artifactId ? "visual" : "working",
+		label: lifecycleLabel ?? ([server, tool].filter(Boolean).join(".") || "Tool call"),
+		detail: [argsLabel, failure, visualDuration].filter(Boolean).join(" · ") || undefined,
+		kind: visualStage ? "visual_lifecycle" : artifactId ? "visual" : "working",
 		artifactId,
 		containerId,
-		inspectable: inspectableToolPayloads(item, args),
-		toolStatus: safeToolStatus(item)
+		...optimizerRun,
+		toolStatus,
+		durationMs,
+		visualStage
 	};
 }
 
@@ -749,47 +873,42 @@ function safeToolActivity(event: RuntimeEvent): SafeToolActivity | undefined {
 	const tool = (stringField(item, "tool", "name", "toolName", "tool_name") ?? "").toLowerCase();
 	const args = nestedObject(item, "arguments", "args", "input") ?? nestedObject(payload, "arguments", "args", "input") ?? {};
 	const id = stringField(item, "id", "callId", "call_id") ?? `${event.eventKind}-${event.sequence}`;
+	const toolStatus = safeToolStatus(item, event.eventKind);
+	const durationMs = typeof item.durationMs === "number" && Number.isFinite(item.durationMs)
+		? Math.max(0, item.durationMs)
+		: typeof payload.durationMs === "number" && Number.isFinite(payload.durationMs)
+			? Math.max(0, payload.durationMs)
+			: undefined;
+	const lifecycle = { toolStatus, durationMs };
 
 	if (event.eventKind === "command.execution" || itemType === "commandexecution") {
 		const raw = stringField(item, "command", "cmd") ?? stringField(payload, "command", "cmd");
 		if (!raw) return undefined;
-		const output = item.output ?? item.result ?? payload.output ?? payload.result;
-		const error = item.error ?? payload.error;
-		return {
-			key: `command:${id}`,
-			label: "Run Shell Command",
-			detail: redactCommand(raw),
-			kind: "command",
-			inspectable: [
-				inspectablePayload("Command", redactCommand(raw), "text"),
-				...(output === undefined ? [] : [inspectablePayload("Output", output)]),
-				...(error === undefined ? [] : [inspectablePayload("Error", error)])
-			].filter((entry): entry is NonNullable<LocalActivityLine["inspectable"]>[number] => Boolean(entry))
-		};
+		return { key: `command:${id}`, label: "Run Shell Command", detail: redactCommand(raw), kind: "command", ...lifecycle };
 	}
 
 	if (event.eventKind === "file.change" || itemType === "filechange") {
 		const path = stringField(item, "path", "filePath", "file_path") ?? stringField(payload, "path", "filePath", "file_path");
-		return path ? { key: `write:${id}:${path}`, label: "Wrote", path, kind: "file_write" } : undefined;
+		return path ? { key: `write:${id}:${path}`, label: "Wrote", path, kind: "file_write", ...lifecycle } : undefined;
 	}
 
 	const path = stringField(args, "path", "file", "filePath", "file_path")
 		?? stringField(item, "path", "file", "filePath", "file_path");
 	if (["read", "read_file", "readfile", "read_text_file", "filesystem.read_text_file"].includes(tool)) {
-		return path ? { key: `read:${id}:${path}`, label: "Read", path, kind: "file_read" } : undefined;
+		return path ? { key: `read:${id}:${path}`, label: "Read", path, kind: "file_read", ...lifecycle } : undefined;
 	}
 	if (["search", "search_files", "grep", "find", "find_files", "list_directory", "list_files"].includes(tool)) {
 		const query = stringField(args, "query", "pattern", "glob");
-		return { key: `search:${id}`, label: tool.startsWith("list") ? "Listed files" : "Searched files", detail: query?.slice(0, 300), kind: "search" };
+		return { key: `search:${id}`, label: tool.startsWith("list") ? "Listed files" : "Searched files", detail: query?.slice(0, 300), kind: "search", ...lifecycle };
 	}
 	if (["web_search", "websearch", "search_web"].includes(tool) || itemType === "websearch") {
 		const query = stringField(args, "query") ?? stringField(item, "query");
-		return { key: `search:${id}`, label: "Searched the web", detail: query?.slice(0, 300), kind: "search" };
+		return { key: `search:${id}`, label: "Searched the web", detail: query?.slice(0, 300), kind: "search", ...lifecycle };
 	}
 	if (["view_image", "viewimage"].includes(tool)) {
-		return { key: `view:${id}`, label: "Viewed image", path, kind: "working" };
+		return { key: `view:${id}`, label: "Viewed image", path, kind: "working", ...lifecycle };
 	}
-	return mcpToolActivity(item, args, id, itemType, tool);
+	return mcpToolActivity(item, args, id, itemType, tool, event.eventKind);
 }
 
 function compactDuration(start: string | undefined, end: string): string {
@@ -801,6 +920,22 @@ function compactDuration(start: string | undefined, end: string): string {
 	const minutes = Math.floor(seconds / 60);
 	const remainder = seconds % 60;
 	return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+}
+
+function runDuration(payload: Record<string, unknown>, start: string | undefined, end: string): string {
+	const outcome = objectValue(payload.outcome);
+	const turn = objectValue(payload.turn) ?? (outcome && objectValue(outcome.turn));
+	const explicit = turn?.durationMs ?? payload.durationMs;
+	if (typeof explicit !== "number" || !Number.isFinite(explicit)) return compactDuration(start, end);
+	const syntheticEnd = new Date(Math.max(0, explicit)).toISOString();
+	return compactDuration(new Date(0).toISOString(), syntheticEnd);
+}
+
+function runIdentity(payload: Record<string, unknown>): string | undefined {
+	const outcome = objectValue(payload.outcome);
+	const turn = objectValue(payload.turn) ?? (outcome && objectValue(outcome.turn));
+	return stringField(payload, "runId", "run_id", "turnId", "turn_id")
+		?? (turn && stringField(turn, "id", "runId", "run_id", "turnId", "turn_id"));
 }
 
 function actionCountLabel(counts: { commands: number; reads: number; writes: number; searches: number; tools: number }): string {
@@ -820,12 +955,6 @@ export type SubagentState = {
 	id: string;
 	title: string;
 	summary?: string;
-	/** The explicit parent thread identity reported by the collaboration event. */
-	parentThreadId?: string;
-	/** Ordered journal position of the parent delegation event. */
-	delegationSequence: number;
-	/** Delegation prompt, when the provider intentionally exposes it. */
-	prompt?: string;
 	status: SubagentLifecycle;
 	protocol: SubagentProtocol;
 	agentPath?: string;
@@ -948,9 +1077,6 @@ function upsertSubagent(
 			id,
 			title: next.title,
 			summary: next.summary,
-			parentThreadId: next.parentThreadId,
-			delegationSequence: next.delegationSequence,
-			prompt: next.prompt,
 			status: next.status,
 			protocol: next.protocol,
 			agentPath: next.agentPath,
@@ -973,9 +1099,6 @@ function upsertSubagent(
 		status,
 		title: next.title || existing.title,
 		summary: next.summary ?? existing.summary,
-		parentThreadId: next.parentThreadId ?? existing.parentThreadId,
-		delegationSequence: Math.min(existing.delegationSequence, next.delegationSequence),
-		prompt: next.prompt ?? existing.prompt,
 		agentPath: next.agentPath ?? existing.agentPath,
 		lastAction: next.lastAction ?? existing.lastAction,
 		startedAt: existing.startedAt,
@@ -983,10 +1106,7 @@ function upsertSubagent(
 	});
 }
 
-export function eventsToSubagents(
-	events: RuntimeEvent[],
-	options: { rootThreadId?: string } = {}
-): SubagentState[] {
+export function eventsToSubagents(events: RuntimeEvent[]): SubagentState[] {
 	const agents = new Map<string, SubagentState>();
 	for (const event of events) {
 		const payload = event.payload ?? {};
@@ -996,15 +1116,11 @@ export function eventsToSubagents(
 			const id = stringField(item, "agentThreadId", "agent_thread_id");
 			if (!id) continue;
 			const agentPath = stringField(item, "agentPath", "agent_path");
-			const parentThreadId = eventThreadId(payload, item) ?? options.rootThreadId;
 			const previous = agents.get(id);
 			const status = activityKind === "interrupted" ? "interrupted" : previous?.status ?? "starting";
 			upsertSubagent(agents, id, {
 				title: previous?.title && previous.title !== "Subagent" ? previous.title : subagentTitleFromPath(agentPath),
 				summary: activityKind === "interrupted" ? "Interrupted" : previous?.summary,
-				parentThreadId,
-				delegationSequence: previous?.delegationSequence ?? event.sequence,
-				prompt: previous?.prompt,
 				status,
 				protocol: "v2",
 				agentPath,
@@ -1018,7 +1134,6 @@ export function eventsToSubagents(
 			const callId = stringField(item, "id") ?? `subagent-${event.sequence}`;
 			const ids = stringArrayField(item, "receiverThreadIds", "receiver_thread_ids");
 			const prompt = stringField(item, "prompt") ?? "Subagent task";
-			const parentThreadId = eventThreadId(payload, item) ?? options.rootThreadId;
 			const provisional = agents.get(callId);
 			if (ids.length && provisional && !ids.includes(callId)) agents.delete(callId);
 			for (const id of ids.length ? ids : [callId]) {
@@ -1026,9 +1141,6 @@ export function eventsToSubagents(
 				upsertSubagent(agents, id, {
 					title: subagentTitle(prompt),
 					summary: existing?.summary ?? prompt,
-					parentThreadId: existing?.parentThreadId ?? provisional?.parentThreadId ?? parentThreadId,
-					delegationSequence: existing?.delegationSequence ?? provisional?.delegationSequence ?? event.sequence,
-					prompt: existing?.prompt ?? provisional?.prompt ?? prompt,
 					status: existing?.status ?? "starting",
 					protocol: "v1",
 					startedAt: existing?.startedAt ?? provisional?.startedAt ?? event.createdAt
@@ -1050,9 +1162,6 @@ export function eventsToSubagents(
 				upsertSubagent(agents, id, {
 					title: agent.title,
 					summary: agent.summary,
-					parentThreadId: agent.parentThreadId,
-					delegationSequence: agent.delegationSequence,
-					prompt: agent.prompt,
 					status: "completed",
 					protocol: "v2",
 					agentPath: agent.agentPath,
@@ -1071,9 +1180,6 @@ export function eventsToSubagents(
 				upsertSubagent(agents, id, {
 					title: existing?.title ?? "Subagent",
 					summary: stateMessage(value) ?? existing?.summary,
-					parentThreadId: existing?.parentThreadId,
-					delegationSequence: existing?.delegationSequence ?? event.sequence,
-					prompt: existing?.prompt,
 					status,
 					protocol: existing?.protocol ?? "v1",
 					agentPath: existing?.agentPath,
@@ -1092,102 +1198,13 @@ export function eventsToSubagents(
 		upsertSubagent(agents, threadId, {
 			title: agent.title,
 			summary: content && (isChildMessage || lifecycle === "completed" || lifecycle === "failed") ? content : agent.summary,
-			parentThreadId: agent.parentThreadId,
-			delegationSequence: agent.delegationSequence,
-			prompt: agent.prompt,
 			status: lifecycle ?? agent.status,
 			protocol: agent.protocol,
 			agentPath: agent.agentPath,
 			lastAction: agent.lastAction
 		}, event.createdAt, { allowReactivation: agent.protocol === "v2" && lifecycle === "working" });
 	}
-	return [...agents.values()].sort((left, right) =>
-		left.delegationSequence - right.delegationSequence || left.id.localeCompare(right.id)
-	);
-}
-
-/** Stable root-thread identity persisted with every Codex-backed session. */
-export function sessionThreadId(session: Pick<Session, "id" | "remoteId" | "metadata">): string | undefined {
-	return typeof session.metadata.threadId === "string"
-		? session.metadata.threadId
-		: typeof session.remoteId === "string" ? session.remoteId : undefined;
-}
-
-export type SubagentConversation = {
-	chat: LocalChat;
-	agent: SubagentState;
-	parentTitle: string;
-	model: string | null;
-	reasoningDisplay: "none" | "summary" | "full";
-};
-
-function eventsForThread(events: RuntimeEvent[], threadId: string): RuntimeEvent[] {
-	return events.filter((event) => eventThreadId(event.payload ?? {}, eventItem(event)) === threadId);
-}
-
-/** Parent transcript projection excludes every explicitly identified child thread. */
-export function parentConversationEvents(events: RuntimeEvent[], options: { rootThreadId?: string } = {}): RuntimeEvent[] {
-	const childThreadIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
-	return events.filter((event) => {
-		const sourceThreadId = eventThreadId(event.payload ?? {}, eventItem(event));
-		if (sourceThreadId && options.rootThreadId) return sourceThreadId === options.rootThreadId;
-		return !sourceThreadId || !childThreadIds.has(sourceThreadId);
-	});
-}
-
-/**
- * Build a normal conversation input for a child thread. The delegation prompt
- * is represented as a synthetic user event at the *actual delegation
- * sequence*, then every child event is selected by its explicit thread id.
- * No title or timestamp matching is used to assign ownership.
- */
-export function buildSubagentConversation(
-	session: Session,
-	events: RuntimeEvent[],
-	agentId: string
-): SubagentConversation | null {
-	const rootThreadId = sessionThreadId(session);
-	const agent = eventsToSubagents(events, { rootThreadId }).find((candidate) => candidate.id === agentId);
-	if (!agent) return null;
-	const childEvents = eventsForThread(events, agent.id);
-	const delegatedPrompt = agent.prompt
-		? {
-			...childEvents.find((event) => event.sequence === agent.delegationSequence),
-			schemaVersion: "synth.desktop-runtime-event.v1" as const,
-			sessionId: session.id,
-			sequence: agent.delegationSequence,
-			eventKind: "message.created",
-			payload: {
-				messageId: `delegation-${agent.id}-${agent.delegationSequence}`,
-				role: "user",
-				content: agent.prompt,
-				threadId: agent.id,
-				delegation: true
-			},
-			createdAt: childEvents.find((event) => event.sequence === agent.delegationSequence)?.createdAt ?? agent.startedAt,
-			source: "system" as const
-		} satisfies RuntimeEvent
-		: null;
-	const conversationEvents = [
-		...(delegatedPrompt ? [delegatedPrompt] : []),
-		...childEvents
-	].sort((left, right) => left.sequence - right.sequence);
-	const messages = eventsToMessages(conversationEvents);
-	const reasoningDisplay = modelCapabilitiesForExecutionTarget(session.target)?.reasoningDisplay ?? "none";
-	const model = session.target.kind === "intern" ? null : session.target.model;
-	return {
-		chat: {
-			id: `${session.id}:subagent:${agent.id}`,
-			title: agent.title,
-			messages,
-			artifacts: eventsToArtifacts(conversationEvents),
-			activityByMessageId: eventsToLocalActivity(conversationEvents, messages, reasoningDisplay)
-		},
-		agent,
-		parentTitle: session.title,
-		model,
-		reasoningDisplay
-	};
+	return [...agents.values()];
 }
 
 export function eventsToLocalActivity(
@@ -1212,7 +1229,9 @@ export function eventsToLocalActivity(
 			pendingApprovals.push({ sequence: event.sequence, key: approvalKey(event) });
 			continue;
 		}
-		if (event.eventKind !== "approval.granted" && event.eventKind !== "approval.rejected") continue;
+		if (event.eventKind !== "approval.granted"
+			&& event.eventKind !== "approval.rejected"
+			&& event.eventKind !== "approval.expired") continue;
 		const key = approvalKey(event);
 		let index = pendingApprovals.length - 1;
 		if (key) {
@@ -1228,17 +1247,12 @@ export function eventsToLocalActivity(
 	// assistant message. Until the new assistant item has a stable id it stays
 	// in the active tail directly after the latest user bubble.
 	let current = "__active__";
-	const knownSubagents = eventsToSubagents(events);
-	const subagentByDelegationSequence = new Map<number, SubagentState[]>();
-	for (const agent of knownSubagents) {
-		const currentAgents = subagentByDelegationSequence.get(agent.delegationSequence) ?? [];
-		currentAgents.push(agent);
-		subagentByDelegationSequence.set(agent.delegationSequence, currentAgents);
-	}
 	const subagentTitles = new Map<string, string>();
 	const shownSubagentStarts = new Set<string>();
 	const shownSubagentEnds = new Set<string>();
 	let runStartedAt: string | undefined;
+	let activeRunKey: string | undefined;
+	const completedRunKeys = new Set<string>();
 	let runActions = { commands: 0, reads: 0, writes: 0, searches: 0, tools: 0 };
 	let compactionMarkerAddedForRun = false;
 	let lastTokenTotal: number | undefined;
@@ -1281,7 +1295,7 @@ export function eventsToLocalActivity(
 					id: `activity-${event.sequence}`,
 					label: `${title} started`,
 					detail: path,
-					subagentId: id,
+					artifactId: "codex-subagents",
 					kind: "subagent"
 				});
 			}
@@ -1289,7 +1303,7 @@ export function eventsToLocalActivity(
 				(byMessage[current] ??= []).push({
 					id: `activity-${event.sequence}`,
 					label: `${title} contacted`,
-					subagentId: id,
+					artifactId: "codex-subagents",
 					kind: "subagent"
 				});
 			}
@@ -1300,7 +1314,7 @@ export function eventsToLocalActivity(
 					(byMessage[current] ??= []).push({
 						id: `activity-${event.sequence}`,
 						label: `${title} interrupted`,
-						subagentId: id,
+						artifactId: "codex-subagents",
 						kind: "subagent"
 					});
 				}
@@ -1314,14 +1328,13 @@ export function eventsToLocalActivity(
 			const title = subagentTitle(prompt);
 			const ids = stringArrayField(item, "receiverThreadIds", "receiver_thread_ids");
 			for (const id of ids.length ? ids : [callId]) subagentTitles.set(id, title);
-			const linkedAgentId = ids[0] ?? subagentByDelegationSequence.get(event.sequence)?.[0]?.id;
 			if (!shownSubagentStarts.has(callId)) {
 				shownSubagentStarts.add(callId);
 				(byMessage[current] ??= []).push({
 					id: `activity-${event.sequence}`,
 					label: `${title} started`,
 					detail: prompt,
-					subagentId: linkedAgentId,
+					artifactId: "codex-subagents",
 					kind: "subagent"
 				});
 			}
@@ -1339,7 +1352,7 @@ export function eventsToLocalActivity(
 				(byMessage[current] ??= []).push({
 					id: `activity-${event.sequence}-${id}`,
 					label: `${subagentTitles.get(id)} ${status === "failed" ? "failed" : status === "interrupted" ? "interrupted" : "finished"}`,
-					subagentId: id,
+					artifactId: "codex-subagents",
 					kind: "subagent"
 				});
 			}
@@ -1353,7 +1366,7 @@ export function eventsToLocalActivity(
 				(byMessage[current] ??= []).push({
 					id: `activity-${event.sequence}`,
 					label: `${subagentTitles.get(threadId)} ${status === "failed" ? "failed" : status === "interrupted" ? "interrupted" : "finished"}`,
-					subagentId: threadId,
+					artifactId: "codex-subagents",
 					kind: "subagent"
 				});
 			}
@@ -1387,16 +1400,22 @@ export function eventsToLocalActivity(
 			if (messageText) lastContentSequenceByMessageId.set(resolvedAssistant, event.sequence);
 		}
 		if (event.eventKind === "message.created" && payload.role === "user") {
-			const userIndex = messages.findIndex((message) => message.id === explicit);
-			const followingAssistant = userIndex >= 0
-				? messages.slice(userIndex + 1).find((message) => message.role === "assistant")
-				: undefined;
-			current = followingAssistant?.id ?? "__active__";
+			// `messages` is the projection of the complete event slice, so it may
+			// already contain a future assistant message. Do not attach activity
+			// following this user event to that future bubble until its own event is
+			// encountered; otherwise pre-answer tools render below the answer.
+			current = "__active__";
 			shownToolLines.clear();
 			openCompactionLine = undefined;
 			continue;
 		}
 		if (event.eventKind === "run.started") {
+			const key = runIdentity(payload);
+			// Some provider bridges replay their terminal envelopes while restoring
+			// a thread. A repeated start for an already-finished run must not reset
+			// its clock and make the historical duration grow on every app launch.
+			if (key && completedRunKeys.has(key)) continue;
+			activeRunKey = key;
 			runStartedAt = event.createdAt;
 			runActions = { commands: 0, reads: 0, writes: 0, searches: 0, tools: 0 };
 			compactionMarkerAddedForRun = false;
@@ -1406,14 +1425,23 @@ export function eventsToLocalActivity(
 			continue;
 		}
 		if (event.eventKind === "run.completed" || event.eventKind === "run.failed" || event.eventKind === "run.cancelled") {
+			const key = runIdentity(payload) ?? activeRunKey;
+			if (key && completedRunKeys.has(key)) continue;
 			const actions = actionCountLabel(runActions);
+			if (event.eventKind === "run.cancelled") {
+				for (const line of shownToolLines.values()) {
+					if (line.toolStatus === "running") line.toolStatus = "cancelled";
+				}
+			}
 			const outcome = event.eventKind === "run.completed" ? "Worked" : event.eventKind === "run.failed" ? "Stopped with an error after" : "Stopped after";
 			(byMessage[current] ??= []).unshift({
 				id: `run-summary-${event.sequence}`,
-				label: `${outcome} ${compactDuration(runStartedAt, event.createdAt)}${actions ? ` · ${actions}` : ""}`,
+				label: `${outcome} ${runDuration(payload, runStartedAt, event.createdAt)}${actions ? ` · ${actions}` : ""}`,
 				kind: "run_summary"
 			});
 			runStartedAt = undefined;
+			activeRunKey = undefined;
+			if (key) completedRunKeys.add(key);
 			continue;
 		}
 		if (event.eventKind === "session/unhealthy") {
@@ -1480,16 +1508,24 @@ export function eventsToLocalActivity(
 				existing.detail = safeTool.detail;
 				existing.path = safeTool.path;
 				existing.kind = safeTool.kind;
+				existing.visualStage = safeTool.visualStage;
 				existing.toolStatus = safeTool.toolStatus;
+				existing.durationMs = safeTool.durationMs;
 				existing.artifactId = safeTool.artifactId;
 				existing.containerId = safeTool.containerId;
-				existing.inspectable = safeTool.inspectable;
+				// A run id only ever arrives (never disappears): the call that
+				// returns the record often completes after the one that requested it.
+				if (safeTool.optimizerRunId) existing.optimizerRunId = safeTool.optimizerRunId;
+				if (safeTool.runKind) existing.runKind = safeTool.runKind;
 			} else {
 				if (safeTool.kind === "command") runActions.commands += 1;
 				if (safeTool.kind === "file_read") runActions.reads += 1;
 				if (safeTool.kind === "file_write") runActions.writes += 1;
 				if (safeTool.kind === "search") runActions.searches += 1;
-				if (safeTool.toolStatus) runActions.tools += 1;
+				if (
+					safeTool.toolStatus
+					&& !["command", "file_read", "file_write", "search"].includes(safeTool.kind ?? "")
+				) runActions.tools += 1;
 				const line: LocalActivityLine = {
 					id: `activity-${event.sequence}`,
 					label: safeTool.label,
@@ -1498,10 +1534,13 @@ export function eventsToLocalActivity(
 					placement: current === "__active__" ? undefined : "after",
 					sequence: event.sequence,
 					kind: safeTool.kind,
+					visualStage: safeTool.visualStage,
 					artifactId: safeTool.artifactId,
 					containerId: safeTool.containerId,
-					inspectable: safeTool.inspectable,
-					toolStatus: safeTool.toolStatus
+					optimizerRunId: safeTool.optimizerRunId,
+					runKind: safeTool.runKind,
+					toolStatus: safeTool.toolStatus,
+					durationMs: safeTool.durationMs
 				};
 				shownToolLines.set(safeTool.key, line);
 				(byMessage[current] ??= []).push(line);
@@ -1509,15 +1548,121 @@ export function eventsToLocalActivity(
 			continue;
 		}
 		if (!event.eventKind.startsWith("approval.")) continue;
+		// Policy-effective is durable configuration state, not conversation
+		// activity. Keep it in the journal/Advanced view and let the composer’s
+		// permissions control present the active policy.
+		if (event.eventKind === "approval.policy.effective") continue;
 		const path = typeof payload.path === "string" ? payload.path : undefined;
-		const label = event.eventKind === "approval.requested" ? "Approval requested"
-			: event.eventKind === "approval.granted" ? "Approval granted"
-				: event.eventKind === "approval.rejected" ? "Approval rejected" : "Approval updated";
+		const approvalKind = typeof payload.kind === "string" ? payload.kind : "permission";
+		const approvalSubject = approvalKind === "paid_compute" ? "Paid compute"
+			: approvalKind === "credential_access" ? "Credential access"
+				: approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
+					: approvalKind === "container_lifecycle" ? "Container replacement"
+					: approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
+						: approvalKind === "computer_use" ? "App control"
+							: approvalKind === "project_source" ? "Project source"
+								: "Permission";
+		let label: string | undefined;
+		switch (event.eventKind) {
+			case "approval.requested":
+				label = approvalKind === "paid_compute" ? "Paid compute approval"
+					: approvalKind === "credential_access" ? "Credential access"
+						: approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
+							: approvalKind === "container_lifecycle" ? "Replace container workload"
+							: approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
+								: approvalKind === "computer_use"
+									? (payload.hazard === true ? "Confirm this action" : "Allow app control")
+									: "Approval requested";
+				break;
+			case "approval.granted":
+				if (payload.policyAuto === true && payload.approvalPolicy === "conversation_paid_compute_budget") {
+					const reserved = typeof payload.reservedUsdMicros === "number" ? payload.reservedUsdMicros : 0;
+					const remaining = typeof payload.remainingUsdMicros === "number" ? payload.remainingUsdMicros : 0;
+					const cap = typeof payload.conversationCapUsdMicros === "number" ? payload.conversationCapUsdMicros : 0;
+					const used = Math.max(0, cap - remaining);
+					label = `Auto-approved a $${formatUsdMicros(reserved)} maximum · $${formatUsdMicros(used)} of $${formatUsdMicros(cap)} conversation allowance used`;
+				} else {
+					label = `${approvalSubject} granted`;
+				}
+				break;
+			case "approval.rejected":
+				label = `${approvalSubject} rejected`;
+				break;
+			case "approval.expired":
+				label = `${approvalSubject} expired`;
+				break;
+			default:
+				// Unknown approval events stay inspectable in Advanced without
+				// being mislabeled as user-visible approval activity.
+				continue;
+		}
 		const command = typeof payload.command === "string" ? payload.command : undefined;
-		const safeKind = payload.kind === "shell_command" || payload.kind === "file_change" || payload.kind === "permission";
-		const detail = safeKind && typeof payload.detail === "string"
-			? payload.detail.slice(0, 500)
-			: command ? redactCommand(command) : path;
+		const typedDetail = approvalKind === "credential_access"
+			? [payload.provider, payload.purpose].filter((value): value is string => typeof value === "string").join(" · ")
+			: approvalKind === "sidecar_lifecycle"
+				? [payload.sidecar, payload.action].filter((value): value is string => typeof value === "string").join(" · ")
+				: approvalKind === "container_lifecycle"
+					? [payload.containerId, payload.declarationId, payload.action, payload.effect].filter((value): value is string => typeof value === "string").join(" · ")
+				: undefined;
+		// G6: a hazard card must show what the action will actually do —
+		// recipient, text, destination — not just which app it touches.
+		// "May use Mail" is not consent to send this mail.
+		const computerUseDetail = payload.kind === "computer_use"
+			? [
+				payload.app,
+				payload.action,
+				...(payload.payload && typeof payload.payload === "object" && !Array.isArray(payload.payload)
+					? Object.entries(payload.payload as Record<string, unknown>)
+						.filter(([, value]) => value !== null && value !== undefined && value !== "")
+						.map(([key, value]) => `${key}: ${String(value)}`)
+					: [])
+			].filter((value): value is string => typeof value === "string" && value !== "").join(" · ")
+			: undefined;
+		const pluginDetail = payload.kind === "plugin_lifecycle"
+			? [
+				payload.action,
+				payload.pluginId,
+				payload.version,
+				payload.publisher,
+				payload.digest,
+				payload.networkHost,
+				payload.serviceEffect,
+				payload.retention,
+				typeof payload.activeRuns === "number" ? `${payload.activeRuns} active runs` : null
+			].filter((value): value is string => typeof value === "string" && value !== "").join(" · ")
+			: payload.kind === "paid_compute"
+				? [
+					payload.recipeId ?? payload.operation,
+					payload.dataset,
+					payload.proposerModel ? `proposer ${payload.proposerModel}` : null,
+					payload.evaluatorModel ? `evaluator ${payload.evaluatorModel}` : null,
+					payload.requestedCap && typeof payload.requestedCap === "object"
+						? `max ${String((payload.requestedCap as { maxRollouts?: number }).maxRollouts ?? "")} rollouts`
+						: null,
+					Array.isArray(payload.credentialNames) ? `credentials ${payload.credentialNames.join(", ")}` : null
+				].filter((value): value is string => Boolean(value)).join(" · ")
+				: undefined;
+		const autoPaid = event.eventKind === "approval.granted"
+			&& approvalKind === "paid_compute"
+			&& payload.policyAuto === true
+			&& payload.approvalPolicy === "conversation_paid_compute_budget";
+		const autoPaidDetail = autoPaid
+			? [
+				typeof payload.reservedUsdMicros === "number" ? `reserved $${formatUsdMicros(payload.reservedUsdMicros)}` : null,
+				typeof payload.settledSpendUsdMicros === "number" ? `settled $${formatUsdMicros(payload.settledSpendUsdMicros)}` : null,
+				typeof payload.remainingUsdMicros === "number" ? `remaining $${formatUsdMicros(payload.remainingUsdMicros)}` : null,
+				typeof payload.conversationCapUsdMicros === "number" ? `conversation $${formatUsdMicros(payload.conversationCapUsdMicros)}` : null
+			].filter((value): value is string => Boolean(value)).join(" · ")
+			: undefined;
+		const safeKind = payload.kind === "shell_command" || payload.kind === "file_change" || payload.kind === "permission"
+			|| payload.kind === "plugin_lifecycle" || payload.kind === "paid_compute";
+		const detail = autoPaidDetail
+			?? typedDetail
+			?? computerUseDetail
+			?? pluginDetail
+			?? (safeKind && typeof payload.detail === "string"
+				? payload.detail.slice(0, 500)
+				: command ? redactCommand(command) : path);
 		(byMessage[current] ??= []).push({
 			id: `activity-${event.sequence}`,
 			label,
@@ -1526,6 +1671,36 @@ export function eventsToLocalActivity(
 			approvalId: event.eventKind === "approval.requested"
 				? approvalKey(event) ?? `approval-${event.sequence}`
 				: undefined,
+			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "container_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "computer_use"
+				? approvalKind : "permission",
+			approvalPayload: event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? {
+				operation: typeof payload.operation === "string" ? payload.operation : undefined,
+				parameters: payload.parameters && typeof payload.parameters === "object" && !Array.isArray(payload.parameters) ? payload.parameters as Record<string, unknown> : undefined,
+				estimatedCostUsdMicros: typeof payload.estimatedCostUsdMicros === "number" ? payload.estimatedCostUsdMicros : undefined,
+				requestedCap: payload.requestedCap && typeof payload.requestedCap === "object" && !Array.isArray(payload.requestedCap)
+					? payload.requestedCap as { maxCostUsdMicros?: number; maxRollouts?: number }
+					: undefined,
+				requestingAgent: typeof payload.requestingAgent === "string" ? payload.requestingAgent : undefined
+			} : event.eventKind === "approval.requested" && approvalKind === "credential_access" ? {
+				provider: typeof payload.provider === "string" ? payload.provider : undefined,
+				purpose: typeof payload.purpose === "string" ? payload.purpose : undefined,
+				consent: payload.consent === "remember_locator" || payload.consent === "register_source" || payload.consent === "issue_lease" ? payload.consent : undefined,
+				locatorId: typeof payload.locatorId === "string" ? payload.locatorId : undefined,
+				displayPath: typeof payload.displayPath === "string" ? payload.displayPath : undefined,
+				variable: typeof payload.variable === "string" ? payload.variable : undefined,
+				switchFromDisplay: typeof payload.switchFromDisplay === "string" ? payload.switchFromDisplay : undefined
+			} : autoPaid ? {
+				policyAuto: true,
+				reservedUsdMicros: typeof payload.reservedUsdMicros === "number" ? payload.reservedUsdMicros : undefined,
+				settledSpendUsdMicros: typeof payload.settledSpendUsdMicros === "number" ? payload.settledSpendUsdMicros : undefined,
+				remainingUsdMicros: typeof payload.remainingUsdMicros === "number" ? payload.remainingUsdMicros : undefined,
+				conversationCapUsdMicros: typeof payload.conversationCapUsdMicros === "number" ? payload.conversationCapUsdMicros : undefined,
+				requestedCap: payload.requestedCap && typeof payload.requestedCap === "object" && !Array.isArray(payload.requestedCap)
+					? payload.requestedCap as { maxCostUsdMicros?: number; maxRollouts?: number }
+					: payload.cap && typeof payload.cap === "object" && !Array.isArray(payload.cap)
+						? payload.cap as { maxCostUsdMicros?: number; maxRollouts?: number }
+						: undefined
+			} : undefined,
 			alwaysAllowSupported: event.eventKind === "approval.requested" && payload.alwaysSupported === true,
 			detail,
 			path,
@@ -1553,13 +1728,65 @@ export function eventsToLocalActivity(
 
 export { assertLocalActivityPlacementInvariant } from "./activityPlacementInvariant";
 
+/** Operations that make a visual *this chat's* output.
+ *
+ * The durable visual registry is instance-global, so a visual returned by
+ * `list`, `get`, `show`, `capture_review`, or `review` is very often someone
+ * else's. Adopting on any call that happened to carry a visual record is how a
+ * chat claimed outputs it had merely looked at. Reading is not owning. */
+const VISUAL_OWNERSHIP_OPERATIONS = new Set([
+	"create",
+	"create_from_template",
+	"update",
+	"bind",
+	"bind_data_source",
+	"save",
+	"save_tsx",
+	"fork",
+	"archive"
+]);
+
+const VISUAL_OWNERSHIP_TOOLS = new Set([
+	"visual_create",
+	"visual_create_from_template",
+	"visual_update",
+	"visual_bind_data_source",
+	"visual_save",
+	"visual_save_tsx",
+	"visual_fork",
+	"visual_archive"
+]);
+
+function toolClaimsVisualOwnership(tool: string, args: Record<string, unknown>): boolean {
+	// `visual_manage` is one advertised tool covering every operation, so its
+	// name alone says nothing about whether this call authored anything.
+	if (tool === "visual_manage") {
+		const operation = (stringField(args, "operation") ?? "").toLowerCase();
+		return VISUAL_OWNERSHIP_OPERATIONS.has(operation);
+	}
+	return VISUAL_OWNERSHIP_TOOLS.has(tool);
+}
+
+/** A visual belongs to the session that created it, and to no other.
+ *
+ * A visual with no recorded owner stays adoptable, so chats that predate
+ * ownership keep their own rails. One that names a *different* owner is never
+ * adopted, however it arrived here. */
+function visualBelongsToSession(visual: Record<string, unknown>, sessionId: string): boolean {
+	const owner = stringField(visual, "sessionId", "session_id", "ownerSessionId", "owner_session_id");
+	return !owner || owner === sessionId;
+}
+
 function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 	const item = eventItem(event);
 	const server = (stringField(item, "server", "pluginId", "plugin_id") ?? "").toLowerCase();
 	const tool = (stringField(item, "tool", "name", "toolName", "tool_name") ?? "").toLowerCase();
 	if (server !== "synth_visuals" || !VISUAL_MUTATION_TOOLS.has(tool)) return undefined;
+	const args = parseJsonObject(item.arguments) ?? {};
+	if (!toolClaimsVisualOwnership(tool, args)) return undefined;
 	const visual = visualFromToolResult(item);
 	if (!visual) return undefined;
+	if (!visualBelongsToSession(visual, event.sessionId)) return undefined;
 	const id = stringField(visual, "id", "visualId", "visual_id");
 	const templateId = stringField(visual, "templateId", "template_id");
 	if (!id || !templateId) return undefined;
@@ -1569,19 +1796,18 @@ function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 		id,
 		kind: "report",
 		title,
+		displayName: stringField(visual, "displayName", "display_name") ?? title,
+		updatedAt: stringField(visual, "updatedAt", "updated_at") ?? event.createdAt,
 		summary: stringField(metadata ?? {}, "summary"),
 		messageId: stringField(visual, "messageId", "message_id"),
 		shownByAgent: true,
 		templateId,
 		visualId: id,
 		bindings: objectValue(visual.bindings),
-		preview: {
-			variant: templateId.includes("scrub") || templateId.includes("rollout")
-				? "craftax_frame"
-				: templateId.includes("craftax") || templateId.includes("eval_matrix")
-					? "craftax_pareto"
-					: "generic"
-		}
+		runId: optimizerRunIdFromBindings(visual.bindings) ?? stringField(visual, "runId", "run_id"),
+		metadata,
+		status: parseArtifactRefStatus(stringField(visual, "status")),
+		preview: { variant: previewVariantForTemplate(templateId) }
 	};
 }
 
@@ -1601,6 +1827,12 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			continue;
 		}
 		const payload = event.payload ?? {};
+		// Showing a visual puts it in the pane; it does not make it this chat's
+		// output. The show event is journaled against whoever opened it, so the
+		// record's own owner is the only authority on that.
+		if (event.eventKind === "visual.show" && !visualBelongsToSession(payload, event.sessionId)) {
+			continue;
+		}
 		const id =
 			typeof payload.visualId === "string"
 				? payload.visualId
@@ -1614,10 +1846,24 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 				? payload.templateId
 				: artifacts.get(id)?.templateId;
 		const prior = artifacts.get(id);
+		const metadata = objectValue(payload.metadata) ?? prior?.metadata;
+		const ownerSessionId = stringField(payload, "ownerSessionId", "owner_session_id") ?? prior?.ownerSessionId;
+		const runId = optimizerRunIdFromBindings(payload.bindings ?? prior?.bindings)
+			?? stringField(payload, "runId", "run_id")
+			?? event.runId
+			?? prior?.runId;
 		artifacts.set(id, {
 			id,
 			kind: "report",
 			title: typeof payload.title === "string" ? payload.title : prior?.title ?? title,
+			displayName:
+				typeof payload.displayName === "string"
+					? payload.displayName
+					: stringField(metadata ?? {}, "displayName", "display_name")
+						?? prior?.displayName
+						?? (typeof payload.title === "string" ? payload.title : title),
+			updatedAt:
+				typeof payload.updatedAt === "string" ? payload.updatedAt : event.createdAt ?? prior?.updatedAt,
 			summary:
 				typeof payload.summary === "string" ? payload.summary : prior?.summary,
 			messageId:
@@ -1625,16 +1871,59 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			shownByAgent: true,
 			templateId,
 			visualId: id,
+			revision: typeof payload.revision === "number" && Number.isFinite(payload.revision)
+				? payload.revision
+				: prior?.revision,
+			metadata,
+			ownerSessionId,
+			sessionId: ownerSessionId ?? prior?.sessionId,
+			runId: runId ?? undefined,
+			traceId: stringField(payload, "traceId", "trace_id") ?? prior?.traceId,
 			bindings:
 				payload.bindings && typeof payload.bindings === "object"
 					? (payload.bindings as Record<string, unknown>)
 					: prior?.bindings,
+			status: parseArtifactRefStatus(payload.status ?? prior?.status),
 			preview: {
 				variant: templateId?.includes("scrub") ? "craftax_frame" : "generic"
 			}
 		});
 	}
-	return [...artifacts.values()];
+	const agents = eventsToSubagents(events);
+	if (agents.length) {
+		artifacts.set("codex-subagents", {
+			id: "codex-subagents",
+			kind: "report",
+			title: "Subagents",
+			summary: `${agents.filter((agent) => agent.status === "starting" || agent.status === "working").length} working · ${agents.filter((agent) => agent.status === "interrupted" || agent.status === "failed" || agent.status === "stopped" || agent.status === "unavailable").length} need attention · ${agents.filter((agent) => agent.status === "completed").length} completed`,
+			shownByAgent: true,
+			templateId: "synth.subagents.v1",
+			bindings: { agents, sessionId: events[0]?.sessionId },
+			preview: { variant: "generic" }
+		});
+	}
+	const result = [...artifacts.values()];
+	const subagents = result.findIndex((artifact) => artifact.id === "codex-subagents");
+	if (subagents > 0) result.unshift(result.splice(subagents, 1)[0]);
+	return result;
+}
+
+/** Keep an open pane only if that artifact still belongs to this chat. */
+export function openArtifactIdForChat(
+	openId: string | null,
+	artifacts: ArtifactRef[] | undefined
+): string | null {
+	if (!openId) return null;
+	return artifacts?.some((artifact) => artifact.id === openId) ? openId : null;
+}
+
+/** Outputs lists this chat's owned visuals. Foreign discovery is labeled, never adopted. */
+export function ownedChatArtifacts(chatId: string, artifacts: ArtifactRef[] | undefined): ArtifactRef[] {
+	return (artifacts ?? []).filter((artifact) => {
+		if (artifact.templateId === "synth.subagents.v1") return true;
+		if (!artifact.ownerSessionId) return true;
+		return artifact.ownerSessionId === chatId;
+	});
 }
 
 export function visualRecordToArtifact(visual: VisualInstanceRecord): ArtifactRef {
@@ -1646,14 +1935,9 @@ export function visualRecordToArtifact(visual: VisualInstanceRecord): ArtifactRe
 		visualId: visual.id,
 		rendererKind: typeof visual.metadata?.rendererKind === "string" ? visual.metadata.rendererKind : undefined,
 		bindings: visual.bindings,
+		status: parseArtifactRefStatus(visual.metadata?.status),
 		preview: {
-			variant:
-				visual.templateId.includes("scrub") || visual.templateId.includes("rollout")
-					? "craftax_frame"
-					: visual.templateId.includes("craftax") ||
-						  visual.templateId.includes("eval_matrix")
-						? "craftax_pareto"
-						: "generic"
+			variant: previewVariantForTemplate(visual.templateId)
 		}
 	};
 }
@@ -1813,12 +2097,8 @@ export function buildSessionViewSlice(
 		return cached.value;
 	}
 
-	// The durable journal contains parent and child thread records.  Main chat
-	// projections retain only parent-owned entries; opening a child uses
-	// `buildSubagentConversation` below against the same journal.
-	const conversationEvents = parentConversationEvents(events, { rootThreadId: sessionThreadId(session) });
-	const messages = eventsToMessages(conversationEvents);
-	const artifacts = eventsToArtifacts(artifactEventsForSession(conversationEvents, codexActivity));
+	const messages = eventsToMessages(events);
+	const artifacts = eventsToArtifacts(artifactEventsForSession(events, codexActivity));
 	let value: SessionViewSlice | null = null;
 
 	if (sessionIsLocalChat(session)) {
@@ -1829,7 +2109,7 @@ export function buildSessionViewSlice(
 				title: session.title,
 				messages,
 				artifacts,
-				activityByMessageId: eventsToLocalActivity(conversationEvents, messages, reasoningDisplay)
+				activityByMessageId: eventsToLocalActivity(events, messages, reasoningDisplay)
 			}
 		};
 	} else if (sessionIsSync(session)) {
@@ -1842,13 +2122,13 @@ export function buildSessionViewSlice(
 				remoteId: session.remoteId ?? session.id,
 				cursor: session.latestCursor,
 				messages,
-				activity: eventsToActivity(conversationEvents, codexActivity),
+				activity: eventsToActivity(events, codexActivity),
 				artifacts
 			}
 		};
 	} else if (sessionIsAsync(session)) {
-		const activity = eventsToActivity(conversationEvents, codexActivity);
-		const phase = mapAsyncPhase(session.status, conversationEvents);
+		const activity = eventsToActivity(events, codexActivity);
+		const phase = mapAsyncPhase(session.status, events);
 		value = {
 			kind: "async",
 			isRustIntern: session.metadata.runtime === "rust-intern",

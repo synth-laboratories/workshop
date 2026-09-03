@@ -937,7 +937,11 @@ impl<'a> SvgRenderer<'a> {
                 info.x,
                 info.y,
                 &info.lines,
-                if self.is_state_diagram { 12.0 } else { self.options.font_size },
+                if self.is_state_diagram {
+                    12.0
+                } else {
+                    self.options.font_size
+                },
                 DEFAULT_LINE_HEIGHT,
                 &self.theme.text_color,
             );

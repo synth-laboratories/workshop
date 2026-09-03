@@ -135,6 +135,7 @@ impl SessionStatus {
                         Self::Ready | Self::Running | Self::Closed
                     )
                     | (Self::Failed, Self::Ready | Self::Running | Self::Closed)
+                    | (Self::Closed, Self::Ready)
             )
     }
 }
@@ -162,7 +163,7 @@ impl RunStatus {
         }
     }
 
-    fn parse(value: &str) -> Result<Self> {
+    pub(crate) fn parse(value: &str) -> Result<Self> {
         match value {
             "created" => Ok(Self::Created),
             "running" => Ok(Self::Running),
@@ -174,7 +175,7 @@ impl RunStatus {
         }
     }
 
-    fn terminal(self) -> bool {
+    pub(crate) fn terminal(self) -> bool {
         matches!(
             self,
             Self::Completed | Self::Interrupted | Self::Failed | Self::Cancelled

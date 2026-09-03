@@ -1,22 +1,48 @@
 /**
- * Typed invoke skeleton (Wave 2 interim).
- * Prefer `invokeCommand(COMMANDS.X, args)` over raw string command names.
- * Specta seed bindings live in `generated/protocol.ts`; migrate call sites
- * command-by-command onto `spectaCommands` without dropping this helper.
+ * Specta-generated command bindings are the desktop invoke surface.
+ * Call sites go through `commands` in `generated/protocol.ts`.
  */
 
-import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 export { commands as generatedCommands } from "../generated/protocol";
-import { COMMANDS, type CommandName } from "./protocolConstants";
 
-export type InvokeArgs = Record<string, unknown> | undefined;
+type SpectaEnvelope<D> = { status: "ok"; data: D } | { status: "error"; error: unknown };
 
-/**
- * Invoke a Tauri command by const name from {@link COMMANDS}.
- * New bridge call sites should use this instead of string literals.
- */
-export function invokeCommand<T>(command: CommandName, args?: InvokeArgs): Promise<T> {
-	return tauriInvoke<T>(command, args);
+type Unwrapped<T> = [T] extends [SpectaEnvelope<infer D>]
+	? [D] extends [null]
+		? void
+		: D
+	: [T] extends [SpectaEnvelope<infer D> | null]
+		? [D] extends [null]
+			? void
+			: D
+		: T;
+
+function isSpectaEnvelope(value: unknown): value is SpectaEnvelope<unknown> {
+	return (
+		!!value &&
+		typeof value === "object" &&
+		"status" in value &&
+		((value as SpectaEnvelope<unknown>).status === "ok" ||
+			(value as SpectaEnvelope<unknown>).status === "error")
+	);
 }
 
-export { COMMANDS };
+/** Unwrap tauri-specta `typedError` envelopes; pass through raw invoke results. */
+export async function fromGenerated<T>(result: Promise<T>): Promise<Unwrapped<T>> {
+	const value = await result;
+	if (isSpectaEnvelope(value)) {
+		if (value.status === "error") throw value.error;
+		return value.data as Unwrapped<T>;
+	}
+	return value as Unwrapped<T>;
+}
+
+/** Specta command args are `T | null`; renderer optionals are `T | undefined`. */
+export function n<T>(value: T | null | undefined): T | null {
+	return value ?? null;
+}
+
+/** Coerce a renderer-shaped value onto a generated command argument. */
+export function wire<T>(value: unknown): T {
+	return value as T;
+}

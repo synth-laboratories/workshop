@@ -92,7 +92,7 @@ test("a single tool call stays inline and summary rows split groups", () => {
 	assert.deepEqual(presented[2].lines.map((line) => line.id), ["c2", "t2", "c3"]);
 });
 
-test("grouped mode keeps visual and container MCP calls out of used-tools summaries", () => {
+test("grouped mode keeps lifecycle milestones visible and folds visual plumbing", () => {
 	const lines = [
 		{ id: "c1", label: "synth_containers.container_list", kind: "working", toolStatus: "completed" },
 		{ id: "c2", label: "synth_containers.container_register", kind: "working", toolStatus: "completed", containerId: "ctr_craftax" },
@@ -100,12 +100,15 @@ test("grouped mode keeps visual and container MCP calls out of used-tools summar
 		command("sh2"),
 		{
 			id: "v1",
-			label: "synth_visuals.visual_create_from_template",
-			kind: "visual",
+			label: "Visual draft created",
+			kind: "visual_lifecycle",
+			visualStage: "draft",
 			toolStatus: "completed",
 			artifactId: "vis_w1_craftax",
 			detail: "template_id live.craftax.v1"
-		}
+		},
+		{ id: "v2", label: "synth_visuals.visual_show", kind: "visual", toolStatus: "completed", artifactId: "vis_w1_craftax" },
+		{ id: "v3", label: "synth_visuals.visual_authoring_context", kind: "visual", toolStatus: "completed", artifactId: "vis_w1_craftax" }
 	];
 	const presented = presentActivityLines(lines, "grouped");
 
@@ -118,21 +121,26 @@ test("grouped mode keeps visual and container MCP calls out of used-tools summar
 	assert.equal(presented[2].summary, "2 calls");
 	assert.equal(presented[3].kind, "line");
 	assert.equal(presented[3].line.id, "v1");
-	assert.ok(!presented.some((item) => item.kind === "group" && /used tools/i.test(item.label)));
+	assert.equal(presented[4].kind, "group");
+	assert.equal(presented[4].label, "Used visuals");
+	assert.deepEqual(presented[4].lines.map((line) => line.id), ["v2", "v3"]);
 });
 
-test("compact mode also keeps visual and container MCP calls as inspectable lines", () => {
+test("compact mode keeps a visual lifecycle milestone while folding visual calls", () => {
 	const lines = [
 		{ id: "c1", label: "synth_containers.container_list", kind: "working", toolStatus: "completed" },
 		command("sh1"),
 		command("sh2"),
 		{
 			id: "v1",
-			label: "synth_visuals.visual_create_from_template",
-			kind: "visual",
+			label: "Visual review",
+			kind: "visual_lifecycle",
+			visualStage: "review",
 			toolStatus: "completed",
 			artifactId: "vis_w1_craftax"
-		}
+		},
+		{ id: "v2", label: "synth_visuals.visual_show", kind: "visual", toolStatus: "completed", artifactId: "vis_w1_craftax" },
+		{ id: "v3", label: "synth_visuals.visual_authoring_context", kind: "visual", toolStatus: "completed", artifactId: "vis_w1_craftax" }
 	];
 	const presented = presentActivityLines(lines, "compact");
 
@@ -142,7 +150,8 @@ test("compact mode also keeps visual and container MCP calls as inspectable line
 	assert.equal(presented[1].label, "Ran commands");
 	assert.equal(presented[2].kind, "line");
 	assert.equal(presented[2].line.id, "v1");
-	assert.ok(!presented.some((item) => item.kind === "group" && /used tools/i.test(item.label)));
+	assert.equal(presented[3].kind, "group");
+	assert.equal(presented[3].label, "Used visuals");
 });
 
 test("detailed mode keeps every event inline", () => {

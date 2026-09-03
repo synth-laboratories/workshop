@@ -3,9 +3,10 @@
 //! Wire protocol: `synth.eval-driver.v1` (see `EVAL_DRIVER.md` beside this crate).
 //!
 //! This is product code in the same category as [`crate::visuals_ipc`]: loopback-only
-//! bind, bearer token, descriptor JSON in the instance data root. It is compiled into
-//! debug/dev builds and only spawned for named development instances. Production /
-//! release builds never listen.
+//! bind, bearer token, descriptor JSON in the instance data root. The whole module
+//! exists only behind the `eval-driver` cargo feature — production artifacts are
+//! built without it — and feature-enabled builds still require the runtime opt-in
+//! in [`should_spawn`].
 
 use crate::codex::{self, CodexManager, CodexSessionStartRequest, CodexTurnSendRequest};
 use crate::container_stream::{
@@ -20,9 +21,9 @@ use crate::storage::{EventAppend, EventSource};
 use crate::synth_config;
 use crate::trace_ingest::TraceBundleIngestRequest;
 use crate::visuals::{
-    assert_declared_stream_source, assert_live_eval_slot, classify_live_eval_family,
-    craftax_ten_lane_pins, live_sse_bindings, pending_stream_bindings, resolve_live_eval_template,
-    VisualCreateRequest, VisualUpdateRequest, CRAFTAX_TEN_LANE_SEEDS,
+    assert_declared_stream_source, assert_live_eval_slot, assert_no_live_secrets,
+    classify_live_eval_family, craftax_ten_lane_pins, live_sse_bindings, pending_stream_bindings,
+    resolve_live_eval_template, VisualCreateRequest, VisualUpdateRequest, CRAFTAX_TEN_LANE_SEEDS,
 };
 use crate::visuals_ipc;
 use anyhow::{anyhow, bail, Context, Result};
@@ -39,7 +40,9 @@ pub const PROTOCOL_VERSION: &str = "synth.eval-driver.v1";
 const OPENROUTER_CHAT_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 #[allow(dead_code)]
 const DEFAULT_POLICY_ACTIONS: &[&str] = &["do", "left", "do", "up", "do", "right", "do", "down"];
-const LIVE_EVAL_SLOT: &str = "stream";
+const LIVE_EVAL_INPUT: &str = "stream";
+#[allow(dead_code)]
+const LIVE_EVAL_SLOT: &str = LIVE_EVAL_INPUT;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,11 +59,57 @@ pub fn connection_path(root: &std::path::Path) -> PathBuf {
     root.join("eval-driver.json")
 }
 
-/// Named development instances only. Release/production builds never spawn.
-pub fn should_spawn() -> bool {
-    if !cfg!(debug_assertions) {
-        return false;
+/// Pid a live `/health` body names, if the instance diagnostics are present.
+pub fn health_process_id(body: &Value) -> Option<u32> {
+    body.get("instance")
+        .and_then(|instance| instance.get("processId"))
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+}
+
+/// Refuse to replace a descriptor whose `/health` still answers for a
+/// different process. A missing file or a dead peer is not a holder.
+async fn refuse_overwrite_if_peer_alive(path: &std::path::Path) -> Result<()> {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return Ok(());
+    };
+    let Ok(existing) = serde_json::from_str::<EvalDriverConnection>(&raw) else {
+        return Ok(());
+    };
+    let Some(peer_pid) = probe_peer_health_pid(&existing).await else {
+        return Ok(());
+    };
+    let mine = std::process::id();
+    if peer_pid != mine {
+        bail!(
+            "eval_driver_busy pid={peer_pid} — refusing to overwrite a live descriptor at {}",
+            path.display()
+        );
     }
+    Ok(())
+}
+
+async fn probe_peer_health_pid(existing: &EvalDriverConnection) -> Option<u32> {
+    let url = format!("{}/health", existing.url.trim_end_matches('/'));
+    let client = crate::http::http_client_with_timeout(Duration::from_millis(400));
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", existing.token))
+        .header("x-synth-eval-driver", PROTOCOL_VERSION)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body: Value = response.json().await.ok()?;
+    health_process_id(&body)
+}
+
+/// Runtime opt-in on top of the `eval-driver` compile-time feature: production
+/// artifacts are built without the feature and contain no driver at all, so
+/// this gate only chooses which feature-enabled builds actually listen.
+pub fn should_spawn() -> bool {
     crate::instance::name().is_some() || std::env::var_os("SYNTH_DESKTOP_EVAL_DRIVER").is_some()
 }
 
@@ -91,6 +140,7 @@ pub async fn spawn(deps: EvalDriverDeps, root: PathBuf) -> Result<EvalDriverConn
     };
     fs::create_dir_all(&root)?;
     let connection_file = connection_path(&root);
+    refuse_overwrite_if_peer_alive(&connection_file).await?;
     fs::write(&connection_file, serde_json::to_string_pretty(&connection)?)?;
     #[cfg(unix)]
     {
@@ -113,14 +163,18 @@ pub async fn spawn(deps: EvalDriverDeps, root: PathBuf) -> Result<EvalDriverConn
         )
         .await;
         if let Err(error) = result {
-            eprintln!("synth-desktop: eval driver stopped: {error:#}");
+            crate::platform::logging::report(
+                "eval_driver",
+                "eprintln",
+                format!("synth-desktop: eval driver stopped: {error:#}"),
+            );
         }
     });
     Ok(connection)
 }
 
 fn patch_instance_manifest(connection: &EvalDriverConnection) {
-    let Some(path) = std::env::var_os(crate::instance::MANIFEST_ENV).map(PathBuf::from) else {
+    let Some(path) = crate::instance::manifest_path() else {
         return;
     };
     let Ok(raw) = fs::read_to_string(&path) else {
@@ -154,6 +208,16 @@ async fn route_request(
         Err(error) if crate::error::error_is::<crate::error::Unauthorized>(&error) => {
             JsonHttpResponse::error(StatusCode::UNAUTHORIZED, error.to_string())
         }
+        Err(error)
+            if crate::error::error_is::<crate::container_capabilities::ContainerPreflightError>(
+                &error,
+            ) =>
+        {
+            JsonHttpResponse::with_status(
+                StatusCode::CONFLICT,
+                crate::container_capabilities::preflight_error_body(&error),
+            )
+        }
         Err(error) if crate::error::error_is::<crate::error::ProtocolMismatch>(&error) => {
             JsonHttpResponse::error(StatusCode::UPGRADE_REQUIRED, error.to_string())
         }
@@ -174,7 +238,7 @@ async fn dispatch_request(
         .authorization
         .as_deref()
         .and_then(|value| value.strip_prefix("Bearer ").map(str::trim));
-    if auth != Some(token) {
+    if !auth.is_some_and(|value| crate::ipc::constant_time_eq(value.as_bytes(), token.as_bytes())) {
         return Err(anyhow!(crate::error::Unauthorized).context("unauthorized eval driver request"));
     }
     if let Some(version) = request
@@ -240,6 +304,9 @@ fn percent_decode(value: &str) -> String {
 }
 
 async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) -> Result<Value> {
+    if let Some(route) = laguna_eval_route(method, path) {
+        return dispatch_laguna(route, &deps.laguna).await;
+    }
     let core = &deps.core;
     match (method, path) {
         ("GET", "/health") | ("GET", "/v1/health") => Ok(json!({
@@ -281,20 +348,85 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
                 .context("wait_for_terminal requires sessionId")?;
             wait_for_terminal(core, &session_id, body).await
         }
+        ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/interrupt") => {
+            let session_id = path
+                .trim_start_matches("/v1/sessions/")
+                .trim_end_matches("/interrupt")
+                .trim_end_matches('/')
+                .to_string();
+            deps.codex.interrupt(deps.app.clone(), &session_id).await?;
+            Ok(json!({"ok": true, "sessionId": session_id}))
+        }
+        ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/steer") => {
+            let session_id = path
+                .trim_start_matches("/v1/sessions/")
+                .trim_end_matches("/steer")
+                .trim_end_matches('/')
+                .to_string();
+            let text = body
+                .get("text")
+                .or_else(|| body.get("body"))
+                .and_then(Value::as_str)
+                .context("steer requires text")?
+                .to_string();
+            deps.codex
+                .steer_turn(
+                    deps.app.clone(),
+                    codex::CodexSteerRequest {
+                        session_id: session_id.clone(),
+                        text,
+                    },
+                )
+                .await?;
+            Ok(json!({"ok": true, "sessionId": session_id}))
+        }
+        ("POST", path) if session_approval_route(path).is_some() => {
+            let (session_id, approval_id) =
+                session_approval_route(path).expect("guard checked the route");
+            let decision = body
+                .get("decision")
+                .and_then(Value::as_str)
+                .context("approval resolution requires decision")?
+                .to_string();
+            deps.codex
+                .resolve_approval(
+                    deps.app.clone(),
+                    codex::CodexApprovalDecisionRequest {
+                        session_id: session_id.clone(),
+                        approval_id: approval_id.clone(),
+                        decision,
+                    },
+                )
+                .await?;
+            Ok(json!({"ok": true, "sessionId": session_id, "approvalId": approval_id}))
+        }
+        ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/close") => {
+            let session_id = path
+                .trim_start_matches("/v1/sessions/")
+                .trim_end_matches("/close")
+                .trim_end_matches('/')
+                .to_string();
+            deps.codex.close(&session_id).await?;
+            Ok(json!({"ok": true, "sessionId": session_id, "status": "closed"}))
+        }
+        ("GET", "/v1/preflight") => preflight_report(),
+        ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/ready") => {
+            visuals_ipc::dispatch_optimizer(method, path, body, core, &deps.app).await
+        }
         ("GET", path) if path.starts_with("/v1/sessions/") && path.ends_with("/export") => {
             let session_id = path
                 .trim_start_matches("/v1/sessions/")
                 .trim_end_matches("/export")
                 .trim_end_matches('/')
                 .to_string();
-            export_session(core, &session_id).await
+            export_session(core, &deps.codex, &session_id).await
         }
         ("POST", "/v1/export_session") => {
             let session_id = body
                 .get("sessionId")
                 .and_then(|value| value.as_str().map(str::to_string))
                 .context("export_session requires sessionId")?;
-            export_session(core, &session_id).await
+            export_session(core, &deps.codex, &session_id).await
         }
         ("GET", "/v1/containers") | ("POST", "/v1/containers") => {
             visuals_ipc::dispatch(method, path, body, core).await
@@ -350,10 +482,307 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
         ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/show") => {
             visuals_ipc::dispatch(method, path, body, core).await
         }
+        ("POST", path)
+            if path.starts_with("/v1/visuals/") && path.ends_with("/visualsbench_export") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/visualsbench_export")
+                .trim_end_matches('/');
+            export_visualsbench(core, id, body).await
+        }
         ("POST", "/v1/traces/ingest") => ingest_trace_bundle(core, body).await,
         ("POST", "/v1/policy_preflight") => policy_preflight(deps, body).await,
         _ => bail!("unsupported eval driver route {method} {path}"),
     }
+}
+
+fn session_approval_route(path: &str) -> Option<(String, String)> {
+    let rest = path.strip_prefix("/v1/sessions/")?;
+    let (session_id, tail) = rest.split_once("/approvals/")?;
+    let approval_id = tail.trim_end_matches('/');
+    if session_id.is_empty()
+        || session_id.contains('/')
+        || approval_id.is_empty()
+        || approval_id.contains('/')
+    {
+        return None;
+    }
+    Some((session_id.to_string(), approval_id.to_string()))
+}
+
+/// Read-only launch-state report. The qa-unattended effective-policy contract
+/// (session profile vs machine config) extends this route rather than adding a
+/// second preflight surface.
+fn preflight_report() -> Result<Value> {
+    let permissions = synth_config::desktop_permission_settings()?;
+    let visuals_descriptor = visuals_ipc::connection_path(&crate::storage::app_data_root());
+    // Dry-run of the exact resolution a session start performs. An inherit
+    // start (no explicit values) succeeds whenever machine config parses; the
+    // unattended contract additionally requires the resolved policy to be
+    // `never`, so no provider or host approval can become interactive.
+    let effective = crate::session::approval_policy::resolve_effective(None, None);
+    let qa_unattended = match &effective {
+        Ok(profile) if profile.approval_policy == "never" => json!({
+            "wouldStart": true,
+            "reason": Value::Null,
+        }),
+        Ok(profile) => json!({
+            "wouldStart": false,
+            "reason": format!(
+                "machine approval policy is `{}`; unattended runs require `never`",
+                profile.approval_policy
+            ),
+        }),
+        Err(error) => json!({
+            "wouldStart": false,
+            "reason": format!("effective policy did not resolve: {error}"),
+        }),
+    };
+    Ok(json!({
+        "ok": true,
+        "schemaVersion": PROTOCOL_VERSION,
+        "instance": crate::instance::diagnostics(),
+        "permissions": {
+            "approvalPolicy": permissions.approval_policy,
+            "sandboxMode": permissions.sandbox_mode,
+            "configPath": permissions.config_path,
+        },
+        "effectiveProfile": effective.as_ref().ok().map(|profile| json!({
+            "approvalPolicy": profile.approval_policy,
+            "sandbox": profile.sandbox_mode,
+            "mcpToolsApprovalMode": profile.mcp_tools_approval_mode,
+            "machineConfigPath": profile.machine_config_path,
+        })),
+        "qaUnattended": qa_unattended,
+        // Auto-approval under `never` still refuses unbounded paid compute;
+        // preflight states the cap contract so a driver can assert it.
+        "paidCompute": { "requiresBoundedCap": true },
+        "visualsIpcDescriptorPresent": visuals_descriptor.exists(),
+        "optIn": {
+            "instanceName": crate::instance::name(),
+            "envVar": std::env::var_os("SYNTH_DESKTOP_EVAL_DRIVER").is_some(),
+        },
+    }))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LagunaEvalRoute {
+    Ensure,
+    Status,
+    Inference,
+    Unload,
+}
+
+fn laguna_eval_route(method: &str, path: &str) -> Option<LagunaEvalRoute> {
+    match (method, path) {
+        ("POST", "/v1/laguna/ensure") => Some(LagunaEvalRoute::Ensure),
+        ("GET", "/v1/laguna/status") => Some(LagunaEvalRoute::Status),
+        ("GET", "/v1/laguna/inference") => Some(LagunaEvalRoute::Inference),
+        ("POST", "/v1/laguna/model/unload") => Some(LagunaEvalRoute::Unload),
+        _ => None,
+    }
+}
+
+async fn dispatch_laguna(route: LagunaEvalRoute, laguna: &LagunaManager) -> Result<Value> {
+    match route {
+        LagunaEvalRoute::Ensure => laguna_ensure(laguna).await,
+        LagunaEvalRoute::Status => laguna_status(laguna).await,
+        LagunaEvalRoute::Inference => Ok(serde_json::to_value(laguna.inference_snapshot().await?)?),
+        LagunaEvalRoute::Unload => Ok(serde_json::to_value(laguna.unload_model().await?)?),
+    }
+}
+
+/// Start the same managed Laguna runtime used by the composer, retaining the
+/// product status as the prerequisite receipt when weights or hardware are not
+/// available. Provider credentials and the daemon key never cross this API.
+async fn laguna_ensure(laguna: &LagunaManager) -> Result<Value> {
+    let root = crate::runtime::workshop_root()?;
+    let base_url = match laguna.ensure_for_turn(&root).await {
+        Ok(base_url) => base_url,
+        Err(error) => {
+            laguna.set_error(error.to_string()).await;
+            None
+        }
+    };
+    let product_status = laguna.status().await;
+    let (outcome, code) = classify_laguna_ensure(&product_status, base_url.is_some());
+    let mut status = serde_json::to_value(product_status)?;
+    let status_object = status
+        .as_object_mut()
+        .context("Laguna status must serialize as an object")?;
+    status_object.insert("outcome".into(), Value::String(outcome.into()));
+    status_object.insert("code".into(), Value::String(code.into()));
+    Ok(json!({
+        "ok": base_url.is_some(),
+        "baseUrl": base_url,
+        "status": status,
+    }))
+}
+
+fn classify_laguna_ensure(
+    status: &crate::laguna::LagunaStatus,
+    ready: bool,
+) -> (&'static str, &'static str) {
+    if ready && status.phase == "ready" {
+        return ("ready", "ready");
+    }
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        return ("unmet_prerequisite", "hardware_unsupported");
+    }
+    if status.phase == "not_installed" {
+        return ("unmet_prerequisite", "weights_unavailable");
+    }
+    ("product_error", "runtime_unavailable")
+}
+
+/// Mirror `laguna_get_status`: the first read ensures the managed runtime and
+/// subsequent reads refresh `/health`, so evals observe the same status the UI
+/// renders rather than a parallel test probe.
+async fn laguna_status(laguna: &LagunaManager) -> Result<Value> {
+    let status = if laguna.status().await.phase == "unknown" {
+        let root = crate::runtime::workshop_root()?;
+        if let Err(error) = laguna.ensure(&root).await {
+            laguna.set_error(error.to_string()).await;
+        }
+        laguna.status().await
+    } else {
+        laguna.refresh().await
+    };
+    Ok(serde_json::to_value(status)?)
+}
+
+async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -> Result<Value> {
+    let visual = core.visuals().get(visual_id.to_string()).await?;
+    let mut revisions = core.visuals().revisions(visual_id.to_string()).await?;
+    revisions.sort_by_key(|row| row.revision);
+    let current_revision = revisions
+        .iter()
+        .find(|row| row.revision == visual.current_revision)
+        .context("current visual revision is missing")?;
+    let annotations = core.visuals().annotations(visual_id.to_string()).await?;
+    let active_annotations = annotations
+        .into_iter()
+        .filter(|row| !row.tombstoned && row.visual_revision <= visual.current_revision)
+        .collect::<Vec<_>>();
+    let overlay_digest = core
+        .visuals()
+        .overlay_digest(visual_id.to_string(), visual.current_revision)
+        .await?;
+
+    let mut journal = Vec::new();
+    let mut after = 0_i64;
+    loop {
+        let page = core.journal().events_after(after, 1_000).await?;
+        if page.is_empty() {
+            break;
+        }
+        for event in &page {
+            after = after.max(event.sequence);
+            if event.payload.get("visualId").and_then(Value::as_str) == Some(visual_id) {
+                journal.push(json!({
+                    "kind": event.kind,
+                    "visualId": visual_id,
+                    "revision": event.payload.get("revision").or_else(|| event.payload.get("visualRevision")),
+                    "sequence": event.sequence,
+                }));
+            }
+        }
+        if page.len() < 1_000 || journal.len() > 50_000 {
+            break;
+        }
+    }
+
+    let requested_viewports = body
+        .get("viewports")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let reviews = visual
+        .metadata
+        .get("authoringReviews")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let captures = reviews
+        .iter()
+        .filter(|review| {
+            review.get("revision").and_then(Value::as_i64) == Some(visual.current_revision)
+        })
+        .filter_map(|review| {
+            let viewport = review.get("viewport")?;
+            let width = viewport.get("width")?.as_u64()?;
+            let height = viewport.get("height")?.as_u64()?;
+            let requested = requested_viewports.iter().find(|candidate| {
+                candidate.get("width").and_then(Value::as_u64) == Some(width)
+                    && candidate.get("height").and_then(Value::as_u64) == Some(height)
+            });
+            if !requested_viewports.is_empty() && requested.is_none() {
+                return None;
+            }
+            let screenshot_path = review.get("screenshotPath")?.as_str()?;
+            let bytes = fs::read(screenshot_path).ok();
+            let screenshot_sha256 = bytes
+                .as_deref()
+                .map(hex_sha256)
+                .unwrap_or_default();
+            let checks = review.get("checks").cloned().unwrap_or_else(|| json!({}));
+            Some(json!({
+                "viewport": {
+                    "width": width,
+                    "height": height,
+                    "name": requested.and_then(|value| value.get("name")).and_then(Value::as_str).unwrap_or("recorded"),
+                },
+                "screenshotPath": screenshot_path,
+                "screenshotSha256": screenshot_sha256,
+                "findings": {
+                    "noTextCollisions": checks.get("noTextCollisions").cloned().unwrap_or(Value::Null),
+                    "noHorizontalOverflow": checks.get("noOverflow").cloned().unwrap_or(Value::Null),
+                    "falsifiedMissing": checks.get("falsifiedMissing").cloned().unwrap_or(Value::Bool(false)),
+                },
+                "inspected": bytes.is_some() && checks.get("screenshotInspected").and_then(Value::as_bool) == Some(true),
+            }))
+        })
+        .collect::<Vec<_>>();
+    let annotation_ids = active_annotations
+        .iter()
+        .map(|row| Value::String(row.id.clone()))
+        .collect::<Vec<_>>();
+    let trace_digest = visual.trace_id.clone();
+    Ok(json!({
+        "schemaVersion": "synth.visualsbench-export.v1",
+        "sourceRevision": crate::instance::diagnostics().source_revision,
+        "visual": {
+            "id": visual.id,
+            "revision": visual.current_revision,
+            "templateId": current_revision.template_id,
+            "contentDigest": current_revision.content_digest,
+            "bindingsDigest": current_revision.bindings_digest,
+            "bindings": current_revision.bindings.clone().unwrap_or_else(|| visual.bindings.clone()),
+        },
+        "revisions": revisions.iter().map(|row| json!({
+            "visualId": row.visual_id,
+            "revision": row.revision,
+            "contentDigest": row.content_digest,
+            "bindingsDigest": row.bindings_digest,
+        })).collect::<Vec<_>>(),
+        "journal": journal,
+        "annotations": active_annotations,
+        "overlayDigest": overlay_digest,
+        "nextTurnContext": {
+            "visualId": visual_id,
+            "overlayDigest": overlay_digest,
+            "annotationIds": annotation_ids,
+        },
+        "traceDigestBefore": trace_digest,
+        "traceDigestAfter": trace_digest,
+        "captures": captures,
+        "taskGraderRef": visual.metadata.get("taskGraderRef").cloned().unwrap_or(Value::Null),
+    }))
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
@@ -394,24 +823,23 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
             .to_string(),
         api_key: String::new(),
         model,
+        target_id: body
+            .get("targetId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         provider_name: Some(provider_name),
         provider_title: body
             .get("providerTitle")
             .and_then(Value::as_str)
             .map(str::to_string),
         provider_env_key: None,
-        approval_policy: Some(
-            body.get("approvalPolicy")
-                .and_then(Value::as_str)
-                .unwrap_or("never")
-                .into(),
-        ),
-        sandbox: Some(
-            body.get("sandbox")
-                .and_then(Value::as_str)
-                .unwrap_or("workspace-write")
-                .into(),
-        ),
+        // Absent values inherit the machine policy through the sealed
+        // effective profile; a literal here would be a fifth policy layer.
+        approval_policy: body
+            .get("approvalPolicy")
+            .and_then(Value::as_str)
+            .map(Into::into),
+        sandbox: body.get("sandbox").and_then(Value::as_str).map(Into::into),
         service_tier: body
             .get("serviceTier")
             .and_then(Value::as_str)
@@ -420,6 +848,8 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
         multi_agent_version: None,
         auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
         writable_roots: Vec::new(),
+        adapter: None,
+        local_model_catalog: None,
         broker_credential: false,
     };
     start = prepare_start(&deps.laguna, start).await?;
@@ -441,21 +871,29 @@ async fn prepare_start(
     laguna: &LagunaManager,
     mut request: CodexSessionStartRequest,
 ) -> Result<CodexSessionStartRequest> {
+    request.local_model_catalog = None;
     match crate::codex::provider_class(request.provider_name.as_deref()) {
         crate::codex::ProviderClass::LocalLaguna => {
             let root = crate::runtime::workshop_root()?;
+            let model = laguna.configured_model_id()?;
+            crate::codex::apply_local_laguna_provider(&mut request, &model);
             request.base_url = laguna
-                .ensure(&root)
+                .ensure_for_turn(&root)
                 .await?
                 .ok_or_else(|| anyhow!("Laguna Responses server is unavailable"))?;
-            request.api_key = laguna.api_key().unwrap_or_default();
+            request.api_key = laguna
+                .api_key()
+                .context("Laguna daemon credential is unavailable after ensure")?;
+            let catalog = laguna
+                .codex_model_catalog(&request.base_url, &request.api_key)
+                .await?;
+            crate::codex::apply_local_laguna_catalog_metadata(&mut request, catalog)?;
         }
         crate::codex::ProviderClass::OpenRouter => {
-            let key = synth_config::openrouter_api_key()?
-                .ok_or_else(|| anyhow!("OpenRouter API key is not configured"))?;
+            let key = synth_config::openrouter_api_key()?;
             // Staged for native custody, exactly like the production path;
             // `CodexManager::start` exchanges it for a loopback lease at spawn.
-            crate::codex::stage_brokered_credential(&mut request, &key)
+            crate::codex::apply_openrouter_provider(&mut request, key.as_deref())
                 .map_err(|message| anyhow!(message))?;
         }
         crate::codex::ProviderClass::SynthCloud => {
@@ -526,11 +964,16 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
             .to_string(),
         api_key: String::new(),
         model,
+        target_id: body
+            .get("targetId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         provider_name: Some(provider_name),
         provider_title: None,
         provider_env_key: None,
-        approval_policy: Some("never".into()),
-        sandbox: Some("workspace-write".into()),
+        // Inherit the machine policy through the sealed effective profile.
+        approval_policy: None,
+        sandbox: None,
         service_tier: body
             .get("serviceTier")
             .and_then(Value::as_str)
@@ -539,6 +982,8 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
         multi_agent_version: None,
         auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
         writable_roots: Vec::new(),
+        adapter: None,
+        local_model_catalog: None,
         broker_credential: false,
     };
     start = prepare_start(&deps.laguna, start).await?;
@@ -550,8 +995,10 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
                 start,
                 prompt,
                 effort,
+                ui_context: None,
                 compact_before_model_switch: false,
                 client_message_id: None,
+                recovery_mode: false,
             },
         )
         .await
@@ -616,7 +1063,53 @@ fn is_terminal_event(kind: &str, payload: &Value) -> bool {
         ))
 }
 
-async fn export_session(core: &CoreRuntime, session_id: &str) -> Result<Value> {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EvalProviderBinding {
+    provider: String,
+    model: String,
+    endpoint_class: &'static str,
+    credential_binding: &'static str,
+    brokered: bool,
+    fallback_allowed: bool,
+}
+
+fn eval_provider_binding(record: &crate::codex::CodexSessionRecord) -> EvalProviderBinding {
+    let (endpoint_class, credential_binding, brokered) =
+        match crate::codex::provider_class(Some(&record.provider_name)) {
+            crate::codex::ProviderClass::LocalLaguna => {
+                ("local-loopback-responses", "local-daemon-bearer", false)
+            }
+            crate::codex::ProviderClass::OpenRouter => {
+                ("openrouter-responses", "native-loopback-lease", true)
+            }
+            crate::codex::ProviderClass::SynthCloud => (
+                "synth-cloud-responses-gateway",
+                "native-loopback-lease",
+                true,
+            ),
+            crate::codex::ProviderClass::OpenaiCodexOauth => {
+                ("chatgpt-codex", "oauth-session-file", false)
+            }
+            crate::codex::ProviderClass::Direct => {
+                ("custom-responses", "provider-environment", false)
+            }
+        };
+    EvalProviderBinding {
+        provider: record.provider_name.clone(),
+        model: record.model.clone(),
+        endpoint_class,
+        credential_binding,
+        brokered,
+        fallback_allowed: false,
+    }
+}
+
+async fn export_session(
+    core: &CoreRuntime,
+    codex: &CodexManager,
+    session_id: &str,
+) -> Result<Value> {
     let mut events = Vec::new();
     let mut after = 0_i64;
     loop {
@@ -636,12 +1129,41 @@ async fn export_session(core: &CoreRuntime, session_id: &str) -> Result<Value> {
         }
     }
     let session = core.sessions().get(session_id.to_string()).await?;
+    let provider_binding = codex
+        .list()
+        .await
+        .into_iter()
+        .find(|record| record.session_id == session_id)
+        .map(|record| eval_provider_binding(&record))
+        .with_context(|| format!("Codex provider binding missing for eval session {session_id}"))?;
+    let visuals = core
+        .visuals()
+        .list(crate::visuals::VisualQuery {
+            session_id: Some(session_id.to_string()),
+            limit: Some(100),
+            ..Default::default()
+        })
+        .await?;
+    let mut visual_exports = Vec::with_capacity(visuals.len());
+    for visual in visuals {
+        let revisions = core.visuals().revisions(visual.id.clone()).await?;
+        let renditions = core.visuals().list_renditions(visual.id.clone()).await?;
+        let content = core.visuals().visual_source(visual.id.clone()).await.ok();
+        visual_exports.push(json!({
+            "visual": visual,
+            "revisions": revisions,
+            "renditions": renditions,
+            "content": content,
+        }));
+    }
     Ok(json!({
         "schemaVersion": "synth.eval-session-export.v1",
         "sessionId": session_id,
         "session": session,
+        "providerBinding": provider_binding,
         "events": events,
         "eventCount": events.len(),
+        "visuals": visual_exports,
         "sourceRevision": crate::instance::diagnostics().source_revision,
     }))
 }
@@ -771,6 +1293,11 @@ async fn ingest_trace_bundle(core: &CoreRuntime, body: Value) -> Result<Value> {
         source_uri: body
             .get("sourceUri")
             .or_else(|| body.get("source_uri"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        container_id: body
+            .get("containerId")
+            .or_else(|| body.get("container_id"))
             .and_then(Value::as_str)
             .map(str::to_string),
     };
@@ -920,7 +1447,7 @@ async fn resolve_policy_target(
             let root = crate::runtime::workshop_root()?;
             let base_url = deps
                 .laguna
-                .ensure(&root)
+                .ensure_for_turn(&root)
                 .await?
                 .ok_or_else(|| anyhow!("local Laguna daemon is unavailable"))?;
             let api_key = deps
@@ -951,6 +1478,9 @@ async fn run_policy_rollout(
 ) -> Result<Value> {
     let core = &deps.core;
     let container = core.data().get_container(container_id.to_string()).await?;
+    // Same gate as the direct IPC prepare route: reject unhealthy, stale, or
+    // capability-incompatible records before any mutating call.
+    crate::container_capabilities::preflight_prepare_request(&container, &body)?;
     let base = container
         .base_url
         .as_deref()
@@ -977,12 +1507,7 @@ async fn run_policy_rollout(
         .and_then(Value::as_str)
         .unwrap_or("medium")
         .to_string();
-    let timeout_s = body
-        .get("timeoutS")
-        .or_else(|| body.get("timeout_per_rollout_s"))
-        .and_then(Value::as_u64)
-        .unwrap_or(600)
-        .clamp(30, 3600);
+    let timeout_s = policy_rollout_timeout_seconds(&body);
     let telemetry = body.get("telemetry").cloned().unwrap_or(json!({
         "enabled": true,
         "transport": "sse",
@@ -991,6 +1516,7 @@ async fn run_policy_rollout(
     }));
     refuse_auto_transport(&telemetry)?;
     let slot = require_stream_slot(&body)?;
+    let aggregate_projection = is_aggregate_projection(&body)?;
 
     let client = crate::http::http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -1003,23 +1529,26 @@ async fn run_policy_rollout(
 
     let seed = seed_from_task_instance(&task_instance_id)?;
     // A1: open the family visual before prepare so the pane exists before any
-    // paid call. After prepare, rebind slot `stream` to the declared SSE URL
+    // paid call. After prepare, rebind input `stream` to the declared SSE URL
     // (never guess `/events`) and wait for `stream.subscribed` before start.
-    let visual_id = match body
+    let supplied_visual_id = body
         .get("visualId")
         .or_else(|| body.get("visual_id"))
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            container
-                .metadata
-                .get("liveVisualId")
-                .or_else(|| container.metadata.get("live_visual_id"))
-                .and_then(Value::as_str)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-        }) {
+        .map(str::to_string);
+    if aggregate_projection && supplied_visual_id.is_none() {
+        bail!("projectionMode=aggregate requires visualId for the caller-owned experiment surface");
+    }
+    let visual_id = match supplied_visual_id.or_else(|| {
+        container
+            .metadata
+            .get("liveVisualId")
+            .or_else(|| container.metadata.get("live_visual_id"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+    }) {
         Some(id) => id,
         _ => {
             let opened = open_visual(
@@ -1076,21 +1605,45 @@ async fn run_policy_rollout(
     let poll_url = resolve_declared_url(&base, &declared_poll_url(&prepared_stream)?)?;
     let sse_url = resolve_declared_url(&base, &declared_sse_url(&prepared_stream)?)?;
     assert_declared_stream_source(&sse_url)?;
-    update_visual(
-        core,
-        &visual_id,
-        json!({
-            "bindings": live_sse_bindings(&sse_url),
-            "metadata": {
-                "containerId": container_id,
-                "rolloutId": rollout_id,
-                "streamState": "bound_before_start",
-                "streamId": prepared_stream.get("id"),
-            }
-        }),
+    if !aggregate_projection {
+        update_visual(
+            core,
+            &visual_id,
+            json!({
+                "bindings": live_sse_bindings(&sse_url),
+                "metadata": {
+                    "containerId": container_id,
+                    "rolloutId": rollout_id,
+                    "streamState": "bound_before_start",
+                    "streamId": prepared_stream.get("id"),
+                }
+            }),
+        )
+        .await?;
+    }
+    // The eval driver runs headless, which is exactly when nobody is watching a
+    // pane: its stream failures are the ones most worth having recorded.
+    let stream_diagnostics = crate::container_stream::StreamDiagnostics::new(
+        Some(core.diagnostics_service().clone()),
+        crate::diagnostics::Correlation {
+            container_id: Some(container_id.to_string()),
+            rollout_id: Some(rollout_id.to_string()),
+            visual_id: Some(visual_id.to_string()),
+            stream_id: prepared_stream
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| Some(rollout_id.to_string())),
+            ..Default::default()
+        },
+    );
+    wait_for_stream_subscribed(
+        &client,
+        &poll_url,
+        SUBSCRIBE_READY_TIMEOUT,
+        &stream_diagnostics,
     )
     .await?;
-    wait_for_stream_subscribed(&client, &poll_url, SUBSCRIBE_READY_TIMEOUT).await?;
 
     let mut start_body = json!({
         "rollout_id": rollout_id,
@@ -1100,6 +1653,13 @@ async fn run_policy_rollout(
         "slot": slot,
         "policy_ref": require_caller_policy_ref(&body)?,
     });
+    if let Some(candidate) = body.get("candidate").cloned() {
+        if !candidate.is_object() {
+            bail!("candidate must be an object");
+        }
+        assert_no_live_secrets(&candidate)?;
+        start_body["candidate"] = candidate;
+    }
     if let Some(world_ref) = body
         .get("worldRef")
         .or_else(|| body.get("world_ref"))
@@ -1122,7 +1682,7 @@ async fn run_policy_rollout(
         start_body["task_world"] = task_world;
     }
     let started = std::time::Instant::now();
-    let (state, recovered) = visuals_ipc::start_rollout_idempotently(
+    let (initial_state, recovered) = visuals_ipc::start_rollout_idempotently(
         &client,
         &recovery_client,
         &base,
@@ -1131,8 +1691,20 @@ async fn run_policy_rollout(
     )
     .await
     .context("POST /rollouts after stream.subscribed")?;
+    // A policy-owned container may acknowledge the immutable rollout and run it
+    // asynchronously. Persist provenance as soon as start is accepted so a
+    // timeout or Desktop restart never makes the launched rollout undiscoverable.
+    core.update_container_last_rollout(container_id.to_string(), rollout_id.clone())
+        .await?;
+    let state = wait_for_policy_rollout_terminal(
+        &recovery_client,
+        &base,
+        &rollout_id,
+        initial_state,
+        Duration::from_secs(timeout_s),
+    )
+    .await?;
     let stream = declared_stream_descriptor(&state)?.or(Some(prepared_stream));
-    refuse_host_side_policy_loop(&state)?;
 
     let event_log = client
         .get(&poll_url)
@@ -1176,9 +1748,6 @@ async fn run_policy_rollout(
         },
     };
     let achievements = harvest_achievements(&events);
-
-    core.update_container_last_rollout(container_id.to_string(), rollout_id.clone())
-        .await?;
 
     let env_terminated = state
         .get("terminated")
@@ -1265,13 +1834,51 @@ async fn run_policy_rollout(
     }))
 }
 
-fn refuse_host_side_policy_loop(state: &Value) -> Result<()> {
-    if container_owned_policy_completed(state) {
-        Ok(())
-    } else {
-        bail!(
-            "policy_rollouts refuse a host-side model loop; container did not complete a policy-owned rollout"
-        )
+fn policy_rollout_timeout_seconds(body: &Value) -> u64 {
+    body.get("timeoutS")
+        .or_else(|| body.get("timeout_per_rollout_s"))
+        .and_then(Value::as_u64)
+        .unwrap_or(crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT.as_secs())
+        .clamp(30, 3600)
+}
+
+fn is_aggregate_projection(body: &Value) -> Result<bool> {
+    match body
+        .get("projectionMode")
+        .or_else(|| body.get("projection_mode"))
+        .and_then(Value::as_str)
+    {
+        None | Some("live") => Ok(false),
+        Some("aggregate") => Ok(true),
+        Some(other) => bail!("unsupported projectionMode `{other}`; use live or aggregate"),
+    }
+}
+
+async fn wait_for_policy_rollout_terminal(
+    client: &reqwest::Client,
+    base: &str,
+    rollout_id: &str,
+    mut state: Value,
+    timeout: Duration,
+) -> Result<Value> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if container_owned_policy_completed(&state) {
+            return Ok(state);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let status = state
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            bail!(
+                "policy-owned rollout `{rollout_id}` remained `{status}` past the {timeout:?} deadline; the accepted rollout remains discoverable and may still complete"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Some(current) = visuals_ipc::get_rollout_status(client, base, rollout_id).await? {
+            state = current;
+        }
     }
 }
 
@@ -1776,22 +2383,25 @@ fn seed_from_task_instance(task_instance_id: &str) -> Result<i64> {
         .rsplit(':')
         .next()
         .and_then(|value| value.parse::<i64>().ok())
-        .context("taskInstanceId must end with an integer seed")?;
+        .context(
+            "taskInstanceId must end with an integer seed (for example, `craftax:test:2001`)",
+        )?;
     Ok(seed)
 }
 
 fn require_stream_slot(body: &Value) -> Result<&'static str> {
     let requested = body
-        .get("slot")
+        .get("input")
+        .or_else(|| body.get("slot"))
         .or_else(|| body.get("streamSlot"))
         .or_else(|| body.get("stream_slot"))
         .and_then(Value::as_str)
-        .unwrap_or(LIVE_EVAL_SLOT);
+        .unwrap_or(LIVE_EVAL_INPUT);
     assert_live_eval_slot(requested)?;
-    if requested != LIVE_EVAL_SLOT {
-        bail!("eval driver visual-attached rollouts bind slot \"{LIVE_EVAL_SLOT}\", not \"{requested}\"");
+    if requested != LIVE_EVAL_INPUT {
+        bail!("eval driver visual-attached rollouts bind input \"{LIVE_EVAL_INPUT}\", not \"{requested}\"");
     }
-    Ok(LIVE_EVAL_SLOT)
+    Ok(LIVE_EVAL_INPUT)
 }
 
 /// Pin 10 Craftax lanes (seeds 0–9) for Containers HTTP. Does not call a paid policy.
@@ -1853,6 +2463,186 @@ mod tests {
     }
 
     #[test]
+    fn a_health_body_names_the_holders_pid() {
+        assert_eq!(
+            health_process_id(&json!({"ok": true, "instance": {"processId": 4321}})),
+            Some(4321)
+        );
+        assert_eq!(health_process_id(&json!({"ok": true})), None);
+        assert_eq!(
+            health_process_id(&json!({"instance": {"processId": "1"}})),
+            None
+        );
+    }
+
+    #[test]
+    fn a_dead_peer_descriptor_does_not_block_a_fresh_driver() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = connection_path(dir.path());
+        fs::write(
+            &path,
+            serde_json::to_vec(&EvalDriverConnection {
+                schema_version: PROTOCOL_VERSION.into(),
+                url: "http://127.0.0.1:1".into(),
+                token: "synth_eval_dead".into(),
+                path: path.display().to_string(),
+                instance_name: Some("alpha".into()),
+                source_revision: "test".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(refuse_overwrite_if_peer_alive(&path))
+            .expect("a descriptor whose /health cannot answer is not a live peer");
+    }
+
+    #[test]
+    fn a_live_peer_descriptor_is_not_overwritten() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                use std::io::Write as _;
+                let mut incoming = [0u8; 1024];
+                let _ = std::io::Read::read(&mut stream, &mut incoming);
+                let body = r#"{"ok":true,"instance":{"processId":1}}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let path = connection_path(dir.path());
+        fs::write(
+            &path,
+            serde_json::to_vec(&EvalDriverConnection {
+                schema_version: PROTOCOL_VERSION.into(),
+                url: format!("http://{addr}"),
+                token: "synth_eval_peer".into(),
+                path: path.display().to_string(),
+                instance_name: Some("alpha".into()),
+                source_revision: "test".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(refuse_overwrite_if_peer_alive(&path))
+            .expect_err("a /health with another pid must refuse");
+        let message = format!("{error:#}");
+        assert!(message.contains("eval_driver_busy pid=1"), "{message}");
+    }
+
+    #[test]
+    fn laguna_eval_routes_are_explicit_and_method_scoped() {
+        assert_eq!(
+            laguna_eval_route("POST", "/v1/laguna/ensure"),
+            Some(LagunaEvalRoute::Ensure)
+        );
+        assert_eq!(
+            laguna_eval_route("GET", "/v1/laguna/status"),
+            Some(LagunaEvalRoute::Status)
+        );
+        assert_eq!(
+            laguna_eval_route("GET", "/v1/laguna/inference"),
+            Some(LagunaEvalRoute::Inference)
+        );
+        assert_eq!(
+            laguna_eval_route("POST", "/v1/laguna/model/unload"),
+            Some(LagunaEvalRoute::Unload)
+        );
+        assert_eq!(laguna_eval_route("GET", "/v1/laguna/ensure"), None);
+        assert_eq!(laguna_eval_route("POST", "/v1/laguna/status"), None);
+        assert_eq!(laguna_eval_route("GET", "/v1/laguna/model/unload"), None);
+    }
+
+    fn laguna_status_fixture(phase: &str) -> crate::laguna::LagunaStatus {
+        crate::laguna::LagunaStatus {
+            phase: phase.into(),
+            base_url: Some("http://127.0.0.1:17301".into()),
+            backend: Some("mlx_lm".into()),
+            loaded_model: None,
+            detail: None,
+            memory_bytes: None,
+            idle_seconds: None,
+            idle_unload_after_seconds: None,
+            last_used_at: None,
+            free_at: None,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn laguna_ensure_classifies_only_stable_prerequisites_as_skips() {
+        assert_eq!(
+            classify_laguna_ensure(&laguna_status_fixture("ready"), true),
+            ("ready", "ready")
+        );
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            assert_eq!(
+                classify_laguna_ensure(&laguna_status_fixture("not_installed"), false),
+                ("unmet_prerequisite", "weights_unavailable")
+            );
+            for phase in ["error", "unavailable", "unloaded"] {
+                assert_eq!(
+                    classify_laguna_ensure(&laguna_status_fixture(phase), false),
+                    ("product_error", "runtime_unavailable")
+                );
+            }
+        } else {
+            assert_eq!(
+                classify_laguna_ensure(&laguna_status_fixture("error"), false),
+                ("unmet_prerequisite", "hardware_unsupported")
+            );
+        }
+    }
+
+    #[test]
+    fn provider_binding_is_typed_and_contains_no_endpoint_or_credential() {
+        let record = crate::codex::CodexSessionRecord {
+            session_id: "eval-1".into(),
+            thread_id: "thread-1".into(),
+            workspace: "/tmp/workspace".into(),
+            model: "openai/gpt-5.6-luna".into(),
+            target_id: None,
+            provider_name: "openrouter".into(),
+            provider_title: "OpenRouter Responses".into(),
+            base_url: "http://127.0.0.1:12345/v1".into(),
+            status: "ready".into(),
+            title: None,
+            title_origin: None,
+            presentation_emotion: None,
+            presentation_summary: None,
+            approval_policy: "never".into(),
+            sandbox: "workspace-write".into(),
+            adapter: None,
+            recovery: None,
+        };
+        let binding = eval_provider_binding(&record);
+        assert_eq!(binding.provider, "openrouter");
+        assert_eq!(binding.model, "openai/gpt-5.6-luna");
+        assert_eq!(binding.endpoint_class, "openrouter-responses");
+        assert_eq!(binding.credential_binding, "native-loopback-lease");
+        assert!(binding.brokered);
+        assert!(!binding.fallback_allowed);
+        let value = serde_json::to_value(binding).unwrap();
+        assert!(value.get("baseUrl").is_none());
+        assert!(value.get("apiKey").is_none());
+        assert!(!value.to_string().contains("127.0.0.1"));
+    }
+
+    #[test]
     fn extracts_seed_from_task_instance() {
         assert_eq!(seed_from_task_instance("craftax:test:2001").unwrap(), 2001);
         assert!(seed_from_task_instance("bad").is_err());
@@ -1893,10 +2683,11 @@ mod tests {
                 .unwrap();
         assert_eq!(absolute, "http://127.0.0.1:8098/rollouts/r1/stream");
         let bindings = live_sse_bindings(&absolute);
-        assert_eq!(bindings["slots"][0]["kind"], "live_sse");
-        assert_eq!(bindings["slots"][0]["slot"], "stream");
+        assert!(bindings.get("slots").is_none());
+        assert_eq!(bindings["inputs"][0]["kind"], "live_sse");
+        assert_eq!(bindings["inputs"][0]["input"], "stream");
         assert_eq!(
-            bindings["slots"][0]["source"],
+            bindings["inputs"][0]["source"],
             "http://127.0.0.1:8098/rollouts/r1/stream"
         );
         assert!(declared_sse_url(&json!({
@@ -1919,10 +2710,25 @@ mod tests {
     }
 
     #[test]
-    fn refuse_host_side_policy_when_container_did_not_finish() {
-        assert!(refuse_host_side_policy_loop(&json!({"status": "running"})).is_err());
-        assert!(refuse_host_side_policy_loop(&json!({"terminated": true})).is_ok());
-        assert!(refuse_host_side_policy_loop(&json!({"status": "completed"})).is_ok());
+    fn policy_rollout_timeout_defaults_to_long_running_container_budget() {
+        assert_eq!(
+            policy_rollout_timeout_seconds(&json!({})),
+            crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT.as_secs()
+        );
+        assert_eq!(policy_rollout_timeout_seconds(&json!({"timeoutS": 90})), 90);
+    }
+
+    #[test]
+    fn recognizes_async_and_terminal_policy_states() {
+        assert!(!container_owned_policy_completed(
+            &json!({"status": "running"})
+        ));
+        assert!(container_owned_policy_completed(
+            &json!({"terminated": true})
+        ));
+        assert!(container_owned_policy_completed(
+            &json!({"status": "completed"})
+        ));
     }
 
     #[test]
@@ -2048,16 +2854,60 @@ mod tests {
     }
 
     #[test]
-    fn production_gate_requires_debug_or_named_instance_env() {
-        // In unit tests we are always under debug_assertions.
-        assert!(cfg!(debug_assertions));
-        // Without a named instance or opt-in env, should_spawn is false.
+    fn runtime_gate_requires_named_instance_or_env_opt_in() {
+        // The production gate is the `eval-driver` cargo feature (this module
+        // does not exist without it); should_spawn only selects which
+        // feature-enabled builds listen.
         std::env::remove_var("SYNTH_DESKTOP_INSTANCE");
         std::env::remove_var("SYNTH_DESKTOP_EVAL_DRIVER");
         assert!(!should_spawn());
         std::env::set_var("SYNTH_DESKTOP_EVAL_DRIVER", "1");
         assert!(should_spawn());
         std::env::remove_var("SYNTH_DESKTOP_EVAL_DRIVER");
+    }
+
+    #[test]
+    fn session_approval_route_parses_ids_and_rejects_malformed_paths() {
+        assert_eq!(
+            session_approval_route("/v1/sessions/s-1/approvals/call-9"),
+            Some(("s-1".into(), "call-9".into()))
+        );
+        assert_eq!(
+            session_approval_route("/v1/sessions/s-1/approvals/call-9/"),
+            Some(("s-1".into(), "call-9".into()))
+        );
+        assert_eq!(
+            session_approval_route("/v1/sessions//approvals/call-9"),
+            None
+        );
+        assert_eq!(session_approval_route("/v1/sessions/s-1/approvals/"), None);
+        assert_eq!(
+            session_approval_route("/v1/sessions/s-1/approvals/a/b"),
+            None
+        );
+        assert_eq!(session_approval_route("/v1/sessions/s-1/messages"), None);
+    }
+
+    #[test]
+    fn preflight_report_is_read_only_and_names_the_policy_layers() {
+        let report = preflight_report().expect("preflight");
+        assert_eq!(report["ok"], true);
+        assert_eq!(report["schemaVersion"], PROTOCOL_VERSION);
+        let permissions = &report["permissions"];
+        for key in ["approvalPolicy", "sandboxMode", "configPath"] {
+            assert!(permissions[key].is_string(), "missing permissions.{key}");
+        }
+        assert!(report["visualsIpcDescriptorPresent"].is_boolean());
+        // The unattended contract is a dry-run of the session-start resolution:
+        // wouldStart must be an honest boolean, and it may be true only when
+        // the resolved profile says `never` — never on a divergent machine.
+        assert!(report["qaUnattended"]["wouldStart"].is_boolean());
+        if report["qaUnattended"]["wouldStart"] == true {
+            assert_eq!(report["effectiveProfile"]["approvalPolicy"], "never");
+        } else {
+            assert!(report["qaUnattended"]["reason"].is_string());
+        }
+        assert_eq!(report["paidCompute"]["requiresBoundedCap"], true);
     }
 
     #[test]
@@ -2213,5 +3063,14 @@ mod tests {
             codex::provider_class(Some("openrouter")),
             codex::ProviderClass::OpenRouter
         ));
+    }
+
+    #[test]
+    fn aggregate_projection_is_explicit_and_fail_closed() {
+        assert!(!is_aggregate_projection(&json!({})).unwrap());
+        assert!(!is_aggregate_projection(&json!({"projectionMode": "live"})).unwrap());
+        assert!(is_aggregate_projection(&json!({"projectionMode": "aggregate"})).unwrap());
+        assert!(is_aggregate_projection(&json!({"projection_mode": "aggregate"})).unwrap());
+        assert!(is_aggregate_projection(&json!({"projectionMode": "made_up"})).is_err());
     }
 }

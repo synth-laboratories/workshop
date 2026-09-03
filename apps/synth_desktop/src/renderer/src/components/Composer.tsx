@@ -1,13 +1,18 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-	EXECUTION_TARGETS,
 	LAUNCH_PICKER_TARGETS,
+	MODEL_ACCESS_LABEL,
+	MODEL_ACCESS_ORDER,
+	apiProviderForTarget,
+	isOpenRouterTargetId,
+	modelAccessForTarget,
 	TARGET_GROUP_LABEL,
 	type ExecutionTargetOption,
 	type LandingState,
-	type LocalChat
+	type ModelAccessKind
 } from "../types/landing";
-import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
+import { targetOptionForId } from "../runtime/modelCatalog";
+import { publicError } from "../runtime/publicError";
 import type { ApprovalPolicy, SandboxMode } from "../runtime/nativeCodex";
 import {
 	modelCapabilitiesForTarget,
@@ -21,9 +26,23 @@ import { IconSparkle, SlashCommandMenu, type SlashCommandId, type SlashCommandMe
 import type { Skill } from "../runtime/skills";
 import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
+import type { LagunaPolicy } from "../bridge/types";
+import { compactModelLabel } from "../runtime/modelPresentation";
+import { orderedLagunaPolicies, policyLabel } from "../runtime/lagunaPolicies";
 import { bridges } from "../runtime/desktopBridge";
-import type { Session } from "@synth/runtime-protocol";
-import { ManderPresence } from "./mander";
+import type { PaidComputeAutoApprovalSettings } from "../generated/protocol";
+import { parseUsdAmount } from "../runtime/paidComputeUsd";
+import {
+	armedPromptId,
+	IDLE_STEER_STATE,
+	normalizeSteerFailure,
+	promotingPromptId,
+	reduceSteer,
+	steerFailure,
+	type SteerEffect,
+	type SteerEvent,
+	type SteerState
+} from "../runtime/steering";
 
 /** Permission chip + menus — injectable like InferenceTransport. */
 export type ComposerPermissions = {
@@ -43,7 +62,7 @@ export type ComposerModelControls = {
 
 export type ComposerQueue = {
 	prompts?: Array<{ id: string; text: string }>;
-	onEnqueue?: (text: string) => void;
+	onEnqueue?: (text: string) => string | undefined;
 	onEdit?: (id: string, text: string) => void;
 	onRemove?: (id: string) => void;
 	onPromote?: (id: string, text: string) => void | Promise<void>;
@@ -60,8 +79,14 @@ export type ComposerTurn = {
 	steerSupported?: boolean;
 	steerError?: string | null;
 	onSteer?: (text: string) => void | Promise<void>;
-	/** Recoverable turn-start failure, rendered above the input inside its dock. */
-	sendFailure?: { message: string; onRetry: () => void } | null;
+	onStop?: () => void;
+	/**
+	 * Recoverable turn-start failure, or a turn a dead process abandoned,
+	 * rendered above the input inside its dock. `onRetry` is absent when
+	 * retrying could duplicate work that may already have happened — the state
+	 * is still shown, without an action that would be unsafe to take.
+	 */
+	sendFailure?: { message: string; onRetry?: () => void; actionLabel?: string } | null;
 };
 
 export type ComposerWorkspace = {
@@ -93,20 +118,17 @@ export type ComposerAccountNav = {
 	onOpenVoiceSettings?: () => void;
 };
 
-export type ComposerMascot = {
-	shown: boolean;
-	onToggle: (shown: boolean) => void;
-	session?: Session;
-	chat?: LocalChat | null;
-	running?: boolean;
-};
-
 type Props = {
 	state: LandingState;
 	/** User messages from the active chat, oldest first. */
 	sentMessages?: string[];
 	onSend: (text: string, images?: ComposerImageAttachment[]) => void | Promise<void>;
 	onSelectTarget: (id: string) => void;
+	lagunaAdapter?: {
+		adapters: LagunaPolicy[];
+		selectedId: string | null;
+		onSelect: (checkpointId: string | null) => void;
+	};
 	permissions: ComposerPermissions;
 	model: ComposerModelControls;
 	queue: ComposerQueue;
@@ -114,7 +136,6 @@ type Props = {
 	workspace: ComposerWorkspace;
 	slash: ComposerSlash;
 	account: ComposerAccountNav;
-	mascot?: ComposerMascot;
 };
 
 const APPROVAL_OPTIONS: Array<{ id: ApprovalPolicy; label: string; description: string }> = [
@@ -127,9 +148,108 @@ const SANDBOX_OPTIONS: Array<{ id: SandboxMode; label: string; description: stri
 	{ id: "workspace-write", label: "Workspace access", description: "Read and write inside the workspace." },
 	{ id: "danger-full-access", label: "Full system access", description: "Allow unrestricted filesystem and network access." }
 ];
-
 const APPROVAL_CHIP_LABEL: Record<ApprovalPolicy, string> = { untrusted: "Ask", "on-request": "Risky", never: "Auto" };
 const SANDBOX_CHIP_LABEL: Record<SandboxMode, string> = { "read-only": "Read", "workspace-write": "Workspace", "danger-full-access": "Full" };
+
+const DEFAULT_PAID_COMPUTE: PaidComputeAutoApprovalSettings = {
+	enabled: false,
+	maxRequestUsd: "0.10",
+	maxConversationUsd: "10.00",
+	providers: []
+};
+const PAID_COMPUTE_PROVIDERS = [
+	{ id: "openrouter", label: "OpenRouter" },
+	{ id: "tinker", label: "Tinker" }
+];
+const PAID_COMPUTE_PROVIDER_IDS = new Set(PAID_COMPUTE_PROVIDERS.map(({ id }) => id));
+
+function PaidComputeMenuSection({ approvalPolicy, sandboxMode }: {
+	approvalPolicy: ApprovalPolicy;
+	sandboxMode: SandboxMode;
+}) {
+	const [settings, setSettings] = useState<PaidComputeAutoApprovalSettings>(DEFAULT_PAID_COMPUTE);
+	const [requestLimit, setRequestLimit] = useState(DEFAULT_PAID_COMPUTE.maxRequestUsd);
+	const [conversationLimit, setConversationLimit] = useState(DEFAULT_PAID_COMPUTE.maxConversationUsd);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	useEffect(() => {
+		void bridges.config?.getDesktopPermissions().then((current) => {
+			const paid = current.paidCompute ?? DEFAULT_PAID_COMPUTE;
+			setSettings(paid);
+			setRequestLimit(paid.maxRequestUsd);
+			setConversationLimit(paid.maxConversationUsd);
+		}).catch((reason) => setError(publicError(reason)));
+	}, []);
+
+	const persist = async (next: PaidComputeAutoApprovalSettings) => {
+		if (!bridges.config?.updateDesktopPermissions) return;
+		setBusy(true);
+		try {
+			const supported = {
+				...next,
+				providers: next.providers.filter((provider) => PAID_COMPUTE_PROVIDER_IDS.has(provider))
+			};
+			const stored = await bridges.config.updateDesktopPermissions({
+				approvalPolicy,
+				sandboxMode,
+				paidCompute: supported
+			});
+			const paid = stored.paidCompute ?? DEFAULT_PAID_COMPUTE;
+			setSettings(paid);
+			setRequestLimit(paid.maxRequestUsd);
+			setConversationLimit(paid.maxConversationUsd);
+			setError(null);
+		} catch (reason) {
+			setError(publicError(reason));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const persistLimit = (kind: "request" | "conversation") => {
+		const value = kind === "request" ? requestLimit : conversationLimit;
+		const validation = parseUsdAmount(value).error;
+		if (validation) {
+			setError(validation);
+			return;
+		}
+		void persist(kind === "request"
+			? { ...settings, maxRequestUsd: value }
+			: { ...settings, maxConversationUsd: value });
+	};
+
+	return <div className="permission-section permission-paid-compute" aria-label="Paid compute">
+		<p>Paid compute</p>
+		<label className="permission-paid-toggle">
+			<span><strong>Auto-approve within limits</strong><small>Applies to new conversations.</small></span>
+			<input type="checkbox" checked={settings.enabled} disabled={busy} data-testid="composer-paid-compute-auto-approve" onChange={(event) => void persist({
+				...settings,
+				enabled: event.target.checked,
+				providers: event.target.checked && settings.providers.length === 0 ? ["openrouter"] : settings.providers
+			})} />
+		</label>
+		<div className="permission-paid-limits">
+			<label><span>Per request</span><span className="permission-money-input"><b>$</b><input aria-label="Maximum paid compute per request" inputMode="decimal" value={requestLimit} disabled={busy} onChange={(event) => setRequestLimit(event.target.value)} onBlur={() => persistLimit("request")} /></span></label>
+			<label><span>Per conversation</span><span className="permission-money-input"><b>$</b><input aria-label="Maximum paid compute per conversation" inputMode="decimal" value={conversationLimit} disabled={busy} onChange={(event) => setConversationLimit(event.target.value)} onBlur={() => persistLimit("conversation")} /></span></label>
+		</div>
+		<details className="permission-paid-advanced">
+			<summary>Advanced <span>Providers</span></summary>
+			<div className="permission-paid-providers" aria-label="Allowed paid compute providers">
+				{PAID_COMPUTE_PROVIDERS.map((provider) => <label key={provider.id}>
+					<input type="checkbox" checked={settings.providers.includes(provider.id)} disabled={busy} onChange={(event) => void persist({
+						...settings,
+						providers: event.target.checked
+							? [...new Set([...settings.providers, provider.id])]
+							: settings.providers.filter((id) => id !== provider.id)
+					})} />
+					<span>{provider.label}</span>
+				</label>)}
+			</div>
+		</details>
+		{error ? <small className="permission-paid-error" role="alert">{error}</small> : null}
+	</div>;
+}
 
 function PermissionMenu({ approvalPolicy, sandboxMode, onSelect, disabled, open, onOpenChange }: {
 	approvalPolicy: ApprovalPolicy;
@@ -162,6 +282,7 @@ function PermissionMenu({ approvalPolicy, sandboxMode, onSelect, disabled, open,
 			<div className="permission-section" role="listbox" aria-label="Runtime permissions"><p>Runtime permissions</p>
 				{SANDBOX_OPTIONS.map((option) => <button key={option.id} type="button" role="option" aria-selected={option.id === sandboxMode} className={`permission-option${option.id === sandboxMode ? " selected" : ""}`} onClick={() => onSelect(approvalPolicy, option.id)}><span><strong>{option.label}</strong><small>{option.description}</small></span>{option.id === sandboxMode ? <b aria-hidden>✓</b> : null}</button>)}
 			</div>
+			<PaidComputeMenuSection approvalPolicy={approvalPolicy} sandboxMode={sandboxMode} />
 		</div> : null}
 	</div>;
 }
@@ -241,19 +362,6 @@ function IconAsk() {
 
 function IconWorkspace() {
 	return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden><path d="M1.75 4.25h10.5v6.5a1 1 0 01-1 1h-8.5a1 1 0 01-1-1v-6.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/><path d="M1.75 4.25V3.5a1 1 0 011-1h2.1l1.1 1.25h5.3a1 1 0 011 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>;
-}
-
-function IconMander() {
-	return (
-		<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<path d="M3.4 6.1c.4-1.4 1.5-2.2 2.7-2.2" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
-			<path d="M4.15 7.35c-.85-.45-1.7-.35-2.35.2" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
-			<path d="M5.35 5.15c.15-1.15.7-2 1.45-2.25" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
-			<path d="M4.6 8.15c.35-1.7 1.85-2.85 4.05-2.55 1.55.2 2.55.95 3.15 1.7.45.55 1.35.75 2.05.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-			<path d="M6.15 10.2v1.85M8.35 10.35v1.7M5.45 9.35l-1.25.95M10.05 9.2l1 .9" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
-			<circle cx="10.05" cy="6.95" r="0.65" fill="currentColor" />
-		</svg>
-	);
 }
 
 function IconMic() {
@@ -348,12 +456,12 @@ function IconSend() {
 	);
 }
 
-function IconImage() {
-	return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden><rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.3"/><circle cx="5.2" cy="5.7" r="1.15" fill="currentColor"/><path d="m3.5 11 3-3 2.2 2.1 1.7-1.7 2.1 2.6" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+function IconStop() {
+	return <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden><rect x="3" y="3" width="8" height="8" rx="1" fill="currentColor" /></svg>;
 }
 
-function IconImageUnsupported() {
-	return <svg className="composer-image-unsupported" width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden data-testid="composer-image-unsupported"><circle cx="7" cy="7" r="6" fill="currentColor"/><path d="M7 3.5v4.1M7 10.3v.2" stroke="white" strokeWidth="1.45" strokeLinecap="round"/></svg>;
+function IconImage() {
+	return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden><rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.3"/><circle cx="5.2" cy="5.7" r="1.15" fill="currentColor"/><path d="m3.5 11 3-3 2.2 2.1 1.7-1.7 2.1 2.6" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 }
 
 function formatContextWindow(tokens: number): string {
@@ -368,8 +476,8 @@ function IconChevron() {
 	);
 }
 
-function modelChipLabel(state: LandingState): string {
-	const target = EXECUTION_TARGETS.find((t) => t.id === state.selectedTargetId);
+function modelChipLabel(state: LandingState, policy?: LagunaPolicy): string {
+	const target = targetOptionForId(state.selectedTargetId);
 	if (state.selectedTargetId === "local-laguna") {
 		if (state.model.status === "not_installed" || state.model.status === "error") {
 			return "Laguna offline";
@@ -377,7 +485,7 @@ function modelChipLabel(state: LandingState): string {
 		if (state.model.status === "starting" || state.model.status === "loading") {
 			return "Laguna starting…";
 		}
-		return target?.label ?? `synth/${state.model.name}`;
+		return policy ? policyLabel(policy) : target?.label ?? `synth/${state.model.name}`;
 	}
 	return target?.label ?? "Select model";
 }
@@ -390,7 +498,7 @@ function composerPlaceholder(state: LandingState): string {
 		if (state.apiKeyConfigured !== true) return "Configure Synth API key in Settings → Account";
 		return state.cloudBlockedReason ?? "Ask anything…";
 	}
-	if (state.selectedTargetId.startsWith("openrouter-")) {
+	if (isOpenRouterTargetId(state.selectedTargetId)) {
 		return state.openrouterApiKeyConfigured
 			? "Ask anything…"
 			: "Configure an OpenRouter API key in Settings → Account";
@@ -417,7 +525,7 @@ function composerEnabled(state: LandingState): boolean {
 		// billable cloud target is closed off.
 		return state.apiKeyConfigured === true && !state.cloudBlockedReason;
 	}
-	if (state.selectedTargetId.startsWith("openrouter-")) {
+	if (isOpenRouterTargetId(state.selectedTargetId)) {
 		return state.openrouterApiKeyConfigured === true;
 	}
 	if (state.selectedTargetId.startsWith("chatgpt-")) {
@@ -429,7 +537,7 @@ function composerEnabled(state: LandingState): boolean {
 	return state.composerEnabled;
 }
 
-const GROUP_ORDER: ExecutionTargetOption["group"][] = ["local", "remote", "subscription", "cloud"];
+const GROUP_ORDER: ExecutionTargetOption["group"][] = ["local", "cloud", "remote", "subscription"];
 
 function formatSkillMention(skill: Skill): string {
 	const slug = skill.name.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
@@ -444,6 +552,7 @@ function ModelMenu({
 	onConfigureAccount,
 	onConfigureModels,
 	onResolveBilling,
+	lagunaAdapter,
 	open,
 	onOpenChange
 }: {
@@ -454,15 +563,21 @@ function ModelMenu({
 	onConfigureAccount?: () => void;
 	onConfigureModels?: () => void;
 	onResolveBilling?: () => void;
+	lagunaAdapter?: Props["lagunaAdapter"];
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }) {
 	const ref = useRef<HTMLDivElement>(null);
-	const modelLabel = modelChipLabel(state);
+	const [activeAccess, setActiveAccess] = useState<ModelAccessKind | null>(null);
+	const selectedLagunaPolicy = lagunaAdapter?.adapters.find((policy) =>
+		policy.isBase ? lagunaAdapter.selectedId === null : policy.modelId === lagunaAdapter.selectedId
+	);
+	const modelLabel = modelChipLabel(state, selectedLagunaPolicy);
+	const shortModelLabel = compactModelLabel(modelLabel);
 	const modelReady = !(
 		state.selectedTargetId === "local-laguna" && state.model.status === "not_installed"
 	);
-	const selected = EXECUTION_TARGETS.find((t) => t.id === state.selectedTargetId);
+	const selected = targetOptionForId(state.selectedTargetId);
 	const selectedCapability = modelCapabilitiesForTarget(state.selectedTargetId);
 	const selectedSupportsImages = selectedCapability?.inputModalities.includes("image") ?? false;
 	const selectedThroughput = aggregateModelTpsLabels?.[state.selectedTargetId] ?? modelMedianTpsLabel ?? null;
@@ -493,29 +608,71 @@ function ModelMenu({
 			<button
 				type="button"
 				className={`model-chip${modelReady ? "" : " is-empty"}${open ? " open" : ""}`}
-				onClick={() => onOpenChange(!open)}
+				onClick={() => {
+					if (!open) setActiveAccess(null);
+					onOpenChange(!open);
+				}}
 				aria-label={`Model: ${modelLabel}`}
 				aria-expanded={open}
 				aria-controls="composer-model-menu"
 				aria-haspopup="listbox"
 				data-testid="composer-model"
 			>
-				<ProviderMark
-					kind={providerMarkForTarget(state.selectedTargetId)}
-					className={`model-chip-logo model-chip-logo-${providerMarkForTarget(state.selectedTargetId)}`}
-				/>
 				<span className="model-chip-label">{modelLabel}</span>
+				<span className="model-chip-short-label" aria-hidden>{shortModelLabel}</span>
 				<IconChevron />
 			</button>
 			{open ? (
 				<div id="composer-model-menu" className="composer-model-menu" role="listbox" data-testid="composer-model-menu">
-					{GROUP_ORDER.map((group) => {
+					{activeAccess === null ? MODEL_ACCESS_ORDER.map((access) => (
+						<button key={access} type="button" role="option" aria-selected={selected ? modelAccessForTarget(selected) === access : false} className={`composer-model-option composer-model-access${selected && modelAccessForTarget(selected) === access ? " selected" : ""}`} data-testid={`composer-model-access-${access}`} onClick={() => setActiveAccess(access)}>
+							<span className="composer-model-option-main">
+								<span className="composer-model-option-label">{MODEL_ACCESS_LABEL[access]}</span>
+								<span className="composer-model-option-desc">{access === "local" ? "Models on this Mac" : access === "api" ? "Synth and third-party providers" : "Your ChatGPT subscription"}</span>
+							</span>
+							<span aria-hidden>›</span>
+						</button>
+					)) : <>
+						<button type="button" className="composer-model-option composer-model-access-back" data-testid="composer-model-access-back" onClick={() => setActiveAccess(null)}>
+							<span className="composer-model-option-main"><span className="composer-model-option-label">‹ {MODEL_ACCESS_LABEL[activeAccess]}</span><span className="composer-model-option-desc">All access methods</span></span>
+						</button>
+					{GROUP_ORDER.filter((group) => {
+						const sample = LAUNCH_PICKER_TARGETS.find((target) => target.group === group);
+						return sample ? modelAccessForTarget(sample) === activeAccess : false;
+					}).map((group) => {
 						const items = LAUNCH_PICKER_TARGETS.filter((t) => t.group === group);
 						if (!items.length) return null;
 						return (
 							<div key={group} className="composer-model-group">
-								<div className="composer-model-group-label">{TARGET_GROUP_LABEL[group]}</div>
+								<div className="composer-model-group-label">{activeAccess === "api" ? apiProviderForTarget(items[0]) : TARGET_GROUP_LABEL[group]}</div>
 								{items.map((target) => {
+									if (target.id === "local-laguna" && lagunaAdapter?.adapters.length) {
+									return orderedLagunaPolicies(lagunaAdapter.adapters).map((policy) => {
+											const policyId = policy.isBase ? null : policy.modelId;
+											const selectedHere = state.selectedTargetId === target.id && lagunaAdapter.selectedId === policyId;
+											return (
+												<button
+													key={policy.modelId}
+													type="button"
+													role="option"
+													data-testid={`composer-model-option-local-laguna-${policy.isBase ? "base" : policy.modelId}`}
+													aria-selected={selectedHere}
+													className={`composer-model-option${selectedHere ? " selected" : ""}`}
+													onClick={() => {
+														onSelectTarget(target.id);
+														lagunaAdapter.onSelect(policyId);
+														onOpenChange(false);
+													}}
+												>
+													<span className="composer-model-option-main">
+														<span className="composer-model-option-label">{policyLabel(policy)}</span>
+														<span className="composer-model-option-desc">{policy.isBase ? "Original model · This Mac" : "SFT variant · This Mac"}</span>
+													</span>
+													{selectedHere ? <span className="composer-model-check" aria-hidden>✓</span> : null}
+												</button>
+											);
+										});
+									}
 									const localBlocked =
 										target.id === "local-laguna" &&
 										(state.model.status === "not_installed" ||
@@ -525,7 +682,7 @@ function ModelMenu({
 									const needsSynthKey =
 										target.id.startsWith("synth-cloud-") && state.apiKeyConfigured !== true;
 									const needsOpenRouterKey =
-										target.id.startsWith("openrouter-") && state.openrouterApiKeyConfigured !== true;
+										isOpenRouterTargetId(target.id) && state.openrouterApiKeyConfigured !== true;
 									const needsCodexOauth =
 										target.id.startsWith("chatgpt-") && state.codexOauthConfigured !== true;
 									const allowanceBlocked =
@@ -541,6 +698,16 @@ function ModelMenu({
 														: null
 											: null;
 									const selectedHere = target.id === state.selectedTargetId;
+									if (target.selectable === false) {
+										return (
+											<div key={target.id} className="composer-model-option is-disabled" data-testid={`composer-model-option-${target.id}`}>
+												<span className="composer-model-option-main" role="option" aria-selected={false} aria-disabled="true">
+													<span className="composer-model-option-label">{target.label}</span>
+													<span className="composer-model-option-desc">{target.diagnostic ?? target.availability ?? "Unavailable"}</span>
+												</span>
+											</div>
+										);
+									}
 									if (allowanceBlocked) {
 										return (
 											<div
@@ -627,8 +794,8 @@ function ModelMenu({
 								})}
 							</div>
 						);
-					})}
-					{selected ? (
+					})}</>}
+					{selected && activeAccess !== null ? (
 						<details className="composer-model-advanced" data-testid="composer-model-advanced">
 							<summary>Advanced</summary>
 							<div className="composer-model-details">
@@ -648,7 +815,7 @@ function ModelMenu({
 										</div>
 										<div>
 											<span>Context</span>
-											<strong>{formatContextWindow(selectedCapability.maxContextTokens)}</strong>
+											<strong>{selectedCapability.maxContextTokens ? formatContextWindow(selectedCapability.maxContextTokens) : "Not verified"}</strong>
 										</div>
 									</>
 								) : null}
@@ -672,14 +839,14 @@ export function Composer({
 	sentMessages = [],
 	onSend,
 	onSelectTarget,
+	lagunaAdapter,
 	permissions,
 	model,
 	queue,
 	turn,
 	workspace,
 	slash,
-	account,
-	mascot
+	account
 }: Props) {
 	const { approvalPolicy, sandboxMode, onSelect: onSelectPermissions } = permissions;
 	const {
@@ -704,6 +871,7 @@ export function Composer({
 		steerSupported = false,
 		steerError = null,
 		onSteer,
+		onStop,
 		sendFailure = null
 	} = turn;
 	const {
@@ -737,10 +905,14 @@ export function Composer({
 	const [skillChip, setSkillChip] = useState<Skill | null>(null);
 	const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
 	const [modelMenuOpen, setModelMenuOpen] = useState(false);
-	const [armedQueuedPromptId, setArmedQueuedPromptId] = useState<string | null>(null);
-	const [promotingQueuedPromptId, setPromotingQueuedPromptId] = useState<string | null>(null);
-	const queuedEnterRef = useRef<{ id: string; at: number } | null>(null);
-	const queuedEnterTimerRef = useRef<number | null>(null);
+	const [addMenuOpen, setAddMenuOpen] = useState(false);
+	// Steering lives in the turn controller, not on the queued-prompt row, so a
+	// second Return works from wherever the keyboard is. The ref mirrors the
+	// state because a keydown handler must read it before React commits.
+	const [steer, setSteer] = useState<SteerState>(IDLE_STEER_STATE);
+	const steerRef = useRef<SteerState>(IDLE_STEER_STATE);
+	const armedQueuedPromptId = armedPromptId(steer);
+	const promotingQueuedPromptId = promotingPromptId(steer);
 	const [workspaceMenuSignal, setWorkspaceMenuSignal] = useState(0);
 	const dockRef = useRef<HTMLDivElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -817,6 +989,17 @@ export function Composer({
 		return () => document.removeEventListener("mousedown", close);
 	}, [slashMenuVisible]);
 
+	useEffect(() => {
+		if (!addMenuOpen) return;
+		const close = (event: MouseEvent) => {
+			if (!dockRef.current?.querySelector(".composer-add-wrap")?.contains(event.target as Node)) {
+				setAddMenuOpen(false);
+			}
+		};
+		document.addEventListener("mousedown", close);
+		return () => document.removeEventListener("mousedown", close);
+	}, [addMenuOpen]);
+
 	useLayoutEffect(() => {
 		const dock = dockRef.current;
 		const mainPane = dock?.closest<HTMLElement>(".main-pane");
@@ -825,31 +1008,15 @@ export function Composer({
 		let frame = 0;
 		const updateClearance = () => {
 			frame = 0;
-			const clearance = Math.ceil(window.innerHeight - dock.getBoundingClientRect().top + 16);
+			const transcript = mainPane.querySelector<HTMLElement>(".chat-transcript");
+			const transcriptBottom = transcript?.getBoundingClientRect().bottom
+				?? mainPane.getBoundingClientRect().bottom;
+			const clearance = Math.max(
+				0,
+				Math.ceil(transcriptBottom - dock.getBoundingClientRect().top + 16)
+			);
 			mainPane.style.setProperty("--composer-clearance", `${clearance}px`);
 
-			/*
-			 * Horizontal geometry has the same problem as vertical clearance: the
-			 * dock is an overlay, so it cannot inherit the transcript column from
-			 * the workbench grid. Measure the scroller's *content* box — clientLeft
-			 * and clientWidth exclude a classic scrollbar gutter, which the raw
-			 * rect would fold into the centerline — and inset by the same 24px the
-			 * scroller uses. This keeps the composer on the transcript's centerline
-			 * and clear of the visual, container, and inference panes in every
-			 * combination, including ones no static rule enumerated.
-			 */
-			const scroller = mainPane.querySelector<HTMLElement>(".chat-transcript-scroll");
-			if (!scroller) {
-				mainPane.style.removeProperty("--composer-dock-left");
-				mainPane.style.removeProperty("--composer-dock-right");
-				return;
-			}
-			const paneRect = mainPane.getBoundingClientRect();
-			const scrollerRect = scroller.getBoundingClientRect();
-			const contentLeft = scrollerRect.left + scroller.clientLeft;
-			const contentRight = contentLeft + scroller.clientWidth;
-			mainPane.style.setProperty("--composer-dock-left", `${Math.round(contentLeft - paneRect.left + 24)}px`);
-			mainPane.style.setProperty("--composer-dock-right", `${Math.round(paneRect.right - contentRight + 24)}px`);
 		};
 		const scheduleClearanceUpdate = () => {
 			if (frame) cancelAnimationFrame(frame);
@@ -857,7 +1024,16 @@ export function Composer({
 		};
 		const resizeObserver = new ResizeObserver(scheduleClearanceUpdate);
 		resizeObserver.observe(dock);
-		const mutationObserver = new MutationObserver(scheduleClearanceUpdate);
+		resizeObserver.observe(mainPane);
+		const observeTranscript = () => {
+			const transcript = mainPane.querySelector<HTMLElement>(".chat-transcript");
+			if (transcript) resizeObserver.observe(transcript);
+		};
+		observeTranscript();
+		const mutationObserver = new MutationObserver(() => {
+			observeTranscript();
+			scheduleClearanceUpdate();
+		});
 		mutationObserver.observe(mainPane, { childList: true, subtree: true });
 		window.addEventListener("resize", scheduleClearanceUpdate);
 		updateClearance();
@@ -868,8 +1044,6 @@ export function Composer({
 			mutationObserver.disconnect();
 			window.removeEventListener("resize", scheduleClearanceUpdate);
 			mainPane.style.removeProperty("--composer-clearance");
-			mainPane.style.removeProperty("--composer-dock-left");
-			mainPane.style.removeProperty("--composer-dock-right");
 		};
 	}, []);
 
@@ -906,7 +1080,7 @@ export function Composer({
 				setValue((current) => (current.trim().length ? `${current.trim()} ${text.trim()}` : text.trim()));
 			}
 		} catch (reason) {
-			setVoiceError(reason instanceof Error ? reason.message : String(reason));
+			setVoiceError(publicError(reason));
 		} finally {
 			setTranscribing(false);
 		}
@@ -936,7 +1110,7 @@ export function Composer({
 			recorder.start();
 			setRecording(true);
 		} catch (reason) {
-			setVoiceError(reason instanceof Error ? reason.message : String(reason));
+			setVoiceError(publicError(reason));
 			setRecording(false);
 		}
 	};
@@ -967,17 +1141,23 @@ export function Composer({
 		// Load the model while the user is speaking, just like Laguna warms its
 		// inference model before the first token is needed.
 		void bridges.whisper?.warmSelected?.().catch((reason) => {
-			setVoiceError(reason instanceof Error ? reason.message : String(reason));
+			setVoiceError(publicError(reason));
 		});
 		await startRecording();
 	};
 
 	const openSlashMenuFromButton = () => {
 		if (!enabled) return;
+		setAddMenuOpen(false);
 		if (!/^\/(\S*)$/.test(value)) setValue("/");
 		setSlashDismissed(false);
 		textareaRef.current?.focus();
 	};
+
+	const chooseImageAttachments = () => void bridges.desktop.chooseImageFiles().then((images) => {
+		setImageAttachments((current) => [...current, ...images.filter((image) => !current.some((item) => item.path === image.path))].slice(0, 4));
+		setAttachmentError(images.length && !modelSupportsImageInput(state.selectedTargetId) ? "This model does not support image input. Choose a multimodal model or remove the screenshots before sending." : null);
+	});
 
 	const closeSlashMenu = () => setSlashDismissed(true);
 
@@ -1041,9 +1221,10 @@ export function Composer({
 		setSubmitting(true);
 		try {
 			if (intent === "enqueue") {
-				onEnqueue?.(text);
+				const queuedId = onEnqueue?.(text);
 				setValue("");
 				setSkillChip(null);
+				if (queuedId && agentWorking && steerSupported) armQueuedPrompt(queuedId, text);
 				return;
 			}
 			if (intent === "steer") {
@@ -1110,27 +1291,89 @@ export function Composer({
 		return true;
 	};
 
+	const dispatchSteer = (event: SteerEvent): SteerEffect => {
+		const { state: next, effect } = reduceSteer(steerRef.current, event);
+		steerRef.current = next;
+		setSteer(next);
+		return effect;
+	};
+
+	/**
+	 * Deliver one promotion. The prompt leaves **Next turns** only when the
+	 * backend acknowledges it, and a rejection is normalized before it can be
+	 * rendered — a raw runtime object never reaches the composer.
+	 */
+	const runSteerEffect = (effect: SteerEffect): boolean => {
+		if (!effect) return false;
+		// The queue row is editable, so promote whatever it now says.
+		const queued = queuedPrompts.find((item) => item.id === effect.promptId);
+		const text = (queued?.text ?? effect.text).trim();
+		if (!text) {
+			dispatchSteer({ type: "disarm" });
+			return false;
+		}
+		void Promise.resolve(onPromoteQueuedPrompt?.(effect.promptId, text))
+			.then(() => dispatchSteer({ type: "acknowledged", promptId: effect.promptId }))
+			.catch((reason) => {
+				const failure = normalizeSteerFailure(reason);
+				// The structured original stays out of the DOM and in the log.
+				console.error("[steer] promotion rejected", failure.code, failure.detail);
+				dispatchSteer({ type: "rejected", promptId: effect.promptId, failure });
+			});
+		return true;
+	};
+
+	const armQueuedPrompt = (id: string, text: string) => {
+		dispatchSteer({ type: "queued", promptId: id, text, at: Date.now() });
+	};
+
 	const handleQueuedPromptEnter = (id: string, text: string) => {
-		if (!agentWorking || !steerSupported || promotingQueuedPromptId || !text.trim()) return;
-		const now = Date.now();
-		const prior = queuedEnterRef.current;
-		if (prior?.id === id && now - prior.at <= 700) {
-			queuedEnterRef.current = null;
-			if (queuedEnterTimerRef.current !== null) window.clearTimeout(queuedEnterTimerRef.current);
-			setArmedQueuedPromptId(null);
-			setPromotingQueuedPromptId(id);
-			void Promise.resolve(onPromoteQueuedPrompt?.(id, text.trim()))
-				.finally(() => setPromotingQueuedPromptId(null));
+		if (!agentWorking || !steerSupported || !text.trim()) return;
+		if (armedPromptId(steerRef.current) === id) {
+			runSteerEffect(dispatchSteer({ type: "return", composerText: "", at: Date.now() }));
 			return;
 		}
-		queuedEnterRef.current = { id, at: now };
-		setArmedQueuedPromptId(id);
-		if (queuedEnterTimerRef.current !== null) window.clearTimeout(queuedEnterTimerRef.current);
-		queuedEnterTimerRef.current = window.setTimeout(() => {
-			if (queuedEnterRef.current?.id === id) queuedEnterRef.current = null;
-			setArmedQueuedPromptId((current) => current === id ? null : current);
-		}, 700);
+		armQueuedPrompt(id, text);
 	};
+
+	const promoteComposerQueueOnSecondReturn = (
+		composerValue: string,
+		options: { repeat: boolean; composing: boolean }
+	): boolean => {
+		if (!agentWorking || activeEnterAction !== "enqueue" || !steerSupported) return false;
+		return runSteerEffect(
+			dispatchSteer({
+				type: "return",
+				composerText: composerValue,
+				at: Date.now(),
+				repeat: options.repeat,
+				composing: options.composing
+			})
+		);
+	};
+
+	// A prompt that vanished from the persisted queue — removed here, or
+	// replaced by a reconnect — can no longer be promoted.
+	const queuedPromptKey = JSON.stringify(queuedPrompts.map((item) => item.id));
+	useEffect(() => {
+		dispatchSteer({ type: "queueReconciled", promptIds: JSON.parse(queuedPromptKey) as string[] });
+		// dispatchSteer is stable in effect; the id list is the real dependency.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [queuedPromptKey]);
+
+	// Once the turn ends there is nothing to steer. The prompt stays queued for
+	// the normal next-turn path rather than being lost or delivered twice.
+	useEffect(() => {
+		if (!agentWorking) dispatchSteer({ type: "turnEnded" });
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [agentWorking]);
+
+	// One steering error surface. The promotion machine owns its own failure;
+	// the direct-steer path reports through `steerError`. Both are already
+	// normalized strings, so neither can render an object.
+	const promotionFailure = steerFailure(steer);
+	const steerMessage = promotionFailure?.message ?? (typeof steerError === "string" ? steerError : null);
+	const steerErrorCode = promotionFailure?.code ?? null;
 
 	const sendLabel = !agentWorking
 		? "Send message"
@@ -1156,13 +1399,11 @@ export function Composer({
 								value={item.text}
 								onChange={(event) => onEditQueuedPrompt?.(item.id, event.target.value)}
 								disabled={promotingQueuedPromptId === item.id}
-								onBlur={() => {
-									queuedEnterRef.current = null;
-									setArmedQueuedPromptId(null);
-								}}
 								onKeyDown={(event) => {
-									if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.repeat) return;
+									if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey) return;
+									if (event.nativeEvent.isComposing || event.keyCode === 229) return;
 									event.preventDefault();
+									if (event.repeat) return;
 									handleQueuedPromptEnter(item.id, item.text);
 								}}
 							/>
@@ -1186,20 +1427,34 @@ export function Composer({
 					<button type="button" data-testid="keep-queued" onClick={onKeepQueued}>Keep</button>
 				</div>
 			) : null}
-			{steerError ? (
-				<p className="composer-steer-error" role="alert" data-testid="steer-error">{steerError}</p>
+			{steerMessage ? (
+				<p
+					className="composer-steer-error"
+					role="alert"
+					data-testid="steer-error"
+					data-steer-error-code={steerErrorCode ?? undefined}
+				>{steerMessage}</p>
 			) : null}
 			{sendFailure ? (
 				<div className="composer-send-retry" role="status" data-testid="send-retry">
 					<span>{sendFailure.message}</span>
-					<button type="button" data-testid="send-retry-button" onClick={sendFailure.onRetry}>Retry</button>
+					{sendFailure.onRetry ? (
+						<button type="button" data-testid="send-retry-button" onClick={sendFailure.onRetry}>
+							{sendFailure.actionLabel ?? "Retry"}
+						</button>
+					) : null}
 				</div>
 			) : null}
 			{voiceError ? (
 				<p className="composer-steer-error" role="alert" data-testid="composer-mic-error">{voiceError}</p>
 			) : null}
 			{attachmentError ? <p className="composer-steer-error" role="alert" data-testid="composer-attachment-error">{attachmentError}</p> : null}
-			{state.selectedTargetId.startsWith("openrouter-") && !state.openrouterApiKeyConfigured ? (
+			{armedQueuedPromptId ? (
+				<p className="composer-steer-hint" role="status" aria-live="polite" data-testid="composer-steer-hint">
+					Queued — Return again to steer
+				</p>
+			) : null}
+			{isOpenRouterTargetId(state.selectedTargetId) && !state.openrouterApiKeyConfigured ? (
 				<div className="composer-configuration-required" role="alert" data-testid="openrouter-key-required">
 					<span><strong>OpenRouter API key required</strong> Add it under Settings → Account before sending a message.</span>
 					<button type="button" onClick={onConfigureAccount} data-testid="configure-openrouter-api-key">Open Settings</button>
@@ -1211,16 +1466,6 @@ export function Composer({
 					<button type="button" onClick={onConfigureModels} data-testid="configure-codex-oauth">{state.codexOauthStatus?.action === "reauthenticate" || state.codexOauthStatus?.action === "retry" ? "Re-sync ChatGPT" : "Open Models settings"}</button>
 				</div>
 			) : null}
-			{whisperRuntime?.phase !== "unloaded" ? (
-				<p className={`composer-whisper-status is-${whisperRuntime?.phase}`} role="status" data-testid="composer-whisper-status">
-					<span aria-hidden />
-					{whisperRuntime?.phase === "warming" ? "Warming Whisper…"
-						: whisperRuntime?.phase === "transcribing" ? "Transcribing…"
-							: whisperRuntime?.phase === "ready" ? "Whisper ready · releases after 15 min idle"
-								: "Whisper needs attention"}
-				</p>
-			) : null}
-			<div className="composer-anchor">
 			<div className={`composer${enabled ? "" : " is-disabled"}${imageDragActive ? " is-image-drag-active" : ""}`} data-testid="composer" data-enter-action={enterAction}>
 				{imageDragActive ? <div className="composer-image-drop-target" aria-hidden>Drop screenshots here</div> : null}
 				{imageAttachments.length ? <div className="composer-image-tray" data-testid="composer-image-tray">{imageAttachments.map((image) => <figure key={image.path} className="composer-image-chip"><img src={image.previewUrl} alt={image.name}/><button type="button" aria-label={`Remove ${image.name}`} onClick={() => { setImageAttachments((items) => items.filter((item) => item.path !== image.path)); setAttachmentError(null); }}>×</button></figure>)}</div> : null}
@@ -1251,7 +1496,20 @@ export function Composer({
 							return;
 						}
 						if (e.key !== "Enter" || e.shiftKey) return;
+						// An IME commit press belongs to the composition, not to the
+						// composer. Let it through untouched.
+						if (e.nativeEvent.isComposing || e.keyCode === 229) return;
 						e.preventDefault();
+						// A held Return is one instruction, not one per repeat.
+						if (e.repeat) return;
+						if (
+							!e.metaKey &&
+							!e.ctrlKey &&
+							promoteComposerQueueOnSecondReturn(e.currentTarget.value, {
+								repeat: e.repeat,
+								composing: e.nativeEvent.isComposing
+							})
+						) return;
 						if (e.metaKey || e.ctrlKey) submitAlternate();
 						else submit();
 					}}
@@ -1276,25 +1534,31 @@ export function Composer({
 				) : null}
 				<div className="composer-toolbar">
 					<div className="composer-left">
-						<button type="button" className="composer-icon-btn composer-image-button" aria-label={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Add screenshots — selected model does not support image input"} title={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Selected model does not support image input"} data-testid="composer-add-images" disabled={!enabled || submitting} onClick={() => void bridges.desktop.chooseImageFiles().then((images) => {
-							setImageAttachments((current) => [...current, ...images.filter((image) => !current.some((item) => item.path === image.path))].slice(0, 4));
-							setAttachmentError(images.length && !modelSupportsImageInput(state.selectedTargetId) ? "This model does not support image input. Choose a multimodal model or remove the screenshots before sending." : null);
-						})}><IconImage />{!modelSupportsImageInput(state.selectedTargetId) ? <IconImageUnsupported /> : null}</button>
 						<WorkspaceScopeChip hideTrigger openSignal={workspaceMenuSignal} sessionId={workspaceSessionId ?? null} ensureSession={onEnsureWorkspaceSession} fallbackWorkspace={workspaceFallback ?? null} scope={workspaceScope ?? null} onScopeChange={(next) => onWorkspaceScopeChange?.(next)} onError={(message) => onWorkspaceError?.(message)} />
-						<div className="slash-command-wrap">
+						<div className="composer-add-wrap">
 							<button
 								type="button"
-								className="composer-icon-btn"
-								disabled={!enabled}
-								aria-label="Slash commands"
-								aria-haspopup="listbox"
-								aria-expanded={slashMenuVisible}
-								aria-controls="composer-slash-menu"
-								data-testid="composer-slash-btn"
-								onClick={openSlashMenuFromButton}
+								className="composer-add-trigger"
+								disabled={!enabled || submitting}
+								aria-label="Add to conversation"
+								aria-haspopup="menu"
+								aria-expanded={addMenuOpen}
+								aria-controls="composer-add-menu"
+								data-testid="composer-add-menu-trigger"
+								onClick={() => setAddMenuOpen((open) => !open)}
 							>
-								<IconEdit />
+								<span aria-hidden>+</span>
 							</button>
+							{addMenuOpen ? (
+								<div id="composer-add-menu" className="composer-add-menu" role="menu" data-testid="composer-add-menu">
+									<button type="button" role="menuitem" data-testid="composer-add-images" onClick={() => { setAddMenuOpen(false); chooseImageAttachments(); }}>
+										<IconImage /><span><strong>Add screenshots</strong><small>Attach up to four images</small></span>
+									</button>
+									<button type="button" role="menuitem" data-testid="composer-slash-btn" onClick={openSlashMenuFromButton}>
+										<IconEdit /><span><strong>Commands and skills</strong><small>Open the command palette</small></span>
+									</button>
+								</div>
+							) : null}
 							{slashMenuVisible ? (
 								<SlashCommandMenu
 									ref={slashMenuRef}
@@ -1317,19 +1581,6 @@ export function Composer({
 							open={permissionMenuOpen}
 							onOpenChange={setPermissionMenuOpen}
 						/>
-						{mascot ? (
-							<button
-								type="button"
-								className="composer-icon-btn composer-mascot-btn"
-								aria-label={mascot.shown ? "Hide session mascot" : "Show session mascot"}
-								aria-pressed={mascot.shown}
-								title={mascot.shown ? "Hide Larval Mander" : "Show Larval Mander"}
-								data-testid="composer-mascot"
-								onClick={() => mascot.onToggle(!mascot.shown)}
-							>
-								<IconMander />
-							</button>
-						) : null}
 					</div>
 					<div className="composer-right">
 						<ModelMenu
@@ -1340,6 +1591,7 @@ export function Composer({
 							onConfigureAccount={onConfigureAccount}
 							onConfigureModels={onConfigureModels}
 							onResolveBilling={onResolveBilling}
+							lagunaAdapter={lagunaAdapter}
 							open={modelMenuOpen}
 							onOpenChange={setModelMenuOpen}
 						/>
@@ -1366,20 +1618,16 @@ export function Composer({
 						<button
 							type="button"
 							className="send-btn"
-							disabled={!enabled || !value.trim() || submitting}
-							onClick={submit}
-							aria-label={sendLabel}
-							data-testid="composer-send"
+							disabled={!enabled || submitting || (!agentWorking && !value.trim())}
+							onClick={agentWorking ? onStop : submit}
+							aria-label={agentWorking ? "Stop generating" : sendLabel}
+							data-testid={agentWorking ? "composer-stop" : "composer-send"}
 							data-intent={enterAction}
 						>
-							<IconSend />
+							{agentWorking ? <IconStop /> : <IconSend />}
 						</button>
 					</div>
 				</div>
-			</div>
-			{mascot?.shown ? (
-				<ManderPresence session={mascot.session} chat={mascot.chat ?? undefined} running={mascot.running} />
-			) : null}
 			</div>
 		</div>
 	);

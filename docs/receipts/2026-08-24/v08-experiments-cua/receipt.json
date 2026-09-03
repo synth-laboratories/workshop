@@ -1,0 +1,139 @@
+{
+  "schemaVersion": "workshop.v08.experiments-cua-receipt.v1",
+  "acceptanceId": "V08-EXPERIMENTS-MVP-001",
+  "capturedAt": "2026-08-24T15:56:59Z",
+  "implementationCommit": "84dea5ed37b0",
+  "traceAffordanceFollowup": {
+    "commit": "cc7615383825",
+    "verifiedAt": "2026-08-24T16:12:00Z",
+    "buildRevision": "cc7615383825",
+    "result": "Inspectable Trace V5 references route through the durable inspector; non-self-contained lite seals are labeled unavailable instead of presenting a dead Open trace action.",
+    "organizedPanelVerified": true,
+    "durableReopenVerified": true
+  },
+  "app": {
+    "instance": "v08exp0824",
+    "bundleId": "com.synth.desktop.v07.dev.v08exp0824",
+    "dataRoot": "/Users/joshuapurtell/.synth-desktop/instances/v07/v08exp0824/data",
+    "buildRevision": "84dea5ed37b0",
+    "executableDigest": "sha256:ef42c8228658d8b393afb247f8b21296983b63480be849e9e679d0388c9a90bd"
+  },
+  "task": {
+    "sessionId": "e2dd61ca-d923-441c-9f95-f6e55ac74260",
+    "runId": "01a0345a-a027-7023-8764-ae7580011828",
+    "prompt": "CRAFTAX-EMBER-0824: Create a small Craftax experiment comparing the current baseline prompt against one variant that adds: ‘Before each action batch, explicitly check energy and food; when either is 3 or lower, prioritize survival before exploration.’ Use gpt-5.6-luna at low reasoning. Run the smallest meaningful bounded comparison, retain traces and rewards, and explain whether the evidence supports the hypothesis.",
+    "model": "openai/gpt-5.6-luna",
+    "reasoningEffort": "low",
+    "startedAt": "2026-08-24T15:19:09.798146Z",
+    "completedAt": "2026-08-24T15:56:21.115335Z",
+    "status": "completed_fixture",
+    "declaredCapUsd": null,
+    "actualCostUsd": 0,
+    "costBasis": "credential-free scripted fixture; zero provider calls",
+    "experimentId": "exp_3d87852f28704787b5a3f82ab21767ec",
+    "campaignId": "camp_435018b9a8364c3fa6907e867b21792a",
+    "experimentRunIds": [
+      "camp_435018b9a8364c3fa6907e867b21792a_r01",
+      "camp_435018b9a8364c3fa6907e867b21792a_r02"
+    ],
+    "visualId": "vis_5bf150746e4c49bda77ef2dfd13f3179",
+    "visualRevision": 4
+  },
+  "credentialFreePushthrough": {
+    "optimizerRuntime": "synth-optimizers 0.2.19 ready from a local wheel built from the clean committed Optimizers head",
+    "containerId": "ctr_709437b959b245579a49611f1ed9b359",
+    "containerTarget": "craftax_engine",
+    "containerUrl": "http://127.0.0.1:18768",
+    "fixtureIdentity": "env:craftax_fixture",
+    "world": "world:craftax_default@symbolic_survival",
+    "episodeStepCap": 8,
+    "advertisedPolicy": {
+      "harness": "react",
+      "config": "gpt-5.6-luna",
+      "model": "gpt-5.6-luna",
+      "reasoningEffort": "low",
+      "maxTokens": 256
+    },
+    "providerCalls": 0,
+    "capabilityRevision": "cbf7b0b11e009e49",
+    "status": "completed",
+    "supportedRequiredOperations": [
+      "rollouts.prepare",
+      "rollouts.start_prepared",
+      "rollouts.poll",
+      "rollouts.get",
+      "reward.get",
+      "trace_v5.capture"
+    ]
+  },
+  "observations": {
+    "experimentsDestinationVisible": true,
+    "localOnlyCopyVisible": true,
+    "taskModelAndReasoningVisible": true,
+    "experimentOpenedInRightPanel": true,
+    "stablePanelUpdatesObserved": true,
+    "durableExperimentReopenObserved": true,
+    "restartRecoveryObserved": true,
+    "craftaxRewards": null,
+    "rewardState": "missing_not_zero",
+    "traceRefs": [
+      "/rollouts/camp_435018b9a8364c3fa6907e867b21792a_r01/trace",
+      "/rollouts/camp_435018b9a8364c3fa6907e867b21792a_r02/trace"
+    ],
+    "lineage": "Baseline --forked_from--> Variant --evaluated--> Result",
+    "baselineAndVariantInspected": true,
+    "upliftClaimed": false
+  },
+  "screenshots": [
+    {
+      "path": "01-experiments-index.png",
+      "sha256": "51ef42247deffcdcae48d270c87bb80f8669b3178c7cf6f60b2114886dfb6fda"
+    },
+    {
+      "path": "02-craftax-blocker.png",
+      "sha256": "f8e54165e7416458da25388f361cba9b31e658c5f66764c2a5f48306c184b0f2"
+    },
+    {
+      "path": "04-capability-admission-blocker.jpeg",
+      "sha256": "ccf8e9eaf3d7a17240334e6c91a3af7a7848a3c2a28c00c5af1184586d7b6d6b"
+    },
+    {
+      "path": "05-right-panel-before-start.jpeg",
+      "sha256": "5373d25ddbb290f88ff1aff8d9fc8ae71d205855cc2e400f6da8e34a6d2a5ed9"
+    },
+    {
+      "path": "08-durable-campaign-completed.jpeg",
+      "sha256": "181cb6e1b259f9fac3fc372dab92734f02cd58f4fc902eb207215adcb5034ccd"
+    },
+    {
+      "path": "11-restart-same-visual.jpeg",
+      "sha256": "e9d5e12c08d3f6fd804437e39d295a3dbe10a961e5f04650b6b5fe6548de45b9"
+    },
+    {
+      "path": "12-settled-experiments-index.jpeg",
+      "sha256": "586e4d2bb5778236ccf1d2d50babda0eafe41062135bcfad526ba4effe6797dd"
+    },
+    {
+      "path": "13-lineage-corrected-baseline.jpeg",
+      "sha256": "40bc992b38ecb931ea53c3bd4ad756009ef2d44628edbfce5a42e944821ec53d"
+    },
+    {
+      "path": "14-lineage-variant-inspector.jpeg",
+      "sha256": "e232d6e7079d910cd32c0487294afee8eb2d0826964bd4619e49dde9fc46f564"
+    },
+    {
+      "path": "15-lineage-result-inspector.jpeg",
+      "sha256": "51ee354a515c732ddd8eb06dea8ef29bccdf0940d40fa4e8d647dc2bd0011477"
+    },
+    {
+      "path": "organized-trace-state.png",
+      "sha256": "0f9cf4cdcdaca31d03cd73bd9bc20fe8cba24827c70dd5727cef82664219f607"
+    }
+  ],
+  "limitations": [
+    "Credential-free pushthrough installed the local Optimizers 0.2.19 runtime and registered a healthy instance-owned craftax_engine fixture; no macOS Keychain or Keychain-backed Workshop secret mechanism was used.",
+    "The fixture is scripted CI infrastructure rather than gold Craftax. Its policy metadata records gpt-5.6-luna/low and a 256-token cap, but no paid or local MLX inference occurred.",
+    "Both eight-step arms completed and retained 75-event Trace V5 lite seals. Numeric rewards and token usage were absent from normalized results and remain null rather than zero.",
+    "The evidence validates Workshop orchestration, stable visual updates, explicit lineage, and restart durability only; it neither supports nor refutes the prompt-uplift hypothesis."
+  ]
+}

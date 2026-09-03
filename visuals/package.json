@@ -12,8 +12,14 @@
     "./runtime/bind": "./runtime/bind.ts",
     "./runtime/save_tsx": "./runtime/save_tsx.ts",
     "./chrome": "./chrome/VisualChrome.tsx",
+    "./chrome/useLiveEvalStream": "./chrome/useLiveEvalStream.ts",
     "./chrome/tokens.css": "./chrome/tokens.css",
-    "./templates/*": "./templates/*/shell.tsx",
+    "./components/event_stream.v1": "./components/event_stream.v1/EventStream.tsx",
+    "./components/detail_modal.v1": "./components/detail_modal.v1/DetailModal.tsx",
+    "./components/metrics.v1": "./components/metrics.v1/Metrics.tsx",
+    "./components/scrubber.v1": "./components/scrubber.v1/Scrubber.tsx",
+    "./components/candidate_inspector.v1": "./components/candidate_inspector.v1/CandidateInspector.tsx",
+    "./families/*": "./families/*",
     "./mcp/tools.json": "./mcp/tools.json",
     "./fixtures/*": "./fixtures/*"
   },
@@ -21,14 +27,18 @@
     "react": "^18.0.0 || ^19.0.0",
     "react-dom": "^18.0.0 || ^19.0.0"
   },
+  "dependencies": {
+    "sucrase": "^3.35.1"
+  },
   "files": [
     "chrome",
     "catalog",
+    "components",
     "fixtures",
     "mcp",
     "registry",
     "runtime",
-    "templates",
+    "families",
     "instances",
     "README.md"
   ]

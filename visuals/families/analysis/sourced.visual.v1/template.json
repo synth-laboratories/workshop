@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "sourced.visual.v1",
+  "title": "Sourced visual",
+  "genre": "sourced",
+  "version": "1.0.0",
+  "description": "Agent-authored TSX that imports advertised components. Host-owned ingest. Unknown imports, fetch, and guessed stream URLs fail closed.",
+  "accent": "#F05F22",
+  "rendererKind": "tsx",
+  "kind": "sourced_visual",
+  "protocolId": "whole_file.v1",
+  "shell": "shell.tsx",
+  "tags": [
+    "sourced",
+    "tsx",
+    "live"
+  ],
+  "inputs": [
+    {
+      "name": "stream",
+      "description": "Live SSE endpoint or fixture event list. Bind when the module consumes stream via host replay.",
+      "accepts": [
+        "live_sse",
+        "fixture",
+        "inline"
+      ],
+      "required": false,
+      "schema": "synth.visual.live_eval_events.v1"
+    }
+  ],
+  "components": [
+    {
+      "id": "event_stream.v1",
+      "kind": "event_stream",
+      "protocolId": "event_stream.v1",
+      "consumes": [
+        "stream"
+      ],
+      "emits": [
+        "cursor"
+      ],
+      "description": "Live event log. Filter with includeKinds. Click emits a cursor."
+    },
+    {
+      "id": "detail_modal.v1",
+      "kind": "detail_modal",
+      "protocolId": "detail_modal.v1",
+      "consumes": [
+        "cursor"
+      ],
+      "emits": [],
+      "description": "In-pane overlay that inspects the selected envelope."
+    }
+  ]
+}

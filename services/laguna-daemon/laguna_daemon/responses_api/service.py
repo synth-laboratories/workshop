@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import time
 from collections import deque
 from copy import deepcopy
@@ -18,6 +19,7 @@ from .errors import ResponsesError
 from .events import sse_frame
 from .fixtures import FixtureRecorder
 from .ids import new_id
+from .policies import PolicyError, PolicyRegistry
 from .storage import SQLiteResponseStore, StoredResponse
 from .validation import normalize_request
 
@@ -55,6 +57,13 @@ class ResponsesService:
         # it too, so PUT /v1/synth/settings behaves identically under mock.
         self.backend.sampling_defaults = self.settings.sampling
         self.settings.apply_to_backend(self.backend)
+        # Policies are the daemon's selectable model ids: the base weights plus
+        # any registered adapter. The backend resolves the request's `model`
+        # against this rather than against process-global adapter state.
+        self.policies = PolicyRegistry(config.data_dir, config.default_model)
+        register = getattr(self.backend, "set_policy_registry", None)
+        if callable(register):
+            register(self.policies)
         self.store = SQLiteResponseStore(config.data_dir / "responses.sqlite3")
         self.coordinator = ResponseCoordinator(self.backend, self.store)
         self.compactor = Compactor(config.data_dir / "compaction.key")
@@ -107,6 +116,23 @@ class ResponsesService:
             await asyncio.sleep(1.0)
             await self.unload_if_idle()
 
+    async def watch_memory_pressure(self) -> None:
+        """Evict idle MLX or terminate this sidecar under sustained emergency."""
+        relieve = getattr(self.backend, "relieve_memory_pressure", None)
+        if relieve is None:
+            while True:
+                await asyncio.sleep(5.0)
+        emergencies = 0
+        while True:
+            await asyncio.sleep(1.0)
+            outcome = await relieve()
+            emergencies = emergencies + 1 if outcome == "active_emergency" else 0
+            if emergencies >= 2:
+                # Native prefill may be blocked in a worker and unable to honor
+                # cooperative cancellation. Immediate sidecar exit is the one
+                # bounded way to return its Metal allocation to macOS.
+                os._exit(70)
+
     def residency(self) -> dict[str, Any] | None:
         residency = getattr(self.backend, "residency", None)
         if residency is None:
@@ -114,7 +140,27 @@ class ResponsesService:
         return residency(self.idle_unload_after_seconds)
 
     def normalize(self, body: Any) -> dict[str, Any]:
-        return normalize_request(body, default_model=self.config.default_model)
+        request = normalize_request(body, default_model=self.config.default_model)
+        self.require_policy(request.get("model"))
+        return request
+
+    def require_policy(self, model: str | None) -> None:
+        """Reject an unregistered model id before a response object exists.
+
+        The Responses contract turns a mid-generation failure into a stored
+        response with `status: failed` and HTTP 200. An unknown model is a
+        request error, not a failed generation, so it is refused up front and
+        never becomes a turn the client has to inspect to discover was wrong.
+        """
+        try:
+            self.policies.resolve(model)
+        except PolicyError as error:
+            raise ResponsesError(
+                "model_not_found",
+                str(error),
+                404,
+                error_type="invalid_request_error",
+            ) from error
 
     def capture(self, body: Any, *, transport: str) -> None:
         self.fixtures.capture(body, transport=transport)
@@ -467,6 +513,14 @@ class ResponsesService:
             "queueCapacity": queue_state["capacity"],
             "active": active_payload,
             "rolling": self.coordinator.runner.telemetry.snapshot(),
+            # Per-policy decode speed, so a picker can show what a LoRA costs
+            # instead of implying every model id runs at one rate.
+            "policies": self.coordinator.runner.telemetry.policy_snapshot(
+                self.policies.default_model
+            ),
+            "attachedPolicy": (self.backend.diagnostics() or {}).get("attached_policy")
+            if hasattr(self.backend, "diagnostics")
+            else None,
             # Apple GPU utilization counters are not reliably available, and
             # deriving one from process CPU would be a fabrication.
             "gpuUtilization": None,

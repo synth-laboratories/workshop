@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type { ActiveEnterAction, DesktopPreferences, ThemePreference, ToolActivityMode } from "../preferences";
 import {
 	applyDefaultLayout,
@@ -14,6 +15,9 @@ import {
 	setToolActivityMode
 } from "../preferences";
 import { SettingsCard, SettingsRow } from "./SettingsCard";
+import { bridges } from "../runtime/desktopBridge";
+import type { ProductTelemetryPolicy } from "../bridge";
+import { PaidComputePermissionSettings } from "./PaidComputePermissionSettings";
 
 type Props = {
 	preferences: DesktopPreferences;
@@ -81,6 +85,42 @@ function SegmentedControl<T extends string>({
 	);
 }
 
+function PrivacyTelemetrySettings() {
+	const [policy, setPolicy] = useState<ProductTelemetryPolicy | null>(null);
+	useEffect(() => {
+		void bridges.telemetry?.getPolicy().then(setPolicy).catch(() => undefined);
+	}, []);
+	const optionalEnabled = policy?.optionalEnabled !== false;
+	return (
+		<SettingsCard
+			title="Privacy"
+			description="Optional product analytics never include prompts, traces, filenames, or secret values. Essential sign-in and billing still work when this is off. Sign out deletes optional events on this device; essential recovery events expire after 365 days."
+			testId="settings-privacy"
+		>
+			<SettingsRow
+				label="Product analytics"
+				description="Download, first launch, signup, and activation funnel. Hosted usage remains server-authoritative either way."
+			>
+				<SegmentedControl
+					ariaLabel="Product analytics"
+					options={[{ id: "on", label: "On" }, { id: "off", label: "Off" }]}
+					value={optionalEnabled ? "on" : "off"}
+					testIdPrefix="telemetry-optional"
+					onChange={(value) => {
+						void bridges.telemetry
+							?.setOptOut(value === "off")
+							.then(setPolicy)
+							.catch(() => undefined);
+					}}
+				/>
+			</SettingsRow>
+			<p className="settings-item-subhead" data-testid="telemetry-policy-version">
+				{policy?.dictionaryVersion ?? "workshop.product-telemetry.v1"} · 90-day optional retention
+			</p>
+		</SettingsCard>
+	);
+}
+
 function NumericInput({
 	label,
 	value,
@@ -98,39 +138,66 @@ function NumericInput({
 }) {
 	const [draft, setDraft] = useState(String(value));
 	const [error, setError] = useState<string | null>(null);
+	const [open, setOpen] = useState(false);
 	useEffect(() => { setDraft(String(value)); setError(null); }, [value]);
+	const apply = () => {
+		const next = Number(draft);
+		if (!Number.isFinite(next) || next < min || next > max) {
+			setError(`Enter a number between ${min.toLocaleString()} and ${max.toLocaleString()}`);
+			return;
+		}
+		setError(null);
+		onChange(Math.round(next));
+		setOpen(false);
+	};
 	return (
-		<div className="settings-numeric">
-			<input
-				id={testId}
-				type="number"
-				min={min}
-				max={max}
-				value={draft}
-				data-testid={testId}
-				aria-label={label}
-				aria-invalid={Boolean(error)}
-				aria-describedby={error ? `${testId}-error` : undefined}
-				onChange={(event) => setDraft(event.target.value)}
-				onBlur={() => {
-					const next = Number(draft);
-					if (!Number.isFinite(next) || next < min || next > max) {
-						setError(`Enter a number between ${min} and ${max}`);
-						setDraft(String(value));
-						return;
-					}
-					setError(null);
-					onChange(Math.round(next));
-				}}
-			/>
+		<OptionModal
+			label={label}
+			value={value.toLocaleString()}
+			triggerTestId={`${testId}-trigger`}
+			open={open}
+			onOpen={() => { setDraft(String(value)); setError(null); setOpen(true); }}
+			onClose={() => setOpen(false)}
+			onApply={apply}
+		>
+			<label className="settings-option-field" htmlFor={testId}>
+				<span>Value</span>
+				<input id={testId} type="text" inputMode="numeric" value={draft} data-testid={testId} aria-invalid={Boolean(error)} aria-describedby={error ? `${testId}-error` : undefined} onChange={(event) => setDraft(event.target.value.replace(/[^0-9]/g, ""))} onKeyDown={(event) => { if (event.key === "Enter") apply(); }} autoFocus />
+				<small>Allowed range: {min.toLocaleString()}–{max.toLocaleString()}</small>
+			</label>
 			{error ? <span id={`${testId}-error`} className="pref-field-error" role="alert" data-testid={`${testId}-error`}>{error}</span> : null}
-		</div>
+		</OptionModal>
 	);
+}
+
+function OptionModal({ label, value, open, onOpen, onClose, onApply, triggerTestId, children }: { label: string; value: string; open: boolean; onOpen: () => void; onClose: () => void; onApply?: () => void; triggerTestId?: string; children: ReactNode }) {
+	const dialog = useRef<HTMLDialogElement>(null);
+	useEffect(() => {
+		if (open && !dialog.current?.open) dialog.current?.showModal();
+		if (!open && dialog.current?.open) dialog.current.close();
+	}, [open]);
+	return <div className="settings-option-control">
+		<button type="button" className="settings-option-trigger" data-testid={triggerTestId} aria-haspopup="dialog" onClick={onOpen}><span>{value}</span><em>Change</em></button>
+		<dialog ref={dialog} className="settings-option-dialog" aria-label={`Change ${label}`} onCancel={(event) => { event.preventDefault(); onClose(); }} onClose={onClose}>
+			<header><div><span>Preference</span><h3>{label}</h3></div><button type="button" aria-label="Close" onClick={onClose}>×</button></header>
+			<div className="settings-option-dialog-body">{children}</div>
+			<footer><button type="button" onClick={onClose}>Cancel</button>{onApply ? <button type="button" className="primary" onClick={onApply}>Apply</button> : null}</footer>
+		</dialog>
+	</div>;
+}
+
+function ChoiceInput({ label, value, choices, onChange, testId }: { label: string; value: string; choices: ReadonlyArray<{ label: string; value: string }>; onChange: (value: string) => void; testId: string }) {
+	const [open, setOpen] = useState(false);
+	const current = choices.find((choice) => choice.value === value)?.label ?? "Custom";
+	return <OptionModal label={label} value={current} open={open} onOpen={() => setOpen(true)} onClose={() => setOpen(false)}>
+		<div className="settings-option-list" role="radiogroup" aria-label={label} data-testid={testId}>
+			{choices.map((choice) => <button key={choice.value} type="button" role="radio" aria-checked={choice.value === value} className={choice.value === value ? "selected" : ""} onClick={() => { onChange(choice.value); setOpen(false); }}><span>{choice.label}</span><i aria-hidden>{choice.value === value ? "✓" : ""}</i></button>)}
+		</div>
+	</OptionModal>;
 }
 
 export function GeneralPreferencesSettings({ preferences, onPreferencesChange }: Props) {
 	const codeFontFamily = preferences.appearance.codeFontFamily;
-	const knownFont = CODE_FONT_CHOICES.some((choice) => choice.value === codeFontFamily);
 
 	return (
 		<div className="settings-sections" data-testid="settings-general">
@@ -166,17 +233,7 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 					/>
 				</SettingsRow>
 				<SettingsRow label="Code font" htmlFor="code-font-family">
-					<select
-						id="code-font-family"
-						data-testid="code-font-family"
-						value={codeFontFamily}
-						onChange={(event) => onPreferencesChange(setAppearanceFonts({ codeFontFamily: event.target.value }))}
-					>
-						{knownFont ? null : <option value={codeFontFamily}>Custom</option>}
-						{CODE_FONT_CHOICES.map((choice) => (
-							<option key={choice.label} value={choice.value}>{choice.label}</option>
-						))}
-					</select>
+					<ChoiceInput label="Code font" value={codeFontFamily} choices={CODE_FONT_CHOICES} testId="code-font-family" onChange={(codeFontFamily) => onPreferencesChange(setAppearanceFonts({ codeFontFamily }))} />
 				</SettingsRow>
 				<SettingsRow label="Terminal font size" htmlFor="terminal-font-size">
 					<NumericInput
@@ -190,7 +247,7 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 				</SettingsRow>
 				<SettingsRow
 					label="Mascot"
-					description="Show Larval Mander to the right of the composer, with the seven-word summary when a session has one. Off by default."
+					description="Show Larval Mander and the seven-word summary in the chat column. Off by default."
 				>
 					<SegmentedControl
 						ariaLabel="Chat mascot"
@@ -201,6 +258,10 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 					/>
 				</SettingsRow>
 			</SettingsCard>
+
+			<PrivacyTelemetrySettings />
+
+			<PaidComputePermissionSettings />
 
 			<SettingsCard
 				title="Prompt submission"

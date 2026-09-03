@@ -9,8 +9,13 @@ import {
   projectCraftaxSemanticTrace,
   projectCraftaxViewer,
   scopeCraftaxEvents,
-  semanticCheckpointIndexes,
-} from "../templates/live.craftax.v1/projectCraftax.ts";
+  replayMomentIndexes,
+  craftaxReplayAvailability,
+  environmentStepCount,
+  mergeCraftaxOptimizerJournalEvents,
+} from "../families/first_class_example_containers/live.craftax.v1/projectCraftax.ts";
+import { summarizeCraftaxRun } from "../families/first_class_example_containers/live.craftax.v1/aggregateCraftax.ts";
+import { craftaxAchievementIcon, craftaxStepPath, projectCraftaxAggregateTimeline } from "../families/first_class_example_containers/live.craftax.v1/aggregateTimeline.ts";
 
 function event(lane, kind, sequence, payload = {}, second = sequence) {
   return {
@@ -40,6 +45,218 @@ test("Craftax viewer isolates the selected lane in a time-ordered multiplex", ()
   const second = projectCraftaxViewer(events, "seed:1");
   assert.ok(second.visibleEvents.every((row) => row.lane === "seed:1"));
   assert.equal(second.reward, 5);
+});
+
+test("run-level optimizer lifecycle is retained but never selected as a rollout", () => {
+  const events = [
+    event("eval", "eval.run.started", 1, { status: "running" }, 0),
+    event("rollout-780005", "span.policy.opened", 1, {
+      call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" },
+    }, 1),
+    event("rollout-780005", "span.policy.data", 2, {
+      assistant: "do",
+      actions: ["do"],
+    }, 2),
+    event("rollout-780006", "trace.opened", 1, {}, 3),
+    event("eval", "eval.run.terminal", 2, { status: "completed" }, 4),
+  ];
+
+  const projection = projectCraftaxViewer(events);
+  assert.deepEqual(projection.lanes, ["rollout-780005", "rollout-780006"]);
+  assert.equal(projection.selectedLane, "rollout-780005");
+  assert.equal(projection.traceEvents.length, 2, "the default lane exposes its retained policy call");
+  assert.ok(projection.ordered.some((row) => row.lane === "eval"), "run lifecycle remains in the durable journal");
+});
+
+test("terminal and enrichment optimizer lanes rejoin into 50 calls and 303 completed steps", () => {
+  let sequenceNumber = 1;
+  const optimizerEnvelope = (inner) => ({
+    schemaVersion: "optimizer_event.v1",
+    eventId: `optimizer:event:${sequenceNumber}`,
+    type: "eval.trial.event",
+    sequenceNumber: sequenceNumber++,
+    occurredAt: inner.ts,
+    optimizerRunId: "opt_eval_craftax_313e406208e5",
+    delta: {
+      trial_id: inner.lane,
+      container_event: {
+        kind: inner.kind,
+        rollout_id: inner.lane,
+        sequence: inner.sequence,
+        occurred_at: inner.ts,
+        payload: inner.payload,
+      },
+    },
+  });
+  const terminalEvents = [{
+    schemaVersion: "optimizer_event.v1",
+    eventId: "optimizer:started",
+    type: "optimizer.run.started",
+    sequenceNumber: 0,
+    occurredAt: "2026-08-28T15:17:44.000Z",
+    optimizerRunId: "opt_eval_craftax_313e406208e5",
+    delta: { status: "running" },
+  }];
+  const enrichmentEvents = [65, 66, 85, 56, 31].flatMap((stepCount, laneIndex) => {
+    const lane = `rollout-${laneIndex}`;
+    const calls = Array.from({ length: 10 }, (_, call) => [
+      optimizerEnvelope(event(lane, "span.policy.opened", call * 2 + 1, {
+        call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" },
+      }, laneIndex + 1)),
+      optimizerEnvelope(event(lane, "span.policy.closed", call * 2 + 2, {}, laneIndex + 1)),
+    ]).flat();
+    const steps = Array.from({ length: stepCount }, (_, step) =>
+      optimizerEnvelope(event(lane, "span.step.closed", 100 + step, { step }, laneIndex + 1))
+    );
+    return [...calls, ...steps];
+  });
+
+  const merged = mergeCraftaxOptimizerJournalEvents(terminalEvents, enrichmentEvents);
+  const projection = projectCraftaxViewer(merged);
+  assert.equal(projection.lanes.length, 5);
+  assert.equal(projection.ordered.filter((row) => row.kind === "span.policy.opened").length, 50);
+  assert.equal(environmentStepCount(projection.ordered), 303);
+
+  const duplicated = mergeCraftaxOptimizerJournalEvents(terminalEvents, [...enrichmentEvents, enrichmentEvents[0]]);
+  assert.equal(duplicated.length, merged.length, "replayed optimizer envelopes are de-duplicated by durable identity");
+});
+
+test("run overview aggregates rollout distributions without inventing partial token totals", () => {
+  const rows = [
+    event("rollout-a", "span.policy.opened", 1, { call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" } }),
+    event("rollout-a", "span.policy.data", 2, { usage: { total_tokens: 120, cost_usd: 0.0012 } }),
+    event("rollout-a", "span.policy.closed", 3),
+    event("rollout-a", "span.step.closed", 4, { step: 0 }),
+    event("rollout-a", "span.step.closed", 5, { step: 1 }),
+    event("rollout-a", "reward_signal", 6, { value: 4 }),
+    event("rollout-a", "achievement_unlocked", 7, { achievement: "collect_wood" }),
+    event("rollout-b", "span.policy.opened", 1, { call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" } }),
+    event("rollout-b", "span.policy.data", 2, { usage: { total_tokens: 80, cost_usd: 0.0008 } }),
+    event("rollout-b", "span.policy.closed", 3),
+    event("rollout-b", "span.step.closed", 4, { step: 0 }),
+    event("rollout-b", "reward_signal", 5, { value: 2 }),
+    event("rollout-b", "achievement_unlocked", 6, { achievement: "collect_stone" }),
+  ];
+  const aggregate = summarizeCraftaxRun(rows);
+  assert.equal(aggregate.rollouts.length, 2);
+  assert.equal(aggregate.rewardMean, 3);
+  assert.equal(aggregate.rewardMedian, 3);
+  assert.deepEqual([aggregate.rewardMin, aggregate.rewardMax], [2, 4]);
+  assert.deepEqual([aggregate.totalSteps, aggregate.minSteps, aggregate.maxSteps], [3, 1, 2]);
+  assert.deepEqual([aggregate.totalCalls, aggregate.minCalls, aggregate.maxCalls], [2, 1, 1]);
+  assert.equal(aggregate.totalTokens, 200);
+  assert.equal(aggregate.totalCostUsd, 0.002);
+  assert.equal(aggregate.reportedCosts, 2);
+  assert.deepEqual(aggregate.achievementNames, ["collect_stone", "collect_wood"]);
+  assert.deepEqual([aggregate.totalAchievements, aggregate.minAchievements, aggregate.maxAchievements], [2, 1, 1]);
+  assert.equal(aggregate.achievementMedian, 1);
+  assert.equal(aggregate.achievementRollouts, 2);
+
+  const partial = summarizeCraftaxRun([
+    ...rows,
+    event("rollout-c", "span.policy.opened", 1, { call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" } }),
+    event("rollout-c", "span.policy.closed", 2),
+  ]);
+  assert.equal(partial.totalCalls, 3);
+  assert.equal(partial.totalTokens, undefined, "one call without usage makes the run token total unavailable");
+  assert.equal(partial.totalCostUsd, undefined, "one unpriced rollout makes the exact run total unavailable");
+  assert.equal(partial.knownCostUsd, 0.002, "known rollout costs remain a labelled subtotal");
+  assert.equal(partial.reportedCosts, 2);
+});
+
+test("aggregate Craftax timeline aligns rollout reward lines and achievement icons by environment step", () => {
+  const rows = [
+    event("rollout-a", "span.step.closed", 1, { step: 1 }),
+    event("rollout-a", "achievement_unlocked", 2, { step: 1, achievement: "collect_wood" }),
+    event("rollout-a", "reward_signal", 3, { step: 1, value: 1 }),
+    event("rollout-a", "span.step.closed", 4, { step: 4 }),
+    event("rollout-a", "achievement_unlocked", 5, { step: 4, achievement: "make_wood_pickaxe" }),
+    event("rollout-a", "reward_signal", 6, { step: 4, value: 2 }),
+    event("rollout-b", "snapshot", 1, { step: 2, total_reward: 2, achievements: { collect_stone: 1 } }),
+    event("rollout-b", "snapshot", 2, { step: 3, total_reward: 2, achievements: { collect_stone: 1 } }),
+  ];
+  const timelines = projectCraftaxAggregateTimeline(rows, ["rollout-a", "rollout-b"], [
+    { lane: "rollout-a", reward: 3, steps: 5 },
+    { lane: "rollout-b", reward: 2, steps: 3 },
+  ]);
+
+  assert.deepEqual(timelines[0].points, [
+    { step: 0, reward: 0 },
+    { step: 1, reward: 1 },
+    { step: 4, reward: 3 },
+    { step: 5, reward: 3 },
+  ]);
+  assert.deepEqual(timelines[0].achievements.map(({ step, reward, name, icon }) => ({ step, reward, name, icon })), [
+    { step: 1, reward: 1, name: "collect_wood", icon: "🪵" },
+    { step: 4, reward: 3, name: "make_wood_pickaxe", icon: "⛏" },
+  ]);
+  assert.deepEqual(timelines[1].achievements.map(({ step, reward, name }) => ({ step, reward, name })), [
+    { step: 2, reward: 2, name: "collect_stone" },
+  ], "snapshot achievements are marked once, at first retained evidence");
+  assert.equal(craftaxAchievementIcon("make_iron_sword"), "⚔");
+  assert.match(craftaxStepPath(timelines[0].points, 5, 0, 3), /^M .* H .* V /);
+});
+
+test("terminal overview replaces provisional rewards with scored record truth", () => {
+  const journal = [
+    event("rollout-5", "reward_signal", 1, { value: 3 }),
+    event("rollout-6", "reward_signal", 1, { value: 5 }),
+    event("rollout-7", "reward_signal", 1, { value: 5 }),
+    event("rollout-8", "reward_signal", 1, { value: 6 }),
+    event("rollout-9", "reward_signal", 1, { value: 5 }),
+    ...["rollout-5", "rollout-6", "rollout-7", "rollout-8", "rollout-9"].flatMap((lane) =>
+      [event(lane, "span.policy.opened", 2, { call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" } })]
+    )
+  ];
+  const terminal = [
+    { lane: "rollout-5", status: "failed", steps: 46 },
+    { lane: "rollout-6", status: "failed", steps: 60 },
+    { lane: "rollout-7", status: "failed", steps: 58 },
+    { lane: "rollout-8", seed: 780008, status: "completed", reward: 6, steps: 40, costUsd: 0.0042, achievements: ["collect_wood"] },
+    { lane: "rollout-9", status: "failed", steps: 80 }
+  ];
+  const aggregate = summarizeCraftaxRun(journal, terminal);
+  assert.equal(aggregate.rewardMean, 6);
+  assert.equal(aggregate.reportedRewards, 1);
+  assert.deepEqual(aggregate.rollouts.map((rollout) => rollout.reward), [undefined, undefined, undefined, 6, undefined]);
+  assert.equal(aggregate.totalSteps, 284);
+  assert.equal(aggregate.reportedSteps, 5);
+  assert.equal(aggregate.totalCalls, 5, "retained call starts remain a separately labelled journal count");
+  assert.equal(aggregate.totalCostUsd, undefined);
+  assert.equal(aggregate.knownCostUsd, 0.0042);
+  assert.equal(aggregate.reportedCosts, 1);
+  assert.equal(aggregate.rollouts[3].seed, 780008);
+  assert.equal(aggregate.rollouts[3].costUsd, 0.0042);
+  assert.equal(aggregate.reportedAchievements, 1);
+});
+
+test("terminal aggregates use authoritative scored reward and achievement distributions", () => {
+  const terminal = [
+    { lane: "rollout-5", status: "completed", reward: 1, achievements: ["wood"] },
+    { lane: "rollout-6", status: "completed", reward: 2, achievements: ["wood", "stone"] },
+    { lane: "rollout-7", status: "completed", reward: 4, achievements: [] },
+    { lane: "rollout-8", status: "completed", reward: 6, achievements: ["wood", "stone", "table"] },
+    { lane: "rollout-9", status: "completed", reward: 9, achievements: ["wood"] },
+  ];
+  const aggregate = summarizeCraftaxRun([], terminal);
+  assert.deepEqual(
+    [aggregate.rewardMean, aggregate.rewardMedian, aggregate.rewardMin, aggregate.rewardMax],
+    [4.4, 4, 1, 9]
+  );
+  assert.deepEqual(
+    [aggregate.totalAchievements, aggregate.achievementMedian, aggregate.minAchievements, aggregate.maxAchievements],
+    [7, 1, 0, 3]
+  );
+});
+
+test("native GameBench reward_signal reward alias remains visible during replay", () => {
+  const projection = projectCraftaxViewer([
+    event("seed:2001", "rollout.progress", 1, { status: "running", reward: 0 }),
+    event("seed:2001", "reward_signal", 2, { reward: 1 }),
+    event("seed:2001", "eval.run.terminal", 3, { status: "completed" }),
+  ]);
+  assert.equal(projection.reward, 1);
+  assert.equal(projection.cumulativeReward, 1);
 });
 
 test("through-time cutoff hides future policy, reward, frame, and achievement evidence", () => {
@@ -93,6 +310,34 @@ test("image replay uses only ordered frame URLs emitted by Containers", () => {
     "http://container/frames/1.png",
   ]);
   assert.equal(view.frameUrl, "http://container/frames/1.png");
+});
+
+test("retained CAS media keeps a PNG replayable when its container URL is gone", () => {
+  const casDigest = "a".repeat(64);
+  const view = projectCraftaxViewer([
+    event("seed:0", "frame", 1, {
+      digest: "producer-label",
+      format: "png",
+      step: 0,
+      media: {
+        casDigest,
+        mediaType: "image/png",
+        width: 768,
+        height: 768,
+        producerDigest: "producer-label",
+      },
+    }),
+  ]);
+  assert.equal(view.frameUrl, null);
+  assert.equal(view.frameUnavailable, false);
+  assert.equal(view.frameEvents.length, 1);
+  assert.deepEqual(view.frameMedia, {
+    casDigest,
+    mediaType: "image/png",
+    width: 768,
+    height: 768,
+    producerDigest: "producer-label",
+  });
 });
 
 test("real ReAct policy partials expose metadata, data, plan, usage, and fallback", () => {
@@ -246,7 +491,7 @@ test("A13 visual scope refuses unrelated rollouts sharing one producer root", ()
   assert.ok(!JSON.stringify(scoped).includes("999"));
 });
 
-test("V2 replay checkpoints skip token deltas and observations", () => {
+test("V2 replay moments skip token deltas and observations", () => {
   const rows = [
     event("seed:0", "trace.opened", 1),
     event("seed:0", "observation", 2, {}),
@@ -255,9 +500,22 @@ test("V2 replay checkpoints skip token deltas and observations", () => {
     event("seed:0", "span.policy.closed", 1004, {}),
     event("seed:0", "span.step.closed", 1005, { step: 1 }),
   ];
-  const checkpoints = semanticCheckpointIndexes(rows);
-  assert.deepEqual(checkpoints, [0, 2, 1003, 1004]);
-  assert.ok(checkpoints.length < rows.length / 100);
+  const moments = replayMomentIndexes(rows);
+  assert.deepEqual(moments, [0, 2, 1003, 1004]);
+  assert.ok(moments.length < rows.length / 100);
+});
+
+test("lifecycle-only rejected evidence reports markers without inventing environment steps", () => {
+  const rows = Array.from({ length: 5 }, (_, index) =>
+    event(`seed:${index}`, "status", index + 1, { status: "failed" })
+  );
+  const availability = craftaxReplayAvailability(rows, "rejected");
+  assert.deepEqual(availability, {
+    markers: 5,
+    environmentSteps: 0,
+    replayable: false,
+    reason: "evidence rejected"
+  });
 });
 
 test("missing PNG stays unavailable and does not fall back to ASCII", () => {
@@ -274,4 +532,116 @@ test("missing PNG stays unavailable and does not fall back to ASCII", () => {
   ]);
   assert.equal(fixtureAscii.ascii, "P....\n..T..");
   assert.equal(fixtureAscii.frameUnavailable, false);
+});
+
+test("host-envelope events without kind cannot crash the Craftax projection", () => {
+  const projection = projectCraftaxViewer([
+    {
+      event_type: "optimizer.run.failed",
+      sequence: 1,
+      occurred_at: "2026-08-28T00:00:00Z",
+      payload: { reason: "failed honestly" },
+    },
+  ]);
+
+  assert.equal(projection.ordered.length, 1);
+  assert.equal(projection.ordered[0].kind, "optimizer.run.failed");
+  assert.doesNotThrow(() => projectCraftaxSemanticTrace(projection.ordered));
+});
+
+test("optimizer trial envelopes unwrap NanoHorizon policy spans into transcript calls", () => {
+  const projection = projectCraftaxViewer([
+    {
+      type: "eval.trial.event",
+      sequenceNumber: 11,
+      occurredAt: "2026-08-28T05:39:51Z",
+      optimizerRunId: "run:craftax",
+      delta: {
+        trial_id: "trial:craftax:780005",
+        container_event: {
+          kind: "span.policy.opened",
+          sequence: 9,
+          occurred_at: "2026-08-28T05:39:51Z",
+          rollout_id: "roll:780005",
+          payload: { call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" } },
+        },
+      },
+    },
+    {
+      type: "eval.trial.event",
+      sequenceNumber: 12,
+      occurredAt: "2026-08-28T05:39:52Z",
+      optimizerRunId: "run:craftax",
+      delta: {
+        trial_id: "trial:craftax:780005",
+        container_event: {
+          kind: "span.policy.data",
+          sequence: 10,
+          occurred_at: "2026-08-28T05:39:52Z",
+          rollout_id: "roll:780005",
+          payload: {
+            assistant: { content: null, reasoning_content: "Choose up, then do." },
+            completion_tokens: 384,
+            prompt_tokens: 1462,
+            phase: "sample",
+          },
+        },
+      },
+    },
+    {
+      type: "eval.trial.event",
+      sequenceNumber: 13,
+      occurredAt: "2026-08-28T05:39:53Z",
+      optimizerRunId: "run:craftax",
+      delta: {
+        trial_id: "trial:craftax:780005",
+        container_event: {
+          kind: "span.policy.data",
+          sequence: 11,
+          occurred_at: "2026-08-28T05:39:53Z",
+          rollout_id: "roll:780005",
+          payload: {
+            assistant: { content: null, reasoning_content: "Try a shorter plan." },
+            completion_tokens: 384,
+            prompt_tokens: 1500,
+            phase: "sample",
+          },
+        },
+      },
+    },
+    {
+      type: "eval.trial.event",
+      sequenceNumber: 14,
+      occurredAt: "2026-08-28T05:39:54Z",
+      optimizerRunId: "run:craftax",
+      delta: {
+        trial_id: "trial:craftax:780005",
+        container_event: {
+          kind: "span.policy.closed",
+          sequence: 12,
+          occurred_at: "2026-08-28T05:39:54Z",
+          rollout_id: "roll:780005",
+          payload: {},
+        },
+      },
+    },
+  ]);
+
+  assert.equal(projection.selectedLane, "roll:780005");
+  assert.deepEqual(projection.traceEvents.map((row) => row.kind), [
+    "span.policy.opened",
+    "span.policy.data",
+    "span.policy.data",
+    "span.policy.closed",
+  ]);
+  assert.equal(projection.semanticTrace.length, 2);
+  assert.equal(projection.semanticTrace[0].kind, "policy.call");
+  assert.match(projection.semanticTrace[0].label, /z-ai\/glm-5.3-flash/);
+  assert.equal(projection.semanticTrace[0].interaction?.thinking, "Choose up, then do.");
+  assert.equal(projection.semanticTrace[0].interaction?.responseType, "pending");
+  assert.equal(projection.semanticTrace[1].interaction?.thinking, "Try a shorter plan.");
+  assert.deepEqual(projection.policy.usage, {
+    prompt_tokens: 2962,
+    completion_tokens: 768,
+  });
 });

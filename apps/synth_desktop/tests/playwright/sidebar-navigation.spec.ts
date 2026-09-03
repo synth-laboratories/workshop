@@ -16,6 +16,12 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 			latestCursor: 0,
 			metadata: {}
 		};
+		const remoteSession = {
+			...session,
+			id: "remote-failure-chat",
+			title: "Remote failure review",
+			target: { kind: "remote", provider: "openrouter", model: "openai/gpt-5.6" }
+		};
 		(window as typeof window & { synthRuntime?: unknown }).synthRuntime = {
 			async request(path: string) {
 				if (path === "/v1/health") return {
@@ -23,7 +29,7 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 					intern: { mode: "demo" }, openrouter: { mode: "unconfigured" },
 					inventory: { containers: 0, traces: 0, visuals: 0 }
 				};
-				if (path === "/v1/sessions") return { sessions: [session] };
+				if (path === "/v1/sessions") return { sessions: [session, remoteSession] };
 				if (path === "/v1/projects") return { projects: [] };
 				if (path.includes("/events")) return { events: [], nextCursor: 0, hasMore: false };
 				throw new Error(`Unexpected renderer test request: ${path}`);
@@ -51,6 +57,32 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 	await expect(sidePanel.getByRole("tab", { name: "Inference" })).toHaveAttribute("aria-selected", "false");
 	await expect(outputsPanel).toBeVisible();
 	await expect(outputsPanel.getByTestId("resource-shelf-empty")).toContainText("No outputs yet");
+	await sidePanel.evaluate((panel) => {
+		const workbench = panel.parentElement;
+		if (workbench) workbench.style.gridTemplateColumns = "minmax(0, 1fr) 228px";
+	});
+	const outerTabs = sidePanel.locator(".workbench-side-panel-tabs [role=tab]");
+	expect(await outerTabs.count()).toBe(4);
+	const tabGeometry = await outerTabs.evaluateAll((elements) => {
+		const header = elements[0]?.closest(".workbench-side-panel-header")?.getBoundingClientRect();
+		return elements.map((element) => {
+			const rect = element.getBoundingClientRect();
+			return Boolean(header)
+				&& rect.width > 0
+				&& rect.height > 0
+				&& rect.left >= header!.left
+				&& rect.right <= header!.right;
+		});
+	});
+	expect(tabGeometry).toEqual([true, true, true, true]);
+	await sidePanel.getByRole("tab", { name: "Diagnostics" }).click();
+	await expect(sidePanel).toBeVisible();
+	await expect(sidePanel.getByRole("tab", { name: "Diagnostics" })).toHaveAttribute("aria-selected", "true");
+	await expect(sidePanel.getByTestId("errors-logs-panel")).toBeVisible();
+	await expect(sidePanel.getByText("Error log", { exact: true })).toBeVisible();
+	await expect(sidePanel.getByRole("tab", { name: "Failures" })).toHaveCount(0);
+	await expect(sidePanel.locator('[aria-label="Error and diagnostic log"]')).toBeVisible();
+	await sidePanel.getByRole("tab", { name: "Outputs" }).click();
 	await sidePanel.getByRole("button", { name: "Close side panel" }).click();
 	await expect(outputsPanel).toHaveCount(0);
 	await expect(outputsTrigger).toHaveAttribute("aria-expanded", "false");
@@ -82,6 +114,20 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 	await expect(page.getByTestId("conversation-search")).toBeVisible();
 	await page.getByRole("button", { name: "Close search" }).click();
 	await expect(page.getByTestId("conversation-search")).toHaveCount(0);
+
+	// Diagnostics is not a local-inference-only tab. Remote chats must expose the
+	// same unified error log instead of closing the panel during activation.
+	await page.keyboard.press("Meta+k");
+	const remoteSearch = page.getByTestId("conversation-search");
+	await remoteSearch.getByRole("searchbox", { name: "Search conversations" }).fill("Remote failure");
+	await remoteSearch.getByRole("option", { name: /Remote failure review/ }).click();
+	const remoteOutputsTrigger = page.getByTestId("resource-shelf-trigger");
+	await remoteOutputsTrigger.click();
+	const remoteSidePanel = page.getByTestId("workbench-side-panel");
+	await remoteSidePanel.getByRole("tab", { name: "Diagnostics" }).click();
+	await expect(remoteSidePanel).toBeVisible();
+	await expect(remoteSidePanel.getByTestId("errors-logs-panel")).toBeVisible();
+	await expect(remoteSidePanel.getByRole("tab", { name: "Failures" })).toHaveCount(0);
 });
 
 test("dense search results scroll inside the dialog instead of clipping its last row", async ({ page }) => {
@@ -191,13 +237,25 @@ test("sidebar starts compact while retaining a working conversation and a revers
 		return { width: style.width, height: style.height, contained: rect.left >= row.left && rect.right <= row.right - 8 };
 	});
 	expect(markerGeometry).toEqual({ width: "15px", height: "15px", contained: true });
-	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]')).toHaveCount(10);
+	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]:visible')).toHaveCount(10);
 	await expect(page.getByTestId("sidebar-show-all-chats")).toContainText("Show 4 more");
+	const rowLayout = await page.getByTestId("local-chat-sidebar-chat-13").evaluate((item) => {
+		const row = item.closest<HTMLElement>(".chat-row")!;
+		const actions = row.querySelector<HTMLElement>(".chat-row-actions")!;
+		return {
+			rowHeight: row.getBoundingClientRect().height,
+			itemHeight: item.getBoundingClientRect().height,
+			actionsPosition: getComputedStyle(actions).position
+		};
+	});
+	expect(rowLayout.rowHeight).toBeLessThanOrEqual(32);
+	expect(rowLayout.rowHeight).toBeCloseTo(rowLayout.itemHeight, 0);
+	expect(rowLayout.actionsPosition).toBe("absolute");
 
 	await page.getByTestId("sidebar-show-all-chats").click();
-	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]')).toHaveCount(14);
+	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]:visible')).toHaveCount(14);
 	await page.getByTestId("sidebar-show-fewer-chats").click();
-	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]')).toHaveCount(10);
+	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]:visible')).toHaveCount(10);
 	await expect(page.getByTestId("local-chat-sidebar-chat-13")).toBeVisible();
 });
 

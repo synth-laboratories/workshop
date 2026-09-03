@@ -49,7 +49,7 @@ const visualContracts = extract((state: any) => {
 		forbiddenModelSurfaceAbsent: !/Muse Glimmer|muse-glimmer|GGUF|DFlash/i.test(document.body.textContent ?? ""),
 		titlebarIsClean: Boolean(titlebar) &&
 			!titlebar.querySelector('[data-testid="runtime-status"], [data-testid="titlebar-account"], [data-testid="titlebar-account-avatar"], [data-testid="titlebar-cloud-status"]') &&
-			!actions.some((element) => !["app-version", "toggle-terminal", "toggle-inference-rail"].includes(element.dataset.testid ?? "")) &&
+			!actions.some((element) => !["toggle-terminal", "toggle-inference-rail"].includes(element.dataset.testid ?? "")) &&
 			![...titlebar.querySelectorAll("*")].some((element) => ["Local", "S"].includes(element.textContent?.trim() ?? "")),
 		providerRowsComplete: !providerCard || rows.length === 4,
 		providerMarksQuiet: !providerCard || (

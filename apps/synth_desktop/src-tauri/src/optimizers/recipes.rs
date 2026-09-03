@@ -3,81 +3,24 @@
 //! paths, environment variables, or credentials.
 
 use anyhow::{anyhow, bail, Context, Result};
-use serde_json::json;
+use serde_json::{json, Map, Value};
 use std::{
     fs,
-    net::TcpListener,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 use tokio::{sync::watch, time::sleep};
 
+use super::events::OptimizerEventDraft;
 use super::{
+    manager::DEFAULT_ALGORITHM_VERSION,
     models::{
-        OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerExecutionBinding,
-        OptimizerRecipeRunRequest, OptimizerResourceRef, OPTIMIZER_EVENT_SCHEMA_VERSION,
+        OptimizerCreateRequest, OptimizerExecutionBinding, OptimizerRecipeRunRequest,
+        OptimizerResourceRef,
     },
     normalize, OptimizerService,
 };
-
-pub const BANKING77_GEPA_SMOKE_RECIPE: &str = "gepa.banking77.smoke.v1";
-pub const BANKING77_GEPA_LUNA_RECIPE: &str = "gepa.banking77.luna.v1";
-pub const BANKING77_GEPA_SOL_RECIPE: &str = "gepa.banking77.sol.v1";
-const TRAIN_ROWS: usize = 50;
-const HELDOUT_ROWS: usize = 50;
-const MAX_GENERATIONS: i64 = 1;
-const PROPOSALS_PER_GENERATION: i64 = 1;
-const MINIBATCH_SIZE: i64 = 20;
-// One generation consumes a 50-example seed evaluation, a 20-example parent
-// reference, a 20-example candidate minibatch, and a 50-example candidate
-// evaluation. Terminal comparison gives both the seed and a distinct winning
-// proposal 50 heldout examples, so heldout needs room for two candidates.
-const MAX_TRAIN_ROLLOUTS: i64 = 140;
-const MAX_HELDOUT_ROLLOUTS: i64 = 100;
-const MAX_TOTAL_ROLLOUTS: i64 = 240;
-const MAX_COST_USD: f64 = 2.45;
-const PROPOSER_ESTIMATED_COST_USD: f64 = 0.05;
-const ROLLOUT_ESTIMATED_COST_USD: f64 = 0.01;
-const PROPOSER_TIMEOUT_SECONDS: i64 = 300;
-const PROPOSER_MESSAGE_STALL_TIMEOUT_SECONDS: i64 = 120;
-
-#[derive(Clone, Copy)]
-enum ProposerProfile {
-    LunaMedium,
-    SolMedium,
-}
-
-impl ProposerProfile {
-    fn for_recipe(recipe_id: &str) -> Result<Self> {
-        match recipe_id {
-            BANKING77_GEPA_SMOKE_RECIPE | BANKING77_GEPA_LUNA_RECIPE => Ok(Self::LunaMedium),
-            BANKING77_GEPA_SOL_RECIPE => Ok(Self::SolMedium),
-            _ => bail!("unknown Banking77 GEPA recipe: {recipe_id}"),
-        }
-    }
-
-    fn config_id(self) -> &'static str {
-        match self {
-            Self::LunaMedium => "luna_med",
-            Self::SolMedium => "sol_med",
-        }
-    }
-
-    fn model(self) -> &'static str {
-        match self {
-            Self::LunaMedium => "gpt-5.6-luna",
-            Self::SolMedium => "gpt-5.6-sol",
-        }
-    }
-
-    fn title(self) -> &'static str {
-        match self {
-            Self::LunaMedium => "Luna medium",
-            Self::SolMedium => "Sol medium",
-        }
-    }
-}
 
 pub(super) async fn start(
     service: &OptimizerService,
@@ -86,107 +29,158 @@ pub(super) async fn start(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
-    let recipe_id = request.recipe_id.clone();
-    let proposer = ProposerProfile::for_recipe(&recipe_id)?;
-    let manager = service.manager().clone();
-    manager.ensure_ready().await?;
-    let cookbook = banking77_cookbook_root()?;
-    let run_id = recipe_run_id(proposer);
-    let runs_root = cookbook
-        .parent()
-        .ok_or_else(|| anyhow!("invalid Banking77 cookbook path"))?
-        .join("runs");
-    let run_dir = runs_root.join(&run_id);
-    fs::create_dir_all(&run_dir).context("create Banking77 GEPA run directory")?;
-    let port = reserve_loopback_port()?;
-    let uv = resolve_uv()?;
-    let codex_home = resolve_codex_home()?;
-    let config_path = run_dir.join("workshop.recipe.toml");
-    materialize_config(
-        &cookbook,
-        &runs_root,
-        &run_id,
-        port,
-        &uv,
-        &config_path,
-        proposer,
-        &codex_home,
-    )?;
+    start_inner(service, request, true).await
+}
 
+async fn start_inner(
+    service: &OptimizerService,
+    request: OptimizerRecipeRunRequest,
+    spawn: bool,
+) -> Result<(
+    super::models::OptimizerRunRecord,
+    Option<crate::storage::AppEvent>,
+)> {
+    let session = request
+        .session_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("workspace recipes require session_ref"))?;
+    let (workspace, recipe) = super::workspace_recipe::find_session_recipe(
+        service.database(),
+        session,
+        &request.recipe_id,
+    )?;
+    match recipe.algorithm {
+        super::workspace_recipe::AlgorithmKind::Eval => {
+            // The container evaluator owns a large debug-build future. Box it
+            // at the algorithm boundary so admission does not duplicate that
+            // state on the Tokio worker stack.
+            return Box::pin(super::container_eval::start(service, request)).await;
+        }
+        super::workspace_recipe::AlgorithmKind::Gepa => {}
+    }
+    let manager = service.manager().clone();
+    require_plugin_ready(&manager).await?;
+    let ensured = super::container_lifecycle::ensure_from_session(
+        service.database(),
+        session,
+        &recipe.container,
+    )
+    .await?;
+    let run_id = format!(
+        "gepa_{}_{}",
+        recipe
+            .id
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect::<String>(),
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
+    let runs_root = gepa_runs_root()?;
+    let run_dir = runs_root.join(&run_id);
+    fs::create_dir_all(&run_dir).context("create GEPA run directory")?;
+    let config_path = super::workspace_recipe::copy_into_run_dir(&recipe, &run_dir)?;
+    let mut config: toml::Value = toml::from_str(&fs::read_to_string(&config_path)?)?;
+    let table = config
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("workspace recipe must be a TOML table"))?;
+    table.insert(
+        "run".into(),
+        toml::Value::Table(
+            [
+                ("run_id".into(), toml::Value::String(run_id.clone())),
+                (
+                    "output_dir".into(),
+                    toml::Value::String(runs_root.display().to_string()),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+    );
+    table.insert(
+        "container".into(),
+        toml::Value::Table(
+            [("url".into(), toml::Value::String(ensured.base_url.clone()))]
+                .into_iter()
+                .collect(),
+        ),
+    );
+    let openai =
+        resolve_provider_workload(&recipe.provider, &run_id, &recipe.id, Some(&config_path))?;
+    super::workspace_recipe::bind_locality_urls(
+        table,
+        recipe.locality,
+        openai.base_url.as_deref(),
+        openai.config_base_url.as_deref(),
+        openai.inference_url.as_deref(),
+    )?;
+    fs::write(&config_path, toml::to_string_pretty(&config)?)?;
+    if let Some(lease) = openai.lease.as_ref() {
+        crate::secrets::lease::bind_lease_into_toml(&config_path, lease)?;
+    }
     let create = OptimizerCreateRequest {
         algorithm_id: "gepa".into(),
-        algorithm_version: Some("synth-optimizers-0.2.0".into()),
-        objective: Some(format!(
-            "Banking77 intent prompt · bounded GEPA · {}",
-            proposer.title()
-        )),
+        algorithm_version: Some(DEFAULT_ALGORITHM_VERSION.into()),
+        objective: Some(recipe.title.clone()),
         source: Some("local".into()),
-        project_ref: Some("banking77@huggingface-polyai-pinned-by-cookbook".into()),
-        session_ref: request.session_ref,
+        project_ref: Some(workspace.display().to_string()),
+        session_ref: request.session_ref.clone(),
         id: Some(run_id.clone()),
         execution_bindings: Some(vec![OptimizerExecutionBinding {
             kind: "local_process".into(),
             id: run_id.clone(),
-            label: Some(format!("Banking77 GEPA · {}", proposer.title())),
+            label: Some(recipe.title.clone()),
             status: Some("starting".into()),
             metadata: json!({
-                "recipeId": recipe_id,
-                "port": port,
-                "proposerPolicyRef": {
-                    "harness": "gepa_proposer",
-                    "config": proposer.config_id(),
-                },
+                "recipeId": recipe.id,
+                "containerId": ensured.container_id,
+                "locality": recipe.locality.as_str(),
+                "sourceHash": recipe.source_hash,
             }),
         }]),
         input_refs: Some(vec![
             OptimizerResourceRef {
-                kind: "dataset".into(),
-                id: "banking77".into(),
+                kind: "container".into(),
+                id: ensured.container_id.clone(),
                 digest: None,
-                role: Some("train_and_heldout".into()),
-                title: Some("Banking77 (cookbook-pinned loader)".into()),
-                metadata: json!({ "trainRows": TRAIN_ROWS, "heldoutRows": HELDOUT_ROWS }),
+                role: Some("eval_target".into()),
+                title: Some(recipe.container.clone()),
+                metadata: json!({ "baseUrl": ensured.base_url }),
             },
             OptimizerResourceRef {
                 kind: "recipe".into(),
-                id: recipe_id.clone(),
-                digest: None,
+                id: recipe.id.clone(),
+                digest: Some(recipe.source_hash.clone()),
                 role: Some("configuration".into()),
-                title: Some(format!("Bounded Banking77 GEPA · {}", proposer.title())),
-                metadata: recipe_limits(),
-            },
-            OptimizerResourceRef {
-                kind: "policy_ref".into(),
-                id: proposer.config_id().into(),
-                digest: None,
-                role: Some("proposer".into()),
-                title: Some(format!("GEPA proposer · {}", proposer.title())),
+                title: Some(recipe.title.clone()),
                 metadata: json!({
-                    "harness": "gepa_proposer",
-                    "config": proposer.config_id(),
-                }),
-            },
-            OptimizerResourceRef {
-                kind: "policy_ref".into(),
-                id: "banking77_candidate".into(),
-                digest: None,
-                role: Some("evaluator".into()),
-                title: Some("Banking77 candidate evaluator".into()),
-                metadata: json!({
-                    "harness": "banking77_eval",
-                    "config": "candidate",
+                    "cwd": run_dir,
+                    "locality": recipe.locality.as_str(),
                 }),
             },
         ]),
         capabilities: None,
         summary: Some(json!({
-            "recipeId": recipe_id,
-            "task": "banking77",
-            "proposerPolicyRef": {
-                "harness": "gepa_proposer",
-                "config": proposer.config_id(),
+            "recipeId": recipe.id,
+            "task": recipe.family,
+            "source": "workspace",
+            "containerId": ensured.container_id,
+            "locality": recipe.locality.as_str(),
+            "sourceHash": recipe.source_hash,
+            "proposerModel": recipe.proposer_model,
+            // Paid admission runs before the worker can mint and persist its
+            // run-scoped credential lease. Preserve the recipe's declared
+            // provider now so admission can authorize the correct route; the
+            // full receipt chain replaces this stub once the lease exists.
+            "credentialChain": {
+                "provider": recipe.provider,
             },
-            "limits": recipe_limits(),
+            "limits": {
+                "maxCostUsd": recipe.bounds.max_cost_usd,
+                "maxTotalRollouts": recipe.bounds.max_total_rollouts,
+            },
             "runDirectory": run_dir,
         })),
         open_visual: request.open_visual.or(Some(true)),
@@ -195,19 +189,120 @@ pub(super) async fn start(
         local_path: None,
     };
     let (run, event) = service.create(create).await?;
-    let (run, _) = manager.pin_run(service, &run.id, &recipe_id).await?;
+    let (run, _) = manager.pin_run(service, &run.id, &recipe.id).await?;
+    if !spawn {
+        return Ok((run, event));
+    }
     append_status_event(service, &run_id, "optimizer.run.queued", "queued").await?;
-
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
     let worker_service = service.clone();
     let worker_manager = manager.clone();
+    let work_dir = run_dir.clone();
     tokio::spawn(async move {
         if let Err(error) = run_recipe_worker(
             worker_service.clone(),
             run_id.clone(),
+            work_dir.clone(),
+            config_path,
+            work_dir,
+            manager,
+            cancel_rx,
+        )
+        .await
+        {
+            let _ =
+                append_terminal_event(&worker_service, &run_id, true, format!("{error:#}")).await;
+        }
+        worker_manager.release_gepa_recipe(&run_id).await;
+        worker_service.unregister_local_recipe(&run_id).await;
+    });
+    Ok((run, event))
+}
+
+pub(super) async fn prepare(
+    service: &OptimizerService,
+    request: OptimizerRecipeRunRequest,
+) -> Result<(
+    super::models::OptimizerRunRecord,
+    Option<crate::storage::AppEvent>,
+)> {
+    let manager = service.manager().clone();
+    require_plugin_ready(&manager).await?;
+    let (mut run, event) = start_inner(service, request, false).await?;
+    let digest = preparation_digest(&run);
+    let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+    summary.insert("preparationDigest".into(), json!(digest));
+    summary.insert("waitingForViewer".into(), json!(true));
+    // A missing digest is a refusal, never a skipped pin. Without this, prepare
+    // records no `capabilitiesDigest`, start's comparison is a skipped `if let`,
+    // and the anti-swap guard is inert in exactly the case it exists to catch:
+    // capabilities that were never proven by a live handshake.
+    let capabilities_digest = manager
+        .advertised_capabilities()
+        .get("digest")
+        .cloned()
+        .ok_or_else(|| {
+            anyhow!(
+                "optimizer capabilities are not proven; the sidecar must complete a capability \
+                 handshake before a run is prepared"
+            )
+        })?;
+    summary.insert("capabilitiesDigest".into(), capabilities_digest);
+    run.summary = serde_json::Value::Object(summary);
+    run.status = "waiting_for_viewer".into();
+    let run = service.persist_run(run).await?;
+    Ok((run, event))
+}
+
+pub(super) async fn start_prepared(
+    service: &OptimizerService,
+    run_id: &str,
+) -> Result<(
+    super::models::OptimizerRunRecord,
+    Option<crate::storage::AppEvent>,
+)> {
+    require_plugin_ready(service.manager()).await?;
+    let run = service.get(run_id.to_string()).await?;
+    if run.status != "waiting_for_viewer" && run.status != "queued" {
+        bail!(
+            "optimizer run `{run_id}` is not prepared for start (status {})",
+            run.status
+        );
+    }
+    let recipe_id = run
+        .summary
+        .get("recipeId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("prepared run omitted recipeId"))?
+        .to_owned();
+    let _ = recipe_id;
+    let run_dir = run
+        .summary
+        .get("runDirectory")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("prepared run omitted runDirectory"))?;
+    let cookbook = run_dir.clone();
+    let config_path = run_dir.join("workshop.recipe.toml");
+    if !config_path.is_file() {
+        bail!("prepared run is missing its recipe config");
+    }
+    let manager = service.manager().clone();
+    append_status_event(service, run_id, "optimizer.run.queued", "queued").await?;
+    let (cancel_tx, cancel_rx) = watch::channel(None);
+    service
+        .register_local_recipe(run_id.to_string(), cancel_tx)
+        .await;
+    let worker_service = service.clone();
+    let worker_manager = manager.clone();
+    let worker_run_id = run_id.to_string();
+    tokio::spawn(async move {
+        if let Err(error) = run_recipe_worker(
+            worker_service.clone(),
+            worker_run_id.clone(),
             cookbook,
             config_path,
             run_dir,
@@ -216,46 +311,68 @@ pub(super) async fn start(
         )
         .await
         {
-            let _ = append_terminal_event(&worker_service, &run_id, true, error.to_string()).await;
+            let _ =
+                append_terminal_event(&worker_service, &worker_run_id, true, format!("{error:#}"))
+                    .await;
         }
-        worker_manager.release_gepa_recipe(&run_id).await;
-        worker_service.unregister_local_recipe(&run_id).await;
+        worker_manager.release_gepa_recipe(&worker_run_id).await;
+        worker_service.unregister_local_recipe(&worker_run_id).await;
     });
-    Ok((run, event))
+    let started = service.get(run_id.to_string()).await?;
+    Ok((started, None))
+}
+
+pub(super) async fn require_plugin_ready(manager: &super::OptimizerManager) -> Result<()> {
+    // A disabled plugin refuses work even when its sidecar is still up.
+    // `disable` only clears the registry flag, so the process keeps running;
+    // without this check the only thing enforcing "disabled" was that the MCP
+    // server stopped being registered at session start — which a session that
+    // was already open never sees.
+    if !crate::plugins::optimizers_plugin_enabled() {
+        return Err(crate::plugins::PluginNotReady::new("disabled", "enable").into());
+    }
+    if manager.is_running().await {
+        return Ok(());
+    }
+    let status = manager.status().await;
+    if status.version.is_none() {
+        return Err(crate::plugins::PluginNotReady::new("not_installed", "install").into());
+    }
+    // Installed/enabled is sufficient authority for an idempotent warm start.
+    // `OptimizerManager::start` probes first and returns only after the
+    // authenticated proxy is healthy, so a normal recipe attempt no longer
+    // leaks a stopped sidecar as `plugin_not_ready` to the agent.
+    manager
+        .start()
+        .await
+        .context("start the installed Optimizers plugin for this workflow")?;
+    Ok(())
+}
+
+fn preparation_digest(run: &super::models::OptimizerRunRecord) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(run.id.as_bytes());
+    hasher.update(run.algorithm_id.as_bytes());
+    if let Some(version) = run.algorithm_version.as_deref() {
+        hasher.update(version.as_bytes());
+    }
+    hasher.update(serde_json::to_vec(&run.summary).unwrap_or_default());
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 pub fn recipe_catalog() -> Vec<serde_json::Value> {
-    let availability = if banking77_cookbook_root().is_ok() {
-        "available"
-    } else {
-        "unavailable"
-    };
-    [
-        (
-            BANKING77_GEPA_LUNA_RECIPE,
-            "Banking77 GEPA · Luna medium",
-            "luna_med",
-        ),
-        (
-            BANKING77_GEPA_SOL_RECIPE,
-            "Banking77 GEPA · Sol medium",
-            "sol_med",
-        ),
-    ]
-    .into_iter()
-    .map(|(id, title, config)| {
-        json!({
-            "id": id,
-            "title": title,
-            "algorithmId": "gepa",
-            "task": "banking77",
-            "availability": availability,
-            "limits": recipe_limits(),
-            "policyRef": { "harness": "gepa_proposer", "config": config },
-            "credentialInputs": [],
-        })
-    })
-    .collect()
+    Vec::new()
+}
+
+pub(super) async fn start_container_eval(
+    service: &OptimizerService,
+    request: OptimizerRecipeRunRequest,
+) -> Result<(
+    super::models::OptimizerRunRecord,
+    Option<crate::storage::AppEvent>,
+)> {
+    super::container_eval::start(service, request).await
 }
 
 pub(super) async fn reconcile_persisted(
@@ -263,12 +380,12 @@ pub(super) async fn reconcile_persisted(
     run_id: &str,
 ) -> Result<super::models::OptimizerRunRecord> {
     let run = service.get(run_id.to_string()).await?;
-    if !matches!(run.status.as_str(), "completed" | "failed" | "cancelled")
+    if !super::service::is_terminal_status(&run.status)
         || run
             .summary
             .get("recipeId")
             .and_then(serde_json::Value::as_str)
-            .is_none_or(|recipe_id| ProposerProfile::for_recipe(recipe_id).is_err())
+            .is_none()
     {
         return Ok(run);
     }
@@ -359,27 +476,15 @@ pub(super) async fn reconcile_persisted(
     service.get(run_id.to_string()).await
 }
 
-fn recipe_run_id(proposer: ProposerProfile) -> String {
-    let run_suffix = uuid::Uuid::new_v4().simple().to_string();
-    format!(
-        "banking77_gepa_{}_{}",
-        proposer.config_id(),
-        &run_suffix[..8]
-    )
-}
-
-fn recipe_limits() -> serde_json::Value {
-    json!({
-        "maxGenerations": MAX_GENERATIONS,
-        "proposalsPerGeneration": PROPOSALS_PER_GENERATION,
-        "minibatchSize": MINIBATCH_SIZE,
-        "maxTrainRollouts": MAX_TRAIN_ROLLOUTS,
-        "maxHeldoutRollouts": MAX_HELDOUT_ROLLOUTS,
-        "maxTotalRollouts": MAX_TOTAL_ROLLOUTS,
-        "maxCostUsd": MAX_COST_USD,
-        "proposerEstimatedCostUsd": PROPOSER_ESTIMATED_COST_USD,
-        "rolloutEstimatedCostUsd": ROLLOUT_ESTIMATED_COST_USD,
-    })
+fn run_index_wait() -> Duration {
+    if cfg!(test) {
+        if let Ok(millis) = std::env::var("SYNTH_OPTIMIZER_TEST_INDEX_WAIT_MS") {
+            if let Ok(millis) = millis.parse::<u64>() {
+                return Duration::from_millis(millis);
+            }
+        }
+    }
+    crate::limits::OPTIMIZER_RUN_INDEX_WAIT
 }
 
 async fn run_recipe_worker(
@@ -389,12 +494,37 @@ async fn run_recipe_worker(
     config_path: PathBuf,
     run_dir: PathBuf,
     manager: Arc<super::OptimizerManager>,
-    mut cancel_rx: watch::Receiver<bool>,
+    mut cancel_rx: super::CancelObserver,
 ) -> Result<()> {
+    let _revoke_capabilities = crate::secrets::RevokeRunOnDrop(run_id.clone());
+    let _ownership = service.hold_run_ownership(&run_id)?;
     append_status_event(&service, &run_id, "optimizer.run.started", "running").await?;
-    let openai_api_key = resolve_secret("OPENAI_API_KEY")?;
+    let provider = fs::read_to_string(&config_path)
+        .context("read run-owned recipe provider")?
+        .parse::<toml::Value>()?
+        .get("provider")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("run-owned recipe is missing provider"))?
+        .to_string();
+    let openai = resolve_provider_workload(
+        &provider,
+        &run_id,
+        recipe_id_for_lease(&config_path),
+        Some(&config_path),
+    )?;
+    if let Some(lease) = openai.lease.as_ref() {
+        crate::secrets::lease::bind_lease_into_toml(&config_path, lease)?;
+        let _ = service.persist_credential_chain(&run_id).await;
+    }
     let stdout = fs::File::create(run_dir.join("workshop.stdout.log"))?;
     let stderr = fs::File::create(run_dir.join("workshop.stderr.log"))?;
+    let extra_env = openai
+        .lease
+        .as_ref()
+        .map(|lease| lease.compile_host_env())
+        .unwrap_or_default();
     let mut child = manager
         .spawn_gepa_recipe(
             &run_id,
@@ -402,29 +532,90 @@ async fn run_recipe_worker(
             &config_path,
             stdout,
             stderr,
-            &openai_api_key,
+            &openai.api_key,
+            openai.base_url.as_deref(),
+            &extra_env,
         )
         .await?;
 
     let mut upstream_cursor = 0;
+    // A run that never becomes visible is bounded, not waited out. Retrying an
+    // unindexed run until the child exits on its own turns a contract failure
+    // into a full-budget one: the rollouts are still paid for, and their events
+    // can never be ingested. `run_not_found` cannot distinguish "not registered
+    // yet" from "this service will never see this run" (a mismatched database,
+    // or a service that does not serve the events route at all), so the wait is
+    // capped and the child is killed rather than allowed to spend to term.
+    let mut indexed = false;
+    let index_wait = run_index_wait();
+    let index_deadline = tokio::time::Instant::now() + index_wait;
     loop {
-        if let Err(error) =
-            ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await
-        {
-            // The producer registers its durable index shortly after spawn.
-            // A 404 is retryable only while the child is demonstrably alive;
-            // it is not a successful empty event page.
-            if !super::OptimizerManager::optimizer_run_not_indexed(&error) {
-                return Err(error);
+        match ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await {
+            Ok(()) => indexed = true,
+            Err(error) => {
+                if super::OptimizerManager::optimizer_event_endpoint_temporarily_unavailable(&error)
+                {
+                    // The producer is independently supervised and paid work
+                    // may still be progressing. Keep the bounded index wait
+                    // below, but do not turn one observer gateway miss into a
+                    // terminal optimizer failure.
+                } else
+                // The producer registers its durable index shortly after spawn.
+                // A 404 is retryable only while the child is demonstrably alive;
+                // it is not a successful empty event page.
+                if !super::OptimizerManager::optimizer_run_not_indexed(&error) {
+                    return Err(error);
+                }
+                if !indexed && tokio::time::Instant::now() >= index_deadline {
+                    manager.terminate_gepa_recipe(&run_id).await;
+                    if child.try_wait()?.is_none() {
+                        let _ = child.kill().await;
+                    }
+                    let waited = index_wait.as_secs_f32();
+                    append_terminal_event(
+                        &service,
+                        &run_id,
+                        true,
+                        format!(
+                            "run_never_indexed: the optimizer service never reported run {run_id} \
+                             after {waited}s of a live recipe process; the child was terminated \
+                             before spending further"
+                        ),
+                    )
+                    .await?;
+                    bail!(
+                        "run_never_indexed: optimizer run {run_id} was never visible to the \
+                         polled service after {waited}s; terminated the recipe process. The \
+                         service and the recipe child are not sharing a run index — verify the \
+                         sidecar serves /runs/{{id}}/optimizer-events and that the child writes \
+                         the database the service was started with"
+                    );
+                }
             }
         }
         tokio::select! {
             status = child.wait() => {
-                let status = status.context("wait for Banking77 GEPA process")?;
-                ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await?;
+                let status = status.context("wait for product-owned GEPA process")?;
+                let final_ingest =
+                    ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await;
                 if !status.success() {
-                    bail!("Banking77 GEPA exited with {status}; see {}", run_dir.join("workshop.stderr.log").display());
+                    // A producer that never indexed this run emits no event
+                    // stream by definition; that expected absence must not
+                    // bury the process exit that actually ended the run.
+                    let ingest_detail = final_ingest
+                        .as_ref()
+                        .err()
+                        .filter(|error| !super::OptimizerManager::optimizer_run_not_indexed(error))
+                        .map(|error| format!("; final event ingestion also failed unexpectedly: {error:#}"))
+                        .unwrap_or_default();
+                    bail!(
+                        "GEPA recipe {}{ingest_detail}; stdout={} stderr={}",
+                        describe_exit_status(&status),
+                        run_dir.join("workshop.stdout.log").display(),
+                        run_dir.join("workshop.stderr.log").display()
+                    );
                 }
+                final_ingest.context("ingest final GEPA event page after successful child exit")?;
                 append_recipe_artifacts(&service, &run_id, &run_dir).await?;
                 append_recipe_candidates(&service, &run_id, &run_dir).await?;
                 append_proposer_transcripts(&service, &run_id, &run_dir).await?;
@@ -432,12 +623,23 @@ async fn run_recipe_worker(
                 return Ok(());
             }
             changed = cancel_rx.changed() => {
-                if changed.is_ok() && *cancel_rx.borrow() {
+                if changed.is_ok() && cancel_rx.borrow().is_some() {
                     manager.terminate_gepa_recipe(&run_id).await;
                     if child.try_wait()?.is_none() {
-                        child.kill().await.context("cancel Banking77 GEPA process")?;
+                        child.kill().await.context("cancel product-owned GEPA process")?;
                     }
-                    append_status_event(&service, &run_id, "optimizer.run.cancelled", "cancelled").await?;
+                    let request = cancel_rx
+                        .borrow()
+                        .as_ref()
+                        .cloned()
+                        .expect("cancel observer changed with a request");
+                    service
+                        .settle_run(
+                            run_id.clone(),
+                            super::kernel::SettleCause::Cancelled { request },
+                            None,
+                        )
+                        .await?;
                     return Ok(());
                 }
             }
@@ -448,63 +650,174 @@ async fn run_recipe_worker(
                 // have to wait for terminal state. Deterministic event ids make
                 // repeated polls and reconnects idempotent.
                 if let Err(error) = append_proposer_transcripts(&service, &run_id, &run_dir).await {
-                    eprintln!("transient proposer transcript reconciliation failure: {error:#}");
+                    crate::platform::logging::report("optimizers", "eprintln", format!("transient proposer transcript reconciliation failure: {error:#}"));
                 }
             }
         }
     }
 }
 
-/// Resolve a recipe secret exclusively inside the Rust host. Finder-launched
-/// applications do not inherit shell variables, so consult a small trusted
-/// file allowlist after checking the process environment. Values are returned
-/// only to the child environment and are never persisted or logged.
-fn resolve_secret(name: &str) -> Result<String> {
-    if name != "OPENAI_API_KEY" {
-        bail!("optimizer recipe requested a non-allowlisted secret name");
-    }
-    if let Ok(value) = std::env::var(name) {
-        if !value.trim().is_empty() {
-            return Ok(value);
+/// Resolve OpenAI access for a recipe through the local vault and provider
+/// proxy. Paid workers never receive a provider key and never fall back to a
+/// process variable or dotenv file.
+fn resolve_provider_workload(
+    provider: &str,
+    run_id: &str,
+    recipe_id: &str,
+    config_path: Option<&Path>,
+) -> Result<OpenAiWorkload> {
+    #[cfg(test)]
+    {
+        if std::env::var("SYNTH_OPTIMIZER_TEST_CHILD_SLEEP_SECS").is_ok()
+            || std::env::var("SYNTH_OPTIMIZER_TEST_SUPPRESS_SPOOL").is_ok()
+        {
+            return Ok(OpenAiWorkload {
+                api_key: crate::secrets::API_KEY_SENTINEL.to_owned(),
+                base_url: None,
+                config_base_url: None,
+                inference_url: None,
+                lease: None,
+            });
         }
     }
-    let candidates = std::env::var_os("SYNTH_BANKING77_SECRET_ENV_FILE")
-        .map(PathBuf::from)
-        .into_iter();
-    for path in candidates {
-        let Ok(text) = fs::read_to_string(path) else {
-            continue;
-        };
-        if let Some(value) = dotenv_value(&text, name) {
-            return Ok(value);
-        }
+    let secrets = crate::secrets::live().ok_or_else(|| {
+        crate::secrets::lease::CredentialError::new(
+            crate::secrets::lease::PROXY_NOT_RUNNING,
+            "proxy",
+            true,
+            "Workshop secrets proxy is not running",
+        )
+        .anyhow()
+    })?;
+    let mut use_policy = provider_use_policy(config_path)?;
+    if provider.eq_ignore_ascii_case("openrouter") {
+        use_policy.operations.push("responses.create".into());
     }
-    bail!(
-        "Banking77 GEPA requires {name}; configure it in the Desktop process or a trusted recipe env file"
-    )
+    let lease = secrets
+        .issue_lease(provider, run_id, recipe_id, use_policy, "optimizer")
+        .map_err(|error| anyhow!("{error}"))?;
+    Ok(OpenAiWorkload {
+        api_key: crate::secrets::API_KEY_SENTINEL.to_owned(),
+        base_url: Some(lease.host_base_url.clone()),
+        config_base_url: Some(lease.container_base_url.clone()),
+        inference_url: Some(lease.inference_url.clone()),
+        lease: Some(lease),
+    })
 }
 
-fn dotenv_value(text: &str, name: &str) -> Option<String> {
-    text.lines().find_map(|line| {
-        let line = line.trim().strip_prefix("export ").unwrap_or(line.trim());
-        if line.starts_with('#') || line.is_empty() {
-            return None;
-        }
-        let (key, raw) = line.split_once('=')?;
-        if key.trim() != name {
-            return None;
-        }
-        let value = raw.trim();
-        let value = if value.len() >= 2
-            && ((value.starts_with('"') && value.ends_with('"'))
-                || (value.starts_with('\'') && value.ends_with('\'')))
-        {
-            &value[1..value.len() - 1]
-        } else {
+fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::SecretsUsePolicy> {
+    let path = config_path.context(
+        "run-scoped provider lease requires the admitted run-owned recipe configuration",
+    )?;
+    let config = fs::read_to_string(path)
+        .with_context(|| format!("read provider policy from {}", path.display()))?
+        .parse::<toml::Value>()?;
+    let proposer = config.get("proposer").and_then(toml::Value::as_table);
+    let mut reasoning_efforts = Vec::new();
+    if let Some(effort) = proposer
+        .and_then(|section| section.get("reasoning_effort"))
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        reasoning_efforts.push(effort.to_string());
+    }
+    let mut models: Vec<String> = [
+        config.get("model").and_then(toml::Value::as_str),
+        proposer
+            .and_then(|section| section.get("model"))
+            .and_then(toml::Value::as_str),
+        config
+            .get("policy")
+            .and_then(toml::Value::as_table)
+            .and_then(|section| section.get("model"))
+            .and_then(toml::Value::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_string)
+    .collect();
+    models.sort();
+    models.dedup();
+    let rollout_limit = config
+        .get("bounds")
+        .and_then(toml::Value::as_table)
+        .and_then(|section| section.get("max_total_rollouts"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .context("run-owned recipe is missing bounds.max_total_rollouts")?;
+    let max_cost_usd = config
+        .get("bounds")
+        .and_then(toml::Value::as_table)
+        .and_then(|section| section.get("max_cost_usd"))
+        .and_then(|value| {
             value
-        };
-        (!value.is_empty()).then(|| value.to_string())
-    })
+                .as_float()
+                .or_else(|| value.as_integer().map(|v| v as f64))
+        })
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .context("run-owned recipe is missing bounds.max_cost_usd")?;
+    let rollout_output_limit = config
+        .get("policy")
+        .and_then(toml::Value::as_table)
+        .and_then(|section| section.get("max_tokens"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0);
+    let calls_per_rollout = config
+        .get("policy")
+        .and_then(toml::Value::as_table)
+        .and_then(|section| section.get("max_calls"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(16);
+    // The provider capability must cover the entire admitted execution plus
+    // terminal settlement. A fixed desktop TTL can expire in the middle of a
+    // longer, otherwise valid optimizer run.
+    let capability_lifetime_seconds = config
+        .get("bounds")
+        .and_then(toml::Value::as_table)
+        .and_then(|section| section.get("max_seconds"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.saturating_add(300))
+        .unwrap_or_else(|| crate::limits::SECRETS_CAPABILITY_TTL.as_secs())
+        .max(crate::limits::SECRETS_CAPABILITY_TTL.as_secs());
+    let declared_output_tokens =
+        rollout_output_limit.map(|limit| rollout_limit.saturating_mul(limit));
+    Ok(super::admission::provider_use_policy_from_bounds(
+        vec!["chat.completions.create".into()],
+        models,
+        reasoning_efforts,
+        rollout_limit
+            .saturating_mul(calls_per_rollout)
+            .min(u64::from(u32::MAX)) as u32,
+        (max_cost_usd * 1_000_000.0).round() as u64,
+        capability_lifetime_seconds,
+        declared_output_tokens.map(|tokens| tokens.saturating_mul(4)),
+        declared_output_tokens,
+    ))
+}
+
+fn recipe_id_for_lease(config_path: &Path) -> &str {
+    config_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("gepa")
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct OpenAiWorkload {
+    pub api_key: String,
+    pub base_url: Option<String>,
+    pub config_base_url: Option<String>,
+    pub inference_url: Option<String>,
+    pub lease: Option<crate::secrets::CredentialLease>,
 }
 
 async fn ingest_available(
@@ -547,28 +860,16 @@ async fn append_recipe_artifacts(
     if artifacts.is_empty() {
         return Ok(());
     }
-    let run = service.get(run_id.to_string()).await?;
-    let event = OptimizerEventEnvelope {
-        schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-        event_id: Some(format!("{run_id}:workshop:artifacts")),
-        event_type: "optimizer.recipe.artifacts".into(),
-        sequence_number: run.cursor_seq + 1,
-        occurred_at: chrono::Utc::now().to_rfc3339(),
-        optimizer_run_id: run_id.into(),
-        algorithm_id: "gepa".into(),
-        level: Some("info".into()),
-        item: None,
-        delta: serde_json::from_value(json!({
+    let mut draft = OptimizerEventDraft::new("optimizer.recipe.artifacts", "gepa")
+        .idempotency_key("workshop:artifacts")
+        .level("info")
+        .delta(serde_json::from_value(json!({
             "message": format!("Persisted {} optimizer artifacts", artifacts.len()),
-        }))?,
-        snapshot: None,
-        usage_delta: None,
-        artifact_refs: artifacts,
-        error: None,
-        raw: json!({ "source": "workshop_recipe" }),
-    };
+        }))?)
+        .raw(json!({ "source": "workshop_recipe" }));
+    draft.artifact_refs = artifacts;
     service
-        .append_events(run_id.to_string(), vec![event])
+        .append_event_payloads(run_id.to_string(), vec![draft])
         .await?;
     Ok(())
 }
@@ -589,7 +890,6 @@ async fn append_recipe_candidates(
     let Some(candidates) = registry.as_array() else {
         return Ok(());
     };
-    let run = service.get(run_id.to_string()).await?;
     let mut events = Vec::new();
     for (index, candidate) in candidates.iter().enumerate() {
         let Some(candidate_id) = candidate
@@ -607,7 +907,6 @@ async fn append_recipe_candidates(
             .get("status")
             .cloned()
             .unwrap_or_else(|| json!("evaluated"));
-        let sequence_number = run.cursor_seq + events.len() as u64 + 1;
         let mut delta = serde_json::Map::new();
         for key in ["train_reward", "heldout_reward", "minibatch_reward"] {
             if let Some(value) = candidate.get(key) {
@@ -617,16 +916,13 @@ async fn append_recipe_candidates(
         if let Some(parent_id) = candidate.get("parent_id") {
             delta.insert("parentId".into(), parent_id.clone());
         }
-        events.push(OptimizerEventEnvelope {
-            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-            event_id: Some(format!("{run_id}:candidate-artifact:{candidate_id}")),
-            event_type: "candidate.artifact.loaded".into(),
-            sequence_number,
-            occurred_at: chrono::Utc::now().to_rfc3339(),
-            optimizer_run_id: run_id.into(),
-            algorithm_id: "gepa".into(),
-            level: Some("info".into()),
-            item: Some(json!({
+        // Content-addressed identity: the same candidate reconciled twice is the
+        // same event, so a repeated reconcile re-offers it rather than minting a
+        // second sequence for it.
+        let mut draft = OptimizerEventDraft::new("candidate.artifact.loaded", "gepa")
+            .idempotency_key(format!("candidate-artifact:{candidate_id}"))
+            .level("info")
+            .item(json!({
                 "kind": "candidate",
                 "id": candidate_id,
                 "status": status,
@@ -634,22 +930,21 @@ async fn append_recipe_candidates(
                     "values": values,
                     "sourceArtifact": "candidate_registry.json"
                 }
-            })),
-            delta,
-            snapshot: None,
-            usage_delta: None,
-            artifact_refs: vec![json!({
-                "kind": "candidate_registry",
-                "id": registry_path,
-                "path": registry_path,
-                "title": "Candidate registry"
-            })],
-            error: None,
-            raw: json!({ "source": "candidate_registry.json", "index": index }),
-        });
+            }))
+            .delta(delta)
+            .raw(json!({ "source": "candidate_registry.json", "index": index }));
+        draft.artifact_refs = vec![json!({
+            "kind": "candidate_registry",
+            "id": registry_path,
+            "path": registry_path,
+            "title": "Candidate registry"
+        })];
+        events.push(draft);
     }
     if !events.is_empty() {
-        service.append_events(run_id.to_string(), events).await?;
+        service
+            .append_event_payloads(run_id.to_string(), events)
+            .await?;
     }
     Ok(())
 }
@@ -803,7 +1098,6 @@ async fn append_proposer_transcripts(
         })
         .collect();
     generation_dirs.sort();
-    let run = service.get(run_id.to_string()).await?;
     let mut events = Vec::new();
     for dir in generation_dirs {
         let generation: u64 = dir
@@ -860,18 +1154,11 @@ async fn append_proposer_transcripts(
             .has_event_id(run_id.to_string(), transcript_event_id.clone())
             .await?
         {
-            let sequence_number = run.cursor_seq + events.len() as u64 + 1;
-            events.push(OptimizerEventEnvelope {
-                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                event_id: Some(transcript_event_id),
-                event_type: "proposer.transcript.loaded".into(),
-                sequence_number,
-                occurred_at: chrono::Utc::now().to_rfc3339(),
-                optimizer_run_id: run_id.into(),
-                algorithm_id: "gepa".into(),
-                level: Some("info".into()),
-                item: None,
-                delta: serde_json::from_value(json!({
+            events.push(
+                OptimizerEventDraft::new("proposer.transcript.loaded", "gepa")
+                    .idempotency_key(format!("proposer-transcript:{generation}"))
+                    .level("info")
+                    .delta(serde_json::from_value(json!({
                     "generation": generation,
                     "message": "Proposer transcript reconciled from workspace artifacts",
                     "critique": truncated_text(
@@ -890,18 +1177,15 @@ async fn append_proposer_transcripts(
                     ),
                     "proposals": proposals,
                     "usage": response.get("usage"),
-                }))?,
-                snapshot: None,
-                usage_delta: None,
-                artifact_refs: vec![json!({
-                    "kind": "proposer_transcript",
-                    "id": response_path,
-                    "path": response_path,
-                    "title": format!("Proposer transcript · generation {generation}")
-                })],
-                error: None,
-                raw: json!({ "source": "opencode_response.json", "generation": generation }),
-            });
+                    }))?)
+                    .raw(json!({ "source": "opencode_response.json", "generation": generation }))
+                    .artifact_refs(vec![json!({
+                        "kind": "proposer_transcript",
+                        "id": response_path,
+                        "path": response_path,
+                        "title": format!("Proposer transcript · generation {generation}")
+                    })]),
+            );
         }
         let trace_path = dir
             .join(".agent_artifacts")
@@ -917,39 +1201,31 @@ async fn append_proposer_transcripts(
                 .map(|source| project_trace_v5_items(&source))
                 .unwrap_or_default();
             if !items.is_empty() {
-                let sequence_number = run.cursor_seq + events.len() as u64 + 1;
-                events.push(OptimizerEventEnvelope {
-                    schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                    event_id: Some(trace_event_id),
-                    event_type: "proposer.trace_v5.loaded".into(),
-                    sequence_number,
-                    occurred_at: chrono::Utc::now().to_rfc3339(),
-                    optimizer_run_id: run_id.into(),
-                    algorithm_id: "gepa".into(),
-                    level: Some("info".into()),
-                    item: None,
-                    delta: serde_json::from_value(json!({
-                        "generation": generation,
-                        "schema_version": "synth.trace-projection.rollout-inspector.v1",
-                        "message": "Sealed proposer Trace V5 reconciled from app-server artifacts",
-                        "items": items,
-                    }))?,
-                    snapshot: None,
-                    usage_delta: None,
-                    artifact_refs: vec![json!({
-                        "kind": "trace_v5",
-                        "id": trace_path,
-                        "path": trace_path,
-                        "title": format!("Proposer Trace V5 · generation {generation}")
-                    })],
-                    error: None,
-                    raw: json!({ "source": "opencode_sse_events.jsonl", "generation": generation }),
-                });
+                events.push(
+                    OptimizerEventDraft::new("proposer.trace_v5.loaded", "gepa")
+                        .idempotency_key(format!("proposer-trace-v5:{generation}"))
+                        .level("info")
+                        .delta(serde_json::from_value(json!({
+                            "generation": generation,
+                            "schema_version": "synth.trace-projection.rollout-inspector.v1",
+                            "message": "Sealed proposer Trace V5 reconciled from app-server artifacts",
+                            "items": items,
+                        }))?)
+                        .raw(json!({ "source": "opencode_sse_events.jsonl", "generation": generation }))
+                        .artifact_refs(vec![json!({
+                            "kind": "trace_v5",
+                            "id": trace_path,
+                            "path": trace_path,
+                            "title": format!("Proposer Trace V5 · generation {generation}")
+                        })]),
+                );
             }
         }
     }
     if !events.is_empty() {
-        service.append_events(run_id.to_string(), events).await?;
+        service
+            .append_event_payloads(run_id.to_string(), events)
+            .await?;
     }
     Ok(())
 }
@@ -960,26 +1236,16 @@ async fn append_status_event(
     event_type: &str,
     status: &str,
 ) -> Result<()> {
-    let run = service.get(run_id.to_string()).await?;
-    let event = OptimizerEventEnvelope {
-        schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-        event_id: Some(format!("{run_id}:workshop:{}", run.cursor_seq + 1)),
-        event_type: event_type.into(),
-        sequence_number: run.cursor_seq + 1,
-        occurred_at: chrono::Utc::now().to_rfc3339(),
-        optimizer_run_id: run_id.into(),
-        algorithm_id: "gepa".into(),
-        level: None,
-        item: None,
-        delta: serde_json::from_value(json!({ "status": status }))?,
-        snapshot: None,
-        usage_delta: None,
-        artifact_refs: vec![],
-        error: None,
-        raw: json!({ "source": "workshop_recipe" }),
-    };
     service
-        .append_events(run_id.to_string(), vec![event])
+        .append_event_payloads(
+            run_id.to_string(),
+            vec![OptimizerEventDraft::new(event_type, "gepa")
+                // One lifecycle transition per run: a retried append re-offers
+                // the same event instead of minting a second one.
+                .idempotency_key(format!("workshop:lifecycle:{event_type}"))
+                .delta(serde_json::from_value(json!({ "status": status }))?)
+                .raw(json!({ "source": "workshop_recipe" }))],
+        )
         .await?;
     Ok(())
 }
@@ -991,24 +1257,53 @@ async fn append_terminal_event(
     detail: String,
 ) -> Result<()> {
     let run = service.get(run_id.to_string()).await?;
-    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
-        return Ok(());
-    }
-    let status = if failed { "failed" } else { "completed" };
-    append_status_event(
-        service,
-        run_id,
-        if failed {
-            "optimizer.run.failed"
-        } else {
-            "optimizer.run.completed"
-        },
-        status,
-    )
-    .await?;
-    if failed {
-        append_diagnostic_event(service, run_id, detail).await?;
-    }
+    // Final ingestion can seal the producer's terminal event before the
+    // recipe supervisor gets here. Still route that compatible terminal
+    // through `settle_run`: its idempotent sealed-manifest branch performs
+    // the Workshop-owned post-terminal cleanup (capability revocation,
+    // durable credential-chain sealing, and paid-compute settlement). An
+    // early return here left completed GEPA runs with a revoked capability in
+    // the capability table but a stale `granted` summary and reservation.
+    let error = if failed {
+        let run_directory = run
+            .summary
+            .get("runDirectory")
+            .and_then(serde_json::Value::as_str)
+            .map(PathBuf::from);
+        let stdout_path = run_directory
+            .as_ref()
+            .map(|directory| directory.join("workshop.stdout.log"));
+        let stderr_path = run_directory
+            .as_ref()
+            .map(|directory| directory.join("workshop.stderr.log"));
+        let stdout_tail = stdout_path
+            .as_ref()
+            .and_then(|path| bounded_log_tail(path, 4_000).ok())
+            .filter(|text| !text.trim().is_empty());
+        let stderr_tail = stderr_path
+            .as_ref()
+            .and_then(|path| bounded_log_tail(path, 4_000).ok())
+            .filter(|text| !text.trim().is_empty());
+        Some(json!({
+            "message": detail.trim().chars().take(1_000).collect::<String>(),
+            "supervisorDetail": detail.chars().take(4_000).collect::<String>(),
+            "stdoutTail": stdout_tail,
+            "stderrTail": stderr_tail,
+            "logPath": stderr_path,
+            "stdoutLogPath": stdout_path,
+            "stderrLogPath": stderr_path,
+        }))
+    } else {
+        None
+    };
+    let cause = if failed {
+        super::kernel::SettleCause::Failed {
+            detail: detail.clone(),
+        }
+    } else {
+        super::kernel::SettleCause::Completed
+    };
+    service.settle_run(run_id.to_string(), cause, error).await?;
     Ok(())
 }
 
@@ -1024,40 +1319,95 @@ async fn append_diagnostic_event(
         .get("runDirectory")
         .and_then(serde_json::Value::as_str)
         .map(PathBuf::from);
+    let stdout_path = run_directory
+        .as_ref()
+        .map(|directory| directory.join("workshop.stdout.log"));
     let stderr_path = run_directory
         .as_ref()
         .map(|directory| directory.join("workshop.stderr.log"));
+    let stdout_tail = stdout_path
+        .as_ref()
+        .and_then(|path| bounded_log_tail(path, 4_000).ok())
+        .filter(|text| !text.trim().is_empty());
     let stderr_tail = stderr_path
         .as_ref()
         .and_then(|path| bounded_log_tail(path, 4_000).ok())
         .filter(|text| !text.trim().is_empty());
-    let display_message = stderr_tail.as_deref().unwrap_or(&detail);
-    let mut event = OptimizerEventEnvelope {
-        schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-        event_id: Some(format!("{run_id}:workshop:{}", run.cursor_seq + 1)),
-        event_type: "optimizer.recipe.diagnostic".into(),
-        sequence_number: run.cursor_seq + 1,
-        occurred_at: chrono::Utc::now().to_rfc3339(),
-        optimizer_run_id: run_id.into(),
-        algorithm_id: "gepa".into(),
-        level: Some("error".into()),
-        item: None,
-        delta: Default::default(),
-        snapshot: None,
-        usage_delta: None,
-        artifact_refs: vec![],
-        error: Some(json!({
-            "message": display_message.chars().take(1_000).collect::<String>(),
-            "stderrTail": stderr_tail,
-            "logPath": stderr_path,
-        })),
-        raw: json!({}),
+    // `detail` is the supervisor's causal error (exit status, signal, ingest
+    // failure, etc.). Log output is supporting evidence and must never replace
+    // it: stderr may contain only a warning, which previously hid the actual
+    // failure and produced a polished-looking lie in the run UI.
+    let display_message = detail.trim();
+    let diagnostic = json!({
+        "message": display_message.chars().take(1_000).collect::<String>(),
+        "supervisorDetail": detail.chars().take(4_000).collect::<String>(),
+        "stdoutTail": stdout_tail,
+        "stderrTail": stderr_tail,
+        "logPath": stderr_path,
+        "stdoutLogPath": stdout_path,
+        "stderrLogPath": stderr_path,
+    });
+    let mut draft = if let Some(manifest) = service.terminal_manifest(run_id.to_string()).await? {
+        let terminal_sequence = manifest
+            .get("terminalCursor")
+            .and_then(Value::as_u64)
+            .context("sealed terminal manifest is missing terminalCursor")?;
+        OptimizerEventDraft::new("optimizer.evidence.amended", "gepa")
+            .idempotency_key(format!("diagnostic-amendment:{terminal_sequence}"))
+            .level("error")
+            .delta(Map::from_iter([
+                ("terminalSequence".into(), json!(terminal_sequence)),
+                ("diagnostic".into(), diagnostic),
+            ]))
+    } else {
+        OptimizerEventDraft::new("optimizer.recipe.diagnostic", "gepa")
+            .level("error")
+            .error(diagnostic)
     };
-    event.delta.insert("status".into(), json!("failed"));
+    if draft.event_type != "optimizer.evidence.amended" {
+        draft.delta.insert("status".into(), json!("failed"));
+    }
     service
-        .append_events(run_id.to_string(), vec![event])
+        .append_event_payloads(run_id.to_string(), vec![draft])
         .await?;
+
+    // The run evidence above stays authoritative. This makes the same failure
+    // findable from the other side — by optimizer_run_id, alongside whatever
+    // container, stream, or visual failed with it.
+    if let Some(diagnostics) = service.diagnostics() {
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            crate::diagnostics::Severity::Error,
+            "optimizers",
+            "optimizer.worker.failed",
+            crate::diagnostics::codes::OPTIMIZER_WORKER_FAILED,
+            display_message.chars().take(500).collect::<String>(),
+        );
+        input.correlation.optimizer_run_id = Some(run_id.to_owned());
+        input.details.insert("algorithm".into(), json!("gepa"));
+        if let Some(path) = stderr_path.as_ref() {
+            // The pointer, not the contents: a log tail is evidence to open,
+            // not payload to index.
+            input
+                .details
+                .insert("log_path".into(), json!(path.display().to_string()));
+        }
+        diagnostics.emit(input);
+    }
     Ok(())
+}
+
+fn describe_exit_status(status: &std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("terminated by signal {signal}");
+        }
+    }
+    match status.code() {
+        Some(code) => format!("exited with code {code}"),
+        None => format!("exited with unknown status {status}"),
+    }
 }
 
 fn bounded_log_tail(path: &Path, max_chars: usize) -> Result<String> {
@@ -1071,313 +1421,97 @@ fn bounded_log_tail(path: &Path, max_chars: usize) -> Result<String> {
         .unwrap_or(0);
     Ok(text[start..].to_string())
 }
-
-fn banking77_cookbook_root() -> Result<PathBuf> {
-    let path = std::env::var_os("SYNTH_BANKING77_GEPA_COOKBOOK_ROOT")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("SYNTH_BANKING77_GEPA_COOKBOOK_ROOT is not configured"))?;
-    let path = path.canonicalize().unwrap_or(path);
-    if !path.join("gepa.toml").is_file() || !path.join("synth_service_app.py").is_file() {
-        bail!(
-            "Banking77 GEPA cookbook is unavailable; set SYNTH_BANKING77_GEPA_COOKBOOK_ROOT in the Desktop process"
-        );
-    }
-    Ok(path)
-}
-
-fn reserve_loopback_port() -> Result<u16> {
-    Ok(TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port())
-}
-
-fn resolve_uv() -> Result<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(path) = std::env::var_os("SYNTH_OPTIMIZER_UV_PATH") {
-        candidates.push(PathBuf::from(path));
-    }
-    candidates.extend([
-        PathBuf::from("/opt/homebrew/bin/uv"),
-        PathBuf::from("/usr/local/bin/uv"),
-    ]);
-    if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join(".local/bin/uv"));
-        candidates.push(home.join(".cargo/bin/uv"));
-    }
-    for path in candidates {
-        if path.is_file() {
-            return path
-                .canonicalize()
-                .with_context(|| format!("canonicalize trusted uv path {}", path.display()));
-        }
-    }
-    bail!(
-        "Banking77 GEPA requires uv; install it or set SYNTH_OPTIMIZER_UV_PATH in the Desktop process"
-    )
-}
-
-fn resolve_codex_home() -> Result<PathBuf> {
-    let path = std::env::var_os("SYNTH_OPTIMIZER_CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
-        .ok_or_else(|| anyhow!("cannot resolve Codex home"))?;
-    let path = path.canonicalize().unwrap_or(path);
-    if !path.join("auth.json").is_file() {
-        bail!(
-            "Banking77 GEPA Luna/Sol requires ChatGPT auth; sign in to Codex or set SYNTH_OPTIMIZER_CODEX_HOME"
-        );
-    }
-    Ok(path)
-}
-
-fn materialize_config(
-    cookbook: &Path,
-    runs_root: &Path,
-    run_id: &str,
-    port: u16,
-    uv: &Path,
-    destination: &Path,
-    proposer_profile: ProposerProfile,
-    codex_home: &Path,
-) -> Result<()> {
-    let source = fs::read_to_string(cookbook.join("gepa.toml"))?;
-    let mut config: toml::Value = toml::from_str(&source)?;
-    let run = table_mut(&mut config, "run")?;
-    run.insert("run_id".into(), toml::Value::String(run_id.into()));
-    run.insert(
-        "output_dir".into(),
-        toml::Value::String(runs_root.display().to_string()),
-    );
-
-    let container = table_mut(&mut config, "container")?;
-    // The first Banking77 launch may need to create the isolated uv environment
-    // and load the Hugging Face dataset before it can bind its health endpoint.
-    // Keep the runtime's default 30s deadline for warm services, but give this
-    // explicitly managed cold-start path enough room to become ready.
-    container.insert("startup_timeout_seconds".into(), 120.into());
-    let container_stream_root = destination
-        .parent()
-        .ok_or_else(|| anyhow!("generated recipe destination has no run directory"))?
-        .join("container-streams");
-    container.insert(
-        "url".into(),
-        toml::Value::String(format!("http://127.0.0.1:{port}")),
-    );
-    container.insert(
-        "cwd".into(),
-        toml::Value::String(
-            cookbook
-                .parent()
-                .ok_or_else(|| anyhow!("invalid cookbook path"))?
-                .display()
-                .to_string(),
-        ),
-    );
-    container.insert(
-        "command".into(),
-        toml::Value::Array(
-            vec![
-                "/usr/bin/env",
-                "BANKING77_TRAIN_SAMPLE=50",
-                "BANKING77_TEST_SAMPLE=50",
-                "BANKING77_POLICY_CONCURRENCY=4",
-                "BANKING77_POLICY_TIMEOUT_SECONDS=20",
-                "BANKING77_ROLLOUT_TIMEOUT_SECONDS=25",
-                &format!("BANKING77_STREAM_ROOT={}", container_stream_root.display()),
-                "HF_HUB_DISABLE_PROGRESS_BARS=1",
-                &uv.display().to_string(),
-                "run",
-                "--project",
-                "banking77_container",
-                "python",
-                "banking77_container/synth_service_app.py",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                &port.to_string(),
-            ]
-            .into_iter()
-            .map(|v| toml::Value::String(v.into()))
-            .collect(),
-        ),
-    );
-
-    let dataset = table_mut(&mut config, "dataset")?;
-    dataset.insert("train_seeds".into(), integer_array(0, TRAIN_ROWS));
-    dataset.insert("heldout_seeds".into(), integer_array(100, HELDOUT_ROWS));
-
-    let taskset = [
-        ("train_split".into(), toml::Value::String("train".into())),
-        ("heldout_split".into(), toml::Value::String("test".into())),
-        (
-            "train_ids".into(),
-            string_array((0..TRAIN_ROWS).map(|seed| format!("train:{seed}"))),
-        ),
-        (
-            "heldout_ids".into(),
-            string_array((100..100 + HELDOUT_ROWS).map(|seed| format!("test:{seed}"))),
-        ),
-    ]
-    .into_iter()
-    .collect();
-    config
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("Banking77 base config must be a TOML table"))?
-        .insert("taskset".into(), toml::Value::Table(taskset));
-
-    let gepa = table_mut(&mut config, "gepa")?;
-    gepa.insert("max_generations".into(), MAX_GENERATIONS.into());
-    gepa.insert(
-        "proposals_per_generation".into(),
-        PROPOSALS_PER_GENERATION.into(),
-    );
-    gepa.insert("minibatch_size".into(), MINIBATCH_SIZE.into());
-    gepa.insert("max_train_rollouts".into(), MAX_TRAIN_ROLLOUTS.into());
-    gepa.insert("max_heldout_rollouts".into(), MAX_HELDOUT_ROLLOUTS.into());
-    gepa.insert("max_total_rollouts".into(), MAX_TOTAL_ROLLOUTS.into());
-    gepa.insert("max_cost_usd".into(), MAX_COST_USD.into());
-    gepa.insert(
-        "proposer_estimated_cost_usd".into(),
-        PROPOSER_ESTIMATED_COST_USD.into(),
-    );
-    gepa.insert(
-        "rollout_estimated_cost_usd".into(),
-        ROLLOUT_ESTIMATED_COST_USD.into(),
-    );
-    let task_pools = [
-        (
-            "pareto".into(),
-            string_array((0..TRAIN_ROWS).map(|seed| format!("train:{seed}"))),
-        ),
-        (
-            "minibatch".into(),
-            string_array((0..MINIBATCH_SIZE as usize).map(|seed| format!("train:{seed}"))),
-        ),
-        (
-            "reflection".into(),
-            string_array((0..TRAIN_ROWS).map(|seed| format!("train:{seed}"))),
-        ),
-        (
-            "heldout".into(),
-            string_array((100..100 + HELDOUT_ROWS).map(|seed| format!("test:{seed}"))),
-        ),
-    ]
-    .into_iter()
-    .collect();
-    gepa.insert("task_pools".into(), toml::Value::Table(task_pools));
-
-    let cache = table_mut(&mut config, "cache")?;
-    cache.insert("mode".into(), toml::Value::String("off".into()));
-    cache.insert("path".into(), toml::Value::String(String::new()));
-    cache.insert("namespace".into(), toml::Value::String(run_id.into()));
-
-    let proposer = table_mut(&mut config, "proposer")?;
-    proposer.insert(
-        "model".into(),
-        toml::Value::String(proposer_profile.model().into()),
-    );
-    proposer.insert(
-        "reasoning_effort".into(),
-        toml::Value::String("medium".into()),
-    );
-    proposer.insert(
-        "timeout_seconds".into(),
-        toml::Value::Integer(PROPOSER_TIMEOUT_SECONDS),
-    );
-    proposer.insert(
-        "message_stall_timeout_seconds".into(),
-        toml::Value::Integer(PROPOSER_MESSAGE_STALL_TIMEOUT_SECONDS),
-    );
-    proposer.insert("auth_mode".into(), toml::Value::String("chatgpt".into()));
-    proposer.insert("copy_host_auth".into(), toml::Value::Boolean(true));
-    proposer.remove("api_key_env");
-    proposer.insert(
-        "codex_home".into(),
-        toml::Value::String(codex_home.display().to_string()),
-    );
-
-    validate_limits(&config)?;
-    fs::write(destination, toml::to_string_pretty(&config)?)?;
-    Ok(())
-}
-
-fn table_mut<'a>(config: &'a mut toml::Value, key: &str) -> Result<&'a mut toml::value::Table> {
-    config
-        .get_mut(key)
-        .and_then(toml::Value::as_table_mut)
-        .ok_or_else(|| anyhow!("Banking77 base config missing [{key}]"))
-}
-
-fn integer_array(start: usize, count: usize) -> toml::Value {
-    toml::Value::Array(
-        (start..start + count)
-            .map(|value| toml::Value::Integer(value as i64))
-            .collect(),
-    )
-}
-
-fn string_array(values: impl IntoIterator<Item = String>) -> toml::Value {
-    toml::Value::Array(values.into_iter().map(toml::Value::String).collect())
-}
-
-fn validate_limits(config: &toml::Value) -> Result<()> {
-    let gepa = config
-        .get("gepa")
-        .and_then(toml::Value::as_table)
-        .ok_or_else(|| anyhow!("generated recipe missing [gepa]"))?;
-    let integer = |key: &str| {
-        gepa.get(key)
-            .and_then(toml::Value::as_integer)
-            .ok_or_else(|| anyhow!("generated recipe missing gepa.{key}"))
-    };
-    if integer("max_generations")? > MAX_GENERATIONS
-        || integer("proposals_per_generation")? > PROPOSALS_PER_GENERATION
-        || integer("max_train_rollouts")? > MAX_TRAIN_ROLLOUTS
-        || integer("max_heldout_rollouts")? > MAX_HELDOUT_ROLLOUTS
-        || integer("max_total_rollouts")? > MAX_TOTAL_ROLLOUTS
-    {
-        bail!("generated Banking77 GEPA recipe exceeds hard rollout bounds");
-    }
-    let cost = gepa
-        .get("max_cost_usd")
-        .and_then(|value| {
-            value
-                .as_float()
-                .or_else(|| value.as_integer().map(|v| v as f64))
-        })
-        .ok_or_else(|| anyhow!("generated recipe missing gepa.max_cost_usd"))?;
-    if !(0.0..=MAX_COST_USD).contains(&cost) {
-        bail!("generated Banking77 GEPA recipe exceeds hard cost bound");
-    }
-    let proposer_cost = gepa
-        .get("proposer_estimated_cost_usd")
-        .and_then(|value| {
-            value
-                .as_float()
-                .or_else(|| value.as_integer().map(|v| v as f64))
-        })
-        .ok_or_else(|| anyhow!("generated recipe missing gepa.proposer_estimated_cost_usd"))?;
-    if proposer_cost <= 0.0 || proposer_cost > MAX_COST_USD {
-        bail!("generated Banking77 GEPA recipe has an invalid proposer cost estimate");
-    }
-    let rollout_cost = gepa
-        .get("rollout_estimated_cost_usd")
-        .and_then(|value| {
-            value
-                .as_float()
-                .or_else(|| value.as_integer().map(|v| v as f64))
-        })
-        .ok_or_else(|| anyhow!("generated recipe missing gepa.rollout_estimated_cost_usd"))?;
-    if rollout_cost <= 0.0 || rollout_cost > MAX_COST_USD {
-        bail!("generated Banking77 GEPA recipe has an invalid rollout cost estimate");
-    }
-    Ok(())
+///
+/// Deliberately *not* beside the cookbook. Packaged builds ship the cookbooks
+/// inside `Synth Desktop.app/Contents/Resources`, so deriving the runs root
+/// from the cookbook put every run directory — configs, proposer transcripts,
+/// `best_candidate.json`, the result manifest `get_result` reads — inside the
+/// application bundle. A rebuild or an update deletes them (observed: a 19:47
+/// rebuild erased four completed runs' evidence), and a signed, quarantined
+/// install cannot write there at all. Evidence lives in the instance's own
+/// writable data root, which survives both.
+fn gepa_runs_root() -> Result<PathBuf> {
+    let root = crate::instance::data_root()
+        .join("optimizers")
+        .join("gepa")
+        .join("runs");
+    fs::create_dir_all(&root).context("create the optimizer runs root")?;
+    Ok(root)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{ContentStore, EventJournal, Storage};
-    use crate::visuals::VisualRegistry;
-    use tempfile::tempdir;
+
+    #[test]
+    fn provider_policy_uses_the_run_owned_model_and_reasoning_effort() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("workshop.recipe.toml");
+        fs::write(
+            &config,
+            r#"
+model = "openai/gpt-5.6-luna"
+
+[bounds]
+max_total_rollouts = 6
+max_cost_usd = 0.75
+
+[proposer]
+model = "openai/gpt-5.6-luna"
+reasoning_effort = "low"
+
+[policy]
+model = "openai/gpt-5.6-luna"
+max_tokens = 16000
+"#,
+        )
+        .unwrap();
+        let policy = provider_use_policy(Some(&config)).unwrap();
+        assert_eq!(policy.reasoning_efforts, ["low"]);
+        assert_eq!(policy.models, ["openai/gpt-5.6-luna"]);
+    }
+
+    #[test]
+    fn provider_policy_covers_the_declared_rollout_token_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("workshop.recipe.toml");
+        fs::write(
+            &config,
+            r#"
+[bounds]
+max_total_rollouts = 6
+max_cost_usd = 0.90
+
+[policy]
+max_tokens = 16000
+max_calls = 128
+"#,
+        )
+        .unwrap();
+        let policy = provider_use_policy(Some(&config)).unwrap();
+        assert_eq!(policy.max_output_tokens, 96_000);
+        assert_eq!(policy.max_input_tokens, 384_000);
+        assert_eq!(policy.max_calls, 768);
+        assert_eq!(policy.max_cost_usd, 0.90);
+    }
+
+    #[test]
+    fn provider_policy_outlives_the_admitted_run_for_settlement() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("workshop.recipe.toml");
+        fs::write(
+            &config,
+            r#"
+[bounds]
+max_total_rollouts = 240
+max_cost_usd = 2.45
+max_seconds = 3600
+"#,
+        )
+        .unwrap();
+        let policy = provider_use_policy(Some(&config)).unwrap();
+        assert_eq!(policy.lifetime_seconds, 3900);
+    }
 
     #[test]
     fn sealed_app_server_events_project_to_trace_v5_without_invented_reasoning() {
@@ -1406,472 +1540,36 @@ mod tests {
     }
 
     #[test]
-    fn materialized_recipe_enforces_pinned_bounds_and_no_secret_values() {
-        let dir = tempdir().unwrap();
-        fs::write(
-            dir.path().join("gepa.toml"),
-            r#"[run]
-run_id = "base"
-output_dir = "runs"
-[container]
-url = "http://127.0.0.1:8765"
-command = []
-cwd = "."
-[dataset]
-train_seeds = [0]
-heldout_seeds = [1]
-[proposer]
-model = "gpt-5.4-nano"
-auth_mode = "api_key"
-api_key_env = "OPENAI_API_KEY"
-[gepa]
-max_generations = 99
-proposals_per_generation = 99
-minibatch_size = 99
-max_total_rollouts = 9999
-max_cost_usd = 99.0
-[cache]
-mode = "readwrite"
-path = "secret"
-namespace = "base"
-"#,
-        )
-        .unwrap();
-        fs::write(dir.path().join("synth_service_app.py"), "").unwrap();
-        let runs = dir.path().join("runs");
-        fs::create_dir_all(&runs).unwrap();
-        let codex_home = dir.path().join("codex-home");
-        fs::create_dir_all(&codex_home).unwrap();
-        fs::write(codex_home.join("auth.json"), "{}").unwrap();
-        let output = dir.path().join("recipe.toml");
-        materialize_config(
-            dir.path(),
-            &runs,
-            "test_run",
-            23456,
-            Path::new("/usr/bin/true"),
-            &output,
-            ProposerProfile::LunaMedium,
-            &codex_home,
-        )
-        .unwrap();
-        let text = fs::read_to_string(output).unwrap();
-        let config: toml::Value = toml::from_str(&text).unwrap();
-        validate_limits(&config).unwrap();
-        assert_eq!(
-            config["taskset"]["train_ids"].as_array().unwrap().len(),
-            TRAIN_ROWS
-        );
-        assert_eq!(
-            config["gepa"]["task_pools"]["minibatch"]
-                .as_array()
-                .unwrap()
-                .len(),
-            MINIBATCH_SIZE as usize
-        );
-        assert_eq!(
-            config["taskset"]["heldout_ids"].as_array().unwrap().len(),
-            HELDOUT_ROWS
-        );
-        assert!(text.contains("minibatch_size = 20"));
-        assert!(text.contains("max_total_rollouts = 240"));
-        assert!(text.contains("max_train_rollouts = 140"));
-        assert!(text.contains("max_heldout_rollouts = 100"));
-        assert!(text.contains("max_cost_usd = 2.45"));
-        assert!(text.contains("proposer_estimated_cost_usd = 0.05"));
-        assert!(text.contains("rollout_estimated_cost_usd = 0.01"));
-        assert!(text.contains("BANKING77_TRAIN_SAMPLE=50"));
-        assert!(text.contains("BANKING77_TEST_SAMPLE=50"));
-        assert!(text.contains("startup_timeout_seconds = 120"));
-        assert!(!text.contains("OPENAI_API_KEY="));
-        assert!(!text.contains("secret"));
-        assert!(text.contains("model = \"gpt-5.6-luna\""));
-        assert!(text.contains("auth_mode = \"chatgpt\""));
-        assert!(text.contains("timeout_seconds = 300"));
-        assert!(text.contains("message_stall_timeout_seconds = 120"));
-        assert!(!text.contains("api_key_env = \"OPENAI_API_KEY\""));
-        assert!(text.contains("train_ids = ["));
-        assert!(text.contains("\"train:0\""));
-        assert!(text.contains("[gepa.task_pools]"));
-        assert!(text.contains("\"test:100\""));
-    }
-
-    #[test]
-    fn catalog_discloses_no_credential_inputs() {
-        let catalog = recipe_catalog();
-        assert_eq!(catalog.len(), 2);
-        assert!(catalog
-            .iter()
-            .all(|recipe| recipe["credentialInputs"] == json!([])));
-        assert!(catalog
-            .iter()
-            .all(|recipe| recipe["limits"]["maxCostUsd"] == json!(2.45)));
-        assert_ne!(catalog[0]["policyRef"], catalog[1]["policyRef"]);
-    }
-
-    #[test]
-    fn banking77_gepa_spawn_is_owned_by_optimizer_manager() {
-        let source = include_str!("recipes.rs");
-        let production = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("recipes.rs production source");
-        assert!(production.contains("manager.ensure_ready().await"));
-        assert!(production.contains("spawn_gepa_recipe"));
-        assert!(production.contains("manager.pin_run"));
-        let ensure_at = production.find("manager.ensure_ready().await").unwrap();
-        let spawn_at = production.find("spawn_gepa_recipe").unwrap();
+    fn product_gepa_catalog_is_empty() {
         assert!(
-            ensure_at < spawn_at,
-            "GEPA recipes must ensure_ready before manager spawn"
+            recipe_catalog().is_empty(),
+            "Workshop must not ship task GEPA/eval recipes; the workspace declares them"
         );
-        assert!(
-            !production.contains("Command::new"),
-            "recipes.rs must not launch a raw process; OptimizerManager owns spawn"
-        );
-        assert!(!production.contains("tokio::process::Command"));
-        assert!(!production.contains("std::process::Command"));
-        assert!(!production.contains("uv run --with synth-optimizers"));
-        assert!(!production.contains("\"gepa\", \"run\""));
     }
+}
+
+#[cfg(test)]
+mod runs_root_tests {
+    use super::*;
 
     #[test]
-    fn two_banking77_recipes_allocate_distinct_run_ids() {
-        let luna = recipe_run_id(ProposerProfile::LunaMedium);
-        let sol = recipe_run_id(ProposerProfile::SolMedium);
-        assert!(luna.starts_with("banking77_gepa_luna_med_"));
-        assert!(sol.starts_with("banking77_gepa_sol_med_"));
-        assert_ne!(luna, sol);
-    }
-
-    #[tokio::test]
-    async fn two_banking77_recipes_pin_distinct_spools_through_the_manager() {
-        use super::super::models::OptimizerCreateRequest;
-        use super::super::OptimizerManager;
-        use std::sync::Arc;
-
-        let dir = tempdir().unwrap();
-        let storage = Storage::open(dir.path().join("core")).unwrap();
-        let journal = EventJournal::new(storage.database().clone());
-        let content = ContentStore::new(storage.content_root());
-        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
-        let (events_tx, _) = tokio::sync::broadcast::channel(16);
-        let manager = Arc::new(OptimizerManager::with_home(dir.path().join("manager")));
-        manager.install(None).unwrap();
-        manager.start().await.unwrap();
-        let service = OptimizerService::new_with_manager(
-            storage.database().clone(),
-            journal,
-            visuals,
-            events_tx,
-            manager.clone(),
-        );
-
-        let mut runs = Vec::new();
-        for (recipe_id, proposer) in [
-            (BANKING77_GEPA_LUNA_RECIPE, ProposerProfile::LunaMedium),
-            (BANKING77_GEPA_SOL_RECIPE, ProposerProfile::SolMedium),
-        ] {
-            let run_id = recipe_run_id(proposer);
-            let (run, _) = service
-                .create(OptimizerCreateRequest {
-                    algorithm_id: "gepa".into(),
-                    algorithm_version: Some("synth-optimizers-0.2.0".into()),
-                    objective: Some(format!("Banking77 GEPA · {}", proposer.title())),
-                    source: Some("local".into()),
-                    project_ref: None,
-                    session_ref: None,
-                    id: Some(run_id),
-                    execution_bindings: None,
-                    input_refs: None,
-                    capabilities: None,
-                    summary: Some(json!({
-                        "recipeId": recipe_id,
-                        "proposerPolicyRef": {
-                            "harness": "gepa_proposer",
-                            "config": proposer.config_id(),
-                        },
-                    })),
-                    open_visual: Some(true),
-                    seed_fixture: None,
-                    cloud_config: None,
-                    local_path: None,
-                })
-                .await
-                .unwrap();
-            let (pinned, pin) = manager.pin_run(&service, &run.id, recipe_id).await.unwrap();
-            runs.push((pinned, pin));
+    fn gepa_run_evidence_lives_outside_the_application_bundle() {
+        let temp = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("SYNTH_DESKTOP_DATA_ROOT");
+        std::env::set_var("SYNTH_DESKTOP_DATA_ROOT", temp.path());
+        let root = gepa_runs_root().unwrap();
+        match previous {
+            Some(value) => std::env::set_var("SYNTH_DESKTOP_DATA_ROOT", value),
+            None => std::env::remove_var("SYNTH_DESKTOP_DATA_ROOT"),
         }
-        assert_ne!(runs[0].0.id, runs[1].0.id);
-        assert_ne!(runs[0].1.spool_path, runs[1].1.spool_path);
-        assert_eq!(runs[0].1.sidecar_version, runs[1].1.sidecar_version);
-        assert_eq!(runs[0].1.algorithm_version, runs[1].1.algorithm_version);
-        assert_eq!(runs[0].1.recipe_version, BANKING77_GEPA_LUNA_RECIPE);
-        assert_eq!(runs[1].1.recipe_version, BANKING77_GEPA_SOL_RECIPE);
-        assert_eq!(
-            runs[0].0.summary.pointer("/proposerPolicyRef/config"),
-            Some(&json!("luna_med"))
-        );
-        assert_eq!(
-            runs[1].0.summary.pointer("/proposerPolicyRef/config"),
-            Some(&json!("sol_med"))
-        );
-        for (run, pin) in &runs {
-            assert_eq!(
-                run.summary
-                    .get("sidecarVersion")
-                    .and_then(serde_json::Value::as_str),
-                Some(super::super::manager::DEFAULT_SIDECAR_VERSION)
-            );
-            assert!(std::path::Path::new(&pin.spool_path)
-                .join("identity.json")
-                .is_file());
-            assert!(!run.visual_refs.is_empty());
-        }
-        let stopped = manager.stop().await.unwrap();
-        assert_ne!(stopped.phase, "ready");
-        assert_eq!(
-            service.get(runs[0].0.id.clone()).await.unwrap().id,
-            runs[0].0.id
-        );
-        assert_eq!(
-            service.get(runs[1].0.id.clone()).await.unwrap().id,
-            runs[1].0.id
-        );
-    }
-
-    #[test]
-    fn parses_only_the_requested_dotenv_key() {
-        let text = "OTHER=do-not-return\nexport OPENAI_API_KEY='test-key'\n";
-        assert_eq!(
-            dotenv_value(text, "OPENAI_API_KEY").as_deref(),
-            Some("test-key")
-        );
-        assert_eq!(dotenv_value(text, "MISSING"), None);
-    }
-
-    #[test]
-    fn resolves_an_absolute_uv_path_for_finder_launches() {
-        if Path::new("/opt/homebrew/bin/uv").is_file() {
-            let path = resolve_uv().unwrap();
-            assert!(path.is_absolute());
-            assert!(path.is_file());
-        }
-    }
-
-    /// Manual A3 receipt. This is ignored in normal CI because it performs two
-    /// paid Banking77 runs through the same Desktop service and manager. Run it
-    /// with SYNTH_OPTIMIZER_PROJECT_ROOT pointed at the reviewed G1 checkout.
-    #[tokio::test]
-    #[ignore = "paid A3 acceptance; requires ChatGPT auth and OPENAI_API_KEY"]
-    async fn paid_dual_banking77_luna_sol_receipt() {
-        assert_eq!(
-            std::env::var("SYNTH_OPTIMIZER_LIVE_SIDECAR").as_deref(),
-            Ok("1"),
-            "paid acceptance must exercise the real G1 sidecar, not the unit-test health stub"
-        );
-        let dir = tempdir().unwrap();
-        let storage = Storage::open(dir.path().join("core")).unwrap();
-        let journal = EventJournal::new(storage.database().clone());
-        let content = ContentStore::new(storage.content_root());
-        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
-        let receipt_visuals = visuals.clone();
-        let (events_tx, _) = tokio::sync::broadcast::channel(64);
-        let manager = Arc::new(super::super::OptimizerManager::with_home(
-            dir.path().join("manager"),
-        ));
-        let service = OptimizerService::new_with_manager(
-            storage.database().clone(),
-            journal,
-            visuals,
-            events_tx,
-            manager.clone(),
-        );
-
-        let (luna, sol) = tokio::join!(
-            service.start_recipe(OptimizerRecipeRunRequest {
-                recipe_id: BANKING77_GEPA_LUNA_RECIPE.into(),
-                session_ref: Some("a3-luna-vs-sol".into()),
-                open_visual: Some(true),
-                base_model: None,
-                dataset_shard: None,
-            }),
-            service.start_recipe(OptimizerRecipeRunRequest {
-                recipe_id: BANKING77_GEPA_SOL_RECIPE.into(),
-                session_ref: Some("a3-luna-vs-sol".into()),
-                open_visual: Some(true),
-                base_model: None,
-                dataset_shard: None,
-            })
-        );
-        let luna = luna.unwrap().0;
-        let sol = sol.unwrap().0;
-        assert_ne!(luna.id, sol.id);
-        assert!(!luna.visual_refs.is_empty() && !sol.visual_refs.is_empty());
-        assert_eq!(
-            luna.summary.pointer("/proposerPolicyRef/config"),
-            Some(&json!("luna_med"))
-        );
-        assert_eq!(
-            sol.summary.pointer("/proposerPolicyRef/config"),
-            Some(&json!("sol_med"))
-        );
-        let visual_ready = async |run: &super::super::models::OptimizerRunRecord| {
-            let visual_id = run
-                .visual_refs
-                .iter()
-                .find(|reference| reference.kind == "visual")
-                .map(|reference| reference.id.clone())
-                .expect("paid receipt omitted primary visual");
-            let visual = receipt_visuals.get(visual_id).await.unwrap();
-            json!({"visualId": visual.id, "readyAt": visual.created_at})
-        };
-        let luna_visual_ready = visual_ready(&luna).await;
-        let sol_visual_ready = visual_ready(&sol).await;
-
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(1_800);
-        let mut luna_partial = false;
-        let mut sol_partial = false;
-        let mut luna_advanced_while_sol_selected = false;
-        let mut sol_advanced_while_luna_selected = false;
-        let mut prior_luna_cursor = luna.cursor_seq;
-        let mut prior_sol_cursor = sol.cursor_seq;
-        let mut select_luna = true;
-        let (luna, sol) = loop {
-            let luna = service.get(luna.id.clone()).await.unwrap();
-            let sol = service.get(sol.id.clone()).await.unwrap();
-            let terminal = |status: &str| matches!(status, "completed" | "failed" | "cancelled");
-            luna_partial |= !terminal(&luna.status) && luna.cursor_seq > 2;
-            sol_partial |= !terminal(&sol.status) && sol.cursor_seq > 2;
-            if select_luna && sol.cursor_seq > prior_sol_cursor {
-                sol_advanced_while_luna_selected = true;
-            }
-            if !select_luna && luna.cursor_seq > prior_luna_cursor {
-                luna_advanced_while_sol_selected = true;
-            }
-            prior_luna_cursor = luna.cursor_seq;
-            prior_sol_cursor = sol.cursor_seq;
-            select_luna = !select_luna;
-            if terminal(&luna.status) && terminal(&sol.status) {
-                break (luna, sol);
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "timed out: luna={} sol={}",
-                luna.status,
-                sol.status
-            );
-            sleep(Duration::from_secs(2)).await;
-        };
-
-        assert_eq!(luna.status, "completed", "luna error: {:?}", luna.error);
-        assert_eq!(sol.status, "completed", "sol error: {:?}", sol.error);
+        assert!(root.starts_with(temp.path()), "{}", root.display());
+        assert!(root.is_dir(), "the runs root is created eagerly");
         assert!(
-            luna_partial && sol_partial,
-            "both visuals must receive partial live events"
+            !root
+                .components()
+                .any(|component| component.as_os_str().to_string_lossy().ends_with(".app")),
+            "{} must not sit inside an application bundle",
+            root.display()
         );
-        assert!(
-            luna_advanced_while_sol_selected && sol_advanced_while_luna_selected,
-            "visual selection must not stall the unselected run"
-        );
-        assert!(luna.cursor_seq > 2 && sol.cursor_seq > 2);
-        assert_ne!(
-            luna.summary.get("spoolPath"),
-            sol.summary.get("spoolPath"),
-            "each optimizer run must own its spool"
-        );
-        for (label, run, expected_model) in [
-            ("luna", &luna, "gpt-5.6-luna"),
-            ("sol", &sol, "gpt-5.6-sol"),
-        ] {
-            let page = manager
-                .optimizer_events_after(&run.id, 0, 2_000)
-                .await
-                .unwrap();
-            let replay = manager
-                .optimizer_events_after(&run.id, 0, 2_000)
-                .await
-                .unwrap();
-            assert_eq!(page, replay, "{label} cursor replay was not idempotent");
-            let source_events = page["events"].as_array().unwrap();
-            assert!(!source_events.is_empty(), "{label} live endpoint was empty");
-            for (index, event) in source_events.iter().enumerate() {
-                assert_eq!(event["schema_version"], "optimizer_event.v1");
-                assert_eq!(event["algorithm_id"], "gepa");
-                assert_eq!(event["slot"], "optimizer_run");
-                assert_eq!(event["run_id"], run.id);
-                assert_eq!(event["sequence_number"], json!((index + 1) as u64));
-            }
-            let proposer_started = source_events
-                .iter()
-                .find(|event| event.pointer("/delta/trigger") == Some(&json!("proposer_started")))
-                .unwrap_or_else(|| panic!("{label} omitted proposer_started"));
-            let ready = if label == "luna" {
-                &luna_visual_ready
-            } else {
-                &sol_visual_ready
-            };
-            assert!(
-                ready["readyAt"].as_str().unwrap()
-                    < proposer_started["created_at"].as_str().unwrap(),
-                "{label} proposer started before its visual was ready"
-            );
-            let child_refs = source_events
-                .iter()
-                .filter(|event| event["type"] == "optimizer.child_rollout.attached")
-                .map(|event| event.pointer("/delta/child_resource_ref").unwrap())
-                .collect::<Vec<_>>();
-            assert!(!child_refs.is_empty(), "{label} omitted child rollout refs");
-            for child in child_refs {
-                assert_eq!(child["schema"], "synth.resource-ref.v1");
-                assert_eq!(child["kind"], "container_rollout");
-                assert!(child["id"].as_str().is_some_and(|value| !value.is_empty()));
-                assert!(child["attributes"]["stream_id"]
-                    .as_str()
-                    .is_some_and(|value| value.starts_with("stream:")));
-                assert!(child["attributes"]["reward_url"]
-                    .as_str()
-                    .is_some_and(|value| value.starts_with("/reward?rollout_id=")));
-            }
-            let pivot = source_events.len() as u64 / 2;
-            let suffix = manager
-                .optimizer_events_after(&run.id, pivot, 2_000)
-                .await
-                .unwrap();
-            assert!(suffix["events"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|event| event["sequence_number"].as_u64().unwrap() > pivot));
-            let run_dir = PathBuf::from(
-                run.summary
-                    .get("runDirectory")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_else(|| panic!("{label} receipt omitted runDirectory")),
-            );
-            let manifest: serde_json::Value =
-                serde_json::from_slice(&fs::read(run_dir.join("result_manifest.json")).unwrap())
-                    .unwrap();
-            assert!(
-                manifest
-                    .pointer("/usage/proposer_calls")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0)
-                    >= 1,
-                "{label} completed without invoking its proposer"
-            );
-            let generated: toml::Value =
-                toml::from_str(&fs::read_to_string(run_dir.join("workshop.recipe.toml")).unwrap())
-                    .unwrap();
-            assert_eq!(
-                generated
-                    .get("proposer")
-                    .and_then(|value| value.get("model"))
-                    .and_then(toml::Value::as_str),
-                Some(expected_model),
-                "{label} proposer receipt used the wrong model"
-            );
-        }
-        manager.stop().await.unwrap();
     }
 }

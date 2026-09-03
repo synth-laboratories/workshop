@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import sys
 import threading
 import time
 from collections import OrderedDict
@@ -16,6 +17,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from ..policies import Policy, PolicyError, PolicyRegistry
 from ..capabilities import ModelCapabilities
 from ..compiler import compile_messages, compile_turn
 from ..errors import ResponsesError
@@ -31,6 +33,10 @@ _ARGUMENT = re.compile(
 _TOOL_CALL_STOP_GRACE_TOKENS = 16
 _MIN_SYSTEM_MEMORY_BYTES = 32 * 1024**3
 _MODEL_MEMORY_HEADROOM_BYTES = 8 * 1024**3
+_MIN_AVAILABLE_MEMORY_BYTES = 24 * 1024**3
+_RESIDENT_MEMORY_FLOOR_BYTES = 4 * 1024**3
+_EMERGENCY_MEMORY_FLOOR_BYTES = 2 * 1024**3
+_MAX_SAFETENSORS_HEADER_BYTES = 100_000_000
 
 
 def _physical_memory_bytes() -> int | None:
@@ -49,22 +55,141 @@ def _physical_memory_bytes() -> int | None:
     return total if total > 0 else None
 
 
+def _available_memory_bytes() -> int | None:
+    """Return memory that can be reclaimed without forcing swap.
+
+    The Laguna deployment target is macOS, where Mach's free, inactive, and
+    purgeable page counts are the closest stable no-subprocess admission fact.
+    Speculative pages are already included in ``free_count``. If the Mach
+    query fails on macOS, return zero so a safety gate cannot silently open.
+    """
+    if sys.platform != "darwin":
+        try:
+            pages = int(os.sysconf("SC_AVPHYS_PAGES"))
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        except (AttributeError, OSError, TypeError, ValueError):
+            return None
+        available = pages * page_size
+        return available if available > 0 else None
+
+    try:
+        import ctypes
+
+        class VmStatistics64(ctypes.Structure):
+            _fields_ = [
+                ("free_count", ctypes.c_uint32),
+                ("active_count", ctypes.c_uint32),
+                ("inactive_count", ctypes.c_uint32),
+                ("wire_count", ctypes.c_uint32),
+                ("zero_fill_count", ctypes.c_uint64),
+                ("reactivations", ctypes.c_uint64),
+                ("pageins", ctypes.c_uint64),
+                ("pageouts", ctypes.c_uint64),
+                ("faults", ctypes.c_uint64),
+                ("cow_faults", ctypes.c_uint64),
+                ("lookups", ctypes.c_uint64),
+                ("hits", ctypes.c_uint64),
+                ("purges", ctypes.c_uint64),
+                ("purgeable_count", ctypes.c_uint32),
+                ("speculative_count", ctypes.c_uint32),
+                ("decompressions", ctypes.c_uint64),
+                ("compressions", ctypes.c_uint64),
+                ("swapins", ctypes.c_uint64),
+                ("swapouts", ctypes.c_uint64),
+                ("compressor_page_count", ctypes.c_uint32),
+                ("throttled_count", ctypes.c_uint32),
+                ("external_page_count", ctypes.c_uint32),
+                ("internal_page_count", ctypes.c_uint32),
+                ("total_uncompressed_pages_in_compressor", ctypes.c_uint64),
+            ]
+
+        system = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        system.mach_host_self.restype = ctypes.c_uint32
+        host = system.mach_host_self()
+        page_size = ctypes.c_uint32()
+        if system.host_page_size(host, ctypes.byref(page_size)) != 0:
+            return 0
+        stats = VmStatistics64()
+        count = ctypes.c_uint32(ctypes.sizeof(stats) // ctypes.sizeof(ctypes.c_int32))
+        if system.host_statistics64(host, 4, ctypes.byref(stats), ctypes.byref(count)) != 0:
+            return 0
+        pages = stats.free_count + stats.inactive_count + stats.purgeable_count
+        return pages * page_size.value
+    except (AttributeError, OSError, TypeError, ValueError):
+        return 0
+
+
+def _required_available_memory_bytes(model_path: Path) -> int:
+    weights = _model_weight_bytes(model_path)
+    allocation_floor = (weights + 4 * 1024**3) if weights else 0
+    return max(_MIN_AVAILABLE_MEMORY_BYTES, allocation_floor)
+
+
 def _model_weight_bytes(model_path: Path) -> int | None:
     index_path = model_path / "model.safetensors.index.json"
     try:
         index = json.loads(index_path.read_text())
         declared = (index.get("metadata") or {}).get("total_size")
-        if isinstance(declared, int) and declared > 0:
-            return declared
         shards = {
             value
             for value in (index.get("weight_map") or {}).values()
             if isinstance(value, str)
+            and value.endswith(".safetensors")
+            and "/" not in value
+            and "\\" not in value
         }
-        total = sum((model_path / shard).stat().st_size for shard in shards)
-        return total if total > 0 else None
+        if not shards:
+            return None
+        payload_bytes = sum(
+            _safetensors_payload_bytes(model_path / shard) for shard in shards
+        )
+        if isinstance(declared, int) and declared > 0 and payload_bytes != declared:
+            return None
+        return payload_bytes if payload_bytes > 0 else None
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return None
+
+
+def _safetensors_payload_bytes(path: Path) -> int:
+    file_size = path.stat().st_size
+    with path.open("rb") as file:
+        encoded_header_size = file.read(8)
+        if len(encoded_header_size) != 8:
+            raise ValueError("truncated safetensors header size")
+        header_size = int.from_bytes(encoded_header_size, "little")
+        if (
+            header_size <= 0
+            or header_size > _MAX_SAFETENSORS_HEADER_BYTES
+            or 8 + header_size > file_size
+        ):
+            raise ValueError("invalid safetensors header size")
+        header = json.loads(file.read(header_size))
+
+    ranges: list[tuple[int, int]] = []
+    for name, tensor in header.items():
+        if name == "__metadata__":
+            continue
+        offsets = tensor.get("data_offsets") if isinstance(tensor, dict) else None
+        if (
+            not isinstance(offsets, list)
+            or len(offsets) != 2
+            or not all(isinstance(offset, int) for offset in offsets)
+            or offsets[0] < 0
+            or offsets[1] < offsets[0]
+        ):
+            raise ValueError("invalid safetensors tensor offsets")
+        ranges.append((offsets[0], offsets[1]))
+    if not ranges:
+        raise ValueError("safetensors shard has no tensors")
+    ranges.sort()
+    cursor = 0
+    for start, end in ranges:
+        if start != cursor:
+            raise ValueError("non-contiguous safetensors tensor offsets")
+        cursor = end
+    if 8 + header_size + cursor != file_size:
+        raise ValueError("safetensors payload length does not match file size")
+    return cursor
 
 
 def _required_system_memory_bytes(model_path: Path) -> int:
@@ -545,6 +670,7 @@ class NativeMlxBackend:
         adapter_path: str | None = None,
         context_length: int = 262_144,
         system_memory_bytes: int | None = None,
+        available_memory_bytes: int | None = None,
     ) -> None:
         self.model_path = model_path
         self.adapter_path = adapter_path
@@ -575,12 +701,18 @@ class NativeMlxBackend:
         self._recent_generations: OrderedDict[str, GenerationTiming] = OrderedDict()
         self._max_recent_generations = 32
         self._loading = False
+        # The policy whose adapter is currently attached, and the base modules
+        # it displaced. `None` is the base weights with nothing attached.
+        self._attached_policy: str | None = None
+        self._attached_originals: dict[str, Any] = {}
+        self._policies: PolicyRegistry | None = None
         self._last_used_at = time.time()
         self._system_memory_bytes = (
             system_memory_bytes
             if system_memory_bytes is not None
             else _physical_memory_bytes()
         )
+        self._available_memory_override = available_memory_bytes
 
     async def capabilities(self, model: str) -> ModelCapabilities:
         return self._capabilities
@@ -594,6 +726,150 @@ class NativeMlxBackend:
         await self._ensure_loaded()
         self._last_used_at = time.time()
 
+    async def set_adapter(self, adapter_path: str | None) -> None:
+        """Swap the LoRA path and drop resident weights so the next load picks it up."""
+        normalized = str(Path(adapter_path).expanduser().resolve()) if adapter_path else None
+        current = (
+            str(Path(self.adapter_path).expanduser().resolve()) if self.adapter_path else None
+        )
+        if normalized == current and self._model is not None:
+            return
+        async with self._load_lock:
+            async with self._admission_lock:
+                if self._inflight_generations > 0:
+                    raise ResponsesError(
+                        "model_busy",
+                        "A generation is in flight; retry the adapter change once it completes.",
+                        409,
+                        error_type="server_error",
+                    )
+            await self._release_model_memory()
+            self.adapter_path = normalized
+
+    def set_policy_registry(self, registry: PolicyRegistry) -> None:
+        self._policies = registry
+
+    def _lora_target(self, sample_key: str) -> Any:
+        """Find the module the adapter's key paths are relative to.
+
+        mlx-vlm nests a text checkpoint differently depending on how the
+        architecture was registered: Laguna is
+        `Model.language_model.model.layers[...]`, while the text-only fallback
+        is `Model.language_model._model`. Probing with a real key keeps this
+        working across versions instead of hardcoding one shape.
+        """
+        from mlx_vlm.trainer.utils import get_module_by_name
+
+        candidates = [self._model]
+        language_model = getattr(self._model, "language_model", None)
+        if language_model is not None:
+            candidates.append(language_model)
+            inner = getattr(language_model, "_model", None)
+            if inner is not None:
+                candidates.append(inner)
+        for candidate in candidates:
+            try:
+                get_module_by_name(candidate, sample_key)
+            except (AttributeError, KeyError, IndexError, TypeError):
+                continue
+            return candidate
+        raise ResponsesError(
+            "adapter_shape_unsupported",
+            f"No module tree resolves adapter key {sample_key!r}.",
+            503,
+            error_type="server_error",
+        )
+
+    def _attach_adapter(self, adapter_path: Path) -> None:
+        """Swap adapted linears for LoRA wrappers on the resident model.
+
+        Attaching in place is what makes a policy a per-request pin: reloading
+        the checkpoint instead would cost a cold load per switch.
+        """
+        import mlx.core as mx
+        from mlx_vlm.trainer.utils import _to_lora, get_module_by_name, set_module_by_name
+
+        config = json.loads((adapter_path / "adapter_config.json").read_text(encoding="utf-8"))
+        params = dict(config.get("lora_parameters") or {})
+        keys = params.get("keys")
+        if not keys:
+            raise ResponsesError(
+                "adapter_config_unsupported",
+                f"{adapter_path} does not list lora_parameters.keys.",
+                503,
+                error_type="server_error",
+            )
+        target = self._lora_target(keys[0])
+        originals: dict[str, Any] = {}
+        for name in keys:
+            module = get_module_by_name(target, name)
+            originals[name] = module
+            set_module_by_name(target, name, _to_lora(module, params))
+        target.load_weights(str(adapter_path / "adapters.safetensors"), strict=False)
+        mx.eval(target.parameters())
+        # `load_weights(strict=False)` ignores keys it does not recognise, so a
+        # mismatch would leave a silently unadapted model that still answers.
+        saved = mx.load(str(adapter_path / "adapters.safetensors"))
+        live = get_module_by_name(target, keys[0])
+        if not bool(mx.array_equal(live.lora_b, saved[f"{keys[0]}.lora_b"])):
+            self._detach_adapter_locked(originals)
+            raise ResponsesError(
+                "adapter_did_not_bind",
+                f"Adapter weights from {adapter_path} did not bind to the model.",
+                503,
+                error_type="server_error",
+            )
+        self._attached_originals = originals
+
+    def _detach_adapter_locked(self, originals: dict[str, Any]) -> None:
+        from mlx_vlm.trainer.utils import set_module_by_name
+
+        if not originals:
+            return
+        import mlx.core as mx
+
+        target = self._lora_target(next(iter(originals)))
+        for name, module in originals.items():
+            set_module_by_name(target, name, module)
+        mx.eval(target.parameters())
+
+    def _swap_policy(self, policy: Policy) -> None:
+        """Runs on the owned executor: MLX streams are thread-affine."""
+        self._detach_adapter_locked(self._attached_originals)
+        self._attached_originals = {}
+        if policy.adapter_path is not None:
+            self._attach_adapter(policy.adapter_path)
+        self._attached_policy = policy.model_id
+
+    async def _ensure_policy(self, model: str | None) -> None:
+        """Make the requested policy the attached one before generating.
+
+        Called with the generation slot held, so the attach cannot race a
+        turn that is already decoding under a different policy.
+        """
+        if self._policies is None:
+            return
+        try:
+            policy = self._policies.resolve(model)
+        except PolicyError as error:
+            # An unregistered model id is refused rather than quietly served by
+            # the base weights: answering with the wrong policy is the failure
+            # this design exists to prevent.
+            raise ResponsesError(
+                "model_not_found",
+                str(error),
+                404,
+                error_type="invalid_request_error",
+            ) from error
+        if self._attached_policy == policy.model_id and self._model is not None:
+            return
+        await self._ensure_loaded()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self._executor, partial(self._swap_policy, policy))
+        # Prompt caches are keyed by prompt, not by policy; a cache built under
+        # one adapter is not reusable under another.
+        self._prompt_caches.clear()
+
     async def _ensure_loaded(self) -> None:
         if self._model is not None:
             return
@@ -603,17 +879,45 @@ class NativeMlxBackend:
             self._loading = True
             try:
                 required_memory = _required_system_memory_bytes(self.model_path)
+                available_memory = (
+                    self._available_memory_override
+                    if self._available_memory_override is not None
+                    else _available_memory_bytes()
+                )
+                required_available = _required_available_memory_bytes(self.model_path)
                 if (
                     self._system_memory_bytes is not None
                     and self._system_memory_bytes < required_memory
+                ) or (
+                    available_memory is not None
+                    and available_memory < required_available
                 ):
-                    available_gib = self._system_memory_bytes / 1024**3
-                    required_gib = required_memory / 1024**3
+                    capacity_shortfall = (
+                        self._system_memory_bytes is not None
+                        and self._system_memory_bytes < required_memory
+                    )
+                    measured_capacity = (
+                        self._system_memory_bytes
+                        if capacity_shortfall
+                        else available_memory
+                    )
+                    assert measured_capacity is not None
+                    available_gib = measured_capacity / 1024**3
+                    required_gib = (
+                        required_memory if capacity_shortfall else required_available
+                    ) / 1024**3
                     raise ResponsesError(
                         "insufficient_system_memory",
                         f"{self.model_path.name} was not loaded because this Mac has "
                         f"{available_gib:.1f} GiB of unified memory; "
                         f"at least {required_gib:.1f} GiB is required.",
+                        503,
+                        error_type="server_error",
+                    )
+                if _model_weight_bytes(self.model_path) is None:
+                    raise ResponsesError(
+                        "model_not_found",
+                        f"MLX model artifacts are incomplete or invalid: {self.model_path}",
                         503,
                         error_type="server_error",
                     )
@@ -640,14 +944,6 @@ class NativeMlxBackend:
                     503,
                     error_type="server_error",
                 )
-            if not self.model_path.exists():
-                raise ResponsesError(
-                    "model_not_found",
-                    f"MLX model path does not exist: {self.model_path}",
-                    503,
-                    error_type="server_error",
-                )
-
             def load_model() -> tuple[Any, Any]:
                 # mlx-vlm carries the open Laguna architecture and NVFP4
                 # loader. We use only its in-process model primitives, never
@@ -748,9 +1044,18 @@ class NativeMlxBackend:
                 self._inflight_generations -= 1
                 self._generations.pop(turn.generation_id, None)
             raise
+        try:
+            await self._ensure_policy(turn.model)
+        except BaseException:
+            self._generation_slot.release()
+            async with self._admission_lock:
+                self._inflight_generations -= 1
+                self._generations.pop(turn.generation_id, None)
+            raise
         async with self._admission_lock:
             timing.admitted_at = time.monotonic()
             timing.phase = "compiling"
+            timing.policy = turn.model
         # Hugging Face's fast tokenizer is not re-entrant. Prompt compilation,
         # token counting, grammar construction, and generation all run on the
         # same owned executor so queued requests cannot borrow it concurrently.
@@ -863,6 +1168,13 @@ class NativeMlxBackend:
                         # token source. Keep the latest value rather than
                         # deriving a rate from event-loop delivery timing.
                         measured_decode_tps = source_decode_tps
+                    progress = (
+                        time.monotonic(),
+                        output_tokens,
+                        prompt_tokens,
+                        cached_tokens,
+                        measured_decode_tps,
+                    )
                     if response.text:
                         loop.call_soon_threadsafe(
                             queue.put_nowait,
@@ -870,13 +1182,17 @@ class NativeMlxBackend:
                                 "chunk",
                                 (
                                     response.text,
-                                    time.monotonic(),
-                                    output_tokens,
-                                    prompt_tokens,
-                                    cached_tokens,
-                                    measured_decode_tps,
+                                    *progress,
                                 ),
                             ),
+                        )
+                    else:
+                        # Structured/tool generation can advance tokens before
+                        # a displayable text delta exists. Feed that real
+                        # source-side progress to the monitor without emitting
+                        # a synthetic client-visible chunk.
+                        loop.call_soon_threadsafe(
+                            queue.put_nowait, ("progress", progress)
                         )
                     final_finish_reason = response.finish_reason or final_finish_reason
                 loop.call_soon_threadsafe(
@@ -922,25 +1238,34 @@ class NativeMlxBackend:
                         500,
                         error_type="model_error",
                     )
-                if kind == "chunk":
-                    (
-                        chunk,
-                        sampled_at,
-                        output_tokens,
-                        prompt_tokens,
-                        cached_tokens,
-                        measured_decode_tps,
-                    ) = payload
-                    chunk = str(chunk)
-                    sampled_at = float(sampled_at)
-                    if timing.first_token_at is None:
-                        timing.first_token_at = sampled_at
-                        timing.phase = "decode"
-                    timing.last_token_at = sampled_at
-                    timing.output_tokens = int(output_tokens)
-                    timing.prompt_tokens = int(prompt_tokens) or timing.prompt_tokens
-                    timing.cached_tokens = int(cached_tokens)
-                    timing.measured_decode_tps = measured_decode_tps
+                if kind in {"chunk", "progress"}:
+                    if kind == "chunk":
+                        (
+                            chunk,
+                            sampled_at,
+                            output_tokens,
+                            prompt_tokens,
+                            cached_tokens,
+                            measured_decode_tps,
+                        ) = payload
+                        chunk = str(chunk)
+                    else:
+                        (
+                            sampled_at,
+                            output_tokens,
+                            prompt_tokens,
+                            cached_tokens,
+                            measured_decode_tps,
+                        ) = payload
+                    timing.record_decode_progress(
+                        sampled_at=float(sampled_at),
+                        output_tokens=int(output_tokens),
+                        prompt_tokens=int(prompt_tokens),
+                        cached_tokens=int(cached_tokens),
+                        measured_decode_tps=measured_decode_tps,
+                    )
+                    if kind == "progress":
+                        continue
                     if splitter is None:
                         if turn.bindings:
                             structured_tool_chunks.append(chunk)
@@ -1136,10 +1461,41 @@ class NativeMlxBackend:
             await self._release_model_memory()
             return True
 
+    async def relieve_memory_pressure(self) -> str:
+        """Continuously enforce a safe floor while MLX weights are resident."""
+        if self._model is None:
+            return "ok"
+        available = (
+            self._available_memory_override
+            if self._available_memory_override is not None
+            else _available_memory_bytes()
+        )
+        if available is None or available >= _RESIDENT_MEMORY_FLOOR_BYTES:
+            return "ok"
+        async with self._load_lock:
+            async with self._admission_lock:
+                if self._model is None:
+                    return "ok"
+                if self._inflight_generations > 0:
+                    for flag in self._cancel_flags.values():
+                        flag.set()
+                    return (
+                        "active_emergency"
+                        if available < _EMERGENCY_MEMORY_FLOOR_BYTES
+                        else "ok"
+                    )
+            await self._release_model_memory()
+            return "unloaded"
+
     async def _release_model_memory(self) -> None:
         def release() -> None:
             self._model = None
             self._tokenizer = None
+            # Weights and the modules the adapter displaced go together; a
+            # remembered attachment would be restored onto a model that no
+            # longer exists.
+            self._attached_policy = None
+            self._attached_originals = {}
             self._prompt_caches.clear()
             gc.collect()
             try:
@@ -1159,6 +1515,11 @@ class NativeMlxBackend:
         return {
             "loaded": self._model is not None,
             "loading": self._loading,
+            # Which policy the resident weights are currently wearing. Without
+            # this, the only way to tell an attached adapter from an
+            # unattached one is to compare generated text, which is not a
+            # sound test at any temperature the product actually uses.
+            "attached_policy": self._attached_policy,
             "inflight_generations": self._inflight_generations,
             "max_inflight_generations": self._max_inflight_generations,
             "generation_slot_available": not self._generation_slot.locked(),

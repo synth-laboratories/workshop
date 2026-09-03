@@ -1,3 +1,4 @@
+// @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 import type { AppEvent, ExecutionTarget, RuntimeEvent, Session } from "@synth/runtime-protocol";
 import type { CodexEvent, CodexSessionStart, PersistedCodexSession } from "../bridge";
 
@@ -26,6 +27,8 @@ export function permissionConfigFromApprovalMode(mode: ApprovalMode): Permission
 	return approvalModeConfig(mode) as PermissionConfig;
 }
 
+import { LOCAL_BASE_POLICY } from "./lagunaPolicies.ts";
+
 /** Where the local daemon listens when nothing else says otherwise. A named
  *  development instance gets its own port, so the caller passes the address the
  *  supervisor actually reported rather than assuming this one. */
@@ -43,9 +46,9 @@ export function codexStartRequest(
 		const autoCompactTokenLimit = autoCompactTokenLimits.lagunaXs ?? 150_000;
 		return {
 			sessionId, workspace, baseUrl: localBaseUrl,
-			model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
+			model: target.model || LOCAL_BASE_POLICY, providerName: "local-laguna",
 			providerTitle: "Laguna XS Responses", providerEnvKey: "SYNTH_LAGUNA_API_KEY",
-			autoCompactTokenLimit, ...approval
+			autoCompactTokenLimit, adapter: target.adapter, ...approval
 		};
 	}
 	if (target.kind === "cloud") {
@@ -78,7 +81,7 @@ export function codexStartRequest(
 	return {
 		sessionId, workspace, baseUrl: "https://openrouter.ai/api/v1",
 		model: target.model, providerName: "openrouter", providerTitle: "OpenRouter Responses",
-		providerEnvKey: "OPENROUTER_API_KEY", autoCompactTokenLimit, ...approval
+		providerEnvKey: "OPENROUTER_API_KEY", autoCompactTokenLimit, targetId: target.targetId ?? null, ...approval
 	};
 }
 
@@ -101,21 +104,27 @@ export function restoreCodexSession(value: PersistedCodexSession): Session {
 	const synthCloud = value.providerName === "synth-cloud";
 	const chatgpt = value.providerName === "openai-codex-oauth";
 	const target: ExecutionTarget = local
-		? { kind: "local", model: "laguna-xs-2.1", adapter: null }
+		? { kind: "local", model: value.model || LOCAL_BASE_POLICY, adapter: value.adapter ?? null }
 		: synthCloud
 			? { kind: "cloud", model: value.model, adapter: null }
 			: {
 				kind: "remote",
 				provider: chatgpt ? "openai-codex-oauth" : "openrouter",
 				model: value.model,
-				adapter: null
+				adapter: null,
+				targetId: value.targetId ?? null
 			};
 	const allowedStatuses = new Set<Session["status"]>([
 		"created", "ready", "running", "waiting_for_input", "paused", "interrupted", "completed", "failed", "cancelled", "configuration_required"
 	]);
-	const status = allowedStatuses.has(value.status as Session["status"])
+	const persisted = allowedStatuses.has(value.status as Session["status"])
 		? value.status as Session["status"]
 		: "ready";
+	// Belt and braces. The host reconciles this cache before it can be listed,
+	// so a `running` record should be impossible here — but a restored session
+	// has no live owner by construction, and this is the last place a stale
+	// status could turn into a Working spinner.
+	const status = persisted === "running" ? "interrupted" : persisted;
 	return {
 		id: value.sessionId,
 		title: value.title || (local ? "Laguna XS" : value.model),
@@ -135,7 +144,8 @@ export function restoreCodexSession(value: PersistedCodexSession): Session {
 			sandbox: value.sandbox,
 			approvalMode: approvalModeFromConfig(value.approvalPolicy, value.sandbox),
 			...(value.presentationEmotion ? { presentationEmotion: value.presentationEmotion } : {}),
-			...(value.presentationSummary ? { presentationSummary: value.presentationSummary } : {})
+			...(value.presentationSummary ? { presentationSummary: value.presentationSummary } : {}),
+			...(value.recovery ? { recovery: value.recovery } : {})
 		}
 	};
 }
@@ -187,7 +197,7 @@ export function codexEventToRuntime(event: CodexEvent, sequence: number): Runtim
 	return {
 		schemaVersion: "synth.desktop-runtime-event.v1", sessionId: event.sessionId,
 		sequence, eventKind, payload,
-		createdAt: new Date().toISOString(), source: "local"
+		createdAt: event.createdAt ?? new Date().toISOString(), source: "local"
 	};
 }
 

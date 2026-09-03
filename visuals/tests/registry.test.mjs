@@ -1,87 +1,197 @@
 import assert from "node:assert/strict";
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, lstatSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const familiesDir = join(root, "families");
+
+function declaredInputs(meta) {
+  return meta.inputs ?? meta.slots ?? [];
+}
+
+function discoverTemplates(directory = familiesDir, found = new Map()) {
+  for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const path = join(directory, entry.name);
+    assert.equal(lstatSync(path).isSymbolicLink(), false, `registry must not contain symlink ${path}`);
+    if (!entry.isDirectory()) continue;
+    const manifest = join(path, "template.json");
+    if (existsSync(manifest)) {
+      const meta = JSON.parse(readFileSync(manifest, "utf8"));
+      assert.equal(meta.id, entry.name, `manifest identity must match directory at ${path}`);
+      assert.equal(found.has(meta.id), false, `duplicate ${meta.id}: ${found.get(meta.id)?.path} and ${path}`);
+      found.set(meta.id, { meta, path });
+    } else {
+      discoverTemplates(path, found);
+    }
+  }
+  return found;
+}
+
+const EXPECTED_IDS = [
+  "analysis.annotation_workbench.v1",
+  "analysis.chart.v1",
+  "analysis.visual.v1",
+  "annotation.overlay.v1",
+  "blank.canvas.v1",
+  "compose.visual.v1",
+  "craftax.eval_matrix.v1",
+  "craftax.rollout_scrub.v1",
+  "craftax.trace_workbench.v1",
+  "diagram.mermaid.v1",
+  "diagram.systems.dynamic.v1",
+  "diagram.systems.v1",
+  "experiment.overview.v1",
+  "live.annotated_rollouts.v1",
+  "live.container_rollouts.v1",
+  "live.craftax.v1",
+  "live.eval_stream.v1",
+  "live.harbor_eval.v1",
+  "live.intern_acceptance.v1",
+  "model.compare.v1",
+  "optimizer.cispo.live.v1",
+  "optimizer.eval.live.v1",
+  "optimizer.gepa.candidate.v1",
+  "optimizer.gepa.evaluations.v1",
+  "optimizer.gepa.frontier.v1",
+  "optimizer.gepa.live.v1",
+  "optimizer.run.v1",
+  "optimizer.sft.checkpoints.v1",
+  "optimizer.sft.dataset.v1",
+  "optimizer.sft.examples.v1",
+  "optimizer.sft.lineage.v1",
+  "optimizer.sft.live.v1",
+  "optimizer.sft.rollouts.v1",
+  "posttrain.rollout_viewer.v1",
+  "reward.breakdown.v1",
+  "sourced.visual.v1",
+  "trace.catalog.v1",
+  "trace.rollout_inspector.v1",
+  "trace.workbench.v1",
+];
 
 test("visuals package exposes the registered templates", () => {
-  const templatesDir = join(root, "templates");
-  const ids = readdirSync(templatesDir).filter((name) =>
-    existsSync(join(templatesDir, name, "template.json")),
-  );
-  assert.ok(ids.length >= 10);
-  for (const id of [
-    "craftax.eval_matrix.v1",
-    "craftax.rollout_scrub.v1",
-    "posttrain.rollout_viewer.v1",
-    "reward.breakdown.v1",
-    "annotation.overlay.v1",
-    "model.compare.v1",
-    "live.eval_stream.v1",
-    "live.harbor_eval.v1",
-    "live.intern_acceptance.v1",
-    "trace.rollout_inspector.v1",
-    "live.container_rollouts.v1",
-    "live.craftax.v1",
-    "live.digbench.v1",
-    "optimizer.run.v1",
-    "optimizer.gepa.live.v1",
-    "optimizer.gepa.frontier.v1",
-    "optimizer.gepa.candidate.v1",
-    "optimizer.gepa.evaluations.v1",
-    "optimizer.sft.live.v1",
-    "optimizer.sft.checkpoints.v1",
-    "optimizer.sft.rollouts.v1",
-    "optimizer.sft.examples.v1",
-    "optimizer.sft.dataset.v1",
-    "optimizer.sft.lineage.v1",
-  ]) {
-    assert.ok(ids.includes(id), `missing ${id}`);
-    const meta = JSON.parse(
-      readFileSync(join(templatesDir, id, "template.json"), "utf8"),
-    );
+  const templates = discoverTemplates();
+  assert.deepEqual([...templates.keys()].sort(), EXPECTED_IDS);
+  assert.equal(existsSync(join(root, "templates", "optimizer.dag.live.v1", "template.json")), false, "optimizer.dag.live.v1 is a v0.4 surface");
+  for (const id of EXPECTED_IDS) {
+    const { meta, path } = templates.get(id);
     assert.equal(meta.id, id);
     assert.equal(meta.schemaVersion, "synth.visual-template.v1");
-    assert.ok(existsSync(join(templatesDir, id, "shell.tsx")));
-    if (
-      id === "live.harbor_eval.v1" ||
-      id === "live.container_rollouts.v1" ||
-      id === "live.eval_stream.v1" ||
-      id === "live.craftax.v1" ||
-      id === "live.digbench.v1"
-    ) {
-      assert.deepEqual(meta.slots.map((slot) => slot.name), ["stream"]);
+    if (!id.startsWith("diagram.") && meta.rendererKind !== "chart") {
+      assert.ok(existsSync(join(path, "shell.tsx")));
+    }
+    if (id === "live.harbor_eval.v1" || id === "live.container_rollouts.v1") {
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream"]);
+    }
+    if (id === "live.annotated_rollouts.v1") {
+      // The superset viewer folds each rollout's stream with its annotation
+      // sibling; both are declared per rollout on the one multi-stream input.
+      // The optional optimizer_run input carries the authoritative eval
+      // runtime configuration (container, policy, provider, model pins).
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream", "optimizer_run"]);
+      assert.equal(meta.inputs[0].multiple, true);
+      assert.equal(meta.inputs[1].required, false);
+      assert.equal(meta.observationContract.readiness.requireTerminal, false);
+    }
+    if (id === "live.craftax.v1") {
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream", "optimizer_run"]);
+      assert.equal(meta.inputs[0].required, true);
+      assert.equal(meta.inputs[1].required, false);
+    }
+    if (id === "live.eval_stream.v1") {
+      assert.equal(meta.slots, undefined);
+      assert.deepEqual((meta.inputs ?? []).map((input) => input.name), ["stream"]);
+      assert.equal(meta.inputs[0].required, true);
+      assert.ok(!(meta.inputs ?? []).some((input) => input.name === "optimizer_run"));
+      assert.deepEqual(
+        (meta.components ?? []).map((row) => row.id).sort(),
+        ["detail_modal.v1", "event_stream.v1", "metrics.v1", "scrubber.v1"]
+      );
+    }
+    if (id === "analysis.annotation_workbench.v1") {
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["evidence", "trace", "rubric"]);
+      assert.equal(declaredInputs(meta)[0].required, true);
+      assert.equal(declaredInputs(meta)[1].required, false);
+      assert.equal(declaredInputs(meta)[2].required, false);
+      assert.ok(declaredInputs(meta)[0].accepts.includes("annotation_evidence_head"));
+      assert.ok(declaredInputs(meta)[2].accepts.includes("verifier_result_v2"));
+      assert.equal(meta.genre, "analysis");
+    }
+    if (id === "trace.workbench.v1") {
+      // The family-agnostic workstation reads a run like the Craftax one, but
+      // must not demand rendered frames: liveFrames-unsupported and post_hoc
+      // families can never satisfy a minimum-frame readiness requirement.
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["optimizer_run"]);
+      assert.equal(meta.observationContract.readiness.minimumRenderedFrameCount, undefined);
+      assert.equal(meta.observationContract.readiness.minimumRolloutCount, 1);
+    }
+    if (id === "craftax.trace_workbench.v1") {
+      // The workstation replays one container-eval run's relayed trials. It
+      // reads the run, not a stream: the frames it shows are host-stored media
+      // referenced from that run's events, not bodies fetched from a URL.
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["optimizer_run"]);
+      assert.deepEqual(declaredInputs(meta)[0].accepts, ["optimizer_run"]);
+      assert.equal(declaredInputs(meta)[0].required, true);
+    }
+    if (id === "compose.visual.v1") {
+      const declared = declaredInputs(meta);
+      assert.deepEqual(declared.map((slot) => slot.name), ["spec", "stream", "optimizer_run"]);
+      assert.equal(declared[0].required, true);
+      assert.equal(declared[1].required, false);
+      assert.equal(declared[2].required, false);
+      assert.deepEqual(
+        (meta.components ?? []).map((row) => row.id).sort(),
+        ["candidate_inspector.v1", "detail_modal.v1", "event_stream.v1", "metrics.v1", "scrubber.v1"]
+      );
+    }
+    if (id === "sourced.visual.v1") {
+      const declared = declaredInputs(meta);
+      assert.deepEqual(declared.map((slot) => slot.name), ["stream"]);
+      assert.equal(declared[0].required, false);
+      assert.equal(meta.rendererKind, "tsx");
+      assert.deepEqual(
+        (meta.components ?? []).map((row) => row.id).sort(),
+        ["detail_modal.v1", "event_stream.v1"]
+      );
     }
     if (id.startsWith("optimizer.")) {
-      const slotNames = meta.slots.map((slot) => slot.name);
+      const slotNames = declaredInputs(meta).map((slot) => slot.name);
       assert.deepEqual(slotNames, ["optimizer_run"]);
       assert.ok(!slotNames.includes("live"), `${id} must not bind slot live`);
       assert.ok(!slotNames.includes("jobs"), `${id} must not bind slot jobs`);
       assert.ok(!slotNames.includes("stream"), `${id} must not invent a second stream slot`);
     }
   }
-  const mermaid = JSON.parse(
-    readFileSync(join(templatesDir, "diagram.mermaid.v1", "template.json"), "utf8"),
-  );
+  const mermaidPath = templates.get("diagram.mermaid.v1").path;
+  const mermaid = templates.get("diagram.mermaid.v1").meta;
   assert.equal(mermaid.id, "diagram.mermaid.v1");
   assert.equal(mermaid.genre, "diagram");
   assert.equal(mermaid.rendererKind, "mermaid");
-  assert.equal(mermaid.slots.length, 0);
-  assert.ok(!existsSync(join(templatesDir, "diagram.mermaid.v1", "shell.tsx")));
-  assert.ok(!existsSync(join(templatesDir, "diagram.mermaid.v1", "examples")));
+  assert.equal(declaredInputs(mermaid).length, 0);
+  assert.ok(!existsSync(join(mermaidPath, "shell.tsx")));
+  assert.ok(!existsSync(join(mermaidPath, "examples")));
   for (const [id, rendererKind] of [
     ["diagram.systems.v1", "systems"],
     ["diagram.systems.dynamic.v1", "systems-dynamic"],
   ]) {
-    const meta = JSON.parse(readFileSync(join(templatesDir, id, "template.json"), "utf8"));
+    const { meta, path } = templates.get(id);
     assert.equal(meta.id, id);
     assert.equal(meta.genre, "diagram");
     assert.equal(meta.rendererKind, rendererKind);
-    assert.deepEqual(meta.slots, []);
-    assert.ok(!existsSync(join(templatesDir, id, "shell.tsx")));
+    assert.deepEqual(declaredInputs(meta), []);
+    assert.ok(!existsSync(join(path, "shell.tsx")));
   }
+});
+
+test("TypeScript registry is recursive and fails duplicate IDs closed", () => {
+  const source = readFileSync(join(root, "registry/index.ts"), "utf8");
+  assert.match(source, /families\/\*\*\/template\.json/);
+  assert.match(source, /families\/\*\*\/shell\.tsx/);
+  assert.match(source, /Duplicate visual template id/);
+  assert.match(source, /existing\.manifestPath/);
+  assert.match(source, /entry\.manifestPath/);
 });
 
 test("eval catalog declares the initial versioned family", () => {
@@ -93,7 +203,7 @@ test("eval catalog declares the initial versioned family", () => {
     "eval.regression.v1"
   ]);
   for (const template of catalog.templates.filter((template) => template.status === "available")) {
-    assert.ok(existsSync(join(root, "templates", template.implementation, "template.json")), template.id);
+    assert.ok(discoverTemplates().has(template.implementation), template.id);
   }
 });
 
@@ -105,6 +215,9 @@ test("fixtures exist for matrix/rollout/live", () => {
     "reward_breakdown.json",
     "model_compare.json",
     "annotation_markers.json",
+    "annotation_workbench_craftax.json",
+    "annotation_workbench_deepswe.json",
+    "annotation_workbench_rogue_deo.json",
   ]) {
     assert.ok(existsSync(join(root, "fixtures", name)), name);
   }
@@ -118,11 +231,13 @@ test("MCP tools schema lists agent entrypoints", () => {
     "visual_create_from_template",
     "visual_bind_data_source",
     "visual_open_in_pane",
-    "visual_stream_live_eval",
 	"visual_authoring_context",
 	"visual_review",
 	"visual_mark_ready",
   ]) {
     assert.ok(names.includes(required), required);
   }
+  assert.ok(!names.includes("visual_list_components"));
+  assert.ok(!names.includes("list_components"));
+  assert.ok(!names.includes("reports_promote"));
 });

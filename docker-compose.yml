@@ -90,6 +90,28 @@ services:
       - synth_desktop
 
   # Optional: expose a connection file-compatible hint for Electron on the host
+  # Adapter distribution rehearsal. Wasabi and MinIO differ only by
+  # endpoint_url, so the publish → download → verify path is proven here
+  # before a production credential exists.
+  minio:
+    image: minio/minio:latest
+    container_name: synth-adapters-minio
+    profiles: ["adapters"]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: synth-local
+      MINIO_ROOT_PASSWORD: synth-local-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-adapters:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   connection-writer:
     image: python:3.12-slim
     profiles: ["host-hints"]
@@ -117,6 +139,7 @@ services:
       - synth_desktop
 
 volumes:
+  minio-adapters:
   synth_runtime_data:
   synth_laguna_data:
   laguna_models:

@@ -13,6 +13,7 @@ import type {
 	InternSessionCreateRequest,
 	InternSessionSendRequest,
 	InternSessionSendResult,
+	RecoveryNotice,
 	ResolvedTraceProjection,
 	RuntimeEvent,
 	Session,
@@ -27,7 +28,212 @@ import type {
 	OptimizerAlgorithmInfo,
 	OptimizerRunRecord
 } from "@synth/runtime-protocol";
-import type { InstanceDiagnostics } from "../generated/protocol";
+export type { OptimizerAlgorithmInfo, OptimizerRunRecord };
+import type {
+	ArtifactMutationReceipt,
+	BeginResult,
+	BrowserRuntimeStatus,
+	CapabilitySummary,
+	CodexSessionInfo,
+	CodexTurnFailure,
+	ComputerUseSnapshot,
+	ContextFile,
+	ContextSkill,
+	ContextSnapshot,
+	ConversationWorkspaceScope,
+	CredentialBindingSummary,
+	CredentialLocatorSummary,
+	CookbookContext,
+	DesktopPermissionSettings,
+	ExperimentRecord,
+	ExperimentStatus,
+	InstanceDiagnostics,
+	HostedTrainingModel,
+	HostedTrainingModelCatalog,
+	LagunaAdapterStatus,
+	LagunaModelHit,
+	LagunaPolicy,
+	LagunaStatus,
+	MaskedImportCandidate,
+	McpContextGroup,
+	MlxRuntimeStatus,
+	ModelPerformanceSummary,
+	ModelPerformanceTurnSample,
+	ModelMultiAgentSetting,
+	ModelCatalog,
+	MultiAgentVersion,
+	PendingGrantSummary,
+	PluginPermission,
+	PluginStatus,
+	RegisteredInstance,
+	ReportAudience,
+	ReportAudienceState,
+	ReportBlock,
+	ReportClaim,
+	ReportComment,
+	ReportLimitation,
+	ReportPromotion,
+	ReportRecord,
+	ReportRevision,
+	ReportRevisionCompare,
+	ReportSeal,
+	ReportSealBundle,
+	ReportSource,
+	ReportStatus,
+	ReportUpload,
+	ReportValidationFinding,
+	ReportValidationResult,
+	ReportVisibilityRequest,
+	ResearchLogEntry,
+	OptimizerRunOutputs,
+	EvidencePage,
+	EvidenceRange,
+	VisualRenderReceipt,
+	OptimizerRunViewEnvelope,
+	OptimizerRunViewV2,
+	OptimizerRunSummary,
+	OptimizerRunSummaryEnvelope,
+	RunCollection,
+	RunCollectionFilter,
+	RunCollectionQuery,
+	RunCollectionPage,
+	RunCollectionRow,
+	HistoricalProjection,
+	OptimizerFrameContent,
+	OptimizerFrameDelta,
+	OptimizerFrameRef,
+	SavedLoraCheckpoint,
+	SavedLoraCheckpointPage,
+	SavedLoraDownload,
+	SavedLoraRunPage,
+	SecretAuditEvent,
+	SecretSummary,
+	SecretsInbox,
+	SkillHit,
+	Status,
+	TariffCard,
+	TemplateMeta,
+	NativeTerminalFrame,
+	NativeTerminalMountRequest,
+	TerminalCreateRequest,
+	TerminalEvent,
+	TerminalInfo,
+	TrainingArtifact,
+	TrainingModelHit,
+	UpdateStatus,
+	VisualAnnotation,
+	VisualSeal,
+	VisualSealBundle,
+	VisualUpload,
+	WhisperModelHit,
+	WhisperRuntimeStatus,
+	WorkspaceAccessMode,
+	WorkspaceAccessSettings,
+	WorkspaceAttachment,
+	WorkspaceGrantRequest,
+	WorkspaceRootSummary
+} from "../generated/protocol";
+export type { RegisteredInstance };
+
+export type {
+	ArtifactMutationReceipt,
+	BrowserRuntimeStatus,
+	CodexSessionInfo,
+	CodexTurnFailure,
+	ComputerUseSnapshot,
+	ContextFile,
+	ContextSkill,
+	ContextSnapshot,
+	ConversationWorkspaceScope,
+	CredentialBindingSummary,
+	CredentialLocatorSummary,
+	CookbookContext,
+	DesktopPermissionSettings,
+	ExperimentRecord,
+	ExperimentStatus,
+	HostedTrainingModel,
+	HostedTrainingModelCatalog,
+	LagunaAdapterStatus,
+	LagunaModelHit,
+	LagunaPolicy,
+	LagunaStatus,
+	MaskedImportCandidate,
+	McpContextGroup,
+	MlxRuntimeStatus,
+	ModelPerformanceSummary,
+	ModelPerformanceTurnSample,
+	ModelMultiAgentSetting,
+	ModelCatalog,
+	MultiAgentVersion,
+	PendingGrantSummary,
+	PluginPermission,
+	PluginStatus,
+	ReportAudience,
+	ReportAudienceState,
+	ReportBlock,
+	ReportClaim,
+	ReportComment,
+	ReportLimitation,
+	ReportPromotion,
+	ReportRecord,
+	ReportRevision,
+	ReportRevisionCompare,
+	ReportSeal,
+	ReportSealBundle,
+	ReportSource,
+	ReportStatus,
+	ReportUpload,
+	ReportValidationFinding,
+	ReportValidationResult,
+	ReportVisibilityRequest,
+	ResearchLogEntry,
+	OptimizerRunOutputs,
+	EvidencePage,
+	EvidenceRange,
+	VisualRenderReceipt,
+	OptimizerRunViewEnvelope,
+	OptimizerRunViewV2,
+	OptimizerRunSummary,
+	OptimizerRunSummaryEnvelope,
+	RunCollection,
+	RunCollectionFilter,
+	RunCollectionQuery,
+	RunCollectionPage,
+	RunCollectionRow,
+	HistoricalProjection,
+	OptimizerFrameContent,
+	OptimizerFrameDelta,
+	OptimizerFrameRef,
+	SavedLoraCheckpoint,
+	SavedLoraCheckpointPage,
+	SavedLoraDownload,
+	SavedLoraRunPage,
+	SecretAuditEvent,
+	SecretSummary,
+	SecretsInbox,
+	SkillHit,
+	TariffCard,
+	NativeTerminalFrame,
+	NativeTerminalMountRequest,
+	TerminalCreateRequest,
+	TerminalEvent,
+	TerminalInfo,
+	TrainingArtifact,
+	TrainingModelHit,
+	UpdateStatus,
+	VisualAnnotation,
+	VisualSeal,
+	VisualSealBundle,
+	VisualUpload,
+	WhisperModelHit,
+	WhisperRuntimeStatus,
+	WorkspaceAccessMode,
+	WorkspaceAccessSettings,
+	WorkspaceAttachment,
+	WorkspaceGrantRequest,
+	WorkspaceRootSummary
+};
+
 
 export type RequestOptions = {
 	method?: "GET" | "POST" | "DELETE";
@@ -58,6 +264,16 @@ export type RuntimeBridge = {
 	): Promise<EventSubscription>;
 };
 
+/** Annotation projections have a narrow native bridge; generic runtime HTTP is
+ * intentionally browser-only so its authenticated loopback capability never
+ * reaches a Desktop renderer. */
+export type AnalysisBridge = {
+	projection(kind: string, digest: string): Promise<unknown>;
+	findings(traceDigest: string): Promise<{ findings: unknown[] }>;
+	campaigns(evalRunId: string): Promise<{ campaigns: unknown[] }>;
+	review(input: { findingId: string; evidenceHeadDigest: string; decision: string; rationale: string }): Promise<unknown>;
+};
+
 export type LagunaPhase =
 	| "unknown"
 	| "starting"
@@ -66,31 +282,6 @@ export type LagunaPhase =
 	| "unloaded"
 	| "error"
 	| "unavailable";
-
-export type LagunaStatus = {
-	phase: LagunaPhase;
-	baseUrl: string | null;
-	backend: string | null;
-	loadedModel: string | null;
-	detail: string | null;
-	memoryBytes: number | null;
-	idleSeconds?: number | null;
-	idleUnloadAfterSeconds?: number | null;
-	lastUsedAt?: number | null;
-	freeAt?: number | null;
-	updatedAt: number;
-};
-
-export type LagunaModelHit = {
-	path: string;
-	modelsRoot: string;
-	modelId: string;
-	shardCount: number;
-	totalBytes: number;
-	selected: boolean;
-	runtimeReady: boolean;
-	companionBytes: number;
-};
 
 export type LagunaDownloadProgress = {
 	modelId: string;
@@ -109,22 +300,51 @@ export type LagunaBridge = {
 	chooseModelDirectory(): Promise<string | null>;
 	setModelDirectory(path: string): Promise<LagunaModelHit>;
 	clearModelDirectory(): Promise<void>;
+	/** Selectable policies with whatever decode speed has been measured. */
+	policies?(): Promise<LagunaPolicy[]>;
+	/** Register a Laguna-compatible LoRA under a model id. Registration is not
+	 *  selection: which policy a turn uses is decided by that turn's model. */
+	registerPolicy?(checkpointId: string, modelId: string): Promise<LagunaPolicy>;
+	/** The Synth-published finetune, installed or not. */
+	adapterStatus?(): Promise<LagunaAdapterStatus[]>;
+	/** Download, verify, install, and register the published finetune. */
+	adapterDownload?(modelId: string): Promise<LagunaAdapterStatus>;
 	downloadModel(modelId: string): Promise<LagunaModelHit>;
 	deleteModel(modelId: string): Promise<void>;
 	onDownloadProgress?(listener: (progress: LagunaDownloadProgress) => void): () => void;
 };
 
-export type WhisperModelHit = {
-	id: string;
-	title: string;
-	description?: string | null;
-	recommended: boolean;
-	multilingual: boolean;
-	downloadBytes: number;
-	installedBytes?: number | null;
-	path?: string | null;
-	selected: boolean;
-	modelsRoot: string;
+export type TrainingModelDownloadProgress = {
+	modelId: string;
+	phase: "preparing" | "downloading" | "ready" | "error";
+	detail: string;
+	downloadedBytes?: number;
+	totalBytes?: number;
+};
+
+export type TrainingModelsBridge = {
+	listModels(): Promise<TrainingModelHit[]>;
+	runtimeStatus(): Promise<MlxRuntimeStatus>;
+	installRuntime(confirm: boolean): Promise<MlxRuntimeStatus>;
+	downloadModel(modelId: string): Promise<TrainingModelHit>;
+	deleteModel(modelId: string): Promise<void>;
+	onDownloadProgress(listener: (progress: TrainingModelDownloadProgress) => void): () => void;
+};
+
+export type TrainingArtifactsBridge = {
+	list(): Promise<TrainingArtifact[]>;
+	get(id: string): Promise<TrainingArtifact>;
+	launchInference(request: { id: string; message?: string; confirm: boolean }): Promise<{
+		artifactId: string;
+		policySnapshotId: string;
+		reply: string;
+		baseModelId: string;
+		producingRunId: string;
+		configDigest?: string | null;
+		digest?: string | null;
+	}>;
+	export?(request: { id: string; destination: string; expectedDigest?: string; confirm: boolean }): Promise<ArtifactMutationReceipt>;
+	delete?(request: { id: string; confirm: boolean }): Promise<ArtifactMutationReceipt>;
 };
 
 export type WhisperDownloadProgress = {
@@ -133,16 +353,6 @@ export type WhisperDownloadProgress = {
 	detail: string;
 	downloadedBytes?: number;
 	totalBytes?: number;
-};
-
-export type WhisperRuntimeStatus = {
-	phase: string;
-	loadedModel: string | null;
-	idleSeconds: number | null;
-	idleUnloadAfterSeconds: number;
-	lastUsedAt: number | null;
-	freeAt: number | null;
-	updatedAt: number;
 };
 
 export type WhisperBridge = {
@@ -163,14 +373,19 @@ export type WhisperBridge = {
 	transcribeAudio?(base64: string, mimeType: string): Promise<string>;
 };
 
-export type SkillHit = {
-	id: string;
-	name: string;
-	description: string;
-};
-
 export type SkillsBridge = {
 	list(): Promise<SkillHit[]>;
+};
+
+export type ContextBridge = {
+	snapshot(workspace: string): Promise<ContextSnapshot>;
+	updateWorkspaceAgents(workspace: string, content: string): Promise<ContextSnapshot>;
+	updateSkill(workspace: string, skillId: string, enabled: boolean, content?: string | null): Promise<ContextSnapshot>;
+	updateMcpGroup(workspace: string, groupId: string, enabled: boolean): Promise<ContextSnapshot>;
+	installCookbooks(workspace: string): Promise<ContextSnapshot>;
+	cancelCookbooks(workspace: string): Promise<ContextSnapshot>;
+	setCookbooksEnabled(workspace: string, enabled: boolean): Promise<ContextSnapshot>;
+	uninstallCookbooks(workspace: string): Promise<ContextSnapshot>;
 };
 
 export type SynthBackendSettings = {
@@ -186,29 +401,19 @@ export type SynthBackendSettings = {
 	openrouterApiKeyConfigured: boolean;
 	openrouterApiKeyFingerprint?: string | null;
 	openrouterApiKeySource?: string | null;
-};
-
-export type MultiAgentVersion = "none" | "v1" | "v2";
-export type ModelMultiAgentSetting = {
-	modelId: string;
-	displayName: string;
-	preset: MultiAgentVersion;
-	effective: MultiAgentVersion;
-	overridden: boolean;
-};
-
-export type WorkspaceAccessSettings = {
-	allowedRoots: string[];
-};
-
-export type DesktopPermissionSettings = {
-	configPath: string;
-	approvalPolicy: "untrusted" | "on-request" | "never";
-	sandboxMode: "read-only" | "workspace-write" | "danger-full-access";
+	defaultModel?: {
+		model: string;
+		effort: string;
+		providers: string[];
+	};
 };
 
 export type SynthConfigBridge = {
 	get(): Promise<SynthBackendSettings>;
+	/** Rust-owned model projection; this never parses config.toml in the renderer. */
+	modelCatalog(): Promise<ModelCatalog>;
+	/** Explicit bounded refresh of OpenRouter's public, credential-free metadata. */
+	refreshModelCatalog(): Promise<ModelCatalog>;
 	update(request: {
 		profile: string;
 		backendUrl: string;
@@ -233,6 +438,7 @@ export type SynthConfigBridge = {
 	updateDesktopPermissions(request: {
 		approvalPolicy: DesktopPermissionSettings["approvalPolicy"];
 		sandboxMode: DesktopPermissionSettings["sandboxMode"];
+		paidCompute?: DesktopPermissionSettings["paidCompute"];
 	}): Promise<DesktopPermissionSettings>;
 };
 
@@ -242,6 +448,7 @@ export type CodexSessionStart = {
 	baseUrl: string;
 	apiKey?: string;
 	model: string;
+	targetId?: string | null;
 	providerName: string;
 	providerTitle: string;
 	providerEnvKey: string;
@@ -251,15 +458,17 @@ export type CodexSessionStart = {
 	threadId?: string;
 	multiAgentVersion?: MultiAgentVersion;
 	autoCompactTokenLimit: number;
+	/** This Mac Laguna catalog id. Null loads the base Laguna XS weights. */
+	adapter?: string | null;
 };
 
-export type CodexSessionInfo = { sessionId: string; threadId: string; turnId?: string | null };
 export type ComposerImageAttachment = { path: string; name: string; previewUrl: string };
 export type PersistedCodexSession = {
 	sessionId: string;
 	threadId: string;
 	workspace: string;
 	model: string;
+	targetId?: string | null;
 	providerName: string;
 	providerTitle: string;
 	baseUrl: string;
@@ -270,16 +479,14 @@ export type PersistedCodexSession = {
 	sandbox: string;
 	presentationEmotion?: string | null;
 	presentationSummary?: string | null;
+	/** This Mac Laguna catalog id. Null is the base model. */
+	adapter?: string | null;
+	/** Set when a previous process died holding this chat's turn. */
+	recovery?: RecoveryNotice | null;
 };
-export type CodexEvent = { sessionId: string; method: string; params: Record<string, unknown> };
+export type CodexEvent = { sessionId: string; method: string; params: Record<string, unknown>; createdAt?: string };
 /** Typed rejection payload of `codex_turn_send`. */
-export type CodexTurnFailure = {
-	code: "codex_session_detached" | "codex_turn_start_failed" | "codex_provider_unavailable" | string;
-	message: string;
-	sessionId: string;
-	/** Developer detail. Debug logs only — never a user-facing surface. */
-	detail: string;
-};
+
 export type CodexBridge = {
 	defaultWorkspace(): Promise<string>;
 	list(): Promise<PersistedCodexSession[]>;
@@ -288,7 +495,7 @@ export type CodexBridge = {
 		sessionId: string,
 		prompt: string,
 		effort?: string,
-		options?: { clientMessageId?: string }
+		options?: { clientMessageId?: string; uiContext?: string }
 	): Promise<CodexSessionInfo>;
 	/**
 	 * Atomic attach-or-resume plus turn start. Optional because browser demo
@@ -304,14 +511,18 @@ export type CodexBridge = {
 		request: CodexSessionStart,
 		prompt: string,
 		effort?: string,
-		options?: { compactBeforeModelSwitch?: boolean; clientMessageId?: string }
+		options?: { compactBeforeModelSwitch?: boolean; clientMessageId?: string; recoveryMode?: boolean; uiContext?: string }
 	): Promise<CodexSessionInfo>;
 	interrupt(sessionId: string): Promise<void>;
 	/** Atomically attaches/resumes a Codex thread and starts ad-hoc compaction. */
 	compact?(request: CodexSessionStart): Promise<void>;
+	/** Ownership-checked child thread read. Optional on browser fixtures. */
+	readThread?(sessionId: string, threadId: string, includeTurns?: boolean): Promise<unknown>;
+	/** Paginated child thread items. Optional on browser fixtures. */
+	listThreadItems?(sessionId: string, threadId: string, cursor?: string, limit?: number): Promise<unknown>;
 	/** Mid-turn user input via Codex `turn/steer`. Optional on browser fixtures without a native runtime. */
 	steerTurn?(sessionId: string, text: string): Promise<void>;
-	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject"): Promise<void>;
+	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject" | "remember-locator" | "register-source"): Promise<void>;
 	close(sessionId: string): Promise<void>;
 	onEvent(listener: (event: CodexEvent) => void): () => void;
 };
@@ -320,6 +531,8 @@ export type CoreBridge = {
 	diagnostics(): Promise<CoreDiagnostics>;
 	eventsAfter(afterSequence?: number, limit?: number): Promise<AppEvent[]>;
 	sessionEventsAfter(sessionId: string, afterSequence?: number, limit?: number): Promise<AppEvent[]>;
+	sessionEventsTail(sessionId: string, limit?: number): Promise<AppEvent[]>;
+	sessionEventsBefore(sessionId: string, beforeSequence: number, limit?: number): Promise<AppEvent[]>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
 };
 
@@ -338,8 +551,11 @@ export type InventoryBridge = {
 	getContainer(containerId: string): Promise<ContainerDeployment>;
 	registerContainer(request: { name?: string; baseUrl: string; location?: "local" | string; taskFamily?: string; metadata?: Record<string, unknown> }): Promise<ContainerDeployment>;
 	probeContainer(containerId: string): Promise<ContainerDeployment>;
+	reconcileContainer(containerId: string, sessionId: string): Promise<ContainerDeployment>;
+	restartContainer(containerId: string, sessionId: string): Promise<ContainerDeployment>;
 	listTraces(): Promise<TraceV5Record[]>;
 	getTrace(traceId: string): Promise<TraceV5Record>;
+	materializeContainerTrace(containerId: string, rolloutId: string): Promise<{ inspectable?: boolean; note?: string; traces?: Array<{ traceId?: string }> }>;
 	chooseTraceInput(): Promise<string | null>;
 	ingestTraceBundle(request: TraceBundleIngestRequest): Promise<TraceBundleIngestResult>;
 	resolveTraceProjection(traceDigest: string, projectionKind?: string): Promise<ResolvedTraceProjection>;
@@ -347,19 +563,9 @@ export type InventoryBridge = {
 	counts(): Promise<InventoryCounts>;
 };
 
-export type ModelPerformanceSummary = {
-	provider: string;
-	modelId: string;
-	measurementKind: "decode" | "observed_stream" | "end_to_end" | "provider_reported";
-	sampleCount: number;
-	tpsP50: number | null;
-	tpsP95: number | null;
-	ttftP50Ms: number | null;
-	lastObservedAt: string;
-};
-
 export type ModelPerformanceBridge = {
 	summaries(): Promise<ModelPerformanceSummary[]>;
+	turnSamples(sessionId: string): Promise<ModelPerformanceTurnSample[]>;
 };
 
 /** Device-wide usage dashboard, aggregated natively over `usage_records`. */
@@ -369,14 +575,6 @@ export type UsageBridge = {
 
 /** One provider price card, served from the native tariff catalog — the same
  * numbers the cost estimator prices with. */
-export type TariffCard = {
-	provider: string;
-	modelId: string;
-	inputUsdPerM: number;
-	outputUsdPerM: number;
-	cachedInputUsdPerM: number | null;
-	cacheWriteUsdPerM: number | null;
-};
 
 export type TariffsBridge = {
 	catalog(): Promise<TariffCard[]>;
@@ -384,28 +582,13 @@ export type TariffsBridge = {
 
 /** Passive release check: version facts only. The download action always
  * opens the fixed public download page. */
-export type UpdateStatus = {
-	currentVersion: string;
-	channel: string;
-	latestVersion: string | null;
-	updateAvailable: boolean;
-};
 
 export type UpdatesBridge = {
 	status(): Promise<UpdateStatus>;
 	openDownload(): Promise<void>;
 };
 
-export type VisualTemplateMeta = {
-	id: string;
-	title: string;
-	genre?: string | null;
-	version?: string | null;
-	description?: string | null;
-	path?: string | null;
-	shellPath?: string | null;
-	exampleBinding?: Record<string, unknown> | null;
-};
+export type VisualTemplateMeta = TemplateMeta;
 
 export type VisualsBridge = {
 	listTemplates(genre?: string | null): Promise<VisualTemplateMeta[]>;
@@ -419,7 +602,37 @@ export type VisualsBridge = {
 		offset?: number;
 	}): Promise<VisualRecord[]>;
 	get(visualId: string): Promise<VisualRecord>;
+	reportObservation(observation: {
+		schemaVersion: "synth.rendered-visual-observation.v1";
+		visualId: string;
+		renderedRevision: number;
+		bindingsDigest: string;
+		transportState: string;
+		rolloutCount: number;
+		renderedFrameCount: number;
+		semanticEventCount: number;
+		terminal: boolean;
+		error?: string | null;
+		observedAt: string;
+	}): Promise<void>;
 	revisions(visualId: string): Promise<VisualRevision[]>;
+	annotations(visualId: string): Promise<VisualAnnotation[]>;
+	createAnnotation(visualId: string, request: {
+		visualRevision: number;
+		sourceDigest?: string | null;
+		selector: Record<string, unknown>;
+		kind: VisualAnnotation["kind"];
+		body?: string | null;
+		metadata?: Record<string, unknown>;
+		authorId?: string;
+		supersedesId?: string | null;
+	}): Promise<VisualAnnotation>;
+	listSeals(visualId?: string | null): Promise<VisualSeal[]>;
+	seal(visualId: string, revision: number): Promise<VisualSeal>;
+	getSeal(receiptDigest: string): Promise<VisualSealBundle>;
+	uploadStatus(receiptDigest: string): Promise<VisualUpload | null>;
+	shareSeal(receiptDigest: string): Promise<VisualUpload>;
+	openShared(committedUrl: string): Promise<VisualSealBundle>;
 	create(request: {
 		templateId: string;
 		title?: string;
@@ -459,21 +672,268 @@ export type VisualsBridge = {
 		base64: string;
 	}>;
 	render(visualId: string): Promise<VisualRecord>;
-	onEvent(listener: (event: AppEvent) => void): () => void;
+	pollStream(request: { visualId: string; pollUrl: string; after: number; limit: number }): Promise<unknown>;
+	/**
+	 * `synth.visual.media.v1` — one bounded binary object by CAS digest.
+	 *
+	 * The host answers only for media produced by a run this visual is bound
+	 * to, so a pane cannot read the store by asking for arbitrary digests.
+	 */
+	readMedia(request: { visualId: string; casDigest: string }): Promise<{
+		protocol: string;
+		casDigest: string;
+		mediaType: string;
+		byteSize: number;
+		width: number | null;
+		height: number | null;
+		rolloutId: string | null;
+		step: number | null;
+		optimizerRunId: string;
+		dataUrl: string;
+	}>;
+	onEvent(listener: (event: AppEvent) => void, onAttached?: () => void): () => void;
 	onShow(listener: (event: AppEvent) => void): () => void;
+};
+
+/** `PluginPermission` from src-tauri/src/plugins/types.rs. */
+export type PluginPermissionState = "granted" | "denied" | "not_determined" | "not_applicable";
+
+/** Mirrors the operations `PluginService::manage` accepts. */
+export type PluginLifecycleOperation =
+	| "enable"
+	| "disable"
+	| "install"
+	| "start"
+	| "restart"
+	| "stop"
+	| "update"
+	| "remove";
+
+/** `PluginActionReceipt` from src-tauri/src/plugins/types.rs. */
+export type PluginActionReceipt = {
+	schemaVersion: string;
+	receiptId?: string;
+	pluginId: string;
+	action: string;
+	version?: string | null;
+	digest?: string | null;
+	approvalReceiptId?: string | null;
+	startedAt?: string;
+	finishedAt?: string;
+	result: string;
+	retainedData?: string;
+	status?: PluginStatus | null;
+	error?: string | null;
+};
+
+/** What `remove` actually did, so the page can report residue honestly. */
+export type ComputerUseRemovalReport = {
+	bundleRemoved: boolean;
+	tccReset: string[];
+	/** Grants macOS refused to reset. Surfaced, never swallowed. */
+	tccResetFailed: string[];
+	allowlistEntriesRemoved: number;
+};
+
+/**
+ * Computer Use is human-only: there is no agent path to any of these. The
+ * agent's MCP surface offers status and nothing else.
+ */
+export type ComputerUseBridge = {
+	status(sessionId?: string | null): Promise<ComputerUseSnapshot>;
+	install(): Promise<PluginStatus>;
+	remove(): Promise<ComputerUseRemovalReport>;
+	revokeApp(bundleId: string): Promise<number>;
+	openSettings(permissionId: string): Promise<void>;
+};
+
+/** Human-only browser setup. Agent tools can consume policy but cannot mutate it. */
+export type BrowserAdminBridge = {
+	status(): Promise<BrowserRuntimeStatus>;
+	allowOrigin(origin: string): Promise<BrowserRuntimeStatus>;
+	revokeOrigin(origin: string): Promise<BrowserRuntimeStatus>;
+};
+
+export type PluginsBridge = {
+	status(pluginId?: string | null): Promise<PluginStatus>;
+	list(): Promise<PluginStatus[]>;
+	setReleaseChannel(pluginId: "optimizers", channel: "official" | "dev"): Promise<PluginStatus>;
+	/**
+	 * Human-triggered lifecycle. Approval policy, active-run guards, retention
+	 * classes, and receipts are enforced natively — the renderer never decides
+	 * whether an action is permitted, only whether to offer it.
+	 */
+	manage?(
+		operation: PluginLifecycleOperation,
+		pluginId: string,
+		version?: string | null
+	): Promise<PluginActionReceipt>;
+	/**
+	 * Fires whenever the native sidecar status changes. Subscribing is what
+	 * replaces polling the registry: every poll runs a live sidecar probe.
+	 */
+	onStatusChanged?(listener: () => void): () => void;
+};
+
+export type ReportReferenceMode = "live" | "pinned";
+export type ReportAccessState = "available" | "redacted" | "forbidden" | "missing";
+export type ReportIntegrityState = "verified" | "digest_mismatch" | "unresolved" | "unsupported" | "source_changed";
+
+export type ReportsBridge = {
+	list(query?: { status?: string; search?: string; limit?: number; includeArchived?: boolean }): Promise<ReportRecord[]>;
+	get(reportId: string): Promise<ReportRecord>;
+	getRevision(reportId: string, revision?: number | null): Promise<ReportRevision>;
+	validate(reportId: string, revision?: number | null): Promise<ReportValidationResult>;
+	pinAll(reportId: string): Promise<ReportRecord>;
+	create(request: {
+		title?: string;
+		summary?: string;
+		authors?: string[];
+		projectRef?: string;
+		id?: string;
+		blocks?: ReportBlock[];
+	}): Promise<ReportRecord>;
+	update(reportId: string, request: {
+		expectedRevision?: number;
+		title?: string;
+		summary?: string | null;
+		authors?: string[];
+		projectRef?: string;
+		blocks?: ReportBlock[];
+		sources?: ReportSource[];
+		claims?: ReportClaim[];
+		limitations?: ReportLimitation[];
+	}): Promise<ReportRecord>;
+	archive(reportId: string): Promise<ReportRecord>;
+	restore(reportId: string): Promise<ReportRecord>;
+	listVisibilityRequests(reportId?: string | null): Promise<ReportVisibilityRequest[]>;
+	requestVisibility(reportId: string, request: {
+		receiptDigest: string;
+		target: "private" | "public" | "unpublished";
+		slug?: string;
+		reason?: string;
+		requestedBy?: string;
+	}): Promise<ReportVisibilityRequest>;
+	decideVisibility(requestId: string, approved: boolean): Promise<ReportVisibilityRequest>;
+	seal(reportId: string, revision: number): Promise<ReportSeal>;
+	listSeals(reportId?: string | null): Promise<ReportSeal[]>;
+	getSeal(receiptDigest: string): Promise<ReportSealBundle>;
+	compareSeals(leftDigest: string, rightDigest: string): Promise<ReportRevisionCompare>;
+	uploadStatus(receiptDigest: string): Promise<ReportUpload | null>;
+	shareSeal(receiptDigest: string): Promise<ReportUpload>;
+	setAudience(publicationId: string, request: {
+		receiptDigest: string;
+		audience: ReportAudience;
+		redactionPolicyVersion: string;
+	}): Promise<ReportAudienceState>;
+	revokeAudience(publicationId: string, receiptDigest: string): Promise<ReportAudienceState>;
+	promote(publicationId: string, slug: string): Promise<ReportPromotion>;
+	openShared(committedUrl: string): Promise<ReportSealBundle>;
+	listComments(reportId: string, revision?: number | null): Promise<ReportComment[]>;
+	createComment(reportId: string, revision: number, request: {
+		body: string;
+		anchor?: string;
+		authorId?: string;
+		receiptDigest?: string;
+		publicationId?: string;
+	}): Promise<ReportComment>;
+	listExperiments(reportId: string): Promise<ExperimentRecord[]>;
+	upsertExperiment(reportId: string, request: {
+		experimentId?: string;
+		title: string;
+		hypothesis?: string;
+		status?: string;
+		protocolDigest?: string;
+		arms?: unknown;
+		runs?: unknown;
+		results?: unknown;
+		evaluatorRefs?: unknown;
+		traceCollectionRefs?: unknown;
+		claimRefs?: unknown;
+		researchLogRefs?: unknown;
+		limitations?: unknown;
+		experimentGroupId?: string;
+	}): Promise<ExperimentRecord>;
+	listLog(reportId: string): Promise<ResearchLogEntry[]>;
+	appendLog(reportId: string, request: {
+		occurredAt?: string;
+		author?: string;
+		actorKind?: string;
+		entryKind: string;
+		title: string;
+		body: string;
+		tags?: string[];
+		links?: unknown;
+		claimEffect?: string;
+		supersedesEntryId?: string;
+	}): Promise<ResearchLogEntry>;
+	onEvent?(listener: (event: AppEvent) => void): () => void;
+};
+
+export type OptimizerRecipeInfo = {
+	id: string;
+	title: string;
+	algorithmId: string;
+	task?: string;
+	source?: string;
+	semantics?: string;
+	availability: string;
+	availabilityReason?: string | null;
+	description?: string;
+	/** Producer-declared caps. Real keys are e.g. `trials`; nothing writes
+	 * screening/confirmation seed lists here. */
+	limits?: Record<string, unknown>;
+	/** Producer-declared spend ceiling, e.g. `{ max_usd: 0.30 }`. */
+	budget?: Record<string, unknown>;
+	/** Pinned model list, e.g. `[{ id: "gpt-5.6-luna" }]`. */
+	models?: Array<Record<string, unknown>>;
+	prerequisites?: string[];
+	/** Admission facts projected by `eval_recipes.rs::project_eval_recipe_state`.
+	 * Absent (not false) when a producer predates the projection. */
+	recipeDiscovered?: boolean;
+	executionSupported?: boolean;
+	targetPresent?: boolean;
+	targetDigestMatches?: boolean;
+	targetAdmitted?: boolean;
+	/** Structured admission failure, parsed from `availabilityReason` when that
+	 * string carries JSON. */
+	admissionError?: unknown;
+	executionKind?: string;
+};
+
+export type OptimizerInferDelta = {
+	checkpointId: string;
+	family: string;
+	delta: string;
+	done: boolean;
 };
 
 export type OptimizersBridge = {
 	listAlgorithms(): Promise<OptimizerAlgorithmInfo[]>;
-	listRecipes(): Promise<Array<{
-		id: string;
-		title: string;
-		algorithmId: string;
-		task: string;
-		availability: string;
-		limits: Record<string, number>;
-	}>>;
-	startRecipe(request: { recipeId: string; sessionRef?: string; openVisual?: boolean; baseModel?: string }): Promise<OptimizerRunRecord>;
+	listRecipes(sessionRef?: string): Promise<OptimizerRecipeInfo[]>;
+	startRecipe(request: {
+		recipeId: string;
+		sessionRef?: string;
+		openVisual?: boolean;
+		baseModel?: string;
+		/** Required by `eval.*` recipes unless `trainingArtifactId` is set. */
+		candidateSetId?: string;
+		/** Registered-container identity for workspace baseline evals. */
+		containerId?: string;
+		/** Managed training adapter. Eval stages it and retains identity in the receipt. */
+		trainingArtifactId?: string;
+	}): Promise<OptimizerRunRecord>;
+	stageEvalCandidates(request: {
+		sessionRef: string;
+		candidates: Array<{
+			label: string;
+			/** Workspace-relative file or directory. */
+			path: string;
+			entrypoint?: string;
+			kind?: string;
+			baseline?: boolean;
+		}>;
+	}): Promise<{ id: string; candidates: Array<{ id: string; label: string }> }>;
 	list(query?: {
 		status?: string;
 		algorithmId?: string;
@@ -484,6 +944,35 @@ export type OptimizersBridge = {
 		offset?: number;
 	}): Promise<OptimizerRunRecord[]>;
 	get(optimizerRunId: string): Promise<OptimizerRunRecord>;
+	runViewV2(optimizerRunId: string): Promise<OptimizerRunViewV2>;
+	/**
+	 * One coherent read for first paint: the kernel projection, the run record
+	 * the templates still read compatibility fields from, and the durable
+	 * journal tail. Pass `ifNewerThan` with a projection revision already held
+	 * to get `unchanged` back instead of the same bytes again.
+	 */
+	runView(optimizerRunId: string, ifNewerThan?: number | null): Promise<OptimizerRunViewEnvelope>;
+	/**
+	 * The bounded, algorithm-neutral run summary — the only read an ordinary
+	 * mount performs. Conditional on `ifNewerThan` like `runView`.
+	 */
+	runSummary(optimizerRunId: string, ifNewerThan?: number | null): Promise<OptimizerRunSummaryEnvelope>;
+	/** One keyset page of a durable collection. The limit is always explicit. */
+	runCollection(optimizerRunId: string, collection: RunCollection, query: RunCollectionQuery): Promise<RunCollectionPage>;
+	/** One row's durable detail — a candidate's content, one evaluation. */
+	runCollectionItem(optimizerRunId: string, collection: RunCollection, itemId: string): Promise<RunCollectionRow | null>;
+	/** The projection at `sequence`, folded backend-side from a checkpoint. */
+	projectionAt(optimizerRunId: string, sequence: number): Promise<HistoricalProjection>;
+	/**
+	 * Everything in `window` the caller does not already hold. `held` is the
+	 * coverage from the previous answer, sent back verbatim.
+	 */
+	evidencePage(
+		optimizerRunId: string,
+		window: EvidenceRange,
+		held?: EvidenceRange[] | null,
+		limit?: number | null
+	): Promise<EvidencePage>;
 	create(request: {
 		algorithmId: string;
 		algorithmVersion?: string;
@@ -499,6 +988,9 @@ export type OptimizersBridge = {
 	}): Promise<OptimizerRunRecord>;
 	refresh(optimizerRunId: string): Promise<OptimizerRunRecord>;
 	eventsAfter(optimizerRunId: string, afterSeq?: number, limit?: number): Promise<unknown[]>;
+	framesLatest(optimizerRunId: string, afterFrameSequence?: number): Promise<OptimizerFrameDelta>;
+	framesList(optimizerRunId: string, seed: number, beforeFrameSequence?: number, limit?: number): Promise<OptimizerFrameRef[]>;
+	frameContent(optimizerRunId: string, seed: number, frameSequence: number): Promise<OptimizerFrameContent>;
 	getState(optimizerRunId: string, sliceId: string, atSeq?: number): Promise<unknown>;
 	getStateBatch(optimizerRunId: string, slices?: string[], atSeq?: number): Promise<unknown[]>;
 	cancel(optimizerRunId: string): Promise<OptimizerRunRecord>;
@@ -508,12 +1000,94 @@ export type OptimizersBridge = {
 	importLocal(request: { path: string; sessionRef?: string; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	reconcileCloud(request: { optimizerRunId: string; afterSeq?: number; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	listCloud(query?: { algorithm?: string; status?: string; limit?: number }): Promise<unknown[]>;
+	searchSavedLoras?(query?: {
+		search?: string;
+		scope?: "all" | "mine" | "org";
+		placement?: "all" | "this_mac" | "hosted";
+		provider?: string;
+		checkpointKind?: string;
+		baseModel?: string;
+		runId?: string;
+		attemptId?: string;
+		sourceCheckpointId?: string;
+		optimizerAlgorithm?: "sft" | "cispo" | "ppo";
+		status?: string;
+		tags?: string[];
+		limit?: number;
+		offset?: number;
+	}): Promise<SavedLoraCheckpointPage>;
+	listRunCheckpoints(optimizerRunId: string): Promise<SavedLoraRunPage>;
+	runOutputs(optimizerRunId: string): Promise<OptimizerRunOutputs>;
+	hostedTrainingModels(): Promise<HostedTrainingModelCatalog>;
+	archiveSavedLora(checkpointId: string): Promise<SavedLoraCheckpoint>;
+	savedLoraDownload(checkpointId: string): Promise<SavedLoraDownload>;
+	importSavedLora(path: string): Promise<SavedLoraCheckpoint>;
+	patchSavedLora?(checkpointId: string, patch: { name?: string; description?: string; tags?: string[] }): Promise<SavedLoraCheckpoint>;
+	publishSavedLora?(checkpointId: string): Promise<SavedLoraCheckpoint>;
+	inferCheckpoint(request: { checkpointId: string; family: "chat_completions" | "responses"; body: Record<string, unknown> }): Promise<unknown>;
+	onInferDelta?(listener: (event: OptimizerInferDelta) => void): () => void;
+	reconcileTraining(optimizerRunId: string): Promise<{
+		schemaVersion: "workshop.training_snapshot.v1";
+		runId: string;
+		projection: TrainingProjection;
+	}>;
+	recordVisualReady?(request: {
+		visualId: string;
+		optimizerRunId: string;
+		templateId: string;
+		replayedThrough: number;
+		subscribedFrom: number;
+		templateDigest?: string;
+		/** Visual revision this render belongs to. */
+		visualRevision?: number | null;
+		/** Durable projection revision the render was produced from. */
+		projectionRevision?: number | null;
+		/** Digest of that projection, so identical revisions with different
+		 *  content are detectable. */
+		dataDigest?: string;
+	}): Promise<unknown>;
+	/**
+	 * Proof that this visual revision has rendered before, if it has. Read on
+	 * reopen to tell a normal revision advance from evidence that has gone
+	 * backwards under a visual that already showed something newer.
+	 */
+	visualRenderReceipt?(
+		visualId: string,
+		visualRevision?: number | null
+	): Promise<VisualRenderReceipt | null>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
 };
 
-export type TerminalInfo = { id: string; workspaceId: string; cwd: string; shell: string; title: string; status: "running" | "exited" | "failed"; createdAt: number; exitCode?: number | null };
-export type TerminalEvent = { terminalId: string; sequence: number; kind: "output" | "exit" | "error"; dataBase64?: string | null; exitCode?: number | null; message?: string | null };
-export type TerminalCreateRequest = { workspaceId: string; workspaceRoot: string; cwd?: string; cols?: number; rows?: number };
+export type TrainingProjection = {
+	lifecycle: string;
+	phase?: string | null;
+	last_sequence: number;
+	last_event_id?: string | null;
+	attempt_id?: string | null;
+	metrics: Record<string, number>;
+	checkpoints: unknown[];
+	evaluations: Array<{
+		phase?: "baseline" | "checkpoint" | "final" | string;
+		checkpoint_id?: string | null;
+		artifact_digest?: string | null;
+		step?: number | null;
+		evaluator?: string | null;
+		metric?: string;
+		score?: number | null;
+		loss?: number | null;
+		baseline_score?: number | null;
+		delta?: number | null;
+		sample_count?: number | null;
+		status?: string;
+	}>;
+	warnings: unknown[];
+	latest_rollout?: unknown;
+	tunnel_health?: { status?: string; occurred_at?: string; detail?: unknown } | null;
+	provider_usage?: Record<string, unknown> | null;
+	terminal_summary?: unknown;
+	attempt_history: unknown[];
+};
+
 export type TerminalBridge = {
 	available: boolean;
 	create(request: TerminalCreateRequest): Promise<TerminalInfo>;
@@ -521,14 +1095,15 @@ export type TerminalBridge = {
 	snapshot(terminalId: string, afterSequence?: number): Promise<TerminalEvent[]>;
 	write(terminalId: string, data: string): Promise<void>;
 	resize(terminalId: string, cols: number, rows: number): Promise<void>;
+	mountNative(request: NativeTerminalMountRequest): Promise<boolean>;
+	setNativeFrame(terminalId: string, frame: NativeTerminalFrame): Promise<void>;
+	setNativeVisible(terminalId: string, visible: boolean): Promise<void>;
+	focusNative(terminalId: string): Promise<void>;
+	unmountNative(terminalId: string): Promise<void>;
 	close(terminalId: string): Promise<void>;
 	onEvent(listener: (event: TerminalEvent) => void): () => void;
 };
 
-export type WorkspaceAccessMode = "read_only" | "read_write";
-export type WorkspaceAttachment = { path: string; access: WorkspaceAccessMode; source: "user_picker" | "recent_folder" | "agent_request" | "migrated_default"; createdAt: string };
-export type ConversationWorkspaceScope = { sessionId: string; workspace: string; attachments: WorkspaceAttachment[]; revision: number; boundRevision: number; bindingStatus: "pending" | "active" | "failed"; bindingError?: string | null };
-export type WorkspaceGrantRequest = { id: string; sessionId: string; path: string; access: WorkspaceAccessMode; reason: string; status: "pending" | "approved" | "denied"; createdAt: string; resolvedAt?: string | null };
 export type WorkspaceScopeBridge = {
 	get(sessionId: string): Promise<ConversationWorkspaceScope | null>;
 	chooseAndAttach(sessionId: string, access: WorkspaceAccessMode): Promise<ConversationWorkspaceScope | null>;
@@ -598,6 +1173,10 @@ export type SynthAccountOrganization = {
 export type SynthAccountUsageWindow = {
 	events: number;
 	costUsd: number;
+	finalizedUsd?: number;
+	pendingUsd?: number;
+	tokens?: number;
+	runtimeSeconds?: number;
 };
 
 export type SynthAccountCloudUsage = {
@@ -637,6 +1216,10 @@ export type SynthAccountSummary = {
 	/** True when the cloud facts shown are a cached copy after a failed refresh. */
 	stale?: boolean;
 	error?: string;
+	sessionHealth?: "local_only" | "signed_out" | "active" | "revoked" | "offline" | "malformed";
+	failureKind?: "none" | "auth" | "entitlement" | "quota" | "outage" | "malformed";
+	quotaExhausted?: boolean;
+	reconciliation?: "ok" | "stale" | "failed";
 };
 
 export type SynthBillingAction = "upgrade" | "manage";
@@ -653,21 +1236,21 @@ export type SynthAccountBridge = {
 	openBilling?(action: SynthBillingAction, tier?: string): Promise<string>;
 };
 
-export type CodexOauthBegin = {
-	authorizeUrl: string;
-	mode: "auto" | "manual";
+export type ProductTelemetryPolicy = {
+	dictionaryVersion: string;
+	collectionPolicyVersion: string;
+	optionalEnabled: boolean;
+	consentVersion: string;
 };
 
-export type CodexOauthStatus = {
-	state: "disconnected" | "authenticating" | "ready" | "expiring" | "expired" | "refresh_failed";
-	action: "connect" | "wait" | "none" | "reauthenticate" | "retry";
-	canUseModels: boolean;
-	guidance: string;
-	configured: boolean;
-	accountHint?: string | null;
-	lastRefresh?: string | null;
-	expiresAt?: string | null;
+export type ProductTelemetryBridge = {
+	getPolicy(): Promise<ProductTelemetryPolicy>;
+	setOptOut(optOut: boolean): Promise<ProductTelemetryPolicy>;
 };
+
+export type CodexOauthBegin = BeginResult;
+
+export type CodexOauthStatus = Status;
 
 export type CodexOauthBridge = {
 	begin(): Promise<CodexOauthBegin>;
@@ -676,4 +1259,39 @@ export type CodexOauthBridge = {
 	ensureReady(): Promise<CodexOauthStatus>;
 	disconnect(): Promise<CodexOauthStatus>;
 	cancel(): Promise<void>;
+};
+
+export type SecretCapabilitySummary = CapabilitySummary;
+
+export type SecretImportPreview = {
+	requestId: string;
+	status: string;
+	sourcePath: string;
+	candidates: MaskedImportCandidate[];
+	sourceRemainsReadable: boolean;
+	warning?: string | null;
+	cleanupDiff?: string | null;
+};
+
+export type SecretsBridge = {
+	workspaceRoots(): Promise<WorkspaceRootSummary[]>;
+	bindings(): Promise<CredentialBindingSummary[]>;
+	locators(): Promise<CredentialLocatorSummary[]>;
+	rememberExternal(pickerPath: string, provider: string, variable: string, label?: string): Promise<CredentialLocatorSummary>;
+	registerLocator(locatorId: string): Promise<CredentialLocatorSummary>;
+	forgetLocator(locatorId: string): Promise<void>;
+	list(provider?: string, scope?: string): Promise<SecretSummary[]>;
+	create(request: { alias: string; provider: string; scope?: string; value: string }): Promise<SecretSummary>;
+	replace(secretId: string, value: string): Promise<SecretSummary>;
+	delete(secretId: string): Promise<void>;
+	test(secretId: string): Promise<SecretSummary>;
+	requestEnvImport(sourcePath: string, variableNames?: string[]): Promise<SecretImportPreview>;
+	commitEnvImport(requestId: string, selected: string[], after: "keep" | "replace_aliases" | "remove_entries", confirm?: boolean): Promise<SecretSummary[]>;
+	denyEnvImport(requestId: string): Promise<void>;
+	pending(): Promise<SecretsInbox>;
+	capabilities(): Promise<SecretCapabilitySummary[]>;
+	revokeCapability(capabilityId: string): Promise<void>;
+	audit(limit?: number): Promise<SecretAuditEvent[]>;
+	grantUse(secretId: string, runId: string, recipeId: string, rememberRecipe: boolean, requestId?: string): Promise<unknown>;
+	denyUse(secretId: string): Promise<unknown>;
 };

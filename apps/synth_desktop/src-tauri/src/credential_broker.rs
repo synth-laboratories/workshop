@@ -101,6 +101,10 @@ struct BrokerState {
     by_session: RwLock<HashMap<String, String>>,
     /// lease token -> lease.
     leases: RwLock<HashMap<String, Arc<Lease>>>,
+    /// Current turn-attribution scope for each session. Requests capture this
+    /// value when they enter the proxy, so a late response can never be charged
+    /// to whichever turn happens to finalize next.
+    turn_scopes: RwLock<HashMap<String, String>>,
     http: reqwest::Client,
     /// Settled receipts for sessions leasing through this broker. Shared with
     /// the composition root so finalizers can drain without owning the proxy.
@@ -143,6 +147,7 @@ impl CredentialBroker {
         let state = Arc::new(BrokerState {
             by_session: RwLock::new(HashMap::new()),
             leases: RwLock::new(HashMap::new()),
+            turn_scopes: RwLock::new(HashMap::new()),
             http: crate::http::http_client_with_timeout(UPSTREAM_TIMEOUT),
             receipts,
         });
@@ -172,7 +177,11 @@ impl CredentialBroker {
             if let Err(error) = served {
                 // Nothing can await this task, so the failure is reported here
                 // rather than swallowed. Cloud sessions fail closed after it.
-                eprintln!("synth-desktop: credential proxy stopped serving: {error:#}");
+                crate::platform::logging::report(
+                    "credential_broker",
+                    "eprintln",
+                    format!("synth-desktop: credential proxy stopped serving: {error:#}"),
+                );
             }
         });
         Ok(broker)
@@ -181,6 +190,58 @@ impl CredentialBroker {
     /// Receipt store this broker writes into. Finalizers drain the same Arc.
     pub fn receipts(&self) -> Arc<ReceiptStore> {
         self.state.receipts.clone()
+    }
+
+    /// Read Shoal's side-effect-free lifecycle projection through the same
+    /// session-bound credential lease used for inference. The renderer never
+    /// receives either the upstream origin or the real provider credential.
+    pub async fn hosted_inference_status(&self, session_id: &str, model: &str) -> Result<Value> {
+        let token = self
+            .state
+            .by_session
+            .read()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+            .context("this cloud session has no active provider lease")?;
+        let lease = self
+            .state
+            .lookup(&token)
+            .context("this cloud session's provider lease is no longer valid")?;
+        let mut url = reqwest::Url::parse(&lease.upstream_origin)
+            .context("the Synth Cloud lifecycle origin is invalid")?;
+        url.set_path("");
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| anyhow::anyhow!("the Synth Cloud lifecycle origin cannot carry a path"))?;
+            // Synth Cloud's public gateway is rooted at /api/v1 (the same
+            // path apply_synth_cloud_provider gives Codex through this proxy).
+            segments.extend(["api", "v1", "models", model]);
+        }
+        let response = self
+            .state
+            .http
+            .get(url)
+            .bearer_auth(&lease.api_key)
+            .send()
+            .await
+            .context("Synth Cloud lifecycle status is unavailable")?
+            .error_for_status()
+            .context("Synth Cloud rejected the lifecycle status request")?;
+        response
+            .json::<Value>()
+            .await
+            .context("Synth Cloud returned an invalid lifecycle status")
+    }
+
+    /// Bind subsequent relayed requests for a session to one turn scope.
+    pub fn begin_turn(&self, session_id: &str, turn_scope: &str) {
+        self.state
+            .turn_scopes
+            .write()
+            .unwrap()
+            .insert(session_id.to_owned(), turn_scope.to_owned());
     }
 
     pub fn origin(&self) -> String {
@@ -229,6 +290,7 @@ impl CredentialBroker {
         if let Some(token) = token {
             self.state.leases.write().unwrap().remove(&token);
         }
+        self.state.turn_scopes.write().unwrap().remove(session_id);
         self.state.receipts.discard(session_id);
     }
 
@@ -265,6 +327,9 @@ impl CredentialBroker {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SettledReceipt {
     pub session_id: String,
+    /// Native-generated scope of the turn whose upstream request produced this
+    /// receipt. It is intentionally independent of provider response ids.
+    pub turn_scope: Option<String>,
     pub provider_response_id: String,
     pub model: Option<String>,
     pub prompt_tokens: Option<i64>,
@@ -308,6 +373,30 @@ impl ReceiptStore {
             .unwrap_or_default()
     }
 
+    /// Take only receipts captured for one native turn scope, leaving late
+    /// receipts from every other turn untouched rather than misattributing
+    /// them to the caller.
+    pub fn drain_for_turn(&self, session_id: &str, turn_scope: &str) -> Vec<SettledReceipt> {
+        let mut store = self.inner.lock().unwrap();
+        let Some(queue) = store.get_mut(session_id) else {
+            return Vec::new();
+        };
+        let mut matched = Vec::new();
+        let mut retained = Vec::new();
+        for receipt in std::mem::take(queue) {
+            if receipt.turn_scope.as_deref() == Some(turn_scope) {
+                matched.push(receipt);
+            } else {
+                retained.push(receipt);
+            }
+        }
+        *queue = retained;
+        if queue.is_empty() {
+            store.remove(session_id);
+        }
+        matched
+    }
+
     /// Queue one settled receipt for its session. `pub(crate)` only so finalizer
     /// tests can stage receipts; production receipts are all born in the relay.
     pub(crate) fn push(&self, receipt: SettledReceipt) {
@@ -328,10 +417,10 @@ impl ReceiptStore {
         let dropped = self.inner.lock().unwrap().remove(session_id);
         if let Some(dropped) = dropped {
             if !dropped.is_empty() {
-                eprintln!(
+                crate::platform::logging::report("credential_broker", "eprintln", format!(
                     "synth-desktop: dropped {} settled receipt(s) undrained at close of session {session_id}",
                     dropped.len()
-                );
+                ));
             }
         }
     }
@@ -350,9 +439,10 @@ struct ResponseAccounting {
 }
 
 impl ResponseAccounting {
-    fn into_receipt(self, session_id: &str) -> SettledReceipt {
+    fn into_receipt(self, session_id: &str, turn_scope: Option<String>) -> SettledReceipt {
         SettledReceipt {
             session_id: session_id.to_owned(),
+            turn_scope,
             // A response object without an id still settles once: the fallback
             // id is unique, so insert-time dedupe simply never collapses it.
             provider_response_id: self
@@ -560,15 +650,16 @@ type RelayedBytes = Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send + S
 
 struct MeteredRelay {
     inner: RelayedBytes,
-    accounting: Option<(AccountingScanner, String)>,
+    accounting: Option<(AccountingScanner, String, Option<String>)>,
     receipts: Arc<ReceiptStore>,
 }
 
 impl MeteredRelay {
     fn settle(&mut self) {
-        if let Some((scanner, session_id)) = self.accounting.take() {
+        if let Some((scanner, session_id, turn_scope)) = self.accounting.take() {
             if let Some(accounting) = scanner.finish() {
-                self.receipts.push(accounting.into_receipt(&session_id));
+                self.receipts
+                    .push(accounting.into_receipt(&session_id, turn_scope));
             }
         }
     }
@@ -581,7 +672,7 @@ impl Stream for MeteredRelay {
         let this = self.get_mut();
         match this.inner.poll_next_unpin(cx) {
             Poll::Ready(Some(Ok(bytes))) => {
-                if let Some((scanner, _)) = this.accounting.as_mut() {
+                if let Some((scanner, _, _)) = this.accounting.as_mut() {
                     scanner.observe(&bytes);
                 }
                 Poll::Ready(Some(Ok(Frame::data(bytes))))
@@ -605,7 +696,7 @@ impl Drop for MeteredRelay {
 }
 
 async fn serve(state: Arc<BrokerState>, listener: tokio::net::TcpListener) -> Result<()> {
-    crate::ipc::serve_connections(listener, move |request| {
+    crate::ipc::serve_connections(listener, move |request, _peer| {
         let state = state.clone();
         async move { proxy(state, request).await }
     })
@@ -734,8 +825,14 @@ async fn proxy(
         .get(hyper::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
+    let turn_scope = state
+        .turn_scopes
+        .read()
+        .unwrap()
+        .get(&lease.session_id)
+        .cloned();
     let accounting = AccountingScanner::for_response(status, content_type.as_deref())
-        .map(|scanner| (scanner, lease.session_id.clone()));
+        .map(|scanner| (scanner, lease.session_id.clone(), turn_scope));
     // Stream rather than buffer: a governed Responses call is server-sent events
     // and must reach the agent token by token.
     let stream = MeteredRelay {
@@ -985,6 +1082,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hosted_lifecycle_status_uses_the_session_lease_and_gateway_path() {
+        let body = r#"{"inference_lifecycle":{"protocol_version":"synth.inference.lifecycle.v3","phase":"warming"}}"#;
+        let (upstream, seen) = spawn_upstream(body);
+        let (broker, _listener) = CredentialBroker::bind(empty_receipts()).unwrap();
+        broker.lease("session-status", &upstream, SENTINEL);
+
+        let status = broker
+            .hosted_inference_status("session-status", "synth_internal/laguna-xs")
+            .await
+            .unwrap();
+        assert_eq!(
+            status.pointer("/inference_lifecycle/phase").and_then(Value::as_str),
+            Some("warming")
+        );
+        let request = seen.lock().unwrap().first().cloned().unwrap();
+        assert!(request.starts_with(
+            "GET /api/v1/models/synth_internal%2Flaguna-xs HTTP/1.1"
+        ));
+        assert!(request.contains(&format!("authorization: Bearer {SENTINEL}")));
+    }
+
+    #[tokio::test]
     async fn the_proxy_refuses_a_token_it_never_issued() {
         let broker = CredentialBroker::start(empty_receipts()).unwrap();
         let response = crate::http::http_client()
@@ -1208,10 +1327,10 @@ mod tests {
         let body = format!("data: {RESPONSES_COMPLETED}\n\ndata: {RESPONSES_COMPLETED}\n\n");
         let accounting = scan_sse(&[body.as_bytes()]).expect("usage frames arrived");
         let store = ReceiptStore::new();
-        store.push(accounting.clone().into_receipt("session-dup-frame"));
+        store.push(accounting.clone().into_receipt("session-dup-frame", None));
         // Even a receipt replayed at insert (retry path) collapses on its
         // provider response id.
-        store.push(accounting.into_receipt("session-dup-frame"));
+        store.push(accounting.into_receipt("session-dup-frame", None));
         let receipts = store.drain("session-dup-frame");
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].cost_usd, Some(0.0123));
@@ -1391,6 +1510,7 @@ mod tests {
         broker.lease("session-undrained", "http://127.0.0.1:1", SENTINEL);
         store.push(SettledReceipt {
             session_id: "session-undrained".into(),
+            turn_scope: None,
             provider_response_id: "resp_orphan".into(),
             model: None,
             prompt_tokens: Some(5),

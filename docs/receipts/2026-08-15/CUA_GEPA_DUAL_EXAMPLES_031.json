@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "synth.optimizer-plugin-cua-receipt.v1",
+  "recordedAt": "2026-08-15T08:00:00Z",
+  "result": "blocked_plugin_install",
+  "definitionOfDone": "Split dual replay: Banking77 on optimizer-dual-e2e-030 (prior pass) and Craftax gepa.craftax.smoke.v1 on optimizer-dual-e2e-031 after post-fix taskset_route.",
+  "split": {
+    "banking77": {
+      "instanceId": "optimizer-dual-e2e-030",
+      "recipeId": "gepa.banking77.luna.v1",
+      "status": "prior_pass"
+    },
+    "craftax": {
+      "instanceId": "optimizer-dual-e2e-031",
+      "recipeId": "gepa.craftax.smoke.v1",
+      "status": "blocked_plugin_not_installed"
+    }
+  },
+  "workshop": {
+    "appVersion": "0.3.0",
+    "testedCommit": "d8d79794e4e3",
+    "instanceId": "optimizer-dual-e2e-031",
+    "approvalPolicy": "never",
+    "note": "cua-run relaunched with cookbooks-gepa sources; no rebuild. Visuals IPC http://127.0.0.1:54421 listed 9 recipes including gepa.craftax.smoke.v1."
+  },
+  "plugin": {
+    "pluginId": "optimizers",
+    "phaseAtProbe": "not_installed",
+    "selectedVersion": "0.2.5",
+    "releaseChannel": "official",
+    "install": "POST /v1/plugins/optimizers/install did not return; likely blocked on the approval broker. Sidecar was not started. Recipe prepare/run returned plugin_not_ready."
+  },
+  "recipeCherryPick": {
+    "source": "d8d7979 on workshop-cua",
+    "landedOnJoshV03": "f8d7846"
+  }
+}

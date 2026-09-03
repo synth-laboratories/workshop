@@ -1,5 +1,7 @@
 import type { ExecutionTarget } from "@synth/runtime-protocol";
-import { OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, OPENROUTER_MUSE_SPARK_MODEL, SYNTH_CLOUD_LAGUNA_S_MODEL, SYNTH_CLOUD_MUSE_SPARK_MODEL } from "../types/landing";
+import type { ModelCatalogEntry } from "../generated/protocol";
+import { isOpenRouterTargetId } from "../types/landing";
+import { SYNTH_CLOUD_LAGUNA_S_MODEL, SYNTH_CLOUD_LAGUNA_XS_B200_MODEL, SYNTH_CLOUD_LAGUNA_XS_H100_MODEL, SYNTH_CLOUD_MUSE_SPARK_MODEL } from "../types/landing";
 
 /**
  * Declarative registry for model-specific composer controls.
@@ -39,7 +41,9 @@ export type ModelCapabilitySpec = {
 	/** Input kinds accepted by the provider/model before a turn is attempted. */
 	inputModalities: readonly ("text" | "image")[];
 	/** Provider-advertised maximum combined input/output context window. */
-	maxContextTokens: number;
+	maxContextTokens?: number;
+	/** Provider-discovered tool availability. No catalog entry invents this. */
+	supportsTools?: boolean;
 };
 
 const LUNA_EFFORT_OPTIONS: ModelKnobOption[] = [
@@ -72,12 +76,12 @@ const SERVICE_TIER_OPTIONS: ModelKnobOption[] = [
 	{ displayValue: "Fast", transportValue: "fast" }
 ];
 
-export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
+const BUILTIN_MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 	{
 		targetId: "chatgpt-luna",
 		target: { kind: "remote", models: ["gpt-5.6-luna"] },
 		knobs: [
-			{ id: "reasoning", label: "Thinking", testId: "reasoning-effort", storageKey: "synth.models.chatgpt-luna.reasoning", defaultValue: "medium", options: LUNA_EFFORT_OPTIONS, turnStartField: "effort" },
+			{ id: "reasoning", label: "Thinking", testId: "reasoning-effort", storageKey: "synth.models.chatgpt-luna.reasoning", defaultValue: "xhigh", options: LUNA_EFFORT_OPTIONS, turnStartField: "effort" },
 			{ id: "service-tier", label: "Speed", testId: "service-tier", storageKey: "synth.models.chatgpt-luna.service-tier", defaultValue: "default", options: SERVICE_TIER_OPTIONS, turnStartField: "serviceTier" }
 		],
 		reasoningDisplay: "summary", inputModalities: ["text", "image"], maxContextTokens: 272_000
@@ -120,61 +124,6 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 		maxContextTokens: 262_144
 	},
 	{
-		targetId: "openrouter-luna",
-		target: { kind: "remote", models: [OPENROUTER_LUNA_MODEL] },
-		knobs: [{
-			id: "reasoning",
-			label: "Reasoning effort",
-			testId: "reasoning-effort",
-			storageKey: "synth.reasoningEffort",
-			defaultValue: "medium",
-			options: LUNA_EFFORT_OPTIONS,
-			turnStartField: "effort"
-		}],
-		// Closed/remote providers expose a provider-authored summary, not their
-		// private chain of thought. Render only that safe payload when present.
-		reasoningDisplay: "summary",
-		inputModalities: ["text", "image"],
-		maxContextTokens: 272_000
-	},
-	{
-		targetId: "openrouter-laguna-s",
-		target: { kind: "remote", models: [OPENROUTER_LAGUNA_S_MODEL] },
-		knobs: [{
-			id: "reasoning",
-			label: "Thinking",
-			testId: "reasoning-effort",
-			storageKey: "synth.models.openrouter-laguna-s.reasoning",
-			legacyStorageKeys: ["synth.lagunaThinking"],
-			defaultValue: "max",
-			options: BINARY_THINKING_OPTIONS,
-			turnStartField: "effort"
-		}],
-		// Poolside's S 2.1 model card documents a per-request
-		// `enable_thinking` switch rather than graded low/max budgets. Our
-		// Responses adapter carries this binary choice as none/max, so present
-		// the exact provider vocabulary to people: None / Max.
-		reasoningDisplay: "summary",
-		inputModalities: ["text"],
-		maxContextTokens: 262_144
-	},
-	{
-		targetId: "openrouter-muse-spark",
-		target: { kind: "remote", models: [OPENROUTER_MUSE_SPARK_MODEL] },
-		knobs: [{
-			id: "reasoning",
-			label: "Reasoning effort",
-			testId: "reasoning-effort",
-			storageKey: "synth.models.openrouter-muse-spark.reasoning",
-			defaultValue: "medium",
-			options: SPARK_EFFORT_OPTIONS,
-			turnStartField: "effort"
-		}],
-		reasoningDisplay: "summary",
-		inputModalities: ["text", "image"],
-		maxContextTokens: 1_048_576
-	},
-	{
 		targetId: "synth-cloud-laguna-s",
 		target: { kind: "cloud", models: [SYNTH_CLOUD_LAGUNA_S_MODEL] },
 		knobs: [{
@@ -191,6 +140,25 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 		inputModalities: ["text"],
 		maxContextTokens: 262_144
 	},
+	...[
+		["synth-cloud-laguna-xs-b200", SYNTH_CLOUD_LAGUNA_XS_B200_MODEL],
+		["synth-cloud-laguna-xs-h100", SYNTH_CLOUD_LAGUNA_XS_H100_MODEL]
+	].map(([targetId, model]) => ({
+		targetId,
+		target: { kind: "cloud" as const, models: [model] },
+		knobs: [{
+			id: "reasoning",
+			label: "Thinking",
+			testId: "reasoning-effort",
+			storageKey: `synth.models.${targetId}.reasoning`,
+			defaultValue: "max" as const,
+			options: BINARY_THINKING_OPTIONS,
+			turnStartField: "effort" as const
+		}],
+		reasoningDisplay: "summary" as const,
+		inputModalities: ["text" as const],
+		maxContextTokens: 262_144
+	})),
 	{
 		targetId: "synth-cloud-muse-spark",
 		target: { kind: "remote", models: [SYNTH_CLOUD_MUSE_SPARK_MODEL] },
@@ -209,6 +177,44 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 	}
 ];
 
+/** Replaced atomically when Rust's catalog changes; built-ins and configured
+ * OpenRouter targets consequently use the same capability projection path. */
+export let MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [...BUILTIN_MODEL_CAPABILITY_REGISTRY];
+
+export function installModelCatalogCapabilities(entries: ModelCatalogEntry[]): void {
+	const nonOpenRouter = BUILTIN_MODEL_CAPABILITY_REGISTRY.filter((entry) => !isOpenRouterTargetId(entry.targetId));
+	MODEL_CAPABILITY_REGISTRY = [
+		...nonOpenRouter,
+		...entries.map((entry) => catalogCapability(entry))
+	];
+}
+
+function catalogCapability(entry: ModelCatalogEntry): ModelCapabilitySpec {
+	const reasoning = entry.capabilities.reasoningControl;
+	const options = reasoning === "binary" ? BINARY_THINKING_OPTIONS : LUNA_EFFORT_OPTIONS;
+	const defaultValue = entry.capabilities.defaultReasoning;
+	const admittedDefault = defaultValue && options.some((option) => option.transportValue === defaultValue)
+		? defaultValue as ModelKnobTransportValue
+		: reasoning === "binary" ? "max" : "high";
+	return {
+		targetId: entry.targetId,
+		target: { kind: "remote", models: [entry.modelId] },
+		knobs: reasoning === "none" ? [] : [{
+			id: "reasoning",
+			label: reasoning === "binary" ? "Thinking" : "Reasoning effort",
+			testId: "reasoning-effort",
+			storageKey: `synth.models.${entry.targetId}.reasoning`,
+			defaultValue: admittedDefault,
+			options,
+			turnStartField: "effort"
+		}],
+		reasoningDisplay: reasoning === "none" ? "none" : "summary",
+		inputModalities: entry.capabilities.inputModalities.includes("image") ? ["text", "image"] : ["text"],
+		maxContextTokens: entry.capabilities.maxContextTokens ?? undefined,
+		supportsTools: entry.capabilities.tools
+	};
+}
+
 export type ModelKnobValues = Record<string, ModelKnobTransportValue>;
 
 export function modelKnobKey(targetId: string, knobId: string): string {
@@ -225,6 +231,10 @@ export function modelCapabilitiesForTarget(targetId: string): ModelCapabilitySpe
 
 export function modelCapabilitiesForExecutionTarget(target: ExecutionTarget): ModelCapabilitySpec | undefined {
 	if (target.kind === "intern") return undefined;
+	if (target.kind === "remote" && target.targetId) {
+		const byId = modelCapabilitiesForTarget(target.targetId);
+		if (byId) return byId;
+	}
 	return MODEL_CAPABILITY_REGISTRY.find((entry) =>
 		entry.target.kind === target.kind &&
 		(entry.target.kind === "local" || entry.target.models.includes(target.model))

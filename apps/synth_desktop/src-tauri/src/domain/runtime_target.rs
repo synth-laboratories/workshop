@@ -6,8 +6,10 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
-/// Laguna on-device model id used by LocalRuntime payloads.
-pub const LOCAL_LAGUNA_MODEL: &str = "laguna-xs-2.1";
+/// The daemon's base policy, and the fallback for a local target that carries
+/// no model. It must be a registered policy id: an unknown one is refused at
+/// turn time rather than quietly served by the base weights.
+pub const LOCAL_LAGUNA_MODEL: &str = "poolside/Laguna-XS-2.1-NVFP4-mlx";
 
 /// Sync vs async Intern wire mode.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
@@ -38,13 +40,13 @@ impl InternMode {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternBinding {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub factory_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub project_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub effort_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub run_id: Option<String>,
 }
 
@@ -65,6 +67,8 @@ pub enum RuntimeTarget {
     RemoteRuntime {
         model: String,
         adapter: Option<String>,
+        /// Stable catalog/picker identity, distinct from the provider slug.
+        target_id: Option<String>,
     },
     /// Synth gateway (Credential lease → cloud).
     CloudRuntime {
@@ -86,6 +90,35 @@ impl RuntimeTarget {
         }
     }
 
+    /// Stamp a This Mac catalog id onto a local target. Remote/cloud adapters
+    /// stay untouched — Laguna Composer never loads Qwen Optimizers LoRAs.
+    pub fn with_local_adapter(self, adapter: Option<String>) -> Self {
+        match self {
+            Self::LocalRuntime { model, .. } => Self::LocalRuntime { model, adapter },
+            other => other,
+        }
+    }
+
+    /// Persist a renderer-selected catalog key beside the request identity.
+    /// It is never used to select a provider or rewrite a model slug.
+    pub fn with_target_id(self, target_id: Option<String>) -> Self {
+        match self {
+            Self::RemoteRuntime { model, adapter, .. } => Self::RemoteRuntime {
+                model,
+                adapter,
+                target_id,
+            },
+            other => other,
+        }
+    }
+
+    pub fn target_id(&self) -> Option<&str> {
+        match self {
+            Self::RemoteRuntime { target_id, .. } => target_id.as_deref(),
+            _ => None,
+        }
+    }
+
     /// Map Codex app-server provider names onto RuntimeTarget variants.
     /// SessionKind remains Codex; this is only the inference substrate.
     pub fn from_codex_provider(provider_name: &str, model: &str) -> Self {
@@ -98,16 +131,19 @@ impl RuntimeTarget {
             "openrouter" => Self::RemoteRuntime {
                 model: model.to_owned(),
                 adapter: None,
+                target_id: None,
             },
             "openai-codex-oauth" => Self::RemoteRuntime {
                 model: model.to_owned(),
                 adapter: Some("openai-codex-oauth".into()),
+                target_id: None,
             },
             _ => {
                 // Unknown / custom providers still run through the remote path.
                 Self::RemoteRuntime {
                     model: model.to_owned(),
                     adapter: None,
+                    target_id: None,
                 }
             }
         }
@@ -185,9 +221,14 @@ impl Serialize for RuntimeTarget {
                 map.serialize_entry("adapter", adapter)?;
                 map.end()
             }
-            Self::RemoteRuntime { model, adapter } => {
+            Self::RemoteRuntime {
+                model,
+                adapter,
+                target_id,
+            } => {
                 // Keep provider for renderer payloads that still expect it.
-                let mut map = serializer.serialize_map(Some(4))?;
+                let mut map =
+                    serializer.serialize_map(Some(if target_id.is_some() { 5 } else { 4 }))?;
                 map.serialize_entry("kind", "remote")?;
                 let provider = if adapter.as_deref() == Some("openai-codex-oauth") {
                     "openai-codex-oauth"
@@ -197,6 +238,9 @@ impl Serialize for RuntimeTarget {
                 map.serialize_entry("provider", provider)?;
                 map.serialize_entry("model", model)?;
                 map.serialize_entry("adapter", adapter)?;
+                if let Some(target_id) = target_id {
+                    map.serialize_entry("targetId", target_id)?;
+                }
                 map.end()
             }
             Self::CloudRuntime { model, adapter } => {
@@ -252,11 +296,17 @@ fn parse_runtime_target_value(value: &Value) -> Result<RuntimeTarget, String> {
             let adapter = optional_string(obj, "adapter").or_else(|| {
                 (provider == "openai-codex-oauth").then(|| "openai-codex-oauth".into())
             });
+            let target_id =
+                optional_string(obj, "targetId").or_else(|| optional_string(obj, "target_id"));
             if provider == "synth-cloud" {
                 // Historical synonym: remote + synth-cloud → CloudRuntime.
                 Ok(RuntimeTarget::CloudRuntime { model, adapter })
             } else {
-                Ok(RuntimeTarget::RemoteRuntime { model, adapter })
+                Ok(RuntimeTarget::RemoteRuntime {
+                    model,
+                    adapter,
+                    target_id,
+                })
             }
         }
         "cloud" => Ok(RuntimeTarget::CloudRuntime {
@@ -323,6 +373,7 @@ mod tests {
             RuntimeTarget::RemoteRuntime {
                 model: "openai/gpt-5.6-luna".into(),
                 adapter: None,
+                target_id: None,
             },
             RuntimeTarget::CloudRuntime {
                 model: "openrouter/poolside/laguna-s-2.1".into(),
@@ -365,10 +416,12 @@ mod tests {
         let target = RuntimeTarget::RemoteRuntime {
             model: "poolside/laguna-s-2.1".into(),
             adapter: None,
+            target_id: Some("openrouter:laguna".into()),
         };
         let encoded = serde_json::to_value(&target).unwrap();
         assert_eq!(encoded["kind"], "remote");
         assert_eq!(encoded["provider"], "openrouter");
+        assert_eq!(encoded["targetId"], "openrouter:laguna");
     }
 
     #[test]
@@ -378,5 +431,15 @@ mod tests {
         assert!(!target.is_cloud());
         assert_eq!(target.to_json_value()["provider"], "openai-codex-oauth");
         assert_eq!(target.to_json_value()["adapter"], "openai-codex-oauth");
+    }
+
+    #[test]
+    fn local_adapter_stamps_only_laguna_targets() {
+        let local = RuntimeTarget::from_codex_provider("local-laguna", "ignored")
+            .with_local_adapter(Some("sha256:abc".into()));
+        assert_eq!(local.to_json_value()["adapter"], "sha256:abc");
+        let remote = RuntimeTarget::from_codex_provider("openrouter", "openai/gpt-5.6-luna")
+            .with_local_adapter(Some("sha256:abc".into()));
+        assert!(remote.to_json_value()["adapter"].is_null());
     }
 }

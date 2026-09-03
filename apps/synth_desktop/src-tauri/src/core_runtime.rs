@@ -7,12 +7,15 @@ use crate::contract::events::{origin_for_source_and_kind, tag_event, EventChanne
 use crate::data::{ContainerDeployment, ContainerRegisterRequest, DataStore};
 use crate::domain::{RunService, RunStatus, SessionKind, SessionService, SessionStatus};
 use crate::optimizers::OptimizerService;
+use crate::plugins::PluginService;
+use crate::reports::ReportRegistry;
 use crate::storage::{
     AppEvent, ContentStore, CoreDiagnostics, EventAppend, EventJournal, EventSource, SessionRecord,
     Storage,
 };
 use crate::visuals::VisualRegistry;
 use anyhow::{Context, Result};
+use chrono::Utc;
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 use tauri::{AppHandle, Emitter};
@@ -27,18 +30,124 @@ pub struct CoreRuntime {
     journal: EventJournal,
     content: ContentStore,
     visuals: VisualRegistry,
+    reports: ReportRegistry,
     data: DataStore,
     optimizers: OptimizerService,
+    plugins: PluginService,
+    computer_use: Arc<crate::computer_use::service::ComputerUseService>,
+    diagnostics: Arc<crate::diagnostics::DiagnosticsService>,
     intern: Arc<InternRuntime>,
     intern_provider: Arc<InternProviderManager>,
     sessions: SessionService,
     runs: RunService,
     events_tx: broadcast::Sender<AppEvent>,
+    secrets: Arc<crate::secrets::SecretsService>,
+    observability: crate::composition::ObservabilityRuntime,
 }
 
 impl CoreRuntime {
     pub fn open(root: impl Into<std::path::PathBuf>) -> Result<Self> {
         let storage = Storage::open(root)?;
+        let data_root = storage
+            .content_root()
+            .parent()
+            .unwrap_or_else(|| storage.content_root())
+            .to_path_buf();
+        let observability =
+            crate::composition::ObservabilityRuntime::open(storage.database().clone(), data_root)?;
+        // Bindings written before the canonical envelope was enforced still
+        // render an empty pane, so bring them forward at open. Storage cannot
+        // do this itself: deciding what a legacy shape meant is domain logic.
+        let backfill = storage
+            .database()
+            .with_conn(crate::visuals::canonicalize_persisted_bindings)
+            .context("canonicalize persisted visual bindings")?;
+        if backfill.changed() {
+            observability.logs.info(
+                "visuals",
+                "bindings.backfill",
+                format!(
+                    "visual bindings backfill scanned {}, upgraded {}, refused {}",
+                    backfill.scanned, backfill.upgraded, backfill.refused
+                ),
+            );
+        }
+        // Reconcile before returning, not in a spawned task. Everything that can
+        // read a session — `listSessions`, the Codex record cache, the eval
+        // driver — goes through a CoreRuntime that already exists, so a task
+        // scheduled here would race the first read and let a dead `running` row
+        // reach the UI as Working. This is the boundary that must hold.
+        let recovered = storage
+            .database()
+            .transaction(|conn| {
+                crate::recovery::reconcile_orphaned_turns(
+                    conn,
+                    crate::instance::boot_epoch(),
+                    Utc::now(),
+                )
+            })
+            .context("reconcile abandoned turns at startup")?;
+        if !recovered.is_empty() {
+            let _ = storage.database().transaction(|conn| {
+                for notice in &recovered {
+                    crate::domains::sessions::raise_from_notice(conn, notice)?;
+                }
+                Ok(())
+            });
+            observability.logs.info(
+                "recovery",
+                "session.reconciled",
+                format!(
+                    "recovered {} abandoned turn(s) from a previous run",
+                    recovered.len()
+                ),
+            );
+        }
+        // Neither visual cache is product truth, and nothing else ever removes
+        // from them. Collecting at startup keeps that bounded without adding a
+        // background timer whose only job is to delete rows nobody is reading.
+        match storage.database().transaction(|conn| {
+            crate::visuals::cache_gc::collect(conn, crate::visuals::RENDITION_RENDERER_VERSION)
+        }) {
+            Ok(collected) if collected.total() > 0 => observability.logs.info(
+                "recovery",
+                "visuals.cache_collected",
+                format!(
+                    "collected {} visual cache row(s): {} stale-renderer, {} over-budget, {} orphaned receipt(s)",
+                    collected.total(),
+                    collected.stale_renditions,
+                    collected.evicted_renditions,
+                    collected.orphaned_receipts
+                ),
+            ),
+            Ok(_) => {}
+            // A cache that failed to shrink is not a reason to fail startup.
+            Err(error) => observability.logs.error(
+                "recovery",
+                "visuals.cache_collect_failed",
+                format!("visual cache collection failed: {error}"),
+            ),
+        }
+        let recovered_runs = storage
+            .database()
+            .transaction(|conn| {
+                crate::optimizers::reconcile_stale_local_runs_in_tx(
+                    conn,
+                    crate::instance::boot_epoch(),
+                    Utc::now(),
+                )
+            })
+            .context("reconcile abandoned optimizer runs at startup")?;
+        if !recovered_runs.is_empty() {
+            observability.logs.info(
+                "recovery",
+                "optimizer.reconciled",
+                format!(
+                    "recovered {} abandoned optimizer run(s) from a previous boot",
+                    recovered_runs.len()
+                ),
+            );
+        }
         let backend = crate::synth_config::resolve().context("resolve Synth backend")?;
         let intern = Arc::new(match backend.api_key {
             Some(api_key) => InternRuntime::configured(
@@ -49,14 +158,24 @@ impl CoreRuntime {
             .context("configure Rust Intern runtime")?,
             None => InternRuntime::unconfigured(),
         });
-        Ok(Self::from_parts(storage, intern))
+        Ok(Self::from_parts(storage, intern, observability))
     }
 
-    fn from_parts(storage: Storage, intern: Arc<InternRuntime>) -> Self {
+    fn from_parts(
+        storage: Storage,
+        intern: Arc<InternRuntime>,
+        observability: crate::composition::ObservabilityRuntime,
+    ) -> Self {
         let journal = EventJournal::new(storage.database().clone());
         let content = ContentStore::new(storage.content_root());
         let visuals =
             VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
+        let reports = ReportRegistry::new(
+            storage.database().clone(),
+            journal.clone(),
+            content.clone(),
+            visuals.clone(),
+        );
         let data = DataStore::new(storage.database().clone(), content.clone());
         let intern_provider = Arc::new(InternProviderManager::new(
             intern.clone(),
@@ -71,20 +190,65 @@ impl CoreRuntime {
             journal.clone(),
             visuals.clone(),
             events_tx.clone(),
-            optimizer_manager,
+            optimizer_manager.clone(),
         );
+        let plugin_path = storage
+            .content_root()
+            .parent()
+            .unwrap_or_else(|| storage.content_root())
+            .join("plugins/optimizers.json");
+        let plugins = PluginService::new(crate::plugins::PluginRegistry::with_path(plugin_path));
+        // The allowlist lives beside the plugin registry, per instance, so a
+        // second Desktop instance does not inherit the first one's grants.
+        let computer_use = Arc::new(crate::computer_use::service::ComputerUseService::new(
+            crate::computer_use::allowlist::AppAllowlist::open(
+                storage
+                    .content_root()
+                    .parent()
+                    .unwrap_or_else(|| storage.content_root())
+                    .join("computer-use/allowlist.json"),
+            ),
+        ));
+        // Diagnostics share the journal's database and live beside the content
+        // store, one directory per instance. The service is constructed here
+        // but starts nothing: its writer and its index sidecar are started
+        // deliberately, after the main window is interactive.
+        let diagnostics_root = storage
+            .content_root()
+            .parent()
+            .unwrap_or_else(|| storage.content_root())
+            .join("diagnostics");
+        let diagnostics = crate::diagnostics::DiagnosticsService::new(
+            storage.database().clone(),
+            journal.clone(),
+            diagnostics_root,
+        );
+        optimizers.attach_diagnostics(diagnostics.clone());
+        visuals.attach_optimizer_runs(optimizers.clone());
+        visuals.attach_diagnostics(diagnostics.clone());
+        optimizer_manager.attach_diagnostics(diagnostics.clone());
+        let secrets = Arc::new(crate::secrets::SecretsService::new(
+            storage.database().clone(),
+        ));
+        let _ = secrets.load_configured_env_sources();
         Self {
             storage,
             journal,
             content,
             visuals,
+            reports,
             data,
             optimizers,
+            plugins,
+            computer_use,
+            diagnostics,
             intern,
             intern_provider,
             sessions,
             runs,
             events_tx,
+            secrets,
+            observability,
         }
     }
 
@@ -93,7 +257,11 @@ impl CoreRuntime {
         root: impl Into<std::path::PathBuf>,
         intern: InternRuntime,
     ) -> Result<Self> {
-        Ok(Self::from_parts(Storage::open(root)?, Arc::new(intern)))
+        let root = root.into();
+        let storage = Storage::open(&root)?;
+        let observability =
+            crate::composition::ObservabilityRuntime::open(storage.database().clone(), root)?;
+        Ok(Self::from_parts(storage, Arc::new(intern), observability))
     }
 
     pub fn open_default() -> Result<Self> {
@@ -116,12 +284,30 @@ impl CoreRuntime {
         &self.visuals
     }
 
+    pub fn reports(&self) -> &ReportRegistry {
+        &self.reports
+    }
+
     pub fn data(&self) -> &DataStore {
         &self.data
     }
 
     pub fn optimizers(&self) -> &OptimizerService {
         &self.optimizers
+    }
+
+    pub fn computer_use(&self) -> &crate::computer_use::service::ComputerUseService {
+        &self.computer_use
+    }
+
+    pub fn plugins(&self) -> &PluginService {
+        &self.plugins
+    }
+
+    /// Local diagnostics. Named apart from [`Self::diagnostics`], which
+    /// reports storage health and predates this system.
+    pub fn diagnostics_service(&self) -> &Arc<crate::diagnostics::DiagnosticsService> {
+        &self.diagnostics
     }
 
     pub fn intern(&self) -> &Arc<InternRuntime> {
@@ -136,10 +322,174 @@ impl CoreRuntime {
         &self.runs
     }
 
+    pub fn secrets(&self) -> &Arc<crate::secrets::SecretsService> {
+        &self.secrets
+    }
+
+    pub fn observability(&self) -> &crate::composition::ObservabilityRuntime {
+        &self.observability
+    }
+
     pub fn broadcast_committed(&self, event: Option<AppEvent>) {
         if let Some(event) = event {
             let _ = self.events_tx.send(event);
         }
+    }
+
+    /// Take the live claim on a turn this process is about to run, and clear any
+    /// recovery notice the session was still carrying. Returns the attempt
+    /// number, so a restarted turn is auditable as one.
+    pub async fn claim_turn(
+        &self,
+        session_id: String,
+        run_id: String,
+        attachment_id: Option<String>,
+    ) -> Result<i64> {
+        let instance_id = crate::instance::boot_epoch().to_owned();
+        self.storage
+            .database()
+            .run_transaction(move |conn| {
+                let previous_attempt =
+                    crate::recovery::clear_recovery_metadata(conn, &session_id)?.unwrap_or(0);
+                crate::recovery::ownership::claim(
+                    conn,
+                    &session_id,
+                    &run_id,
+                    &instance_id,
+                    attachment_id.as_deref(),
+                    previous_attempt,
+                    Utc::now(),
+                )?;
+                Ok(previous_attempt)
+            })
+            .await
+    }
+
+    /// Refresh the lease from live provider activity. Rate-limited against the
+    /// stored heartbeat so a chatty stream does not turn into a write storm.
+    pub async fn heartbeat_turn(&self, session_id: String) -> Result<bool> {
+        let instance_id = crate::instance::boot_epoch().to_owned();
+        self.storage
+            .database()
+            .run(move |conn| {
+                let now = Utc::now();
+                let Some(claim) = crate::recovery::ownership::load(conn, &session_id)? else {
+                    return Ok(false);
+                };
+                if claim.owner_instance_id != instance_id
+                    || !crate::recovery::ownership::heartbeat_due(&claim, now)
+                {
+                    return Ok(false);
+                }
+                crate::recovery::ownership::heartbeat(conn, &session_id, &instance_id, None, now)
+            })
+            .await
+    }
+
+    pub async fn release_turn(&self, session_id: String) -> Result<()> {
+        self.storage
+            .database()
+            .run(move |conn| crate::recovery::ownership::release(conn, &session_id))
+            .await
+    }
+
+    /// Sessions this process can honestly present as Working right now.
+    pub async fn live_turn_sessions(&self) -> Result<Vec<String>> {
+        let instance_id = crate::instance::boot_epoch().to_owned();
+        self.storage
+            .database()
+            .run(move |conn| {
+                let now = Utc::now();
+                Ok(
+                    crate::recovery::ownership::owned_sessions(conn, &instance_id)?
+                        .into_iter()
+                        .filter(|claim| claim.is_live(&instance_id, now))
+                        .map(|claim| claim.session_id)
+                        .collect(),
+                )
+            })
+            .await
+    }
+
+    /// Run one lease-expiry sweep and broadcast what it recovered.
+    ///
+    /// The renderer's watchdogs die with the window; this one does not. It also
+    /// covers the case the renderer cannot see at all — a turn whose owner is
+    /// this process but whose event pump has stopped refreshing the claim.
+    pub async fn sweep_expired_leases(&self) -> Result<usize> {
+        // Cheap read first: an idle Workshop must not take a write lock every
+        // five seconds just to discover it has nothing to do.
+        if !self
+            .storage
+            .database()
+            .run(crate::recovery::has_reconcilable_turns)
+            .await?
+        {
+            return Ok(0);
+        }
+        let instance_id = crate::instance::boot_epoch().to_owned();
+        let notices = self
+            .storage
+            .database()
+            .run_transaction(move |conn| {
+                let notices =
+                    crate::recovery::reconcile_orphaned_turns(conn, &instance_id, Utc::now())?;
+                for notice in &notices {
+                    crate::domains::sessions::raise_from_notice(conn, notice)?;
+                }
+                Ok(notices)
+            })
+            .await?;
+        let recovered = notices.len();
+        for notice in notices {
+            self.observability.logs.info(
+                "recovery",
+                "session.lease_expired",
+                format!(
+                    "lease expired for session {} ({})",
+                    notice.session_id, notice.reason
+                ),
+            );
+            let _ = self
+                .append_and_broadcast(EventAppend {
+                    event_id: None,
+                    session_id: Some(notice.session_id.clone()),
+                    run_id: notice.run_id.clone(),
+                    source: EventSource::System,
+                    kind: "session/unhealthy".into(),
+                    payload: json!({
+                        "reason": notice.reason,
+                        "message": "This task stopped proving it was still running.",
+                        "recovery": notice.to_json(),
+                    }),
+                    remote_sequence: None,
+                    command_id: None,
+                    created_at: None,
+                })
+                .await;
+        }
+        Ok(recovered)
+    }
+
+    /// Backend-owned liveness. Starting this is what makes the invariant hold
+    /// with no window open at all.
+    pub fn spawn_lease_watchdog(self: &Arc<Self>) {
+        let core = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let interval = crate::recovery::HEARTBEAT_INTERVAL
+                .to_std()
+                .unwrap_or(Duration::from_secs(5));
+            loop {
+                tokio::time::sleep(interval).await;
+                if let Err(error) = core.sweep_expired_leases().await {
+                    crate::platform::logging::report(
+                        "core_runtime",
+                        "eprintln",
+                        format!("lease watchdog sweep failed: {error}"),
+                    );
+                }
+            }
+        });
     }
 
     pub async fn start_intern_provider(
@@ -405,6 +755,7 @@ impl CoreRuntime {
         )
         .await
         .context("emit runtime.ready")?;
+        self.optimizers.restore_hosted_sft_mirrors().await;
         Ok(())
     }
 

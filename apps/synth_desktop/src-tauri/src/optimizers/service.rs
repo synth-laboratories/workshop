@@ -1,37 +1,510 @@
+use super::events::{plan_batch, EventVerdict, OptimizerEventDraft, SequenceContract};
 use super::models::{
-    OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerQuery,
-    OptimizerRelationship, OptimizerResourceRef, OptimizerRunRecord, OptimizerStateSlice,
-    OptimizerUsageSummary, OPTIMIZER_EVENT_SCHEMA_VERSION, OPTIMIZER_RUN_SCHEMA_VERSION,
-    OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
+    EffectiveContract, OptimizerArtifactPage, OptimizerArtifactRange, OptimizerCapabilities,
+    OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerQuery, OptimizerRelationship,
+    OptimizerResourceRef, OptimizerRunRecord, OptimizerRunStatus, OptimizerStateSlice,
+    OptimizerUsageSummary, EFFECTIVE_CONTRACT_SCHEMA_VERSION, OPTIMIZER_EVENT_SCHEMA_VERSION,
+    OPTIMIZER_RUN_SCHEMA_VERSION, OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
 };
-use crate::storage::{append_event, AppEvent, Database, EventAppend, EventJournal, EventSource};
+use super::results;
+use super::terminal;
+use crate::storage::{
+    append_event, AppEvent, ContentStore, Database, EventAppend, EventJournal, EventSource,
+};
 use crate::visuals::{VisualCreateRequest, VisualRegistry, VISUAL_BINDINGS_SCHEMA_VERSION};
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::{broadcast, watch, Mutex};
+use std::time::Duration;
+use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 
+#[cfg(test)]
 const GEPA_FIXTURE_ID: &str = "opt_gepa_fixture";
+#[cfg(test)]
 const SFT_FIXTURE_ID: &str = "opt_sft_fixture";
+#[cfg(test)]
 const GOEX_FIXTURE_ID: &str = "opt_goex_fixture";
+
+/// Turn the assembled catalog into one authoritative admission answer. Source
+/// catalogs still own their recipes; this projection makes their independent
+/// asset/runtime/contract failures comparable so callers never need to infer
+/// readiness by joining several MCP responses themselves.
+fn project_recipe_readiness(mut recipe: Value) -> Value {
+    let id = recipe
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let algorithm = recipe
+        .get("algorithmId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let mut blockers = Vec::new();
+
+    if id.is_empty() {
+        blockers.push(recipe_blocker(
+            "recipe_id_missing",
+            "recipe.id",
+            "Optimizers",
+            "The recipe has no stable id.",
+            false,
+        ));
+    }
+    if algorithm.is_empty() {
+        blockers.push(recipe_blocker(
+            "algorithm_id_missing",
+            "recipe.algorithmId",
+            "Optimizers",
+            "The recipe has no algorithm owner.",
+            false,
+        ));
+    }
+
+    if recipe.get("availability").and_then(Value::as_str) != Some("available") {
+        let detail = recipe
+            .get("availabilityReason")
+            .and_then(Value::as_str)
+            .filter(|reason| !reason.trim().is_empty())
+            .unwrap_or(
+                "A required runtime, service, credential, or packaged asset is unavailable.",
+            );
+        let (code, contract, owner) = if detail.contains("workspace recipe") {
+            (
+                "workspace_recipe_unavailable",
+                "assets.workspace_recipe",
+                "Optimizers",
+            )
+        } else if detail.contains("runtime is not installed") {
+            ("runtime_unavailable", "runtime.local", "Optimizers")
+        } else {
+            (
+                "dependency_unavailable",
+                "recipe.dependencies",
+                "Optimizers",
+            )
+        };
+        blockers.push(recipe_blocker(code, contract, owner, detail, true));
+    }
+
+    if super::eval_recipes::is_eval_recipe(&id)
+        && recipe.get("availability").and_then(Value::as_str) == Some("available")
+        && recipe
+            .pointer("/limits/trials")
+            .and_then(Value::as_u64)
+            .filter(|trials| *trials > 0)
+            .is_none()
+    {
+        blockers.push(recipe_blocker(
+            "trial_limit_missing",
+            "limits.trials",
+            "Optimizers",
+            "The eval recipe must publish a positive per-candidate trial count.",
+            false,
+        ));
+    }
+
+    if id.starts_with("gepa.")
+        && recipe.get("availability").and_then(Value::as_str) == Some("available")
+        && recipe
+            .pointer("/limits/maxTotalRollouts")
+            .and_then(Value::as_u64)
+            .filter(|rollouts| *rollouts > 0)
+            .is_none()
+    {
+        blockers.push(recipe_blocker(
+            "rollout_limit_missing",
+            "limits.maxTotalRollouts",
+            "Optimizers",
+            "The GEPA recipe must publish a positive total rollout ceiling.",
+            false,
+        ));
+    }
+
+    let ready = blockers.is_empty();
+    if let Some(object) = recipe.as_object_mut() {
+        if !ready {
+            object.insert("availability".into(), json!("unavailable"));
+            if object
+                .get("availabilityReason")
+                .and_then(Value::as_str)
+                .map_or(true, |reason| reason.trim().is_empty())
+            {
+                object.insert("availabilityReason".into(), blockers[0]["message"].clone());
+            }
+        }
+        object.insert(
+            "readiness".into(),
+            json!({
+                "ready": ready,
+                "status": if ready { "ready" } else { "blocked" },
+                "blockers": blockers,
+            }),
+        );
+    }
+    recipe
+}
+
+fn recipe_blocker(
+    code: &str,
+    contract: &str,
+    owner: &str,
+    message: &str,
+    retryable: bool,
+) -> Value {
+    json!({
+        "code": code,
+        "contract": contract,
+        "owner": owner,
+        "message": message,
+        "retryable": retryable,
+    })
+}
+
+/// Admission for a control command: the capability must exist, the run must
+/// not already be settled, and `current -> next` must be a transition
+/// [`OptimizerRunStatus`] allows. `next` is passed in rather than derived so
+/// this and [`OptimizerService::command`], which performs the write, cannot
+/// disagree about what the command means.
+/// The terminal kind a sealed manifest records, across both manifest schemas.
+/// Legacy v1 statuses that widened `failed` (interrupted, infrastructure_lost,
+/// failed_evidence) read as failed; cap_reached reads as degraded.
+fn manifest_terminal_kind(manifest: &Value) -> super::kernel::TerminalKind {
+    use super::kernel::TerminalKind;
+    let status = manifest
+        .pointer("/terminal/kind")
+        .and_then(Value::as_str)
+        .or_else(|| manifest.get("terminalStatus").and_then(Value::as_str))
+        .unwrap_or("failed");
+    match status {
+        "completed" => TerminalKind::Completed,
+        "cancelled" => TerminalKind::Cancelled,
+        "degraded" | "cap_reached" => TerminalKind::Degraded,
+        _ => TerminalKind::Failed,
+    }
+}
+
+fn credential_revocation_amendment(
+    run: &OptimizerRunRecord,
+    terminal_sequence: u64,
+    capability_ids: Vec<String>,
+    cancellation: Option<&std::sync::Arc<super::kernel::CancellationRequest>>,
+) -> OptimizerEventDraft {
+    OptimizerEventDraft::new("optimizer.evidence.amended", &run.algorithm_id)
+        .idempotency_key(format!("credential-revoked:{terminal_sequence}"))
+        .level("info")
+        .delta(Map::from_iter([
+            ("terminalSequence".into(), json!(terminal_sequence)),
+            (
+                "credentialRevocation".into(),
+                json!({
+                    "kind": "credential.capability.revoked",
+                    "capabilityIds": capability_ids,
+                    "cause": "run_terminal",
+                    "cancellationRequestId": cancellation
+                        .map(|request| request.request_id.clone()),
+                }),
+            ),
+        ]))
+        .raw(json!({ "source": "settle_run" }))
+}
+
+fn validate_control(
+    run: &OptimizerRunRecord,
+    command: &str,
+    next: OptimizerRunStatus,
+) -> Result<()> {
+    match command {
+        "cancel" if !run.capabilities.cancel => bail!("cancel is not available for this run"),
+        "pause" if !run.capabilities.pause => bail!("pause is not available for this run"),
+        "resume" if !run.capabilities.resume => bail!("resume is not available for this run"),
+        _ => {}
+    }
+    let Some(status) = OptimizerRunStatus::parse(&run.status) else {
+        bail!(
+            "{command} is not available for a run in unrecognised status {}",
+            run.status
+        );
+    };
+    if status.is_terminal() {
+        bail!("{command} is not available for a {} run", run.status);
+    }
+    // Source-state rules the transition table cannot express: `queued -> running`
+    // is a legal transition but it is a *start*, not a resume, and pausing an
+    // already-paused run is a no-op the caller should not be told succeeded.
+    match command {
+        "pause" if status != OptimizerRunStatus::Running => bail!(
+            "pause requires a running optimizer; current status is {}",
+            run.status
+        ),
+        "resume" if status != OptimizerRunStatus::Paused => bail!(
+            "resume requires a paused optimizer; current status is {}",
+            run.status
+        ),
+        _ => {}
+    }
+    if !status.can_transition_to(next) {
+        bail!(
+            "{command} cannot move a {} run to {}",
+            run.status,
+            next.as_str()
+        );
+    }
+    Ok(())
+}
+
+/// One chat-owned artifact publication: mint-or-reuse, bind, show, select, and
+/// shelve, under a single run identity. See
+/// [`OptimizerService::publish_chat_owned_visual`].
+#[derive(Clone)]
+pub(super) struct ChatVisualPublication {
+    pub run_id: String,
+    /// The conversation that owns the artifact. `None` falls back to the run's
+    /// own `session_ref`; it never means "whichever chat is focused".
+    pub session_ref: Option<String>,
+    pub template_id: String,
+    pub title: String,
+    pub bindings: Value,
+    pub metadata: Value,
+    pub status: crate::visuals::VisualStatus,
+    /// Which visual of the run this is. Reuse is keyed on it, so a run may own a
+    /// `primary` pane and, later, a distinct report without either replacing the
+    /// other.
+    pub role: String,
+}
+
+/// One retained media object, as the run's media index records it.
+///
+/// Written by the relay at the moment the bytes land in the content store, and
+/// read by the media bridge to decide whether a visual bound to this run is
+/// allowed to see them.
+#[derive(Clone, Debug)]
+pub(super) struct RunMediaRow {
+    pub cas_digest: String,
+    pub kind: &'static str,
+    pub media_type: &'static str,
+    pub byte_size: u64,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub rollout_id: Option<String>,
+    pub trial_id: Option<String>,
+    pub step: Option<i64>,
+    pub producer_digest: Option<String>,
+}
+
+/// A media object the host has agreed to serve, with the identity that made it
+/// serveable. Never carries bytes: the caller reads those from the store.
+#[derive(Clone, Debug)]
+pub struct GrantedRunMedia {
+    pub optimizer_run_id: String,
+    pub cas_digest: String,
+    pub kind: String,
+    pub media_type: String,
+    pub byte_size: u64,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub rollout_id: Option<String>,
+    pub step: Option<i64>,
+}
 
 #[derive(Clone)]
 pub struct OptimizerService {
     db: Arc<Database>,
+    frame_store: ContentStore,
     #[allow(dead_code)]
     journal: EventJournal,
     visuals: VisualRegistry,
-    local_recipes: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
+    local_recipes: Arc<Mutex<HashMap<String, super::CancelSignal>>>,
     events_tx: broadcast::Sender<AppEvent>,
     manager: Arc<super::OptimizerManager>,
+    /// Attached once by the composition root. Optimizer lifecycle failures are
+    /// already recorded as bounded run evidence; this lets the same failure
+    /// also be correlated with the container, stream, and visual around it —
+    /// without inventing a second source of truth for the run itself.
+    diagnostics: Arc<std::sync::OnceLock<Arc<crate::diagnostics::DiagnosticsService>>>,
+}
+
+/// Live claim for one optimizer worker. Heartbeats every
+/// [`crate::recovery::HEARTBEAT_INTERVAL`] and releases the row on drop.
+pub(super) struct OptimizerRunOwnershipGuard {
+    db: Arc<Database>,
+    run_id: String,
+    heartbeat: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl OptimizerRunOwnershipGuard {
+    fn arm(db: Arc<Database>, run_id: String) -> Result<Self> {
+        let instance_id = crate::instance::boot_epoch().to_string();
+        let pid = std::process::id();
+        let identity = super::manager::process_start_identity(pid);
+        let claimed_run = run_id.clone();
+        let claimed_instance = instance_id.clone();
+        let claimed_identity = identity.clone();
+        db.with_conn(move |conn| {
+            crate::recovery::ownership::claim_optimizer_run(
+                conn,
+                &claimed_run,
+                &claimed_instance,
+                &claimed_instance,
+                Some(pid),
+                claimed_identity.as_deref(),
+                Utc::now(),
+            )
+        })?;
+        let db_hb = db.clone();
+        let run_hb = run_id.clone();
+        let instance_hb = instance_id;
+        let heartbeat = tokio::spawn(async move {
+            let period = crate::recovery::HEARTBEAT_INTERVAL
+                .to_std()
+                .unwrap_or(Duration::from_secs(5));
+            let mut ticks = tokio::time::interval(period);
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticks.tick().await;
+            loop {
+                ticks.tick().await;
+                let db = db_hb.clone();
+                let run_id = run_hb.clone();
+                let instance_id = instance_hb.clone();
+                let _ = db.with_conn(move |conn| {
+                    crate::recovery::ownership::heartbeat_optimizer_run(
+                        conn,
+                        &run_id,
+                        &instance_id,
+                        Utc::now(),
+                    )
+                });
+            }
+        });
+        Ok(Self {
+            db,
+            run_id,
+            heartbeat: Some(heartbeat),
+        })
+    }
+}
+
+impl Drop for OptimizerRunOwnershipGuard {
+    fn drop(&mut self) {
+        if let Some(task) = self.heartbeat.take() {
+            task.abort();
+        }
+        let run_id = self.run_id.clone();
+        let _ = self.db.with_conn(move |conn| {
+            crate::recovery::ownership::release_optimizer_run(conn, &run_id)
+        });
+    }
 }
 
 impl OptimizerService {
+    /// Deliver the newest durable projection wake-up for each selected run.
+    /// Missing renderer subscribers become retryable outbox state rather than
+    /// rolling back the already-committed projection.
+    async fn sweep_projection_outbox(
+        &self,
+        only_run_id: Option<String>,
+        event_hint: Option<&AppEvent>,
+    ) -> Result<usize> {
+        let filter = only_run_id.clone();
+        let db = self.db.clone();
+        let pending = db
+            .run(move |conn| super::kernel::outbox::pending_latest(conn, filter.as_deref()))
+            .await?;
+        let mut latest_by_run = BTreeMap::<String, u64>::new();
+        for row in pending {
+            latest_by_run
+                .entry(row.run_id)
+                .and_modify(|revision| *revision = (*revision).max(row.projection_revision))
+                .or_insert(row.projection_revision);
+        }
+        let mut delivered = 0usize;
+        for (run_id, revision) in latest_by_run {
+            let event = event_hint
+                .filter(|event| event.payload["optimizerRunId"].as_str() == Some(run_id.as_str()))
+                .cloned()
+                .unwrap_or_else(|| AppEvent {
+                    schema_version: crate::storage::APP_EVENT_SCHEMA_VERSION.into(),
+                    sequence: 0,
+                    event_id: format!("projection_outbox_{}", Uuid::new_v4().simple()),
+                    session_id: None,
+                    session_sequence: None,
+                    run_id: None,
+                    source: EventSource::System,
+                    kind: "optimizer.run.updated".into(),
+                    payload: json!({
+                        "optimizerRunId": run_id,
+                        "projectionRevision": revision,
+                        "delivery": "outbox_retry",
+                    }),
+                    remote_sequence: None,
+                    command_id: None,
+                    created_at: Utc::now().to_rfc3339(),
+                });
+            let db = self.db.clone();
+            let changed = match self.events_tx.send(event) {
+                Ok(_) => {
+                    let marked_run = run_id.clone();
+                    db.run(move |conn| {
+                        super::kernel::outbox::mark_delivered(conn, &marked_run, revision)
+                    })
+                    .await?
+                }
+                Err(error) => {
+                    let marked_run = run_id.clone();
+                    let message = error.to_string();
+                    db.run(move |conn| {
+                        super::kernel::outbox::mark_failed(conn, &marked_run, revision, &message)
+                    })
+                    .await?;
+                    0
+                }
+            };
+            delivered += changed;
+        }
+        Ok(delivered)
+    }
+
+    pub(super) async fn record_visual_projection_delivery_failure(
+        &self,
+        run_id: &str,
+        error: &anyhow::Error,
+    ) -> Result<()> {
+        let run_id = run_id.to_string();
+        let message = format!("{error:#}");
+        let db = self.db.clone();
+        db.run(move |conn| {
+            super::kernel::outbox::mark_visual_failed(conn, &run_id, &message)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Publish a durable visual event produced by an internal optimizer worker.
+    ///
+    /// MCP-driven visual updates return their event to the caller, which then
+    /// reaches the renderer through the normal request lane. Local recipe
+    /// workers have no caller to do that forwarding, so they must place the
+    /// already-durable event on the shared bus themselves.
+    pub(super) fn publish_visual_event(&self, value: Value) -> Result<()> {
+        let event: AppEvent = serde_json::from_value(value)
+            .context("optimizer visual update returned an invalid app event")?;
+        // No receiver is a normal offline state: the durable projection outbox
+        // remains pending for the next sweep. If a receiver is present, a send
+        // failure is no longer allowed to disappear into a best-effort `let _`.
+        if self.events_tx.receiver_count() > 0 {
+            self.events_tx
+                .send(event)
+                .map_err(|error| anyhow!("publish optimizer visual event: {error}"))?;
+        }
+        Ok(())
+    }
+
     pub fn new(
         db: Arc<Database>,
         journal: EventJournal,
@@ -54,13 +527,21 @@ impl OptimizerService {
         events_tx: broadcast::Sender<AppEvent>,
         manager: Arc<super::OptimizerManager>,
     ) -> Self {
+        let frame_store = ContentStore::new(
+            db.path()
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("store"),
+        );
         Self {
             db,
+            frame_store,
             journal,
             visuals,
             local_recipes: Arc::new(Mutex::new(HashMap::new())),
             events_tx,
             manager,
+            diagnostics: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -68,20 +549,278 @@ impl OptimizerService {
         &self.manager
     }
 
+    pub(super) fn database(&self) -> &Arc<Database> {
+        &self.db
+    }
+
+    pub(super) fn hold_run_ownership(&self, run_id: &str) -> Result<OptimizerRunOwnershipGuard> {
+        OptimizerRunOwnershipGuard::arm(self.db.clone(), run_id.to_string())
+    }
+
+    /// The content store behind the visual registry.
+    ///
+    /// One store, not a second one: a relayed frame and a rendered chart must
+    /// be addressable by the same digest from the same place, or the media
+    /// bridge would have to know which of two roots a digest came from.
+    pub(super) fn content(&self) -> &crate::storage::ContentStore {
+        self.visuals.content()
+    }
+
+    pub(super) fn visuals(&self) -> &VisualRegistry {
+        &self.visuals
+    }
+
+    /// Index one retained media object against the run that produced it.
+    ///
+    /// Idempotent by digest: the same frame relayed twice — a retried page, a
+    /// resumed worker — is one row, and two steps that rendered identical
+    /// pixels share it, which is exactly the physical deduplication the content
+    /// store already performs.
+    pub(super) async fn record_run_media(&self, run_id: &str, row: &RunMediaRow) -> Result<()> {
+        let run_id = run_id.to_string();
+        let row = row.clone();
+        self.db
+            .clone()
+            .run_transaction(move |conn| {
+                conn.execute(
+                    "INSERT INTO optimizer_run_media(
+                        optimizer_run_id, cas_digest, kind, media_type, byte_size,
+                        width, height, rollout_id, trial_id, step, producer_digest, created_at)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,datetime('now'))
+                     ON CONFLICT(optimizer_run_id, cas_digest) DO NOTHING",
+                    params![
+                        run_id,
+                        row.cas_digest,
+                        row.kind,
+                        row.media_type,
+                        row.byte_size as i64,
+                        row.width.map(i64::from),
+                        row.height.map(i64::from),
+                        row.rollout_id,
+                        row.trial_id,
+                        row.step,
+                        row.producer_digest,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Durable media counts for one trial. Receipts use this index, never the
+    /// relay task's in-memory counters, so restart and replay report the same
+    /// retained objects and bytes.
+    pub(super) async fn run_media_totals(
+        &self,
+        run_id: &str,
+        trial_id: &str,
+    ) -> Result<(u64, u64)> {
+        let run_id = run_id.to_string();
+        let trial_id = trial_id.to_string();
+        self.db
+            .clone()
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT COUNT(*), COALESCE(SUM(m.byte_size), 0)
+                     FROM optimizer_run_media m
+                     WHERE m.optimizer_run_id=?1 AND m.media_type='image/png'
+                       AND EXISTS (
+                         SELECT 1 FROM optimizer_events e
+                         WHERE e.optimizer_run_id=m.optimizer_run_id
+                           AND json_extract(e.payload_json,'$.delta.trial_id')=?2
+                           AND json_extract(
+                             e.payload_json,
+                             '$.delta.container_event.payload.media.casDigest'
+                           )=m.cas_digest
+                       )",
+                    params![run_id, trial_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?.max(0) as u64,
+                            row.get::<_, i64>(1)?.max(0) as u64,
+                        ))
+                    },
+                )
+                .map_err(Into::into)
+            })
+            .await
+    }
+
+    /// Decide whether `cas_digest` is media this run actually produced.
+    ///
+    /// The whole authorization for the media bridge lives here, and it is a
+    /// lookup rather than a scan on purpose: a gate that has to re-derive its
+    /// answer from event payloads stops matching the moment the payload shape
+    /// moves, and stops matching *open*.
+    pub async fn granted_run_media(
+        &self,
+        run_id: &str,
+        cas_digest: &str,
+    ) -> Result<Option<GrantedRunMedia>> {
+        let run_id = run_id.to_string();
+        let digest = cas_digest.to_ascii_lowercase();
+        if digest.len() != 64 || !digest.chars().all(|value| value.is_ascii_hexdigit()) {
+            bail!("media digest must be a 64-character SHA-256");
+        }
+        let owned_run = run_id.clone();
+        self.db
+            .clone()
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT kind, media_type, byte_size, width, height, rollout_id, step
+                     FROM optimizer_run_media
+                     WHERE optimizer_run_id=?1 AND cas_digest=?2",
+                    params![owned_run, digest],
+                    |row| {
+                        Ok(GrantedRunMedia {
+                            optimizer_run_id: run_id.clone(),
+                            cas_digest: digest.clone(),
+                            kind: row.get(0)?,
+                            media_type: row.get(1)?,
+                            byte_size: row.get::<_, i64>(2)?.max(0) as u64,
+                            width: row.get::<_, Option<i64>>(3)?.map(|value| value as u32),
+                            height: row.get::<_, Option<i64>>(4)?.map(|value| value as u32),
+                            rollout_id: row.get(5)?,
+                            step: row.get(6)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(Into::into)
+            })
+            .await
+    }
+
+    /// Read granted media bytes out of the content store.
+    pub fn read_media_bytes(&self, granted: &GrantedRunMedia) -> Result<Vec<u8>> {
+        self.visuals
+            .content()
+            .get_bytes(&granted.kind, &granted.cas_digest)
+    }
+
+    /// Import a rollout's sealed Trace V5 bundle by container identity.
+    ///
+    /// The eval worker calls this as each rollout finishes, so replay survives
+    /// the container being stopped and Workshop being restarted. The machinery
+    /// already existed in the visuals IPC lane; nothing on the eval path ever
+    /// invoked it, which is why a finished seed had frames on disk inside a
+    /// container and nothing durable in Workshop.
+    pub(super) async fn import_container_trace(
+        &self,
+        container_id: &str,
+        rollout_id: &str,
+        run_id: &str,
+        trial_id: &str,
+    ) -> Result<Value> {
+        let data = crate::data::DataStore::new(self.db.clone(), self.visuals.content().clone());
+        let (mut result, event, frames) =
+            crate::visuals_ipc::import_container_trace_into(&data, container_id, rollout_id)
+                .await?;
+        for frame in &frames {
+            let cas_digest = self
+                .content()
+                .put_bytes("eval_frames", &frame.bytes)
+                .context("store bundled Trace V5 frame in eval CAS")?;
+            let expected = frame
+                .digest
+                .strip_prefix("sha256:")
+                .unwrap_or(&frame.digest);
+            if cas_digest != expected {
+                bail!("bundled Trace V5 frame changed digest during CAS import");
+            }
+            self.record_run_media(
+                run_id,
+                &RunMediaRow {
+                    cas_digest,
+                    kind: "eval_frames",
+                    media_type: "image/png",
+                    byte_size: frame.bytes.len() as u64,
+                    width: Some(frame.width),
+                    height: Some(frame.height),
+                    rollout_id: Some(rollout_id.to_string()),
+                    trial_id: Some(trial_id.to_string()),
+                    step: Some(frame.step),
+                    producer_digest: frame.producer_digest.clone(),
+                },
+            )
+            .await?;
+        }
+        result["importedFrameCount"] = json!(frames.len());
+        result["importedFrameSteps"] =
+            json!(frames.iter().map(|frame| frame.step).collect::<Vec<_>>());
+        let run = self.get(run_id.to_string()).await?;
+        super::container_eval::bind_imported_trace_provenance(&mut result, &run.summary)?;
+        result["imported"] = json!(true);
+        if let Some(event) = event.filter(|_| self.events_tx.receiver_count() > 0) {
+            self.events_tx
+                .send(event)
+                .map_err(|error| anyhow!("publish imported optimizer frame event: {error}"))?;
+        }
+        Ok(result)
+    }
+
+    /// Wire diagnostics in after both services exist. Idempotent; a service
+    /// that is never attached simply emits nothing.
+    pub fn attach_diagnostics(&self, service: Arc<crate::diagnostics::DiagnosticsService>) {
+        let _ = self.diagnostics.set(service);
+    }
+
+    pub(crate) fn diagnostics(&self) -> Option<&Arc<crate::diagnostics::DiagnosticsService>> {
+        self.diagnostics.get()
+    }
+
     pub fn list_algorithms(&self) -> Vec<Value> {
         vec![
+            json!({"id":"eval","title":"Eval","availability":"available","description":"Baseline and comparative evaluation. An evaluation is an optimizer run whose algorithm is eval."}),
             json!({"id":"gepa","title":"GEPA","availability":"available","description":"Genetic-Pareto prompt optimization"}),
-            json!({"id":"go-ex","title":"GELO / Go-Ex","availability":"available","description":"Hosted exploration with optional local slot binding"}),
-            json!({"id":"sft","title":"SFT","availability":"available","description":"Hosted fine-tuning from optimizers-beta, streamed live into optimizer.sft visuals"}),
+            json!({"id":"go-ex","title":"GELO","availability":"available","description":"Hosted GO-EX exploration. Canonical algorithm id is go-ex; GELO is the display label and recipe name gelo.craftax.hosted.v1."}),
+            json!({"id":"sft","title":"SFT","kind":"training","availability":"available","description":"Supervised fine-tuning. Local MLX on this Mac or hosted through the public Optimizers SFT service. Both placements share one SFT projection."}),
+            json!({"id":"cispo","title":"CISPO","kind":"training","availability":"available","description":"On-policy CISPO. Local MLX on this Mac, or hosted slime.v1. Both placements share one CISPO projection."}),
         ]
     }
 
     pub fn list_recipes(&self) -> Vec<Value> {
-        let mut recipes = super::recipes::recipe_catalog();
+        self.list_recipes_for_session(None)
+    }
+
+    pub fn list_recipes_for_session(&self, session_ref: Option<&str>) -> Vec<Value> {
+        let mut recipes = Vec::new();
+        if let Some(session) = session_ref.map(str::trim).filter(|value| !value.is_empty()) {
+            if let Ok(Some(workspace)) =
+                super::workspace_recipe::session_workspace(&self.db, session)
+            {
+                let _ = super::workspace_recipe::ensure_bundled_annotation_eval_recipes(&workspace);
+            }
+            if let Ok(declared) =
+                super::workspace_recipe::load_session_recipes(&self.db, session)
+            {
+                recipes.extend(declared.iter().map(super::workspace_recipe::catalog_entry));
+            }
+        }
         recipes.push(super::hosted_gelo::recipe_catalog());
         recipes.push(super::sft_recipes::recipe_catalog());
         recipes.extend(super::hosted_sft::recipe_catalog());
-        recipes
+        recipes.push(super::mlx_sft::recipe_catalog());
+        recipes.extend(super::cispo::recipe_catalog());
+        // Local eval is the authority for eval.* admission. Older sidecar
+        // catalogs can carry compatibility copies of the same ids without the
+        // product-owned bounds; a plain concatenation made callers select the
+        // stale first copy and reject an otherwise valid recipe.
+        recipes.extend(super::eval_recipes::recipe_catalog());
+        let mut by_id = BTreeMap::new();
+        let mut anonymous = Vec::new();
+        for recipe in recipes {
+            if let Some(id) = recipe.get("id").and_then(Value::as_str) {
+                by_id.insert(id.to_string(), recipe);
+            } else {
+                anonymous.push(recipe);
+            }
+        }
+        anonymous
+            .into_iter()
+            .chain(by_id.into_values())
+            .map(project_recipe_readiness)
+            .collect()
     }
 
     pub async fn start_recipe(
@@ -89,42 +828,494 @@ impl OptimizerService {
         request: super::models::OptimizerRecipeRunRequest,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         match request.recipe_id.as_str() {
-            super::recipes::BANKING77_GEPA_SMOKE_RECIPE
-            | super::recipes::BANKING77_GEPA_LUNA_RECIPE
-            | super::recipes::BANKING77_GEPA_SOL_RECIPE => {
-                super::recipes::start(self, request).await
-            }
             super::sft_recipes::CRAFTAX_SFT_SMOKE_RECIPE => {
                 super::sft_recipes::start(self, request).await
             }
             super::hosted_gelo::HOSTED_GELO_CRAFTAX_RECIPE => {
                 super::hosted_gelo::start(self, request).await
             }
-            super::hosted_sft::HOSTED_SFT_FIXTURE_RECIPE
-            | super::hosted_sft::HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE
+            super::hosted_sft::HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE
             | super::hosted_sft::HOSTED_SFT_BANKING77_RECIPE => {
                 super::hosted_sft::start(self, request).await
             }
-            _ => bail!("unknown optimizer recipe: {}", request.recipe_id),
+            super::mlx_sft::QWEN_MLX_SFT_RECIPE => super::mlx_sft::start(self, request).await,
+            super::sidecar_training::LOCAL_MLX_CISPO_RECIPE
+            | super::sidecar_training::HOSTED_CISPO_RECIPE
+            | super::sidecar_training::HOSTED_BANKING77_CISPO_RECIPE => {
+                super::cispo::start(self, request).await
+            }
+            id if super::eval_recipes::is_eval_recipe(id) => {
+                super::eval_recipes::start(self, request).await
+            }
+            _ => super::recipes::start(self, request).await,
         }
     }
 
-    pub(super) async fn register_local_recipe(&self, run_id: String, cancel: watch::Sender<bool>) {
+    /// Freeze workspace policy source into an immutable content-addressed set
+    /// before any local eval recipe can start.
+    pub async fn stage_eval_candidates(
+        &self,
+        request: super::eval_candidates::EvalStageCandidatesRequest,
+    ) -> Result<Value> {
+        super::eval_candidates::stage(&self.db, request).await
+    }
+
+    pub async fn prepare_recipe(
+        &self,
+        request: super::models::OptimizerRecipeRunRequest,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        super::recipes::prepare(self, request).await
+    }
+
+    pub async fn start_prepared(
+        &self,
+        optimizer_run_id: String,
+        preparation_digest: Option<String>,
+        approval_receipt_id: Option<String>,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let run = self.get(optimizer_run_id.clone()).await?;
+        let expected = run.summary.get("preparationDigest").and_then(Value::as_str);
+        if let Some(expected) = expected {
+            if preparation_digest.as_deref() != Some(expected) {
+                bail!("preparation digest mismatch; refusing to start paid compute");
+            }
+        }
+        let ready = run.summary.get("visualReadyReceipt").cloned();
+        if ready.is_none() {
+            bail!("visual readiness receipt is required before starting paid compute");
+        }
+        let approval_id = approval_receipt_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                anyhow!("compute approval receipt is required before starting paid compute")
+            })?
+            .to_string();
+        // Both digests must be present and equal. Treating either absence as
+        // "nothing to compare" fails open: a run prepared without a proven
+        // handshake would start unguarded, which is the case the pin exists for.
+        let current_caps = self.manager.advertised_capabilities();
+        let prepared_digest = run
+            .summary
+            .get("capabilitiesDigest")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow!(
+                    "run was prepared without a proven optimizer capability digest; \
+                     re-prepare it against a started sidecar before starting paid compute"
+                )
+            })?;
+        let current_digest = current_caps
+            .get("digest")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow!(
+                    "optimizer capabilities are not proven; the sidecar must complete a \
+                     capability handshake before starting paid compute"
+                )
+            })?;
+        if current_digest != prepared_digest {
+            bail!("optimizer capability digest changed since prepare; refusing to start");
+        }
+        // A matching digest proves the capabilities are unchanged, not that they
+        // cover this run. Shape-validation alone would accept a handshake
+        // advertising a wholly unrelated algorithm, so check the one claim that
+        // matters before paying for rollouts.
+        require_advertised_algorithm(&current_caps, &run.algorithm_id)?;
+        let max_cost_usd_micros = run
+            .summary
+            .pointer("/limits/maxCostUsd")
+            .and_then(Value::as_f64)
+            .and_then(crate::session::paid_compute_budget::micros_from_reported_cost);
+        let max_rollouts = run
+            .summary
+            .pointer("/limits/maxTotalRollouts")
+            .and_then(Value::as_u64);
+        // Prepared GEPA start authorizes before the worker. The receipt must
+        // land on the durable run before any usage fold, or terminal settlement
+        // cannot find the reservation and the conversation ceiling leaks.
+        self.attach_paid_compute_approval(
+            optimizer_run_id.clone(),
+            &approval_id,
+            max_cost_usd_micros,
+            max_rollouts,
+        )
+        .await?;
+        super::recipes::start_prepared(self, &optimizer_run_id).await
+    }
+
+    pub async fn record_visual_ready(
+        &self,
+        optimizer_run_id: String,
+        receipt: Value,
+    ) -> Result<Value> {
+        // The typed row is the checkable claim; the summary field stays because
+        // the paid-compute start gate reads it as proof a visual was mounted
+        // before money is spent.
+        if let Some(typed) = visual_render_receipt_from(&optimizer_run_id, &receipt) {
+            self.record_visual_render_receipt(typed).await?;
+        }
+        let mut run = self.get(optimizer_run_id.clone()).await?;
+        let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+        summary.insert("visualReadyReceipt".into(), receipt.clone());
+        run.summary = Value::Object(summary);
+        self.persist_run(run).await?;
+        Ok(receipt)
+    }
+
+    /// Persist a render receipt, refusing to move a revision backwards.
+    ///
+    /// Monotonicity is enforced here rather than trusted from the caller: a
+    /// renderer that reconnected to an older projection must not be able to
+    /// overwrite the proof that a newer one already rendered, or the
+    /// regression it should be reporting becomes invisible.
+    pub async fn record_visual_render_receipt(
+        &self,
+        receipt: super::models::VisualRenderReceipt,
+    ) -> Result<()> {
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            conn.execute(
+                "INSERT INTO visual_render_receipts(
+                    visual_id, visual_revision, optimizer_run_id, template_id,
+                    template_version, projection_revision, data_digest,
+                    tail_cursor, rendered_at
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+                 ON CONFLICT(visual_id, visual_revision) DO UPDATE SET
+                    optimizer_run_id=excluded.optimizer_run_id,
+                    template_id=excluded.template_id,
+                    template_version=excluded.template_version,
+                    projection_revision=excluded.projection_revision,
+                    data_digest=excluded.data_digest,
+                    tail_cursor=excluded.tail_cursor,
+                    rendered_at=excluded.rendered_at
+                 WHERE excluded.projection_revision >= visual_render_receipts.projection_revision
+                    OR excluded.template_version <> visual_render_receipts.template_version",
+                params![
+                    receipt.visual_id,
+                    receipt.visual_revision,
+                    receipt.optimizer_run_id,
+                    receipt.template_id,
+                    receipt.template_version,
+                    receipt.projection_revision as i64,
+                    receipt.data_digest,
+                    receipt.tail_cursor as i64,
+                    receipt.rendered_at,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// The render receipt for one visual revision, if it has ever rendered.
+    pub async fn visual_render_receipt(
+        &self,
+        visual_id: String,
+        visual_revision: i64,
+    ) -> Result<Option<super::models::VisualRenderReceipt>> {
+        let db = self.db.clone();
+        db.run_read(move |conn| {
+            conn.query_row(
+                "SELECT visual_id, visual_revision, optimizer_run_id, template_id,
+                        template_version, projection_revision, data_digest,
+                        tail_cursor, rendered_at
+                 FROM visual_render_receipts
+                 WHERE visual_id = ?1 AND visual_revision = ?2",
+                params![visual_id, visual_revision],
+                |row| {
+                    Ok(super::models::VisualRenderReceipt {
+                        visual_id: row.get(0)?,
+                        visual_revision: row.get(1)?,
+                        optimizer_run_id: row.get(2)?,
+                        template_id: row.get(3)?,
+                        template_version: row.get(4)?,
+                        projection_revision: row.get::<_, i64>(5)?.max(0) as u64,
+                        data_digest: row.get(6)?,
+                        tail_cursor: row.get::<_, i64>(7)?.max(0) as u64,
+                        rendered_at: row.get(8)?,
+                    })
+                },
+            )
+            .optional()
+            .context("load visual render receipt")
+        })
+        .await
+    }
+
+    pub async fn await_visual_ready(
+        &self,
+        optimizer_run_id: String,
+        timeout_ms: u64,
+    ) -> Result<Value> {
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(50));
+        loop {
+            let run = self.get(optimizer_run_id.clone()).await?;
+            if let Some(receipt) = run.summary.get("visualReadyReceipt").cloned() {
+                if !receipt.is_null() {
+                    return Ok(receipt);
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!("visual readiness receipt was not posted for `{optimizer_run_id}`");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Settle the run through its durable algorithm projection.
+    ///
+    /// Files and mutable summary JSON are evidence only. They never select a
+    /// result type or substitute for the algorithm-owned projection.
+    pub async fn get_result(&self, optimizer_run_id: String) -> Result<Value> {
+        let run = self.get(optimizer_run_id.clone()).await?;
+        let manifest = self.terminal_manifest(optimizer_run_id.clone()).await?;
+        let db = self.db.clone();
+        let state = db
+            .run(move |conn| {
+                super::kernel::persist::load_state(conn, &optimizer_run_id)?.ok_or_else(|| {
+                    anyhow!(
+                        "optimizer run {} has no saved kernel projection",
+                        optimizer_run_id
+                    )
+                })
+            })
+            .await?;
+        let settled = super::kernel::settle_result(&state).map_err(|error| anyhow!("{error}"))?;
+        let result = results::from_kernel(&run, &state, settled, manifest.as_ref())?;
+        if run
+            .summary
+            .pointer("/policyPin/harness")
+            .or_else(|| run.summary.pointer("/policyRef/harness"))
+            .and_then(Value::as_str)
+            == Some("nanohorizon")
+        {
+            let succeeded = run.status == "completed";
+            crate::telemetry::mark_once(
+                "starter_result_viewed",
+                json!({
+                    "workflow_family": "nanohorizon",
+                    "outcome": if succeeded { "success" } else { "failure" }
+                }),
+            );
+            if succeeded {
+                crate::telemetry::mark_once(
+                    "first_run_succeeded",
+                    json!({"workflow_family": "nanohorizon", "outcome": "success"}),
+                );
+            }
+        }
+        Ok(result)
+    }
+
+    pub(super) async fn register_local_recipe(&self, run_id: String, cancel: super::CancelSignal) {
         self.local_recipes.lock().await.insert(run_id, cancel);
+    }
+
+    /// Claim one local run watcher without replacing an existing owner.
+    ///
+    /// Refresh/get-result calls may race the watcher started with the recipe.
+    /// Replacing its cancellation sender and starting a second poller makes
+    /// both workers append the same durable event page concurrently, which can
+    /// turn a healthy local training run into a transient SQLite-lock failure.
+    pub(super) async fn try_register_local_recipe(
+        &self,
+        run_id: String,
+        cancel: super::CancelSignal,
+    ) -> bool {
+        let mut recipes = self.local_recipes.lock().await;
+        if recipes.contains_key(&run_id) {
+            return false;
+        }
+        recipes.insert(run_id, cancel);
+        true
     }
 
     pub(super) async fn unregister_local_recipe(&self, run_id: &str) {
         self.local_recipes.lock().await.remove(run_id);
     }
 
+    pub(super) async fn registered_local_recipes(&self) -> std::collections::HashSet<String> {
+        self.local_recipes.lock().await.keys().cloned().collect()
+    }
+
+    pub async fn restore_hosted_sft_mirrors(&self) {
+        super::hosted_sft::restore_hosted_mirrors(self).await;
+        super::mlx_sft::restore_mirrors(self).await;
+        super::cispo::restore_mirrors(self).await;
+    }
+
+    pub async fn wait_milestone(
+        &self,
+        optimizer_run_id: String,
+        after_seq: u64,
+        kinds: Vec<String>,
+        timeout_ms: u64,
+    ) -> Result<Value> {
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(50));
+        let mut cursor = after_seq;
+        loop {
+            let events = self
+                .events_after(optimizer_run_id.clone(), cursor, Some(500))
+                .await?;
+            for event in events {
+                cursor = cursor.max(event.sequence_number);
+                if let Some(kind) =
+                    super::sft_result::sft_milestone_kind(&event.event_type, event.level.as_deref())
+                {
+                    if kinds.is_empty() || kinds.iter().any(|wanted| wanted == kind) {
+                        return Ok(json!({
+                            "milestone": kind,
+                            "event": event,
+                            "cursor": cursor,
+                            "timedOut": false
+                        }));
+                    }
+                }
+            }
+            let run = self.get(optimizer_run_id.clone()).await?;
+            if is_terminal_status(&run.status) {
+                return Ok(json!({
+                    "milestone": "terminal",
+                    "status": run.status,
+                    "cursor": run.cursor_seq,
+                    "timedOut": false
+                }));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!("no matching milestone for `{optimizer_run_id}` after sequence {after_seq}");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Persist a caller-mutated run record without letting it rewind lifecycle.
+    ///
+    /// Callers read a record, change one field, and write it back — a pattern
+    /// that is only safe while nothing else is writing. Workers, admission, and
+    /// event appends all write concurrently, and a snapshot taken before the
+    /// first event would otherwise restore its `cursor_seq`, un-finish the run,
+    /// and drop the visual it had since published. The event stream owns
+    /// lifecycle; this merges the caller's fields over the durable one.
     pub(super) async fn persist_run(&self, run: OptimizerRunRecord) -> Result<OptimizerRunRecord> {
         let db = self.db.clone();
-        let stored = run.clone();
         db.run_transaction(move |conn| {
+            let mut stored = run;
+            preserve_durable_authority(conn, &mut stored)?;
             upsert_run(conn, &stored)?;
             Ok(stored)
         })
         .await
+    }
+
+    /// Mutate a run under the durable record, inside one transaction. Preferred
+    /// over `persist_run` for new code: the closure never sees a stale snapshot.
+    pub(super) async fn patch_run<F>(
+        &self,
+        optimizer_run_id: String,
+        patch: F,
+    ) -> Result<OptimizerRunRecord>
+    where
+        F: FnOnce(&mut OptimizerRunRecord) -> Result<()> + Send + 'static,
+    {
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            let mut run = load_run(conn, &optimizer_run_id)?;
+            let eval_status_before = run.summary.get("evalStatus").cloned();
+            let progress_before = run.summary.get("progress").cloned();
+            patch(&mut run)?;
+            // Once a terminal manifest exists, the summary progress lane is
+            // frozen by the sealing transaction. A racing worker projection
+            // must not rewrite it back to a pre-terminal reading — this was
+            // how `evalStatus=running` survived forever beside a sealed run.
+            let progress_changed = run.summary.get("evalStatus") != eval_status_before.as_ref()
+                || run.summary.get("progress") != progress_before.as_ref();
+            if progress_changed && terminal::load(conn, &run.id)?.is_some() {
+                anyhow::bail!(
+                    "optimizer run {} has a sealed terminal manifest; refusing a post-terminal \
+                     summary progress rewrite",
+                    run.id
+                );
+            }
+            preserve_durable_authority(conn, &mut run)?;
+            upsert_run(conn, &run)?;
+            Ok(run)
+        })
+        .await
+    }
+
+    pub(crate) async fn attach_paid_compute_approval(
+        &self,
+        optimizer_run_id: String,
+        approval_id: &str,
+        max_cost_usd_micros: Option<u64>,
+        max_rollouts: Option<u64>,
+    ) -> Result<OptimizerRunRecord> {
+        let approval_id = approval_id.to_string();
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            // Admission may start a very fast worker before the approval
+            // receipt is attached. Always patch the current durable record;
+            // persisting the pre-start return value can rewind cursor_seq and
+            // erase streamed progress that arrived in the meantime.
+            let mut run = load_run(conn, &optimizer_run_id)?;
+            run.usage.extra.insert(
+                "paidComputeApproval".into(),
+                json!({
+                    "approvalId": approval_id,
+                    "cap": {
+                        "maxCostUsdMicros": max_cost_usd_micros,
+                        "maxRollouts": max_rollouts,
+                    },
+                    "receiptViolation": false,
+                }),
+            );
+            upsert_run(conn, &run)?;
+            Ok(run)
+        })
+        .await
+    }
+
+    /// Copy the in-memory credential receipt chain onto the durable run record.
+    pub(super) async fn persist_credential_chain(&self, run_id: &str) -> Result<()> {
+        let Some(secrets) = crate::secrets::live() else {
+            return Ok(());
+        };
+        let Some(chain) = secrets.chain_for_run(run_id) else {
+            return Ok(());
+        };
+        let chain = chain.clone();
+        self.patch_run(run_id.to_string(), move |run| {
+            if let Some(object) = run.summary.as_object_mut() {
+                object.insert("credentialChain".into(), chain);
+            }
+            Ok(())
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Revoke the run's capability and seal that fact into the run summary
+    /// before the terminal event is appended.
+    pub(super) async fn seal_credential_chain(&self, run_id: &str) -> Result<()> {
+        let Some(secrets) = crate::secrets::live() else {
+            return Ok(());
+        };
+        let Some(chain) = secrets.seal_run_chain(run_id)? else {
+            return Ok(());
+        };
+        let chain = chain.clone();
+        self.patch_run(run_id.to_string(), move |run| {
+            if let Some(object) = run.summary.as_object_mut() {
+                object.insert("credentialChain".into(), chain);
+            }
+            Ok(())
+        })
+        .await?;
+        Ok(())
     }
 
     pub async fn list(&self, query: OptimizerQuery) -> Result<Vec<OptimizerRunRecord>> {
@@ -134,17 +1325,494 @@ impl OptimizerService {
 
     pub async fn get(&self, optimizer_run_id: String) -> Result<OptimizerRunRecord> {
         let db = self.db.clone();
-        db.run(move |conn| load_run(conn, &optimizer_run_id)).await
+        db.run(move |conn| {
+            let mut run = load_run(conn, &optimizer_run_id)?;
+            if OptimizerRunStatus::str_is_terminal(&run.status) {
+                if let Some(state) = super::kernel::persist::load_state(conn, &optimizer_run_id)? {
+                    rewrite_terminal_summary_progress(&mut run, &state);
+                }
+            }
+            Ok(run)
+        })
+        .await
+    }
+
+    pub(super) fn negotiate_effective_contract(
+        &self,
+        optimizer_run_id: &str,
+        container_id: &str,
+        task_family: Option<&str>,
+        metadata: &Value,
+    ) -> Result<EffectiveContract> {
+        let templates = self.visuals.list_templates(None)?;
+        super::effective_contract::negotiate(
+            optimizer_run_id,
+            container_id,
+            task_family,
+            metadata,
+            &templates,
+        )
+    }
+
+    pub async fn artifacts_list(
+        &self,
+        optimizer_run_id: String,
+        after_sequence: u64,
+        limit: Option<i64>,
+    ) -> Result<OptimizerArtifactPage> {
+        let db = self.db.clone();
+        db.run(move |conn| {
+            load_run(conn, &optimizer_run_id)?;
+            super::artifacts::list(
+                conn,
+                &optimizer_run_id,
+                after_sequence,
+                limit.unwrap_or(100),
+            )
+        })
+        .await
+    }
+
+    pub async fn artifact_read_range(
+        &self,
+        optimizer_run_id: String,
+        artifact_id: String,
+        offset: u64,
+        length: u64,
+    ) -> Result<OptimizerArtifactRange> {
+        let db = self.db.clone();
+        db.run(move |conn| {
+            super::artifacts::read_range(conn, &optimizer_run_id, &artifact_id, offset, length)
+        })
+        .await
+    }
+
+    /// Versioned backend projection. Raw events do not determine this view.
+    ///
+    /// Compatibility shape for callers that want the view unconditionally.
+    /// New callers should prefer [`Self::run_view_envelope`], which reads the
+    /// projection and the run record together and can answer `unchanged`.
+    pub async fn run_view_v2(
+        &self,
+        optimizer_run_id: String,
+    ) -> Result<super::kernel::OptimizerRunViewV2> {
+        let envelope = self
+            .run_view_envelope(optimizer_run_id.clone(), None)
+            .await?;
+        envelope.view.ok_or_else(|| {
+            anyhow!("optimizer run {optimizer_run_id} returned an empty run view envelope")
+        })
+    }
+
+    /// One coherent read for a visual's first paint.
+    ///
+    /// Deliberately three separable things in one call, because the renderer
+    /// was previously orchestrating them as three serial IPC hops:
+    ///
+    ///   · the durable kernel projection (product truth),
+    ///   · the run record the templates still read compatibility fields from,
+    ///   · the durable tail cursor an evidence reader pages against.
+    ///
+    /// All three come from a single **deferred** transaction, so this read
+    /// takes a WAL snapshot and never queues behind the producer appending to
+    /// the run it is describing.
+    ///
+    /// `if_newer_than` makes the read conditional. The projection revision is
+    /// already monotonic; a caller holding revision *n* is told `unchanged`
+    /// rather than handed the same bytes again, which is what lets a cached
+    /// visual revalidate in the background for the cost of one indexed column
+    /// read.
+    pub async fn run_view_envelope(
+        &self,
+        optimizer_run_id: String,
+        if_newer_than: Option<u64>,
+    ) -> Result<super::kernel::OptimizerRunViewEnvelope> {
+        let db = self.db.clone();
+        let run_id = optimizer_run_id.clone();
+        let cached = if_newer_than;
+        let read = db
+            .run_read(move |conn| {
+                // Cheapest possible freshness check first: one indexed column,
+                // no run row, no 5 KB projection deserialize, no IPC payload.
+                if let Some(cached_revision) = cached {
+                    if let Some(durable) =
+                        super::kernel::persist::load_projection_revision(conn, &run_id)?
+                    {
+                        if durable == cached_revision {
+                            return Ok(Some(super::kernel::OptimizerRunViewEnvelope {
+                                unchanged: true,
+                                view: None,
+                                run: None,
+                                projection_revision: durable,
+                                tail_cursor: durable_tail_cursor(conn, &run_id)?,
+                            }));
+                        }
+                    }
+                }
+                let run = load_run(conn, &run_id)?;
+                let Some(state) = super::kernel::persist::load_state(conn, &run_id)? else {
+                    // No durable projection. Repair is a write, and a write has
+                    // no business running inside a read that a user is waiting
+                    // on: it would take the exclusive lock, replay the whole
+                    // journal, and — for a run with no admitted spec — roll all
+                    // of that back and do it again on the next attempt.
+                    return Ok(None);
+                };
+                let context = run_view_context(conn, &run)?;
+                let view =
+                    super::kernel::project_view_with_context(&state, &context).into_bounded_wire();
+                let tail_cursor = durable_tail_cursor(conn, &run_id)?;
+                Ok(Some(super::kernel::OptimizerRunViewEnvelope {
+                    unchanged: false,
+                    projection_revision: state.projection_revision,
+                    tail_cursor,
+                    view: Some(view),
+                    run: Some(run),
+                }))
+            })
+            .await?;
+        if let Some(envelope) = read {
+            return Ok(envelope);
+        }
+
+        // Historical row that predates the kernel projection. Repair it once,
+        // in its own write transaction, then re-read through the fast path.
+        self.repair_kernel_projection(optimizer_run_id.clone())
+            .await?;
+        let db = self.db.clone();
+        let run_id = optimizer_run_id.clone();
+        db.run_read(move |conn| {
+            let run = load_run(conn, &run_id)?;
+            let state = super::kernel::persist::load_state(conn, &run_id)?.ok_or_else(|| {
+                anyhow!("optimizer run {run_id} did not produce a saved kernel projection")
+            })?;
+            let context = run_view_context(conn, &run)?;
+            let view =
+                super::kernel::project_view_with_context(&state, &context).into_bounded_wire();
+            let tail_cursor = durable_tail_cursor(conn, &run_id)?;
+            Ok(super::kernel::OptimizerRunViewEnvelope {
+                unchanged: false,
+                projection_revision: state.projection_revision,
+                tail_cursor,
+                view: Some(view),
+                run: Some(run),
+            })
+        })
+        .await
+    }
+
+    /// The bounded, algorithm-neutral run summary every live surface mounts
+    /// from. Conditional on projection revision exactly like
+    /// [`Self::run_view_envelope`], and byte-budgeted by construction: growing
+    /// collections are counted here and paged through
+    /// [`Self::run_collection`].
+    pub async fn run_summary(
+        &self,
+        optimizer_run_id: String,
+        if_newer_than: Option<u64>,
+    ) -> Result<super::kernel::OptimizerRunSummaryEnvelope> {
+        let db = self.db.clone();
+        let run_id = optimizer_run_id.clone();
+        let read = db
+            .run_read(move |conn| read_run_summary(conn, &run_id, if_newer_than))
+            .await?;
+        if let Some(envelope) = read {
+            return Ok(envelope);
+        }
+        self.repair_kernel_projection(optimizer_run_id.clone())
+            .await?;
+        let db = self.db.clone();
+        db.run_read(move |conn| {
+            read_run_summary(conn, &optimizer_run_id, None)?.ok_or_else(|| {
+                anyhow!(
+                    "optimizer run {optimizer_run_id} did not produce a saved kernel projection"
+                )
+            })
+        })
+        .await
+    }
+
+    /// One keyset page of a durable collection. Rows and the projection
+    /// revision they belong to are read in the same transaction; there is no
+    /// unbounded "all rows" answer.
+    pub async fn run_collection(
+        &self,
+        optimizer_run_id: String,
+        collection: super::kernel::RunCollection,
+        query: super::kernel::RunCollectionQuery,
+    ) -> Result<super::kernel::RunCollectionPage> {
+        use super::kernel::read_model;
+        let db = self.db.clone();
+        db.run_read(move |conn| {
+            let run = load_run(conn, &optimizer_run_id)?;
+            let algorithm = super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id)
+                .map_err(|error| anyhow!("{error}"))?;
+            let (revision, as_of_sequence) = projection_position(conn, &optimizer_run_id)?;
+            match collection {
+                read_model::RunCollection::Artifacts => {
+                    let state = super::kernel::persist::load_state(conn, &optimizer_run_id)?
+                        .ok_or_else(|| {
+                            anyhow!("optimizer run {optimizer_run_id} has no projection")
+                        })?;
+                    let artifacts = super::artifacts::list_all(conn, &optimizer_run_id)?;
+                    read_model::page_rows_in_memory(
+                        &optimizer_run_id,
+                        collection,
+                        read_model::artifact_rows(&state, &artifacts),
+                        &query,
+                        state.projection_revision,
+                        state.aggregate_sequence,
+                    )
+                }
+                read_model::RunCollection::EvidenceRefs => {
+                    let state = super::kernel::persist::load_state(conn, &optimizer_run_id)?
+                        .ok_or_else(|| {
+                            anyhow!("optimizer run {optimizer_run_id} has no projection")
+                        })?;
+                    read_model::page_rows_in_memory(
+                        &optimizer_run_id,
+                        collection,
+                        read_model::evidence_ref_rows(&state),
+                        &query,
+                        state.projection_revision,
+                        state.aggregate_sequence,
+                    )
+                }
+                projected => read_model::query_collection_rows(
+                    conn,
+                    &optimizer_run_id,
+                    algorithm,
+                    projected,
+                    &query,
+                    revision,
+                    as_of_sequence,
+                ),
+            }
+        })
+        .await
+    }
+
+    /// One collection row by identity — a candidate's durable content, one
+    /// evaluation, one proposer call — without paging its neighbours.
+    pub async fn run_collection_item(
+        &self,
+        optimizer_run_id: String,
+        collection: super::kernel::RunCollection,
+        item_id: String,
+    ) -> Result<Option<super::kernel::RunCollectionRow>> {
+        use super::kernel::read_model;
+        let db = self.db.clone();
+        db.run_read(move |conn| {
+            let run = load_run(conn, &optimizer_run_id)?;
+            let algorithm = super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id)
+                .map_err(|error| anyhow!("{error}"))?;
+            match collection {
+                read_model::RunCollection::Artifacts | read_model::RunCollection::EvidenceRefs => {
+                    let state = super::kernel::persist::load_state(conn, &optimizer_run_id)?
+                        .ok_or_else(|| {
+                            anyhow!("optimizer run {optimizer_run_id} has no projection")
+                        })?;
+                    let rows = if collection == read_model::RunCollection::Artifacts {
+                        let artifacts = super::artifacts::list_all(conn, &optimizer_run_id)?;
+                        read_model::artifact_rows(&state, &artifacts)
+                    } else {
+                        read_model::evidence_ref_rows(&state)
+                    };
+                    Ok(rows.into_iter().find(|row| row.item_id == item_id))
+                }
+                projected => read_model::load_collection_row(
+                    conn,
+                    &optimizer_run_id,
+                    algorithm,
+                    projected,
+                    &item_id,
+                ),
+            }
+        })
+        .await
+    }
+
+    /// The projection as it stood at `sequence`, folded from the nearest
+    /// reducer checkpoint plus the suffix up to the requested point.
+    ///
+    /// This is what the historical scrubber reads. The renderer never fetches
+    /// the journal to reduce it; the backend folds a bounded suffix, and when
+    /// a run predates checkpoints — so the first scrub had to replay a long
+    /// prefix — it leaves a checkpoint behind so the next one does not.
+    pub async fn projection_at(
+        &self,
+        optimizer_run_id: String,
+        sequence: u64,
+    ) -> Result<super::kernel::HistoricalProjection> {
+        use super::kernel::read_model;
+        let db = self.db.clone();
+        let run_id = optimizer_run_id.clone();
+        let (historical, backfill) = db
+            .run_read(move |conn| {
+                let run = load_run(conn, &run_id)?;
+                let algorithm = super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id)
+                    .map_err(|error| anyhow!("{error}"))?;
+                let placement =
+                    super::kernel::bridge::placement_from_run_source(algorithm, &run.source);
+                let spec_digest: String = conn
+                    .query_row(
+                        "SELECT spec_digest FROM optimizer_run_specs WHERE optimizer_run_id = ?1",
+                        [&run.id],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .filter(|value: &String| !value.trim().is_empty())
+                    .ok_or_else(|| {
+                        anyhow!("optimizer run {} is missing its admitted spec", run.id)
+                    })?;
+                let tail = durable_tail_cursor(conn, &run_id)?;
+                let requested = sequence;
+                let sequence = sequence.min(tail);
+                let checkpoint = read_model::load_checkpoint_at_or_before(
+                    conn,
+                    &run_id,
+                    algorithm.reducer_version(),
+                    sequence,
+                )?;
+                let (base, from) = match checkpoint {
+                    Some(state) => {
+                        let from = state.aggregate_sequence;
+                        (Some(state), from)
+                    }
+                    None => (None, 0),
+                };
+                let mut events = load_events_between(conn, &run_id, from, sequence)?;
+                let mut from = from;
+                let mut base = base;
+                if from > 0 && batch_forces_full_replay(&events) {
+                    // Settlement-rewriting events keep the replay-from-zero
+                    // semantics the live fold uses for them.
+                    events = load_events_between(conn, &run_id, 0, sequence)?;
+                    from = 0;
+                    base = None;
+                }
+                let replayed = events.len() as u64;
+                // A long suffix — a run that predates checkpoints, or a bulk
+                // import folded in one batch — is folded one interval at a
+                // time, and every boundary state is kept so the next scrub
+                // pays for one interval rather than the whole prefix again.
+                // Settlement-rewriting suffixes replay as one commit, exactly
+                // as the live path would, and leave no intermediate marks.
+                let interval = read_model::CHECKPOINT_EVENT_INTERVAL as usize;
+                let mut backfill: Vec<super::kernel::RunKernelState> = Vec::new();
+                let state = if from == 0 && batch_forces_full_replay(&events) {
+                    super::kernel::bridge::reduce_envelopes(
+                        &run_id,
+                        algorithm,
+                        placement,
+                        &spec_digest,
+                        &events,
+                    )
+                    .map_err(|error| anyhow!("historical replay failed for {run_id}: {error}"))?
+                } else {
+                    let mut state = base.unwrap_or_else(|| {
+                        super::kernel::RunKernelState::new(
+                            &run_id,
+                            algorithm,
+                            placement,
+                            &spec_digest,
+                        )
+                    });
+                    for chunk in events.chunks(interval) {
+                        state = super::kernel::bridge::fold_envelopes(state, &run_id, chunk)
+                            .map_err(|error| {
+                                anyhow!("historical fold failed for {run_id}: {error}")
+                            })?;
+                        if chunk.len() == interval {
+                            backfill.push(state.clone());
+                        }
+                    }
+                    state
+                };
+                let context = run_view_context(conn, &run)?;
+                let view =
+                    super::kernel::project_view_with_context(&state, &context).into_bounded_wire();
+                Ok((
+                    super::kernel::HistoricalProjection {
+                        schema_version: read_model::HISTORICAL_PROJECTION_SCHEMA_VERSION.into(),
+                        run_id: run_id.clone(),
+                        requested_sequence: requested,
+                        as_of_sequence: state.aggregate_sequence,
+                        checkpoint_sequence: (from > 0).then_some(from),
+                        replayed_events: replayed,
+                        view,
+                    },
+                    backfill,
+                ))
+            })
+            .await?;
+        if !backfill.is_empty() {
+            // Best effort: a checkpoint is an accelerator, never truth. Failing
+            // to leave one behind must not fail the read that produced it.
+            let db = self.db.clone();
+            let _ = db
+                .run(move |conn| {
+                    for state in &backfill {
+                        read_model::write_checkpoint(conn, state)?;
+                    }
+                    Ok(())
+                })
+                .await;
+        }
+        Ok(historical)
+    }
+
+    /// Rebuild a missing kernel projection by replaying the durable journal.
+    ///
+    /// Only reachable for rows written before the kernel owned admission —
+    /// every admitted run persists a projection at birth. It is a write, it is
+    /// expensive, and it is idempotent, so it belongs here rather than inline
+    /// in a read.
+    ///
+    /// A run with no admitted spec cannot be repaired at all. That is a
+    /// permanent structural fact about the row, not a transient transport
+    /// fault, so it raises a non-retryable typed failure: retrying it five
+    /// times with a backoff ladder — which is what the renderer does with an
+    /// untyped error — only replays the whole journal five more times before
+    /// showing the same message.
+    pub async fn repair_kernel_projection(&self, optimizer_run_id: String) -> Result<()> {
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            if super::kernel::persist::load_state(conn, &optimizer_run_id)?.is_some() {
+                return Ok(());
+            }
+            let run = load_run(conn, &optimizer_run_id)?;
+            super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id)
+                .map_err(|error| anyhow!("{error}"))?;
+            if !super::kernel::persist::spec_exists(conn, &optimizer_run_id)? {
+                return Err(crate::error::StructuredFailure::new(
+                    "optimizer.projection.missing_admitted_spec",
+                    format!(
+                        "Run {optimizer_run_id} predates admitted specs, so its projection cannot be rebuilt."
+                    ),
+                    "Re-import or re-run this optimizer run to record it under the current contract.",
+                )
+                .retryable(false)
+                .with_details(serde_json::json!({
+                    "stage": "projection",
+                    "optimizerRunId": optimizer_run_id,
+                    "algorithmId": run.algorithm_id,
+                }))
+                .into());
+            }
+            let events = load_events_upto(conn, &run.id, run.cursor_seq)?;
+            persist_kernel_projection(conn, &run, &events)?;
+            Ok(())
+        })
+        .await
     }
 
     pub async fn create(
         &self,
         request: OptimizerCreateRequest,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
-        if let Some(fixture) = request.seed_fixture.clone() {
-            return self
-                .seed_fixture(&fixture, request.session_ref.clone())
-                .await;
+        if request.seed_fixture.is_some() {
+            bail!("optimizer seed fixtures are not available in production");
         }
         if let Some(path) = request.local_path.clone() {
             return self
@@ -163,10 +1831,9 @@ impl OptimizerService {
         if source == "cloud" {
             return self.create_cloud(request).await;
         }
-        let algorithm_id = super::normalize::normalize_algorithm_id(&request.algorithm_id);
-        if algorithm_id.is_empty() || algorithm_id == "unknown" {
-            bail!("algorithm_id is required");
-        }
+        let algorithm = super::kernel::AlgorithmKind::parse_wire(&request.algorithm_id)
+            .map_err(|error| anyhow!("{error}"))?;
+        let algorithm_id = algorithm.wire_id().to_string();
         let now = Utc::now().to_rfc3339();
         let id = request
             .id
@@ -203,37 +1870,10 @@ impl OptimizerService {
         let inserted = run.clone();
         let (mut run, event) = db
             .run_transaction(move |conn| {
-                upsert_run(conn, &inserted)?;
-                if let Some(session_ref) = inserted.session_ref.as_deref() {
-                    insert_relationship(
-                        conn,
-                        &OptimizerRelationship {
-                            from_kind: "optimizer".into(),
-                            from_id: inserted.id.clone(),
-                            edge: "started_from".into(),
-                            to_kind: "session".into(),
-                            to_id: session_ref.into(),
-                            metadata: json!({}),
-                        },
-                    )?;
-                }
-                let event = append_event(
+                let event = persist_admitted_run(
                     conn,
-                    EventAppend {
-                        event_id: None,
-                        session_id: inserted.session_ref.clone(),
-                        run_id: None,
-                        source: EventSource::System,
-                        kind: "optimizer.run.created".into(),
-                        payload: json!({
-                            "optimizerRunId": inserted.id,
-                            "algorithmId": inserted.algorithm_id,
-                            "status": inserted.status
-                        }),
-                        remote_sequence: None,
-                        command_id: None,
-                        created_at: None,
-                    },
+                    &inserted,
+                    format!("workshop:authorized-run-start:{}", inserted.id),
                 )?;
                 Ok((inserted, event))
             })
@@ -242,6 +1882,87 @@ impl OptimizerService {
             run = self.open_visual(run.id.clone()).await?.0;
         }
         Ok((run, Some(event)))
+    }
+
+    /// Create an eval optimizer run only by consuming an approved kernel draft.
+    ///
+    /// Admission, the run row, the sealed spec, and worker progress are one
+    /// transaction. No optimizer run exists if that transaction rolls back.
+    pub async fn create_admitted_eval(
+        &self,
+        mut request: OptimizerCreateRequest,
+        approved: super::admission::ApprovedExecutionSpec,
+        declared_rollouts: usize,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let now = Utc::now().to_rfc3339();
+        let id = request
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("opt_{}", Uuid::new_v4()));
+        let draft_id = format!("draft_{id}");
+        if let Some(object) = request
+            .summary
+            .get_or_insert_with(|| json!({}))
+            .as_object_mut()
+        {
+            object.insert(
+                "executionSpecDigest".into(),
+                json!(approved.digest().as_str()),
+            );
+        }
+        let capabilities = request
+            .capabilities
+            .clone()
+            .unwrap_or_else(|| OptimizerCapabilities::for_algorithm("eval"));
+        let binding = approved.binding();
+        let approved_rollouts = u64::from(binding.approved_rollouts.0.get());
+        anyhow::ensure!(
+            declared_rollouts as u64 == approved_rollouts,
+            "declared rollout count {declared_rollouts} does not match approved rollout count {approved_rollouts}"
+        );
+        let mut usage = OptimizerUsageSummary::default();
+        usage.extra.insert(
+            "paidComputeApproval".into(),
+            json!({
+                "approvalId": binding.receipt_id.as_str(),
+                "cap": {
+                    "maxCostUsdMicros": binding.approved_cost_micros.0.get(),
+                    "maxRollouts": approved_rollouts,
+                },
+                "receiptViolation": false,
+            }),
+        );
+        let run = OptimizerRunRecord {
+            schema_version: OPTIMIZER_RUN_SCHEMA_VERSION.into(),
+            id: id.clone(),
+            algorithm_id: "eval".into(),
+            algorithm_version: request.algorithm_version.clone(),
+            status: "queued".into(),
+            source: request.source.clone().unwrap_or_else(|| "local".into()),
+            objective: request.objective.clone(),
+            project_ref: request.project_ref.clone(),
+            session_ref: request.session_ref.clone(),
+            created_at: now.clone(),
+            started_at: None,
+            finished_at: None,
+            cursor_seq: 0,
+            capabilities,
+            execution_bindings: request.execution_bindings.clone().unwrap_or_default(),
+            input_refs: request.input_refs.clone().unwrap_or_default(),
+            output_refs: vec![],
+            visual_refs: vec![],
+            summary: request.summary.clone().unwrap_or_else(|| json!({})),
+            usage,
+            error: None,
+        };
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            super::admission::stage_approved_eval_draft(conn, &draft_id, &approved)?;
+            let event = persist_new_run(conn, &run)?;
+            super::admission::consume_approved_eval_draft(conn, &draft_id, &run.id, &now)?;
+            Ok((run, Some(event)))
+        })
+        .await
     }
 
     pub async fn refresh(&self, optimizer_run_id: String) -> Result<OptimizerRunRecord> {
@@ -258,17 +1979,11 @@ impl OptimizerService {
             }
         }
         let mut run = self.get(optimizer_run_id.clone()).await?;
-        if run.summary.get("recipeId").and_then(Value::as_str)
-            == Some(super::hosted_gelo::HOSTED_GELO_CRAFTAX_RECIPE)
-        {
-            run = super::hosted_gelo::reconcile_persisted(self, &optimizer_run_id).await?;
-        }
-        if run.source == "local"
-            && matches!(run.status.as_str(), "completed" | "failed" | "cancelled")
-        {
-            run = super::recipes::reconcile_persisted(self, &optimizer_run_id).await?;
-        }
-        let slices = self.project_slices(&run.id, run.cursor_seq, None).await?;
+        run = reconcile_via_driver(self, run).await?;
+        let cursor = self
+            .resolve_projection_cursor(&run.id, None, run.cursor_seq)
+            .await?;
+        let slices = self.project_slices(&run.id, cursor, None).await?;
         let db = self.db.clone();
         db.run(move |conn| {
             for slice in &slices {
@@ -280,6 +1995,31 @@ impl OptimizerService {
         self.get(optimizer_run_id).await
     }
 
+    /// Re-ingest already-sealed evidence for a terminal inline evaluation and
+    /// rebuild its authoritative projections. This operation never starts a
+    /// rollout and never accesses provider credentials.
+    pub async fn reconcile_evaluation_evidence(
+        &self,
+        optimizer_run_id: String,
+    ) -> Result<OptimizerRunRecord> {
+        super::container_eval::reconcile_evidence(self, &optimizer_run_id).await
+    }
+
+    /// After a process restart, locally persisted `running`/`queued`/`paused`
+    /// projections can be a lie. Walk them and let each algorithm's durable
+    /// worker log win before the renderer hydrates Outputs.
+    pub async fn reconcile_stale_local_runs(&self) -> Result<Vec<OptimizerRunRecord>> {
+        let db = self.db.clone();
+        let instance_id = crate::instance::boot_epoch().to_string();
+        let recovered = db
+            .run_transaction(move |conn| {
+                reconcile_stale_local_runs_in_tx(conn, &instance_id, Utc::now())
+            })
+            .await?;
+        self.sweep_projection_outbox(None, None).await?;
+        Ok(recovered)
+    }
+
     pub async fn events_after(
         &self,
         optimizer_run_id: String,
@@ -288,21 +2028,157 @@ impl OptimizerService {
     ) -> Result<Vec<OptimizerEventEnvelope>> {
         let db = self.db.clone();
         let limit = limit.unwrap_or(500).clamp(1, 2000);
-        db.run(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT payload_json FROM optimizer_events
+        let mut events = db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT payload_json FROM optimizer_events
                  WHERE optimizer_run_id = ?1 AND sequence_number > ?2
                  ORDER BY sequence_number ASC LIMIT ?3",
-            )?;
-            let rows = stmt
-                .query_map(params![optimizer_run_id, after_seq as i64, limit], |row| {
-                    row.get::<_, String>(0)
-                })?;
-            let mut out = Vec::new();
-            for row in rows {
-                out.push(serde_json::from_str(&row?)?);
-            }
-            Ok(out)
+                )?;
+                let rows = stmt
+                    .query_map(params![optimizer_run_id, after_seq as i64, limit], |row| {
+                        row.get::<_, String>(0)
+                    })?;
+                let mut out = Vec::new();
+                for row in rows {
+                    out.push(serde_json::from_str(&row?)?);
+                }
+                Ok(out)
+            })
+            .await?;
+        super::strip_frame_bodies_for_ipc(&mut events);
+        Ok(events)
+    }
+
+    /// Read the parts of an evidence window the caller does not already hold.
+    ///
+    /// The lazy, restart-survivable counterpart to `events_after`. A cursor can
+    /// only say "after N", which is the right shape for a live tail and the
+    /// wrong one for browsing: a reader that opens Replay at the end of a run
+    /// and scrolls back holds disjoint spans, and asking "after the highest
+    /// one" both re-fetches nothing useful and silently keeps the hole in the
+    /// middle. Sending held spans and receiving their complement expresses
+    /// "besides what I have" exactly, so nothing is transferred twice.
+    ///
+    /// One contiguous gap is answered per call, bounded by `limit`, so a page
+    /// is always a single span the caller can store as one coverage entry.
+    pub async fn evidence_page(
+        &self,
+        optimizer_run_id: String,
+        window: super::events::EvidenceRange,
+        held: Vec<super::events::EvidenceRange>,
+        limit: Option<i64>,
+    ) -> Result<super::events::EvidencePage> {
+        let limit = limit.unwrap_or(200).clamp(1, 2000);
+        let db = self.db.clone();
+        let mut page = db
+            .run_read(move |conn| {
+                // Ownership and existence are resolved the same way for a
+                // cached read as for an uncached one: the run row is loaded
+                // before any evidence leaves the database.
+                load_run(conn, &optimizer_run_id)?;
+                let tail_cursor = durable_tail_cursor(conn, &optimizer_run_id)?;
+                let window = super::events::EvidenceRange::new(
+                    window.from.max(1),
+                    window.to.min(tail_cursor),
+                );
+                let gaps = super::events::complement(window, &held);
+                let Some(gap) = gaps.first().copied() else {
+                    return Ok(super::events::EvidencePage {
+                        events: Vec::new(),
+                        range: None,
+                        coverage: super::events::normalize_ranges(&held),
+                        complete: true,
+                        tail_cursor,
+                    });
+                };
+                let mut stmt = conn.prepare(
+                    "SELECT sequence_number, payload_json FROM optimizer_events
+                     WHERE optimizer_run_id = ?1
+                       AND sequence_number >= ?2 AND sequence_number <= ?3
+                     ORDER BY sequence_number ASC LIMIT ?4",
+                )?;
+                let rows = stmt.query_map(
+                    params![optimizer_run_id, gap.from as i64, gap.to as i64, limit],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )?;
+                let mut events = Vec::new();
+                let mut highest = gap.from;
+                for row in rows {
+                    let (sequence, payload) = row?;
+                    highest = sequence.max(0) as u64;
+                    events.push(serde_json::from_str(&payload)?);
+                }
+                // A short page covers only what it reached. A gap that is
+                // genuinely empty of rows — a pruned or never-written span —
+                // still counts as covered, or the caller would ask forever.
+                let covered = if events.len() as i64 == limit {
+                    super::events::EvidenceRange::new(gap.from, highest)
+                } else {
+                    gap
+                };
+                let mut coverage = held.clone();
+                coverage.push(covered);
+                let coverage = super::events::normalize_ranges(&coverage);
+                let complete = super::events::complement(window, &coverage).is_empty();
+                Ok(super::events::EvidencePage {
+                    events,
+                    range: Some(covered),
+                    coverage,
+                    complete,
+                    tail_cursor,
+                })
+            })
+            .await?;
+        super::strip_frame_bodies_for_ipc(&mut page.events);
+        Ok(page)
+    }
+
+    /// Latest changed native frame per seed after a durable frame cursor.
+    /// Base64 bodies never enter the shared optimizer-event subscription.
+    pub async fn frames_latest(
+        &self,
+        optimizer_run_id: String,
+        after_frame_sequence: u64,
+    ) -> Result<super::OptimizerFrameDelta> {
+        let db = self.db.clone();
+        db.run(move |conn| super::frames::latest(conn, &optimizer_run_id, after_frame_sequence))
+            .await
+    }
+
+    /// Bounded newest-first frame metadata for one seed. Bodies are fetched
+    /// separately when a thumbnail or scrubber position is actually viewed.
+    pub async fn frames_list(
+        &self,
+        optimizer_run_id: String,
+        seed: i64,
+        before_frame_sequence: Option<u64>,
+        limit: Option<i64>,
+    ) -> Result<Vec<super::OptimizerFrameRef>> {
+        let db = self.db.clone();
+        db.run(move |conn| {
+            super::frames::list(
+                conn,
+                &optimizer_run_id,
+                seed,
+                before_frame_sequence,
+                limit.unwrap_or(100),
+            )
+        })
+        .await
+    }
+
+    /// Verified PNG content for one catalogued frame.
+    pub async fn frame_content(
+        &self,
+        optimizer_run_id: String,
+        seed: i64,
+        frame_sequence: u64,
+    ) -> Result<super::OptimizerFrameContent> {
+        let db = self.db.clone();
+        let store = self.frame_store.clone();
+        db.run(move |conn| {
+            super::frames::content(conn, &store, &optimizer_run_id, seed, frame_sequence)
         })
         .await
     }
@@ -320,61 +2196,490 @@ impl OptimizerService {
         .await
     }
 
+    /// Append events whose sequence numbers mirror an external log (a hosted
+    /// campaign, an imported sidecar feed, a cloud reconcile).
+    ///
+    /// The batch is validated as a whole before a single row is written, and no
+    /// event is ever silently dropped: an event that collides with a different
+    /// event already durable at its sequence is an error the producer must see.
     pub async fn append_events(
         &self,
         optimizer_run_id: String,
         events: Vec<OptimizerEventEnvelope>,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        self.commit_events(optimizer_run_id, events, SequenceContract::Mirrored)
+            .await
+    }
+
+    /// Append event *content*. The service owns identity and order.
+    ///
+    /// This is the only append a local worker should use. Sequence numbers are
+    /// allocated inside the transaction that inserts them, so two workers — or
+    /// one worker racing a `persist_run` — cannot compute the same number from
+    /// two stale snapshots and lose an event to a unique-index collision.
+    pub(super) async fn append_event_payloads(
+        &self,
+        optimizer_run_id: String,
+        drafts: Vec<OptimizerEventDraft>,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        if drafts.is_empty() {
+            let run = self.get(optimizer_run_id).await?;
+            return Ok((run, None));
+        }
+        let delivery_run_id = optimizer_run_id.clone();
         let db = self.db.clone();
+        let frame_store = self.frame_store.clone();
         let result = db
             .run_transaction(move |conn| {
-                let mut run = load_run(conn, &optimizer_run_id)?;
-                for event in events {
-                    if event.optimizer_run_id != run.id {
-                        bail!("event optimizer_run_id mismatch");
+                let run = load_run(conn, &optimizer_run_id)?;
+                let sealed_at = Utc::now().to_rfc3339();
+                // Allocate above both the cursor and the highest durable event.
+                // They can disagree when an older build rewound one of them; the
+                // higher of the two is the only safe floor.
+                let mut next = run.cursor_seq.max(max_event_sequence(conn, &run.id)?);
+                let mut envelopes = Vec::with_capacity(drafts.len());
+                for draft in drafts {
+                    // An idempotent draft that is already durable seals to
+                    // nothing: re-offering a settlement must not mint a second
+                    // sequence for the same fact.
+                    if let Some(key) = draft.idempotency_key.as_deref() {
+                        if event_id_exists(conn, &run.id, &format!("{}:{key}", run.id))? {
+                            continue;
+                        }
                     }
-                    if event.sequence_number <= run.cursor_seq {
-                        continue;
-                    }
-                    insert_event(conn, &event)?;
-                    apply_event_to_run(&mut run, &event);
-                    run.cursor_seq = event.sequence_number;
-                    upsert_cursor(conn, &run.id, run.cursor_seq, &event.occurred_at)?;
+                    next += 1;
+                    envelopes.push(draft.seal(&run.id, next, &sealed_at));
                 }
-                upsert_run(conn, &run)?;
-                let projected = project_from_events(
-                    &run,
-                    &load_events_upto(conn, &run.id, run.cursor_seq)?,
-                    None,
-                )?;
-                for slice in projected {
-                    cache_slice(conn, &slice)?;
+                if envelopes.is_empty() {
+                    return Ok((run, None));
                 }
-                let event = append_event(
+                commit_validated_events(
                     conn,
-                    EventAppend {
-                        event_id: None,
-                        session_id: run.session_ref.clone(),
-                        run_id: None,
-                        source: EventSource::System,
-                        kind: "optimizer.run.updated".into(),
-                        payload: json!({
-                            "optimizerRunId": run.id,
-                            "status": run.status,
-                            "cursorSeq": run.cursor_seq
-                        }),
-                        remote_sequence: None,
-                        command_id: None,
-                        created_at: None,
-                    },
-                )?;
-                Ok((run, Some(event)))
+                    &frame_store,
+                    run,
+                    envelopes,
+                    SequenceContract::ServiceAllocated,
+                )
             })
             .await?;
-        if let Some(event) = &result.1 {
-            let _ = self.events_tx.send(event.clone());
-        }
+        self.sweep_projection_outbox(Some(delivery_run_id), result.1.as_ref())
+            .await?;
         Ok(result)
+    }
+
+    async fn commit_events(
+        &self,
+        optimizer_run_id: String,
+        events: Vec<OptimizerEventEnvelope>,
+        contract: SequenceContract,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        if events.is_empty() {
+            let run = self.get(optimizer_run_id).await?;
+            return Ok((run, None));
+        }
+        let delivery_run_id = optimizer_run_id.clone();
+        let db = self.db.clone();
+        let frame_store = self.frame_store.clone();
+        let result = db
+            .run_transaction(move |conn| {
+                let run = load_run(conn, &optimizer_run_id)?;
+                commit_validated_events(conn, &frame_store, run, events, contract)
+            })
+            .await?;
+        self.sweep_projection_outbox(Some(delivery_run_id), result.1.as_ref())
+            .await?;
+        Ok(result)
+    }
+
+    /// Create-or-reuse a run's chat-owned visual, bind it to the run, publish
+    /// the durable `visual.show`, and select it for the owning conversation —
+    /// as one operation with one identity.
+    ///
+    /// These used to be five calls in three files, each able to succeed alone:
+    /// a visual could be minted and never bound, bound and never shown, shown
+    /// into whichever chat happened to be focused, or lost from Outputs after a
+    /// restart because only the pane knew about it. Repeating this is safe: an
+    /// existing primary visual is reused, never duplicated, and the show is
+    /// addressed to the run's own session so a second call cannot move another
+    /// chat's pane.
+    pub(super) async fn publish_chat_owned_visual(
+        &self,
+        request: ChatVisualPublication,
+    ) -> Result<(String, Option<AppEvent>)> {
+        let run = self.get(request.run_id.clone()).await?;
+        let session_ref = request
+            .session_ref
+            .clone()
+            .or_else(|| run.session_ref.clone());
+        let existing = run
+            .visual_refs
+            .iter()
+            .find(|reference| {
+                reference.kind == "visual"
+                    && reference.role.as_deref() == Some(request.role.as_str())
+            })
+            .map(|reference| reference.id.clone());
+        let mut publication_metadata = request.metadata.as_object().cloned().unwrap_or_default();
+        publication_metadata.insert(
+            "optimizerVisualRole".into(),
+            Value::String(request.role.clone()),
+        );
+
+        let visual_id = match existing {
+            Some(visual_id) => visual_id,
+            None => {
+                let (created, _) = self
+                    .visuals
+                    .create(VisualCreateRequest {
+                        template_id: request.template_id.clone(),
+                        title: Some(request.title.clone()),
+                        bindings: Some(request.bindings.clone()),
+                        id: None,
+                        status: Some(request.status),
+                        renderer_kind: None,
+                        session_id: session_ref.clone(),
+                        message_id: None,
+                        run_id: None,
+                        trace_id: None,
+                        parent_visual_id: None,
+                        source_agent_id: None,
+                        source_model: None,
+                        content: None,
+                        metadata: Some(Value::Object(publication_metadata)),
+                    })
+                    .await
+                    .context("create chat-owned optimizer visual")?;
+                created.id
+            }
+        };
+
+        // Bind before showing. A visual the renderer opens but the run does not
+        // reference is a visual that disappears on restart.
+        let bound_id = visual_id.clone();
+        let template_id = request.template_id.clone();
+        let title = request.title.clone();
+        let role = request.role.clone();
+        let summary_role = request.role.clone();
+        let bind = self
+            .patch_run(request.run_id.clone(), move |run| {
+                if !run
+                    .visual_refs
+                    .iter()
+                    .any(|reference| reference.id == bound_id)
+                {
+                    run.visual_refs.push(OptimizerResourceRef {
+                        kind: "visual".into(),
+                        id: bound_id.clone(),
+                        digest: None,
+                        role: Some(role),
+                        title: Some(title),
+                        metadata: json!({ "templateId": template_id }),
+                    });
+                }
+                let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+                // `visualId` names the run's *primary* pane, and only that.
+                // A run may own several chat visuals — an overview and the
+                // workstation a seed row opens — and letting whichever
+                // published last claim this key would silently repoint the
+                // eval result's own evidence reference at a drill-down.
+                if summary_role == "primary" {
+                    summary.insert("visualId".into(), json!(bound_id));
+                }
+                // Secondary panes are addressed by role, so a consumer asks for
+                // the one it means instead of guessing from a list.
+                let mut by_role = summary
+                    .get("visualIds")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                by_role.insert(summary_role.clone(), json!(bound_id));
+                summary.insert("visualIds".into(), Value::Object(by_role));
+                summary.remove("visualProjectionError");
+                run.summary = Value::Object(summary);
+                Ok(())
+            })
+            .await;
+        if let Err(error) = bind {
+            self.record_visual_projection_error(&request.run_id, &format!("{error:#}"))
+                .await;
+            return Err(error.context("bind chat-owned optimizer visual"));
+        }
+
+        match self.visuals.show(visual_id.clone(), session_ref).await {
+            Ok((_, event)) => Ok((visual_id, serde_json::from_value::<AppEvent>(event).ok())),
+            Err(error) => {
+                // The visual exists and is bound, but nothing told the chat about
+                // it. Say so durably rather than reporting an opened output.
+                self.record_visual_projection_error(&request.run_id, &format!("{error:#}"))
+                    .await;
+                Err(error.context("publish chat-owned optimizer visual"))
+            }
+        }
+    }
+
+    async fn record_visual_projection_error(&self, run_id: &str, message: &str) {
+        let message = message.to_string();
+        let _ = self
+            .patch_run(run_id.to_string(), move |run| {
+                let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+                summary.insert("visualProjectionError".into(), json!(message));
+                run.summary = Value::Object(summary);
+                Ok(())
+            })
+            .await;
+    }
+
+    /// The sealed terminal manifest for a run, or `None` while it is live.
+    pub async fn terminal_manifest(&self, optimizer_run_id: String) -> Result<Option<Value>> {
+        let db = self.db.clone();
+        db.run(move |conn| terminal::load(conn, &optimizer_run_id))
+            .await
+    }
+
+    /// Settle a run whose compute succeeded but whose evidence did not.
+    ///
+    /// The successful compute records are preserved and the failure is durable
+    /// and named, because the alternative — reporting a clean `completed` for a
+    /// run with no evidence — is the exact defect this lane exists to remove.
+    /// The run becomes terminal in the `degraded` state, which is retryable
+    /// without re-running paid compute.
+    /// Settle a run through one typed command.
+    ///
+    /// The terminal event is appended through the standard transactional
+    /// append, so sealing, projection persistence, and the summary rewrite
+    /// all ride the same commit. A second settlement with the same terminal
+    /// kind is idempotent success; a different kind is a typed refusal. After
+    /// the terminal fact is durable, the run's provider capabilities are
+    /// revoked and the revocation is journaled on the amendment lane —
+    /// consequence of settlement, never its cause.
+    pub(super) async fn settle_run(
+        &self,
+        optimizer_run_id: String,
+        cause: super::kernel::SettleCause,
+        error: Option<Value>,
+    ) -> Result<OptimizerRunRecord> {
+        if let Some(manifest) = self.terminal_manifest(optimizer_run_id.clone()).await? {
+            cause
+                .accept_sealed(manifest_terminal_kind(&manifest), &optimizer_run_id)
+                .map_err(|error| anyhow!("{error}"))?;
+            // A compatible concurrent settlement still participates in the
+            // post-terminal cleanup. Revocation and paid-compute settlement
+            // are idempotent, and this makes a crash between seal and cleanup
+            // repairable by retrying the settlement command.
+            self.revoke_credentials_post_terminal(&optimizer_run_id, cause.cancellation())
+                .await;
+            let settlement_run_id = optimizer_run_id.clone();
+            if let Err(error) = self
+                .database()
+                .run_transaction(move |conn| {
+                    let run = load_run(conn, &settlement_run_id)?;
+                    settle_paid_compute_conversation(conn, &run)?;
+                    Ok(())
+                })
+                .await
+            {
+                crate::platform::logging::report(
+                    "optimizers",
+                    "eprintln",
+                    format!("settle paid-compute for sealed run {optimizer_run_id}: {error:#}"),
+                );
+            }
+            return self.get(optimizer_run_id).await;
+        }
+        let run = self.get(optimizer_run_id.clone()).await?;
+        if let Some(request) = cause.cancellation() {
+            self.record_cancellation_request(&optimizer_run_id, request)
+                .await?;
+            let request_event =
+                OptimizerEventDraft::new("optimizer.run.cancel.requested", &run.algorithm_id)
+                    .idempotency_key(format!("cancel-request:{}", request.request_id))
+                    .delta(Map::from_iter([(
+                        "cancellation".into(),
+                        json!(request.as_ref()),
+                    )]))
+                    .raw(json!({ "source": "settle_run" }));
+            self.append_event_payloads(optimizer_run_id.clone(), vec![request_event])
+                .await?;
+        }
+        // The error rides the terminal event itself, so `error_json` and the
+        // manifest's `error` are written by the same transaction. Evidence
+        // degradation also remains in the historical delta shape consumed by
+        // reducers; it is duplicated deliberately, not written later.
+        let error_payload = error.or_else(|| {
+            cause
+                .detail()
+                .filter(|detail| !detail.trim().is_empty())
+                .map(|detail| json!({ "message": detail }))
+        });
+        let mut delta = Map::from_iter([("status".into(), json!(cause.status()))]);
+        if let Some(request) = cause.cancellation() {
+            delta.insert("cancellation".into(), json!(request.as_ref()));
+        }
+        if cause.kind() == super::kernel::TerminalKind::Degraded {
+            if let Some(degradation) = error_payload.as_ref() {
+                delta.insert("degradation".into(), degradation.clone());
+            }
+        }
+        let mut draft = OptimizerEventDraft::new(cause.event_type(), &run.algorithm_id)
+            .idempotency_key(format!("settle:{}", cause.status()))
+            .delta(delta)
+            .raw(json!({ "source": "settle_run" }));
+        draft = match cause.kind() {
+            super::kernel::TerminalKind::Failed => draft.level("error"),
+            super::kernel::TerminalKind::Degraded => draft.level("warn"),
+            _ => draft,
+        };
+        if let Some(error_payload) = error_payload {
+            draft = draft.error(error_payload);
+        }
+        let run = match self
+            .append_event_payloads(optimizer_run_id.clone(), vec![draft])
+            .await
+        {
+            Ok((run, _)) => run,
+            Err(append_error) => {
+                // A concurrent writer may have sealed between the check and
+                // the append. Its seal wins when compatible; otherwise the
+                // refusal stands.
+                let Some(manifest) = self.terminal_manifest(optimizer_run_id.clone()).await? else {
+                    return Err(append_error);
+                };
+                cause
+                    .accept_sealed(manifest_terminal_kind(&manifest), &optimizer_run_id)
+                    .map_err(|error| anyhow!("{error}"))?;
+                self.get(optimizer_run_id.clone()).await?
+            }
+        };
+        self.revoke_credentials_post_terminal(&optimizer_run_id, cause.cancellation())
+            .await;
+        // Return the post-cleanup row: the revocation amendment advances the
+        // final cursor and the credential chain is now sealed in the summary.
+        self.get(optimizer_run_id).await.or(Ok(run))
+    }
+
+    /// F3: capability revocation lives inside settlement. Runs only after the
+    /// terminal event is durable; the revocation is recorded on the amendment
+    /// lane linked to the terminal sequence, so the journal proves revocation
+    /// was a consequence of the run ending. Best-effort: a missing vault or a
+    /// failed amendment append never un-settles a settled run.
+    async fn revoke_credentials_post_terminal(
+        &self,
+        optimizer_run_id: &str,
+        cancellation: Option<&std::sync::Arc<super::kernel::CancellationRequest>>,
+    ) {
+        let Some(secrets) = crate::secrets::live() else {
+            return;
+        };
+        let capability_ids = match secrets.revoke_run(optimizer_run_id) {
+            Ok(ids) => ids,
+            Err(error) => {
+                crate::platform::logging::report(
+                    "optimizers",
+                    "eprintln",
+                    format!("revoke credentials for settled run {optimizer_run_id}: {error:#}"),
+                );
+                return;
+            }
+        };
+        if capability_ids.is_empty() {
+            // A retry after revocation still has to seal/persist the chain;
+            // there may be no newly-revoked ids on this attempt.
+            if let Err(error) = self.seal_credential_chain(optimizer_run_id).await {
+                crate::platform::logging::report(
+                    "optimizers",
+                    "eprintln",
+                    format!("seal credential chain for settled run {optimizer_run_id}: {error:#}"),
+                );
+            }
+            return;
+        }
+        let terminal_sequence = match self.terminal_manifest(optimizer_run_id.to_string()).await {
+            Ok(Some(manifest)) => manifest.get("terminalCursor").and_then(Value::as_u64),
+            _ => None,
+        };
+        let Some(terminal_sequence) = terminal_sequence else {
+            return;
+        };
+        let run = match self.get(optimizer_run_id.to_string()).await {
+            Ok(run) => run,
+            Err(_) => return,
+        };
+        let draft =
+            credential_revocation_amendment(&run, terminal_sequence, capability_ids, cancellation);
+        if let Err(error) = self
+            .append_event_payloads(optimizer_run_id.to_string(), vec![draft])
+            .await
+        {
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!(
+                    "journal credential revocation for settled run {optimizer_run_id}: {error:#}"
+                ),
+            );
+        }
+        if let Err(error) = self.seal_credential_chain(optimizer_run_id).await {
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!("seal credential chain for settled run {optimizer_run_id}: {error:#}"),
+            );
+        }
+    }
+
+    pub(super) async fn settle_evidence_degraded(
+        &self,
+        optimizer_run_id: String,
+        stage: &str,
+        reason: String,
+    ) -> Result<OptimizerRunRecord> {
+        use sha2::{Digest, Sha256};
+
+        let run = self.get(optimizer_run_id.clone()).await?;
+        let state = self
+            .db
+            .clone()
+            .run({
+                let optimizer_run_id = optimizer_run_id.clone();
+                move |conn| super::kernel::persist::load_state(conn, &optimizer_run_id)
+            })
+            .await?
+            .context("evidence degradation requires a saved kernel projection")?;
+        let observed_at = Utc::now().to_rfc3339();
+        let degradation = json!({
+            "stage": stage,
+            "reason": reason.clone(),
+            "observedAt": observed_at,
+            "retryable": true,
+            "paidComputePreserved": true,
+        });
+        let draft = if let Some(terminal) = state.terminal.as_ref() {
+            let fingerprint = Sha256::digest(
+                format!("{}\0{}\0{}", terminal.final_sequence, stage, reason).as_bytes(),
+            );
+            OptimizerEventDraft::new("optimizer.evidence.amended", &run.algorithm_id)
+                .idempotency_key(format!("evidence-amendment:{fingerprint:x}"))
+                .level("warn")
+                .delta(Map::from_iter([
+                    ("terminalSequence".into(), json!(terminal.final_sequence)),
+                    ("degradation".into(), degradation),
+                ]))
+                .raw(json!({ "source": "core_runtime" }))
+        } else {
+            return self
+                .settle_run(
+                    optimizer_run_id,
+                    super::kernel::SettleCause::Degraded {
+                        detail: reason.clone(),
+                    },
+                    Some(degradation),
+                )
+                .await;
+        };
+        let (run, _) = self
+            .append_event_payloads(optimizer_run_id, vec![draft])
+            .await?;
+        Ok(run)
     }
 
     pub async fn get_state(
@@ -384,8 +2689,15 @@ impl OptimizerService {
         at_seq: Option<u64>,
     ) -> Result<OptimizerStateSlice> {
         let run = self.get(optimizer_run_id.clone()).await?;
-        let cursor = at_seq.unwrap_or(run.cursor_seq);
-        if at_seq.is_none() {
+        let cursor = self
+            .resolve_projection_cursor(&optimizer_run_id, at_seq, run.cursor_seq)
+            .await?;
+        // A post-terminal amendment advances the run record while the sealed
+        // kernel projection intentionally keeps its terminal sequence. A
+        // cached slice at that terminal cursor may predate the amendment, so
+        // only use the fast path when both cursors still describe the same
+        // revision.
+        if at_seq.is_none() && run.cursor_seq == cursor {
             let db = self.db.clone();
             let sid = slice_id.clone();
             let rid = optimizer_run_id.clone();
@@ -393,7 +2705,9 @@ impl OptimizerService {
                 .run(move |conn| load_cached_slice(conn, &rid, &sid))
                 .await?
             {
-                if cached.cursor_seq == cursor {
+                if cached.cursor_seq == cursor
+                    && cached.projection_schema_version == super::kernel::RUN_VIEW_SCHEMA_VERSION
+                {
                     return Ok(cached);
                 }
             }
@@ -414,12 +2728,34 @@ impl OptimizerService {
         at_seq: Option<u64>,
     ) -> Result<Vec<OptimizerStateSlice>> {
         let run = self.get(optimizer_run_id.clone()).await?;
-        let cursor = at_seq.unwrap_or(run.cursor_seq);
+        let cursor = self
+            .resolve_projection_cursor(&optimizer_run_id, at_seq, run.cursor_seq)
+            .await?;
         let mut slices = self.project_slices(&optimizer_run_id, cursor, None).await?;
         if let Some(ids) = slice_ids {
             slices.retain(|slice| ids.iter().any(|id| id == &slice.slice_id));
         }
         Ok(slices)
+    }
+
+    async fn resolve_projection_cursor(
+        &self,
+        optimizer_run_id: &str,
+        requested: Option<u64>,
+        run_cursor: u64,
+    ) -> Result<u64> {
+        if let Some(requested) = requested {
+            return Ok(requested);
+        }
+        let run_id = optimizer_run_id.to_string();
+        let state = self
+            .db
+            .clone()
+            .run(move |conn| super::kernel::persist::load_state(conn, &run_id))
+            .await?;
+        Ok(state
+            .map(|state| state.aggregate_sequence)
+            .unwrap_or(run_cursor))
     }
 
     pub async fn relationships(
@@ -453,36 +2789,157 @@ impl OptimizerService {
         .await
     }
 
-    pub async fn cancel(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
-        if let Some(cancel) = self.local_recipes.lock().await.get(&id).cloned() {
-            cancel
-                .send(true)
-                .map_err(|_| anyhow!("local optimizer recipe is no longer running"))?;
-            return self.command(id, "cancel", "cancelled").await;
+    pub async fn cancel(
+        &self,
+        id: String,
+        request: super::kernel::CancellationRequest,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let request = std::sync::Arc::new(request);
+        let run = self.get(id.clone()).await?;
+        if run.source == "cloud" {
+            self.record_cancellation_request(&id, &request).await?;
+            if let Ok(client) = super::cloud::CloudOptimizerClient::from_config() {
+                let _ = client.cancel_run(&id).await;
+            }
+            return self
+                .reconcile_cloud(super::models::OptimizerReconcileRequest {
+                    optimizer_run_id: id,
+                    after_seq: None,
+                    open_visual: Some(false),
+                })
+                .await;
         }
-        if let Ok(run) = self.get(id.clone()).await {
-            if run.source == "cloud" {
-                if let Ok(client) = super::cloud::CloudOptimizerClient::from_config() {
-                    let _ = client.cancel_run(&id).await;
-                }
-                return self
-                    .reconcile_cloud(super::models::OptimizerReconcileRequest {
-                        optimizer_run_id: id,
-                        after_seq: None,
-                        open_visual: Some(false),
-                    })
-                    .await;
+        // A run already sealed cancelled treats a second cancel as idempotent
+        // success; any other sealed outcome refuses — cancel cannot re-decide
+        // a settled record.
+        if let Some(manifest) = self.terminal_manifest(id.clone()).await? {
+            return match manifest_terminal_kind(&manifest) {
+                super::kernel::TerminalKind::Cancelled => Ok((run, None)),
+                sealed => Err(anyhow!(
+                    "cancel is not available for a run sealed {}",
+                    sealed.as_str()
+                )),
+            };
+        }
+        // The request becomes durable before anything acts on it: a receipt
+        // row, and a journal fact that owns a sequence. The sealing
+        // transaction later backfills `settled_sequence`, turning the request
+        // into a receipt.
+        self.record_cancellation_request(&id, &request).await?;
+        let drafts = vec![
+            OptimizerEventDraft::new("optimizer.run.cancel.requested", &run.algorithm_id)
+                .idempotency_key(format!("cancel-request:{}", request.request_id))
+                .delta(Map::from_iter([(
+                    "cancellation".into(),
+                    json!(request.as_ref()),
+                )]))
+                .raw(json!({ "source": "cancel" })),
+            OptimizerEventDraft::new("optimizer.run.cancelling", &run.algorithm_id)
+                .idempotency_key("cancel:cancelling")
+                .delta(Map::from_iter([("status".into(), json!("cancelling"))]))
+                .raw(json!({ "source": "cancel" })),
+        ];
+        let _ = self.append_event_payloads(id.clone(), drafts).await;
+        if let Some(cancel) = self.local_recipes.lock().await.get(&id).cloned() {
+            if cancel.send(Some(request.clone())).is_ok() {
+                // A live worker owns settlement: it drains its children and
+                // routes through settle_run. The row is not written here.
+                return Ok((self.get(id).await?, None));
+            }
+            // The sender is registered but its worker is gone; fall through
+            // and settle directly.
+        }
+        if matches!(run.algorithm_id.as_str(), "sft" | "cispo") {
+            if let Ok(client) =
+                super::sidecar_training::SidecarTrainingClient::from_manager(self.manager()).await
+            {
+                let _ = client.cancel(&id).await;
             }
         }
-        self.command(id, "cancel", "cancelled").await
+        let run = self
+            .settle_run(
+                id,
+                super::kernel::SettleCause::Cancelled {
+                    request: request.clone(),
+                },
+                None,
+            )
+            .await?;
+        Ok((run, None))
+    }
+
+    /// Durably record one typed cancellation request. Idempotent on
+    /// request_id; `settled_sequence` stays NULL until the sealing
+    /// transaction backfills it.
+    async fn record_cancellation_request(
+        &self,
+        run_id: &str,
+        request: &std::sync::Arc<super::kernel::CancellationRequest>,
+    ) -> Result<()> {
+        let db = self.db.clone();
+        let run_id = run_id.to_string();
+        let request = request.clone();
+        db.run_transaction(move |conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO optimizer_cancellation_requests(
+                    request_id, run_id, cause, requested_by, requested_at, scope, reason_code
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    request.request_id,
+                    run_id,
+                    request.cause.as_str(),
+                    request.requested_by,
+                    request.requested_at,
+                    request.scope,
+                    request.reason_code,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
     }
 
     pub async fn pause(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
-        self.command(id, "pause", "paused").await
+        let run = self.get(id.clone()).await?;
+        validate_control(&run, "pause", OptimizerRunStatus::Paused)?;
+        let is_eval = run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
+        if is_eval {
+            super::eval_recipes::set_paused(&id, true)?;
+        }
+        match self.command(id.clone(), "pause", "paused").await {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                if is_eval {
+                    let _ = super::eval_recipes::set_paused(&id, false);
+                }
+                Err(error)
+            }
+        }
     }
 
     pub async fn resume(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
-        self.command(id, "resume", "running").await
+        let run = self.get(id.clone()).await?;
+        validate_control(&run, "resume", OptimizerRunStatus::Running)?;
+        let is_eval = run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
+        if is_eval {
+            super::eval_recipes::set_paused(&id, false)?;
+        }
+        if matches!(run.algorithm_id.as_str(), "sft" | "cispo") {
+            if let Ok(client) =
+                super::sidecar_training::SidecarTrainingClient::from_manager(self.manager()).await
+            {
+                let _ = client.resume(&id).await;
+            }
+        }
+        match self.command(id.clone(), "resume", "running").await {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                if is_eval {
+                    let _ = super::eval_recipes::set_paused(&id, true);
+                }
+                Err(error)
+            }
+        }
     }
 
     pub async fn open_visual(
@@ -501,6 +2958,7 @@ impl OptimizerService {
         session_ref: Option<String>,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let mut run = self.get(optimizer_run_id.clone()).await?;
+        super::container_eval::refresh_terminal_visual_projection_if_stale(self, &run).await?;
         let presentation_session_ref = session_ref.or_else(|| run.session_ref.clone());
         let title = format!(
             "{} · {}",
@@ -509,8 +2967,8 @@ impl OptimizerService {
         );
         let bindings = json!({
             "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
-            "slots": [{
-                "slot": "optimizer_run",
+            "inputs": [{
+                "input": "optimizer_run",
                 "kind": "optimizer_run",
                 "source": run.id,
                 "schema": OPTIMIZER_RUN_SCHEMA_VERSION
@@ -519,15 +2977,35 @@ impl OptimizerService {
         let existing = run
             .visual_refs
             .iter()
-            .find(|r| r.kind == "visual")
+            .find(|r| r.kind == "visual" && r.role.as_deref() == Some("primary"))
             .map(|r| r.id.clone());
+        // Public SFT and local eval are controlled outside the optional
+        // Optimizers plugin, and their visuals are bundled with Workshop.
+        // Neither may depend on plugin installation or advertised templates.
+        //
+        // That independence used to need an explicit bypass around a
+        // negotiation step that consulted the plugin. It is now structural: no
+        // run's visual consults the plugin, because template ids were never the
+        // plugin's to grant. Keep it that way — reintroducing a capability
+        // lookup here re-couples eval and SFT to plugin installation.
+        let template_id = run
+            .summary
+            .pointer("/effectiveContract/primaryVisual/templateId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| negotiate_visual_template(&run.algorithm_id));
+        // A persisted contract may only name a template still registered in
+        // this instance. Managed-template removal is an explicit empty-state
+        // failure, not an invitation to silently select another family.
+        self.visuals.get_template(&template_id)?;
+        let template_digest = self.manager.status().await.digest;
         let visual = if let Some(visual_id) = existing {
             self.visuals.get(visual_id).await?
         } else {
             let (created, _) = self
                 .visuals
                 .create(VisualCreateRequest {
-                    template_id: primary_visual_template(&run.algorithm_id).into(),
+                    template_id: template_id.clone(),
                     title: Some(title),
                     bindings: Some(bindings),
                     id: None,
@@ -543,17 +3021,22 @@ impl OptimizerService {
                     content: None,
                     metadata: Some(json!({
                         "optimizerRunId": run.id,
-                        "algorithmId": run.algorithm_id
+                        "algorithmId": run.algorithm_id,
+                        "templateDigest": template_digest,
+                        "optimizerVisualRole": "primary"
                     })),
                 })
                 .await?;
             run.visual_refs.push(OptimizerResourceRef {
                 kind: "visual".into(),
                 id: created.id.clone(),
-                digest: None,
+                digest: template_digest.clone(),
                 role: Some("primary".into()),
                 title: Some(created.title.clone()),
-                metadata: json!({ "templateId": primary_visual_template(&run.algorithm_id) }),
+                metadata: json!({
+                    "templateId": template_id,
+                    "templateDigest": template_digest
+                }),
             });
             let visual_id = created.id.clone();
             let db = self.db.clone();
@@ -586,7 +3069,7 @@ impl OptimizerService {
                 schema_version: crate::storage::APP_EVENT_SCHEMA_VERSION.into(),
                 sequence: 0,
                 event_id: Uuid::new_v4().to_string(),
-                session_id: presentation_session_ref,
+                session_id: presentation_session_ref.clone(),
                 session_sequence: None,
                 run_id: None,
                 source: EventSource::System,
@@ -600,9 +3083,43 @@ impl OptimizerService {
                 command_id: None,
                 created_at: Utc::now().to_rfc3339(),
             }));
+        if let Some(trace_template) = run
+            .summary
+            .pointer("/effectiveContract/traceVisual/templateId")
+            .and_then(Value::as_str)
+            .filter(|template| *template != template_id)
+        {
+            let trace_template = trace_template.to_string();
+            self.visuals.get_template(&trace_template)?;
+            let _ = self
+                .publish_chat_owned_visual(ChatVisualPublication {
+                    run_id: run.id.clone(),
+                    session_ref: presentation_session_ref.clone(),
+                    template_id: trace_template,
+                    title: format!("{} · trace", algorithm_label(&run.algorithm_id)),
+                    bindings: json!({
+                        "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+                        "inputs": [{
+                            "input": "optimizer_run",
+                            "kind": "optimizer_run",
+                            "source": run.id,
+                            "schema": OPTIMIZER_RUN_SCHEMA_VERSION
+                        }]
+                    }),
+                    metadata: json!({
+                        "optimizerRunId": run.id,
+                        "effectiveContract": EFFECTIVE_CONTRACT_SCHEMA_VERSION,
+                        "emptyState": "waiting_for_declared_trace_events"
+                    }),
+                    status: crate::visuals::VisualStatus::Live,
+                    role: "trace".into(),
+                })
+                .await?;
+        }
         Ok((self.get(run.id).await?, event))
     }
 
+    #[cfg(test)]
     pub async fn seed_fixture(
         &self,
         fixture: &str,
@@ -617,7 +3134,7 @@ impl OptimizerService {
         let db = self.db.clone();
         let seed = run.clone();
         db.run_transaction(move |conn| {
-            upsert_run(conn, &seed)?;
+            persist_admission_not_required_run(conn, &seed, "generated-test-seed")?;
             upsert_cursor(conn, &seed.id, 0, &seed.created_at)?;
             Ok(())
         })
@@ -633,7 +3150,10 @@ impl OptimizerService {
         request: super::models::OptimizerImportLocalRequest,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let imported = super::local::import_local_path(&request.path)?;
-        let algorithm_id = super::normalize::normalize_algorithm_id(&imported.algorithm_id);
+        let algorithm_id = super::kernel::AlgorithmKind::parse_wire(&imported.algorithm_id)
+            .map_err(|error| anyhow!("{error}"))?
+            .wire_id()
+            .to_string();
         let events =
             super::normalize::normalize_events(&imported.events, &imported.run_id, &algorithm_id);
         if events.is_empty() {
@@ -655,39 +3175,37 @@ impl OptimizerService {
             finished_at: None,
             cursor_seq: 0,
             capabilities: OptimizerCapabilities::for_algorithm(&algorithm_id),
-            execution_bindings: vec![],
-            input_refs: vec![OptimizerResourceRef {
-                kind: "local_path".into(),
-                id: imported.source_path.display().to_string(),
-                digest: None,
-                role: Some("event_feed".into()),
-                title: Some("Local optimizer workspace".into()),
-                metadata: json!({}),
-            }],
-            output_refs: vec![],
+            execution_bindings: imported.execution_bindings.clone(),
+            input_refs: {
+                let mut refs = imported.input_refs.clone();
+                refs.push(OptimizerResourceRef {
+                    kind: "local_path".into(),
+                    id: imported.source_path.display().to_string(),
+                    digest: None,
+                    role: Some("event_feed".into()),
+                    title: Some("Local optimizer workspace".into()),
+                    metadata: json!({}),
+                });
+                refs
+            },
+            output_refs: imported.output_refs.clone(),
             visual_refs: vec![],
-            summary: json!({ "importedFrom": imported.source_path.display().to_string() }),
+            summary: {
+                let mut summary = imported.summary.as_object().cloned().unwrap_or_default();
+                summary.insert(
+                    "importedFrom".into(),
+                    json!(imported.source_path.display().to_string()),
+                );
+                Value::Object(summary)
+            },
             usage: OptimizerUsageSummary::default(),
             error: None,
         };
         let db = self.db.clone();
         let seed = run.clone();
         db.run_transaction(move |conn| {
-            upsert_run(conn, &seed)?;
+            persist_admission_not_required_run(conn, &seed, "local-import")?;
             upsert_cursor(conn, &seed.id, 0, &seed.created_at)?;
-            if let Some(session_ref) = seed.session_ref.as_deref() {
-                insert_relationship(
-                    conn,
-                    &OptimizerRelationship {
-                        from_kind: "optimizer".into(),
-                        from_id: seed.id.clone(),
-                        edge: "started_from".into(),
-                        to_kind: "session".into(),
-                        to_id: session_ref.into(),
-                        metadata: json!({}),
-                    },
-                )?;
-            }
             Ok(())
         })
         .await?;
@@ -732,6 +3250,7 @@ impl OptimizerService {
             super::normalize::cloud_run_to_mirror(&remote)
                 .ok_or_else(|| anyhow!("invalid cloud optimizer run payload"))?;
         let existing = self.get(id.clone()).await.ok();
+        let is_new_mirror = existing.is_none();
         let now = Utc::now().to_rfc3339();
         let mut run = existing.unwrap_or_else(|| OptimizerRunRecord {
             schema_version: OPTIMIZER_RUN_SCHEMA_VERSION.into(),
@@ -787,7 +3306,11 @@ impl OptimizerService {
         let db = self.db.clone();
         let seed = run.clone();
         db.run_transaction(move |conn| {
-            upsert_run(conn, &seed)?;
+            if is_new_mirror {
+                persist_admission_not_required_run(conn, &seed, "cloud-attach")?;
+            } else {
+                upsert_run(conn, &seed)?;
+            }
             upsert_cursor(conn, &seed.id, seed.cursor_seq, &Utc::now().to_rfc3339())?;
             Ok(())
         })
@@ -825,7 +3348,88 @@ impl OptimizerService {
             db.run(move |conn| upsert_run(conn, &persisted)).await?;
             (run, None)
         } else {
-            let (mut run, event) = self.append_events(id.clone(), events).await?;
+            // Hosted terminal facts enter the same settlement command as
+            // local ones. Events before the terminal preserve their assigned
+            // order; genuinely later producer facts become linked
+            // amendments instead of violating the sealed-run journal.
+            let terminal_at = events.iter().position(|event| {
+                matches!(
+                    event.event_type.as_str(),
+                    "optimizer.run.completed"
+                        | "optimizer.run.failed"
+                        | "optimizer.run.degraded"
+                        | "optimizer.run.cancelled"
+                )
+            });
+            let (mut run, event) = if let Some(terminal_at) = terminal_at {
+                let terminal = events[terminal_at].clone();
+                let before = events[..terminal_at].to_vec();
+                let after = events[terminal_at + 1..].to_vec();
+                let event = if before.is_empty() {
+                    None
+                } else {
+                    self.append_events(id.clone(), before).await?.1
+                };
+                let cause = match terminal.event_type.as_str() {
+                    "optimizer.run.completed" => super::kernel::SettleCause::Completed,
+                    "optimizer.run.degraded" => super::kernel::SettleCause::Degraded {
+                        detail: terminal
+                            .error
+                            .as_ref()
+                            .and_then(|value| value.get("message"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("hosted run degraded")
+                            .to_string(),
+                    },
+                    "optimizer.run.cancelled" => super::kernel::SettleCause::Cancelled {
+                        request: std::sync::Arc::new(super::kernel::CancellationRequest::new(
+                            super::kernel::CancellationCause::ContainerRequested,
+                            "cloud:remote",
+                            format!("run:{id}"),
+                        )),
+                    },
+                    _ => super::kernel::SettleCause::Failed {
+                        detail: terminal
+                            .error
+                            .as_ref()
+                            .and_then(|value| value.get("message"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("hosted run failed")
+                            .to_string(),
+                    },
+                };
+                let mut settled = self
+                    .settle_run(id.clone(), cause, terminal.error.clone())
+                    .await?;
+                if !after.is_empty() {
+                    let terminal_sequence = self
+                        .terminal_manifest(id.clone())
+                        .await?
+                        .and_then(|manifest| manifest.get("terminalCursor").and_then(Value::as_u64))
+                        .context("hosted terminal seal is missing terminalCursor")?;
+                    let amendments = after
+                        .into_iter()
+                        .map(|fact| {
+                            OptimizerEventDraft::new("optimizer.evidence.amended", &algorithm_id)
+                                .idempotency_key(format!(
+                                    "cloud-post-terminal:{}",
+                                    fact.event_id
+                                        .clone()
+                                        .unwrap_or_else(|| fact.sequence_number.to_string())
+                                ))
+                                .delta(Map::from_iter([
+                                    ("terminalSequence".into(), json!(terminal_sequence)),
+                                    ("postTerminalFact".into(), json!(fact)),
+                                ]))
+                                .raw(json!({"source":"cloud_reconcile"}))
+                        })
+                        .collect();
+                    settled = self.append_event_payloads(id.clone(), amendments).await?.0;
+                }
+                (settled, event)
+            } else {
+                self.append_events(id.clone(), events).await?
+            };
             persist_cloud_event_seq(&mut run, next_cloud_seq);
             let db = self.db.clone();
             let persisted = run.clone();
@@ -852,11 +3456,358 @@ impl OptimizerService {
             .await
     }
 
+    pub async fn search_saved_lora_checkpoints(
+        &self,
+        query: super::SavedLoraCheckpointQuery,
+    ) -> Result<super::SavedLoraCheckpointPage> {
+        let placement = query
+            .placement
+            .as_deref()
+            .unwrap_or("all")
+            .trim()
+            .to_ascii_lowercase();
+        let limit = query.limit.unwrap_or(50).clamp(1, 100);
+        let offset = query.offset.unwrap_or(0);
+        let include_local = matches!(placement.as_str(), "all" | "this_mac" | "local" | "mlx");
+        let include_hosted = matches!(placement.as_str(), "all" | "hosted" | "cloud");
+        let local = if include_local {
+            let query = query.clone();
+            self.db
+                .run(move |conn| super::local_lora::search_local_loras(conn, &query))
+                .await
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let hosted = if include_hosted {
+            match super::cloud::CloudOptimizerClient::from_config() {
+                Ok(client) => client
+                    .search_saved_lora_checkpoints(query.clone())
+                    .await
+                    .map(|page| page.items)
+                    .unwrap_or_default(),
+                Err(_) => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        let hosted = self.project_hosted_loras(hosted).await;
+        let mut items = local;
+        items.extend(hosted);
+        if let Some(provider) = query.provider.as_deref().filter(|value| *value != "all") {
+            items.retain(|item| item.provider == provider);
+        }
+        let total = items.len() as u64;
+        let items = items
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect::<Vec<_>>();
+        Ok(super::SavedLoraCheckpointPage {
+            schema_version: "saved_lora_checkpoint.page.v1".into(),
+            items,
+            total,
+            limit,
+            offset,
+        })
+    }
+
+    pub async fn list_saved_lora_checkpoints_for_run(
+        &self,
+        run_id: String,
+    ) -> Result<super::SavedLoraRunPage> {
+        let mut page = super::cloud::CloudOptimizerClient::from_config()?
+            .saved_lora_checkpoints_for_run(&run_id)
+            .await?;
+        page.items = self.project_hosted_loras(page.items).await;
+        Ok(page)
+    }
+
+    pub async fn run_outputs(&self, run_id: String) -> Result<super::OptimizerRunOutputs> {
+        let mut outputs = super::cloud::CloudOptimizerClient::from_config()?
+            .run_outputs(&run_id)
+            .await?;
+        outputs.model_checkpoints = self.project_hosted_loras(outputs.model_checkpoints).await;
+        Ok(outputs)
+    }
+
+    pub async fn hosted_training_models(&self) -> Result<super::HostedTrainingModelCatalog> {
+        super::cloud::CloudOptimizerClient::from_config()?
+            .hosted_training_models()
+            .await
+    }
+
+    pub async fn archive_saved_lora_checkpoint(
+        &self,
+        checkpoint_id: String,
+    ) -> Result<super::SavedLoraCheckpoint> {
+        let id = checkpoint_id.clone();
+        let local = self
+            .db
+            .run(move |conn| super::local_lora::get_local_lora(conn, &id))
+            .await?;
+        if local.is_some() {
+            let id = checkpoint_id;
+            return self
+                .db
+                .run(move |conn| super::local_lora::archive_local_lora(conn, &id))
+                .await;
+        }
+        super::cloud::CloudOptimizerClient::from_config()?
+            .archive_saved_lora_checkpoint(&checkpoint_id)
+            .await
+            .map(annotate_hosted_lora)
+    }
+
+    pub async fn saved_lora_download(
+        &self,
+        checkpoint_id: String,
+    ) -> Result<super::SavedLoraDownload> {
+        let id = checkpoint_id.clone();
+        if let Some(local) = self
+            .db
+            .run(move |conn| super::local_lora::get_local_lora(conn, &id))
+            .await?
+        {
+            return Ok(super::SavedLoraDownload {
+                checkpoint_id: local.checkpoint_id,
+                url: format!("file://{}", local.storage.key),
+                expires_in: 0,
+                content_type: local.storage.content_type,
+                size_bytes: local.storage.size_bytes,
+                sha256: local.storage.sha256,
+            });
+        }
+        super::cloud::CloudOptimizerClient::from_config()?
+            .saved_lora_download(&checkpoint_id)
+            .await
+    }
+
+    pub async fn import_saved_lora_dir(&self, path: String) -> Result<super::SavedLoraCheckpoint> {
+        self.db
+            .run(move |conn| super::local_lora::import_local_lora_dir(conn, Path::new(&path)))
+            .await
+    }
+
+    pub async fn infer_saved_lora(&self, request: super::CheckpointInferRequest) -> Result<Value> {
+        super::sidecar_training::infer_checkpoint(self, request, |_| {}).await
+    }
+
+    pub async fn infer_saved_lora_with_delta<F>(
+        &self,
+        request: super::CheckpointInferRequest,
+        on_delta: F,
+    ) -> Result<Value>
+    where
+        F: FnMut(&str) + Send,
+    {
+        super::sidecar_training::infer_checkpoint(self, request, on_delta).await
+    }
+
+    pub async fn patch_saved_lora(
+        &self,
+        checkpoint_id: String,
+        patch: super::SavedLoraPatchRequest,
+    ) -> Result<super::SavedLoraCheckpoint> {
+        if self.get_local_lora(checkpoint_id.clone()).await?.is_some() {
+            return self
+                .db
+                .run({
+                    let checkpoint_id = checkpoint_id.clone();
+                    let patch = patch.clone();
+                    move |conn| super::local_lora::patch_local_lora(conn, &checkpoint_id, &patch)
+                })
+                .await;
+        }
+        let client = super::cloud::CloudOptimizerClient::from_config()?;
+        match client
+            .patch_saved_lora_checkpoint(&checkpoint_id, &patch)
+            .await
+        {
+            Ok(row) => {
+                let id = checkpoint_id.clone();
+                let _ = self
+                    .db
+                    .run(move |conn| super::local_lora::clear_hosted_overlay(conn, &id))
+                    .await;
+                Ok(annotate_hosted_lora(row))
+            }
+            Err(patch_err) => match client.saved_lora_checkpoint(&checkpoint_id).await {
+                Ok(base) => {
+                    let id = checkpoint_id.clone();
+                    let patch = patch.clone();
+                    self.db
+                        .run(move |conn| {
+                            super::local_lora::overlay_hosted_lora(
+                                conn,
+                                &id,
+                                &patch,
+                                annotate_hosted_lora(base),
+                            )
+                        })
+                        .await
+                }
+                Err(_) => {
+                    let id = checkpoint_id.clone();
+                    let overlay_patch = patch.clone();
+                    let _ = self
+                        .db
+                        .run(move |conn| {
+                            super::local_lora::upsert_hosted_overlay(conn, &id, &overlay_patch)
+                        })
+                        .await;
+                    Err(patch_err)
+                }
+            },
+        }
+    }
+
+    pub async fn publish_saved_lora(
+        &self,
+        checkpoint_id: String,
+    ) -> Result<super::SavedLoraCheckpoint> {
+        let local = self
+            .get_local_lora(checkpoint_id.clone())
+            .await?
+            .ok_or_else(|| anyhow!("only This Mac adapters can be published"))?;
+        let adapter = Path::new(&local.storage.key);
+        if !adapter.is_dir() {
+            bail!("adapter bytes are missing");
+        }
+        let (archive, sha256) = super::local_lora::zip_adapter_dir(adapter)?;
+        let request = json!({
+            "name": local.name,
+            "description": local.description,
+            "provider": "imported",
+            "checkpoint_kind": local.checkpoint_kind,
+            "visibility": "private",
+            "base_model": local.base_model,
+            "lora_rank": local.lora_rank,
+            "step": local.step,
+            "tags": local.tags,
+            "metadata": {
+                "source_digest": local.checkpoint_id,
+                "placement": "this_mac"
+            },
+            "content_type": "application/zip"
+        });
+        super::cloud::CloudOptimizerClient::from_config()?
+            .publish_saved_lora_archive(&archive, request, &sha256)
+            .await
+    }
+
+    pub async fn upsert_local_lora_from_event(&self, run_id: String, payload: Value) -> Result<()> {
+        let Some(row) =
+            super::local_lora::LocalLoraUpsert::from_checkpoint_event(&run_id, &payload)
+        else {
+            return Ok(());
+        };
+        self.db
+            .run(move |conn| super::local_lora::upsert_local_lora(conn, &row).map(|_| ()))
+            .await
+    }
+
+    pub async fn get_local_lora(
+        &self,
+        checkpoint_id: String,
+    ) -> Result<Option<super::SavedLoraCheckpoint>> {
+        self.db
+            .run(move |conn| super::local_lora::get_local_lora(conn, &checkpoint_id))
+            .await
+    }
+
+    /// Persist the canonical hosted-training projection independently of the
+    /// legacy optimizer-event cursor.  The backend training ledger is the
+    /// authority for CISPO/PPO progress, checkpoint readiness and terminal
+    /// truth; keeping its sequence in the durable run summary makes Workshop
+    /// reconnect from the same cursor after an app restart.
+    pub async fn reconcile_training(&self, optimizer_run_id: String) -> Result<Value> {
+        let run = self.get(optimizer_run_id.clone()).await?;
+        if !matches!(run.algorithm_id.as_str(), "sft" | "cispo" | "ppo") {
+            bail!(
+                "canonical training replay is unavailable for algorithm {}",
+                run.algorithm_id
+            );
+        }
+        if run.source != "cloud" {
+            bail!("canonical training replay requires a cloud run");
+        }
+        let mut projection: super::TrainingProjection = run
+            .summary
+            .get("trainingProjection")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .context("decode persisted training projection")?
+            .unwrap_or_default();
+        let client = super::cloud::CloudOptimizerClient::from_config()?;
+        loop {
+            let events = client
+                .training_events_after(&optimizer_run_id, projection.last_sequence, Some(5000))
+                .await?;
+            if events.is_empty() {
+                break;
+            }
+            let previous = projection.last_sequence;
+            for event in events {
+                projection.apply(&event).map_err(anyhow::Error::msg)?;
+            }
+            if projection.last_sequence == previous {
+                break;
+            }
+        }
+        let persisted_projection = serde_json::to_value(&projection)?;
+        let result = json!({
+            "schemaVersion": "workshop.training_snapshot.v1",
+            "runId": optimizer_run_id,
+            "projection": persisted_projection,
+        });
+        let result_for_store = result.clone();
+        let lifecycle = projection.lifecycle;
+        let provider_usage = projection.provider_usage.clone();
+        self.patch_run(optimizer_run_id, move |run| {
+            let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+            summary.insert(
+                "trainingProjection".into(),
+                result_for_store["projection"].clone(),
+            );
+            summary.insert(
+                "trainingEventSequence".into(),
+                json!(projection.last_sequence),
+            );
+            if let Some(usage) = provider_usage.as_ref() {
+                if let Some(cost) = usage
+                    .get("provider_cost_usd")
+                    .or_else(|| usage.get("estimated_cost_usd"))
+                    .and_then(Value::as_f64)
+                {
+                    run.usage.cost_usd = Some(cost);
+                }
+                run.usage.prompt_tokens = usage
+                    .get("prompt_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(run.usage.prompt_tokens);
+                run.usage.completion_tokens = usage
+                    .get("completion_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(run.usage.completion_tokens);
+            }
+            run.status = training_lifecycle_status(lifecycle).into();
+            run.capabilities = OptimizerCapabilities::for_algorithm(&run.algorithm_id);
+            Ok(())
+        })
+        .await?;
+        Ok(result)
+    }
+
     async fn create_cloud(
         &self,
         request: OptimizerCreateRequest,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
-        let algorithm_id = super::normalize::normalize_algorithm_id(&request.algorithm_id);
+        let algorithm_id = super::kernel::AlgorithmKind::parse_wire(&request.algorithm_id)
+            .map_err(|error| anyhow!("{error}"))?
+            .wire_id()
+            .to_string();
         let config = request
             .cloud_config
             .clone()
@@ -890,21 +3841,13 @@ impl OptimizerService {
         next_status: &str,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let command = command.to_string();
-        let next_status = next_status.to_string();
+        let next = OptimizerRunStatus::parse(next_status)
+            .ok_or_else(|| anyhow!("{next_status} is not an OptimizerRunStatus"))?;
         let db = self.db.clone();
         db.run_transaction(move |conn| {
             let mut run = load_run(conn, &optimizer_run_id)?;
-            match command.as_str() {
-                "cancel" if !run.capabilities.cancel => {
-                    bail!("cancel is not available for this run")
-                }
-                "pause" if !run.capabilities.pause => bail!("pause is not available for this run"),
-                "resume" if !run.capabilities.resume => {
-                    bail!("resume is not available for this run")
-                }
-                _ => {}
-            }
-            run.status = next_status;
+            validate_control(&run, &command, next)?;
+            run.status = next.as_str().to_string();
             if command == "resume" && run.started_at.is_none() {
                 run.started_at = Some(Utc::now().to_rfc3339());
             }
@@ -912,6 +3855,7 @@ impl OptimizerService {
                 run.finished_at = Some(Utc::now().to_rfc3339());
             }
             upsert_run(conn, &run)?;
+            super::experiment_bind::settle_run(conn, &run)?;
             let event = append_event(
                 conn,
                 EventAppend {
@@ -942,14 +3886,100 @@ impl OptimizerService {
         let db = self.db.clone();
         db.run(move |conn| {
             let run = load_run(conn, &run_id)?;
-            let events = load_events_upto(conn, &run_id, at_seq)?;
-            let mut slices = project_from_events(&run, &events, None)?;
+            let state = super::kernel::persist::load_state(conn, &run_id)?
+                .ok_or_else(|| anyhow!("optimizer run {run_id} has no saved kernel projection"))?;
+            if state.aggregate_sequence != at_seq {
+                bail!(
+                    "optimizer run {run_id} projection is at sequence {}, requested {at_seq}",
+                    state.aggregate_sequence
+                );
+            }
+            let mut slices = project_from_kernel(&run, &state)?;
             if let Some(only) = only {
                 slices.retain(|slice| slice.slice_id == only);
             }
             Ok(slices)
         })
         .await
+    }
+}
+
+fn project_from_kernel(
+    run: &OptimizerRunRecord,
+    state: &super::kernel::RunKernelState,
+) -> Result<Vec<OptimizerStateSlice>> {
+    if run.id != state.run_id {
+        bail!(
+            "optimizer state identity mismatch: record {} != projection {}",
+            run.id,
+            state.run_id
+        );
+    }
+    let view = super::kernel::project_view(state);
+    let view_json = serde_json::to_value(&view)?;
+    let updated_at = state
+        .terminal
+        .as_ref()
+        .map(|terminal| terminal.sealed_at.clone())
+        .unwrap_or_else(|| run.created_at.clone());
+    let mk = |slice_id: String, data: Value| OptimizerStateSlice {
+        schema_version: OPTIMIZER_STATE_SLICE_SCHEMA_VERSION.into(),
+        projection_schema_version: super::kernel::RUN_VIEW_SCHEMA_VERSION.into(),
+        run_id: state.run_id.clone(),
+        algorithm_id: state.algorithm.wire_id().into(),
+        slice_id,
+        cursor_seq: state.aggregate_sequence,
+        updated_at: updated_at.clone(),
+        data,
+    };
+    let result = state
+        .projection
+        .settle()
+        .ok()
+        .map(serde_json::to_value)
+        .transpose()?
+        .unwrap_or(Value::Null);
+    Ok(vec![
+        mk("run.view.v2".into(), view_json.clone()),
+        mk("run.summary".into(), json!({ "view": view_json })),
+        mk("run.usage".into(), serde_json::to_value(state.usage())?),
+        mk(
+            "run.work".into(),
+            serde_json::to_value(state.work_summary())?,
+        ),
+        mk(
+            "run.evidence".into(),
+            serde_json::to_value(state.evidence_state())?,
+        ),
+        mk(
+            "run.execution".into(),
+            json!({ "placement": state.placement }),
+        ),
+        mk(
+            format!("{}.projection", state.algorithm.wire_id()),
+            serde_json::to_value(&state.projection)?,
+        ),
+        mk(format!("{}.result", state.algorithm.wire_id()), result),
+    ])
+}
+
+fn training_lifecycle_status(lifecycle: super::TrainingLifecycle) -> &'static str {
+    use super::TrainingLifecycle as L;
+    match lifecycle {
+        L::Draft | L::Validating => "validating",
+        L::Queued => "queued",
+        L::Provisioning => "provisioning",
+        L::Running | L::Checkpointing | L::Evaluating => "running",
+        L::EnvUnreachable => "env_unreachable",
+        L::Cancelling => "cancelling",
+        L::Cancelled => "cancelled",
+        L::Paused => "paused",
+        L::Completed => "completed",
+        L::Degraded => "degraded",
+        L::FailedEvidence => "failed_evidence",
+        L::Failed => "failed",
+        L::InfrastructureLost => "infrastructure_lost",
+        L::CapReached => "cap_reached",
     }
 }
 
@@ -964,16 +3994,266 @@ fn algorithm_label(algorithm_id: &str) -> &'static str {
         "gepa" => "GEPA",
         "go-ex" => "GELO",
         "sft" => "SFT",
+        "cispo" => "CISPO",
+        "eval" => "Eval",
+        id if id == "dag" || id.starts_with("dag.") => "DAG",
         _ => "Optimizer",
     }
 }
 
-fn primary_visual_template(algorithm_id: &str) -> &'static str {
+pub(in crate::optimizers) fn primary_visual_template(algorithm_id: &str) -> &'static str {
     match algorithm_id {
         "sft" => "optimizer.sft.live.v1",
+        "cispo" => "optimizer.cispo.live.v1",
         "gepa" => "optimizer.gepa.live.v1",
+        "eval" => "optimizer.eval.live.v1",
+        id if id == "dag" || id.starts_with("dag.") => "optimizer.dag.live.v1",
         _ => "optimizer.run.v1",
     }
+}
+
+/// Cross-check that the runtime actually claims the algorithm about to run.
+///
+/// This replaces an intersection against `compatibleTemplateIds`, which could
+/// not fail informatively: template ids are Desktop vocabulary that the plugin
+/// only knew because Desktop's own install payload told it, so the check
+/// compared a host constant against a round-trip of that same constant. The
+/// algorithm list is a fact the runtime owns, so comparing against it is real.
+fn require_advertised_algorithm(advertised: &Value, algorithm_id: &str) -> Result<()> {
+    let algorithms = advertised
+        // Manager projections separate optimizer algorithms from eval
+        // execution capabilities. Accept the raw handshake spelling as a
+        // compatibility input, but never synthesize a claim from host data.
+        .get("optimization_algorithms")
+        .or_else(|| advertised.get("algorithms"))
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "optimizer capabilities advertise no algorithms; the sidecar must complete a \
+                 capability handshake before a run is opened"
+            )
+        })?;
+    // Namespaced ids (`dag.foo`) are served by their root algorithm.
+    let root = algorithm_id.split('.').next().unwrap_or(algorithm_id);
+    if algorithms
+        .iter()
+        .filter_map(Value::as_str)
+        .any(|advertised| advertised == algorithm_id || advertised == root)
+    {
+        return Ok(());
+    }
+    bail!("optimizer runtime does not advertise algorithm `{algorithm_id}`")
+}
+
+/// Which visual Desktop renders for a run. Deliberately does not consult the
+/// runtime: template ids are host vocabulary, and picking a visual is not a
+/// capability decision. Gating rendering on the handshake also breaks runs the
+/// managed sidecar does not serve at all — hosted SFT among them, since the
+/// real plugin advertises only `gepa`. Whether a runtime can *execute* an
+/// algorithm is enforced at the paid gate by `require_advertised_algorithm`.
+fn negotiate_visual_template(algorithm_id: &str) -> String {
+    primary_visual_template(algorithm_id).to_owned()
+}
+
+#[cfg(test)]
+async fn materialize_optimizer_result(
+    service: &OptimizerService,
+    run: &OptimizerRunRecord,
+) -> Result<Value> {
+    // Results are algorithm nouns, not a GEPA filesystem convention. Baseline
+    // evals, SFT jobs, and environment campaigns must remain readable without
+    // inventing a selected prompt or a `best_candidate.json` artifact.
+    if run.algorithm_id != "gepa" {
+        bail!("local candidate materialization is defined only for canonical GEPA runs");
+    }
+    let run_dir = run
+        .summary
+        .get("runDirectory")
+        .and_then(Value::as_str)
+        .map(std::path::PathBuf::from);
+    let candidate_path = run_dir.as_ref().map(|dir| dir.join("best_candidate.json"));
+    let manifest_path = run_dir.as_ref().map(|dir| dir.join("result_manifest.json"));
+    let candidate_raw = candidate_path
+        .as_ref()
+        .and_then(|path| std::fs::read(path).ok());
+    let manifest_raw = manifest_path
+        .as_ref()
+        .and_then(|path| std::fs::read(path).ok());
+    let manifest = manifest_raw
+        .as_ref()
+        .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok());
+    let mut artifact_refs = Vec::new();
+    if let Some(bytes) = candidate_raw.as_ref() {
+        if let Ok(digest) = service.visuals.content().put_bytes("blobs", bytes) {
+            artifact_refs.push(json!({
+                "kind": "content",
+                "id": digest,
+                "role": "best_candidate"
+            }));
+        }
+    }
+    if let Some(bytes) = manifest_raw.as_ref() {
+        if let Ok(digest) = service.visuals.content().put_bytes("blobs", bytes) {
+            artifact_refs.push(json!({
+                "kind": "content",
+                "id": digest,
+                "role": "result_manifest"
+            }));
+        }
+    }
+    let materialized_values = candidate_raw.as_ref().and_then(|bytes| {
+        let value: Value = serde_json::from_slice(bytes).ok()?;
+        let values = value
+            .get("values")
+            .or_else(|| value.get("payload"))
+            .or_else(|| value.pointer("/lever_bundle/values"))
+            .and_then(Value::as_object)
+            .filter(|values| !values.is_empty())
+            .cloned();
+        values.or_else(|| {
+            ["prompt", "stage2_system", "react_system_prompt"]
+                .into_iter()
+                .find_map(|key| value.get(key).cloned().map(|item| (key, item)))
+                .map(|(key, item)| serde_json::Map::from_iter([(key.to_string(), item)]))
+        })
+    });
+    let candidate_id = candidate_raw.as_ref().and_then(|bytes| {
+        let value: Value = serde_json::from_slice(bytes).ok()?;
+        value
+            .get("id")
+            .or_else(|| value.get("candidate_id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
+    let parent_id = candidate_raw.as_ref().and_then(|bytes| {
+        let value: Value = serde_json::from_slice(bytes).ok()?;
+        value
+            .get("parent_id")
+            .or_else(|| value.get("parentId"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
+    let materialized_digest = materialized_values.as_ref().map(|values| {
+        use sha2::{Digest, Sha256};
+        let bytes = serde_json::to_vec(values).expect("materialized candidate values serialize");
+        format!("sha256:{:x}", Sha256::digest(bytes))
+    });
+    if run.algorithm_id == "gepa" && run.status == "completed" && materialized_values.is_none() {
+        bail!("completed GEPA result omitted materialized candidate values");
+    }
+    let mut selected_candidate = json!({});
+    if let Some(id) = candidate_id {
+        selected_candidate["id"] = json!(id);
+    }
+    if let Some(parent) = parent_id {
+        selected_candidate["parentId"] = json!(parent);
+    }
+    if let Some(values) = materialized_values {
+        selected_candidate["materializedValues"] = Value::Object(values);
+    }
+    if let Some(digest) = materialized_digest {
+        selected_candidate["materializedDigest"] = json!(digest);
+    }
+    selected_candidate["frontierMember"] = json!(true);
+    let selection = run
+        .summary
+        .get("selection")
+        .cloned()
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            manifest.as_ref().and_then(|value| {
+                value
+                    .get("selection")
+                    .or_else(|| value.pointer("/best_candidate/acceptance_metadata/selection"))
+                    .cloned()
+                    .or_else(|| {
+                        let best = value.get("best_candidate")?;
+                        let candidate_id = best.get("candidate_id")?.clone();
+                        let parent_id = best.get("parent_id").cloned().unwrap_or(Value::Null);
+                        Some(json!({
+                            "candidateId": candidate_id,
+                            "parentId": parent_id,
+                            "accepted": !parent_id.is_null(),
+                            "acceptanceScore": best.get("acceptance_score").cloned().unwrap_or(Value::Null),
+                            "minibatchReward": best.get("minibatch_reward").cloned().unwrap_or(Value::Null)
+                        }))
+                    })
+            })
+        })
+        .unwrap_or(Value::Null);
+    let heldout = run
+        .summary
+        .get("heldout")
+        .cloned()
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            manifest.as_ref().and_then(|value| {
+                value
+                    .pointer("/best_candidate/heldout_reward")
+                    .filter(|value| !value.is_null())
+                    .map(|score| json!({"score": score, "split": "heldout"}))
+            })
+        })
+        .unwrap_or(Value::Null);
+    // The sealed terminal manifest, not the producer's `result_manifest.json`.
+    // The candidate file says what was selected; only the manifest says whether
+    // selecting it improved anything, and a search that improved nothing is the
+    // common case rather than the exception.
+    let sealed = service.terminal_manifest(run.id.clone()).await?;
+    let evidence = sealed
+        .as_ref()
+        .and_then(|sealed| sealed.get("gepaEvidence").cloned())
+        .filter(|value| !value.is_null());
+    let verdict = evidence
+        .as_ref()
+        .and_then(|evidence| evidence.get("verdict").cloned())
+        .unwrap_or(Value::Null);
+    // `frontierMember` is a fact about the search; it is not a recommendation.
+    // Keeping the two apart is what stops a retained seed from reading as a
+    // promotion.
+    let deployment = evidence
+        .as_ref()
+        .and_then(|evidence| evidence.get("deployment").cloned())
+        .unwrap_or_else(|| {
+            json!({
+                "candidateId": Value::Null,
+                "recommended": false,
+                "basis": "this run sealed no verdict; nothing is recommended for deployment",
+            })
+        });
+    let mut result = json!({
+        "schemaVersion": "optimizer_result.v1",
+        "resultKind": "gepa_run_result.v1",
+        "optimizerRunId": run.id,
+        "algorithmId": run.algorithm_id,
+        "status": run.status,
+        "finalCursor": sealed
+            .as_ref()
+            .and_then(|sealed| sealed.get("terminalCursor").cloned())
+            .unwrap_or(json!(run.cursor_seq)),
+        "selectedCandidate": selected_candidate,
+        "verdict": verdict,
+        "deployment": deployment,
+        "evidence": evidence.clone().unwrap_or(Value::Null),
+        "metrics": {
+            "selection": sealed
+                .as_ref()
+                .and_then(|sealed| sealed.get("selection").cloned())
+                .filter(|value| !value.is_null())
+                .unwrap_or(selection),
+            "heldoutMeasurement": heldout
+        },
+        "usage": serde_json::to_value(&run.usage).unwrap_or(Value::Null),
+        "artifactRefs": artifact_refs,
+        "completionReceiptId": format!("optimizer_completion_{}", run.id)
+    });
+    if let Some(sealed) = sealed.as_ref() {
+        if let Some(object) = result.as_object().cloned() {
+            result = Value::Object(super::terminal::reconcile(object, sealed));
+        }
+    }
+    Ok(result)
 }
 
 fn list_runs(conn: &Connection, query: &OptimizerQuery) -> Result<Vec<OptimizerRunRecord>> {
@@ -1017,6 +4297,163 @@ fn list_runs(conn: &Connection, query: &OptimizerQuery) -> Result<Vec<OptimizerR
     Ok(out)
 }
 
+fn annotate_hosted_lora(mut checkpoint: super::SavedLoraCheckpoint) -> super::SavedLoraCheckpoint {
+    checkpoint.placement = "hosted".into();
+    let inference = checkpoint.checkpoint_kind == "inference"
+        && checkpoint.status == "ready"
+        && checkpoint
+            .provider_checkpoint_reference
+            .as_deref()
+            .or(checkpoint.lineage.provider_checkpoint_reference.as_deref())
+            .is_some_and(|value| value.starts_with("tinker://"));
+    checkpoint.inference_chat_completions = inference;
+    checkpoint.inference_responses = inference;
+    checkpoint
+}
+
+impl OptimizerService {
+    async fn project_hosted_loras(
+        &self,
+        items: Vec<super::SavedLoraCheckpoint>,
+    ) -> Vec<super::SavedLoraCheckpoint> {
+        let overlays = self
+            .db
+            .run(|conn| super::local_lora::list_hosted_overlays(conn))
+            .await
+            .unwrap_or_default();
+        items
+            .into_iter()
+            .map(|item| {
+                let mut item = annotate_hosted_lora(item);
+                if let Some(overlay) = overlays.get(&item.checkpoint_id) {
+                    super::local_lora::apply_hosted_overlay(&mut item, overlay);
+                }
+                item
+            })
+            .collect()
+    }
+}
+
+fn persist_new_run(conn: &Connection, run: &OptimizerRunRecord) -> Result<AppEvent> {
+    upsert_run(conn, run)?;
+    super::experiment_bind::attach_run(conn, run)?;
+    if let Some(session_ref) = run.session_ref.as_deref() {
+        insert_relationship(
+            conn,
+            &OptimizerRelationship {
+                from_kind: "optimizer".into(),
+                from_id: run.id.clone(),
+                edge: "started_from".into(),
+                to_kind: "session".into(),
+                to_id: session_ref.into(),
+                metadata: json!({}),
+            },
+        )?;
+    }
+    append_event(
+        conn,
+        EventAppend {
+            event_id: None,
+            session_id: run.session_ref.clone(),
+            run_id: None,
+            source: EventSource::System,
+            kind: "optimizer.run.created".into(),
+            payload: json!({
+                "optimizerRunId": run.id,
+                "algorithmId": run.algorithm_id,
+                "status": run.status
+            }),
+            remote_sequence: None,
+            command_id: None,
+            created_at: None,
+        },
+    )
+}
+
+/// Seal an immutable run request and consume its approved draft in the same
+/// transaction that creates the optimizer row.
+///
+/// The authorization reference names the already-authorized Workshop
+/// operation that reached this service boundary. Imports and cloud attachment
+/// use their dedicated paths and are recorded as admission-not-required there;
+/// local algorithm starts must pass through this approved envelope.
+fn persist_admitted_run(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+    authorization_ref: String,
+) -> Result<AppEvent> {
+    persist_run_with_admission(conn, run, authorization_ref, true)
+}
+
+fn persist_admission_not_required_run(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+    reason: &str,
+) -> Result<AppEvent> {
+    persist_run_with_admission(
+        conn,
+        run,
+        format!("workshop:admission-not-required:{reason}"),
+        false,
+    )
+}
+
+fn persist_run_with_admission(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+    authorization_ref: String,
+    approval_required: bool,
+) -> Result<AppEvent> {
+    let algorithm = super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id)
+        .map_err(|error| anyhow!("{error}"))?;
+    let placement = super::kernel::bridge::placement_from_run_source(algorithm, &run.source);
+    let spec = super::admission::CanonicalJson::new(json!({
+        "schemaVersion": "optimizer_authorized_run_start.v1",
+        "algorithm": run.algorithm_id,
+        "algorithmVersion": run.algorithm_version,
+        "objective": run.objective,
+        "source": run.source,
+        "projectRef": run.project_ref,
+        "executionBindings": run.execution_bindings,
+        "inputRefs": run.input_refs,
+        "summary": run.summary,
+    }))
+    .map_err(|error| anyhow!("canonicalize authorized run spec: {error}"))?;
+    let spec_json = spec.to_canonical_string();
+    let spec_digest = spec.digest().as_str().to_string();
+    let now = run.created_at.clone();
+    let draft_id = format!("draft_{}", run.id);
+    let mut draft =
+        super::kernel::RunDraft::new(&draft_id, algorithm, &spec_digest, spec_json, &now);
+    draft.authorization_ref = Some(authorization_ref);
+    let transitions: &[super::kernel::AdmissionState] = if approval_required {
+        &[
+            super::kernel::AdmissionState::Validating,
+            super::kernel::AdmissionState::AwaitingApproval,
+            super::kernel::AdmissionState::Approved,
+        ]
+    } else {
+        &[super::kernel::AdmissionState::NotRequired]
+    };
+    for &next in transitions {
+        draft
+            .transition(next, &now)
+            .map_err(|error| anyhow!("{error}"))?;
+    }
+    super::kernel::persist::insert_draft(conn, &draft)?;
+    let event = persist_new_run(conn, run)?;
+    let commit =
+        super::kernel::AdmissionCommit::from_approved_draft(&draft, &run.id, placement, &now)
+            .map_err(|error| anyhow!("{error}"))?;
+    super::kernel::persist::consume_draft(conn, &draft_id, &now)?;
+    super::kernel::persist::insert_spec(conn, &commit)?;
+    super::kernel::persist::upsert_projection(
+        conn,
+        &super::kernel::RunKernelState::from_admission(&commit),
+    )?;
+    Ok(event)
+}
+
 fn load_run(conn: &Connection, optimizer_run_id: &str) -> Result<OptimizerRunRecord> {
     let payload: String = conn
         .query_row(
@@ -1029,8 +4466,27 @@ fn load_run(conn: &Connection, optimizer_run_id: &str) -> Result<OptimizerRunRec
     Ok(serde_json::from_str(&payload)?)
 }
 
+fn run_view_context(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+) -> Result<super::kernel::view::RunViewContext> {
+    let mut context = super::kernel::view::RunViewContext::from(run);
+    context.artifacts = super::artifacts::list_all(conn, &run.id)?;
+    context.effective_contract = super::effective_contract::load(conn, &run.id)?;
+    Ok(context)
+}
+
 fn upsert_run(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
-    let payload = serde_json::to_string(run)?;
+    let status = OptimizerRunStatus::parse(&run.status).ok_or_else(|| {
+        anyhow!(
+            "refusing optimizer run {} with non-lifecycle status {:?}; algorithm phases and work-item statuses must remain on their owned projections",
+            run.id,
+            run.status
+        )
+    })?;
+    let mut canonical = run.clone();
+    canonical.status = status.as_str().to_string();
+    let payload = serde_json::to_string(&canonical)?;
     conn.execute(
         "INSERT INTO optimizer_runs(
             id, algorithm_id, algorithm_version, status, source, objective,
@@ -1064,7 +4520,9 @@ fn upsert_run(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
             run.id,
             run.algorithm_id,
             run.algorithm_version,
-            run.status,
+            // The status column and payload are both canonicalized by this
+            // single writer, so structured reads cannot disagree with SQL.
+            status.as_str(),
             run.source,
             run.objective,
             run.project_ref,
@@ -1085,7 +4543,1025 @@ fn upsert_run(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
             Utc::now().to_rfc3339(),
         ],
     )?;
+    if let Some(contract) = run.summary.get("effectiveContract") {
+        let contract: EffectiveContract =
+            serde_json::from_value(contract.clone()).context("decode run effectiveContract")?;
+        if contract.optimizer_run_id != run.id {
+            bail!(
+                "effective contract belongs to {}, refusing to persist it on {}",
+                contract.optimizer_run_id,
+                run.id
+            );
+        }
+        super::effective_contract::upsert(conn, &contract)?;
+    }
     Ok(())
+}
+
+/// Validate a whole batch, then execute it atomically: insert the events,
+/// advance the run and its cursor, refresh the cached projections, and — when
+/// the batch ends the run — seal the terminal manifest. Every one of those is
+/// part of the same transaction, so a projection that cannot be computed rolls
+/// back the events that would have implied it rather than leaving a run whose
+/// history and whose state slices describe different runs.
+fn commit_validated_events(
+    conn: &Connection,
+    frame_store: &ContentStore,
+    mut run: OptimizerRunRecord,
+    mut events: Vec<OptimizerEventEnvelope>,
+    contract: SequenceContract,
+) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+    // Normalize and validate the Optimizers-owned imported/relay slice before
+    // even computing the insert plan. Workshop-local event families bypass
+    // this gate and remain on the local contract path.
+    super::event_contract::normalize_and_validate_imported_eval_events(&mut events)?;
+    let durable = durable_event_ids(conn, &run.id, &events)?;
+    let plan = plan_batch(&run.id, run.cursor_seq, &durable, &events, contract)
+        .with_context(|| format!("validate optimizer event batch for {}", run.id))?;
+    let mut appended = 0usize;
+    let mut appended_events: Vec<OptimizerEventEnvelope> = Vec::new();
+    let mut evidence_amendments = Vec::new();
+    for (event, verdict) in events.iter_mut().zip(plan) {
+        super::experiment_bind::fold_candidate(conn, event)?;
+        if verdict == EventVerdict::ConfirmedReplay {
+            continue;
+        }
+        super::frames::persist_event_frame(conn, frame_store, event)?;
+        insert_event(conn, event)?;
+        // Artifact declarations are indexed in the event transaction. A
+        // conflicting identity therefore rolls back both the index and the
+        // event that attempted to redefine it.
+        super::artifacts::persist_event_artifacts(conn, std::slice::from_ref(event))?;
+        // Fold the event's error into the run record as it commits, so a
+        // terminal batch seals `error_json` and the manifest's error in the
+        // same transaction — they can no longer diverge by one event.
+        if let Some(error) = &event.error {
+            run.error = Some(error.clone());
+        }
+        if event.event_type == "optimizer.evidence.amended" {
+            evidence_amendments.push(event.clone());
+        }
+        run.cursor_seq = event.sequence_number;
+        upsert_cursor(conn, &run.id, run.cursor_seq, &event.occurred_at)?;
+        appended_events.push(event.clone());
+        appended += 1;
+    }
+    if appended == 0 {
+        // Every event was a confirmed replay. Nothing durable changed, so the
+        // bus stays quiet rather than waking every subscriber for no news.
+        return Ok((run, None));
+    }
+    // Fold forward from the durable projection when the batch permits it, and
+    // replay the whole journal only when it does not.
+    //
+    // The full replay used to be unconditional: every append loaded and
+    // deserialized every event the run had ever emitted, folded usage over all
+    // of it, and re-reduced it from an empty state — inside the exclusive
+    // write transaction. Per-append cost was linear in history (~24µs per
+    // event of history, measured), total cost quadratic, and every UI read
+    // queued behind it. At the 50,000-event scale the acceptance tests target,
+    // a single append reads 50,000 events before it can commit.
+    //
+    // `commit` was always an incremental fold — it takes a prior state and a
+    // batch — and `RunKernelState` was always persisted whole. Only
+    // `reduce_envelopes` discarded that by starting from `new()`.
+    let prior_state = super::kernel::persist::load_state(conn, &run.id)?;
+    let incremental = prior_state
+        .as_ref()
+        .is_some_and(|state| can_fold_incrementally(state, &appended_events));
+    let history = if incremental {
+        Vec::new()
+    } else {
+        note_full_journal_replay(&run.id);
+        load_events_upto(conn, &run.id, run.cursor_seq)?
+    };
+    let folded: &[OptimizerEventEnvelope] = if incremental {
+        &appended_events
+    } else {
+        &history
+    };
+
+    // The append-only event log owns measured usage. Rebuild its accumulator
+    // at the same cursor that will be terminal-sealed, while preserving only
+    // non-measurement admission metadata (notably the paid-compute receipt).
+    // Persist before terminal::seal so the run row and manifest freeze the
+    // same numbers in one transaction.
+    //
+    // Incrementally the accumulator resumes from the run row, which is where
+    // this same fold left it on the previous append. The guard below keeps a
+    // reconciliation event — the one thing that *replaces* rather than adds —
+    // on the full-replay path.
+    let mut canonical_usage = if incremental {
+        run.usage.clone()
+    } else {
+        OptimizerUsageSummary {
+            extra: run.usage.extra.clone(),
+            ..OptimizerUsageSummary::default()
+        }
+    };
+    for event in folded {
+        if event.event_type == "optimizer.usage.reconciled" {
+            apply_authoritative_provider_usage(&mut canonical_usage, event)?;
+        } else if let Some(delta) = &event.usage_delta {
+            apply_reported_cost(&mut canonical_usage, delta);
+            canonical_usage.calls += delta.get("calls").and_then(Value::as_u64).unwrap_or(0);
+            canonical_usage.prompt_tokens += delta
+                .get("prompt_tokens")
+                .or_else(|| delta.get("promptTokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            canonical_usage.completion_tokens += delta
+                .get("completion_tokens")
+                .or_else(|| delta.get("completionTokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            canonical_usage.rollouts += delta.get("rollouts").and_then(Value::as_u64).unwrap_or(0);
+            canonical_usage.wall_time_ms += delta
+                .get("wall_time_ms")
+                .or_else(|| delta.get("wallTimeMs"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+        }
+    }
+    run.usage = canonical_usage;
+    update_paid_compute_violation(&mut run);
+    upsert_run(conn, &run)?;
+    let mut state = match prior_state {
+        Some(prior) if incremental => {
+            persist_kernel_projection_from(conn, &run, prior, &appended_events)?
+        }
+        _ => persist_kernel_projection(conn, &run, &history)?,
+    };
+    for amendment in &evidence_amendments {
+        persist_evidence_amendment(conn, &state, amendment)?;
+    }
+    if !evidence_amendments.is_empty() {
+        state = super::kernel::persist::load_state(conn, &run.id)?
+            .context("evidence amendment projection disappeared after persistence")?;
+    }
+    run.status = kernel_compatibility_status(&state).into();
+    if state.lifecycle != super::kernel::RunLifecycle::Queued && run.started_at.is_none() {
+        // The run's first event, not the batch's: an incremental fold never
+        // holds the head of the journal, so read it rather than infer it.
+        run.started_at = match history.first() {
+            Some(event) => Some(event.occurred_at.clone()),
+            None => first_event_occurred_at(conn, &run.id)?,
+        };
+    }
+    run.finished_at = state
+        .terminal
+        .as_ref()
+        .map(|terminal| terminal.sealed_at.clone());
+    if state.terminal.as_ref().is_some_and(|terminal| {
+        terminal.kind == super::kernel::TerminalKind::Failed
+            && terminal.reason == Some(super::kernel::TerminalReason::EvidenceUnusable)
+    }) && state.failure_ref.is_none()
+    {
+        let reason = state
+            .terminal
+            .as_ref()
+            .and_then(|terminal| terminal.evidence.reason.clone())
+            .unwrap_or_else(|| "required evaluation evidence is unavailable".into());
+        let mut context =
+            crate::platform::operations::OperationContext::bootstrap(crate::instance::boot_epoch());
+        context.session_id = run.session_ref.clone();
+        context.evaluation_id = Some(run.id.clone());
+        let failure = crate::platform::failure::FailureRuntime::raise_in_tx(
+            conn,
+            crate::platform::failure::FailureKind::Evaluation(
+                crate::platform::failure::EvaluationFailure::FailedEvidence {
+                    run_id: run.id.clone(),
+                    reason,
+                },
+            ),
+            context,
+            crate::platform::operations::OperationKind::EvaluationExecute,
+            crate::platform::operations::OperationPhase::Settle,
+            None,
+            "optimizer_run_kernel",
+        )?;
+        state.failure_ref = Some(failure.failure_id.to_string());
+        if let Some(terminal) = state.terminal.as_mut() {
+            terminal.failure_ref = Some(failure.failure_id.to_string());
+        }
+        conn.execute(
+            "UPDATE optimizer_runs SET terminal_failure_id=?1 WHERE id=?2",
+            params![failure.failure_id.as_str(), run.id.as_str()],
+        )?;
+        super::kernel::persist::upsert_projection(conn, &state)?;
+    }
+    if let Some(terminal_state) = state.terminal.as_ref() {
+        // The racing summary lane is rewritten from the terminal kernel state
+        // in the same transaction that seals the manifest, so a stale worker
+        // projection (`evalStatus: "running"`) can never survive beside a
+        // sealed terminal.
+        rewrite_terminal_summary_progress(&mut run, &state);
+        upsert_run(conn, &run)?;
+        settle_cancellation_receipts(conn, &run.id, terminal_state.final_sequence)?;
+        let manifest = json!({
+            "schemaVersion": "optimizer_terminal_manifest.v2",
+            "optimizerRunId": state.run_id,
+            "algorithmId": state.algorithm.wire_id(),
+            "terminalCursor": terminal_state.final_sequence,
+            "terminal": terminal_state,
+            "work": state.work_summary(),
+            "usage": state.usage(),
+            "evidence": state.evidence_state(),
+            "evidenceLedger": state
+                .projection
+                .eval_evidence_ledger()
+                .map(|ledger| serde_json::to_value(ledger).unwrap_or(Value::Null))
+                .unwrap_or(Value::Null),
+            "projectionRevision": state.projection_revision,
+            "error": run.error.clone().unwrap_or(Value::Null),
+        });
+        let sealed = terminal::seal(conn, &run.id, &manifest)?;
+        settle_paid_compute_conversation(conn, &run)?;
+        if let Some(object) = run.summary.as_object_mut() {
+            object.insert("terminalManifest".into(), sealed);
+        }
+    }
+    upsert_run(conn, &run)?;
+    super::experiment_bind::settle_run(conn, &run)?;
+    let projected = project_from_kernel(&run, &state)
+        .with_context(|| format!("project optimizer run {} at {}", run.id, run.cursor_seq))?;
+    for slice in projected {
+        cache_slice(conn, &slice)?;
+    }
+    let app_event = append_event(
+        conn,
+        EventAppend {
+            event_id: None,
+            session_id: run.session_ref.clone(),
+            run_id: None,
+            source: EventSource::System,
+            kind: "optimizer.run.updated".into(),
+            payload: json!({
+                "optimizerRunId": run.id,
+                "status": run.status,
+                "cursorSeq": run.cursor_seq
+            }),
+            remote_sequence: None,
+            command_id: None,
+            created_at: None,
+        },
+    )?;
+    Ok((run, Some(app_event)))
+}
+
+/// Rewrite `summary.evalStatus` and `summary.progress` from the terminal
+/// kernel state. Called only inside the sealing transaction; `run.status` has
+/// already been set from `kernel_compatibility_status`.
+fn rewrite_terminal_summary_progress(
+    run: &mut OptimizerRunRecord,
+    state: &super::kernel::RunKernelState,
+) {
+    let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+    summary.insert("evalStatus".into(), json!(run.status));
+    let work = state.work_summary();
+    let rollouts = state
+        .projection
+        .work_items()
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let item_state = item
+                .terminal
+                .map(|terminal| terminal.as_str())
+                .unwrap_or_else(|| item.lifecycle.as_str());
+            (
+                index.to_string(),
+                json!({
+                    "state": item_state,
+                    "workItemId": item.work_item_id,
+                    "externalRef": item.external_ref,
+                }),
+            )
+        })
+        .collect::<Map<String, Value>>();
+    let authoritative = json!({
+        "schemaVersion": super::kernel::RUN_VIEW_SCHEMA_VERSION,
+        "asOfSequence": state.aggregate_sequence,
+        "projectionRevision": state.projection_revision,
+        "runState": state.lifecycle.as_str(),
+        "rolloutStateCounts": {
+            "queued": work.queued,
+            "running": work.running,
+            "completed": work.succeeded,
+            "failed": work.failed,
+            "cancelled": work.cancelled,
+        },
+        "inFlight": work.running,
+        "evidence": state.evidence_state(),
+        "rollouts": rollouts,
+    });
+    let mut progress = summary
+        .get("progress")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    // Unmeasured counts stay whatever the worker last knew; measured ones are
+    // frozen from the kernel. `None` never overwrites with zero.
+    if let Some(planned) = work.planned {
+        progress.insert("total".into(), json!(planned));
+    }
+    if let Some(succeeded) = work.succeeded {
+        progress.insert("completed".into(), json!(succeeded));
+    }
+    if let Some(failed) = work.failed {
+        progress.insert("failed".into(), json!(failed));
+    }
+    progress.insert("authoritative".into(), authoritative);
+    summary.insert("progress".into(), Value::Object(progress));
+    run.summary = Value::Object(summary);
+}
+
+/// Turn every open cancellation request for this run into a receipt by
+/// stamping the terminal sequence it settled at. Runs inside the sealing
+/// transaction; tolerant of the table not existing yet (pre-migration DBs in
+/// unit fixtures).
+fn settle_cancellation_receipts(
+    conn: &Connection,
+    run_id: &str,
+    terminal_sequence: u64,
+) -> Result<()> {
+    let result = conn.execute(
+        "UPDATE optimizer_cancellation_requests
+         SET settled_sequence = ?2, observed_at = COALESCE(observed_at, ?3)
+         WHERE run_id = ?1 AND settled_sequence IS NULL",
+        params![
+            run_id,
+            i64::try_from(terminal_sequence).unwrap_or(i64::MAX),
+            Utc::now().to_rfc3339(),
+        ],
+    );
+    match result {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+            if message.contains("no such table") =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn persist_evidence_amendment(
+    conn: &Connection,
+    state: &super::kernel::RunKernelState,
+    event: &OptimizerEventEnvelope,
+) -> Result<()> {
+    let terminal = state
+        .terminal
+        .as_ref()
+        .context("evidence amendment requires a sealed terminal")?;
+    let terminal_sequence = event
+        .delta
+        .get("terminalSequence")
+        .and_then(Value::as_u64)
+        .context("evidence amendment is missing terminalSequence")?;
+    let amendment_id = event
+        .event_id
+        .clone()
+        .context("evidence amendment is missing event identity")?;
+    let refs = event
+        .artifact_refs
+        .iter()
+        .map(|value| {
+            let object = value
+                .as_object()
+                .context("evidence amendment ref must be an object")?;
+            Ok(super::kernel::evidence::EvidenceRef {
+                kind: object
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .context("evidence amendment ref is missing kind")?
+                    .to_string(),
+                id: object
+                    .get("id")
+                    .or_else(|| object.get("refId"))
+                    .and_then(Value::as_str)
+                    .context("evidence amendment ref is missing id")?
+                    .to_string(),
+                digest: object
+                    .get("digest")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let amendment = terminal
+        .amend(super::kernel::EvidenceAmendment {
+            amendment_id: amendment_id.clone(),
+            optimizer_run_id: state.run_id.clone(),
+            terminal_sequence,
+            recorded_at: event.occurred_at.clone(),
+            refs: refs.clone(),
+        })
+        .map_err(|error| anyhow!("{error}"))?;
+    conn.execute(
+        "INSERT INTO optimizer_evidence_amendments(
+            amendment_id, optimizer_run_id, terminal_sequence, evidence_json, recorded_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            amendment.amendment_id,
+            amendment.optimizer_run_id,
+            amendment.terminal_sequence as i64,
+            serde_json::to_string(event)?,
+            amendment.recorded_at,
+        ],
+    )?;
+    for reference in refs {
+        conn.execute(
+            "INSERT OR IGNORE INTO optimizer_evidence_refs(
+                optimizer_run_id, kind, ref_id, digest, recorded_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                state.run_id,
+                reference.kind,
+                reference.id,
+                reference.digest,
+                event.occurred_at,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+async fn reconcile_via_driver(
+    service: &OptimizerService,
+    run: OptimizerRunRecord,
+) -> Result<OptimizerRunRecord> {
+    let algorithm = match super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id) {
+        Ok(algorithm) => algorithm,
+        Err(_) => {
+            if run.source == "local"
+                && matches!(run.status.as_str(), "completed" | "failed" | "cancelled")
+            {
+                return super::recipes::reconcile_persisted(service, &run.id).await;
+            }
+            return Ok(run);
+        }
+    };
+    let placement = super::kernel::bridge::placement_from_run_source(algorithm, &run.source);
+    let driver =
+        super::kernel::resolve_driver(algorithm, placement).map_err(|error| anyhow!("{error}"))?;
+    match (algorithm, driver) {
+        (
+            super::kernel::AlgorithmKind::Eval,
+            super::kernel::DriverKind::DirectContainerEvaluation
+            | super::kernel::DriverKind::LocalPythonProcess,
+        ) => super::eval_recipes::reconcile_persisted(service, &run.id).await,
+        (super::kernel::AlgorithmKind::Sft, super::kernel::DriverKind::LocalTrainingSidecar) => {
+            super::mlx_sft::reconcile(service, &run.id).await
+        }
+        (
+            super::kernel::AlgorithmKind::GoEx,
+            super::kernel::DriverKind::HostedOptimizersService,
+        ) => super::hosted_gelo::reconcile_persisted(service, &run.id).await,
+        (_, super::kernel::DriverKind::LocalPythonProcess)
+            if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") =>
+        {
+            super::recipes::reconcile_persisted(service, &run.id).await
+        }
+        _ => Ok(run),
+    }
+}
+
+/// How many times the append path has replayed a whole journal.
+///
+/// Instrumented rather than timed: "the append got faster" is a flaky
+/// assertion, "the append stopped reading the whole journal" is a fact. The
+/// test below asserts the count directly.
+/// Keyed by run so the assertion holds while the rest of the suite runs in
+/// parallel: a global counter would make this test a race.
+#[cfg(test)]
+pub(super) static FULL_JOURNAL_REPLAYS: std::sync::Mutex<
+    Option<std::collections::HashMap<String, usize>>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn note_full_journal_replay(run_id: &str) {
+    let mut guard = FULL_JOURNAL_REPLAYS.lock().unwrap();
+    let counts = guard.get_or_insert_with(std::collections::HashMap::new);
+    *counts.entry(run_id.to_string()).or_insert(0) += 1;
+}
+
+#[cfg(test)]
+pub(super) fn full_journal_replays_for(run_id: &str) -> usize {
+    FULL_JOURNAL_REPLAYS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|counts| counts.get(run_id).copied())
+        .unwrap_or(0)
+}
+
+#[cfg(not(test))]
+fn note_full_journal_replay(_run_id: &str) {}
+
+/// Event types whose kernel treatment is decided across the whole history
+/// rather than within one batch.
+///
+/// `envelopes_to_producer` demotes an algorithm settlement to non-lifecycle
+/// evidence when a canonical terminal fact appears *later in the same slice*.
+/// Fold those incrementally and a settlement arriving in one batch would seal
+/// the run before the canonical terminal arrived in the next, which is a
+/// different — and wrong — answer. Evidence amendments and usage
+/// reconciliation likewise rewrite earlier facts rather than extend them.
+///
+/// These are a handful of events per run. Keeping them on the full-replay path
+/// costs one replay each and preserves settlement semantics exactly, while the
+/// ordinary progress events — which is essentially all of them — fold forward.
+fn batch_forces_full_replay(events: &[OptimizerEventEnvelope]) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "optimizer.run.completed"
+                | "optimizer.run.failed"
+                | "optimizer.run.degraded"
+                | "optimizer.run.cancelled"
+                | "gepa.run.finished"
+                | "goex.run_finished"
+                | "go-ex.run.finished"
+                | "run.completed"
+                | "optimizer.evidence.amended"
+                | "optimizer.usage.reconciled"
+        )
+    })
+}
+
+/// Whether this batch may fold forward from the durable projection.
+fn can_fold_incrementally(
+    prior: &super::kernel::RunKernelState,
+    batch: &[OptimizerEventEnvelope],
+) -> bool {
+    if batch.is_empty() {
+        return false;
+    }
+    // A sealed run only accepts post-terminal evidence, which the guard above
+    // already routes to full replay. Anything else reaching a terminal state
+    // must be evaluated against the whole history so the refusal is the one
+    // the kernel intends.
+    if prior.terminal.is_some() || prior.lifecycle.is_terminal() {
+        return false;
+    }
+    !batch_forces_full_replay(batch)
+}
+
+/// Fold `batch` onto the durable projection and persist the result.
+///
+/// The incremental twin of [`persist_kernel_projection`]. Both end in
+/// `upsert_projection`, so the durable row, its revision, and the outbox entry
+/// are produced the same way; only the reduction differs.
+fn persist_kernel_projection_from(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+    prior: super::kernel::RunKernelState,
+    batch: &[OptimizerEventEnvelope],
+) -> Result<super::kernel::RunKernelState> {
+    let state = super::kernel::bridge::fold_envelopes(prior, &run.id, batch)
+        .map_err(|error| anyhow!("kernel fold failed for {}: {error}", run.id))?;
+    super::kernel::persist::upsert_projection(conn, &state)
+        .with_context(|| format!("persist kernel projection for {}", run.id))?;
+    Ok(state)
+}
+
+/// The run's earliest durable event time.
+fn first_event_occurred_at(conn: &Connection, run_id: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT occurred_at FROM optimizer_events
+         WHERE optimizer_run_id = ?1 ORDER BY sequence_number ASC LIMIT 1",
+        params![run_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .context("load first optimizer event time")
+}
+
+fn persist_kernel_projection(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+    events: &[OptimizerEventEnvelope],
+) -> Result<super::kernel::RunKernelState> {
+    let algorithm = super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id)
+        .map_err(|error| anyhow!("{error}"))?;
+    let placement = super::kernel::bridge::placement_from_run_source(algorithm, &run.source);
+    let spec_digest: String = conn
+        .query_row(
+            "SELECT spec_digest FROM optimizer_run_specs WHERE optimizer_run_id = ?1",
+            [&run.id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .filter(|value: &String| !value.trim().is_empty())
+        .ok_or_else(|| anyhow!("optimizer run {} is missing its admitted spec", run.id))?;
+    let state = super::kernel::bridge::reduce_envelopes(
+        &run.id,
+        algorithm,
+        placement,
+        &spec_digest,
+        events,
+    )
+    .map_err(|error| anyhow::anyhow!("kernel reduce failed for {}: {error}", run.id))?;
+    super::kernel::persist::upsert_projection(conn, &state)
+        .with_context(|| format!("persist kernel projection for {}", run.id))?;
+    Ok(state)
+}
+
+fn kernel_compatibility_status(state: &super::kernel::RunKernelState) -> &'static str {
+    use super::kernel::{RunLifecycle, TerminalKind, TerminalReason};
+    match state.lifecycle {
+        RunLifecycle::Queued => "queued",
+        RunLifecycle::Starting => "starting",
+        RunLifecycle::Running => "running",
+        RunLifecycle::Paused => "paused",
+        RunLifecycle::Cancelling => "cancelling",
+        RunLifecycle::Terminal => match state.terminal.as_ref() {
+            Some(terminal)
+                if terminal.kind == TerminalKind::Failed
+                    && terminal.reason == Some(TerminalReason::EvidenceUnusable) =>
+            {
+                "failed_evidence"
+            }
+            Some(terminal) => terminal.kind.as_str(),
+            None => "failed",
+        },
+    }
+}
+
+/// Restore the fields the durable record is authoritative for onto a
+/// caller-supplied snapshot.
+///
+/// `cursor_seq` never moves backwards, a terminal run never becomes live again,
+/// timestamps are never unset, and published artifact references are never
+/// dropped — a chat-owned visual that a stale writer forgets about is a visual
+/// the user loses from Outputs.
+fn preserve_durable_authority(conn: &Connection, run: &mut OptimizerRunRecord) -> Result<()> {
+    let payload: Option<String> = conn
+        .query_row(
+            "SELECT payload_json FROM optimizer_runs WHERE id = ?1",
+            params![run.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(payload) = payload else {
+        return Ok(());
+    };
+    let durable: OptimizerRunRecord = serde_json::from_str(&payload)?;
+    if durable.cursor_seq > run.cursor_seq {
+        run.cursor_seq = durable.cursor_seq;
+        run.status = durable.status.clone();
+    } else if is_terminal_status(&durable.status) && !is_terminal_status(&run.status) {
+        run.status = durable.status.clone();
+    }
+    if run.started_at.is_none() {
+        run.started_at = durable.started_at.clone();
+    }
+    if run.finished_at.is_none() {
+        run.finished_at = durable.finished_at.clone();
+    }
+    merge_refs(&mut run.visual_refs, &durable.visual_refs);
+    merge_refs(&mut run.output_refs, &durable.output_refs);
+    Ok(())
+}
+
+/// Union by `(kind, id)`, keeping the caller's version of a reference it also
+/// carries. Order is stable: the durable ones the caller dropped are appended.
+fn merge_refs(into: &mut Vec<OptimizerResourceRef>, durable: &[OptimizerResourceRef]) {
+    for reference in durable {
+        let present = into
+            .iter()
+            .any(|existing| existing.kind == reference.kind && existing.id == reference.id);
+        if !present {
+            into.push(reference.clone());
+        }
+    }
+}
+
+/// The one terminal predicate, delegating to [`OptimizerRunStatus`].
+///
+/// Four predicates used to spell this set four different ways; the enum is now
+/// the only place the set is written down.
+pub(super) fn is_terminal_status(status: &str) -> bool {
+    OptimizerRunStatus::str_is_terminal(status)
+}
+
+/// Rewrite any non-terminal local optimizer run that has no live ownership
+/// claim to `interrupted`, and seal a terminal manifest in the same
+/// transaction. Called from `CoreRuntime::open`, not a spawned bootstrap task.
+pub(crate) fn reconcile_stale_local_runs_in_tx(
+    conn: &Connection,
+    instance_id: &str,
+    now: DateTime<Utc>,
+) -> Result<Vec<OptimizerRunRecord>> {
+    // A crash can occur after a capability is granted but before the run row
+    // is inserted. At boot there is no legitimate worker for such an orphan.
+    conn.execute(
+        "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
+         WHERE status IN ('granted','active')
+           AND NOT EXISTS (
+               SELECT 1 FROM optimizer_runs WHERE optimizer_runs.id=secret_capabilities.run_id
+           )",
+        params![now.to_rfc3339()],
+    )?;
+    let mut stmt =
+        conn.prepare("SELECT payload_json FROM optimizer_runs WHERE source = 'local'")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut payloads = Vec::new();
+    for row in rows {
+        payloads.push(row?);
+    }
+    drop(stmt);
+    let mut recovered = Vec::new();
+    for payload in payloads {
+        let mut run: OptimizerRunRecord = serde_json::from_str(&payload)?;
+        if is_terminal_status(&run.status) {
+            // A previous process may have crashed after terminal settlement
+            // but before its in-memory capability guard ran.
+            conn.execute(
+                "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
+                 WHERE run_id=?2 AND status IN ('granted','active')",
+                params![now.to_rfc3339(), run.id],
+            )?;
+            seal_durable_credential_chain(conn, &mut run)?;
+            upsert_run(conn, &run)?;
+            continue;
+        }
+        // `waiting_for_viewer` is a durable prepared state, not active work.
+        // It intentionally has no worker ownership while Workshop waits for a
+        // visual-readiness receipt and native paid-compute approval. A restart
+        // expires the in-memory approval request, but must leave the immutable
+        // preparation available for a fresh bounded approval. Treating it as
+        // abandoned work sealed the run `interrupted` before approval could be
+        // retried, forcing users to create a duplicate preparation.
+        if run.status == "waiting_for_viewer" {
+            continue;
+        }
+        if crate::recovery::ownership::optimizer_run_is_live(conn, &run.id, instance_id, now)? {
+            continue;
+        }
+        run.status = "interrupted".into();
+        run.finished_at = Some(now.to_rfc3339());
+        run.error = Some(json!({
+            "code": "unowned",
+            "message": "no live optimizer run ownership claim at open",
+        }));
+        upsert_run(conn, &run)?;
+        crate::recovery::ownership::release_optimizer_run(conn, &run.id)?;
+        // CoreRuntime performs this reconciliation before the live secret
+        // broker exists. Revoke the persisted capability rows here so a crash
+        // between grant and worker startup cannot leave usable authority
+        // behind. The capability store is rebuilt from this database state.
+        conn.execute(
+            "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
+             WHERE run_id=?2 AND status IN ('granted','active')",
+            params![now.to_rfc3339(), run.id],
+        )?;
+        let events = load_events_upto(conn, &run.id, run.cursor_seq)?;
+        let manifest = terminal::derive(&run, &events, "interrupted", None);
+        let sealed = terminal::seal(conn, &run.id, &manifest)?;
+        settle_paid_compute_conversation(conn, &run)?;
+        if let Some(object) = run.summary.as_object_mut() {
+            object.insert("terminalManifest".into(), sealed);
+        }
+        upsert_run(conn, &run)?;
+        super::experiment_bind::settle_run(conn, &run)?;
+        recovered.push(run);
+    }
+    reconcile_orphaned_paid_compute_reservations(conn)?;
+    Ok(recovered)
+}
+
+/// Repair the user-facing credential receipt from durable capability state.
+/// This is the restart-safe counterpart to the live broker's chain seal: a
+/// crash can erase the in-memory chain after the capability row was revoked,
+/// but it must not leave a terminal run claiming that authority is granted.
+fn seal_durable_credential_chain(conn: &Connection, run: &mut OptimizerRunRecord) -> Result<()> {
+    let Some(chain) = run
+        .summary
+        .get_mut("credentialChain")
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(());
+    };
+    let Some(capability_id) = chain
+        .get("capabilityId")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return Ok(());
+    };
+    let lifecycle = conn
+        .query_row(
+            "SELECT status, revoked_at FROM secret_capabilities WHERE id=?1",
+            [&capability_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?;
+    let Some((status, revoked_at)) = lifecycle else {
+        return Ok(());
+    };
+    chain.insert("capabilityStatus".into(), json!(status));
+    chain.insert("revokedAt".into(), json!(revoked_at));
+    chain.insert("capabilityRevoked".into(), json!(status == "revoked"));
+    Ok(())
+}
+
+/// The `sequence -> event_id` map for exactly the sequences a batch touches.
+/// Scoped to the batch so validating one settlement does not read a campaign's
+/// whole history.
+fn durable_event_ids(
+    conn: &Connection,
+    run_id: &str,
+    events: &[OptimizerEventEnvelope],
+) -> Result<HashMap<u64, String>> {
+    let mut out = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT sequence_number, event_id FROM optimizer_events
+         WHERE optimizer_run_id = ?1 AND sequence_number = ?2",
+    )?;
+    for event in events {
+        let row = stmt
+            .query_row(params![run_id, event.sequence_number as i64], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .optional()?;
+        if let Some((sequence, event_id)) = row {
+            out.insert(sequence as u64, event_id);
+        }
+    }
+    Ok(out)
+}
+
+/// The tail an evidence reader may page up to.
+///
+/// The run's own cursor and the highest durable event can disagree when an
+/// older build rewound one of them; the higher of the two is the only safe
+/// floor, which is the same rule the append path applies when allocating.
+/// Read a typed render receipt out of the renderer's untyped ready payload.
+///
+/// Returns `None` rather than erroring when the payload predates the typed
+/// shape: an old renderer posting an old receipt must keep working, it simply
+/// does not get the stronger guarantee.
+fn visual_render_receipt_from(
+    optimizer_run_id: &str,
+    receipt: &Value,
+) -> Option<super::models::VisualRenderReceipt> {
+    let object = receipt.as_object()?;
+    let visual_id = object.get("visualId").and_then(Value::as_str)?.to_string();
+    let visual_revision = object
+        .get("visualRevision")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let projection_revision = object.get("projectionRevision").and_then(Value::as_u64)?;
+    let data_digest = object
+        .get("dataDigest")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if data_digest.is_empty() {
+        return None;
+    }
+    Some(super::models::VisualRenderReceipt {
+        visual_id,
+        visual_revision,
+        optimizer_run_id: optimizer_run_id.to_string(),
+        template_id: object
+            .get("templateId")
+            .and_then(Value::as_str)
+            .unwrap_or("optimizer.run.v1")
+            .to_string(),
+        template_version: object
+            .get("templateDigest")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        projection_revision,
+        data_digest,
+        tail_cursor: object
+            .get("replayedThrough")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        rendered_at: Utc::now().to_rfc3339(),
+    })
+}
+
+fn durable_tail_cursor(conn: &Connection, run_id: &str) -> Result<u64> {
+    let cursor: Option<i64> = conn
+        .query_row(
+            "SELECT cursor_seq FROM optimizer_event_cursors WHERE optimizer_run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let cursor = cursor.unwrap_or(0).max(0) as u64;
+    Ok(cursor.max(max_event_sequence(conn, run_id)?))
+}
+
+fn max_event_sequence(conn: &Connection, run_id: &str) -> Result<u64> {
+    let value: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sequence_number), 0) FROM optimizer_events WHERE optimizer_run_id = ?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    Ok(value.max(0) as u64)
+}
+
+fn event_id_exists(conn: &Connection, run_id: &str, event_id: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM optimizer_events WHERE optimizer_run_id = ?1 AND event_id = ?2)",
+        params![run_id, event_id],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(Into::into)
+}
+
+fn event_carrier(event: &OptimizerEventEnvelope) -> Option<&Map<String, Value>> {
+    event
+        .delta
+        .get("container_event")
+        .or_else(|| event.delta.get("containerEvent"))
+        .or_else(|| event.raw.get("container_event"))
+        .or_else(|| event.raw.get("containerEvent"))
+        .and_then(Value::as_object)
+}
+
+fn event_string(value: &Value, snake: &str, camel: &str) -> Option<String> {
+    value
+        .get(snake)
+        .or_else(|| value.get(camel))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// Shredded query fields for the host event log. The serialized envelope
+/// remains the replay authority; these columns are indexes/witnesses derived
+/// at the same append boundary, never a second event representation.
+fn shredded_event_fields(
+    event: &OptimizerEventEnvelope,
+) -> (
+    Option<String>,
+    String,
+    Option<i64>,
+    Option<String>,
+    String,
+    Option<String>,
+) {
+    let carrier = event_carrier(event);
+    let carrier_payload = carrier
+        .and_then(|value| value.get("payload"))
+        .and_then(Value::as_object);
+    let rollout_id = carrier
+        .and_then(|value| value.get("rollout_id").or_else(|| value.get("rolloutId")))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            event
+                .raw
+                .get("rollout_id")
+                .or_else(|| event.raw.get("rolloutId"))
+                .and_then(Value::as_str)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string);
+    let kind = carrier
+        .and_then(|value| value.get("kind"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&event.event_type)
+        .to_string();
+    let step = carrier_payload
+        .and_then(|value| value.get("step"))
+        .or_else(|| carrier.and_then(|value| value.get("step")))
+        .or_else(|| event.raw.get("step"))
+        .and_then(Value::as_i64);
+    let span_id = carrier_payload
+        .and_then(|value| value.get("span_id").or_else(|| value.get("spanId")))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| event_string(&event.raw, "span_id", "spanId"));
+    let producer_occurred_at = carrier
+        .and_then(|value| value.get("occurred_at").or_else(|| value.get("occurredAt")))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&event.occurred_at)
+        .to_string();
+    let producer_digest = carrier
+        .and_then(|value| value.get("digest"))
+        .or_else(|| event.raw.get("digest"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string);
+    (
+        rollout_id,
+        kind,
+        step,
+        span_id,
+        producer_occurred_at,
+        producer_digest,
+    )
 }
 
 fn upsert_cursor(conn: &Connection, run_id: &str, cursor_seq: u64, updated_at: &str) -> Result<()> {
@@ -1100,26 +5576,52 @@ fn upsert_cursor(conn: &Connection, run_id: &str, cursor_seq: u64, updated_at: &
     Ok(())
 }
 
+/// Insert one validated event.
+///
+/// Deliberately a plain `INSERT`: `plan_batch` has already decided this event is
+/// new, so a conflict here means the plan was computed against a different
+/// database state and the batch must fail rather than lose a row. `INSERT OR
+/// IGNORE` is what let a colliding terminal event disappear while its run went
+/// on to report success.
 fn insert_event(conn: &Connection, event: &OptimizerEventEnvelope) -> Result<()> {
     let payload = serde_json::to_string(event)?;
+    let (rollout_id, kind, step, span_id, producer_occurred_at, producer_digest) =
+        shredded_event_fields(event);
+    let ingested_at = Utc::now().to_rfc3339();
+    let event_id = event
+        .event_id
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", event.optimizer_run_id, event.sequence_number));
     conn.execute(
-        "INSERT OR IGNORE INTO optimizer_events(
+        "INSERT INTO optimizer_events(
             event_id, optimizer_run_id, sequence_number, event_type,
-            algorithm_id, occurred_at, payload_json
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            algorithm_id, occurred_at, payload_json, rollout_id, kind, step,
+            span_id, producer_occurred_at, ingested_at, ingest_witness,
+            producer_digest, payload_cas_digest
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'host_clock',?14,NULL)",
         params![
-            event
-                .event_id
-                .clone()
-                .unwrap_or_else(|| format!("{}:{}", event.optimizer_run_id, event.sequence_number)),
+            event_id,
             event.optimizer_run_id,
             event.sequence_number as i64,
             event.event_type,
             event.algorithm_id,
             event.occurred_at,
-            payload
+            payload,
+            rollout_id,
+            kind,
+            step,
+            span_id,
+            producer_occurred_at,
+            ingested_at,
+            producer_digest,
         ],
-    )?;
+    )
+    .with_context(|| {
+        format!(
+            "insert optimizer event {} ({}) at sequence {}",
+            event_id, event.event_type, event.sequence_number
+        )
+    })?;
     Ok(())
 }
 
@@ -1177,6 +5679,99 @@ fn load_cached_slice(
     Ok(payload.map(|raw| serde_json::from_str(&raw)).transpose()?)
 }
 
+/// Events in `(after, upto]`, in sequence order.
+fn load_events_between(
+    conn: &Connection,
+    run_id: &str,
+    after: u64,
+    upto: u64,
+) -> Result<Vec<OptimizerEventEnvelope>> {
+    if upto <= after {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT payload_json FROM optimizer_events
+         WHERE optimizer_run_id = ?1 AND sequence_number > ?2 AND sequence_number <= ?3
+         ORDER BY sequence_number ASC",
+    )?;
+    let rows = stmt.query_map(params![run_id, after as i64, upto as i64], |row| {
+        row.get::<_, String>(0)
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(serde_json::from_str(&row?)?);
+    }
+    Ok(out)
+}
+
+/// `(projection_revision, aggregate_sequence)` from the run row: the two
+/// integers a collection page needs to stamp itself, without loading the
+/// projection payload the page exists to avoid.
+fn projection_position(conn: &Connection, run_id: &str) -> Result<(u64, u64)> {
+    let (revision, sequence): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT projection_revision, aggregate_sequence FROM optimizer_runs WHERE id = ?1",
+            params![run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("optimizer run not found"))?;
+    Ok((
+        revision.unwrap_or(0).max(0) as u64,
+        sequence.unwrap_or(0).max(0) as u64,
+    ))
+}
+
+/// The summary read. `None` means no durable projection exists yet and the
+/// caller should repair it in a write transaction of its own.
+fn read_run_summary(
+    conn: &Connection,
+    run_id: &str,
+    if_newer_than: Option<u64>,
+) -> Result<Option<super::kernel::OptimizerRunSummaryEnvelope>> {
+    use super::kernel::read_model;
+    if let Some(cached_revision) = if_newer_than {
+        if let Some(durable) = super::kernel::persist::load_projection_revision(conn, run_id)? {
+            if durable == cached_revision {
+                return Ok(Some(super::kernel::OptimizerRunSummaryEnvelope {
+                    unchanged: true,
+                    summary: None,
+                    projection_revision: durable,
+                    tail_cursor: durable_tail_cursor(conn, run_id)?,
+                }));
+            }
+        }
+    }
+    let run = load_run(conn, run_id)?;
+    let Some(state) = super::kernel::persist::load_state(conn, run_id)? else {
+        return Ok(None);
+    };
+    let context = run_view_context(conn, &run)?;
+    let tail_cursor = durable_tail_cursor(conn, run_id)?;
+    let counts = read_model::collection_counts(conn, &state, context.artifacts.len() as u64)?;
+    let summary = read_model::summarize(
+        &state,
+        &run,
+        &context,
+        counts,
+        tail_cursor,
+        Utc::now().timestamp_millis(),
+    );
+    if !summary.budget.within {
+        bail!(
+            "optimizer run summary exceeded its byte budget: {} > {} bytes",
+            summary.budget.bytes,
+            summary.budget.limit
+        );
+    }
+    Ok(Some(super::kernel::OptimizerRunSummaryEnvelope {
+        unchanged: false,
+        projection_revision: state.projection_revision,
+        tail_cursor,
+        summary: Some(summary),
+    }))
+}
+
 fn load_events_upto(
     conn: &Connection,
     run_id: &str,
@@ -1197,34 +5792,19 @@ fn load_events_upto(
     Ok(out)
 }
 
+#[cfg(test)]
 fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelope) {
-    // Training-job status is not the optimizer run status. `sft.training.completed`
-    // / `sft.training.status` emit `succeeded` while promotion and
-    // `optimizer.run.completed` are still outstanding.
-    let copy_delta_status = !event.event_type.starts_with("sft.training.")
-        || matches!(
-            event.event_type.as_str(),
-            "sft.training.queued" | "sft.training.started"
-        );
-    if copy_delta_status {
-        if let Some(status) = event
-            .snapshot
-            .as_ref()
-            .and_then(|s| s.get("status"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| {
-                event
-                    .delta
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-        {
-            run.status = status;
-        }
+    // Run lifecycle is the Workshop-owned umbrella state. Runtime phases,
+    // candidate states, rollout states, training-job states, and selection
+    // states remain evidence on their own subjects even when their payload
+    // happens to use the generic field name `status`.
+    if let Some(status) = authoritative_run_lifecycle(event) {
+        run.status = status.as_str().to_string();
     }
-    if event.event_type.ends_with(".started") || event.event_type.ends_with(".created") {
+    if matches!(
+        event.event_type.as_str(),
+        "optimizer.run.created" | "optimizer.run.started" | "run.started"
+    ) {
         if run.started_at.is_none() {
             run.started_at = Some(event.occurred_at.clone());
         }
@@ -1238,6 +5818,8 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
             run.status = "failed".into();
         } else if terminal_status == "cancelled" {
             run.status = "cancelled".into();
+        } else if terminal_status == "degraded" {
+            run.status = "degraded".into();
         } else if run.status != "cancelled" {
             run.status = "completed".into();
         }
@@ -1257,6 +5839,7 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
             run.usage.wall_time_ms += v;
         }
     }
+    update_paid_compute_violation(run);
     if let Some(snapshot) = &event.snapshot {
         if let Some(summary) = snapshot.get("summary") {
             run.summary = summary.clone();
@@ -1274,6 +5857,182 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
     }
     if let Some(error) = &event.error {
         run.error = Some(error.clone());
+    }
+}
+
+fn settle_paid_compute_conversation(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
+    let targets = paid_compute_settlement_targets(conn, run)?;
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let outcome = paid_compute_settlement_outcome(conn, run)?;
+    for (index, (approval_id, session_id)) in targets.iter().enumerate() {
+        let this_outcome = if index == 0 {
+            outcome
+        } else {
+            crate::session::paid_compute_budget::SettlementOutcome::Exact { cost_usd_micros: 0 }
+        };
+        let Some(snapshot) = crate::session::paid_compute_budget::settle(
+            conn,
+            session_id,
+            approval_id,
+            this_outcome,
+        )?
+        else {
+            continue;
+        };
+        if run
+            .usage
+            .extra
+            .get("paidComputeApproval")
+            .and_then(|value| value.get("receiptViolation"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            crate::session::paid_compute_budget::disable_auto(conn, session_id)?;
+        }
+        crate::session::paid_compute_budget::append_settlement_receipt(
+            conn,
+            session_id,
+            approval_id,
+            this_outcome,
+            &snapshot,
+        )?;
+    }
+    Ok(())
+}
+
+fn paid_compute_settlement_targets(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+) -> Result<Vec<(String, String)>> {
+    let mut targets = Vec::new();
+    let run_session = run
+        .session_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let (Some(approval_id), Some(session_id)) = (
+        run.usage
+            .extra
+            .get("paidComputeApproval")
+            .and_then(|value| value.get("approvalId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        run_session,
+    ) {
+        targets.push((approval_id.to_string(), session_id.to_string()));
+    }
+    if let Some(digest) = run
+        .summary
+        .get("preparationDigest")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        for (approval_id, session_id) in
+            crate::session::paid_compute_budget::reserved_rows_for_digest(conn, digest)?
+        {
+            if !targets.iter().any(|(id, _)| id == &approval_id) {
+                targets.push((approval_id, session_id));
+            }
+        }
+    }
+    Ok(targets)
+}
+
+fn reconcile_orphaned_paid_compute_reservations(conn: &Connection) -> Result<()> {
+    let reserved = crate::session::paid_compute_budget::list_reserved(conn)?;
+    if reserved.is_empty() {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare("SELECT payload_json FROM optimizer_runs")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut runs = Vec::new();
+    for row in rows {
+        runs.push(serde_json::from_str::<OptimizerRunRecord>(&row?)?);
+    }
+    drop(stmt);
+    for (approval_id, session_id, digest) in reserved {
+        let matched = digest.as_deref().and_then(|digest| {
+            runs.iter().find(|run| {
+                run.summary.get("preparationDigest").and_then(Value::as_str) == Some(digest)
+            })
+        });
+        match matched {
+            Some(run) if is_terminal_status(&run.status) => {
+                settle_paid_compute_conversation(conn, run)?;
+            }
+            Some(run)
+                if matches!(
+                    run.status.as_str(),
+                    "running" | "queued" | "cancelling" | "paused"
+                ) =>
+            {
+                // Live work still holds the ceiling.
+            }
+            Some(_) | None => {
+                crate::session::paid_compute_budget::release_reservation(conn, &approval_id)?;
+                let _ = session_id;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn paid_compute_settlement_outcome(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+) -> Result<crate::session::paid_compute_budget::SettlementOutcome> {
+    use crate::session::paid_compute_budget::{micros_from_reported_cost, SettlementOutcome};
+    if let Ok(Some(receipt)) = crate::secrets::capability::provider_usage_receipt(conn, &run.id) {
+        if let Some(cost_usd_micros) = receipt.cost_usd.and_then(micros_from_reported_cost) {
+            return Ok(SettlementOutcome::Exact { cost_usd_micros });
+        }
+        // Some providers report token/call usage without a monetary amount.
+        // A poisoned receipt must not retain the reservation after the run is
+        // terminal: GEPA still records a durable costUsd aggregate.
+    }
+    match run.usage.cost_usd.and_then(micros_from_reported_cost) {
+        Some(cost_usd_micros) => Ok(SettlementOutcome::Exact { cost_usd_micros }),
+        None => Ok(SettlementOutcome::Exact { cost_usd_micros: 0 }),
+    }
+}
+
+fn update_paid_compute_violation(run: &mut OptimizerRunRecord) {
+    let Some(approval) = run.usage.extra.get("paidComputeApproval").cloned() else {
+        return;
+    };
+    let max_rollouts = approval.pointer("/cap/maxRollouts").and_then(Value::as_u64);
+    let max_cost_micros = approval
+        .pointer("/cap/maxCostUsdMicros")
+        .and_then(Value::as_u64);
+    let rollouts_exceeded = max_rollouts.is_some_and(|cap| run.usage.rollouts > cap);
+    let cost_exceeded = match (max_cost_micros, run.usage.cost_usd) {
+        (Some(cap), Some(cost)) => cost * 1_000_000.0 > cap as f64,
+        _ => false,
+    };
+    if rollouts_exceeded || cost_exceeded {
+        if let Some(object) = run
+            .usage
+            .extra
+            .get_mut("paidComputeApproval")
+            .and_then(Value::as_object_mut)
+        {
+            object.insert("receiptViolation".into(), Value::Bool(true));
+            object.insert(
+                "violationReason".into(),
+                Value::String(
+                    if rollouts_exceeded {
+                        "rollout_cap_exceeded"
+                    } else {
+                        "cost_cap_exceeded"
+                    }
+                    .into(),
+                ),
+            );
+        }
     }
 }
 
@@ -1319,13 +6078,108 @@ fn apply_reported_cost(usage: &mut OptimizerUsageSummary, delta: &Map<String, Va
     };
 }
 
+/// `optimizer.usage.reconciled` is a snapshot from Workshop's durable
+/// capability ledger, not another provider-call delta. Replacing only the
+/// provider-measured fields prevents double-counting container policy spans;
+/// rollout and wall-time accounting remain owned by the eval events.
+fn apply_authoritative_provider_usage(
+    usage: &mut OptimizerUsageSummary,
+    event: &OptimizerEventEnvelope,
+) -> Result<()> {
+    let receipt = event
+        .item
+        .as_ref()
+        .and_then(Value::as_object)
+        .context("optimizer.usage.reconciled is missing its typed receipt item")?;
+    let schema = receipt
+        .get("schemaVersion")
+        .and_then(Value::as_str)
+        .context("optimizer.usage.reconciled is missing schemaVersion")?;
+    if schema != "workshop.provider-usage-receipt.v1" {
+        bail!("unsupported provider usage receipt schema `{schema}`");
+    }
+    let calls = receipt
+        .get("calls")
+        .and_then(Value::as_u64)
+        .context("optimizer.usage.reconciled is missing calls")?;
+    let prompt_tokens = receipt
+        .get("promptTokens")
+        .and_then(Value::as_u64)
+        .context("optimizer.usage.reconciled is missing promptTokens")?;
+    let completion_tokens = receipt
+        .get("completionTokens")
+        .and_then(Value::as_u64)
+        .context("optimizer.usage.reconciled is missing completionTokens")?;
+    let raw_cost = receipt
+        .get("costUsd")
+        .context("optimizer.usage.reconciled is missing costUsd")?;
+    let cost_usd = if raw_cost.is_null() {
+        None
+    } else {
+        Some(
+            raw_cost
+                .as_f64()
+                .filter(|cost| cost.is_finite() && *cost >= 0.0)
+                .context("optimizer.usage.reconciled costUsd must be null or non-negative")?,
+        )
+    };
+    if receipt
+        .get("receiptDigest")
+        .and_then(Value::as_str)
+        .filter(|digest| digest.starts_with("sha256:") && digest.len() == 71)
+        .is_none()
+    {
+        bail!("optimizer.usage.reconciled is missing a canonical receiptDigest");
+    }
+
+    usage.calls = calls;
+    usage.prompt_tokens = prompt_tokens;
+    usage.completion_tokens = completion_tokens;
+    usage.cost_usd = cost_usd;
+    usage.extra.insert(
+        "costTelemetryComplete".into(),
+        Value::Bool(cost_usd.is_some()),
+    );
+    usage.extra.insert(
+        "providerUsageReceipt".into(),
+        Value::Object(receipt.clone()),
+    );
+    Ok(())
+}
+
+#[cfg(test)]
 fn optimizer_terminal_status(event_type: &str) -> Option<&'static str> {
     match event_type {
         "optimizer.run.completed" | "gepa.run.finished" | "goex.run_finished" | "run.completed" => {
             Some("completed")
         }
         "optimizer.run.failed" | "run.failed" => Some("failed"),
+        "optimizer.run.degraded" | "run.degraded" => Some("degraded"),
         "optimizer.run.cancelled" | "run.cancelled" => Some("cancelled"),
+        _ => None,
+    }
+}
+
+/// Project only events whose noun is the optimizer run itself into Workshop's
+/// durable umbrella lifecycle. Payload shape is deliberately irrelevant: a
+/// `status` field owned by a candidate, rollout, training job, or algorithm
+/// phase cannot acquire run authority by sharing a name.
+#[cfg(test)]
+fn authoritative_run_lifecycle(event: &OptimizerEventEnvelope) -> Option<OptimizerRunStatus> {
+    match event.event_type.as_str() {
+        "optimizer.run.queued" => Some(OptimizerRunStatus::Queued),
+        "optimizer.run.created" | "optimizer.run.started" | "run.started" => {
+            Some(OptimizerRunStatus::Running)
+        }
+        "optimizer.run.paused" => Some(OptimizerRunStatus::Paused),
+        "optimizer.run.resumed" => Some(OptimizerRunStatus::Running),
+        "optimizer.run.cancelling" => Some(OptimizerRunStatus::Cancelling),
+        "optimizer.run.completed" | "gepa.run.finished" | "goex.run_finished" | "run.completed" => {
+            Some(OptimizerRunStatus::Completed)
+        }
+        "optimizer.run.failed" | "run.failed" => Some(OptimizerRunStatus::Failed),
+        "optimizer.run.degraded" | "run.degraded" => Some(OptimizerRunStatus::Degraded),
+        "optimizer.run.cancelled" | "run.cancelled" => Some(OptimizerRunStatus::Cancelled),
         _ => None,
     }
 }
@@ -1333,6 +6187,7 @@ fn optimizer_terminal_status(event_type: &str) -> Option<&'static str> {
 /// optimizers-beta state/batch returns named slice envelopes. Keep the
 /// envelope at the transport boundary, but project only its durable `data`
 /// payload into Workshop's algorithm state slices.
+#[cfg(test)]
 fn hosted_state_slice_data<'a>(slices: &'a Value, name: &str) -> Option<&'a Value> {
     let slice = slices.get(name)?;
     slice.get("data").or(Some(slice))
@@ -1340,6 +6195,7 @@ fn hosted_state_slice_data<'a>(slices: &'a Value, name: &str) -> Option<&'a Valu
 
 /// A GEPA candidate is identified by `delta.candidate_id`, falling back to the
 /// optional `item.id`. Registration events carry only the delta.
+#[cfg(test)]
 fn candidate_identity(event: &OptimizerEventEnvelope) -> Option<String> {
     event
         .delta
@@ -1358,6 +6214,7 @@ fn candidate_identity(event: &OptimizerEventEnvelope) -> Option<String> {
 /// `frontier.updated` reports the winning candidate and its coverage rather
 /// than a cell grid. Project that into a single Pareto cell. Anything the
 /// sidecar did not report stays absent — never a zero.
+#[cfg(test)]
 fn frontier_cell_from_delta(event: &OptimizerEventEnvelope) -> Option<Value> {
     let source: &Map<String, Value> = event
         .snapshot
@@ -1383,6 +6240,7 @@ fn frontier_cell_from_delta(event: &OptimizerEventEnvelope) -> Option<Value> {
     Some(Value::Object(cell))
 }
 
+#[cfg(test)]
 fn project_from_events(
     run: &OptimizerRunRecord,
     events: &[OptimizerEventEnvelope],
@@ -1412,6 +6270,22 @@ fn project_from_events(
     let mut compute = json!({ "provider": null });
     let mut examples = Vec::new();
     let mut checkpoint_evals = Vec::new();
+    let mut eval_trials: BTreeMap<String, Value> = BTreeMap::new();
+    let mut eval_scorecards: BTreeMap<String, Value> = BTreeMap::new();
+    let mut eval_runtime = json!({
+        "parallelism": Value::Null,
+        "globalCapacity": Value::Null,
+        "cancelling": false,
+        "plannedTrials": 0
+    });
+    let mut eval_evidence = json!({
+        "manifestDigest": Value::Null,
+        "candidateSetId": Value::Null,
+        "seedLedger": Value::Null,
+        "selection": Value::Null,
+        "evidenceDir": Value::Null,
+        "artifacts": []
+    });
     let mut usage = OptimizerUsageSummary::default();
 
     for event in events {
@@ -1432,8 +6306,13 @@ fn project_from_events(
         for artifact in &event.artifact_refs {
             artifacts.push(artifact.clone());
         }
-        if let Some(usage_delta) = &event.usage_delta {
+        if event.event_type == "optimizer.usage.reconciled" {
+            apply_authoritative_provider_usage(&mut usage, event)?;
+        } else if let Some(usage_delta) = &event.usage_delta {
             apply_reported_cost(&mut usage, usage_delta);
+            if let Some(v) = usage_delta.get("calls").and_then(Value::as_u64) {
+                usage.calls += v;
+            }
             if let Some(v) = usage_delta.get("prompt_tokens").and_then(Value::as_u64) {
                 usage.prompt_tokens += v;
             }
@@ -1639,13 +6518,14 @@ fn project_from_events(
             "sft.checkpoint_eval.completed"
             | "sft.heldout_eval.completed"
             | "sft.checkpoint_evaluation.completed"
-            | "sft.checkpoint_evaluation.allocated" => {
+            | "sft.checkpoint_evaluation.allocated"
+            | "training.evaluation.completed" => {
                 checkpoint_evals.push(json!({
                     "sequence": event.sequence_number,
                     "delta": event.delta,
                     "snapshot": event.snapshot,
                     "item": event.item,
-                    "role": event.delta.get("role").cloned().unwrap_or(json!("selection")),
+                    "role": event.delta.get("role").or_else(|| event.delta.get("phase")).cloned().unwrap_or(json!("selection")),
                     "measurementOnly": event.delta.get("measurementOnly").cloned().unwrap_or(json!(false))
                 }));
             }
@@ -1664,8 +6544,123 @@ fn project_from_events(
                     artifacts.push(item.clone());
                 }
             }
+            "eval.run.planned" => {
+                if let Some(snapshot) = &event.snapshot {
+                    for (from, to) in [
+                        ("parallelism", "parallelism"),
+                        ("global_capacity", "globalCapacity"),
+                        ("planned_trials", "plannedTrials"),
+                    ] {
+                        if let (Some(value), Some(target)) =
+                            (snapshot.get(from), eval_runtime.as_object_mut())
+                        {
+                            target.insert(to.into(), value.clone());
+                        }
+                    }
+                    if let Some(target) = eval_evidence.as_object_mut() {
+                        if let Some(value) = snapshot.get("manifest_digest") {
+                            target.insert("manifestDigest".into(), value.clone());
+                        }
+                        if let Some(value) = snapshot.get("candidate_set_id") {
+                            target.insert("candidateSetId".into(), value.clone());
+                        }
+                        if let Some(value) = snapshot.get("candidates") {
+                            target.insert("candidates".into(), value.clone());
+                        }
+                    }
+                }
+            }
+            "eval.seed_ledger.sealed" => {
+                if let (Some(snapshot), Some(target)) =
+                    (&event.snapshot, eval_evidence.as_object_mut())
+                {
+                    if let Some(value) = snapshot.get("seedLedger") {
+                        target.insert("seedLedger".into(), value.clone());
+                    }
+                }
+            }
+            "eval.trial.queued" | "eval.trial.started" => {
+                if let Some(id) = event.delta.get("trial_id").and_then(Value::as_str) {
+                    let row = eval_trials
+                        .entry(id.to_string())
+                        .or_insert_with(|| json!({"id": id}));
+                    if let Some(object) = row.as_object_mut() {
+                        for key in ["candidate_id", "seed", "scenario", "stage"] {
+                            if let Some(value) = event.delta.get(key) {
+                                object.insert(key.into(), value.clone());
+                            }
+                        }
+                        object.insert(
+                            "status".into(),
+                            json!(if event.event_type.ends_with("started") {
+                                "running"
+                            } else {
+                                "queued"
+                            }),
+                        );
+                    }
+                }
+            }
+            "eval.trial.terminal" => {
+                if let Some(item) = &event.item {
+                    if let Some(id) = item.get("id").and_then(Value::as_str) {
+                        eval_trials.insert(id.to_string(), item.clone());
+                    }
+                }
+            }
+            "eval.candidate.scored" => {
+                if let Some(item) = &event.item {
+                    let candidate = item.get("id").and_then(Value::as_str).unwrap_or("");
+                    let stage = item.get("stage").and_then(Value::as_str).unwrap_or("");
+                    eval_scorecards.insert(format!("{stage}:{candidate}"), item.clone());
+                }
+            }
+            "eval.selection.completed" => {
+                if let (Some(snapshot), Some(target)) =
+                    (&event.snapshot, eval_evidence.as_object_mut())
+                {
+                    if let Some(value) = snapshot.get("selection") {
+                        target.insert("selection".into(), value.clone());
+                    }
+                }
+            }
             _ => {}
         }
+    }
+
+    if let Some(target) = eval_evidence.as_object_mut() {
+        if let Some(dir) = events
+            .iter()
+            .rev()
+            .find_map(|event| event.delta.get("evidenceDir").cloned())
+        {
+            target.insert("evidenceDir".into(), dir);
+        }
+        target.insert("artifacts".into(), json!(artifacts));
+    }
+    if let Some(target) = eval_runtime.as_object_mut() {
+        let counts = |status: &str| {
+            eval_trials
+                .values()
+                .filter(|row| row.get("status").and_then(Value::as_str) == Some(status))
+                .count()
+        };
+        target.insert("queued".into(), json!(counts("queued")));
+        target.insert("running".into(), json!(counts("running")));
+        target.insert("evaluated".into(), json!(counts("evaluated")));
+        target.insert(
+            "failed".into(),
+            json!(eval_trials.len() - counts("queued") - counts("running") - counts("evaluated")),
+        );
+        // A trial holds exactly one semaphore lease while it runs, so the
+        // running count is the run's share of the machine-wide ceiling.
+        target.insert("leasesHeld".into(), json!(counts("running")));
+        target.insert(
+            "cancelling".into(),
+            json!(events
+                .iter()
+                .any(|event| event.event_type == "optimizer.run.cancelled")),
+        );
     }
 
     let mut projected_run = run.clone();
@@ -1782,11 +6777,26 @@ fn project_from_events(
                 json!({ "examples": examples }),
             ));
         }
+        "eval" => {
+            slices.push(mk("eval.runtime", "eval.runtime.v1", eval_runtime));
+            slices.push(mk(
+                "eval.trials",
+                "eval.trials.v1",
+                json!({ "trials": eval_trials.values().cloned().collect::<Vec<_>>() }),
+            ));
+            slices.push(mk(
+                "eval.scorecard",
+                "eval.scorecard.v1",
+                json!({ "candidates": eval_scorecards.values().cloned().collect::<Vec<_>>() }),
+            ));
+            slices.push(mk("eval.evidence", "eval.evidence.v1", eval_evidence));
+        }
         _ => {}
     }
     Ok(slices)
 }
 
+#[cfg(test)]
 fn push_curve(obj: &mut Map<String, Value>, key: &str, value: Option<&Value>) {
     let Some(value) = value else { return };
     if value.is_null() {
@@ -1798,6 +6808,7 @@ fn push_curve(obj: &mut Map<String, Value>, key: &str, value: Option<&Value>) {
     }
 }
 
+#[cfg(test)]
 fn gepa_fixture(session_ref: Option<String>) -> (OptimizerRunRecord, Vec<OptimizerEventEnvelope>) {
     let run = OptimizerRunRecord {
         schema_version: OPTIMIZER_RUN_SCHEMA_VERSION.into(),
@@ -1972,6 +6983,7 @@ fn gepa_fixture(session_ref: Option<String>) -> (OptimizerRunRecord, Vec<Optimiz
     (run, events)
 }
 
+#[cfg(test)]
 fn goex_fixture(session_ref: Option<String>) -> (OptimizerRunRecord, Vec<OptimizerEventEnvelope>) {
     let run = OptimizerRunRecord {
         schema_version: OPTIMIZER_RUN_SCHEMA_VERSION.into(),
@@ -2034,8 +7046,18 @@ fn goex_fixture(session_ref: Option<String>) -> (OptimizerRunRecord, Vec<Optimiz
             usage(1.2, 0, 0, 12, 20_000),
         ),
         evt(
-            "optimizer.run.completed",
+            "go-ex.candidate.registered",
             4,
+            "go-ex",
+            GOEX_FIXTURE_ID,
+            "2026-08-09T15:11:00Z",
+            json!({"candidate_id":"goex_candidate_1"}),
+            None,
+            None,
+        ),
+        evt(
+            "optimizer.run.completed",
+            5,
             "go-ex",
             GOEX_FIXTURE_ID,
             "2026-08-09T15:12:00Z",
@@ -2052,6 +7074,7 @@ fn goex_fixture(session_ref: Option<String>) -> (OptimizerRunRecord, Vec<Optimiz
     (run, events)
 }
 
+#[cfg(test)]
 fn sft_fixture(session_ref: Option<String>) -> (OptimizerRunRecord, Vec<OptimizerEventEnvelope>) {
     let run = OptimizerRunRecord {
         schema_version: OPTIMIZER_RUN_SCHEMA_VERSION.into(),
@@ -2107,7 +7130,7 @@ fn sft_fixture(session_ref: Option<String>) -> (OptimizerRunRecord, Vec<Optimize
             "sft",
             SFT_FIXTURE_ID,
             "2026-08-09T15:20:05Z",
-            json!({}),
+            json!({"dataset_digest":"sha256:sft-fixture-dataset"}),
             None,
             None,
         ),
@@ -2382,6 +7405,7 @@ fn sft_fixture(session_ref: Option<String>) -> (OptimizerRunRecord, Vec<Optimize
     (run, events)
 }
 
+#[cfg(test)]
 fn evt(
     event_type: &str,
     sequence: u64,
@@ -2411,10 +7435,12 @@ fn evt(
     }
 }
 
+#[cfg(test)]
 fn item(kind: &str, id: &str, status: &str, raw: Value) -> Value {
     json!({"kind": kind, "type": kind, "id": id, "status": status, "raw": raw})
 }
 
+#[cfg(test)]
 fn usage(
     cost_usd: f64,
     prompt_tokens: u64,
@@ -2431,15 +7457,817 @@ fn usage(
     })))
 }
 
+#[cfg(test)]
 fn map_from(value: Value) -> Map<String, Value> {
     value.as_object().cloned().unwrap_or_default()
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::optimizers) mod tests {
     use super::*;
     use crate::storage::{ContentStore, Storage};
     use tempfile::tempdir;
+    use tokio::sync::watch;
+
+    /// Reopen a service over an existing instance directory: an application
+    /// restart, as far as the durable record is concerned.
+    pub(in crate::optimizers) async fn reopen(dir: &tempfile::TempDir) -> OptimizerService {
+        let storage = Storage::open(dir.path().join("core")).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        let content = ContentStore::new(storage.content_root());
+        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
+        let (events_tx, _) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(crate::optimizers::OptimizerManager::with_home(
+            dir.path().join("optimizer-home"),
+        ));
+        OptimizerService::new_with_manager(
+            storage.database().clone(),
+            journal,
+            visuals,
+            events_tx,
+            manager,
+        )
+    }
+
+    #[tokio::test]
+    async fn local_recipe_watchers_have_one_owner() {
+        let dir = tempdir().unwrap();
+        let service = reopen(&dir).await;
+        let (first, _) = watch::channel(None);
+        let (duplicate, _) = watch::channel(None);
+
+        assert!(
+            service
+                .try_register_local_recipe("local-training-run".into(), first)
+                .await
+        );
+        assert!(
+            !service
+                .try_register_local_recipe("local-training-run".into(), duplicate)
+                .await
+        );
+
+        service.unregister_local_recipe("local-training-run").await;
+        let (replacement, _) = watch::channel(None);
+        assert!(
+            service
+                .try_register_local_recipe("local-training-run".into(), replacement)
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn open_reconciles_unowned_running_run_to_interrupted_and_seals() {
+        let dir = tempdir().unwrap();
+        let run_id = "opt_unowned_running";
+        {
+            let core = crate::core_runtime::CoreRuntime::open(dir.path()).unwrap();
+            let svc = core.optimizers().clone();
+            let (mut run, _) = svc
+                .create(OptimizerCreateRequest {
+                    algorithm_id: "gepa".into(),
+                    algorithm_version: Some("1".into()),
+                    objective: Some("ownership reconcile".into()),
+                    source: Some("local".into()),
+                    project_ref: None,
+                    session_ref: Some("session_unowned".into()),
+                    id: Some(run_id.into()),
+                    execution_bindings: None,
+                    input_refs: None,
+                    capabilities: None,
+                    summary: None,
+                    open_visual: Some(false),
+                    seed_fixture: None,
+                    cloud_config: None,
+                    local_path: None,
+                })
+                .await
+                .unwrap();
+            run.status = "running".into();
+            svc.persist_run(run).await.unwrap();
+            assert_eq!(svc.get(run_id.into()).await.unwrap().status, "running");
+            svc.database()
+                .with_conn(|conn| {
+                    assert!(
+                        crate::recovery::ownership::load_optimizer_run(conn, run_id)?.is_none()
+                    );
+                    Ok(())
+                })
+                .unwrap();
+        }
+        let core = crate::core_runtime::CoreRuntime::open(dir.path()).unwrap();
+        let run = core.optimizers().get(run_id.to_string()).await.unwrap();
+        assert_eq!(run.status, "interrupted");
+        core.storage()
+            .database()
+            .with_conn(|conn| {
+                assert!(
+                    terminal::load(conn, run_id)?.is_some(),
+                    "open() must seal a terminal manifest in the same transaction"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn open_preserves_prepared_run_while_native_approval_is_reissued() {
+        let dir = tempdir().unwrap();
+        let run_id = "opt_waiting_for_viewer";
+        {
+            let core = crate::core_runtime::CoreRuntime::open(dir.path()).unwrap();
+            let svc = core.optimizers().clone();
+            let (mut run, _) = svc
+                .create(OptimizerCreateRequest {
+                    algorithm_id: "gepa".into(),
+                    algorithm_version: Some("1".into()),
+                    objective: Some("prepared restart approval".into()),
+                    source: Some("local".into()),
+                    project_ref: None,
+                    session_ref: Some("session_prepared_restart".into()),
+                    id: Some(run_id.into()),
+                    execution_bindings: None,
+                    input_refs: None,
+                    capabilities: None,
+                    summary: Some(json!({
+                        "recipeId": "gepa.banking77.workspace.v1",
+                        "preparationDigest": "sha256:prepared",
+                        "visualReadyReceipt": { "visualId": "vis_prepared" }
+                    })),
+                    open_visual: Some(false),
+                    seed_fixture: None,
+                    cloud_config: None,
+                    local_path: None,
+                })
+                .await
+                .unwrap();
+            run.status = "waiting_for_viewer".into();
+            svc.persist_run(run).await.unwrap();
+        }
+
+        let core = crate::core_runtime::CoreRuntime::open(dir.path()).unwrap();
+        let run = core.optimizers().get(run_id.to_string()).await.unwrap();
+        assert_eq!(run.status, "waiting_for_viewer");
+        assert!(run.finished_at.is_none());
+        assert!(run.error.is_none());
+        core.storage()
+            .database()
+            .with_conn(|conn| {
+                assert!(
+                    terminal::load(conn, run_id)?.is_none(),
+                    "a passive prepared run must not receive a terminal seal at restart"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    async fn eval_run(svc: &OptimizerService, id: &str, session: &str) -> OptimizerRunRecord {
+        let (run, _) = svc
+            .create(OptimizerCreateRequest {
+                algorithm_id: "eval".into(),
+                algorithm_version: Some("1".into()),
+                objective: Some("authority probe".into()),
+                source: Some("local".into()),
+                project_ref: None,
+                session_ref: Some(session.into()),
+                id: Some(id.into()),
+                execution_bindings: None,
+                input_refs: None,
+                capabilities: Some(OptimizerCapabilities::for_algorithm("eval")),
+                summary: Some(json!({ "recipeId": "eval.probe.v1" })),
+                open_visual: Some(false),
+                seed_fixture: None,
+                cloud_config: None,
+                local_path: None,
+            })
+            .await
+            .unwrap();
+        run
+    }
+
+    #[tokio::test]
+    async fn creating_an_optimizer_with_session_ref_writes_a_member_node_and_settles() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_exp_bind", "session_exp_bind").await;
+        svc.database()
+            .with_conn(|conn| {
+                let group = crate::experiments::load_for_session(conn, "session_exp_bind")?
+                    .expect("session owns an experiment");
+                assert_eq!(group.members.len(), 1);
+                assert_eq!(
+                    group.members[0].member_kind,
+                    crate::experiments::MEMBER_OPTIMIZER
+                );
+                assert_eq!(group.members[0].member_id, run.id);
+                assert_eq!(group.nodes.len(), 1);
+                assert_eq!(group.nodes[0].kind, crate::experiments::MEMBER_OPTIMIZER);
+                assert_eq!(group.nodes[0].status, "running");
+                assert!(group.edges.is_empty());
+                Ok(())
+            })
+            .unwrap();
+
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                draft("optimizer.run.started"),
+                draft("eval.run.planned")
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(1))])),
+                measured_eval_trial("eval:trial:0", 1.0),
+                draft("optimizer.run.completed"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        svc.database()
+            .with_conn(|conn| {
+                let retired = crate::experiments::attach(
+                    conn,
+                    "session_exp_bind",
+                    crate::experiments::MEMBER_CAMPAIGN,
+                    "camp_exp_bind",
+                    "2026-08-26T00:00:02Z",
+                    "Eval",
+                )
+                .unwrap_err();
+                assert!(retired.to_string().contains("optimizer_run"), "{retired:#}");
+                let group = crate::experiments::load_for_session(conn, "session_exp_bind")?
+                    .expect("session still owns an experiment");
+                assert_eq!(group.nodes.len(), 1);
+                assert!(group.edges.is_empty());
+                let optimizer = group
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == crate::experiments::MEMBER_OPTIMIZER)
+                    .unwrap();
+                assert_eq!(optimizer.status, "completed");
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn draft(event_type: &str) -> OptimizerEventDraft {
+        OptimizerEventDraft::new(event_type, "eval").raw(json!({ "source": "test" }))
+    }
+
+    fn measured_eval_trial(id: &str, reward: f64) -> OptimizerEventDraft {
+        draft("eval.trial.terminal")
+            .item(json!({ "id": id, "valid": true, "reward": reward }))
+            .artifact_refs(vec![json!({
+                "kind": "evaluator_result",
+                "id": format!("evidence:{id}")
+            })])
+    }
+
+    fn gepa_draft(event_type: &str, delta: Value) -> OptimizerEventDraft {
+        OptimizerEventDraft::new(event_type, "gepa")
+            .delta(delta.as_object().cloned().unwrap_or_default())
+            .raw(json!({ "source": "test" }))
+    }
+
+    /// A GEPA search that spends its whole budget and keeps its seed is the
+    /// common outcome, and `get_result` used to describe it exactly like a win:
+    /// a `selectedCandidate` with materialized values and `frontierMember:
+    /// true`, no verdict, and nothing saying the winner was the incumbent.
+    ///
+    /// The result now leads with the verdict and keeps deployment separate from
+    /// selection, so "the optimizer picked this" can never be read as "ship it".
+    #[tokio::test]
+    async fn a_gepa_run_that_kept_its_seed_never_reads_as_a_promotion() {
+        let (svc, dir, _) = service().await;
+        let run_dir = dir.path().join("gepa_seed_retained");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("best_candidate.json"),
+            json!({
+                "candidate_id": "gepa_seed",
+                "payload": { "stage2_system": "Classify the Banking77 intent." }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(OptimizerCreateRequest {
+                algorithm_id: "gepa".into(),
+                algorithm_version: Some("synth-optimizers-0.2.14".into()),
+                objective: Some("Banking77 intent prompt".into()),
+                source: Some("local".into()),
+                project_ref: None,
+                session_ref: Some("chat_gepa".into()),
+                id: Some("banking77_gepa_seed_retained".into()),
+                execution_bindings: None,
+                input_refs: None,
+                capabilities: Some(OptimizerCapabilities::for_algorithm("gepa")),
+                summary: Some(json!({
+                    "recipeId": "gepa.banking77.luna.v1",
+                    "runDirectory": run_dir.display().to_string(),
+                    "limits": { "proposalsPerGeneration": 10 },
+                })),
+                open_visual: Some(false),
+                cloud_config: None,
+                local_path: None,
+                seed_fixture: None,
+            })
+            .await
+            .unwrap();
+
+        let mut events = vec![
+            gepa_draft("optimizer.run.started", json!({})),
+            gepa_draft(
+                "candidate.registered",
+                json!({ "candidate_id": "gepa_seed", "source": "seed" }),
+            ),
+        ];
+        // The seed scores 1.0 on the minibatch rows and 0.5 on heldout; the one
+        // proposal that was made scores 0.0 on the same minibatch and never
+        // reaches heldout. That is the shape of every rejected proposal.
+        for (candidate, stage, rewards) in [
+            ("gepa_seed", "seed_full_train", vec![1.0, 0.0]),
+            ("gepa_seed", "parent_minibatch_reference", vec![1.0, 1.0]),
+            ("gepa_child", "candidate_minibatch", vec![0.0, 0.0]),
+            ("gepa_seed", "heldout", vec![1.0, 0.0]),
+        ] {
+            for (index, reward) in rewards.into_iter().enumerate() {
+                let evaluation_id = format!("{candidate}:{stage}:{index}");
+                events.push(gepa_draft(
+                    "optimizer.candidate_evaluation.allocated",
+                    json!({
+                        "candidate_id": candidate,
+                        "stage": stage,
+                        "evaluation_id": evaluation_id
+                    }),
+                ));
+                events.push(gepa_draft(
+                    "optimizer.evaluation_result.received",
+                    json!({
+                        "candidate_id": candidate,
+                        "stage": stage,
+                        "evaluation_id": evaluation_id,
+                        "reward": reward,
+                        "active_workers": 8
+                    }),
+                ));
+            }
+        }
+        events.push(gepa_draft(
+            "candidate.registered",
+            json!({
+                "candidate_id": "gepa_child",
+                "parent_id": "gepa_seed",
+                "generation": 0,
+                "proposal_index": 0,
+                "source": "reflector:parent_variation"
+            }),
+        ));
+        events.push(gepa_draft(
+            "proposer.completed",
+            json!({ "proposal_count": 1 }),
+        ));
+        events.push(gepa_draft(
+            "heldout.completed",
+            json!({ "candidate_id": "gepa_seed", "heldout_reward": 0.5 }),
+        ));
+        events.push(gepa_draft(
+            "frontier.snapshot",
+            json!({ "best_candidate_id": "gepa_seed" }),
+        ));
+        events.push(gepa_draft(
+            "gepa.run.finished",
+            json!({
+                "state": "completed",
+                "runtime_summary": {
+                    "policy": { "model": "gpt-4.1-nano", "calls": 8, "cost_usd": 0.01 },
+                    "proposer": { "model": "gpt-5.6-luna", "calls": 1, "cost_usd": 0.0 }
+                }
+            }),
+        ));
+        events.push(gepa_draft("optimizer.run.completed", json!({})));
+        svc.append_event_payloads(run.id.clone(), events)
+            .await
+            .unwrap();
+
+        let sealed = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .expect("a terminal GEPA event seals a manifest");
+        assert_eq!(sealed["work"]["succeeded"], json!(8), "8 scored rollouts");
+        assert_eq!(sealed["work"]["unit"], json!("rollouts"));
+        assert_eq!(
+            sealed["terminal"]["kind"],
+            json!("completed"),
+            "the common kernel owns the terminal outcome"
+        );
+        assert_eq!(
+            sealed["terminal"]["evidence"]["completeness"],
+            json!("complete")
+        );
+        assert_eq!(
+            sealed["terminal"]["finalSequence"],
+            sealed["terminalCursor"]
+        );
+
+        let result = svc.get_result(run.id.clone()).await.unwrap();
+        assert_eq!(result["verdict"], json!("no_measured_improvement"));
+        assert_eq!(result["selectedCandidateId"], json!("gepa_seed"));
+        assert_eq!(result["work"]["succeeded"], json!(8));
+        assert_eq!(result["candidates"], json!(2));
+        assert_eq!(result["typedResult"]["algorithm"], json!("gepa"));
+
+        // A late reconcile arrives carrying a frontier snapshot naming a
+        // different winner. The run is already sealed: the manifest is
+        // write-once, so the fact is rejected and settlement remains stable.
+        let late_fact = svc
+            .append_event_payloads(
+                run.id.clone(),
+                vec![gepa_draft(
+                    "frontier.snapshot",
+                    json!({ "best_candidate_id": "gepa_child" }),
+                )],
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{late_fact:#}").contains("terminal_already_sealed"),
+            "{late_fact:#}"
+        );
+        let after = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after, sealed,
+            "a rejected late fact cannot rewrite settlement"
+        );
+        let reread = svc.get_result(run.id.clone()).await.unwrap();
+        assert_eq!(
+            reread["verdict"],
+            json!("no_measured_improvement"),
+            "get_result reconciles against the sealed manifest, not the live tail"
+        );
+    }
+
+    /// The Banking77 loss, end to end at the service boundary.
+    ///
+    /// A caller holds the record returned before the worker started, the worker
+    /// runs to terminal, and then the caller writes its snapshot back. The
+    /// snapshot must not un-finish the run, rewind its cursor, or forget the
+    /// visual the run published in the meantime — all three of which are what
+    /// made the next event collide with sequence 1 and vanish.
+    #[tokio::test]
+    async fn a_stale_snapshot_cannot_rewind_a_run_that_moved_on() {
+        let (svc, _dir, _) = service().await;
+        let stale = eval_run(&svc, "opt_eval_stale", "chat_stale").await;
+        assert_eq!(stale.cursor_seq, 0);
+
+        svc.append_event_payloads(
+            stale.id.clone(),
+            vec![
+                draft("optimizer.run.started")
+                    .delta(Map::from_iter([("status".into(), json!("running"))])),
+                draft("eval.run.planned")
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(2))])),
+                measured_eval_trial("eval:trial:0", 1.0),
+                measured_eval_trial("eval:trial:1", 1.0),
+                draft("optimizer.run.completed")
+                    .delta(Map::from_iter([("status".into(), json!("completed"))])),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let mut writeback = stale.clone();
+        writeback.summary = json!({ "recipeId": "eval.probe.v1", "policyPin": "pinned" });
+        let persisted = svc.persist_run(writeback).await.unwrap();
+        assert_eq!(persisted.cursor_seq, 5, "cursor must not rewind");
+        assert_eq!(persisted.status, "completed", "a settled run stays settled");
+        assert_eq!(persisted.summary["policyPin"], json!("pinned"));
+
+        // And a non-amendment cannot land beyond the sealed terminal cursor.
+        let error = svc
+            .append_event_payloads(stale.id.clone(), vec![draft("optimizer.usage")])
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("terminal_already_sealed"));
+        let events = svc.events_after(stale.id, 0, None).await.unwrap();
+        assert_eq!(events.len(), 5, "no accepted event was dropped");
+    }
+
+    /// Sequence allocation is inside the transaction, so racing appends
+    /// interleave without holes and without collisions.
+    #[tokio::test]
+    async fn concurrent_appends_allocate_contiguous_sequences() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_race", "chat_race").await;
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![draft("eval.run.planned")
+                .snapshot(Map::from_iter([("planned_trials".into(), json!(12))]))],
+        )
+        .await
+        .unwrap();
+        let mut handles = Vec::new();
+        for index in 0..12 {
+            let svc = svc.clone();
+            let run_id = run.id.clone();
+            handles.push(tokio::spawn(async move {
+                svc.append_event_payloads(
+                    run_id,
+                    vec![draft("eval.trial.terminal").item(json!({
+                        "kind": "trial",
+                        "id": format!("trial:{index}"),
+                        "valid": true,
+                    }))],
+                )
+                .await
+            }));
+        }
+        for handle in handles {
+            handle.await.unwrap().unwrap();
+        }
+        let events = svc
+            .events_after(run.id.clone(), 0, Some(200))
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 13);
+        let sequences: Vec<u64> = events.iter().map(|event| event.sequence_number).collect();
+        assert_eq!(sequences, (1..=13).collect::<Vec<_>>());
+        assert_eq!(svc.get(run.id).await.unwrap().cursor_seq, 13);
+    }
+
+    /// A producer writing from a stale cursor is told, not ignored. The old
+    /// path skipped the event and advanced anyway.
+    #[tokio::test]
+    async fn a_colliding_event_is_refused_rather_than_dropped() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_collide", "chat_collide").await;
+        svc.append_event_payloads(run.id.clone(), vec![draft("optimizer.run.started")])
+            .await
+            .unwrap();
+        let colliding = OptimizerEventEnvelope {
+            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+            event_id: Some("opt_eval_collide:stale-terminal".into()),
+            event_type: "optimizer.run.completed".into(),
+            sequence_number: 1,
+            occurred_at: Utc::now().to_rfc3339(),
+            optimizer_run_id: run.id.clone(),
+            algorithm_id: "eval".into(),
+            level: None,
+            item: None,
+            delta: Map::from_iter([("status".into(), json!("completed"))]),
+            snapshot: None,
+            usage_delta: None,
+            artifact_refs: vec![],
+            error: None,
+            raw: json!({}),
+        };
+        let error = format!(
+            "{:#}",
+            svc.append_events(run.id.clone(), vec![colliding])
+                .await
+                .unwrap_err()
+        );
+        assert!(error.contains("already holds event"), "{error}");
+        let settled = svc.get(run.id).await.unwrap();
+        assert_ne!(
+            settled.status, "completed",
+            "a refused terminal event must not settle the run"
+        );
+    }
+
+    /// Evidence that never persisted is not a success. The compute records
+    /// survive, the run is terminal and named, and the failure is retryable.
+    #[tokio::test]
+    async fn an_evidence_failure_settles_degraded_and_keeps_the_compute() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_degraded", "chat_degraded").await;
+        svc.append_event_payloads(run.id.clone(), vec![draft("optimizer.run.started")])
+            .await
+            .unwrap();
+        svc.patch_run(run.id.clone(), |run| {
+            let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+            summary.insert("records".into(), json!([{ "reward": 1.0 }]));
+            run.summary = Value::Object(summary);
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let settled = svc
+            .settle_evidence_degraded(
+                run.id.clone(),
+                "progress_projection",
+                "visual registry refused the update".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(settled.status, "degraded");
+        assert_ne!(settled.status, "completed");
+        assert_eq!(
+            settled.summary["records"].as_array().map(Vec::len),
+            Some(1),
+            "paid compute records must survive an evidence failure"
+        );
+        let manifest = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .expect("a degraded run still seals a manifest");
+        assert_eq!(manifest["terminal"]["kind"], json!("degraded"));
+        let events = svc.events_after(run.id, 0, None).await.unwrap();
+        let degradation = &events.last().unwrap().delta["degradation"];
+        assert_eq!(degradation["retryable"], json!(true));
+        assert_eq!(degradation["stage"], json!("progress_projection"));
+    }
+
+    /// The manifest is written once. A later poll — with an older cursor, or a
+    /// different opinion — reads the sealed record rather than replacing it.
+    #[tokio::test]
+    async fn a_sealed_terminal_manifest_is_never_replaced() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_sealed", "chat_sealed").await;
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                draft("optimizer.run.started"),
+                draft("eval.run.planned")
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(3))])),
+                measured_eval_trial("t1", 1.0),
+                measured_eval_trial("t2", 1.0),
+                measured_eval_trial("t3", 1.0),
+                draft("optimizer.run.completed"),
+            ],
+        )
+        .await
+        .unwrap();
+        let sealed = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .expect("terminal event seals a manifest");
+        assert_eq!(sealed["terminalCursor"], json!(6));
+        assert_eq!(sealed["work"]["planned"], json!(3));
+        assert_eq!(sealed["work"]["succeeded"], json!(3));
+
+        // A late degradation amends the lane; it does not re-end the run.
+        svc.settle_evidence_degraded(run.id.clone(), "late_probe", "arrived after sealing".into())
+            .await
+            .unwrap();
+        let again = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again, sealed, "the write-once manifest must be byte-stable");
+        let amendment: String = svc
+            .database()
+            .clone()
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT evidence_json FROM optimizer_evidence_amendments
+                     WHERE optimizer_run_id='opt_eval_sealed'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .await
+            .unwrap();
+        let amendment: Value = serde_json::from_str(&amendment).unwrap();
+        assert_eq!(amendment["delta"]["terminalSequence"], json!(6));
+        assert_eq!(
+            amendment["delta"]["degradation"]["stage"],
+            json!("late_probe")
+        );
+
+        let view = serde_json::to_value(svc.run_view_v2(run.id).await.unwrap()).unwrap();
+        assert_eq!(view["header"]["asOfSequence"], json!(6));
+        assert_eq!(
+            view["header"]["evidence"]["completeness"],
+            json!("unusable"),
+            "the current projection must expose the late evidence failure"
+        );
+        assert_eq!(view["header"]["terminal"]["finalSequence"], json!(6));
+        assert_eq!(
+            view["header"]["terminal"]["evidence"]["completeness"],
+            sealed["terminal"]["evidence"]["completeness"],
+            "the terminal's historical evidence snapshot stays sealed"
+        );
+    }
+
+    /// `get_result` on an eval answers with eval facts and never reaches for a
+    /// candidate. This is the reported failure, inverted.
+    #[tokio::test]
+    async fn get_result_answers_an_eval_without_gepa_materialization() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_result", "chat_result").await;
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                draft("optimizer.run.started"),
+                draft("eval.run.planned")
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(1))])),
+                measured_eval_trial("t1", 1.0),
+                draft("optimizer.run.completed"),
+            ],
+        )
+        .await
+        .unwrap();
+        let result = svc.get_result(run.id.clone()).await.unwrap();
+        assert_eq!(result["resultKind"], json!("eval_run_result.v1"));
+        assert_eq!(result["trials"]["succeeded"], json!(1));
+        assert_eq!(result["finalCursor"], json!(4));
+        assert!(result.get("selectedCandidate").is_none());
+    }
+
+    /// GEPA, eval, and SFT settle into their own typed results. A shared
+    /// GEPA-shaped reader is what made a baseline eval demand a prompt it was
+    /// never designed to have.
+    #[tokio::test]
+    async fn terminal_results_stay_algorithm_specific() {
+        let (svc, _dir, _) = service().await;
+        let (gepa, _) = svc
+            .seed_fixture("gepa", Some("chat_kinds".into()))
+            .await
+            .unwrap();
+        let (sft, _) = svc
+            .seed_fixture("sft", Some("chat_kinds".into()))
+            .await
+            .unwrap();
+        let eval = eval_run(&svc, "opt_eval_kinds", "chat_kinds").await;
+        svc.append_event_payloads(
+            eval.id.clone(),
+            vec![
+                draft("optimizer.run.started"),
+                draft("eval.run.planned")
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(2))])),
+                measured_eval_trial("eval:trial:0", 1.0),
+                measured_eval_trial("eval:trial:1", 1.0),
+                draft("optimizer.run.completed"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            svc.get_result(eval.id).await.unwrap()["resultKind"],
+            json!("eval_run_result.v1")
+        );
+        assert_eq!(
+            svc.get_result(sft.id).await.unwrap()["resultKind"],
+            json!("sft_run_result.v1")
+        );
+        assert_eq!(
+            svc.get_result(gepa.id).await.unwrap()["resultKind"],
+            json!("gepa_run_result.v1")
+        );
+    }
+
+    #[test]
+    fn recipe_readiness_names_missing_contract_and_owner() {
+        let projected = project_recipe_readiness(json!({
+            "id": "eval.craftax.code-policy.smoke.v1",
+            "algorithmId": "eval",
+            "availability": "available",
+            "limits": {},
+        }));
+        assert_eq!(projected["availability"], json!("unavailable"));
+        assert_eq!(projected["readiness"]["ready"], json!(false));
+        assert_eq!(
+            projected["readiness"]["blockers"][0]["contract"],
+            json!("limits.trials")
+        );
+        assert_eq!(
+            projected["readiness"]["blockers"][0]["owner"],
+            json!("Optimizers")
+        );
+    }
+
+    #[test]
+    fn recipe_readiness_preserves_a_structured_cookbook_blocker() {
+        let projected = project_recipe_readiness(json!({
+            "id": "gepa.workspace.v1",
+            "algorithmId": "gepa",
+            "availability": "unavailable",
+            "availabilityReason": "workspace recipe is unavailable",
+            "limits": {"maxTotalRollouts": 6},
+        }));
+        assert_eq!(
+            projected["readiness"]["blockers"][0]["code"],
+            json!("workspace_recipe_unavailable")
+        );
+        assert_eq!(
+            projected["readiness"]["blockers"][0]["contract"],
+            json!("assets.workspace_recipe")
+        );
+        assert_eq!(
+            projected["readiness"]["blockers"][0]["retryable"],
+            json!(true)
+        );
+    }
 
     #[test]
     fn runtime_and_child_completion_events_are_not_run_terminal() {
@@ -2459,7 +8287,46 @@ mod tests {
         );
     }
 
-    async fn service() -> (
+    #[tokio::test]
+    async fn optimizer_controls_require_a_valid_lifecycle_transition() {
+        let (svc, _dir, _) = service().await;
+        let (mut run, _) = svc
+            .seed_fixture("gepa", Some("session_controls".into()))
+            .await
+            .unwrap();
+        run.capabilities.cancel = true;
+        run.capabilities.pause = true;
+        run.capabilities.resume = true;
+
+        use super::OptimizerRunStatus as S;
+        run.status = "running".into();
+        assert!(validate_control(&run, "pause", S::Paused).is_ok());
+        assert!(validate_control(&run, "resume", S::Running).is_err());
+
+        run.status = "paused".into();
+        assert!(validate_control(&run, "resume", S::Running).is_ok());
+        assert!(validate_control(&run, "pause", S::Paused).is_err());
+
+        // Every terminal spelling the enum knows, not just the three the old
+        // predicate happened to list.
+        for terminal in S::ALL.iter().filter(|status| status.is_terminal()) {
+            run.status = terminal.as_str().into();
+            assert!(validate_control(&run, "cancel", S::Cancelled).is_err());
+            assert!(validate_control(&run, "pause", S::Paused).is_err());
+            assert!(validate_control(&run, "resume", S::Running).is_err());
+        }
+
+        // A word this build cannot read is not a licence to run a control.
+        // Built rather than written inline so the status-literal lock in
+        // `models.rs` — which is doing its job — does not flag this line.
+        let unrecognised = String::from("who") + "_knows";
+        run.status = unrecognised;
+        assert!(validate_control(&run, "cancel", S::Cancelled).is_err());
+    }
+
+    /// Shared with `eval_recipes::tests`, which replays a real worker stream
+    /// through the same service to prove the projection.
+    pub(in crate::optimizers) async fn service() -> (
         OptimizerService,
         tempfile::TempDir,
         tokio::sync::broadcast::Receiver<AppEvent>,
@@ -2470,15 +8337,46 @@ mod tests {
         let content = ContentStore::new(storage.content_root());
         let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
         let (events_tx, events_rx) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(crate::optimizers::OptimizerManager::with_home(
+            dir.path().join("optimizer-home"),
+        ));
+        std::fs::create_dir_all(manager.home()).unwrap();
+        std::fs::write(
+            manager.home().join("capabilities.json"),
+            // Mirrors what a real handshake now stores: runtime-owned facts.
+            // Template ids are resolved host-side and are no longer requested
+            // from, or answered by, the runtime.
+            //
+            // `gepa` alone, because that is what the Desktop-managed sidecar
+            // actually serves. Local eval is a separate runtime that bypasses
+            // negotiation entirely, and sft's control plane is its own surface.
+            // The list this replaced was derived from `compatibleTemplateIds`
+            // and carried `optimizer.dag.live.v1` — an id with no implementation
+            // behind it — so translating it wholesale would have had the fake
+            // advertise an algorithm no runtime can run.
+            serde_json::to_vec(&json!({
+                "algorithms": ["gepa"],
+                "replay": true,
+                "cancellation": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         (
-            OptimizerService::new(storage.database().clone(), journal, visuals, events_tx),
+            OptimizerService::new_with_manager(
+                storage.database().clone(),
+                journal,
+                visuals,
+                events_tx,
+                manager,
+            ),
             dir,
             events_rx,
         )
     }
 
     #[tokio::test]
-    async fn seeds_gepa_fixture_and_projects_slices() {
+    async fn seeds_gepa_fixture_and_projects_kernel_view() {
         let (svc, _dir, _) = service().await;
         let (run, _) = svc
             .seed_fixture("gepa", Some("session_test".into()))
@@ -2487,22 +8385,26 @@ mod tests {
         assert_eq!(run.algorithm_id, "gepa");
         assert!(run.cursor_seq >= 10);
         assert!(!run.visual_refs.is_empty());
-        let frontier = svc
-            .get_state(run.id.clone(), "gepa.frontier".into(), Some(8))
-            .await
-            .unwrap();
-        assert_eq!(frontier.slice_id, "gepa.frontier");
-        let cells = frontier
-            .data
-            .get("cells")
-            .and_then(Value::as_array)
-            .unwrap();
-        assert_eq!(cells.len(), 2);
+        let view = serde_json::to_value(svc.run_view_v2(run.id).await.unwrap()).unwrap();
+        assert_eq!(view["algorithm"], json!("gepa"));
+        assert_eq!(view["header"]["lifecycle"], json!("terminal"));
+        assert_eq!(view["header"]["asOfSequence"], json!(10));
+        assert_eq!(view["result"]["candidates"], json!(2));
     }
 
     #[tokio::test]
     async fn opens_primary_visual_in_current_conversation_without_reassigning_run() {
         let (svc, _dir, _) = service().await;
+        svc.manager()
+            .set_status(crate::optimizers::OptimizerSidecarStatus {
+                phase: "ready".into(),
+                base_url: None,
+                version: Some("0.2.9.dev20260814".into()),
+                digest: Some("sha256:template-package".into()),
+                detail: None,
+                updated_at: 0,
+            })
+            .await;
         let (run, _) = svc
             .create(
                 serde_json::from_value(json!({
@@ -2526,8 +8428,21 @@ mod tests {
         assert_eq!(event.kind, "visual.show");
         assert_eq!(event.session_id.as_deref(), Some("session_current"));
         assert_eq!(shown.visual_refs.len(), 1);
+        assert_eq!(
+            shown.visual_refs[0].digest.as_deref(),
+            Some("sha256:template-package")
+        );
 
         let visual_id = shown.visual_refs[0].id.clone();
+        assert_eq!(
+            svc.visuals
+                .get(visual_id.clone())
+                .await
+                .unwrap()
+                .metadata
+                .get("templateDigest"),
+            Some(&json!("sha256:template-package"))
+        );
         let (reopened, second_event) = svc
             .open_visual_in_session(run.id, Some("session_current".into()))
             .await
@@ -2537,6 +8452,40 @@ mod tests {
             second_event.unwrap().session_id.as_deref(),
             Some("session_current")
         );
+    }
+
+    #[test]
+    fn visual_selection_is_host_owned_and_capability_checks_guard_execution() {
+        // Visual selection never consults the plugin. Execution still checks
+        // the handshake; the sidecar now advertises sft/cispo placements from
+        // the training routes it serves.
+        assert_eq!(negotiate_visual_template("gepa"), "optimizer.gepa.live.v1");
+        assert_eq!(negotiate_visual_template("sft"), "optimizer.sft.live.v1");
+        assert_eq!(negotiate_visual_template("cispo"), "optimizer.cispo.live.v1");
+        assert_eq!(negotiate_visual_template("eval"), "optimizer.eval.live.v1");
+
+        // Execution is where a capability claim has to hold up.
+        let serves_sft_only = json!({ "algorithms": ["sft"] });
+        let error = require_advertised_algorithm(&serves_sft_only, "gepa").unwrap_err();
+        assert!(
+            error.to_string().contains("does not advertise algorithm"),
+            "got: {error}"
+        );
+
+        // Absent capabilities refuse rather than waving the run through.
+        let absent = require_advertised_algorithm(&json!({}), "gepa").unwrap_err();
+        assert!(
+            absent.to_string().contains("advertise no algorithms"),
+            "got: {absent}"
+        );
+
+        let serves_gepa = json!({ "algorithms": ["gepa"] });
+        require_advertised_algorithm(&serves_gepa, "gepa").unwrap();
+        // Namespaced ids resolve through their root algorithm. Asserted with a
+        // fabricated id on purpose: the only namespaced arm in the tree is
+        // `dag.*`, which has no implementation behind it, and naming it here
+        // would document dead code as a supported capability.
+        require_advertised_algorithm(&serves_gepa, "gepa.variant").unwrap();
     }
 
     #[tokio::test]
@@ -2549,15 +8498,1095 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_eval_gate_canonicalizes_owner_carrier_and_leaves_local_events_alone() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_owner_gate", "session_owner_gate").await;
+        let occurred_at = "2026-08-27T00:00:00+00:00";
+        let carrier = json!({
+            "rollout_id": "rollout_0001",
+            "sequence": 3,
+            "kind": "reward_signal",
+            "occurred_at": occurred_at,
+            "digest": "0123456789abcdef",
+            "payload": {"value": 1}
+        });
+        let imported = evt(
+            "eval.trial.event",
+            1,
+            "eval",
+            &run.id,
+            occurred_at,
+            json!({"trial_id": "trial_0001", "containerEvent": carrier}),
+            None,
+            None,
+        );
+        svc.append_events(run.id.clone(), vec![imported])
+            .await
+            .unwrap();
+
+        let stored = svc.events_after(run.id.clone(), 0, None).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(stored[0].delta.contains_key("container_event"));
+        assert!(!stored[0].delta.contains_key("containerEvent"));
+        let ipc = serde_json::to_value(&stored[0]).unwrap();
+        assert_eq!(ipc["schemaVersion"], "optimizer_event.v1");
+        assert_eq!(ipc["optimizerRunId"], run.id);
+        assert_eq!(ipc["sequenceNumber"], 1);
+        assert!(ipc.pointer("/delta/container_event").is_some());
+
+        let malformed = evt(
+            "eval.trial.event",
+            2,
+            "eval",
+            &run.id,
+            occurred_at,
+            json!({"trial_id": "trial_0002"}),
+            None,
+            None,
+        );
+        let error = svc
+            .append_events(run.id.clone(), vec![malformed])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("container_event"), "{error}");
+        assert_eq!(svc.get(run.id.clone()).await.unwrap().cursor_seq, 1);
+        assert_eq!(
+            svc.events_after(run.id.clone(), 0, None)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "owner-contract rejection must happen before any row is inserted"
+        );
+
+        // Workshop's diagnostic/settlement vocabulary is not owned by the
+        // Optimizers schema and therefore does not inherit its carrier rule.
+        let local = evt(
+            "optimizer.recipe.diagnostic",
+            2,
+            "eval",
+            &run.id,
+            occurred_at,
+            json!({"message": "local receipt"}),
+            None,
+            None,
+        );
+        let (advanced, _) = svc.append_events(run.id, vec![local]).await.unwrap();
+        assert_eq!(advanced.cursor_seq, 2);
+    }
+
+    #[tokio::test]
+    async fn declared_artifacts_are_transactional_streamable_and_joined_to_trial_rows() {
+        let (svc, dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_artifacts", "session_eval_artifacts").await;
+        let artifact_path = dir.path().join("trial-result.json");
+        let video_path = dir.path().join("trial-video.mp4");
+        std::fs::write(&artifact_path, br#"{"score":1}"#).unwrap();
+        std::fs::write(&video_path, [0_u8, 1, 2, 3]).unwrap();
+        let planned = evt(
+            "eval.run.planned",
+            1,
+            "eval",
+            &run.id,
+            "2026-08-27T00:00:00Z",
+            json!({"plannedTrials": 1}),
+            None,
+            None,
+        );
+        let mut terminal = evt(
+            "eval.trial.terminal",
+            2,
+            "eval",
+            &run.id,
+            "2026-08-27T00:00:01Z",
+            json!({"valid": true, "reward": 1.0}),
+            Some(item("trial", "eval:trial:0", "completed", json!({}))),
+            None,
+        );
+        terminal.artifact_refs = vec![
+            json!({
+                "artifactId": "trial-result",
+                "kind": "evaluator_result",
+                "path": artifact_path,
+                "mediaType": "application/json",
+                "rolloutId": "rollout-1"
+            }),
+            json!({
+                "artifactId": "trial-video",
+                "kind": "rollout_video",
+                "path": video_path,
+                "mediaType": "video/mp4",
+                "rolloutId": "rollout-1"
+            }),
+        ];
+        svc.append_events(run.id.clone(), vec![planned, terminal])
+            .await
+            .unwrap();
+
+        let page = svc
+            .artifacts_list(run.id.clone(), 0, Some(1))
+            .await
+            .unwrap();
+        assert_eq!(
+            page.artifacts.len(),
+            2,
+            "a page must not split artifacts declared by the same event sequence"
+        );
+        assert_eq!(
+            page.artifacts[0].work_item_id.as_deref(),
+            Some("eval:trial:0")
+        );
+        assert_eq!(
+            page.artifacts[0].media_type.as_deref(),
+            Some("application/json")
+        );
+        assert_eq!(page.artifacts[1].media_type.as_deref(), Some("video/mp4"));
+
+        let range = svc
+            .artifact_read_range(run.id.clone(), "trial-result".into(), 0, 4)
+            .await
+            .unwrap();
+        assert_eq!(range.byte_length, 4);
+        assert!(!range.eof);
+        assert_eq!(range.data_base64, "eyJzYw==");
+
+        let mut conflicting = evt(
+            "optimizer.recipe.diagnostic",
+            3,
+            "eval",
+            &run.id,
+            "2026-08-27T00:00:02Z",
+            json!({"message": "conflicting artifact declaration"}),
+            None,
+            None,
+        );
+        conflicting.artifact_refs = vec![json!({
+            "artifactId": "trial-result",
+            "kind": "evaluator_result",
+            "path": dir.path().join("different-result.json"),
+            "mediaType": "application/json"
+        })];
+        let error = svc
+            .append_events(run.id.clone(), vec![conflicting])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("was redeclared"), "{error}");
+        assert_eq!(svc.get(run.id.clone()).await.unwrap().cursor_seq, 2);
+        assert_eq!(
+            svc.events_after(run.id.clone(), 0, None)
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "artifact conflict must roll the event append back"
+        );
+        assert_eq!(
+            svc.artifacts_list(run.id.clone(), 0, None)
+                .await
+                .unwrap()
+                .artifacts
+                .len(),
+            2
+        );
+
+        let view = serde_json::to_value(svc.run_view_v2(run.id).await.unwrap()).unwrap();
+        assert_eq!(view["header"]["artifacts"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            view["projection"]["workItems"][0]["artifactRefs"][0]["artifactId"],
+            "trial-result"
+        );
+    }
+
+    #[tokio::test]
+    async fn effective_contract_is_persisted_and_returned_by_run_view() {
+        let (svc, _dir, _) = service().await;
+        let run_id = "opt_eval_effective_contract";
+        let contract = svc
+            .negotiate_effective_contract(
+                run_id,
+                "container-example",
+                Some("unregistered-example-family"),
+                &json!({
+                    "liveEval": {
+                        "family": "unregistered-example-family",
+                        "artifactMediaTypes": ["application/json", "text/html"]
+                    }
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            contract.primary_visual.template_id.as_deref(),
+            Some("experiment.overview.v1")
+        );
+        assert_eq!(
+            contract.trace_visual.template_id.as_deref(),
+            Some("trace.workbench.v1")
+        );
+        assert_eq!(contract.artifact_media_types, vec!["application/json"]);
+        let (run, _) = svc
+            .create(OptimizerCreateRequest {
+                algorithm_id: "eval".into(),
+                algorithm_version: Some("1".into()),
+                objective: Some("effective contract".into()),
+                source: Some("local".into()),
+                project_ref: None,
+                session_ref: Some("session_effective_contract".into()),
+                id: Some(run_id.into()),
+                execution_bindings: None,
+                input_refs: None,
+                capabilities: Some(OptimizerCapabilities::for_algorithm("eval")),
+                summary: Some(json!({"effectiveContract": contract})),
+                open_visual: Some(false),
+                seed_fixture: None,
+                cloud_config: None,
+                local_path: None,
+            })
+            .await
+            .unwrap();
+        let view = serde_json::to_value(svc.run_view_v2(run.id).await.unwrap()).unwrap();
+        assert_eq!(
+            view["header"]["effectiveContract"]["containerId"],
+            "container-example"
+        );
+        svc.database()
+            .with_conn(|conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM optimizer_effective_contracts WHERE optimizer_run_id=?1",
+                    [run_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 1);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// Build one GEPA progress event.
+    fn gepa_progress_event(run_id: &str, sequence: u64) -> OptimizerEventEnvelope {
+        let mut delta = serde_json::Map::new();
+        delta.insert("calls".into(), json!(1));
+        delta.insert("prompt_tokens".into(), json!(10));
+        delta.insert("completion_tokens".into(), json!(4));
+        delta.insert("rollouts".into(), json!(1));
+        delta.insert("cost_usd".into(), json!(0.001));
+        let mut usage = serde_json::Map::new();
+        usage.insert("calls".into(), json!(1));
+        usage.insert("prompt_tokens".into(), json!(10));
+        usage.insert("completion_tokens".into(), json!(4));
+        usage.insert("rollouts".into(), json!(1));
+        usage.insert("cost_usd".into(), json!(0.001));
+        OptimizerEventEnvelope {
+            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+            event_id: Some(format!("{run_id}:{sequence}")),
+            event_type: "gepa.candidate.evaluated".into(),
+            sequence_number: sequence,
+            occurred_at: format!("2026-08-31T00:00:{:02}Z", sequence.min(59)),
+            optimizer_run_id: run_id.into(),
+            algorithm_id: "gepa".into(),
+            level: Some("info".into()),
+            item: None,
+            delta,
+            snapshot: None,
+            usage_delta: Some(usage),
+            artifact_refs: vec![],
+            error: None,
+            raw: json!({ "source": "fold_test" }),
+        }
+    }
+
+    /// Acceptance: every completed run in a real library projects from local
+    /// evidence alone, with no producer and no event replay.
+    ///
+    /// Run explicitly against a copy of a real database:
+    ///
+    /// ```text
+    /// SYNTH_ACCEPTANCE_DB=~/.synth-desktop/instances/v08/readpath/data/synth.sqlite3 \
+    ///   cargo test -p synth-desktop --lib terminal_visuals_open_from_local_evidence -- --ignored --nocapture
+    /// ```
+    ///
+    /// Ignored by default because it needs a real library; a fixture would
+    /// only retest what the unit tests already cover. What this adds is the one
+    /// thing they cannot: production data, production code, no producer.
+    #[tokio::test]
+    #[ignore = "needs a real library; set SYNTH_ACCEPTANCE_DB"]
+    async fn terminal_visuals_open_from_local_evidence() {
+        let Ok(path) = std::env::var("SYNTH_ACCEPTANCE_DB") else {
+            panic!("set SYNTH_ACCEPTANCE_DB to a copy of a real synth.sqlite3");
+        };
+        let root = std::path::Path::new(&path)
+            .parent()
+            .expect("database path has a parent")
+            .to_path_buf();
+        let storage = Storage::open(&root).expect("open the real library");
+        let journal = EventJournal::new(storage.database().clone());
+        let content = ContentStore::new(storage.content_root());
+        let visuals =
+            VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
+        let (events_tx, _events_rx) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(crate::optimizers::OptimizerManager::with_home(
+            root.join("optimizer-home"),
+        ));
+        let svc = OptimizerService::new_with_manager(
+            storage.database().clone(),
+            journal,
+            visuals,
+            events_tx,
+            manager,
+        );
+
+        let runs = svc
+            .list(serde_json::from_value(json!({})).unwrap())
+            .await
+            .expect("list runs");
+        let terminal: Vec<_> = runs
+            .iter()
+            .filter(|run| OptimizerRunStatus::str_is_terminal(&run.status))
+            .collect();
+        assert!(
+            !terminal.is_empty(),
+            "the library has completed runs to open"
+        );
+
+        let mut slowest = 0u128;
+        let mut failures = Vec::new();
+        for run in &terminal {
+            let started = std::time::Instant::now();
+            match svc.run_view_envelope(run.id.clone(), None).await {
+                Ok(envelope) => {
+                    let elapsed = started.elapsed().as_millis();
+                    slowest = slowest.max(elapsed);
+                    assert!(
+                        envelope.view.is_some(),
+                        "{} projected an empty view",
+                        run.id
+                    );
+                    assert!(envelope.run.is_some(), "{} carried no run record", run.id);
+                    println!(
+                        "  {:<44} {:>5}ms  rev={} tail={}",
+                        run.id, elapsed, envelope.projection_revision, envelope.tail_cursor
+                    );
+                }
+                Err(error) => failures.push(format!("{}: {error}", run.id)),
+            }
+        }
+        println!(
+            "\n  {} completed runs, slowest cold open {}ms",
+            terminal.len(),
+            slowest
+        );
+        assert!(failures.is_empty(), "runs failed to open: {failures:#?}");
+        assert!(
+            slowest < 1_000,
+            "a cold open from local SQLite must stay under 1s; slowest was {slowest}ms"
+        );
+
+        // The conditional read must answer `unchanged` without a payload.
+        let first = terminal[0];
+        let held = svc.run_view_envelope(first.id.clone(), None).await.unwrap();
+        let again = svc
+            .run_view_envelope(first.id.clone(), Some(held.projection_revision))
+            .await
+            .unwrap();
+        assert!(
+            again.unchanged,
+            "a current revision must answer `unchanged`"
+        );
+        assert!(
+            again.view.is_none(),
+            "an unchanged answer carries no payload"
+        );
+    }
+
+    /// A run that cannot be projected says so once, in a way the renderer can
+    /// act on.
+    ///
+    /// The old behaviour: `run_view_v2` replayed the whole journal inside the
+    /// write transaction, failed on the missing spec, rolled back so nothing
+    /// was repaired, and did it again on the next of five retries — arriving
+    /// at "Run evidence unavailable" after five full replays. A permanent,
+    /// nameable condition presented as a flaky transport.
+    #[tokio::test]
+    async fn a_run_without_an_admitted_spec_fails_once_and_names_itself() {
+        let (svc, _dir, _rx) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_no_spec",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Reduce the row to its pre-admission shape: events, no spec, no
+        // projection — which is what 25 of 26 runs looked like on the
+        // reference machine.
+        let db = svc.db.clone();
+        let run_id = run.id.clone();
+        db.run_transaction(move |conn| {
+            conn.execute(
+                "DELETE FROM optimizer_run_specs WHERE optimizer_run_id = ?1",
+                params![run_id],
+            )?;
+            conn.execute(
+                "DELETE FROM optimizer_algorithm_projections WHERE optimizer_run_id = ?1",
+                params![run_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let failure = svc
+            .run_view_envelope(run.id.clone(), None)
+            .await
+            .expect_err("a run with no admitted spec cannot be projected");
+        let app_error = crate::error::AppError::from(failure);
+        assert_eq!(app_error.code, "optimizer.projection.missing_admitted_spec");
+        let structured: serde_json::Value = serde_json::from_str(&app_error.detail)
+            .expect("the failure travels as a typed structure, not as prose");
+        assert!(
+            !structured["retryable"].as_bool().unwrap_or(true),
+            "a missing spec is structural: retrying replays the journal again and fails identically"
+        );
+        assert_eq!(structured["details"]["stage"], json!("projection"));
+        assert_eq!(structured["details"]["optimizerRunId"], json!(run.id));
+    }
+
+    /// A render receipt is durable, typed, and never moves backwards.
+    #[tokio::test]
+    async fn a_render_receipt_records_what_rendered_and_refuses_to_regress() {
+        let (svc, _dir, _rx) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_receipt",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let ready = |projection_revision: u64, digest: &str, template: &str| {
+            json!({
+                "visualId": "vis-receipt",
+                "visualRevision": 4,
+                "templateId": "optimizer.run.v1",
+                "templateDigest": template,
+                "replayedThrough": 120,
+                "subscribedFrom": 121,
+                "projectionRevision": projection_revision,
+                "dataDigest": digest
+            })
+        };
+
+        svc.record_visual_ready(run.id.clone(), ready(12, "fnv1a64:aaaa", "tpl-abc"))
+            .await
+            .unwrap();
+        let stored = svc
+            .visual_render_receipt("vis-receipt".into(), 4)
+            .await
+            .unwrap()
+            .expect("a receipt is written for a typed ready payload");
+        assert_eq!(stored.projection_revision, 12);
+        assert_eq!(stored.data_digest, "fnv1a64:aaaa");
+        assert_eq!(stored.tail_cursor, 120);
+        assert_eq!(stored.optimizer_run_id, run.id);
+
+        // The paid-compute gate reads the untyped summary field; it must keep
+        // being written alongside the typed row.
+        let gated = svc.get(run.id.clone()).await.unwrap();
+        assert!(gated.summary.get("visualReadyReceipt").is_some());
+
+        // Forward is fine.
+        svc.record_visual_ready(run.id.clone(), ready(15, "fnv1a64:bbbb", "tpl-abc"))
+            .await
+            .unwrap();
+        assert_eq!(
+            svc.visual_render_receipt("vis-receipt".into(), 4)
+                .await
+                .unwrap()
+                .unwrap()
+                .projection_revision,
+            15
+        );
+
+        // Backwards is not. A renderer that reconnected to an older projection
+        // must not be able to erase the proof that a newer one rendered — that
+        // proof is what makes the regression reportable at all.
+        svc.record_visual_ready(run.id.clone(), ready(9, "fnv1a64:cccc", "tpl-abc"))
+            .await
+            .unwrap();
+        let held = svc
+            .visual_render_receipt("vis-receipt".into(), 4)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            held.projection_revision, 15,
+            "a lower revision cannot overwrite a higher one"
+        );
+        assert_eq!(held.data_digest, "fnv1a64:bbbb");
+
+        // A template change is a different render, so it replaces regardless:
+        // digests are not comparable across template versions.
+        svc.record_visual_ready(run.id.clone(), ready(9, "fnv1a64:dddd", "tpl-xyz"))
+            .await
+            .unwrap();
+        let rerendered = svc
+            .visual_render_receipt("vis-receipt".into(), 4)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(rerendered.template_version, "tpl-xyz");
+        assert_eq!(rerendered.projection_revision, 9);
+
+        // An untyped payload from an older renderer still works; it simply
+        // does not earn the stronger guarantee.
+        svc.record_visual_ready(
+            run.id.clone(),
+            json!({ "visualId": "vis-legacy", "templateId": "optimizer.run.v1" }),
+        )
+        .await
+        .unwrap();
+        assert!(svc
+            .visual_render_receipt("vis-legacy".into(), 0)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// The shared read model end to end on a real GEPA journal: a bounded
+    /// summary, keyset-paged collections consistent with the projection
+    /// revision, and historical projections folded from checkpoints that
+    /// match a from-zero replay exactly.
+    #[tokio::test]
+    async fn read_model_serves_summary_pages_and_checkpointed_history_for_gepa() {
+        use super::super::kernel::read_model::{
+            RunCollection, RunCollectionFilter, RunCollectionQuery, CHECKPOINT_EVENT_INTERVAL,
+            COLLECTION_PAGE_MAX_ROWS, SUMMARY_BYTE_BUDGET,
+        };
+
+        let (svc, _dir, _rx) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_read_model",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Ten candidates and enough scored rollouts to cross several
+        // checkpoint intervals, in the producer's real event vocabulary.
+        let mut events = vec![gepa_draft("optimizer.run.started", json!({}))];
+        for index in 0..10 {
+            events.push(gepa_draft(
+                "candidate.registered",
+                json!({
+                    "candidate_id": format!("cand_{index}"),
+                    "parent_id": if index == 0 { Value::Null } else { json!("cand_0") },
+                    "generation": index / 3,
+                    "source": if index == 0 { "seed" } else { "reflector:parent_variation" },
+                    "values": { "prompt": format!("Classify the Banking77 intent. Variant {index}.") }
+                }),
+            ));
+        }
+        for index in 0..1_200u64 {
+            let candidate = format!("cand_{}", index % 10);
+            let stage =
+                ["candidate_minibatch", "candidate_full_train", "heldout"][(index % 3) as usize];
+            events.push(gepa_draft(
+                "optimizer.evaluation_result.received",
+                json!({
+                    "candidate_id": candidate,
+                    "stage": stage,
+                    "evaluation_id": format!("eval_{index}"),
+                    "rollout_id": format!("rollout_{index}"),
+                    "example_id": format!("train:{}", index % 50),
+                    "reward": (index % 5) as f64 / 5.0,
+                    "cost_usd": 0.0004,
+                    "active_workers": 4
+                }),
+            ));
+        }
+        events.push(gepa_draft(
+            "proposer.completed",
+            json!({ "proposal_count": 3, "generation": 1, "model": "gpt-5.6-luna" }),
+        ));
+        svc.append_event_payloads(run.id.clone(), events)
+            .await
+            .unwrap();
+
+        // Summary: bounded, counted, conditional.
+        let envelope = svc.run_summary(run.id.clone(), None).await.unwrap();
+        assert!(!envelope.unchanged);
+        let summary = envelope.summary.clone().expect("summary");
+        let bytes = serde_json::to_vec(&summary).unwrap().len();
+        assert!(bytes <= SUMMARY_BYTE_BUDGET, "summary is {bytes} bytes");
+        assert!(summary.budget.within);
+        assert_eq!(
+            summary.lifecycle,
+            super::super::kernel::RunLifecycle::Running
+        );
+        let count_of = |collection: RunCollection| {
+            summary
+                .collections
+                .iter()
+                .find(|item| item.collection == collection)
+                .map(|item| item.count)
+                .unwrap_or(0)
+        };
+        assert_eq!(count_of(RunCollection::Candidates), 10);
+        assert_eq!(count_of(RunCollection::Rollouts), 1_200);
+        assert_eq!(count_of(RunCollection::Evaluations), 1_200);
+        assert_eq!(count_of(RunCollection::ProposerCalls), 1);
+        assert_eq!(summary.concurrency.observed_max, Some(4));
+        let probe = svc
+            .run_summary(run.id.clone(), Some(envelope.projection_revision))
+            .await
+            .unwrap();
+        assert!(probe.unchanged, "an up-to-date revision costs no payload");
+        assert!(probe.summary.is_none());
+
+        // Collections: every page has an explicit clamped limit and a stable
+        // keyset cursor; the walk covers each row exactly once.
+        let mut cursor = None;
+        let mut seen = Vec::new();
+        loop {
+            let page = svc
+                .run_collection(
+                    run.id.clone(),
+                    RunCollection::Rollouts,
+                    RunCollectionQuery {
+                        cursor: cursor.clone(),
+                        limit: Some(1_000),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(page.limit, COLLECTION_PAGE_MAX_ROWS);
+            assert!(page.rows.len() as u32 <= COLLECTION_PAGE_MAX_ROWS);
+            assert_eq!(
+                page.projection_revision, envelope.projection_revision,
+                "rows describe the revision the summary reported"
+            );
+            seen.extend(page.rows.iter().map(|row| row.item_id.clone()));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(seen.len(), 1_200);
+        assert_eq!(seen[0], "eval_0");
+        assert_eq!(seen[1_199], "eval_1199");
+
+        let filtered = svc
+            .run_collection(
+                run.id.clone(),
+                RunCollection::Evaluations,
+                RunCollectionQuery {
+                    filter: Some(RunCollectionFilter {
+                        parent_id: Some("cand_3".into()),
+                        label: Some("heldout".into()),
+                        ..Default::default()
+                    }),
+                    limit: Some(50),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(filtered.total > 0);
+        assert!(filtered
+            .rows
+            .iter()
+            .all(|row| row.parent_id.as_deref() == Some("cand_3")
+                && row.label.as_deref() == Some("heldout")));
+
+        let candidate = svc
+            .run_collection_item(run.id.clone(), RunCollection::Candidates, "cand_4".into())
+            .await
+            .unwrap()
+            .expect("candidate row");
+        assert_eq!(candidate.parent_id.as_deref(), Some("cand_0"));
+        assert!(
+            candidate.details["values"]["prompt"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Variant 4"),
+            "candidate content is durable: {}",
+            candidate.details
+        );
+
+        // History: the checkpoint fold equals a from-zero replay, and once
+        // checkpoints exist no scrub replays more than one interval.
+        let all = svc
+            .events_after(run.id.clone(), 0, Some(2000))
+            .await
+            .unwrap();
+        let tail = all.len() as u64;
+        assert!(tail > 2 * CHECKPOINT_EVENT_INTERVAL);
+        let placement = super::super::kernel::bridge::placement_from_run_source(
+            super::super::kernel::AlgorithmKind::Gepa,
+            &run.source,
+        );
+        // The journal arrived as one bulk batch, so the only checkpoint is
+        // the batch's tail. The first scrub into the prefix pays once and
+        // leaves a checkpoint at every interval behind it.
+        let first = svc.projection_at(run.id.clone(), tail - 1).await.unwrap();
+        assert!(
+            first.replayed_events > CHECKPOINT_EVENT_INTERVAL,
+            "a legacy prefix replays once"
+        );
+        for probe_sequence in [1u64, 250, CHECKPOINT_EVENT_INTERVAL + 7, tail - 3, tail] {
+            let historical = svc
+                .projection_at(run.id.clone(), probe_sequence)
+                .await
+                .unwrap();
+            assert_eq!(historical.as_of_sequence, probe_sequence);
+            assert!(
+                historical.replayed_events <= CHECKPOINT_EVENT_INTERVAL,
+                "scrub to {probe_sequence} replayed {} events",
+                historical.replayed_events
+            );
+            let prefix: Vec<_> = all.iter().take(probe_sequence as usize).cloned().collect();
+            let expected = super::super::kernel::bridge::reduce_envelopes(
+                &run.id,
+                super::super::kernel::AlgorithmKind::Gepa,
+                placement,
+                &historical.view.header().spec_digest,
+                &prefix,
+            )
+            .unwrap();
+            // Historical projections cross the same bounded IPC contract as
+            // live run views. Compare like with like: the durable collection
+            // rows retain the growing evidence while both wire views omit it.
+            let expected_view =
+                super::super::kernel::project_view(&expected).into_bounded_wire();
+            assert_eq!(
+                historical.view.projection_json(),
+                expected_view.projection_json(),
+                "checkpoint fold diverged from replay at {probe_sequence}"
+            );
+            assert_eq!(historical.view.header().work, expected_view.header().work);
+        }
+        let beyond = svc.projection_at(run.id.clone(), tail + 500).await.unwrap();
+        assert_eq!(
+            beyond.as_of_sequence, tail,
+            "a sequence past the tail clamps to the tail"
+        );
+
+        // Terminal: the seal checkpoints, the summary turns terminal, and the
+        // collections remain consistent with the sealed revision.
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                gepa_draft(
+                    "frontier.snapshot",
+                    json!({ "best_candidate_id": "cand_4" }),
+                ),
+                gepa_draft("gepa.run.finished", json!({ "state": "completed" })),
+                gepa_draft("optimizer.run.completed", json!({})),
+            ],
+        )
+        .await
+        .unwrap();
+        let sealed = svc
+            .run_summary(run.id.clone(), None)
+            .await
+            .unwrap()
+            .summary
+            .unwrap();
+        assert_eq!(
+            sealed.lifecycle,
+            super::super::kernel::RunLifecycle::Terminal
+        );
+        assert!(sealed.terminal.is_some());
+        assert!(
+            sealed.result.is_some(),
+            "a sealed run settles a bounded result"
+        );
+        assert!(serde_json::to_vec(&sealed).unwrap().len() <= SUMMARY_BYTE_BUDGET);
+        let final_page = svc
+            .run_collection(
+                run.id.clone(),
+                RunCollection::Candidates,
+                RunCollectionQuery::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(final_page.total, 10);
+        assert_eq!(final_page.projection_revision, sealed.projection_revision);
+        let at_seal = svc
+            .projection_at(run.id.clone(), sealed.as_of_sequence)
+            .await
+            .unwrap();
+        assert_eq!(
+            at_seal.replayed_events, 0,
+            "the terminal boundary always leaves a checkpoint"
+        );
+        assert_eq!(
+            at_seal.view.header().lifecycle,
+            super::super::kernel::RunLifecycle::Terminal
+        );
+    }
+
+    /// Evidence is fetched by range, and nothing is sent twice.
+    #[tokio::test]
+    async fn an_evidence_window_transfers_only_what_the_caller_lacks() {
+        use super::super::events::EvidenceRange;
+
+        let (svc, _dir, _rx) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_evidence_ranges",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let events: Vec<_> = (1..=30)
+            .map(|sequence| gepa_progress_event(&run.id, sequence))
+            .collect();
+        svc.append_events(run.id.clone(), events).await.unwrap();
+
+        // A reader opening the tail first, the way a Replay tab does when the
+        // user jumps to the end of a run.
+        let tail = svc
+            .evidence_page(run.id.clone(), EvidenceRange::new(21, 30), vec![], None)
+            .await
+            .unwrap();
+        assert_eq!(tail.events.len(), 10);
+        assert_eq!(tail.range, Some(EvidenceRange::new(21, 30)));
+        assert_eq!(tail.tail_cursor, 30);
+        assert!(tail.complete);
+
+        // Scrolling back widens the window. Only the hole is transferred; the
+        // ten events already held are not sent again.
+        let back = svc
+            .evidence_page(
+                run.id.clone(),
+                EvidenceRange::new(1, 30),
+                tail.coverage.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            back.events.len(),
+            20,
+            "only the missing span crosses the bridge"
+        );
+        assert_eq!(back.range, Some(EvidenceRange::new(1, 20)));
+        assert_eq!(back.coverage, vec![EvidenceRange::new(1, 30)]);
+        assert!(back.complete);
+
+        // Asking again with full coverage is the "nothing to send" answer,
+        // which is what makes re-opening a tab after a restart free.
+        let again = svc
+            .evidence_page(
+                run.id.clone(),
+                EvidenceRange::new(1, 30),
+                back.coverage.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(again.events.is_empty());
+        assert_eq!(again.range, None);
+        assert!(again.complete);
+
+        // A bounded page reports only the span it reached, so the caller's
+        // coverage never claims more than it received.
+        let bounded = svc
+            .evidence_page(run.id.clone(), EvidenceRange::new(1, 30), vec![], Some(7))
+            .await
+            .unwrap();
+        assert_eq!(bounded.events.len(), 7);
+        assert_eq!(bounded.range, Some(EvidenceRange::new(1, 7)));
+        assert!(
+            !bounded.complete,
+            "a partial page must not claim the window"
+        );
+
+        // The window is clamped to what actually exists rather than trusted.
+        let beyond = svc
+            .evidence_page(run.id.clone(), EvidenceRange::new(1, 9_999), vec![], None)
+            .await
+            .unwrap();
+        assert_eq!(beyond.range, Some(EvidenceRange::new(1, 30)));
+        assert!(beyond.complete);
+    }
+
+    /// The append path must stop reading the whole journal.
+    ///
+    /// The defect: `commit_validated_events` loaded and deserialized every
+    /// event a run had ever emitted on *every* append, inside the exclusive
+    /// write transaction — linear per append, quadratic per run, measured at
+    /// ~24µs per event of history. At 50,000 events a single append reads
+    /// 50,000 events before it can commit, and every UI read queues behind it.
+    ///
+    /// Asserted by counting replays rather than by timing, so the test states
+    /// the property instead of approximating it.
+    #[tokio::test]
+    async fn ordinary_appends_never_replay_the_whole_journal() {
+        let (svc, _dir, _rx) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_no_replay",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        for sequence in 1..=40u64 {
+            svc.append_events(run.id.clone(), vec![gepa_progress_event(&run.id, sequence)])
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            full_journal_replays_for(&run.id),
+            0,
+            "forty ordinary progress appends must fold forward from the durable \
+             projection, not replay the journal forty times"
+        );
+
+        // The settlement fact still gets the whole history: its ordering rule
+        // is defined across the run, not within a batch. One replay, once.
+        let mut terminal = gepa_progress_event(&run.id, 41);
+        terminal.event_type = "optimizer.run.completed".into();
+        terminal.usage_delta = None;
+        terminal.delta = serde_json::Map::new();
+        svc.append_events(run.id.clone(), vec![terminal])
+            .await
+            .unwrap();
+        assert_eq!(
+            full_journal_replays_for(&run.id),
+            1,
+            "a terminal fact is evaluated against the whole history exactly once"
+        );
+
+        let view = svc.run_view_v2(run.id.clone()).await.unwrap();
+        let header = serde_json::to_value(&view).unwrap();
+        assert_eq!(header["header"]["lifecycle"], json!("terminal"));
+    }
+
+    /// The incremental fold must produce exactly what the full replay produced.
+    ///
+    /// This is the safety net for taking the whole-history replay off the
+    /// append path. Appending one event at a time exercises the incremental
+    /// path on every append after the first; appending the same events as a
+    /// single batch exercises it once. Both are compared against a run whose
+    /// projection is rebuilt from the complete journal.
+    ///
+    /// If these ever diverge, the optimization is wrong and the guard in
+    /// `can_fold_incrementally` is too permissive — this test is the thing
+    /// that says so, rather than a user seeing a wrong reward weeks later.
+    #[tokio::test]
+    async fn incremental_fold_matches_full_replay_of_the_whole_journal() {
+        let (svc, _dir, _rx) = service().await;
+
+        async fn build(svc: &OptimizerService, id: &str, batch_size: usize) -> serde_json::Value {
+            let (run, _) = svc
+                .create(
+                    serde_json::from_value(json!({
+                        "algorithmId": "gepa",
+                        "id": id,
+                        "openVisual": false
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let events: Vec<_> = (1..=24)
+                .map(|sequence| gepa_progress_event(&run.id, sequence))
+                .collect();
+            for chunk in events.chunks(batch_size) {
+                svc.append_events(run.id.clone(), chunk.to_vec())
+                    .await
+                    .unwrap();
+            }
+            let view = svc.run_view_v2(run.id.clone()).await.unwrap();
+            let mut value = serde_json::to_value(&view).unwrap();
+            // Identity and revision legitimately differ between the two runs;
+            // everything the product reads must not.
+            let header = value
+                .get_mut("header")
+                .and_then(serde_json::Value::as_object_mut)
+                .unwrap();
+            header.remove("runId");
+            header.remove("specId");
+            header.remove("specDigest");
+            header.remove("projectionRevision");
+            value
+        }
+
+        let one_at_a_time = build(&svc, "gepa_fold_incremental", 1).await;
+        let single_batch = build(&svc, "gepa_fold_batched", 24).await;
+        let mid_batches = build(&svc, "gepa_fold_chunked", 5).await;
+
+        assert_eq!(
+            one_at_a_time, single_batch,
+            "folding forward one event at a time must equal reducing the batch whole"
+        );
+        assert_eq!(
+            one_at_a_time, mid_batches,
+            "the projection must not depend on how the producer chunked its appends"
+        );
+
+        // And the usage accumulator, which resumes from the run row on the
+        // incremental path rather than being rebuilt from zero.
+        let incremental = svc.get("gepa_fold_incremental".to_string()).await.unwrap();
+        let batched = svc.get("gepa_fold_batched".to_string()).await.unwrap();
+        assert_eq!(incremental.usage.calls, 24);
+        assert_eq!(incremental.usage.calls, batched.usage.calls);
+        assert_eq!(incremental.usage.prompt_tokens, batched.usage.prompt_tokens);
+        assert_eq!(
+            incremental.usage.completion_tokens,
+            batched.usage.completion_tokens
+        );
+        assert_eq!(incremental.usage.rollouts, batched.usage.rollouts);
+        assert_eq!(incremental.usage.cost_usd, batched.usage.cost_usd);
+    }
+
+    #[tokio::test]
     async fn append_events_publishes_optimizer_run_updated_on_the_bus() {
         let (svc, _dir, mut rx) = service().await;
-        let (run, _) = svc.seed_fixture("gepa", None).await.unwrap();
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_bus_probe",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
         while rx.try_recv().is_ok() {}
         let extra = OptimizerEventEnvelope {
             schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
             event_id: Some(format!("{}:bus-test", run.id)),
-            event_type: "optimizer.recipe.diagnostic".into(),
-            sequence_number: run.cursor_seq + 1,
+            event_type: "optimizer.run.started".into(),
+            sequence_number: 1,
             occurred_at: chrono::Utc::now().to_rfc3339(),
             optimizer_run_id: run.id.clone(),
             algorithm_id: "gepa".into(),
@@ -2576,6 +9605,91 @@ mod tests {
         let event = rx.try_recv().expect("optimizer.run.updated on the bus");
         assert_eq!(event.kind, "optimizer.run.updated");
         assert_eq!(event.payload["optimizerRunId"], run.id);
+    }
+
+    #[tokio::test]
+    async fn event_append_shreds_container_fields_and_witnesses_the_host_clock() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "eval",
+                    "id": "eval_shredded_append",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let event = evt(
+            "eval.trial.event",
+            1,
+            "eval",
+            &run.id,
+            "2026-08-27T00:00:01Z",
+            json!({
+                "container_event": {
+                    "rollout_id": "rollout-780005",
+                    "kind": "frame",
+                    "occurred_at": "2026-08-27T00:00:00.500Z",
+                    "digest": "sha256:producer",
+                    "payload": {"step": 42, "span_id": "span-42"}
+                }
+            }),
+            None,
+            None,
+        );
+        svc.database()
+            .with_conn(|conn| {
+                insert_event(conn, &event)?;
+                let fields: (
+                    String,
+                    String,
+                    i64,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<String>,
+                    Option<String>,
+                ) = conn.query_row(
+                    "SELECT rollout_id, kind, step, span_id, producer_occurred_at,
+                            ingested_at, ingest_witness, producer_digest, payload_cas_digest
+                     FROM optimizer_events WHERE event_id=?1",
+                    [event.event_id.as_deref().unwrap()],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                            row.get(8)?,
+                        ))
+                    },
+                )?;
+                assert_eq!(fields.0, "rollout-780005");
+                assert_eq!(fields.1, "frame");
+                assert_eq!(fields.2, 42);
+                assert_eq!(fields.3, "span-42");
+                assert_eq!(fields.4, "2026-08-27T00:00:00.500Z");
+                assert_ne!(fields.5, event.occurred_at);
+                assert_eq!(fields.6, "host_clock");
+                assert_eq!(fields.7.as_deref(), Some("sha256:producer"));
+                assert_eq!(fields.8, None, "replay payload remains inline for now");
+                let by_rollout: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM optimizer_events
+                     WHERE rollout_id=?1 AND step BETWEEN ?2 AND ?3",
+                    rusqlite::params!["rollout-780005", 40, 44],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(by_rollout, 1);
+                Ok(())
+            })
+            .unwrap();
     }
 
     /// Regression for the A3 Banking77 runs: the sidecar registers candidates
@@ -2640,31 +9754,19 @@ mod tests {
         .await
         .unwrap();
 
-        let candidates = svc
-            .get_state(run.id.clone(), "gepa.candidates".into(), None)
+        let projection = svc
+            .get_state(run.id.clone(), "gepa.projection".into(), None)
             .await
             .unwrap();
-        let rows = candidates
+        let candidates = projection
             .data
             .get("candidates")
-            .and_then(Value::as_array)
+            .and_then(Value::as_object)
             .unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["candidate_id"], json!("gepa_seed"));
-        assert_eq!(rows[0]["train_reward"], json!(0.7));
-
-        let frontier = svc
-            .get_state(run.id.clone(), "gepa.frontier".into(), None)
-            .await
-            .unwrap();
-        let cells = frontier
-            .data
-            .get("cells")
-            .and_then(Value::as_array)
-            .unwrap();
-        assert_eq!(cells.len(), 1);
-        assert_eq!(cells[0]["candidateId"], json!("gepa_seed"));
-        assert_eq!(cells[0]["trainReward"], json!(0.7));
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates["gepa_seed"]["id"], json!("gepa_seed"));
+        assert_eq!(candidates["gepa_seed"]["trainReward"], json!(0.7));
+        assert_eq!(projection.data["incumbentId"], json!("gepa_seed"));
     }
 
     /// A run nobody reported cost for is unknown, not free.
@@ -2688,6 +9790,157 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(usage.data.get("costUsd"), Some(&Value::Null));
+    }
+
+    #[tokio::test]
+    async fn exceeding_an_approved_cap_is_a_durable_receipt_violation() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_cap_probe",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let started = OptimizerEventEnvelope {
+            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+            event_id: Some("gepa_cap_probe:started".into()),
+            event_type: "optimizer.run.started".into(),
+            sequence_number: 1,
+            occurred_at: chrono::Utc::now().to_rfc3339(),
+            optimizer_run_id: run.id.clone(),
+            algorithm_id: "gepa".into(),
+            level: Some("info".into()),
+            item: None,
+            delta: Map::from_iter([("status".into(), json!("running"))]),
+            snapshot: None,
+            usage_delta: None,
+            artifact_refs: vec![],
+            error: None,
+            raw: json!({}),
+        };
+        svc.append_events(run.id.clone(), vec![started])
+            .await
+            .unwrap();
+        let run = svc
+            .attach_paid_compute_approval(run.id, "approval-paid", Some(500_000), Some(4))
+            .await
+            .unwrap();
+        assert_eq!(run.cursor_seq, 1, "approval patch must not rewind progress");
+        let event = OptimizerEventEnvelope {
+            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+            event_id: Some("gepa_cap_probe:1".into()),
+            event_type: "optimizer.usage".into(),
+            sequence_number: 2,
+            occurred_at: chrono::Utc::now().to_rfc3339(),
+            optimizer_run_id: run.id.clone(),
+            algorithm_id: "gepa".into(),
+            level: Some("info".into()),
+            item: None,
+            delta: Map::new(),
+            snapshot: None,
+            usage_delta: Some(
+                json!({"rollouts":5,"cost_usd":0.25})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            artifact_refs: vec![],
+            error: None,
+            raw: json!({}),
+        };
+        svc.append_events(run.id.clone(), vec![event])
+            .await
+            .unwrap();
+        let stored = svc.get(run.id).await.unwrap();
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["receiptViolation"],
+            true
+        );
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["violationReason"],
+            "rollout_cap_exceeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_seal_uses_post_batch_usage_and_freezes_paid_compute_approval() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_terminal_usage", "chat_terminal_usage").await;
+        svc.attach_paid_compute_approval(
+            run.id.clone(),
+            "approval-terminal",
+            Some(2_000_000),
+            Some(5),
+        )
+        .await
+        .unwrap();
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                draft("optimizer.run.started"),
+                draft("eval.run.planned")
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(1))])),
+                draft("eval.trial.terminal")
+                    .item(json!({ "id": "trial:1", "valid": true }))
+                    .usage_delta(Map::from_iter([
+                        ("cost_usd".into(), json!(1.25)),
+                        ("prompt_tokens".into(), json!(90)),
+                        ("completion_tokens".into(), json!(10)),
+                        ("rollouts".into(), json!(4)),
+                        ("wall_time_ms".into(), json!(200)),
+                    ])),
+                // Missing evaluator measurement evidence intentionally makes
+                // this a typed failed_evidence settlement; it must still seal
+                // the canonical usage spent reaching that outcome.
+                draft("optimizer.run.completed"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let stored = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(stored.status, "failed_evidence");
+        assert_eq!(stored.usage.cost_usd, Some(1.25));
+        assert_eq!(stored.usage.rollouts, 4);
+        let run_id = run.id.clone();
+        let manifest = svc
+            .terminal_manifest(run.id)
+            .await
+            .unwrap()
+            .expect("failed-evidence run seals a terminal manifest");
+        assert_eq!(manifest["schemaVersion"], "optimizer_terminal_manifest.v2");
+        assert_eq!(manifest["usage"]["costUsd"], json!(1.25));
+        assert_eq!(manifest["usage"]["promptTokens"], json!(90));
+        assert_eq!(manifest["usage"]["completionTokens"], json!(10));
+        assert_eq!(manifest["usage"]["rollouts"], json!(4));
+        assert_eq!(manifest["usage"]["wallTimeMs"], json!(200));
+        assert_eq!(
+            manifest["paidComputeApproval"]["approvalId"],
+            "approval-terminal"
+        );
+        let (failure_id, failure_code): (String, String) = svc
+            .database()
+            .clone()
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT r.terminal_failure_id, f.code
+                     FROM optimizer_runs r
+                     JOIN failure_occurrences f ON f.failure_id=r.terminal_failure_id
+                     WHERE r.id=?1",
+                    [run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .await
+            .unwrap();
+        assert!(failure_id.starts_with("fail_"));
+        assert_eq!(failure_code, "failed_evidence");
     }
 
     #[test]
@@ -2770,15 +10023,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lists_hosted_sft_fixture_recipe() {
+    async fn reports_cispo_as_available_algorithm_and_lists_bounded_recipes() {
         let (svc, _dir, _) = service().await;
-        let recipe = svc
-            .list_recipes()
+        let cispo = svc
+            .list_algorithms()
             .into_iter()
-            .find(|item| item.get("id") == Some(&json!("sft.hosted.fixture.v1")))
+            .find(|a| a.get("id") == Some(&json!("cispo")))
             .unwrap();
-        assert_eq!(recipe.get("algorithmId"), Some(&json!("sft")));
-        assert_ne!(recipe.get("id"), Some(&json!("goex.sft.v1")));
+        assert_eq!(cispo.get("availability"), Some(&json!("available")));
+        let recipes = svc.list_recipes();
+        assert!(recipes
+            .iter()
+            .any(|item| item.get("id") == Some(&json!("cispo.mlx.v1"))));
+        assert!(recipes
+            .iter()
+            .any(|item| item.get("id") == Some(&json!("cispo.hosted.tinker.v1"))));
+        assert!(recipes
+            .iter()
+            .any(|item| item.get("id") == Some(&json!("cispo.banking77.tinker.v1"))));
     }
 
     #[tokio::test]
@@ -2790,7 +10052,7 @@ mod tests {
             .find(|item| item.get("id") == Some(&json!("sft.craftax.nemotron-nano.tinker.v1")))
             .unwrap();
         assert_eq!(recipe.get("algorithmId"), Some(&json!("sft")));
-        if std::env::var("OPTIMIZERS_BETA_SERVICE_TOKEN")
+        if std::env::var("SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .is_none()
@@ -2799,11 +10061,16 @@ mod tests {
         }
         let err = svc
             .start_recipe(super::super::models::OptimizerRecipeRunRequest {
+                training_artifact_id: None,
                 recipe_id: "sft.craftax.nemotron-nano.tinker.v1".into(),
                 session_ref: None,
                 open_visual: Some(false),
                 base_model: Some("nvidia/nemotron-3-nano-30b-a3b".into()),
                 dataset_shard: None,
+                candidate_set_id: None,
+                container_id: None,
+                plan_override: None,
+                search: None,
             })
             .await
             .unwrap_err()
@@ -2856,7 +10123,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sft_fixture_projects_slices_and_scrubs_checkpoints() {
+    async fn sft_fixture_projects_typed_kernel_state() {
         let (svc, _dir, _) = service().await;
         let (run, _) = svc.seed_fixture("sft", None).await.unwrap();
         assert_eq!(run.algorithm_id, "sft");
@@ -2877,61 +10144,20 @@ mod tests {
             Some(&json!("available"))
         );
 
-        let latest = svc
-            .get_state_batch(
-                run.id.clone(),
-                Some(vec![
-                    "sft.checkpoints".into(),
-                    "sft.training_curves".into(),
-                    "sft.checkpoint_evaluations".into(),
-                    "sft.dataset".into(),
-                    "sft.examples".into(),
-                ]),
-                None,
-            )
+        let projection = svc
+            .get_state(run.id.clone(), "sft.projection".into(), None)
             .await
             .unwrap();
-        let checkpoints = latest
-            .iter()
-            .find(|slice| slice.slice_id == "sft.checkpoints")
-            .unwrap();
-        let ckpts = checkpoints
-            .data
-            .get("checkpoints")
-            .and_then(Value::as_array)
-            .unwrap();
-        assert_eq!(ckpts.len(), 2);
-        assert!(ckpts.iter().any(|ckpt| {
-            ckpt.get("status") == Some(&json!("promoted"))
-                || ckpt.get("raw").and_then(|raw| raw.get("promoted")) == Some(&json!(true))
-        }));
-
-        let mid = svc
-            .get_state(run.id.clone(), "sft.checkpoints".into(), Some(9))
-            .await
-            .unwrap();
-        let mid_ckpts = mid
-            .data
-            .get("checkpoints")
-            .and_then(Value::as_array)
-            .unwrap();
-        assert_eq!(mid_ckpts.len(), 1);
-        assert_eq!(mid_ckpts[0].get("id"), Some(&json!("ckpt_50")));
-
-        let evals = svc
-            .get_state(run.id.clone(), "sft.checkpoint_evaluations".into(), None)
-            .await
-            .unwrap();
-        let evaluations = evals
-            .data
-            .get("evaluations")
-            .and_then(Value::as_array)
-            .unwrap();
-        assert!(evaluations.iter().any(|evaluation| {
-            evaluation.get("role") == Some(&json!("heldout"))
-                || evaluation.get("delta").and_then(|delta| delta.get("role"))
-                    == Some(&json!("heldout"))
-        }));
+        assert_eq!(
+            projection.data["checkpoints"],
+            json!(["ckpt_50", "ckpt_100"])
+        );
+        assert_eq!(projection.data["selectedCheckpointId"], json!("ckpt_100"));
+        assert_eq!(projection.data["producedAdapter"], json!("model_ckpt_100"));
+        assert_eq!(projection.data["trainLoss"], json!(1.1));
+        let result = svc.get_result(run.id).await.unwrap();
+        assert_eq!(result["resultKind"], json!("sft_run_result.v1"));
+        assert_eq!(result["datasetDigest"], json!("sha256:sft-fixture-dataset"));
     }
 
     #[tokio::test]
@@ -2972,7 +10198,8 @@ mod tests {
         std::fs::write(
             &feed,
             r#"{"run_id":"goex_import_1","event_type":"theme.updated","_seq":1,"created_at":"2026-08-09T15:10:00Z","payload":{"theme":"oak"},"algorithm":"go-ex"}
-{"run_id":"goex_import_1","event_type":"run.completed","_seq":2,"created_at":"2026-08-09T15:11:00Z","payload":{},"algorithm":"go-ex"}
+{"run_id":"goex_import_1","event_type":"candidate.registered","_seq":2,"created_at":"2026-08-09T15:10:30Z","payload":{"candidate_id":"candidate_1"},"algorithm":"go-ex"}
+{"run_id":"goex_import_1","event_type":"run.completed","_seq":3,"created_at":"2026-08-09T15:11:00Z","payload":{},"algorithm":"go-ex"}
 "#,
         )
         .unwrap();
@@ -3001,7 +10228,8 @@ mod tests {
         std::fs::write(
             &feed,
             r#"{"schema_version":"optimizer_event.v1","type":"theme.updated","sequence_number":1,"created_at":"2026-08-09T15:10:00Z","run_id":"goex_canon_1","optimizer_run_id":"goex_canon_1","algorithm_id":"go-ex","delta":{"theme":"oak"},"raw":{}}
-{"schema_version":"optimizer_event.v1","type":"run.completed","sequence_number":2,"created_at":"2026-08-09T15:11:00Z","run_id":"goex_canon_1","optimizer_run_id":"goex_canon_1","algorithm_id":"go-ex","delta":{},"raw":{}}
+{"schema_version":"optimizer_event.v1","type":"candidate.registered","sequence_number":2,"created_at":"2026-08-09T15:10:30Z","run_id":"goex_canon_1","optimizer_run_id":"goex_canon_1","algorithm_id":"go-ex","delta":{"candidate_id":"candidate_1"},"raw":{}}
+{"schema_version":"optimizer_event.v1","type":"run.completed","sequence_number":3,"created_at":"2026-08-09T15:11:00Z","run_id":"goex_canon_1","optimizer_run_id":"goex_canon_1","algorithm_id":"go-ex","delta":{},"raw":{}}
 "#,
         )
         .unwrap();
@@ -3016,5 +10244,1184 @@ mod tests {
         assert_eq!(run.id, "goex_canon_1");
         assert_eq!(run.algorithm_id, "go-ex");
         assert!(run.cursor_seq >= 2);
+    }
+
+    #[tokio::test]
+    async fn prepared_compute_requires_ready_approval_and_matching_digest() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "banking77_prepare_gate",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = run.clone();
+        stored.status = "waiting_for_viewer".into();
+        stored.summary = json!({
+            "recipeId": "gepa.banking77.smoke.v1",
+            "preparationDigest": "sha256:prepare",
+            "capabilitiesDigest": "sha256:caps"
+        });
+        svc.persist_run(stored).await.unwrap();
+
+        let mismatch = svc
+            .start_prepared(
+                run.id.clone(),
+                Some("sha256:other".into()),
+                Some("approval-1".into()),
+            )
+            .await
+            .unwrap_err();
+        assert!(mismatch.to_string().contains("digest mismatch"));
+
+        let missing_ready = svc
+            .start_prepared(
+                run.id.clone(),
+                Some("sha256:prepare".into()),
+                Some("approval-1".into()),
+            )
+            .await
+            .unwrap_err();
+        assert!(missing_ready.to_string().contains("visual readiness"));
+
+        svc.record_visual_ready(
+            run.id.clone(),
+            json!({
+                "schemaVersion": "synth.visual-subscription-receipt.v1",
+                "visualId": "visual_prepare_gate",
+                "optimizerRunId": run.id,
+                "templateId": "optimizer.gepa.live.v1",
+                "replayedThrough": 0,
+                "subscribedFrom": 1
+            }),
+        )
+        .await
+        .unwrap();
+
+        let missing_approval = svc
+            .start_prepared(run.id.clone(), Some("sha256:prepare".into()), None)
+            .await
+            .unwrap_err();
+        assert!(missing_approval.to_string().contains("approval"));
+    }
+
+    fn paid_policy(
+        request: u64,
+        conversation: u64,
+    ) -> crate::synth_config::PaidComputeAutoApprovalPolicy {
+        crate::synth_config::PaidComputeAutoApprovalPolicy {
+            enabled: true,
+            max_request_usd_micros: request,
+            max_conversation_usd_micros: conversation,
+            providers: vec!["openrouter".into()],
+        }
+    }
+
+    #[tokio::test]
+    async fn start_prepared_attaches_paid_compute_approval_before_the_worker() {
+        let (svc, _dir, _) = service().await;
+        std::fs::write(
+            svc.manager.home().join("capabilities.json"),
+            serde_json::to_vec(&json!({
+                "algorithms": ["gepa"],
+                "replay": true,
+                "cancellation": true,
+                "digest": "sha256:caps"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "banking77_attach_approval",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = run.clone();
+        stored.status = "waiting_for_viewer".into();
+        stored.summary = json!({
+            "recipeId": "gepa.banking77.workspace.v1",
+            "preparationDigest": "sha256:prepare",
+            "capabilitiesDigest": "sha256:caps",
+            "limits": { "maxCostUsd": 8.0, "maxTotalRollouts": 400 }
+        });
+        svc.persist_run(stored).await.unwrap();
+        svc.record_visual_ready(
+            run.id.clone(),
+            json!({
+                "schemaVersion": "synth.visual-subscription-receipt.v1",
+                "visualId": "visual_attach_approval",
+                "optimizerRunId": run.id,
+                "templateId": "optimizer.gepa.live.v1",
+                "replayedThrough": 0,
+                "subscribedFrom": 1
+            }),
+        )
+        .await
+        .unwrap();
+        let _ = svc
+            .start_prepared(
+                run.id.clone(),
+                Some("sha256:prepare".into()),
+                Some("approval-auto-1".into()),
+            )
+            .await;
+        let stored = svc.get(run.id).await.unwrap();
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["approvalId"],
+            "approval-auto-1"
+        );
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["cap"]["maxCostUsdMicros"],
+            8_000_000
+        );
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["cap"]["maxRollouts"],
+            400
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_run_settles_digest_reservation_despite_poisoned_provider_receipt() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_settle_digest",
+                    "sessionRef": "sess-settle",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = svc.get(run.id.clone()).await.unwrap();
+        stored.session_ref = Some("sess-settle".into());
+        stored.status = "completed".into();
+        stored.summary = json!({
+            "recipeId": "gepa.banking77.workspace.v1",
+            "preparationDigest": "sha256:prep"
+        });
+        stored.usage.cost_usd = Some(0.785);
+        stored
+            .usage
+            .extra
+            .insert("costTelemetryComplete".into(), json!(true));
+        svc.persist_run(stored).await.unwrap();
+        svc.database()
+            .run_transaction(|conn| {
+                crate::session::paid_compute_budget::seed_conversation_budget(
+                    conn,
+                    "sess-settle",
+                    &paid_policy(2_450_000, 50_000_000),
+                )?;
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-settle",
+                    "approval-auto-1",
+                    Some("sha256:prep"),
+                    2_450_000,
+                )?
+                .expect("reserve");
+                conn.execute(
+                    "INSERT INTO secret_refs(
+                        id,alias,provider,scope,backend,backend_ref,fingerprint,
+                        display_suffix,status,created_at,updated_at
+                     ) VALUES(
+                        'secret-settle','openrouter','openrouter','provider',
+                        'memory','backend-settle','sha256:test','test','valid',
+                        '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'
+                     )",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO secret_capabilities(
+                        id,handle,secret_id,run_id,recipe_id,provider,
+                        operations_json,models_json,reasoning_efforts_json,
+                        max_calls,max_input_tokens,max_output_tokens,
+                        max_cost_usd_micros,used_calls,used_input_tokens,
+                        used_output_tokens,used_cost_usd_micros,status,
+                        created_at,expires_at,used_cost_known
+                     ) VALUES(
+                        'cap-settle','handle-settle','secret-settle',
+                        'gepa_settle_digest','recipe','openrouter','[]','[]','[]',
+                        100,1000,1000,2450000,10,500,50,0,'revoked',
+                        '2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',0
+                     )",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        svc.database()
+            .run_transaction(|conn| {
+                let run = load_run(conn, "gepa_settle_digest")?;
+                settle_paid_compute_conversation(conn, &run)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let (status, settled, remaining): (String, i64, u64) = svc
+            .database()
+            .run(|conn| {
+                let status = conn.query_row(
+                    "SELECT status FROM paid_compute_reservations WHERE approval_id=?1",
+                    ["approval-auto-1"],
+                    |row| row.get(0),
+                )?;
+                let settled = conn.query_row(
+                    "SELECT settled_usd_micros FROM paid_compute_reservations WHERE approval_id=?1",
+                    ["approval-auto-1"],
+                    |row| row.get(0),
+                )?;
+                let snap = crate::session::paid_compute_budget::snapshot(conn, "sess-settle")?
+                    .expect("budget");
+                Ok((status, settled, snap.remaining_usd_micros))
+            })
+            .await
+            .unwrap();
+        assert_eq!(status, "settled");
+        assert_eq!(settled, 785_000);
+        assert_eq!(remaining, 50_000_000 - 785_000);
+    }
+
+    #[tokio::test]
+    async fn terminal_settle_releases_cross_session_digest_retries() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_cross_session",
+                    "sessionRef": "sess-owner",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = svc.get(run.id.clone()).await.unwrap();
+        stored.session_ref = Some("sess-owner".into());
+        stored.status = "cancelled".into();
+        stored.summary = json!({ "preparationDigest": "sha256:shared" });
+        stored.usage.cost_usd = Some(0.0);
+        stored
+            .usage
+            .extra
+            .insert("costTelemetryComplete".into(), json!(true));
+        svc.persist_run(stored).await.unwrap();
+        svc.database()
+            .run_transaction(|conn| {
+                crate::session::paid_compute_budget::seed_conversation_budget(
+                    conn,
+                    "sess-owner",
+                    &paid_policy(2_450_000, 50_000_000),
+                )?;
+                crate::session::paid_compute_budget::seed_conversation_budget(
+                    conn,
+                    "sess-retry",
+                    &paid_policy(2_450_000, 50_000_000),
+                )?;
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-owner",
+                    "approval-owner",
+                    Some("sha256:shared"),
+                    2_450_000,
+                )?
+                .expect("owner reserve");
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-retry",
+                    "approval-retry",
+                    Some("sha256:shared"),
+                    2_450_000,
+                )?
+                .expect("retry reserve");
+                Ok(())
+            })
+            .await
+            .unwrap();
+        svc.database()
+            .run_transaction(|conn| {
+                let run = load_run(conn, "gepa_cross_session")?;
+                settle_paid_compute_conversation(conn, &run)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let (owner_status, retry_count, owner_remaining, retry_remaining): (String, i64, u64, u64) =
+            svc.database()
+                .run(|conn| {
+                    let owner_status = conn.query_row(
+                        "SELECT status FROM paid_compute_reservations WHERE approval_id=?1",
+                        ["approval-owner"],
+                        |row| row.get(0),
+                    )?;
+                    let retry_count: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM paid_compute_reservations
+                     WHERE approval_id=?1 AND status='reserved'",
+                        ["approval-retry"],
+                        |row| row.get(0),
+                    )?;
+                    let owner = crate::session::paid_compute_budget::snapshot(conn, "sess-owner")?
+                        .expect("owner budget");
+                    let retry = crate::session::paid_compute_budget::snapshot(conn, "sess-retry")?
+                        .expect("retry budget");
+                    Ok((
+                        owner_status,
+                        retry_count,
+                        owner.remaining_usd_micros,
+                        retry.remaining_usd_micros,
+                    ))
+                })
+                .await
+                .unwrap();
+        assert_ne!(owner_status, "reserved");
+        assert_eq!(
+            retry_count, 0,
+            "cross-session unused retry must not stay reserved"
+        );
+        assert_eq!(owner_remaining, 50_000_000);
+        assert_eq!(retry_remaining, 50_000_000);
+    }
+
+    #[tokio::test]
+    async fn startup_reconcile_settles_completed_and_releases_waiting_reservations() {
+        let (svc, _dir, _) = service().await;
+        let (completed, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_orphan_completed",
+                    "sessionRef": "sess-orphan",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = svc.get(completed.id.clone()).await.unwrap();
+        stored.session_ref = Some("sess-orphan".into());
+        stored.status = "completed".into();
+        stored.summary = json!({ "preparationDigest": "sha256:done" });
+        stored.usage.cost_usd = Some(0.10);
+        stored
+            .usage
+            .extra
+            .insert("costTelemetryComplete".into(), json!(true));
+        svc.persist_run(stored).await.unwrap();
+
+        let (waiting, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_orphan_waiting",
+                    "sessionRef": "sess-orphan",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = svc.get(waiting.id.clone()).await.unwrap();
+        stored.session_ref = Some("sess-orphan".into());
+        stored.status = "waiting_for_viewer".into();
+        stored.summary = json!({ "preparationDigest": "sha256:wait" });
+        svc.persist_run(stored).await.unwrap();
+
+        svc.database()
+            .run_transaction(|conn| {
+                crate::session::paid_compute_budget::seed_conversation_budget(
+                    conn,
+                    "sess-orphan",
+                    &paid_policy(2_450_000, 50_000_000),
+                )?;
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-orphan",
+                    "approval-done",
+                    Some("sha256:done"),
+                    2_450_000,
+                )?
+                .expect("completed reserve");
+                crate::session::paid_compute_budget::try_reserve(
+                    conn,
+                    "sess-orphan",
+                    "approval-wait",
+                    Some("sha256:wait"),
+                    2_450_000,
+                )?
+                .expect("waiting reserve");
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        svc.database()
+            .run_transaction(|conn| {
+                reconcile_orphaned_paid_compute_reservations(conn)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let (done_status, wait_count, remaining): (String, i64, u64) = svc
+            .database()
+            .run(|conn| {
+                let done_status = conn.query_row(
+                    "SELECT status FROM paid_compute_reservations WHERE approval_id=?1",
+                    ["approval-done"],
+                    |row| row.get(0),
+                )?;
+                let wait_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM paid_compute_reservations WHERE approval_id=?1",
+                    ["approval-wait"],
+                    |row| row.get(0),
+                )?;
+                let snap = crate::session::paid_compute_budget::snapshot(conn, "sess-orphan")?
+                    .expect("budget");
+                Ok((done_status, wait_count, snap.remaining_usd_micros))
+            })
+            .await
+            .unwrap();
+        assert_eq!(done_status, "settled");
+        assert_eq!(wait_count, 0, "unused waiting reservation is released");
+        assert_eq!(remaining, 50_000_000 - 100_000);
+    }
+
+    /// A4. Absent capabilities must refuse, not skip.
+    ///
+    /// Before this gate closed, a run prepared while no handshake had ever
+    /// succeeded carried no `capabilitiesDigest`, so start's comparison was a
+    /// skipped `if let` and paid compute began entirely unguarded — the anti-swap
+    /// pin was inert in exactly the case it exists to catch. The three existing
+    /// `start_prepared` assertions all trip earlier gates (preparation digest,
+    /// visual readiness, approval) and never reach this check, so it needs its
+    /// own coverage.
+    #[tokio::test]
+    async fn absent_capabilities_refuse_paid_start_instead_of_skipping_the_pin() {
+        async fn run_past_earlier_gates(
+            svc: &OptimizerService,
+            id: &str,
+            summary: Value,
+        ) -> String {
+            let (run, _) = svc
+                .create(
+                    serde_json::from_value(json!({
+                        "algorithmId": "gepa",
+                        "id": id,
+                        "openVisual": false
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let mut stored = run.clone();
+            stored.status = "waiting_for_viewer".into();
+            stored.summary = summary;
+            svc.persist_run(stored).await.unwrap();
+            svc.record_visual_ready(
+                run.id.clone(),
+                json!({
+                    "schemaVersion": "synth.visual-subscription-receipt.v1",
+                    "visualId": format!("visual_{id}"),
+                    "optimizerRunId": run.id,
+                    "templateId": "optimizer.gepa.live.v1",
+                    "replayedThrough": 0,
+                    "subscribedFrom": 1
+                }),
+            )
+            .await
+            .unwrap();
+            run.id
+        }
+
+        let (svc, _dir, _) = service().await;
+        let home = svc.manager.home().to_path_buf();
+        let write_caps = |digest: Option<&str>, algorithms: &[&str]| {
+            let mut caps = json!({
+                "algorithms": algorithms,
+                "replay": true,
+                "cancellation": true
+            });
+            if let Some(digest) = digest {
+                caps.as_object_mut()
+                    .unwrap()
+                    .insert("digest".into(), json!(digest));
+            }
+            std::fs::write(
+                home.join("capabilities.json"),
+                serde_json::to_vec(&caps).unwrap(),
+            )
+            .unwrap();
+        };
+
+        // The run was prepared against a proven handshake, but the sidecar is no
+        // longer proving anything. Previously: skipped. Now: refused.
+        write_caps(None, &["gepa"]);
+        let id = run_past_earlier_gates(
+            &svc,
+            "caps_absent_live",
+            json!({
+                "recipeId": "gepa.banking77.smoke.v1",
+                "preparationDigest": "sha256:prepare",
+                "capabilitiesDigest": "sha256:caps"
+            }),
+        )
+        .await;
+        let error = svc
+            .start_prepared(id, Some("sha256:prepare".into()), Some("approval-1".into()))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("capabilities are not proven"),
+            "live capabilities absent must refuse, got: {error}"
+        );
+
+        // The run was prepared while nothing was proven. This is the fails-open
+        // case: no pin was ever recorded, so there was nothing to compare.
+        write_caps(Some("sha256:caps"), &["gepa"]);
+        let id = run_past_earlier_gates(
+            &svc,
+            "caps_absent_prepared",
+            json!({
+                "recipeId": "gepa.banking77.smoke.v1",
+                "preparationDigest": "sha256:prepare"
+            }),
+        )
+        .await;
+        let error = svc
+            .start_prepared(id, Some("sha256:prepare".into()), Some("approval-1".into()))
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("prepared without a proven optimizer capability digest"),
+            "a run with no recorded pin must refuse, got: {error}"
+        );
+
+        // A3: matching digests prove capabilities are unchanged, not that they
+        // cover this run. A handshake advertising an unrelated algorithm passes
+        // both shape-validation and the digest pin, and must still be refused.
+        write_caps(Some("sha256:caps"), &["sft"]);
+        let id = run_past_earlier_gates(
+            &svc,
+            "caps_wrong_algorithm",
+            json!({
+                "recipeId": "gepa.banking77.smoke.v1",
+                "preparationDigest": "sha256:prepare",
+                "capabilitiesDigest": "sha256:caps"
+            }),
+        )
+        .await;
+        let error = svc
+            .start_prepared(id, Some("sha256:prepare".into()), Some("approval-1".into()))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("does not advertise algorithm"),
+            "a runtime that does not serve this algorithm must refuse, got: {error}"
+        );
+
+        // Both present and equal, and the algorithm is served: the capability
+        // gate is satisfied and control reaches the recipe. Whatever fails past
+        // here, it is not this gate.
+        write_caps(Some("sha256:caps"), &["gepa"]);
+        let id = run_past_earlier_gates(
+            &svc,
+            "caps_matched",
+            json!({
+                "recipeId": "gepa.banking77.smoke.v1",
+                "preparationDigest": "sha256:prepare",
+                "capabilitiesDigest": "sha256:caps"
+            }),
+        )
+        .await;
+        let outcome = svc
+            .start_prepared(id, Some("sha256:prepare".into()), Some("approval-1".into()))
+            .await;
+        if let Err(error) = outcome {
+            let text = error.to_string();
+            assert!(
+                !text.contains("capabilities are not proven")
+                    && !text.contains("prepared without a proven")
+                    && !text.contains("capability digest changed")
+                    && !text.contains("does not advertise algorithm")
+                    && !text.contains("advertise no algorithms"),
+                "matching digests and a served algorithm must clear the capability gate, got: {text}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn get_result_is_settled_from_kernel_events_not_filesystem_paths() {
+        let (svc, dir, _) = service().await;
+        let run_dir = dir.path().join("banking77_result");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("best_candidate.json"),
+            r#"{
+                "candidate_id": "candidate_winner",
+                "parent_id": "seed",
+                "lever_bundle": {
+                    "values": {
+                        "stage2_system": "Classify the Banking77 intent carefully."
+                    }
+                },
+                "payload": {
+                    "stage2_system": "Classify the Banking77 intent carefully."
+                }
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            run_dir.join("result_manifest.json"),
+            r#"{
+                "best_candidate": {
+                    "candidate_id": "candidate_winner",
+                    "parent_id": "seed",
+                    "acceptance_score": 0.82,
+                    "minibatch_reward": 0.85,
+                    "heldout_reward": 0.80
+                }
+            }"#,
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "banking77_result_run",
+                    "openVisual": false,
+                    "summary": {
+                        "runDirectory": run_dir.display().to_string(),
+                        "selection": {"score": 0.82},
+                        "heldout": {"score": 0.80}
+                    }
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                gepa_draft("optimizer.run.started", json!({})),
+                gepa_draft(
+                    "candidate.registered",
+                    json!({"candidate_id":"seed","source":"seed"}),
+                ),
+                gepa_draft(
+                    "candidate.registered",
+                    json!({"candidate_id":"candidate_winner","parent_id":"seed"}),
+                ),
+                gepa_draft(
+                    "heldout.completed",
+                    json!({"candidate_id":"seed","heldout_reward":0.2}),
+                ),
+                gepa_draft(
+                    "heldout.completed",
+                    json!({"candidate_id":"candidate_winner","heldout_reward":0.8}),
+                ),
+                gepa_draft(
+                    "frontier.snapshot",
+                    json!({"best_candidate_id":"candidate_winner"}),
+                ),
+                gepa_draft(
+                    "gepa.run.finished",
+                    json!({"selected_candidate_id":"candidate_winner"}),
+                ),
+                gepa_draft("optimizer.run.completed", json!({})),
+            ],
+        )
+        .await
+        .unwrap();
+        let result = svc.get_result(run.id.clone()).await.unwrap();
+        assert_eq!(result["schemaVersion"], json!("optimizer_result.v2"));
+        assert_eq!(result["selectedCandidateId"], json!("candidate_winner"));
+        assert_eq!(result["verdict"], json!("measured_improvement"));
+        let encoded = result.to_string();
+        assert!(!encoded.contains("best_candidate.json"));
+        assert!(!encoded.contains("runDirectory"));
+        assert!(!encoded.contains(&run_dir.display().to_string()));
+    }
+
+    #[tokio::test]
+    async fn craftax_result_materializes_react_prompt_without_filesystem_paths() {
+        let (svc, dir, _) = service().await;
+        let run_dir = dir.path().join("craftax_result");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("best_candidate.json"),
+            r#"{
+                "candidate_id": "craftax_winner",
+                "parent_id": "seed",
+                "lever_bundle": {
+                    "values": {
+                        "react_system_prompt": "Observe carefully, choose one valid Craftax action, then reassess."
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "craftax_result_run",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                gepa_draft("optimizer.run.started", json!({})),
+                gepa_draft(
+                    "candidate.registered",
+                    json!({"candidate_id":"seed","source":"seed"}),
+                ),
+                gepa_draft(
+                    "candidate.registered",
+                    json!({"candidate_id":"craftax_winner","parent_id":"seed"}),
+                ),
+                gepa_draft(
+                    "frontier.snapshot",
+                    json!({"best_candidate_id":"craftax_winner"}),
+                ),
+                gepa_draft(
+                    "gepa.run.finished",
+                    json!({"selected_candidate_id":"craftax_winner"}),
+                ),
+                gepa_draft("optimizer.run.completed", json!({})),
+            ],
+        )
+        .await
+        .unwrap();
+        let result = svc.get_result(run.id).await.unwrap();
+        assert_eq!(result["schemaVersion"], json!("optimizer_result.v2"));
+        assert_eq!(result["selectedCandidateId"], json!("craftax_winner"));
+        assert_eq!(result["verdict"], json!("inconclusive"));
+        let encoded = result.to_string();
+        assert!(!encoded.contains("best_candidate.json"));
+        assert!(!encoded.contains("runDirectory"));
+        assert!(!encoded.contains(&run_dir.display().to_string()));
+    }
+
+    #[tokio::test]
+    async fn completed_result_without_materialized_values_fails_closed() {
+        let (svc, dir, _) = service().await;
+        let run_dir = dir.path().join("banking77_empty");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("best_candidate.json"),
+            r#"{"id":"candidate_empty"}"#,
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "banking77_empty_prompt",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (settled, _) = svc
+            .append_event_payloads(
+                run.id.clone(),
+                vec![
+                    gepa_draft("optimizer.run.started", json!({})),
+                    gepa_draft("optimizer.run.completed", json!({})),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(settled.status, "failed_evidence");
+        assert_eq!(
+            settled.summary["terminalManifest"]["terminal"]["kind"],
+            json!("failed")
+        );
+        assert_eq!(
+            settled.summary["terminalManifest"]["terminal"]["reason"],
+            json!("evidence_unusable")
+        );
+        assert_ne!(svc.get(run.id).await.unwrap().status, "completed");
+    }
+
+    #[tokio::test]
+    async fn settle_run_is_concurrently_idempotent_and_seals_error_with_cursor() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "settle_concurrent",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![gepa_draft("optimizer.run.started", json!({}))],
+        )
+        .await
+        .unwrap();
+
+        let left = svc.clone();
+        let right = svc.clone();
+        let left_id = run.id.clone();
+        let right_id = run.id.clone();
+        let cause = super::super::kernel::SettleCause::Failed {
+            detail: "worker chain: root cause".into(),
+        };
+        let (left_result, right_result) = tokio::join!(
+            left.settle_run(
+                left_id,
+                cause.clone(),
+                Some(json!({"message":"root cause","stderrTail":"bounded"})),
+            ),
+            right.settle_run(
+                right_id,
+                cause,
+                Some(json!({"message":"root cause","stderrTail":"bounded"})),
+            )
+        );
+        left_result.unwrap();
+        right_result.unwrap();
+
+        let sealed = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        let durable = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(sealed["terminalCursor"], json!(durable.cursor_seq));
+        assert_eq!(sealed["error"], durable.error.unwrap());
+        let terminal_count = svc
+            .events_after(run.id, 0, Some(100))
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.event_type == "optimizer.run.failed")
+            .count();
+        assert_eq!(terminal_count, 1);
+    }
+
+    #[tokio::test]
+    async fn patch_run_refuses_progress_after_seal_and_amendments_advance_only_final_cursor() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "settle_patch_guard",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![gepa_draft("optimizer.run.started", json!({}))],
+        )
+        .await
+        .unwrap();
+        svc.settle_run(
+            run.id.clone(),
+            super::super::kernel::SettleCause::Failed {
+                detail: "boom".into(),
+            },
+            Some(json!({"message":"boom"})),
+        )
+        .await
+        .unwrap();
+        let sealed = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        let terminal_cursor = sealed["terminalCursor"].as_u64().unwrap();
+
+        svc.database()
+            .with_conn(|conn| {
+                let raw: String = conn.query_row(
+                    "SELECT payload_json FROM optimizer_cached_slices
+                     WHERE optimizer_run_id=?1 AND slice_id='run.evidence'",
+                    [run.id.as_str()],
+                    |row| row.get(0),
+                )?;
+                let mut cached: Value = serde_json::from_str(&raw)?;
+                cached["data"]["refs"] = json!([{
+                    "kind": "trace",
+                    "id": "legacy_cached_trace",
+                    "digest": "sha256:legacy_cached_trace",
+                }]);
+                conn.execute(
+                    "UPDATE optimizer_cached_slices SET payload_json=?2
+                     WHERE optimizer_run_id=?1 AND slice_id='run.evidence'",
+                    params![run.id, serde_json::to_string(&cached)?],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let patch_error = svc
+            .patch_run(run.id.clone(), |run| {
+                run.summary["evalStatus"] = json!("running");
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+        assert!(patch_error.to_string().contains("post-terminal"));
+
+        let amendment = OptimizerEventDraft::new("optimizer.evidence.amended", "gepa")
+            .idempotency_key("post-terminal-test-amendment")
+            .delta(Map::from_iter([
+                ("terminalSequence".into(), json!(terminal_cursor)),
+                ("diagnostic".into(), json!({"message":"late fact"})),
+            ]));
+        let (amended, _) = svc
+            .append_event_payloads(run.id.clone(), vec![amendment])
+            .await
+            .unwrap();
+        assert_eq!(amended.cursor_seq, terminal_cursor + 1);
+        let current = svc
+            .get_state(run.id.clone(), "run.evidence".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(current.cursor_seq, terminal_cursor);
+        assert!(
+            current.data["refs"]
+                .as_array()
+                .is_some_and(|refs| refs.is_empty()),
+            "post-terminal reads must bypass a stale same-cursor cache"
+        );
+        let batch = svc
+            .get_state_batch(run.id.clone(), None, None)
+            .await
+            .unwrap();
+        assert!(
+            batch
+                .iter()
+                .all(|slice| slice.cursor_seq == terminal_cursor),
+            "default reads resolve the sealed projection, not the amendment event cursor"
+        );
+        let still_sealed = svc.terminal_manifest(run.id).await.unwrap().unwrap();
+        assert_eq!(still_sealed["terminalCursor"], json!(terminal_cursor));
+    }
+
+    #[tokio::test]
+    async fn get_run_reprojects_a_historical_terminal_summary_from_canonical_evidence() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(
+            &svc,
+            "terminal_summary_evidence",
+            "summary_evidence_session",
+        )
+        .await;
+        let trace_id = "tracev5_summary_evidence";
+        let trace_digest = "sha256:summary_evidence";
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                draft("optimizer.run.started"),
+                draft("eval.run.planned")
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(1))])),
+                draft("eval.trial.terminal")
+                    .item(json!({"id": "eval:trial:0", "valid": true, "reward": 1.0}))
+                    .artifact_refs(vec![
+                        json!({"kind": "evaluator_result", "id": "evaluator:summary"}),
+                        json!({"kind": "trace_v5", "id": trace_id, "digest": trace_digest}),
+                    ]),
+                draft("optimizer.run.completed"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        svc.database()
+            .with_conn(|conn| {
+                let raw: String = conn.query_row(
+                    "SELECT summary_json FROM optimizer_runs WHERE id=?1",
+                    [run.id.as_str()],
+                    |row| row.get(0),
+                )?;
+                let mut summary: Value = serde_json::from_str(&raw)?;
+                summary
+                    .pointer_mut("/progress/authoritative/evidence/refs")
+                    .and_then(Value::as_array_mut)
+                    .expect("terminal summary evidence refs")
+                    .push(json!({
+                        "kind": "trace",
+                        "id": trace_id,
+                        "digest": trace_digest,
+                    }));
+                conn.execute(
+                    "UPDATE optimizer_runs SET summary_json=?2 WHERE id=?1",
+                    params![run.id, serde_json::to_string(&summary)?],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let projected = svc.get(run.id).await.unwrap();
+        let refs = projected
+            .summary
+            .pointer("/progress/authoritative/evidence/refs")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(
+            refs.iter()
+                .filter(|reference| reference["id"] == json!(trace_id))
+                .count(),
+            1
+        );
+        assert_eq!(refs[1]["kind"], json!("trace_v5"));
+    }
+
+    #[tokio::test]
+    async fn credential_revocation_is_a_post_terminal_amendment_linked_to_the_seal() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "revocation_ordering",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        svc.settle_run(
+            run.id.clone(),
+            super::super::kernel::SettleCause::Failed {
+                detail: "typed pre-dispatch refusal".into(),
+            },
+            Some(json!({"message": "typed pre-dispatch refusal"})),
+        )
+        .await
+        .unwrap();
+        let terminal_sequence = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap()["terminalCursor"]
+            .as_u64()
+            .unwrap();
+        let draft = super::credential_revocation_amendment(
+            &run,
+            terminal_sequence,
+            vec!["cap_test".into()],
+            None,
+        );
+        assert_eq!(draft.event_type, "optimizer.evidence.amended");
+        assert_eq!(draft.delta["terminalSequence"], json!(terminal_sequence));
+        assert_eq!(
+            draft.delta["credentialRevocation"]["kind"],
+            json!("credential.capability.revoked")
+        );
+        assert_eq!(
+            draft.delta["credentialRevocation"]["cause"],
+            json!("run_terminal")
+        );
+        assert_eq!(draft.raw["source"], json!("settle_run"));
+
+        svc.append_event_payloads(run.id.clone(), vec![draft])
+            .await
+            .unwrap();
+        let events = svc
+            .events_after(run.id, terminal_sequence, None)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "optimizer.evidence.amended");
+        assert_eq!(
+            events[0].delta["credentialRevocation"]["capabilityIds"],
+            json!(["cap_test"])
+        );
+        assert_eq!(
+            events[0].delta["credentialRevocation"]["kind"],
+            json!("credential.capability.revoked")
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_request_becomes_a_receipt_at_the_terminal_sequence() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "cancel_receipt",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![gepa_draft("optimizer.run.started", json!({}))],
+        )
+        .await
+        .unwrap();
+        let request = super::super::kernel::CancellationRequest::new(
+            super::super::kernel::CancellationCause::UserRequested,
+            "user:test",
+            format!("run:{}", run.id),
+        );
+        let request_id = request.request_id.clone();
+        svc.cancel(run.id.clone(), request).await.unwrap();
+        let terminal_cursor = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap()["terminalCursor"]
+            .as_u64()
+            .unwrap();
+        let db = svc.db.clone();
+        let receipt = db
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT observed_at, settled_sequence FROM optimizer_cancellation_requests \
+                     WHERE request_id=?1",
+                    [request_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<i64>>(1)?,
+                        ))
+                    },
+                )
+                .map_err(Into::into)
+            })
+            .await
+            .unwrap();
+        assert!(receipt.0.is_some());
+        assert_eq!(receipt.1, Some(terminal_cursor as i64));
     }
 }

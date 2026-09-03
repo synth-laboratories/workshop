@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ArtifactRef } from "../types/landing";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 
 type SceneStyle = "warning" | "success" | "missing" | "unproven" | "accent" | "muted" | "dashed";
 type RectItem = { id: string; x: number; y: number; width: number; height: number; label?: string; visible?: boolean; opacity?: number; style?: SceneStyle };
@@ -130,9 +131,11 @@ export function SystemsDynamicVisual({ artifact }: { artifact: ArtifactRef }) {
 	const [notice, setNotice] = useState<string | null>(null);
 	const [reload, setReload] = useState(0);
 	const clock = useRef<{ started: number; from: number } | null>(null);
+	const retryToken = useRef("");
+	retryToken.current = `${visualId}:${String(artifact.metadata?.currentRevision ?? artifact.metadata?.revision ?? "")}`;
 	const parsedScene = useMemo(() => {
 		try { return { scene: source ? parseScene(source) : null, error: null }; }
-		catch (reason) { return { scene: null, error: reason instanceof Error ? reason.message : String(reason) }; }
+		catch (reason) { return { scene: null, error: publicError(reason) }; }
 	}, [source]);
 	const scene = parsedScene.scene;
 
@@ -158,14 +161,14 @@ export function SystemsDynamicVisual({ artifact }: { artifact: ArtifactRef }) {
 				setTimeMs(parsed?.posterTimeMs ?? 0);
 				setPlaying(false);
 			} catch (reason) {
-				if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+				if (!cancelled) setError(publicError(reason));
 			}
 			try {
 				const rendition = await bridges.visuals?.rendition?.(visualId, "svg", theme, "pane");
 				if (!cancelled && rendition) setPosterUrl(`data:${rendition.mediaType};base64,${rendition.base64}`);
 				if (!cancelled) setError(null);
 			} catch (reason) {
-				if (!cancelled && !source) setError(reason instanceof Error ? reason.message : String(reason));
+				if (!cancelled && !source) setError(publicError(reason));
 			}
 		})();
 		return () => { cancelled = true; };
@@ -197,11 +200,11 @@ export function SystemsDynamicVisual({ artifact }: { artifact: ArtifactRef }) {
 	const exportStill = () => {
 		if (!posterUrl) return;
 		try { const link = document.createElement("a"); link.href = posterUrl; link.download = `${artifact.title || "systems-explainer"}-still.svg`; link.click(); setNotice(`Exported ${link.download}`); }
-		catch (reason) { setNotice(`Export failed: ${reason instanceof Error ? reason.message : String(reason)}`); }
+		catch (reason) { setNotice(`Export failed: ${publicError(reason)}`); }
 	};
 
 	return (
-		<div className="systems-dynamic" data-testid="visual-systems-dynamic">
+		<div className="systems-dynamic" data-testid="visual-systems-dynamic" data-theme={scene?.theme === "technical-dark" ? "dark" : "light"}>
 			<div className="systems-dynamic-toolbar">
 				<span className="systems-dynamic-status">BENJAMIN DICKEN STYLE</span>
 				<div className="systems-visual-actions">
@@ -213,7 +216,7 @@ export function SystemsDynamicVisual({ artifact }: { artifact: ArtifactRef }) {
 					<button type="button" onClick={() => setShowSource((value) => !value)}>{showSource ? "Explainer" : "Source"}</button>
 					<button type="button" disabled={!source} onClick={() => { if (source) void navigator.clipboard.writeText(source); }}>Copy source</button>
 					<button type="button" disabled={!posterUrl} onClick={exportStill}>Export still</button>
-					<button type="button" onClick={() => { void (async () => { await bridges.visuals?.render?.(visualId); setReload((value) => value + 1); })(); }}>Retry</button>
+					<button type="button" onClick={() => { const token = retryToken.current; void (async () => { await bridges.visuals?.render?.(visualId); if (retryToken.current === token) setReload((value) => value + 1); })(); }}>Retry</button>
 				</div>
 			</div>
 			{notice ? <p className="systems-visual-notice" role="status">{notice}</p> : null}

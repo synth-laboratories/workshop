@@ -46,6 +46,7 @@ type ActivityStatus = "running" | "completed" | "failed" | "cancelled" | "interr
 function lineStatus(line: LocalActivityLine): ActivityStatus {
 	if (line.toolStatus === "running") return "running";
 	if (line.toolStatus === "failed") return "failed";
+	if (line.toolStatus === "cancelled") return "cancelled";
 	if (/cancel/i.test(line.label)) return "cancelled";
 	if (/interrupt/i.test(line.label)) return "interrupted";
 	if (/unhealthy|detach/i.test(line.label)) return "unhealthy";
@@ -61,7 +62,7 @@ function toolCategory(line: LocalActivityLine): string | null {
 	if (line.kind === "search") return "searched";
 	if (line.toolStatus) {
 		const label = (line.label ?? "").toLowerCase();
-		if (label.includes("visual")) return "used visuals";
+		if (label.includes("synth_visuals") || label.includes("visual")) return "used visuals";
 		if (label.includes("container")) return "used containers";
 		return "used tools";
 	}
@@ -75,17 +76,15 @@ function toolCategory(line: LocalActivityLine): string | null {
  */
 export function isAuthoredEvidence(line: LocalActivityLine): boolean {
 	if (
-		line.kind === "visual"
+		line.kind === "visual_lifecycle"
 		|| line.kind === "approval"
 		|| line.kind === "run_summary"
 		|| line.kind === "subagent"
 		|| line.kind === "context_compaction"
 	) return true;
-	if (line.artifactId || line.containerId) return true;
+	if (line.containerId) return true;
 	const label = (line.label ?? "").toLowerCase();
-	return label.includes("synth_visuals")
-		|| label.includes("synth_containers")
-		|| /(^|[._])visual_/.test(label)
+	return label.includes("synth_containers")
 		|| /(^|[._])container_/.test(label);
 }
 

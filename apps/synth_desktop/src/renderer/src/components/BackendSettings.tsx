@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { SynthBackendSettings } from "../bridge";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 
 type PairState =
 	| { kind: "idle" }
@@ -15,8 +16,8 @@ function announceAccountChange(next: SynthBackendSettings) {
 
 /**
  * Browser sign-in for this device. Lives on its own so the Account page can put
- * it under Devices & security while the endpoint/key editor stays demoted to
- * Advanced connection — one sign-in affordance, not two.
+ * it under Devices & security. Credentials are acquired by the native host;
+ * the renderer never accepts key material.
  */
 export function AccountSignIn() {
 	const [settings, setSettings] = useState<SynthBackendSettings | null>(null);
@@ -65,11 +66,11 @@ export function AccountSignIn() {
 					}
 				}).catch((error) => {
 					stopPolling();
-					setPair({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+					setPair({ kind: "error", message: publicError(error) });
 				});
 			}, 4000);
 		} catch (error) {
-			setPair({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+			setPair({ kind: "error", message: publicError(error) });
 		}
 	};
 	const cancelSignIn = () => {
@@ -86,12 +87,11 @@ export function AccountSignIn() {
 			announceAccountChange(next);
 			setStatus("Signed out · cloud credentials removed");
 		} catch (error) {
-			setStatus(error instanceof Error ? error.message : String(error));
+			setStatus(publicError(error));
 		} finally {
 			setSaving(false);
 		}
 	};
-
 	return (
 		<div className="backend-signin" data-testid="account-sign-in">
 			{pair.kind === "pairing" ? (
@@ -99,8 +99,10 @@ export function AccountSignIn() {
 					<span role="status" className="finetune-meta" data-testid="sign-in-status">
 						Finish sign-in in your browser — this page updates automatically.
 					</span>
-					<button type="button" className="settings-secondary-btn" onClick={() => void beginSignIn()}>Reopen browser</button>
-					<button type="button" className="settings-secondary-btn" data-testid="sign-in-cancel" onClick={cancelSignIn}>Cancel</button>
+					<div className="backend-signin-actions">
+						<button type="button" className="settings-secondary-btn" onClick={() => void beginSignIn()}>Reopen browser</button>
+						<button type="button" className="settings-secondary-btn" data-testid="sign-in-cancel" onClick={cancelSignIn}>Cancel</button>
+					</div>
 				</>
 			) : (
 				<>
@@ -113,15 +115,17 @@ export function AccountSignIn() {
 								? "Connected to Synth. Sign in again to switch accounts."
 								: "New here? Browser sign-in creates your Synth account and connects this device."}
 					</span>
-					{status ? <span className="finetune-meta" data-testid="account-sign-in-note">{status}</span> : null}
-					<button type="button" className="settings-secondary-btn" data-testid="sign-in-begin" onClick={() => void beginSignIn()}>
-						{settings?.apiKeyConfigured ? "Sign in again" : "Sign in with browser"}
-					</button>
-					{settings?.apiKeyConfigured ? (
-						<button type="button" className="settings-secondary-btn" data-testid="account-sign-out" disabled={saving} onClick={() => void signOut()}>
-							Sign out
+					<div className="backend-signin-actions">
+						<button type="button" className="settings-secondary-btn" data-testid="sign-in-begin" onClick={() => void beginSignIn()}>
+							Sign in with browser
 						</button>
-					) : null}
+						{settings?.apiKeyConfigured ? (
+							<button type="button" className="settings-secondary-btn" data-testid="account-sign-out" disabled={saving} onClick={() => void signOut()}>
+								Sign out
+							</button>
+						) : null}
+					</div>
+					{status ? <span className="finetune-meta backend-signin-note" data-testid="account-sign-in-note">{status}</span> : null}
 				</>
 			)}
 		</div>
@@ -163,7 +167,7 @@ export function BackendSettings() {
 	};
 	useEffect(() => {
 		const load = () => {
-			void bridges.config?.get().then(apply).catch((error) => setStatus(String(error)));
+			void bridges.config?.get().then(apply).catch((error) => setStatus(publicError(error)));
 		};
 		load();
 		// Sign-in and sign-out now happen in Devices & security; this panel must
@@ -185,7 +189,7 @@ export function BackendSettings() {
 			announceAccountChange(next);
 			setStatus("Saved · runtime restarted with this backend");
 		} catch (error) {
-			setStatus(error instanceof Error ? error.message : String(error));
+			setStatus(publicError(error));
 		} finally {
 			setSaving(false);
 		}

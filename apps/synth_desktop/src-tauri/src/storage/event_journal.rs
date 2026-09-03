@@ -67,9 +67,46 @@ impl EventJournal {
             .await
     }
 
+    /// Append many events inside one transaction.
+    ///
+    /// The diagnostic writer batches on count or a short timer; one transaction
+    /// per event would put a durable fsync between every queued diagnostic and
+    /// turn a bounded background drain into a visible disk load.
+    pub async fn append_batch(&self, inputs: Vec<EventAppend>) -> Result<Vec<AppEvent>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            let mut appended = Vec::with_capacity(inputs.len());
+            for input in inputs {
+                appended.push(append_event(conn, input)?);
+            }
+            Ok(appended)
+        })
+        .await
+    }
+
     pub async fn events_after(&self, after_sequence: i64, limit: i64) -> Result<Vec<AppEvent>> {
         let db = self.db.clone();
         db.run(move |conn| list_events_after(conn, after_sequence, limit))
+            .await
+    }
+
+    /// Sequence-ordered scan restricted to specific event kinds. Restore paths
+    /// that only care about a handful of kinds must not materialize and JSON
+    /// parse every payload in the journal to find them.
+    pub async fn events_of_kinds_after(
+        &self,
+        after_sequence: i64,
+        kinds: Vec<String>,
+        limit: i64,
+    ) -> Result<Vec<AppEvent>> {
+        if kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let db = self.db.clone();
+        db.run(move |conn| list_events_of_kinds_after(conn, after_sequence, &kinds, limit))
             .await
     }
 
@@ -82,6 +119,29 @@ impl EventJournal {
         let db = self.db.clone();
         db.run(move |conn| {
             list_session_events_after(conn, &session_id, after_session_sequence, limit)
+        })
+        .await
+    }
+
+    pub async fn session_events_tail(
+        &self,
+        session_id: String,
+        limit: i64,
+    ) -> Result<Vec<AppEvent>> {
+        let db = self.db.clone();
+        db.run(move |conn| list_session_events_tail(conn, &session_id, limit))
+            .await
+    }
+
+    pub async fn session_events_before(
+        &self,
+        session_id: String,
+        before_session_sequence: i64,
+        limit: i64,
+    ) -> Result<Vec<AppEvent>> {
+        let db = self.db.clone();
+        db.run(move |conn| {
+            list_session_events_before(conn, &session_id, before_session_sequence, limit)
         })
         .await
     }
@@ -345,6 +405,54 @@ fn load_event(conn: &Connection, sequence: i64) -> Result<AppEvent> {
     .context("load event")
 }
 
+fn list_events_of_kinds_after(
+    conn: &Connection,
+    after_sequence: i64,
+    kinds: &[String],
+    limit: i64,
+) -> Result<Vec<AppEvent>> {
+    let placeholders = (0..kinds.len())
+        .map(|index| format!("?{}", index + 2))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                payload_json, remote_sequence, command_id, created_at
+         FROM events
+         WHERE sequence > ?1 AND kind IN ({placeholders})
+         ORDER BY sequence ASC
+         LIMIT ?{}",
+        kinds.len() + 2
+    ))?;
+    let mut args: Vec<rusqlite::types::Value> = Vec::with_capacity(kinds.len() + 2);
+    args.push(after_sequence.into());
+    args.extend(kinds.iter().map(|kind| kind.clone().into()));
+    args.push(limit.into());
+    let rows = stmt.query_map(rusqlite::params_from_iter(args), map_event_row)?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row?);
+    }
+    Ok(events)
+}
+
+fn map_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppEvent> {
+    Ok(AppEvent {
+        schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
+        sequence: row.get(0)?,
+        event_id: row.get(1)?,
+        session_id: row.get(2)?,
+        session_sequence: row.get(3)?,
+        run_id: row.get(4)?,
+        source: EventSource::parse(&row.get::<_, String>(5)?),
+        kind: row.get(6)?,
+        payload: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or(Value::Null),
+        remote_sequence: row.get(8)?,
+        command_id: row.get(9)?,
+        created_at: row.get(10)?,
+    })
+}
+
 fn list_events_after(conn: &Connection, after_sequence: i64, limit: i64) -> Result<Vec<AppEvent>> {
     let mut stmt = conn.prepare(
         "SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
@@ -354,22 +462,7 @@ fn list_events_after(conn: &Connection, after_sequence: i64, limit: i64) -> Resu
          ORDER BY sequence ASC
          LIMIT ?2",
     )?;
-    let rows = stmt.query_map(params![after_sequence, limit], |row| {
-        Ok(AppEvent {
-            schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
-            sequence: row.get(0)?,
-            event_id: row.get(1)?,
-            session_id: row.get(2)?,
-            session_sequence: row.get(3)?,
-            run_id: row.get(4)?,
-            source: EventSource::parse(&row.get::<_, String>(5)?),
-            kind: row.get(6)?,
-            payload: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or(Value::Null),
-            remote_sequence: row.get(8)?,
-            command_id: row.get(9)?,
-            created_at: row.get(10)?,
-        })
-    })?;
+    let rows = stmt.query_map(params![after_sequence, limit], map_event_row)?;
     let mut events = Vec::new();
     for row in rows {
         events.push(row?);
@@ -414,11 +507,156 @@ fn list_session_events_after(
     Ok(events)
 }
 
+fn list_session_events_tail(
+    conn: &Connection,
+    session_id: &str,
+    limit: i64,
+) -> Result<Vec<AppEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                payload_json, remote_sequence, command_id, created_at
+         FROM (
+             SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                    payload_json, remote_sequence, command_id, created_at
+             FROM events
+             WHERE session_id = ?1 AND session_sequence IS NOT NULL
+             ORDER BY session_sequence DESC
+             LIMIT ?2
+         )
+         ORDER BY session_sequence ASC",
+    )?;
+    let rows = stmt.query_map(params![session_id, limit], |row| {
+        Ok(AppEvent {
+            schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
+            sequence: row.get(0)?,
+            event_id: row.get(1)?,
+            session_id: row.get(2)?,
+            session_sequence: row.get(3)?,
+            run_id: row.get(4)?,
+            source: EventSource::parse(&row.get::<_, String>(5)?),
+            kind: row.get(6)?,
+            payload: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or(Value::Null),
+            remote_sequence: row.get(8)?,
+            command_id: row.get(9)?,
+            created_at: row.get(10)?,
+        })
+    })?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row?);
+    }
+    Ok(events)
+}
+
+fn list_session_events_before(
+    conn: &Connection,
+    session_id: &str,
+    before_session_sequence: i64,
+    limit: i64,
+) -> Result<Vec<AppEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                payload_json, remote_sequence, command_id, created_at
+         FROM (
+             SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                    payload_json, remote_sequence, command_id, created_at
+             FROM events
+             WHERE session_id = ?1 AND session_sequence IS NOT NULL AND session_sequence < ?2
+             ORDER BY session_sequence DESC
+             LIMIT ?3
+         )
+         ORDER BY session_sequence ASC",
+    )?;
+    let rows = stmt.query_map(params![session_id, before_session_sequence, limit], |row| {
+        Ok(AppEvent {
+            schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
+            sequence: row.get(0)?,
+            event_id: row.get(1)?,
+            session_id: row.get(2)?,
+            session_sequence: row.get(3)?,
+            run_id: row.get(4)?,
+            source: EventSource::parse(&row.get::<_, String>(5)?),
+            kind: row.get(6)?,
+            payload: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or(Value::Null),
+            remote_sequence: row.get(8)?,
+            command_id: row.get(9)?,
+            created_at: row.get(10)?,
+        })
+    })?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row?);
+    }
+    Ok(events)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::storage::Storage;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn kind_filtered_scan_returns_only_the_requested_kinds_in_sequence_order() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        journal
+            .upsert_codex_session(
+                "sess_1".into(),
+                "thread_1".into(),
+                "Demo".into(),
+                "laguna-xs-2.1".into(),
+                "/tmp/ws".into(),
+                "ready".into(),
+            )
+            .await
+            .unwrap();
+        for index in 0..40 {
+            let kind = if index == 7 {
+                "approval.requested"
+            } else if index == 23 {
+                "approval.granted"
+            } else {
+                "item/agentMessage/delta"
+            };
+            journal
+                .append(EventAppend::codex("sess_1", kind, json!({"index": index})))
+                .await
+                .unwrap();
+        }
+
+        let matched = journal
+            .events_of_kinds_after(
+                0,
+                vec!["approval.requested".into(), "approval.granted".into()],
+                2_000,
+            )
+            .await
+            .unwrap();
+        let kinds = matched.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>();
+        assert_eq!(kinds, vec!["approval.requested", "approval.granted"]);
+        assert!(matched[0].sequence < matched[1].sequence);
+        assert_eq!(matched[0].payload["index"], 7);
+
+        // The cursor must advance past filtered-out rows, not stall on them.
+        let after_first = journal
+            .events_of_kinds_after(
+                matched[0].sequence,
+                vec!["approval.requested".into(), "approval.granted".into()],
+                2_000,
+            )
+            .await
+            .unwrap();
+        assert_eq!(after_first.len(), 1);
+        assert_eq!(after_first[0].payload["index"], 23);
+
+        assert!(journal
+            .events_of_kinds_after(0, Vec::new(), 2_000)
+            .await
+            .unwrap()
+            .is_empty());
+    }
 
     #[tokio::test]
     async fn append_assigns_global_and_session_sequences() {
@@ -458,6 +696,54 @@ mod tests {
         assert_eq!(second.session_sequence, Some(2));
         let page = journal.events_after(0, 10).await.unwrap();
         assert_eq!(page.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn session_tail_returns_latest_events_in_ascending_order() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        journal
+            .upsert_codex_session(
+                "sess_tail".into(),
+                "thread_tail".into(),
+                "Tail".into(),
+                "laguna-xs-2.1".into(),
+                "/tmp/ws".into(),
+                "ready".into(),
+            )
+            .await
+            .unwrap();
+        for index in 1..=5 {
+            journal
+                .append(EventAppend::codex(
+                    "sess_tail",
+                    "message.delta",
+                    json!({"index": index}),
+                ))
+                .await
+                .unwrap();
+        }
+
+        let tail = journal
+            .session_events_tail("sess_tail".into(), 3)
+            .await
+            .unwrap();
+        let indexes = tail
+            .iter()
+            .map(|event| event.payload["index"].as_i64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(indexes, vec![3, 4, 5]);
+
+        let before = journal
+            .session_events_before("sess_tail".into(), 4, 2)
+            .await
+            .unwrap();
+        let before_indexes = before
+            .iter()
+            .map(|event| event.payload["index"].as_i64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(before_indexes, vec![2, 3]);
     }
 
     #[tokio::test]

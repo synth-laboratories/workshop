@@ -9,7 +9,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{io::Read, sync::Arc};
 use uuid::Uuid;
@@ -36,12 +36,50 @@ pub struct ContainerDeployment {
     pub pool_id: Option<String>,
     pub task_family: Option<String>,
     pub last_rollout_id: Option<String>,
+    pub current_failure_id: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
     pub health: Value,
     #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Fields bound to the approved workspace declaration, rather than observed
+/// from a live container. Catalog registration and probing refresh runtime
+/// facts, but must not detach the durable record from the source revision that
+/// admission is authorized to read.
+const DURABLE_CONTAINER_DECLARATION_KEYS: &[&str] = &[
+    "workspaceSpecId",
+    "sourcePath",
+    "declarationOrigin",
+    "launchDeclaration",
+    "policySourcePath",
+    "gitRevision",
+    "manifestHash",
+];
+
+fn merge_container_hydration_metadata(previous: Option<&Value>, mut observed: Value) -> Value {
+    let Some(previous) = previous.and_then(Value::as_object) else {
+        return observed;
+    };
+    let Some(observed) = observed.as_object_mut() else {
+        return Value::Object(previous.clone());
+    };
+    let has_workspace_declaration = previous
+        .get("workspaceSpecId")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+        && (previous.get("declarationOrigin").is_some() || previous.get("sourcePath").is_some());
+    if !has_workspace_declaration {
+        return Value::Object(observed.clone());
+    }
+    for key in DURABLE_CONTAINER_DECLARATION_KEYS {
+        if let Some(value) = previous.get(*key) {
+            observed.insert((*key).to_string(), value.clone());
+        }
+    }
+    Value::Object(observed.clone())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
@@ -131,7 +169,7 @@ pub struct InspectedTrace {
     #[serde(default)]
     pub task_id: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub seed: Option<i64>,
     #[serde(default)]
     pub terminal_reason: Option<String>,
@@ -144,29 +182,29 @@ pub struct InspectedTrace {
     #[serde(default)]
     pub cost_usd: Option<f64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub prompt_tokens: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub completion_tokens: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub span_count: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub event_count: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub tool_call_count: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub error_count: Option<i64>,
     #[serde(default)]
     pub started_at: Option<String>,
     #[serde(default)]
     pub ended_at: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub duration_ms: Option<i64>,
 }
 
@@ -182,7 +220,7 @@ pub struct InspectedAsset {
     pub semantic_digest: Option<String>,
     pub media_type: String,
     #[serde(alias = "size")]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub byte_size: Option<i64>,
     #[serde(default)]
     pub available: bool,
@@ -213,11 +251,11 @@ pub struct UsageEntry {
     pub model: String,
     pub session_id: Option<String>,
     pub run_id: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub prompt_tokens: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub completion_tokens: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub total_tokens: i64,
     pub cost_usd: Option<f64>,
     pub created_at: String,
@@ -226,11 +264,11 @@ pub struct UsageEntry {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DataCounts {
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub containers: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub traces: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub usage: i64,
 }
 
@@ -243,6 +281,143 @@ pub struct DataStore {
 impl DataStore {
     pub fn new(db: Arc<Database>, content: ContentStore) -> Self {
         Self { db, content }
+    }
+
+    /// Where an import may stage bytes before the format authority inspects
+    /// them. Callers use this instead of inventing a temp directory, so staged
+    /// trace bytes live under the same instance root as what they become.
+    pub fn staging_root(&self) -> std::path::PathBuf {
+        self.content.root().join(".trace-staging")
+    }
+
+    pub async fn experiment_for_session(
+        &self,
+        session_id: String,
+    ) -> Result<Option<crate::experiments::ExperimentGroup>> {
+        self.db
+            .clone()
+            .run(move |conn| crate::experiments::load_for_session(conn, &session_id))
+            .await
+    }
+
+    pub async fn experiment_create(
+        &self,
+        request: crate::experiments::ExperimentCreateRequest,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::create(conn, request))
+            .await
+    }
+
+    pub async fn experiment_create_child(
+        &self,
+        request: crate::experiments::ExperimentChildCreateRequest,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::create_child(conn, request))
+            .await
+    }
+
+    pub async fn experiment_relate(
+        &self,
+        request: crate::experiments::ExperimentRelateRequest,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::relate(conn, request))
+            .await
+    }
+
+    pub async fn experiment_activate(
+        &self,
+        session_id: String,
+        experiment_id: String,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| {
+                crate::experiments::activate(conn, &session_id, &experiment_id)
+            })
+            .await
+    }
+
+    pub async fn experiment_update(
+        &self,
+        request: crate::experiments::ExperimentUpdateRequest,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::update(conn, request))
+            .await
+    }
+
+    pub async fn experiment_finalize(
+        &self,
+        request: crate::experiments::ExperimentFinalizeRequest,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::finalize(conn, request))
+            .await
+    }
+
+    pub async fn experiments_list(
+        &self,
+        query: Option<String>,
+    ) -> Result<Vec<crate::experiments::ExperimentGroup>> {
+        self.db
+            .clone()
+            .run(move |conn| crate::experiments::list(conn, query.as_deref()))
+            .await
+    }
+
+    pub async fn experiment_get(
+        &self,
+        id: String,
+    ) -> Result<Option<crate::experiments::ExperimentGroup>> {
+        self.db
+            .clone()
+            .run(move |conn| crate::experiments::get(conn, &id))
+            .await
+    }
+
+    pub async fn research_log_list(
+        &self,
+        query: Option<String>,
+        experiment_id: Option<String>,
+    ) -> Result<Vec<crate::experiments::ResearchJournalEntry>> {
+        self.db
+            .clone()
+            .run(move |conn| {
+                crate::experiments::research_log_list(
+                    conn,
+                    query.as_deref(),
+                    experiment_id.as_deref(),
+                )
+            })
+            .await
+    }
+
+    pub async fn research_log_append(
+        &self,
+        request: crate::experiments::ResearchJournalAppendRequest,
+    ) -> Result<crate::experiments::ResearchJournalEntry> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::research_log_append(conn, request))
+            .await
+    }
+
+    pub async fn experiment_attach_evidence(
+        &self,
+        request: crate::experiments::ExperimentEvidenceAttachRequest,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::attach_evidence(conn, request))
+            .await
     }
 
     pub async fn list_containers(&self) -> Result<Vec<ContainerDeployment>> {
@@ -267,15 +442,21 @@ impl DataStore {
         self.db.clone().run_transaction(move |conn| {
             let now = Utc::now().to_rfc3339();
             let base_url = request.base_url.trim_end_matches('/').to_string();
-            let existing_id: Option<String> = conn.query_row(
-                "SELECT id FROM containers WHERE base_url = ?1 LIMIT 1",
+            let existing: Option<(String, String)> = conn.query_row(
+                "SELECT id, metadata_json FROM containers WHERE base_url = ?1 LIMIT 1",
                 params![&base_url],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             ).optional()?;
-            let id = existing_id.unwrap_or_else(|| format!("ctr_{}", Uuid::new_v4().simple()));
+            let previous_metadata = existing
+                .as_ref()
+                .and_then(|(_, raw)| serde_json::from_str::<Value>(raw).ok());
+            let id = existing
+                .map(|(id, _)| id)
+                .unwrap_or_else(|| format!("ctr_{}", Uuid::new_v4().simple()));
             let name = request.name.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| "Attached container".into());
             let location = request.location.unwrap_or_else(|| "local".into());
             let health_json = serde_json::to_string(&health)?;
+            let metadata = merge_container_hydration_metadata(previous_metadata.as_ref(), metadata);
             let metadata_json = serde_json::to_string(&metadata)?;
             conn.execute(
                 "INSERT INTO containers(id,name,location,status,base_url,task_family,health_json,metadata_json,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) ON CONFLICT(id) DO UPDATE SET name=excluded.name,location=excluded.location,status=excluded.status,base_url=excluded.base_url,task_family=excluded.task_family,health_json=excluded.health_json,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at",
@@ -301,12 +482,38 @@ impl DataStore {
         task_family: Option<String>,
     ) -> Result<(ContainerDeployment, AppEvent)> {
         self.db.clone().run_transaction(move |conn| {
+            let previous = load_container(conn, &id).ok();
             let now = Utc::now().to_rfc3339();
+            let metadata = merge_container_hydration_metadata(
+                previous.as_ref().map(|container| &container.metadata),
+                metadata,
+            );
             let changed = conn.execute(
                 "UPDATE containers SET status=?1,health_json=?2,metadata_json=?3,task_family=COALESCE(?4,task_family),updated_at=?5 WHERE id=?6",
                 params![&status, serde_json::to_string(&health)?, serde_json::to_string(&metadata)?, &task_family, &now, &id],
             )?;
             if changed == 0 { return Err(anyhow!("container not found: {id}")); }
+            if let Some(previous) = previous {
+                let registry = crate::domains::containers::registry_observation(&previous.status, &previous.health);
+                let live = crate::domains::containers::live_observation(&status, &health);
+                let stopped = previous.status == "stopped" || status == "stopped";
+                if let Some(kind) = crate::domains::containers::classify_probe(&id, registry, live, stopped) {
+                    if crate::platform::failure::repository::FailureRepository::open_for_container(conn, &id)?.is_none() {
+                        crate::domains::containers::raise_probe_failure(conn, kind, &id, None)?;
+                    }
+                } else if status == crate::container_capabilities::READY_STATUS {
+                    if let Some(open) = crate::platform::failure::repository::FailureRepository::open_for_container(conn, &id)? {
+                        let _ = crate::platform::failure::FailureAuthority::transition(
+                            conn,
+                            open.failure_id.as_str(),
+                            crate::platform::failure::FailureLifecycleState::Resolved,
+                            crate::platform::failure::TransitionReason::Resolved,
+                            "container_probe",
+                        );
+                        crate::domains::containers::clear_current(conn, &id)?;
+                    }
+                }
+            }
             let container = load_container(conn, &id)?;
             let event = crate::storage::append_event(conn, EventAppend {
                 event_id: None, session_id: None, run_id: None, source: EventSource::Local,
@@ -405,6 +612,63 @@ impl DataStore {
         self.db
             .clone()
             .run(move |conn| load_trace(conn, &id)?.ok_or_else(|| anyhow!("trace not found: {id}")))
+            .await
+    }
+
+    /// Run a typed trace query and freeze the result as an immutable snapshot.
+    ///
+    /// Reads the projection index rather than the sealed archives: a filtered
+    /// list must never cost a re-parse of every V5 bundle. Re-running mints a
+    /// new snapshot; an existing one is never rewritten, so a visual bound to
+    /// a snapshot id shows the same rows forever.
+    pub async fn query_traces(
+        &self,
+        query: crate::trace_query::TraceQuery,
+        queried_at: String,
+    ) -> Result<crate::trace_query::QuerySnapshot> {
+        use crate::trace_query::{
+            result_digest, snapshot_id, QuerySnapshot, TRACE_QUERY_RESULT_SCHEMA,
+            TRACE_QUERY_SCHEMA,
+        };
+
+        let compiled = query.compile()?;
+        let query_ast = serde_json::to_value(&query)?;
+        let (rows, digests) = self
+            .db
+            .clone()
+            .run(move |conn| run_trace_query(conn, &compiled))
+            .await?;
+
+        let truncated = digests.len() as i64 >= compiled_limit(&query);
+        let digest = result_digest(&query_ast, &digests);
+        let snapshot = QuerySnapshot {
+            schema_version: TRACE_QUERY_RESULT_SCHEMA.into(),
+            snapshot_id: snapshot_id(&digest),
+            domain: "traces".into(),
+            query_schema_version: TRACE_QUERY_SCHEMA.into(),
+            query_ast,
+            result_count: digests.len(),
+            result_ids: digests,
+            facets: json!({ "rows": rows }),
+            result_digest: digest,
+            queried_at,
+            truncated,
+        };
+        let stored = snapshot.clone();
+        self.db
+            .clone()
+            .run(move |conn| insert_query_snapshot(conn, &stored))
+            .await?;
+        Ok(snapshot)
+    }
+
+    pub async fn query_snapshot(
+        &self,
+        snapshot_id: String,
+    ) -> Result<crate::trace_query::QuerySnapshot> {
+        self.db
+            .clone()
+            .run(move |conn| load_query_snapshot(conn, &snapshot_id))
             .await
     }
 
@@ -513,6 +777,20 @@ impl DataStore {
             .unwrap_or_else(|| inspected.inspection.input_kind.clone());
         let compatibility = inspected.inspection.compatibility.clone();
         let validation_status = if validation_ok { "valid" } else { "invalid" }.to_string();
+        // The owning container is the immutable registry id, never a URL or a
+        // display name: `traces.container_id` references `containers(id)` and is
+        // what paid annotation names on its approval card.
+        let owning_container = request
+            .container_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned);
+        if let Some(id) = &owning_container {
+            if id.contains("://") || id.contains('/') {
+                bail!("owning container `{id}` must be the immutable container id from the registry, not a URL");
+            }
+        }
         let errors = inspected
             .inspection
             .validation
@@ -538,6 +816,16 @@ impl DataStore {
         let return_validation = inspected.inspection.validation.clone();
         let db = self.db.clone();
         let result = db.run_transaction(move |conn| {
+            if let Some(container_id) = &owning_container {
+                let registered: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM containers WHERE id=?1)",
+                    params![container_id],
+                    |row| row.get(0),
+                )?;
+                if !registered {
+                    bail!("owning container `{container_id}` is not registered; import with the immutable container id from container_list");
+                }
+            }
             let duplicate: bool = if trusted {
                 conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM trace_bundles WHERE bundle_digest=?1 AND archive_digest=?2)",
@@ -608,6 +896,11 @@ impl DataStore {
                     let title = request.title.clone().unwrap_or_else(|| trace.trace_id.clone());
                     let metadata = serde_json::json!({
                         "schemaVersion": trace.schema_version.as_deref().unwrap_or("synth.trace.v5"),
+                        // The producer identity and Workshop's local trace row id
+                        // intentionally occupy different namespaces. Keep both so
+                        // reconciliation can validate the sealed bundle without
+                        // comparing a rollout-owned id to `tracev5_...`.
+                        "producerTraceId": trace.trace_id,
                         "bundleDigest": bundle_digest,
                         "archiveDigest": archive_digest,
                         "compatibilityLevel": compatibility,
@@ -635,10 +928,10 @@ impl DataStore {
                         "hasEvidence": has_evidence,
                     });
                     conn.execute(
-                        "INSERT INTO traces(id,digest,title,source,reward,metrics_json,path,metadata_json,created_at)
-                         VALUES(?1,?2,?3,'import',?4,'[]',?5,?6,?7)
-                         ON CONFLICT(digest) DO UPDATE SET path=excluded.path,metadata_json=excluded.metadata_json",
-                        params![&row_id,&trace_digest,&title,trace.reward,archive_path,serde_json::to_string(&metadata)?,&now],
+                        "INSERT INTO traces(id,digest,title,source,container_id,reward,metrics_json,path,metadata_json,created_at)
+                         VALUES(?1,?2,?3,'import',?4,?5,'[]',?6,?7,?8)
+                         ON CONFLICT(digest) DO UPDATE SET container_id=COALESCE(excluded.container_id,traces.container_id),path=excluded.path,metadata_json=excluded.metadata_json",
+                        params![&row_id,&trace_digest,&title,&owning_container,trace.reward,archive_path,serde_json::to_string(&metadata)?,&now],
                     )?;
                     conn.execute(
                         "INSERT INTO trace_bundle_members(bundle_digest,trace_row_id,trace_digest,trace_id,capture_id,binding_digest,sealed_path)
@@ -873,6 +1166,7 @@ fn container_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContainerDepl
         pool_id: row.get(5)?,
         task_family: row.get(6)?,
         last_rollout_id: row.get(7)?,
+        current_failure_id: row.get(12).ok(),
         health: parse_json(row.get(8)?)?,
         metadata: parse_json(row.get(9)?)?,
         created_at: row.get(10)?,
@@ -882,14 +1176,14 @@ fn container_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContainerDepl
 
 fn load_container(conn: &Connection, id: &str) -> Result<ContainerDeployment> {
     conn.query_row(
-        "SELECT id,name,location,status,base_url,pool_id,task_family,last_rollout_id,health_json,metadata_json,created_at,updated_at FROM containers WHERE id=?1",
+        "SELECT id,name,location,status,base_url,pool_id,task_family,last_rollout_id,health_json,metadata_json,created_at,updated_at,current_failure_id FROM containers WHERE id=?1",
         params![id], container_from_row,
     ).optional()?.ok_or_else(|| anyhow!("container not found: {id}"))
 }
 
 fn list_containers(conn: &Connection) -> Result<Vec<ContainerDeployment>> {
     let mut statement = conn.prepare(
-        "SELECT id,name,location,status,base_url,pool_id,task_family,last_rollout_id,health_json,metadata_json,created_at,updated_at FROM containers ORDER BY updated_at DESC, id",
+        "SELECT id,name,location,status,base_url,pool_id,task_family,last_rollout_id,health_json,metadata_json,created_at,updated_at,current_failure_id FROM containers ORDER BY updated_at DESC, id",
     )?;
     let rows = statement
         .query_map([], container_from_row)?
@@ -921,6 +1215,121 @@ fn load_trace(conn: &Connection, id: &str) -> Result<Option<TraceRecord>> {
     ).optional()?)
 }
 
+/// Bind every compiled parameter positionally; nothing is formatted into SQL.
+fn run_trace_query(
+    conn: &Connection,
+    compiled: &crate::trace_query::CompiledQuery,
+) -> Result<(Vec<Value>, Vec<String>)> {
+    let mut statement = conn.prepare(&compiled.sql)?;
+    let bound: Vec<Box<dyn rusqlite::ToSql>> = compiled
+        .params
+        .iter()
+        .map(|value| -> Box<dyn rusqlite::ToSql> {
+            match value {
+                Value::String(text) => Box::new(text.clone()),
+                Value::Number(number) if number.is_i64() => Box::new(number.as_i64().unwrap()),
+                Value::Number(number) => Box::new(number.as_f64().unwrap_or_default()),
+                Value::Bool(flag) => Box::new(i64::from(*flag)),
+                other => Box::new(other.to_string()),
+            }
+        })
+        .collect();
+    let rows = statement
+        .query_map(
+            rusqlite::params_from_iter(bound.iter().map(|value| value.as_ref())),
+            |row| {
+                Ok(json!({
+                    "traceDigest": row.get::<_, String>(0)?,
+                    "model": row.get::<_, Option<String>>(1)?,
+                    "provider": row.get::<_, Option<String>>(2)?,
+                    "benchmark": row.get::<_, Option<String>>(3)?,
+                    "taskId": row.get::<_, Option<String>>(4)?,
+                    "lifecycleStatus": row.get::<_, Option<String>>(5)?,
+                    "captureStatus": row.get::<_, Option<String>>(6)?,
+                    "reward": row.get::<_, Option<f64>>(7)?,
+                    "costUsd": row.get::<_, Option<f64>>(8)?,
+                    "eventCount": row.get::<_, i64>(9)?,
+                    "toolCallCount": row.get::<_, i64>(10)?,
+                    "errorCount": row.get::<_, i64>(11)?,
+                    "durationMs": row.get::<_, Option<i64>>(12)?,
+                    "startedAt": row.get::<_, Option<String>>(13)?,
+                    "hasMedia": row.get::<_, i64>(14)? != 0,
+                    "hasEvidence": row.get::<_, i64>(15)? != 0,
+                }))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let digests = rows
+        .iter()
+        .filter_map(|row| row.get("traceDigest").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    Ok((rows, digests))
+}
+
+fn compiled_limit(query: &crate::trace_query::TraceQuery) -> i64 {
+    query
+        .limit
+        .unwrap_or(crate::trace_query::MAX_LIMIT)
+        .clamp(1, crate::trace_query::MAX_LIMIT)
+}
+
+/// Snapshots are append-only. `INSERT OR IGNORE` makes re-taking an identical
+/// query idempotent rather than rewriting history under an existing id.
+fn insert_query_snapshot(
+    conn: &Connection,
+    snapshot: &crate::trace_query::QuerySnapshot,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO query_snapshots(
+            snapshot_id, domain, query_schema_version, query_ast, result_ids,
+            result_count, facets, result_digest, queried_at, truncated
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![
+            snapshot.snapshot_id,
+            snapshot.domain,
+            snapshot.query_schema_version,
+            serde_json::to_string(&snapshot.query_ast)?,
+            serde_json::to_string(&snapshot.result_ids)?,
+            snapshot.result_count as i64,
+            serde_json::to_string(&snapshot.facets)?,
+            snapshot.result_digest,
+            snapshot.queried_at,
+            i64::from(snapshot.truncated),
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_query_snapshot(
+    conn: &Connection,
+    snapshot_id: &str,
+) -> Result<crate::trace_query::QuerySnapshot> {
+    conn.query_row(
+        "SELECT snapshot_id, domain, query_schema_version, query_ast, result_ids,
+                result_count, facets, result_digest, queried_at, truncated
+         FROM query_snapshots WHERE snapshot_id = ?1",
+        [snapshot_id],
+        |row| {
+            Ok(crate::trace_query::QuerySnapshot {
+                schema_version: crate::trace_query::TRACE_QUERY_RESULT_SCHEMA.into(),
+                snapshot_id: row.get(0)?,
+                domain: row.get(1)?,
+                query_schema_version: row.get(2)?,
+                query_ast: serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or_default(),
+                result_ids: serde_json::from_str(&row.get::<_, String>(4)?).unwrap_or_default(),
+                result_count: row.get::<_, i64>(5)? as usize,
+                facets: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+                result_digest: row.get(7)?,
+                queried_at: row.get(8)?,
+                truncated: row.get::<_, i64>(9)? != 0,
+            })
+        },
+    )
+    .optional()?
+    .ok_or_else(|| anyhow!("query snapshot not found: {snapshot_id}"))
+}
+
 fn list_traces(conn: &Connection) -> Result<Vec<TraceRecord>> {
     let mut statement = conn.prepare(
         "SELECT id,digest,title,source,container_id,session_id,run_id,reward,metrics_json,path,metadata_json,created_at FROM traces ORDER BY created_at DESC, id",
@@ -949,14 +1358,20 @@ fn usage_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageEntry> {
 /// Raw request-level inspection feed over the one authoritative
 /// `usage_records` ledger (legacy `usage_ledger` rows were folded in by
 /// migration 11). The exposed cost is the settled charge when one exists,
-/// otherwise the labeled estimate — never a mixture per request.
+/// otherwise a Backend-owned Synth Cloud estimate. Legacy local tariff
+/// estimates are never exposed as money.
 fn list_usage(conn: &Connection, limit: i64) -> Result<Vec<UsageEntry>> {
     let mut statement = conn.prepare(
         "SELECT id, provider, model_id AS model, session_id, run_id,
                 COALESCE(input_tokens, 0) AS prompt_tokens,
                 COALESCE(output_tokens, 0) AS completion_tokens,
                 COALESCE(total_tokens, 0) AS total_tokens,
-                COALESCE(billed_cost_usd, estimated_cost_usd) AS cost_usd,
+                CASE
+                    WHEN cost_source IN ('provider_reported', 'synth_cloud')
+                         AND billed_cost_usd IS NOT NULL THEN billed_cost_usd
+                    WHEN cost_source = 'synth_cloud' THEN estimated_cost_usd
+                    ELSE NULL
+                END AS cost_usd,
                 created_at
          FROM usage_records
          ORDER BY created_at DESC, id LIMIT ?1",
@@ -972,6 +1387,266 @@ mod tests {
     use super::*;
     use crate::storage::Storage;
     use tempfile::tempdir;
+
+    async fn seeded_index_store() -> (tempfile::TempDir, DataStore) {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let db = storage.database().clone();
+        db.with_conn(|conn| {
+            for (digest, benchmark, status, reward, started) in [
+                ("sha256:a1", "craftax", "failed", 0.10, "2026-08-14T10:00:00Z"),
+                ("sha256:b2", "craftax", "completed", 0.90, "2026-08-14T11:00:00Z"),
+                ("sha256:c3", "banking77", "failed", 0.30, "2026-08-14T12:00:00Z"),
+            ] {
+                conn.execute(
+                    "INSERT INTO trace_index(trace_digest,projector_version,benchmark,lifecycle_status,reward,started_at,search_text)
+                     VALUES(?1,'v1',?2,?3,?4,?5,?6)",
+                    params![digest, benchmark, status, reward, started, format!("{benchmark} {status}")],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let data = DataStore::new(db, ContentStore::new(storage.content_root()));
+        (dir, data)
+    }
+
+    #[tokio::test]
+    async fn a_typed_query_reads_the_index_and_freezes_its_result() {
+        let (_dir, data) = seeded_index_store().await;
+        let query = crate::trace_query::TraceQuery {
+            r#where: Some(crate::trace_query::TraceWhere {
+                benchmark: vec!["craftax".into()],
+                lifecycle_status: vec!["failed".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let snapshot = data
+            .query_traces(query.clone(), "2026-08-15T10:22:00Z".into())
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.result_ids, vec!["sha256:a1".to_string()]);
+        assert_eq!(snapshot.result_count, 1);
+        assert_eq!(snapshot.domain, "traces");
+        assert_eq!(snapshot.queried_at, "2026-08-15T10:22:00Z");
+        assert!(!snapshot.truncated);
+        // The snapshot carries the question as well as the answer, so the page
+        // can state what the reader is looking at.
+        assert_eq!(snapshot.query_ast["where"]["benchmark"][0], "craftax");
+
+        let reloaded = data
+            .query_snapshot(snapshot.snapshot_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(reloaded, snapshot);
+    }
+
+    #[tokio::test]
+    async fn re_running_a_query_never_rewrites_an_existing_snapshot() {
+        let (_dir, data) = seeded_index_store().await;
+        let query = crate::trace_query::TraceQuery::default();
+        let first = data
+            .query_traces(query.clone(), "2026-08-15T10:00:00Z".into())
+            .await
+            .unwrap();
+
+        // Same question, same rows, later clock: the stored snapshot keeps its
+        // original timestamp rather than being updated in place.
+        let second = data
+            .query_traces(query, "2026-08-15T23:59:00Z".into())
+            .await
+            .unwrap();
+        assert_eq!(first.snapshot_id, second.snapshot_id);
+        let stored = data
+            .query_snapshot(first.snapshot_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(stored.queried_at, "2026-08-15T10:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn a_different_result_set_is_a_different_snapshot() {
+        let (_dir, data) = seeded_index_store().await;
+        let all = data
+            .query_traces(crate::trace_query::TraceQuery::default(), "t".into())
+            .await
+            .unwrap();
+        let failed = data
+            .query_traces(
+                crate::trace_query::TraceQuery {
+                    r#where: Some(crate::trace_query::TraceWhere {
+                        lifecycle_status: vec!["failed".into()],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                "t".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(all.result_count, 3);
+        assert_eq!(failed.result_count, 2);
+        assert_ne!(all.snapshot_id, failed.snapshot_id);
+    }
+
+    #[tokio::test]
+    async fn a_capped_result_reports_that_it_was_cut() {
+        let (_dir, data) = seeded_index_store().await;
+        let snapshot = data
+            .query_traces(
+                crate::trace_query::TraceQuery {
+                    limit: Some(2),
+                    ..Default::default()
+                },
+                "t".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(snapshot.result_count, 2);
+        assert!(
+            snapshot.truncated,
+            "a truncated result must not read as complete"
+        );
+    }
+
+    /// A trusted, self-contained Trace V5 inspection over an arbitrary archive
+    /// body, shaped the way `synth-trace inspect-input` reports it.
+    fn trusted_inspection(archive: &[u8], trace_hex: &str) -> crate::trace_ingest::InspectedInput {
+        let archive_digest = format!("sha256:{:x}", Sha256::digest(archive));
+        let inspection_json = serde_json::json!({
+            "schema_version": "synth.trace-inspection.v1",
+            "input_kind": "bundle_archive",
+            "compatibility": "native",
+            "source_bytes_digest": archive_digest,
+            "bundle_digest": format!("sha256:{}", "b".repeat(64)),
+            "archive_digest": archive_digest,
+            "self_contained": true,
+            "trusted": true,
+            "validation": {"valid": true, "issues": []},
+            "traces": [{
+                "trace_id": "rollout-1",
+                "trace_digest": format!("sha256:{trace_hex}"),
+                "schema_version": "synth.trace.v5",
+                "reward": 0.5
+            }],
+            "assets": [],
+            "projections": []
+        });
+        crate::trace_ingest::InspectedInput {
+            inspection: serde_json::from_value(inspection_json.clone()).unwrap(),
+            inspection_json,
+            archive_bytes: Some(archive.to_vec()),
+            raw_file_bytes: None,
+        }
+    }
+
+    fn ingest_request(container_id: Option<&str>) -> crate::trace_ingest::TraceBundleIngestRequest {
+        crate::trace_ingest::TraceBundleIngestRequest {
+            source_path: "/nonexistent/bundle.zip".into(),
+            source_kind: Some("test".into()),
+            title: None,
+            source_uri: None,
+            container_id: container_id.map(str::to_owned),
+        }
+    }
+
+    async fn stored_owner(db: &crate::storage::Database, digest: &str) -> Option<String> {
+        let digest = digest.to_string();
+        db.clone()
+            .run(move |conn| {
+                Ok(conn.query_row(
+                    "SELECT container_id FROM traces WHERE digest=?1",
+                    params![digest],
+                    |row| row.get::<_, Option<String>>(0),
+                )?)
+            })
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn container_driven_import_records_the_owning_registry_id() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let db = storage.database().clone();
+        db.with_conn(|conn| {
+            conn.execute("INSERT INTO containers(id,name,location,status,health_json,metadata_json,created_at,updated_at) VALUES('ctr_owner','Local','local','ready','{}','{}','2026-01-01','2026-01-01')", [])?;
+            Ok(())
+        })
+        .unwrap();
+        let data = DataStore::new(db.clone(), ContentStore::new(storage.content_root()));
+        let trace_hex = "a".repeat(64);
+        let digest = format!("sha256:{trace_hex}");
+
+        // A bare file import knows no owner: the column stays NULL rather than
+        // guessing from a title or a URL.
+        let (result, _) = data
+            .commit_inspected_trace(
+                ingest_request(None),
+                trusted_inspection(b"archive-one", &trace_hex),
+            )
+            .await
+            .unwrap();
+        assert!(result.trusted);
+        assert_eq!(result.traces[0].container_id, None);
+        assert_eq!(stored_owner(&db, &digest).await, None);
+
+        // The same trace imported from its container fills the owner in.
+        let (result, _) = data
+            .commit_inspected_trace(
+                ingest_request(Some("ctr_owner")),
+                trusted_inspection(b"archive-one", &trace_hex),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.traces[0].container_id.as_deref(), Some("ctr_owner"));
+        assert_eq!(
+            stored_owner(&db, &digest).await.as_deref(),
+            Some("ctr_owner")
+        );
+
+        // A later ownerless re-import never erases a recorded owner.
+        data.commit_inspected_trace(
+            ingest_request(None),
+            trusted_inspection(b"archive-one", &trace_hex),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stored_owner(&db, &digest).await.as_deref(),
+            Some("ctr_owner")
+        );
+    }
+
+    #[tokio::test]
+    async fn import_refuses_an_owner_that_is_not_a_registry_id() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let data = DataStore::new(
+            storage.database().clone(),
+            ContentStore::new(storage.content_root()),
+        );
+        let trace_hex = "c".repeat(64);
+        let url = data
+            .commit_inspected_trace(
+                ingest_request(Some("http://127.0.0.1:8123")),
+                trusted_inspection(b"archive-two", &trace_hex),
+            )
+            .await
+            .unwrap_err();
+        assert!(url.to_string().contains("not a URL"), "{url}");
+        let unknown = data
+            .commit_inspected_trace(
+                ingest_request(Some("ctr_never_registered")),
+                trusted_inspection(b"archive-two", &trace_hex),
+            )
+            .await
+            .unwrap_err();
+        assert!(unknown.to_string().contains("not registered"), "{unknown}");
+        assert_eq!(data.list_traces().await.unwrap().len(), 0);
+    }
 
     #[tokio::test]
     async fn lists_rust_owned_inventory_tables() {

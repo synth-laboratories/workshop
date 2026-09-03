@@ -18,7 +18,12 @@ use std::{collections::BTreeMap, sync::Arc};
 #[serde(rename_all = "snake_case")]
 pub enum MeasurementKind {
     Decode,
-    ObservedStream,
+    /// A rate regressed from one output-text segment's own samples.
+    ObservedStreamSegment,
+    /// Turn-wide tokens over a gap-filtered denominator, recorded before
+    /// segment measurement existed. Kept readable, never treated as a
+    /// measurement: see migration 21.
+    LegacyObservedStreamEstimate,
     EndToEnd,
     ProviderReported,
 }
@@ -27,7 +32,8 @@ impl MeasurementKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Decode => "decode",
-            Self::ObservedStream => "observed_stream",
+            Self::ObservedStreamSegment => "observed_stream_segment",
+            Self::LegacyObservedStreamEstimate => "legacy_observed_stream_estimate",
             Self::EndToEnd => "end_to_end",
             Self::ProviderReported => "provider_reported",
         }
@@ -35,9 +41,14 @@ impl MeasurementKind {
     fn parse(value: &str) -> Self {
         match value {
             "decode" => Self::Decode,
-            "end_to_end" => Self::EndToEnd,
+            "observed_stream_segment" => Self::ObservedStreamSegment,
             "provider_reported" => Self::ProviderReported,
-            _ => Self::ObservedStream,
+            // `observed_stream` is the pre-migration-20 name for the turn-wide
+            // estimate. A row still carrying it has not been reinterpreted.
+            "observed_stream" | "legacy_observed_stream_estimate" => {
+                Self::LegacyObservedStreamEstimate
+            }
+            _ => Self::EndToEnd,
         }
     }
 }
@@ -48,12 +59,27 @@ pub struct ModelPerformanceSummary {
     pub provider: String,
     pub model_id: String,
     pub measurement_kind: MeasurementKind,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub sample_count: usize,
     pub tps_p50: Option<f64>,
     pub tps_p95: Option<f64>,
     pub ttft_p50_ms: Option<f64>,
     pub last_observed_at: String,
+}
+
+/// One authoritative request measurement for reconstructing per-user-turn
+/// throughput in the transcript. The renderer groups these rows between user
+/// message timestamps; it must never substitute the model's lifetime p50.
+#[derive(Clone, Debug, Serialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPerformanceTurnSample {
+    pub run_id: Option<String>,
+    pub measurement_kind: MeasurementKind,
+    #[specta(type = specta_typescript::Number)]
+    pub started_at_ms: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub completed_at_ms: i64,
+    pub output_tps: f64,
 }
 
 #[derive(Clone)]
@@ -67,6 +93,15 @@ impl ModelPerformanceRepository {
     }
     pub async fn summaries(&self) -> Result<Vec<ModelPerformanceSummary>> {
         self.db.run(summaries).await
+    }
+
+    pub async fn turn_samples(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<ModelPerformanceTurnSample>> {
+        self.db
+            .run(move |connection| turn_samples(connection, &session_id))
+            .await
     }
 }
 
@@ -82,7 +117,7 @@ struct Aggregate {
 }
 
 fn summaries(conn: &Connection) -> Result<Vec<ModelPerformanceSummary>> {
-    let mut statement = conn.prepare("SELECT provider,model_id,measurement_kind,completed_at_ms,ttft_ms,observed_output_tps,end_to_end_output_tps FROM usage_records WHERE status='completed' AND output_tokens IS NOT NULL AND output_tokens>0 ORDER BY completed_at_ms")?;
+    let mut statement = conn.prepare("SELECT provider,model_id,measurement_kind,completed_at_ms,ttft_ms,observed_output_tps FROM usage_records WHERE status='completed' AND output_tokens IS NOT NULL AND output_tokens>0 AND observed_output_tps IS NOT NULL AND observed_output_tps>0 ORDER BY completed_at_ms")?;
     let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -91,12 +126,11 @@ fn summaries(conn: &Connection) -> Result<Vec<ModelPerformanceSummary>> {
             row.get::<_, i64>(3)?,
             row.get::<_, Option<f64>>(4)?,
             row.get::<_, Option<f64>>(5)?,
-            row.get::<_, Option<f64>>(6)?,
         ))
     })?;
     let mut groups: BTreeMap<(String, String, MeasurementKind), Aggregate> = BTreeMap::new();
     for row in rows {
-        let (provider, model, kind, completed, ttft, observed, e2e) = row?;
+        let (provider, model, kind, completed, ttft, observed) = row?;
         let a = groups
             .entry((provider, model, MeasurementKind::parse(&kind)))
             .or_default();
@@ -104,7 +138,7 @@ fn summaries(conn: &Connection) -> Result<Vec<ModelPerformanceSummary>> {
         if let Some(v) = finite_positive(ttft) {
             a.ttft.push(v)
         }
-        if let Some(v) = finite_positive(observed.or(e2e)) {
+        if let Some(v) = finite_positive(observed) {
             a.tps.push(v)
         }
     }
@@ -132,6 +166,43 @@ fn summaries(conn: &Connection) -> Result<Vec<ModelPerformanceSummary>> {
         .collect())
 }
 
+fn turn_samples(conn: &Connection, session_id: &str) -> Result<Vec<ModelPerformanceTurnSample>> {
+    let mut statement = conn.prepare(
+        "SELECT run_id,measurement_kind,started_at_ms,completed_at_ms,
+                observed_output_tps
+         FROM usage_records
+         WHERE session_id=?1 AND output_tokens IS NOT NULL AND output_tokens>0
+           AND observed_output_tps IS NOT NULL
+           AND observed_output_tps>0
+         ORDER BY started_at_ms,completed_at_ms",
+    )?;
+    let rows = statement.query_map([session_id], |row| {
+        let kind = MeasurementKind::parse(&row.get::<_, String>(1)?);
+        Ok((
+            row.get::<_, Option<String>>(0)?,
+            kind,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, Option<f64>>(4)?,
+        ))
+    })?;
+    let mut samples = Vec::new();
+    for row in rows {
+        let (run_id, measurement_kind, started_at_ms, completed_at_ms, output_tps) = row?;
+        let Some(output_tps) = finite_positive(output_tps) else {
+            continue;
+        };
+        samples.push(ModelPerformanceTurnSample {
+            run_id,
+            measurement_kind,
+            started_at_ms,
+            completed_at_ms,
+            output_tps,
+        });
+    }
+    Ok(samples)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,7 +218,7 @@ mod tests {
             session_id: None,
             run_id: None,
             request_id: request.into(),
-            measurement_kind: MeasurementKind::ObservedStream,
+            measurement_kind: MeasurementKind::ObservedStreamSegment,
             status: "completed".into(),
             started_at_ms: 1000,
             first_output_at_ms: Some(1100),
@@ -201,5 +272,55 @@ mod tests {
             .await
             .unwrap();
         assert!(v.is_empty());
+    }
+
+    #[tokio::test]
+    async fn returns_only_samples_for_the_requested_session() {
+        let t = tempfile::tempdir().unwrap();
+        let s = Storage::open(t.path()).unwrap();
+        s.database()
+            .run(|connection| {
+                connection.execute(
+                    "INSERT INTO sessions(id,title,target_json,status,created_at,updated_at) VALUES(?1,'Test','{}','ready','2026-08-15T00:00:00Z','2026-08-15T00:00:00Z')",
+                    ["session-a"],
+                )?;
+                connection.execute(
+                    "INSERT INTO sessions(id,title,target_json,status,created_at,updated_at) VALUES(?1,'Test','{}','ready','2026-08-15T00:00:00Z','2026-08-15T00:00:00Z')",
+                    ["session-b"],
+                )?;
+                connection.execute(
+                    "INSERT INTO runs(id,session_id,mode,status,created_at,updated_at) VALUES('turn-a','session-a','sync','completed','2026-08-15T00:00:00Z','2026-08-15T00:00:00Z')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let w = UsageRecordsRepository::new(s.database().clone());
+        let mut first = record("one", 11.0);
+        first.session_id = Some("session-a".into());
+        first.run_id = Some("turn-a".into());
+        w.record(first).await.unwrap();
+        let mut second = record("two", 29.0);
+        second.session_id = Some("session-b".into());
+        w.record(second).await.unwrap();
+        let mut end_to_end_only = record("hosted-settled", 0.1);
+        end_to_end_only.session_id = Some("session-a".into());
+        end_to_end_only.measurement_kind = MeasurementKind::EndToEnd;
+        end_to_end_only.observed_output_tps = None;
+        end_to_end_only.end_to_end_output_tps = Some(12.5);
+        end_to_end_only.started_at_ms = 3_000;
+        end_to_end_only.completed_at_ms = 4_000;
+        w.record(end_to_end_only).await.unwrap();
+
+        let rows = ModelPerformanceRepository::new(s.database().clone())
+            .turn_samples("session-a".into())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].run_id.as_deref(), Some("turn-a"));
+        assert_eq!(rows[0].output_tps, 11.0);
+        // Acceptance-to-completion rates include warm-up and are latency, not
+        // generation throughput. They must never reach the TPS UI.
     }
 }

@@ -80,8 +80,8 @@ class TurnRunner:
         except asyncio.CancelledError:
             self.telemetry.record_cancelled()
             raise
-        except BaseException:
-            self.telemetry.record_failed()
+        except BaseException as error:
+            self.telemetry.record_failed(error)
             raise
         latency_ms = round((time.monotonic() - started) * 1000, 3)
         if finish_reason == "cancelled":

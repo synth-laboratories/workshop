@@ -1,4 +1,4 @@
-//! Shared optimizers-beta client used by hosted GELO and standalone SFT.
+//! Private optimizers-beta client used only by hosted GELO.
 //! Algorithm modules own bounded recipes; this module owns transport only.
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -27,23 +27,6 @@ impl HostedOptimizerClient {
             base_url: base_url.trim().trim_end_matches('/').to_string(),
             token: token.trim().to_string(),
         })
-    }
-
-    pub(super) async fn submit_toml(
-        &self,
-        algorithm: &str,
-        run_id: &str,
-        config_toml: &str,
-    ) -> Result<Value> {
-        self.post_json(
-            "/v1/runs",
-            json!({
-                "algorithm": algorithm,
-                "idempotency_key": run_id,
-                "config_toml": config_toml,
-            }),
-        )
-        .await
     }
 
     pub(super) async fn submit_json(
@@ -102,19 +85,6 @@ impl HostedOptimizerClient {
             );
         }
         Ok(json!({"run_id": run_id, "events": events}))
-    }
-
-    pub(super) async fn optimizer_events_after(
-        &self,
-        run_id: &str,
-        after_sequence: u64,
-        limit: usize,
-    ) -> Result<Value> {
-        self.get_json(&format!(
-            "/runs/{run_id}/optimizer-events?after_sequence={after_sequence}&limit={}",
-            limit.clamp(1, 5_000)
-        ))
-        .await
     }
 
     pub(super) async fn state_batch(&self, run_id: &str, slices: &[&str]) -> Result<Value> {

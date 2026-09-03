@@ -39,9 +39,10 @@ note = "Same size class as 3.5 Lightning. Not the default student."
 
 [[model]]
 id = "openai/gpt-oss-20b"
-label = "GPT-OSS-20B"
+label = "GPT-OSS 20B"
 context = "32K"
 size = "small"
-arch = "moe"
+arch = "dense"
 default = false
-note = "Craftax student. Exact Tinker create_lora_training_client / create_sampling_client id."
+note = "Tinker SDK probe is 32K; backend hosted catalog lists max_context_length 131072. Workshop recipes use 32768 until Tinker confirms 131072."
+

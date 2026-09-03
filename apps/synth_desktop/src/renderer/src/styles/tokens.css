@@ -53,6 +53,7 @@
 	/* ── Shape ── radius-sm/md/lg/pill already exist in app.css. One more for
 	   small controls, and that is the whole set. ── */
 	--radius-xs: 6px;
+	--radius-none: 0;
 
 	/* ── Surfaces ── semantic roles, so dark theme only re-points these. ── */
 	--surface-page: var(--color-bg);
@@ -60,26 +61,56 @@
 	--surface-sunken: var(--color-bg-subtle);
 	--surface-hover: rgba(20, 22, 26, 0.04);
 	--surface-active: rgba(20, 22, 26, 0.07);
+	/* App.css and page chrome still say `--color-surface*`. Alias the same
+	   roles so those lookups follow `--color-card` / `--color-bg-subtle`
+	   when dark theme re-points them. */
+	--color-surface: var(--color-card);
+	--color-surface-raised: var(--color-card);
+	--color-surface-sunken: var(--color-bg-subtle);
+	--color-surface-muted: var(--color-bg-subtle);
+
+	/* Experiment DAG parchment. Light keeps the warm paper; dark re-points. */
+	--lineage-paper: #f9f1e5;
+	--lineage-paper-edge: #cfb99f;
+	--lineage-ink: #332b26;
+	--lineage-ink-muted: #8c7565;
+	--lineage-node: #e7c9ac;
+	--lineage-node-variant: #cb8d64;
+	--lineage-node-variant-fg: #2b1d17;
+	--lineage-node-result: #e7b653;
+	--lineage-node-eval: #d4b896;
+	--lineage-link: #9a5735;
+	--lineage-link-fork: #b8673f;
+	--lineage-link-rerun: #5a7a4a;
+	--lineage-link-label: #765b4a;
+	--lineage-action: #fffaf0;
+	--lineage-action-fg: #33251d;
+	--lineage-accent-edge: #c87545;
+	--lineage-accent-fill: #f0c38e;
+	--lineage-hover: #f1e2cd;
+	--lineage-meta: #76675c;
+	--lineage-rule: #65564c;
+	--lineage-rule-strong: #806a5b;
+	--lineage-muted: #dbc4ae;
+	--lineage-inspector: #3b332e;
+	--lineage-inspector-fg: #f8ead8;
 
 	--border-subtle: var(--color-border);
 	--border-strong: #d2d6dc;
 
-	/* ── Selection ── ONE selection color for the whole product.
-	   Retire the per-page purples (#7663ba, #6654a9, #d8d1ee, #f7f4ff).
-	   To move selection to Synth orange, re-point these three lines only. ── */
+	/* ── Selection ── ONE warm selection color for the whole product. ── */
 	--selected-fg: var(--color-selection);
 	--selected-bg: var(--color-selection-subtle);
 	--selected-edge: var(--color-selection);
-	/* Text that sits ON the selection color. Flips with the theme because the
-	   dark selection blue is light enough that white text fails contrast. */
+	/* Text that sits ON the selection color. */
 	--selected-contrast: #ffffff;
 
 	/* ── Status tones ── the only status colors. Always paired with a word;
 	   never color alone. ── */
 	--tone-neutral-bg: #eef0f3;
 	--tone-neutral-fg: #5b626c;
-	--tone-info-bg: #e9f0fe;
-	--tone-info-fg: #2f5fbd;
+	--tone-info-bg: #fff0e8;
+	--tone-info-fg: #a3481d;
 	--tone-running-bg: #fef3e0;
 	--tone-running-fg: #8a5a11;
 	--tone-success-bg: #e6f4ec;
@@ -98,6 +129,14 @@
 	--measure-page: 1120px;
 	--measure-prose: 68ch;
 	--measure-lede: 52ch;
+
+	/* Compact workbench space-allocation (RP-CUA-021 / 027 / 033 / 064).
+	   Below ~1100px the visual/container pane is min(40vw, last persisted
+	   width). Below ~860px html.compact-workbench overlays that pane.
+	   html.sidebar-hidden remains the existing sidebar toggle — compact
+	   width does not invent a new sidebar noun or auto-collapse it.
+	   html.visual-expanded hides the sidebar only while a visual is expanded. */
+	--visual-pane-compact-max: 40vw;
 
 	/* Larval Mander — identity orange, not status. Eyes stay dark on the body. */
 	--mander-fill: var(--color-accent);
@@ -118,8 +157,8 @@
 
 	--tone-neutral-bg: #24272d;
 	--tone-neutral-fg: #a3aab4;
-	--tone-info-bg: #1c2a44;
-	--tone-info-fg: #8fb4f7;
+	--tone-info-bg: #3b2118;
+	--tone-info-fg: #f0a47d;
 	--tone-running-bg: #33270f;
 	--tone-running-fg: #e0b366;
 	--tone-success-bg: #14301f;
@@ -130,4 +169,29 @@
 	--tone-danger-fg: #e29191;
 
 	--shadow-dialog: 0 22px 70px rgba(0, 0, 0, 0.55);
+
+	--lineage-paper: var(--color-bg-subtle);
+	--lineage-paper-edge: var(--color-border);
+	--lineage-ink: var(--color-text);
+	--lineage-ink-muted: var(--color-text-muted);
+	--lineage-node: var(--color-card);
+	--lineage-node-variant: var(--color-card-header);
+	--lineage-node-variant-fg: var(--color-text);
+	--lineage-node-result: var(--tone-running-bg);
+	--lineage-node-eval: var(--tone-neutral-bg);
+	--lineage-link: var(--color-text-muted);
+	--lineage-link-fork: var(--color-selection);
+	--lineage-link-rerun: var(--tone-success-fg);
+	--lineage-link-label: var(--color-text-muted);
+	--lineage-action: var(--color-card);
+	--lineage-action-fg: var(--color-text);
+	--lineage-accent-edge: var(--color-border);
+	--lineage-accent-fill: var(--color-bg-subtle);
+	--lineage-hover: var(--surface-hover);
+	--lineage-meta: var(--color-text-muted);
+	--lineage-rule: var(--color-border);
+	--lineage-rule-strong: var(--color-border);
+	--lineage-muted: var(--color-text-muted);
+	--lineage-inspector: var(--color-card);
+	--lineage-inspector-fg: var(--color-text);
 }

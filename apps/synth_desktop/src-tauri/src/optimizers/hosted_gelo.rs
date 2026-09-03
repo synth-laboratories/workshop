@@ -1,13 +1,18 @@
-//! Hosted Craftax GELO recipe. optimizers-beta owns algorithm execution and
-//! canonical optimizer events; Containers owns child rollout streams.
+//! Hosted Craftax GELO recipe. Canonical algorithm id is `go-ex`; GELO is the
+//! display label and this recipe id. `gelo` / `hosted_gelo` are not algorithm
+//! ids and must not be folded into `go-ex`.
+//!
+//! optimizers-beta owns algorithm execution and canonical optimizer events;
+//! Containers owns child rollout streams.
 
+use super::events::OptimizerEventDraft;
 use super::{
     hosted_client::HostedOptimizerClient,
     ingest,
     models::{
         OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope,
         OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef,
-        OPTIMIZER_EVENT_SCHEMA_VERSION,
+        TrainingJobStatus, OPTIMIZER_EVENT_SCHEMA_VERSION,
     },
     OptimizerService,
 };
@@ -65,14 +70,14 @@ pub(super) async fn reconcile_persisted(
     if let Ok(batch) = client.state_batch(run_id, STATE_SLICES).await {
         append_state_batch(service, run_id, remote_status, batch).await?;
     }
-    if matches!(remote_status, "succeeded" | "failed" | "cancelled") {
+    if TrainingJobStatus::parse(remote_status).is_some_and(TrainingJobStatus::is_terminal) {
         append_terminal(
             service,
             run_id,
-            if remote_status == "succeeded" {
-                "completed"
-            } else {
-                remote_status
+            match TrainingJobStatus::parse(remote_status) {
+                Some(TrainingJobStatus::Succeeded) => "completed",
+                Some(TrainingJobStatus::Cancelled) => "cancelled",
+                _ => "failed",
             },
             remote
                 .get("error")
@@ -94,6 +99,7 @@ pub fn recipe_catalog() -> Value {
         "id": HOSTED_GELO_CRAFTAX_RECIPE,
         "title": "Hosted GELO · Craftax",
         "algorithmId": "go-ex",
+        "algorithmDisplay": "GELO",
         "task": "craftax",
         "availability": availability,
         "limits": {
@@ -239,7 +245,7 @@ async fn spawn_worker(
     run_id: String,
     config: Value,
 ) {
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
@@ -248,8 +254,12 @@ async fn spawn_worker(
         if let Err(error) =
             run_worker(worker.clone(), client, run_id.clone(), config, cancel_rx).await
         {
-            eprintln!("hosted GELO worker {run_id} failed: {error:#}");
-            let _ = append_terminal(&worker, &run_id, "failed", Some(error.to_string())).await;
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!("hosted GELO worker {run_id} failed: {error:#}"),
+            );
+            let _ = append_terminal(&worker, &run_id, "failed", Some(format!("{error:#}"))).await;
         }
         worker.unregister_local_recipe(&run_id).await;
     });
@@ -260,7 +270,7 @@ async fn run_worker(
     client: HostedOptimizerClient,
     run_id: String,
     config: Value,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: super::CancelObserver,
 ) -> Result<()> {
     client.submit_json("go-ex", &run_id, config).await?;
     let mut upstream_cursor = 0u64;
@@ -284,15 +294,26 @@ async fn run_worker(
         }
         tokio::select! {
             changed = cancel.changed() => {
-                if changed.is_ok() && *cancel.borrow() {
+                if changed.is_ok() && cancel.borrow().is_some() {
                     let _ = client.cancel(&run_id).await;
-                    append_terminal(&service, &run_id, "cancelled", None).await?;
+                    let request = cancel
+                        .borrow()
+                        .as_ref()
+                        .cloned()
+                        .expect("cancel observer changed with a request");
+                    service
+                        .settle_run(
+                            run_id.clone(),
+                            super::kernel::SettleCause::Cancelled { request },
+                            None,
+                        )
+                        .await?;
                     return Ok(());
                 }
             }
             _ = sleep(Duration::from_millis(600)) => {}
         }
-        if matches!(remote_status, "succeeded" | "failed" | "cancelled") {
+        if TrainingJobStatus::parse(remote_status).is_some_and(TrainingJobStatus::is_terminal) {
             let page = client
                 .goex_optimizer_events_after(&run_id, upstream_cursor, 5_000)
                 .await?;
@@ -304,10 +325,10 @@ async fn run_worker(
             append_terminal(
                 &service,
                 &run_id,
-                if remote_status == "succeeded" {
-                    "completed"
-                } else {
-                    remote_status
+                match TrainingJobStatus::parse(remote_status) {
+                    Some(TrainingJobStatus::Succeeded) => "completed",
+                    Some(TrainingJobStatus::Cancelled) => "cancelled",
+                    _ => "failed",
                 },
                 remote
                     .get("error")
@@ -326,7 +347,6 @@ pub(super) async fn append_state_batch(
     remote_status: &str,
     batch: Value,
 ) -> Result<()> {
-    let seq = service.get(run_id.to_string()).await?.cursor_seq + 1;
     let mut snapshot = Map::new();
     snapshot.insert(
         "slices".into(),
@@ -334,25 +354,14 @@ pub(super) async fn append_state_batch(
     );
     snapshot.insert("status".into(), json!(remote_status));
     service
-        .append_events(
+        .append_event_payloads(
             run_id.to_string(),
-            vec![OptimizerEventEnvelope {
-                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                event_id: Some(format!("{run_id}:state:{seq}")),
-                event_type: "goex.state.batch.updated".into(),
-                sequence_number: seq,
-                occurred_at: chrono::Utc::now().to_rfc3339(),
-                optimizer_run_id: run_id.into(),
-                algorithm_id: "go-ex".into(),
-                level: Some("info".into()),
-                item: None,
-                delta: Map::new(),
-                snapshot: Some(snapshot),
-                usage_delta: None,
-                artifact_refs: vec![],
-                error: None,
-                raw: json!({"source": "optimizers-beta-state-batch"}),
-            }],
+            vec![
+                OptimizerEventDraft::new("goex.state.batch.updated", "go-ex")
+                    .level("info")
+                    .snapshot(snapshot)
+                    .raw(json!({"source": "optimizers-beta-state-batch"})),
+            ],
         )
         .await?;
     Ok(())
@@ -364,33 +373,22 @@ async fn append_terminal(
     status: &str,
     error: Option<String>,
 ) -> Result<()> {
-    let seq = service.get(run_id.to_string()).await?.cursor_seq + 1;
+    let error_payload = error.clone().map(|message| json!({ "message": message }));
+    let cause = match status {
+        "completed" => super::kernel::SettleCause::Completed,
+        "cancelled" => super::kernel::SettleCause::Cancelled {
+            request: std::sync::Arc::new(super::kernel::CancellationRequest::new(
+                super::kernel::CancellationCause::ContainerRequested,
+                "go-ex:remote",
+                format!("run:{run_id}"),
+            )),
+        },
+        _ => super::kernel::SettleCause::Failed {
+            detail: error.unwrap_or_else(|| "hosted GELO run failed".into()),
+        },
+    };
     service
-        .append_events(
-            run_id.to_string(),
-            vec![OptimizerEventEnvelope {
-                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                event_id: Some(format!("{run_id}:terminal:{status}")),
-                event_type: match status {
-                    "completed" => "optimizer.run.completed",
-                    "cancelled" => "optimizer.run.cancelled",
-                    _ => "optimizer.run.failed",
-                }
-                .into(),
-                sequence_number: seq,
-                occurred_at: chrono::Utc::now().to_rfc3339(),
-                optimizer_run_id: run_id.into(),
-                algorithm_id: "go-ex".into(),
-                level: Some(if status == "failed" { "error" } else { "info" }.into()),
-                item: None,
-                delta: Map::from_iter([("status".into(), json!(status))]),
-                snapshot: None,
-                usage_delta: None,
-                artifact_refs: vec![],
-                error: error.map(|message| json!({"message": message})),
-                raw: json!({"source": "optimizers-beta"}),
-            }],
-        )
+        .settle_run(run_id.to_string(), cause, error_payload)
         .await?;
     Ok(())
 }

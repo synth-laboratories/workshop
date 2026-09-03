@@ -1,0 +1,1053 @@
+/**
+ * `RunProgressSubscription` — the transport contract.
+ *
+ * These are the acceptance tests that do not need a webview: one subscription
+ * per run however many surfaces read it, terminal authority from the run
+ * record, gap recovery instead of a silently wrong count, restart recovery from
+ * the durable pages, and cross-run isolation.
+ */
+import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import test from "node:test";
+import { buildSync } from "esbuild";
+
+const appRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const compiledDir = join(appRoot, "node_modules/.cache/synth-desktop-tests");
+mkdirSync(compiledDir, { recursive: true });
+
+// One bundle for the store and its telemetry. Built separately, esbuild would
+// inline a second copy of the counter module and the test would read a map the
+// store never writes to.
+const entry = join(compiledDir, "runProgressSubscription.entry.ts");
+writeFileSync(
+	entry,
+	`export * from ${JSON.stringify(join(appRoot, "src/renderer/src/runtime/runProgress/subscription.ts"))};\n` +
+		`export * from ${JSON.stringify(join(appRoot, "src/renderer/src/runtime/runProgress/readPathTelemetry.ts"))};\n`
+);
+const outfile = join(compiledDir, "runProgressSubscription.mjs");
+buildSync({
+	entryPoints: [entry],
+	bundle: true,
+	format: "esm",
+	target: "es2022",
+	platform: "node",
+	outfile
+});
+const {
+	installRunProgressDiagnostics,
+	peekReadPath,
+	resetReadPathTelemetry,
+	resetRunProgressStore,
+	resolveOwnedRun,
+	runSnapshot,
+	runSubscriberCount,
+	setRunProgressPollInterval,
+	setRunProgressRetryBase,
+	setRunProgressStallTimeout,
+	setRunProgressTransport,
+	subscribeToRun
+} = await import(pathToFileURL(outfile).href);
+
+setRunProgressPollInterval(3_600_000);
+
+
+
+/** A fake durable store: a run record plus persisted event pages by sequence. */
+function fakeTransport({ runs, pages, views, onEventsAfter, onRunViewV2 } = {}) {
+	const calls = { get: 0, runViewV2: 0, eventsAfter: 0, refresh: 0, listeners: 0 };
+	// The real bridge broadcasts every optimizer notification to every listener;
+	// a fake that keeps only the newest one would hide cross-run misrouting.
+	const listeners = new Set();
+	const transport = {
+		calls,
+		emit: (runId) => {
+			for (const listener of [...listeners]) listener({ payload: { optimizerRunId: runId } });
+		},
+		setRun: (runId, next) => { runs[runId] = next; },
+		setView: (runId, next) => { views[runId] = next; },
+		setPages: (runId, next) => { pages[runId] = next; },
+		async get(runId) {
+			calls.get += 1;
+			const run = runs[runId];
+			if (!run) throw new Error(`no run ${runId}`);
+			return run;
+		},
+		async eventsAfter(runId, afterSeq = 0) {
+			calls.eventsAfter += 1;
+			onEventsAfter?.(runId, afterSeq);
+			return (pages[runId] ?? []).filter((event) => event.sequenceNumber > afterSeq);
+		},
+		async refresh(runId) {
+			calls.refresh += 1;
+			return runs[runId];
+		},
+		onEvent(listener) {
+			calls.listeners += 1;
+			listeners.add(listener);
+			return () => { calls.listeners -= 1; listeners.delete(listener); };
+		}
+	};
+	if (views) {
+		transport.runViewV2 = async (runId) => {
+			calls.runViewV2 += 1;
+			onRunViewV2?.(runId);
+			return views[runId];
+		};
+	}
+	return transport;
+}
+
+function event(sequence, type = "optimizer.evaluation_result.received") {
+	return {
+		schemaVersion: "optimizer_event.v1",
+		eventId: `e${sequence}`,
+		type,
+		sequenceNumber: sequence,
+		occurredAt: new Date(Date.UTC(2026, 7, 17, 12, 0, sequence)).toISOString(),
+		optimizerRunId: "run-a",
+		algorithmId: "gepa"
+	};
+}
+
+function runRecord(overrides = {}) {
+	return {
+		schemaVersion: "optimizer_run.v1",
+		id: "run-a",
+		algorithmId: "gepa",
+		status: "running",
+		sessionRef: "sess-1",
+		cursorSeq: 3,
+		capabilities: { cancel: true },
+		...overrides
+	};
+}
+
+function runView(projectionRevision, lifecycle = "running") {
+	return { header: { projectionRevision, lifecycle } };
+}
+
+/**
+ * A transport that implements the conditional envelope read, the way the real
+ * desktop bridge does. `runView` folds the projection and the run record into
+ * one call and answers `unchanged` when the caller's revision is current.
+ */
+function envelopeTransport({ runs, pages, views, holdEvents } = {}) {
+	const base = fakeTransport({ runs, pages, views });
+	base.calls.runView = 0;
+	base.calls.unchanged = 0;
+	base.runView = async (runId, ifNewerThan) => {
+		base.calls.runView += 1;
+		const view = views[runId];
+		const revision = view?.header?.projectionRevision ?? 0;
+		if (ifNewerThan != null && ifNewerThan === revision) {
+			base.calls.unchanged += 1;
+			return { unchanged: true, projectionRevision: revision, tailCursor: runs[runId]?.cursorSeq ?? 0 };
+		}
+		return {
+			unchanged: false,
+			view,
+			run: runs[runId],
+			projectionRevision: revision,
+			tailCursor: runs[runId]?.cursorSeq ?? 0
+		};
+	};
+	if (holdEvents) {
+		const inner = base.eventsAfter.bind(base);
+		base.eventsAfter = async (runId, afterSeq = 0) => {
+			await holdEvents.promise;
+			return inner(runId, afterSeq);
+		};
+	}
+	return base;
+}
+
+/** Resolve after the store's internal promise chain drains. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+test.beforeEach(() => {
+	resetRunProgressStore();
+	installRunProgressDiagnostics(() => undefined);
+});
+
+test.after(() => {
+	resetRunProgressStore();
+	setRunProgressTransport(null);
+	setRunProgressStallTimeout(15_000);
+	setRunProgressRetryBase(250);
+});
+
+/**
+ * The fast-finish race. Banking77 settles in ~1.5s — often before any surface
+ * has subscribed. The first read is a full durable snapshot precisely so a
+ * subscription that arrives after the end still sees the whole run, rather than
+ * asking for "events after now" and receiving nothing.
+ */
+test("a run that finished before anyone subscribed still replays its whole history", async () => {
+	const finished = runRecord({ status: "completed", cursorSeq: 23 });
+	const history = Array.from({ length: 23 }, (_, index) => event(index + 1));
+	const asked = [];
+	const transport = fakeTransport({
+		runs: { "run-a": finished },
+		pages: { "run-a": history },
+		onEventsAfter: (_runId, afterSeq) => asked.push(afterSeq)
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	const last = seen.at(-1);
+	assert.equal(last.state, "terminal");
+	assert.equal(last.cursor, 23);
+	assert.equal(last.events.length, 23, "a late subscriber gets the whole run, not the tail");
+	assert.equal(last.gap, false);
+	assert.equal(asked[0], 0, "the first read is a snapshot from zero, never from the current cursor");
+});
+
+/**
+ * Two workflows in flight at once must not read each other's history. The
+ * store is keyed by run id and every wakeup re-reads that run's own pages.
+ */
+test("concurrent runs keep separate histories and separate cursors", async () => {
+	const transport = fakeTransport({
+		runs: {
+			"run-a": runRecord({ id: "run-a", status: "completed", cursorSeq: 3 }),
+			"run-b": runRecord({ id: "run-b", status: "running", cursorSeq: 2 })
+		},
+		pages: {
+			"run-a": [event(1), event(2), event(3)],
+			"run-b": [
+				{ ...event(1), optimizerRunId: "run-b" },
+				{ ...event(2), optimizerRunId: "run-b" }
+			]
+		}
+	});
+	setRunProgressTransport(transport);
+	const a = [];
+	const b = [];
+	subscribeToRun("run-a", (snapshot) => a.push(snapshot));
+	subscribeToRun("run-b", (snapshot) => b.push(snapshot));
+	await settle();
+	assert.equal(a.at(-1).cursor, 3);
+	assert.equal(a.at(-1).events.length, 3);
+	assert.equal(b.at(-1).cursor, 2);
+	assert.equal(b.at(-1).events.length, 2);
+	assert.ok(
+		b.at(-1).events.every((entry) => entry.optimizerRunId === "run-b"),
+		"one run's page must never land in another run's snapshot"
+	);
+});
+
+test("a run history replays once and reaches subscribed with the run's cursor", async () => {
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord() },
+		pages: { "run-a": [event(1), event(2), event(3)] }
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	const last = seen.at(-1);
+	assert.equal(last.state, "subscribed");
+	assert.equal(last.cursor, 3);
+	assert.equal(last.events.length, 3);
+	assert.equal(last.gap, false);
+});
+
+test("three surfaces on one run share a single subscription and one read pass", async () => {
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord() },
+		pages: { "run-a": [event(1), event(2), event(3)] }
+	});
+	setRunProgressTransport(transport);
+	subscribeToRun("run-a", () => undefined);
+	await settle();
+	const readsAfterFirst = transport.calls.eventsAfter;
+	// The card's dialog and the full visual join the same run.
+	subscribeToRun("run-a", () => undefined);
+	subscribeToRun("run-a", () => undefined);
+	await settle();
+	assert.equal(runSubscriberCount("run-a"), 3);
+	assert.equal(transport.calls.listeners, 1, "one upstream event listener, not three");
+	assert.equal(
+		transport.calls.eventsAfter,
+		readsAfterFirst,
+		"joining an active subscription must not re-read the history"
+	);
+});
+
+test("a dialog joining a live run adds no read at all", async () => {
+	const reads = [];
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord() },
+		pages: { "run-a": [event(1), event(2), event(3)] },
+		onEventsAfter: (_runId, afterSeq) => reads.push(afterSeq)
+	});
+	setRunProgressTransport(transport);
+	const card = subscribeToRun("run-a", () => undefined);
+	await settle();
+	const before = reads.length;
+	const dialog = subscribeToRun("run-a", () => undefined);
+	await settle();
+	assert.equal(reads.length, before, "opening a dialog over a live card must not re-read");
+	dialog();
+	await settle();
+	assert.equal(reads.length, before, "closing it must not re-read either");
+	card();
+});
+
+test("a fully parked run resumes from its cursor rather than replaying from zero", async () => {
+	const reads = [];
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord() },
+		pages: { "run-a": [event(1), event(2), event(3)] },
+		onEventsAfter: (_runId, afterSeq) => reads.push(afterSeq)
+	});
+	setRunProgressTransport(transport);
+	const card = subscribeToRun("run-a", () => undefined);
+	await settle();
+	card();
+	reads.length = 0;
+	// Reopening the conversation re-mounts the card over the retained cursor.
+	const seen = [];
+	const reopened = subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	assert.ok(reads.length > 0, "a re-subscribe does read");
+	assert.ok(
+		reads.every((afterSeq) => afterSeq >= 3),
+		`a parked run must resume from the cursor, not from 0 (saw ${reads})`
+	);
+	assert.equal(seen.at(-1).events.length, 3, "the retained history is still there");
+	reopened();
+});
+
+test("the last unsubscribe parks the subscription and its upstream listener", async () => {
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord() },
+		pages: { "run-a": [event(1)] }
+	});
+	setRunProgressTransport(transport);
+	const stop = subscribeToRun("run-a", () => undefined);
+	await settle();
+	assert.equal(transport.calls.listeners, 1);
+	stop();
+	assert.equal(runSubscriberCount("run-a"), 0);
+	assert.equal(transport.calls.listeners, 0, "a parked run holds no upstream listener");
+});
+
+test("a notification is a wakeup, not truth: the persisted page is what lands", async () => {
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 3 }) },
+		pages: { "run-a": [event(1), event(2), event(3)] }
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	assert.equal(seen.at(-1).events.length, 3);
+	// The producer wrote a fourth event and pinged; the store re-reads.
+	transport.setPages("run-a", [event(1), event(2), event(3), event(4)]);
+	transport.setRun("run-a", runRecord({ cursorSeq: 4 }));
+	transport.emit("run-a");
+	await settle();
+	assert.equal(seen.at(-1).cursor, 4);
+	assert.equal(seen.at(-1).events.length, 4);
+});
+
+test("the run record is terminal authority, and a terminal run stops polling", async () => {
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord({ status: "completed", cursorSeq: 3, finishedAt: "2026-08-17T12:05:00Z" }) },
+		pages: { "run-a": [event(1), event(2), event(3)] }
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	assert.equal(seen.at(-1).state, "terminal");
+});
+
+test("a run that stopped emitting is still terminal when its record says so", async () => {
+	// The stream's last event is a mid-run rollout; only the record knows.
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord({ status: "failed", cursorSeq: 2 }) },
+		pages: { "run-a": [event(1), event(2)] }
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	assert.equal(seen.at(-1).state, "terminal");
+	assert.equal(seen.at(-1).run.status, "failed");
+});
+
+test("a sequence hole becomes a stale state, never a silently short count", async () => {
+	const gaps = [];
+	installRunProgressDiagnostics((report) => gaps.push(report));
+	const transport = fakeTransport({
+		// The record claims five events; only three of the first four are readable.
+		runs: { "run-a": runRecord({ cursorSeq: 5 }) },
+		pages: { "run-a": [event(1), event(2), event(4)] }
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	const last = seen.at(-1);
+	assert.equal(last.state, "stale");
+	assert.equal(last.gap, true);
+	assert.equal(gaps.length, 1);
+	assert.equal(gaps[0].code, "stream_replay_gap");
+	assert.match(gaps[0].message, /history is incomplete at 4\/5/);
+});
+
+test("history that catches up clears the stale state", async () => {
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 5 }) },
+		pages: { "run-a": [event(1), event(2), event(4)] }
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	assert.equal(seen.at(-1).state, "stale");
+	transport.setPages("run-a", [event(1), event(2), event(3), event(4), event(5)]);
+	transport.emit("run-a");
+	await settle();
+	assert.equal(seen.at(-1).state, "subscribed");
+	assert.equal(seen.at(-1).gap, false);
+	assert.equal(seen.at(-1).events.length, 5);
+});
+
+test("a shrinking run cursor forces a full reload rather than a patch", async () => {
+	const reads = [];
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 3 }) },
+		pages: { "run-a": [event(1), event(2), event(3)] },
+		onEventsAfter: (_runId, afterSeq) => reads.push(afterSeq)
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	reads.length = 0;
+	// A replaced local import: the same run id, a shorter history.
+	transport.setRun("run-a", runRecord({ cursorSeq: 1 }));
+	transport.setPages("run-a", [event(1)]);
+	transport.emit("run-a");
+	await settle();
+	assert.ok(reads.includes(0), `a shrinking cursor must reload from 0 (saw ${reads})`);
+	assert.equal(seen.at(-1).events.length, 1);
+});
+
+test("a read failure keeps what was already replayed and reports the interruption", async () => {
+	const failures = [];
+	installRunProgressDiagnostics((report) => failures.push(report));
+	const runs = { "run-a": runRecord() };
+	const pages = { "run-a": [event(1), event(2), event(3)] };
+	let failNext = false;
+	const transport = {
+		async get(runId) {
+			if (failNext) throw new Error("bridge closed");
+			return runs[runId];
+		},
+		async eventsAfter(runId, afterSeq = 0) {
+			return pages[runId].filter((entry) => entry.sequenceNumber > afterSeq);
+		},
+		async refresh() { return undefined; },
+		onEvent(listener) { transport.notify = listener; return () => undefined; }
+	};
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	assert.equal(seen.at(-1).events.length, 3);
+	failNext = true;
+	transport.notify({ payload: { optimizerRunId: "run-a" } });
+	await settle();
+	const last = seen.at(-1);
+	assert.equal(last.state, "interrupted");
+	assert.ok(last.error);
+	assert.equal(last.events.length, 3, "a failed read must not blank a card that had counts");
+	assert.equal(failures.at(-1).code, "stream_interrupted");
+});
+
+test("a hung read stalls into a recoverable interrupted state, not endless Running", async () => {
+	const failures = [];
+	installRunProgressDiagnostics((report) => failures.push(report));
+	setRunProgressStallTimeout(20);
+	const transport = {
+		get() {
+			return new Promise(() => undefined);
+		},
+		async eventsAfter() { return []; },
+		async refresh() { return undefined; },
+		onEvent() { return () => undefined; }
+	};
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(seen.at(-1).state, "interrupted");
+	assert.match(seen.at(-1).error, /stalled/);
+	assert.ok(failures.some((report) => report.code === "stream_stalled"));
+	setRunProgressStallTimeout(15_000);
+});
+
+test("the watchdog abandons a hung promise chain and a late result cannot overwrite recovery", async () => {
+	setRunProgressStallTimeout(20);
+	let resolveHung;
+	let reads = 0;
+	const transport = {
+		get() {
+			reads += 1;
+			if (reads === 1) return new Promise((resolve) => { resolveHung = resolve; });
+			return Promise.resolve(runRecord({ status: "running", objective: "recovered" }));
+		},
+		async eventsAfter() { return [event(1), event(2), event(3)]; },
+		async refresh() { return undefined; },
+		onEvent(listener) { transport.notify = listener; return () => undefined; }
+	};
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await new Promise((resolve) => setTimeout(resolve, 25));
+	transport.notify({ payload: { optimizerRunId: "run-a" } });
+	await settle();
+	assert.equal(seen.at(-1).state, "subscribed");
+	assert.equal(seen.at(-1).run.objective, "recovered");
+	resolveHung(runRecord({ status: "failed", objective: "stale" }));
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.equal(seen.at(-1).run.objective, "recovered", "the abandoned invoke cannot win after recovery");
+	setRunProgressStallTimeout(15_000);
+});
+
+test("five consecutive failures stop automatic retries but a producer notification can recover", async () => {
+	setRunProgressRetryBase(5);
+	let failing = true;
+	let reads = 0;
+	const transport = {
+		async get() {
+			reads += 1;
+			if (failing) throw new Error("producer unavailable");
+			return runRecord();
+		},
+		async eventsAfter() { return [event(1), event(2), event(3)]; },
+		async refresh() { return undefined; },
+		onEvent(listener) { transport.notify = listener; return () => undefined; }
+	};
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await new Promise((resolve) => setTimeout(resolve, 130));
+	assert.equal(seen.at(-1).state, "failed");
+	assert.equal(reads, 5, "automatic transport reads are capped at five consecutive failures");
+	failing = false;
+	transport.notify({ payload: { optimizerRunId: "run-a" } });
+	await settle();
+	assert.equal(seen.at(-1).state, "subscribed", "producer wakeups remain live after retry exhaustion");
+	assert.equal(reads, 6);
+	setRunProgressRetryBase(250);
+});
+
+test("projection revision regression and gaps force snapshot replay from zero", async () => {
+	const reads = [];
+	const views = { "run-a": runView(5) };
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 3 }) },
+		pages: { "run-a": [event(1), event(2), event(3)] },
+		views,
+		onEventsAfter: (_runId, afterSeq) => reads.push(afterSeq)
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	reads.length = 0;
+	transport.setView("run-a", runView(3));
+	transport.emit("run-a");
+	await settle();
+	assert.ok(reads.includes(0), `a regressed projection must replay from zero (saw ${reads})`);
+	reads.length = 0;
+	transport.setView("run-a", runView(7));
+	transport.setRun("run-a", runRecord({ cursorSeq: 4 }));
+	transport.setPages("run-a", [event(1), event(2), event(3), event(4)]);
+	transport.emit("run-a");
+	await settle();
+	assert.ok(reads.includes(0), `a projection revision gap must replay from zero (saw ${reads})`);
+	assert.equal(seen.at(-1).viewV2.header.projectionRevision, 7);
+});
+
+test("polling compares durable projection revision and closes a missed-wakeup hole", async () => {
+	setRunProgressPollInterval(10);
+	const views = { "run-a": runView(1) };
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 1 }) },
+		pages: { "run-a": [event(1)] },
+		views
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	transport.setView("run-a", runView(2));
+	transport.setRun("run-a", runRecord({ cursorSeq: 2 }));
+	transport.setPages("run-a", [event(1), event(2)]);
+	await new Promise((resolve) => setTimeout(resolve, 35));
+	assert.equal(seen.at(-1).viewV2.header.projectionRevision, 2);
+	assert.equal(seen.at(-1).cursor, 2);
+	assert.equal(transport.calls.refresh, 0, "V2 polling reads durable revision instead of fire-and-forget refresh");
+	setRunProgressPollInterval(3_600_000);
+});
+
+test("an interrupted subscription recovers to subscribed on the next successful read", async () => {
+	const runs = { "run-a": runRecord() };
+	const pages = { "run-a": [event(1), event(2), event(3)] };
+	let failNext = false;
+	const transport = {
+		async get(runId) {
+			if (failNext) throw new Error("bridge closed");
+			return runs[runId];
+		},
+		async eventsAfter(runId, afterSeq = 0) {
+			return pages[runId].filter((entry) => entry.sequenceNumber > afterSeq);
+		},
+		async refresh() { return undefined; },
+		onEvent(listener) { transport.notify = listener; return () => undefined; }
+	};
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	failNext = true;
+	transport.notify({ payload: { optimizerRunId: "run-a" } });
+	await settle();
+	assert.equal(seen.at(-1).state, "interrupted");
+	failNext = false;
+	transport.notify({ payload: { optimizerRunId: "run-a" } });
+	await settle();
+	assert.ok(seen.some((snapshot) => snapshot.state === "replaying"), "recovery visibly replays durable state");
+	assert.equal(seen.at(-1).state, "subscribed");
+	assert.equal(seen.at(-1).events.length, 3);
+	assert.equal(seen.at(-1).error, undefined);
+});
+
+test("five concurrent runs stay independently scoped", async () => {
+	const runs = {};
+	const pages = {};
+	for (const id of ["r1", "r2", "r3", "r4", "r5"]) {
+		runs[id] = runRecord({ id, cursorSeq: 2, sessionRef: `sess-${id}` });
+		pages[id] = [{ ...event(1), optimizerRunId: id }, { ...event(2), optimizerRunId: id }];
+	}
+	const transport = fakeTransport({ runs, pages });
+	setRunProgressTransport(transport);
+	const snapshots = {};
+	for (const id of Object.keys(runs)) {
+		subscribeToRun(id, (snapshot) => { snapshots[id] = snapshot; });
+	}
+	await settle();
+	for (const id of Object.keys(runs)) {
+		assert.equal(snapshots[id].runId, id);
+		assert.equal(snapshots[id].run.id, id);
+		assert.equal(snapshots[id].cursor, 2);
+		assert.equal(runSubscriberCount(id), 1);
+	}
+	// A wakeup for one run must not be attributed to another.
+	pages.r3 = [...pages.r3, { ...event(3), optimizerRunId: "r3" }];
+	runs.r3 = runRecord({ id: "r3", cursorSeq: 3, sessionRef: "sess-r3" });
+	transport.emit("r3");
+	await settle();
+	assert.equal(snapshots.r3.cursor, 3);
+	assert.equal(snapshots.r1.cursor, 2);
+});
+
+test("restart recovery: a terminal card rebuilds from the durable record and pages", async () => {
+	// Nothing is carried over from a previous session; this is a cold read.
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord({ status: "completed", cursorSeq: 3, finishedAt: "2026-08-17T12:09:00Z" }) },
+		pages: { "run-a": [event(1), event(2), event(3)] }
+	});
+	setRunProgressTransport(transport);
+	resetRunProgressStore();
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	assert.equal(seen.at(-1).state, "terminal");
+	assert.equal(seen.at(-1).events.length, 3);
+	assert.equal(seen.at(-1).run.finishedAt, "2026-08-17T12:09:00Z");
+});
+
+test("ownership: a run from another conversation is not this chat's to watch", async () => {
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord({ sessionRef: "sess-other" }) },
+		pages: { "run-a": [event(1)] }
+	});
+	setRunProgressTransport(transport);
+	assert.equal(await resolveOwnedRun("run-a", "sess-other") !== null, true);
+	assert.equal(await resolveOwnedRun("run-a", "sess-mine"), null);
+	// A workspace-level run with no session is readable from any conversation.
+	transport.setRun("run-a", runRecord({ sessionRef: null }));
+	assert.ok(await resolveOwnedRun("run-a", "sess-mine"));
+	// A removed run is unavailable rather than an exception.
+	transport.setRun("run-a", undefined);
+	assert.equal(await resolveOwnedRun("run-a", "sess-1"), null);
+});
+
+test("without a bridge the state is unavailable, not a crash", async () => {
+	setRunProgressTransport(null);
+	const seen = [];
+	const stop = subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	assert.equal(seen.at(-1).state, "unavailable");
+	assert.match(seen.at(-1).error, /bridge is unavailable/);
+	stop();
+	assert.equal(await resolveOwnedRun("run-a", "sess-1"), null);
+});
+
+
+test("first paint does not wait for the journal: the projection publishes before any event page", async () => {
+	// The defect this pins: `load()` used to await runViewV2, then get, then
+	// every event page, and publish once at the end. A visual therefore sat in
+	// "Restoring run evidence…" for the duration of the whole walk even though
+	// the aggregate it needed was in hand after the first read.
+	let release;
+	const gate = { promise: new Promise((resolve) => { release = resolve; }) };
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 3 }) },
+		pages: { "run-a": [event(1), event(2), event(3)] },
+		views: { "run-a": runView(4) },
+		holdEvents: gate
+	});
+	setRunProgressTransport(transport);
+
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+
+	const painted = seen.filter((snapshot) => snapshot.run && snapshot.viewV2);
+	assert.ok(painted.length > 0, "the aggregate must be published while events are still loading");
+	const first = painted[0];
+	assert.equal(first.evidence, "loading", "evidence is still hydrating at first paint");
+	assert.equal(first.events.length, 0, "no event page has landed yet");
+	assert.equal(first.viewV2.header.projectionRevision, 4, "the projection is already authoritative");
+	assert.equal(transport.calls.eventsAfter, 0, "no page has been read");
+
+	release();
+	await settle();
+	const last = seen[seen.length - 1];
+	assert.equal(last.evidence, "ready");
+	assert.equal(last.events.length, 3);
+	assert.equal(last.cursor, 3);
+});
+
+test("projection-only subscribers never read or retain the raw journal", async () => {
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ status: "completed", cursorSeq: 7_177 }) },
+		pages: { "run-a": Array.from({ length: 7_177 }, (_, index) => event(index + 1)) },
+		views: { "run-a": { ...runView(7_177, "terminal"), algorithm: "gepa" } }
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot), { evidence: "projection" });
+	await settle();
+	assert.equal(transport.calls.eventsAfter, 0, "aggregate surfaces must not deserialize the journal");
+	assert.equal(seen.at(-1).state, "terminal");
+	assert.equal(seen.at(-1).cursor, 7_177);
+	assert.deepEqual(seen.at(-1).events, []);
+});
+
+test("a notification storm coalesces to one newest-state refresh", async () => {
+	let release;
+	const gate = new Promise((resolve) => { release = resolve; });
+	const listeners = new Set();
+	let reads = 0;
+	const transport = {
+		async get() { return runRecord({ cursorSeq: 0 }); },
+		async runView() {
+			reads += 1;
+			if (reads === 1) await gate;
+			return {
+				unchanged: false,
+				view: { ...runView(reads), algorithm: "gepa" },
+				run: runRecord({ cursorSeq: 0 }),
+				projectionRevision: reads,
+				tailCursor: 0
+			};
+		},
+		async eventsAfter() { throw new Error("projection-only subscription read evidence"); },
+		async refresh() { return undefined; },
+		onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+	};
+	setRunProgressTransport(transport);
+	subscribeToRun("run-a", () => undefined, { evidence: "projection" });
+	await settle();
+	for (let index = 0; index < 1_000; index += 1) {
+		for (const listener of listeners) listener({ payload: { optimizerRunId: "run-a" } });
+	}
+	release();
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(reads, 2, "1,000 stale wakeups become one follow-up durable read");
+});
+
+test("one read, not three: the envelope carries the run record and the tail", async () => {
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 2 }) },
+		pages: { "run-a": [event(1), event(2)] },
+		views: { "run-a": runView(2) }
+	});
+	setRunProgressTransport(transport);
+	subscribeToRun("run-a", () => undefined);
+	await settle();
+	assert.equal(transport.calls.runView, 1, "one projection read");
+	assert.equal(transport.calls.get, 0, "the separate run-record hop is gone");
+	assert.equal(transport.calls.runViewV2, 0, "the unconditional view read is not used");
+});
+
+test("a freshness probe on an unchanged revision costs no payload and republishes nothing", async () => {
+	setRunProgressPollInterval(15);
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 1, status: "running" }) },
+		pages: { "run-a": [event(1)] },
+		views: { "run-a": runView(7) }
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	const settledCount = seen.length;
+	const readsBefore = transport.calls.runView;
+
+	await new Promise((resolve) => setTimeout(resolve, 80));
+	assert.ok(transport.calls.unchanged > 0, "the probe ran and was answered `unchanged`");
+	assert.ok(
+		transport.calls.runView > readsBefore,
+		"the probe is a real call"
+	);
+	assert.equal(seen.length, settledCount, "an unchanged probe publishes nothing");
+	setRunProgressPollInterval(3_600_000);
+});
+
+test("a non-retryable projection failure is reported once, not replayed five times", async () => {
+	// A run with no admitted spec can never acquire one. Retrying re-reads the
+	// whole journal before failing identically, which is how a permanent,
+	// nameable condition became a stalled subscription.
+	setRunProgressRetryBase(5);
+	let attempts = 0;
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord() },
+		pages: { "run-a": [] }
+	});
+	transport.runView = async () => {
+		attempts += 1;
+		throw {
+			code: "optimizer.projection.missing_admitted_spec",
+			message: "Run run-a predates admitted specs, so its projection cannot be rebuilt.",
+			retryable: false
+		};
+	};
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await new Promise((resolve) => setTimeout(resolve, 120));
+
+	assert.equal(attempts, 1, "a permanent failure is attempted exactly once");
+	const last = seen[seen.length - 1];
+	assert.equal(last.state, "failed");
+	assert.match(last.error, /admitted specs/);
+	setRunProgressRetryBase(250);
+});
+
+test("a terminal run arms no polling interval at all", async () => {
+	setRunProgressPollInterval(15);
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ status: "completed", cursorSeq: 1 }) },
+		pages: { "run-a": [event(1)] },
+		views: { "run-a": runView(3, "terminal") }
+	});
+	setRunProgressTransport(transport);
+	subscribeToRun("run-a", () => undefined);
+	await settle();
+	const reads = transport.calls.runView;
+	await new Promise((resolve) => setTimeout(resolve, 90));
+	assert.equal(transport.calls.runView, reads, "a terminal run is never probed again");
+	setRunProgressPollInterval(3_600_000);
+});
+
+test("published event arrays are not mutated by a later page walk", async () => {
+	// The cursor state is mutated in place to keep a paged walk linear. The
+	// moment those events reach a consumer they stop being ours, so the
+	// publish boundary copies. Without that copy a React tree holding an
+	// earlier snapshot would silently see it grow.
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 2 }) },
+		pages: { "run-a": [event(1), event(2)] },
+		views: { "run-a": runView(1) }
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push({ events: snapshot.events, at: snapshot.events.length }));
+	await settle();
+	const hydrated = seen[seen.length - 1];
+	const lengthAtPublish = hydrated.at;
+
+	transport.setPages("run-a", [event(1), event(2), event(3)]);
+	transport.setRun("run-a", runRecord({ cursorSeq: 3 }));
+	transport.setView("run-a", runView(2));
+	transport.emit("run-a");
+	await settle();
+
+	assert.equal(hydrated.events.length, lengthAtPublish, "an already-published array must not grow");
+	assert.equal(seen[seen.length - 1].events.length, 3, "the new snapshot has the new page");
+});
+
+test("parked journals are bounded by volume, not just by entry count", async () => {
+	// The retention policy bounded how many runs were remembered and not how
+	// much: a five-event smoke run and a fifty-thousand-event eval counted the
+	// same, so the store could hold thirty-two complete journals long after
+	// every visual was closed.
+	const runs = {};
+	const pages = {};
+	const big = 4_000;
+	for (let index = 0; index < 8; index += 1) {
+		const id = `run-big-${index}`;
+		runs[id] = runRecord({ id, cursorSeq: big });
+		pages[id] = Array.from({ length: big }, (_, i) => ({ ...event(i + 1), optimizerRunId: id }));
+	}
+	const transport = fakeTransport({ runs, pages, views: {} });
+	for (const id of Object.keys(runs)) transport.setView(id, runView(1, "terminal"));
+	setRunProgressTransport(transport);
+
+	for (let index = 0; index < 8; index += 1) {
+		const id = `run-big-${index}`;
+		const stop = subscribeToRun(id, () => undefined);
+		await settle();
+		stop();
+	}
+
+	let retained = 0;
+	for (let index = 0; index < 8; index += 1) {
+		retained += runSnapshot(`run-big-${index}`)?.events.length ?? 0;
+	}
+	assert.ok(
+		retained <= 20_000,
+		`parked journals must stay inside the retention budget (held ${retained} events)`
+	);
+	// The run the user just left keeps its history: that is what parking is for.
+	assert.equal(
+		runSnapshot("run-big-7")?.events.length,
+		big,
+		"the most recently parked run still resumes from its retained history"
+	);
+	// An older one gave its journal back but kept its projection, so reopening
+	// it still paints immediately and re-reads evidence from the durable start.
+	const oldest = runSnapshot("run-big-0");
+	assert.equal(oldest?.events.length, 0, "an older parked journal is released");
+	assert.equal(oldest?.cursor, 0, "its cursor resets so the next read replays rather than resuming over a hole");
+	assert.ok(oldest?.viewV2, "the projection that mounts the visual is kept");
+});
+
+test("the read path reports what it cost, with the stage that owned it", async () => {
+	// "It feels faster" is not a measurement. These are the counters that say
+	// whether the aggregate actually stopped waiting for the journal.
+	resetReadPathTelemetry();
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 3, status: "running" }) },
+		pages: { "run-a": [event(1), event(2), event(3)] },
+		views: { "run-a": runView(4) }
+	});
+	setRunProgressTransport(transport);
+	const stop = subscribeToRun("run-a", () => undefined);
+	await settle();
+
+	const record = peekReadPath("run-a");
+	assert.ok(record, "a subscribed run is being measured");
+	assert.equal(
+		record.pagesBeforeFirstPaint,
+		0,
+		"the aggregate must mount without reading a single event page"
+	);
+	assert.equal(record.eventsBeforeFirstPaint, 0);
+	assert.ok(record.firstPaintMs != null, "first paint is timed");
+	assert.ok(record.interactiveMs != null, "interactive is timed separately from first paint");
+	assert.ok(record.pages > 0, "evidence still hydrated, just not before the mount");
+	assert.equal(record.events, 3);
+	assert.equal(record.failures, 0);
+	assert.deepEqual(record.replayReasons, ["cold_open"], "a first open is attributed, not silent");
+	stop();
+});
+
+test("a probe that changes nothing is counted as carrying nothing", async () => {
+	resetReadPathTelemetry();
+	setRunProgressPollInterval(15);
+	const transport = envelopeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 1, status: "running" }) },
+		pages: { "run-a": [event(1)] },
+		views: { "run-a": runView(7) }
+	});
+	setRunProgressTransport(transport);
+	const stop = subscribeToRun("run-a", () => undefined);
+	await settle();
+	await new Promise((resolve) => setTimeout(resolve, 80));
+	const record = peekReadPath("run-a");
+	assert.ok(record.probes > 0, "the freshness probe ran");
+	assert.equal(
+		record.probes,
+		record.probesUnchanged,
+		"every probe against an unchanged revision must report as carrying no payload"
+	);
+	stop();
+	setRunProgressPollInterval(3_600_000);
+});
+
+test("every first-class optimizer opens under auto without reading the raw journal", async () => {
+	for (const algorithm of ["eval", "gepa", "go-ex", "sft", "cispo"]) {
+		resetRunProgressStore();
+		const transport = fakeTransport({
+			runs: { "run-a": runRecord({ algorithmId: algorithm, cursorSeq: 900 }) },
+			pages: { "run-a": Array.from({ length: 900 }, (_, index) => event(index + 1)) },
+			views: { "run-a": { algorithm, header: { lifecycle: "running", projectionRevision: 4, asOfSequence: 900 }, projection: {} } }
+		});
+		setRunProgressTransport(transport);
+		const seen = [];
+		const unsubscribe = subscribeToRun("run-a", (snapshot) => seen.push(snapshot), { evidence: "auto" });
+		await settle();
+		assert.equal(transport.calls.eventsAfter, 0, `${algorithm} auto mount must not page the journal`);
+		assert.equal(seen.at(-1).events.length, 0);
+		assert.equal(seen.at(-1).evidence, "ready");
+		assert.equal(seen.at(-1).cursor, 900, "the durable cursor is still reported for evidence readers");
+		unsubscribe();
+	}
+});
+
+test("an active full-evidence consumer retains a bounded window and reports the shortfall", async () => {
+	resetRunProgressStore();
+	const total = 50_000 + 1_500;
+	const pages = Array.from({ length: total }, (_, index) => ({ sequenceNumber: index + 1, type: "x", optimizerRunId: "run-a", algorithmId: "gepa" }));
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: total }) },
+		pages: { "run-a": pages },
+		views: { "run-a": { algorithm: "gepa", header: { lifecycle: "running", projectionRevision: 9, asOfSequence: total }, projection: {} } }
+	});
+	setRunProgressTransport(transport);
+	const reports = [];
+	installRunProgressDiagnostics((report) => reports.push(report));
+	const seen = [];
+	const unsubscribe = subscribeToRun("run-a", (snapshot) => seen.push(snapshot), { evidence: "full" });
+	await new Promise((resolve) => setTimeout(resolve, 300));
+	const last = seen.at(-1);
+	assert.equal(last.events.length, 50_000, "retention is bounded to the ceiling");
+	assert.equal(last.events[0].sequenceNumber, 1_501, "the newest window is what stays");
+	assert.equal(last.cursor, total, "the cursor still reflects everything read");
+	assert.equal(last.gap, true);
+	assert.equal(last.evidence, "partial", "missing evidence is missing, never an empty history");
+	assert.equal(last.state, "subscribed", "a bounded window is an evidence-lane fact, not a lifecycle fact");
+	assert.ok(reports.some((report) => report.event === "run_progress.evidence.bounded" && report.details?.dropped === 1_500));
+	// A later wakeup resumes from the cursor rather than replaying from zero
+	// to rebuild what was deliberately trimmed.
+	const before = transport.calls.eventsAfter;
+	transport.emit("run-a");
+	await settle();
+	assert.ok(transport.calls.eventsAfter - before <= 2, "no replay from zero after a bounded window");
+	unsubscribe();
+	installRunProgressDiagnostics(() => undefined);
+});

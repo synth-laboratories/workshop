@@ -1,0 +1,16 @@
+{
+  "bindings": {
+    "schemaVersion": "synth.visual-bindings.v1",
+    "inputs": [
+      {
+        "input": "evidence",
+        "kind": "fixture",
+        "source": "fixtures/annotation_workbench_craftax.json",
+        "schema": "synth.annotation-workbench.v1"
+      }
+    ]
+  },
+  "props": {
+    "title": "Craftax · GLM failure analysis"
+  }
+}

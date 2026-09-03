@@ -29,6 +29,7 @@ const sampleVisual: VisualRecord = {
 async function installVisualsFixture(page: Page, visuals: VisualRecord[] = [sampleVisual]): Promise<void> {
 	await page.addInitScript((rows) => {
 		const store = [...rows] as VisualRecord[];
+		const listeners = new Set<(event: { kind: string; payload: { visualId: string } }) => void>();
 		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
 			listTemplates: async () => [{ id: "reward.breakdown.v1", title: "Reward breakdown", genre: "reward" }],
 			getTemplate: async (templateId: string) => ({ id: templateId, title: templateId }),
@@ -41,14 +42,20 @@ async function installVisualsFixture(page: Page, visuals: VisualRecord[] = [samp
 			revisions: async () => [],
 			create: async (request: { templateId: string; title?: string }) => {
 				const created = {
-					...store[0],
+					schemaVersion: "synth.desktop-visual.v1" as const,
 					id: `vis_${store.length + 1}`,
+					currentRevision: 1,
 					templateId: request.templateId,
 					title: request.title ?? "New visual",
 					status: "draft" as const,
-					currentRevision: 1
+					rendererKind: "template" as const,
+					bindings: {}, sessionId: null, messageId: null, runId: null, traceId: null,
+					parentVisualId: null, sourceAgentId: "test", sourceModel: "fixture",
+					contentDigest: null, previewDigest: null, metadata: {},
+					createdAt: "2026-08-28T12:00:00Z", updatedAt: "2026-08-28T12:00:00Z"
 				};
 				store.unshift(created);
+				queueMicrotask(() => listeners.forEach((listener) => listener({ kind: "visual.created", payload: { visualId: created.id } })));
 				return created;
 			},
 			update: async () => store[0],
@@ -60,7 +67,10 @@ async function installVisualsFixture(page: Page, visuals: VisualRecord[] = [samp
 				if (!hit) throw new Error(`missing visual ${visualId}`);
 				return hit;
 			},
-			onEvent: () => () => undefined,
+			onEvent: (listener: (event: { kind: string; payload: { visualId: string } }) => void) => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
 			onShow: () => () => undefined
 		};
 	}, visuals);
@@ -76,21 +86,625 @@ test("Visuals library lists a saved visual by visual_id", async ({ page }) => {
 	await expect(page.getByTestId("visuals-card-vis_test_reward")).toContainText("Reward breakdown");
 });
 
+test("Visuals preview keeps primary chrome concise and omits report controls", async ({ page }) => {
+	await installVisualsFixture(page);
+	await page.getByTestId("open-visuals").click();
+	const header = page.getByTestId("visuals-preview-header");
+	await expect(header).toContainText("Reward breakdown");
+	await expect(header).toContainText("Saved · rev 1 · Reward Breakdown");
+	await expect(header.getByRole("button", { name: "Expand" })).toBeVisible();
+	await expect(header.getByLabel("Report destination")).toHaveCount(0);
+	await expect(page.getByLabel("Report placement")).toHaveCount(0);
+	await expect(page.getByTestId("visual-add-to-report")).toHaveCount(0);
+	await header.getByLabel("More actions for Reward breakdown").click();
+	await expect(page.getByTestId("visuals-preview-context")).toHaveCount(0);
+	await expect(header.getByRole("menuitem", { name: "Rename" })).toBeVisible();
+	await expect(header.getByRole("menuitem", { name: "Archive" })).toBeVisible();
+	await header.getByRole("menuitem", { name: "Details & provenance" }).click();
+	await expect(page.getByTestId("visuals-preview-context")).toBeVisible();
+	await expect(header.getByRole("menuitem", { name: "Rename" })).toBeHidden();
+});
+
 test("chat visual card, registry, and right pane resolve one visual_id", async ({ page }) => {
 	await installVisualsFixture(page);
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId("visuals-card-vis_test_reward").getByRole("button", { name: "Open" }).click();
+	await page.getByTestId("visuals-actions-vis_test_reward").locator("summary").click();
+	await page.getByTestId("visuals-actions-vis_test_reward").getByRole("menuitem", { name: "Open canvas" }).click();
 	await expect(page.getByTestId("visual-pane")).toBeVisible();
 	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
 	await expect(page.getByTestId("visuals-preview")).toBeVisible();
 });
 
-test("Visuals page can create a draft visual from the registry", async ({ page }) => {
+test("an open visual pane keeps its title when switching chat and Visuals", async ({ page }) => {
+	await page.addInitScript((visual) => {
+		const store = [visual] as VisualRecord[];
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [{ id: visual.templateId, title: visual.title, genre: "reward" }],
+			getTemplate: async (templateId: string) => ({ id: templateId, title: templateId }),
+			list: async () => store,
+			get: async (visualId: string) => {
+				const hit = store.find((row) => row.id === visualId);
+				if (!hit) throw new Error(`missing visual ${visualId}`);
+				return hit;
+			},
+			revisions: async () => [],
+			show: async (visualId: string) => {
+				const hit = store.find((row) => row.id === visualId);
+				if (!hit) throw new Error(`missing visual ${visualId}`);
+				return hit;
+			},
+			onEvent: () => () => undefined,
+			onShow: () => () => undefined
+		};
+		const session = {
+			id: "pane-host-chat",
+			title: "Pane host chat",
+			target: { kind: "local", model: "laguna-xs-2.1", adapter: null },
+			createdAt: "2026-08-09T12:00:00.000Z",
+			updatedAt: "2026-08-09T12:00:00.000Z",
+			status: "ready",
+			latestCursor: 0,
+			metadata: {}
+		};
+		(window as typeof window & { synthRuntime?: unknown }).synthRuntime = {
+			async request(path: string) {
+				if (path === "/v1/health") return {
+					runtimeId: "renderer-test", local: { mode: "unavailable", modelPath: null },
+					intern: { mode: "demo" }, openrouter: { mode: "unconfigured" },
+					inventory: { containers: 0, traces: 0, visuals: 1 }
+				};
+				if (path === "/v1/sessions") return { sessions: [session] };
+				if (path === "/v1/projects") return { projects: [] };
+				if (path.includes("/events")) return { events: [], nextCursor: 0, hasMore: false };
+				throw new Error(`Unexpected renderer test request: ${path}`);
+			},
+			async subscribe() { return { close() {} }; }
+		};
+	}, sampleVisual);
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await page.getByTestId("open-visuals").click();
+	await page.getByTestId("visuals-actions-vis_test_reward").locator("summary").click();
+	await page.getByTestId("visuals-actions-vis_test_reward").getByRole("menuitem", { name: "Open canvas" }).click();
+	await expect(page.getByTestId("visual-pane")).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
+	await page.getByTestId("local-chat-pane-host-chat").click();
+	await expect(page.getByTestId("chat-transcript")).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
+	await page.getByTestId("open-visuals").click();
+	await expect(page.getByTestId("visuals-page")).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
+});
+
+test("Visuals page directs visual creation through the agent", async ({ page }) => {
 	await installVisualsFixture(page, []);
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId("visuals-new").click();
-	await expect(page.getByTestId("visual-pane")).toBeVisible();
-	await expect(page.getByTestId("visuals-grid")).toContainText("New visual");
+	await expect(page.getByTestId("visuals-new")).toHaveCount(0);
+	await expect(page.getByTestId("visuals-grid")).toContainText("Ask the agent to create one in chat.");
+});
+
+test("Visual row overflow dismisses on outside interaction and Escape", async ({ page }) => {
+	await installVisualsFixture(page);
+	await page.getByTestId("open-visuals").click();
+	const actions = page.getByTestId("visuals-actions-vis_test_reward");
+	await actions.locator("summary").click();
+	await expect(actions).toHaveJSProperty("open", true);
+	await page.getByRole("heading", { name: "Visuals" }).click();
+	await expect(actions).toHaveJSProperty("open", false);
+	await actions.locator("summary").click();
+	await page.keyboard.press("Escape");
+	await expect(actions).toHaveJSProperty("open", false);
+});
+
+test("an already-open pane rejects stale gets and reconciles a dropped final update on focus", async ({ page }) => {
+	await page.addInitScript((base) => {
+		let current = { ...base, id: "vis_race", title: "Revision 13", currentRevision: 13 };
+		const listeners = new Set<(event: Record<string, unknown>) => void>();
+		let releaseOld: ((value: VisualRecord) => void) | null = null;
+		let gets = 0;
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [],
+			list: async () => [],
+			get: async () => {
+				gets += 1;
+				if (gets === 1) return new Promise<VisualRecord>((resolve) => { releaseOld = resolve; });
+				return current;
+			},
+			revisions: async () => [],
+			onEvent: (next: (event: Record<string, unknown>) => void, attached?: () => void) => {
+				listeners.add(next);
+				queueMicrotask(() => attached?.());
+				return () => { listeners.delete(next); };
+			}
+		};
+		(window as typeof window & { __visualRace?: unknown }).__visualRace = {
+			isAttached: () => listeners.size > 0,
+			getCount: () => gets,
+			show13: () => listeners.forEach((listener) => listener({ kind: "visual.show", payload: { visualId: "vis_race", revision: 13 } })),
+			update14: () => {
+				current = { ...current, title: "Revision 14", currentRevision: 14 };
+				listeners.forEach((listener) => listener({ kind: "visual.updated", payload: { visualId: "vis_race", revision: 14 } }));
+			},
+			drop15: () => { current = { ...current, title: "Revision 15", currentRevision: 15 }; },
+			release13: () => releaseOld?.({ ...current, title: "Revision 13", currentRevision: 13 }),
+			emit15: () => listeners.forEach((listener) => listener({ kind: "visual.updated", payload: { visualId: "vis_race", revision: 15 } }))
+		};
+	}, sampleVisual);
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualRace: { isAttached(): boolean } }).__visualRace.isAttached())).toBe(true);
+	await page.getByTestId("open-visuals").click();
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualRace: { isAttached(): boolean } }).__visualRace.isAttached())).toBe(true);
+	await page.evaluate(() => (window as typeof window & { __visualRace: { show13(): void; update14(): void } }).__visualRace.show13());
+	await page.evaluate(() => (window as typeof window & { __visualRace: { show13(): void; update14(): void } }).__visualRace.update14());
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualRace: { getCount(): number } }).__visualRace.getCount())).toBe(2);
+	await expect.poll(() => page.evaluate(() => window.__synthEval?.getState().openVisualId)).toBe("vis_race");
+	await expect(page.getByTestId("visual-pane")).toContainText("Revision 14");
+	await expect(page.getByTestId("visual-pane")).toContainText("rev 14");
+	await page.evaluate(() => (window as typeof window & { __visualRace: { release13(): void } }).__visualRace.release13());
+	await expect(page.getByTestId("visual-pane")).toContainText("Revision 14");
+
+	await page.evaluate(() => {
+		(window as typeof window & { __visualRace: { drop15(): void } }).__visualRace.drop15();
+		window.dispatchEvent(new Event("focus"));
+	});
+	await expect(page.getByTestId("visual-pane")).toContainText("Revision 15");
+	await page.getByRole("button", { name: "Close visual" }).click();
+	await page.evaluate(() => (window as typeof window & { __visualRace: { emit15(): void } }).__visualRace.emit15());
+	await expect(page.getByTestId("visual-pane")).toBeHidden();
+});
+
+test("an owned visual.show does not steal another chat's right pane", async ({ page }) => {
+	await page.addInitScript((rows) => {
+		const store = [...rows] as VisualRecord[];
+		const listeners = new Set<(event: Record<string, unknown>) => void>();
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [],
+			list: async () => store,
+			get: async (visualId: string) => {
+				const hit = store.find((row) => row.id === visualId);
+				if (!hit) throw new Error(`missing visual ${visualId}`);
+				return hit;
+			},
+			revisions: async () => [],
+			onEvent: (next: (event: Record<string, unknown>) => void, attached?: () => void) => {
+				listeners.add(next);
+				queueMicrotask(() => attached?.());
+				return () => { listeners.delete(next); };
+			}
+		};
+		(window as typeof window & { __visualOwner?: unknown }).__visualOwner = {
+			show: (visualId: string, ownerSessionId?: string) => {
+				listeners.forEach((listener) => listener({
+					kind: "visual.show",
+					payload: { visualId, revision: 1, ...(ownerSessionId ? { ownerSessionId } : {}) }
+				}));
+			}
+		};
+	}, [sampleVisual, { ...sampleVisual, id: "vis_healthbench", title: "HealthBench smoke" }]);
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await page.getByTestId("open-visuals").click();
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualOwner: { show(visualId: string, ownerSessionId?: string): void } }).__visualOwner !== undefined)).toBeTruthy();
+	await page.evaluate(() => (window as typeof window & { __visualOwner: { show(visualId: string, ownerSessionId?: string): void } }).__visualOwner.show("vis_test_reward", "chat-banking77"));
+	await expect.poll(() => page.evaluate(() => window.__synthEval?.getState().openVisualId ?? null)).toBe(null);
+	await expect(page.getByTestId("visual-pane")).toBeHidden();
+	await page.evaluate(() => (window as typeof window & { __visualOwner: { show(visualId: string, ownerSessionId?: string): void } }).__visualOwner.show("vis_healthbench"));
+	await expect.poll(() => page.evaluate(() => window.__synthEval?.getState().openVisualId)).toBe("vis_healthbench");
+	await expect(page.getByTestId("visual-pane")).toContainText("HealthBench smoke");
+});
+
+test("an optimizer visual event appears immediately in its chat Outputs shelf", async ({ page }) => {
+	await page.addInitScript((base) => {
+		const sessionId = "visual-output-session";
+		const visual = { ...base, id: "vis_optimizer_output", title: "HealthBench live eval", sessionId };
+		const listeners = new Set<(event: Record<string, unknown>) => void>();
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "thread-visual-output", workspace: "/workspaces/default",
+				model: "gpt-5.6-luna", providerName: "openai", providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId, threadId: "thread-visual-output" }),
+			startTurn: async () => ({ sessionId, threadId: "thread-visual-output", turnId: "turn-output" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [],
+			list: async () => [],
+			get: async () => visual,
+			revisions: async () => [],
+			onEvent: (next: (event: Record<string, unknown>) => void, attached?: () => void) => {
+				listeners.add(next);
+				queueMicrotask(() => attached?.());
+				return () => { listeners.delete(next); };
+			}
+		};
+		(window as typeof window & { __optimizerVisual?: unknown }).__optimizerVisual = {
+			emit: () => listeners.forEach((listener) => listener({
+				schemaVersion: "synth.desktop-app-event.v1",
+				eventId: "evt-optimizer-visual",
+				sequence: 41,
+				sessionSequence: 1,
+				sessionId,
+				source: "visual",
+				kind: "visual.show",
+				payload: {
+					visualId: visual.id,
+					title: visual.title,
+					templateId: visual.templateId,
+					revision: 1,
+					ownerSessionId: sessionId
+				},
+				createdAt: "2026-08-17T20:00:00Z"
+			}))
+		};
+	}, sampleVisual);
+	await page.reload();
+	await page.getByTestId("local-chat-visual-output-session").click();
+	await page.evaluate(() => (window as typeof window & { __optimizerVisual: { emit(): void } }).__optimizerVisual.emit());
+	const transcript = page.getByTestId("chat-transcript");
+	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
+	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("visuals-icon-vis_optimizer_output")).toContainText("HealthBench live eval");
+});
+
+test("a durable optimizer visual restores to its chat Outputs shelf outside the transcript tail", async ({ page }) => {
+	await page.addInitScript((base) => {
+		const sessionId = "restored-visual-output-session";
+		const visual = { ...base, id: "vis_restored_optimizer_output", title: "Restored HealthBench eval", sessionId };
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "thread-restored-output", workspace: "/workspaces/default",
+				model: "gpt-5.6-luna", providerName: "openai", providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId, threadId: "thread-restored-output" }),
+			startTurn: async () => ({ sessionId, threadId: "thread-restored-output", turnId: "turn-restored-output" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthCore?: unknown }).synthCore = {
+			sessionEventsTail: async () => Array.from({ length: 250 }, (_, index) => ({
+				schemaVersion: "synth.desktop-app-event.v1",
+				eventId: `evt-tail-${index}`,
+				sequence: index + 500,
+				sessionSequence: index + 500,
+				sessionId,
+				source: "codex",
+				kind: "item/agentMessage/delta",
+				payload: { delta: "x" },
+				createdAt: "2026-08-17T20:00:00Z"
+			}))
+		};
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [],
+			list: async (query: { sessionId?: string }) => query.sessionId === sessionId ? [visual] : [],
+			get: async () => visual,
+			revisions: async () => [],
+			onEvent: () => () => undefined
+		};
+	}, sampleVisual);
+	await page.reload();
+	await page.getByTestId("local-chat-restored-visual-output-session").click();
+	const transcript = page.getByTestId("chat-transcript");
+	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
+	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("visuals-icon-vis_restored_optimizer_output")).toContainText("Restored HealthBench eval");
+});
+
+test("a durable optimizer visual remains in Outputs when conversation replay fails on reopen", async ({ page }) => {
+	await page.addInitScript((base) => {
+		const sessionId = "journal-failed-output-session";
+		const visual = { ...base, id: "vis_journal_failed_output", title: "Recovered eval checkpoint", sessionId };
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "thread-journal-failed-output", workspace: "/workspaces/default",
+				model: "gpt-5.6-luna", providerName: "openai", providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId, threadId: "thread-journal-failed-output" }),
+			startTurn: async () => ({ sessionId, threadId: "thread-journal-failed-output", turnId: "turn-journal-failed-output" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthCore?: unknown }).synthCore = {
+			sessionEventsTail: async () => { throw new Error("journal temporarily unavailable"); }
+		};
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [],
+			list: async (query: { sessionId?: string }) => query.sessionId === sessionId ? [visual] : [],
+			get: async () => visual,
+			revisions: async () => [],
+			onEvent: () => () => undefined
+		};
+	}, sampleVisual);
+	await page.reload();
+	await page.getByTestId("local-chat-journal-failed-output-session").click();
+	const transcript = page.getByTestId("chat-transcript");
+	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
+	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("visuals-icon-vis_journal_failed_output")).toContainText("Recovered eval checkpoint");
+});
+
+test("a persisted report is discoverable from Outputs after reopening a chat", async ({ page }) => {
+	await page.addInitScript(() => {
+		const sessionId = "report-output-session";
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "thread-report-output", workspace: "/workspaces/default",
+				model: "gpt-5.6-luna", providerName: "openai", providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId, threadId: "thread-report-output" }),
+			startTurn: async () => ({ sessionId, threadId: "thread-report-output", turnId: "turn-report-output" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthReports?: unknown }).synthReports = {
+			list: async () => [{
+				schemaVersion: "synth.report.v1", id: "rep_reopen_01", currentRevision: 2,
+				title: "Bounded Craftax baseline", summary: null, authors: ["user"], status: "sealed",
+				createdBy: "user", createdAt: "2026-08-18T20:00:00Z", updatedAt: "2026-08-18T20:05:00Z", archivedAt: null
+			}],
+			onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-report-output-session").click();
+	await page.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("report-output-rep_reopen_01")).toContainText("Bounded Craftax baseline");
+	await expect(page.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
+});
+
+test("session-owned eval, cancelled, and failed runs remain inspectable in Outputs after reopen", async ({ page }) => {
+	await page.addInitScript(() => {
+		const sessionId = "run-output-session";
+		const capabilities = {
+			cancel: true, pause: true, resume: true, streamEvents: true, stateSlices: true, candidates: false,
+			checkpoints: true, checkpointEvaluations: false, inferenceEndpoint: false, localSlotBinding: false
+		};
+		const run = (
+			id: string,
+			status: string,
+			objective: string,
+			visualId: string,
+			outputRefs: Array<{ kind: string; id: string; title?: string; role?: string }> = []
+		) => ({
+			schemaVersion: "optimizer_run.v1",
+			id,
+			algorithmId: "eval",
+			algorithmVersion: "1",
+			status,
+			source: "local",
+			objective,
+			sessionRef: sessionId,
+			createdAt: "2026-08-18T20:00:00Z",
+			startedAt: "2026-08-18T20:00:01Z",
+			finishedAt: status === "running" ? null : "2026-08-18T20:05:00Z",
+			cursorSeq: 4,
+			capabilities,
+			executionBindings: [],
+			inputRefs: [],
+			outputRefs,
+			visualRefs: [{ kind: "visual", id: visualId, role: "primary" }],
+			summary: {},
+			usage: {}
+		});
+		const cancelled = run("opt_eval_cancelled_01", "cancelled", "Cancelled Craftax eval", "vis_cancelled_eval");
+		const failed = run("opt_eval_failed_01", "failed", "Failed HealthBench eval", "vis_failed_eval");
+		const completed = run(
+			"opt_eval_complete_01",
+			"completed",
+			"Completed Qwen SFT",
+			"vis_complete_eval",
+			[{ kind: "checkpoint", id: "ckpt_qwen_step4", title: "Qwen adapter step-4", role: "checkpoint" }]
+		);
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "thread-run-output", workspace: "/workspaces/default",
+				model: "gpt-5.6-luna", providerName: "openai", providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId, threadId: "thread-run-output" }),
+			startTurn: async () => ({ sessionId, threadId: "thread-run-output", turnId: "turn-run-output" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthCore?: unknown }).synthCore = {
+			sessionEventsTail: async () => { throw new Error("journal temporarily unavailable"); }
+		};
+		(window as typeof window & { synthOptimizers?: unknown }).synthOptimizers = {
+			list: async (query: { sessionRef?: string }) => query.sessionRef === sessionId ? [cancelled, failed, completed] : [],
+			get: async (id: string) => [cancelled, failed, completed].find((row) => row.id === id) ?? cancelled,
+			refresh: async (id: string) => [cancelled, failed, completed].find((row) => row.id === id) ?? cancelled,
+			openVisual: async (id: string) => [cancelled, failed, completed].find((row) => row.id === id) ?? cancelled,
+			onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-run-output-session").click();
+	const transcript = page.getByTestId("chat-transcript");
+	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("run-output-opt_eval_cancelled_01")).toContainText("Cancelled Craftax eval");
+	await expect(page.getByTestId("run-output-opt_eval_failed_01")).toContainText("Failed HealthBench eval");
+	await expect(page.getByTestId("run-output-opt_eval_complete_01")).toContainText("Completed Qwen SFT");
+	await expect(page.getByTestId("checkpoint-output-ckpt_qwen_step4")).toContainText("Qwen adapter step-4");
+	await expect(page.getByTestId("run-output-opt_eval_cancelled_01")).toHaveAttribute("data-testid", "run-output-opt_eval_cancelled_01");
+	await page.getByTestId("run-output-opt_eval_cancelled_01").click();
+});
+
+test("a stale running local eval is refreshed before Outputs lists it after reopen", async ({ page }) => {
+	await page.addInitScript(() => {
+		const sessionId = "stale-running-output-session";
+		const capabilities = {
+			cancel: true, pause: false, resume: false, streamEvents: true, stateSlices: true, candidates: false,
+			checkpoints: false, checkpointEvaluations: false, inferenceEndpoint: false, localSlotBinding: false
+		};
+		let status = "running";
+		const record = () => ({
+			schemaVersion: "optimizer_run.v1",
+			id: "opt_eval_stale_01",
+			algorithmId: "eval",
+			algorithmVersion: "1",
+			status,
+			source: "local",
+			objective: "Craftax baseline",
+			sessionRef: sessionId,
+			createdAt: "2026-08-18T20:00:00Z",
+			startedAt: "2026-08-18T20:00:01Z",
+			finishedAt: status === "running" ? null : "2026-08-18T20:05:00Z",
+			cursorSeq: 4,
+			capabilities,
+			executionBindings: [],
+			inputRefs: [],
+			outputRefs: [],
+			visualRefs: [],
+			summary: {},
+			usage: {}
+		});
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "thread-stale-running", workspace: "/workspaces/default",
+				model: "gpt-5.6-luna", providerName: "openai", providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId, threadId: "thread-stale-running" }),
+			startTurn: async () => ({ sessionId, threadId: "thread-stale-running", turnId: "turn-stale-running" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthOptimizers?: unknown }).synthOptimizers = {
+			list: async (query: { sessionRef?: string }) => query.sessionRef === sessionId ? [record()] : [],
+			refresh: async () => {
+				status = "completed";
+				return record();
+			},
+			onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-stale-running-output-session").click();
+	await page.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("run-output-opt_eval_stale_01")).toContainText("opt_eval_stale_01 · completed");
+});
+
+test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears when stacked", async ({ page }) => {
+	await page.setViewportSize({ width: 1600, height: 840 });
+	await installVisualsFixture(page);
+	await page.getByTestId("open-visuals").click();
+	const splitter = page.getByTestId("visuals-resize-handle");
+	await expect(splitter).toBeVisible();
+	await expect(splitter).toHaveAttribute("role", "separator");
+	await expect(splitter).toHaveAttribute("aria-orientation", "vertical");
+	await expect.poll(async () => {
+		const reported = Number(await splitter.getAttribute("aria-valuenow"));
+		const realized = await page.getByTestId("visuals-grid").evaluate((element) => Math.round(element.getBoundingClientRect().width));
+		const minimum = Number(await splitter.getAttribute("aria-valuemin"));
+		const maximum = Number(await splitter.getAttribute("aria-valuemax"));
+		return Math.abs(reported - Math.min(maximum, Math.max(minimum, realized)));
+	}).toBeLessThanOrEqual(1);
+	const before = Number(await splitter.getAttribute("aria-valuenow"));
+	const box = await splitter.boundingBox();
+	if (!box) throw new Error("Visuals splitter geometry unavailable");
+	await page.mouse.move(box.x + box.width / 2, box.y + 80);
+	await page.mouse.down();
+	await page.mouse.move(box.x + 72, box.y + 80, { steps: 4 });
+	await page.mouse.up();
+	await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+	const dragged = Number(await splitter.getAttribute("aria-valuenow"));
+	// Concurrent browser workers can coalesce intermediate pointer-move frames;
+	// require the pointer gesture to grow the pane without assuming how many
+	// synthetic steps painted.
+	expect(dragged).toBeGreaterThan(before);
+	const grownBox = await splitter.boundingBox();
+	if (!grownBox) throw new Error("Visuals splitter geometry unavailable after growing the list");
+	await page.mouse.move(grownBox.x + grownBox.width / 2, grownBox.y + 80);
+	await page.mouse.down();
+	await page.mouse.move(grownBox.x - 112, grownBox.y + 80, { steps: 4 });
+	await page.mouse.up();
+	await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+	const draggedLeft = Number(await splitter.getAttribute("aria-valuenow"));
+	expect(draggedLeft).toBeLessThan(dragged);
+	await page.waitForTimeout(100);
+	await expect(splitter).toHaveAttribute("aria-valuenow", String(draggedLeft));
+	await page.reload();
+	await page.getByTestId("open-visuals").click();
+	await expect(page.getByTestId("visuals-resize-handle")).toHaveAttribute("aria-valuenow", String(draggedLeft));
+	await splitter.focus();
+	await page.keyboard.press("Shift+ArrowLeft");
+	const minimum = Number(await splitter.getAttribute("aria-valuemin"));
+	const expectedKeyboard = Math.max(minimum, draggedLeft - 64);
+	await expect(splitter).toHaveAttribute("aria-valuenow", String(expectedKeyboard));
+	const keyboard = Number(await splitter.getAttribute("aria-valuenow"));
+	await page.reload();
+	await page.getByTestId("open-visuals").click();
+	await expect(page.getByTestId("visuals-resize-handle")).toHaveAttribute("aria-valuenow", String(keyboard));
+	await page.setViewportSize({ width: 720, height: 840 });
+	await expect(page.getByTestId("visuals-resize-handle")).toBeHidden();
+	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+	await page.setViewportSize({ width: 1600, height: 840 });
+	await expect(page.getByTestId("visuals-resize-handle")).toBeVisible();
+	expect(Number(await page.getByTestId("visuals-resize-handle").getAttribute("aria-valuenow"))).toBe(keyboard);
+});
+
+test("Visuals master-detail panes preserve the compact list and useful preview across supported widths", async ({ page }) => {
+	await installVisualsFixture(page);
+	await page.getByTestId("open-visuals").click();
+
+	for (const viewport of [
+		{ width: 960, height: 640 },
+		{ width: 1172, height: 768 },
+		{ width: 1280, height: 840 },
+		{ width: 1600, height: 900 }
+	]) {
+		await page.setViewportSize(viewport);
+		const geometry = await page.getByTestId("visuals-page").evaluate((pageElement) => {
+			const list = pageElement.querySelector<HTMLElement>('[data-testid="visuals-grid"]')!;
+			const preview = pageElement.querySelector<HTMLElement>('[data-testid="visuals-preview"]')!;
+			const splitter = pageElement.querySelector<HTMLElement>('[data-testid="visuals-resize-handle"]');
+			const listRect = list.getBoundingClientRect();
+			const previewRect = preview.getBoundingClientRect();
+			const splitterRect = splitter?.getBoundingClientRect() ?? null;
+			const split = Boolean(splitterRect && splitterRect.width > 0 && splitterRect.height > 0);
+			return {
+				split,
+				listWidth: listRect.width,
+				previewWidth: previewRect.width,
+				listOverflowY: getComputedStyle(list).overflowY,
+				previewOverflowY: getComputedStyle(preview).overflowY,
+				boundariesOrdered: !splitterRect || (listRect.right <= splitterRect.left + 1 && splitterRect.right <= previewRect.left + 1),
+				noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1
+			};
+		});
+
+		expect(geometry.noHorizontalOverflow, `${viewport.width}px should not overflow horizontally`).toBe(true);
+		if (geometry.split) {
+			expect(geometry.listWidth).toBeGreaterThanOrEqual(279);
+			expect(geometry.listWidth).toBeLessThanOrEqual(421);
+			expect(geometry.previewWidth).toBeGreaterThanOrEqual(519);
+			expect(geometry.listOverflowY).toBe("auto");
+			expect(geometry.previewOverflowY).toBe("auto");
+			expect(geometry.boundariesOrdered).toBe(true);
+		} else {
+			expect(geometry.previewWidth).toBeGreaterThanOrEqual(519);
+		}
+	}
 });
 
 test("Trace V5 inspector provides focus, full, evidence, and expandable output views", async ({ page }) => {
@@ -124,7 +738,8 @@ test("Trace V5 inspector provides focus, full, evidence, and expandable output v
 	};
 	await installVisualsFixture(page, [traceVisual]);
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId("visuals-card-tracevis_test").getByRole("button", { name: "Open" }).click();
+	await page.getByTestId("visuals-actions-tracevis_test").locator("summary").click();
+	await page.getByTestId("visuals-actions-tracevis_test").getByRole("menuitem", { name: "Open canvas" }).click();
 	const pane = page.getByTestId("visual-pane");
 	await expect(pane.getByTestId("visual-trace-rollout-inspector")).toBeVisible();
 	await expect(pane).toContainText("I’ll update the configuration.");
@@ -187,7 +802,8 @@ test("Trace V5 inspector renders canonical Craftax rewards, usage, achievements,
 	};
 	await installVisualsFixture(page, [craftaxVisual]);
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId("visuals-card-tracevis_craftax").getByRole("button", { name: "Open" }).click();
+	await page.getByTestId("visuals-actions-tracevis_craftax").locator("summary").click();
+	await page.getByTestId("visuals-actions-tracevis_craftax").getByRole("menuitem", { name: "Open canvas" }).click();
 	const comparison = page.getByTestId("visual-pane").getByTestId("craftax-policy-comparison");
 	await expect(comparison).toBeVisible();
 	await expect(comparison).toContainText("4");

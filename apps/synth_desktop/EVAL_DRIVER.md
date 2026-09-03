@@ -2,8 +2,9 @@
 
 Profile-gated programmatic driver surface for live Workshop development
 instances. Same category as Visuals IPC: loopback-only bind, bearer token,
-descriptor JSON in the instance data root. **Compiled into debug builds only;
-never spawned for the canonical installed/production app.**
+descriptor JSON in the instance data root. **Compiled only behind the
+`eval-driver` cargo feature; production artifacts are built without it and
+contain no driver at all.**
 
 ## Location
 
@@ -17,7 +18,8 @@ never spawned for the canonical installed/production app.**
 
 Spawned only when **all** of:
 
-1. `cfg!(debug_assertions)` (release/production builds never listen)
+1. Built with `--features eval-driver` (desktop-instance.sh passes this for
+   dev/QA instance builds; release artifacts never include the feature)
 2. Named development instance (`SYNTH_DESKTOP_INSTANCE`) **or** explicit
    `SYNTH_DESKTOP_EVAL_DRIVER=1`
 
@@ -54,10 +56,20 @@ bearer → `401`.
 | `POST` | `/v1/sessions/{id}/messages` | Send turn (`send_message`) |
 | `POST` | `/v1/sessions/{id}/wait_terminal` | Poll journal until terminal run event |
 | `GET` | `/v1/sessions/{id}/export` | Journal-backed session export |
+| `POST` | `/v1/sessions/{id}/interrupt` | Interrupt the active turn (idempotent) |
+| `POST` | `/v1/sessions/{id}/steer` | Steer the active turn (`{text}`) |
+| `POST` | `/v1/sessions/{id}/approvals/{callId}` | Resolve a pending approval (`{decision}`) |
+| `POST` | `/v1/sessions/{id}/close` | Fence the attachment and close the session |
+| `GET` | `/v1/preflight` | Read-only launch-state report (permissions, opt-in, descriptors) |
+| `GET` | `/v1/optimizers/runs/{id}/ready` | Await optimizer run terminal readiness (visuals IPC delegate) |
 | `GET/POST` | `/v1/containers…` | Register / list / probe (shared with visuals IPC) |
 | `POST` | `/v1/containers/{id}/rollouts` | Scripted transport-gate rollouts |
 | `POST` | `/v1/containers/{id}/policy_rollouts` | Class-A LLM policy rollouts (`ProviderClass` dispatch) |
 | `POST` | `/v1/policy_preflight` | Fail-closed credential/daemon check before a paid batch |
+| `POST` | `/v1/laguna/ensure` | Ensure the product-managed Laguna runtime and return its status receipt |
+| `GET` | `/v1/laguna/status` | Read the same refreshed Laguna status shown by the UI |
+| `GET` | `/v1/laguna/inference` | Read daemon-backed model residency and inference telemetry |
+| `POST` | `/v1/laguna/model/unload` | Request model unload through the production Laguna manager |
 | `POST` | `/v1/open_visual` | Create + show a visual (dogfood only; never grade from it) |
 | `POST` | `/v1/visuals/{id}/update` | Patch visual bindings/metadata (live → sealed digests) |
 | `POST` | `/v1/traces/ingest` | Generic Trace V5 import via `inventory.ingest_trace_bundle` |
@@ -75,6 +87,8 @@ semantic action names used by `window.__synthEval`.
   "provider": "openrouter",
   "model": "openai/gpt-5.6-luna",
   "reasoningEffort": "medium",
+  "projectionMode": "aggregate",
+  "visualId": "vis_experiment_overview",
   "timeoutS": 600,
   "telemetry": {
     "enabled": true,
@@ -84,6 +98,17 @@ semantic action names used by `window.__synthEval`.
   }
 }
 ```
+
+`projectionMode: "aggregate"` is for eval batches whose caller-owned experiment
+visual already exists before compute. It requires `visualId`, preserves that
+visual's typed experiment bindings, and still waits for the container's declared
+stream subscription before starting. Without it, the driver retains the
+single-rollout behavior and binds the declared SSE stream into a live-eval
+visual.
+
+An optional object-valued `candidate` is forwarded unchanged to the container
+after live-secret validation. It is the candidate being evaluated; the driver
+does not silently substitute a default candidate or fold it into `policy_ref`.
 
 `policy_ref` is required (`harness` and `config`; `config` is omitted only for
 `isolated_policy_process`). The driver does not pick a harness or default
@@ -105,6 +130,25 @@ Call `POST /v1/policy_preflight` before a multi-rollout batch. Missing keys or
 an unavailable Laguna daemon fail closed before any paid call. Provider secrets
 never leave the host process and must never appear in case files, compose env,
 results, or traces.
+
+The Laguna lifecycle endpoints are authenticated debug-driver projections of
+the production `LagunaManager`; they do not contact a test daemon or synthesize
+readiness. `ensure` also performs the daemon's idempotent production model-load
+operation, matching the pre-turn path used to restore residency after unload.
+Local Codex session preparation then reads the daemon's authenticated
+`/v1/models` native Codex envelope and materializes only the exact configured
+slug. Instructions, reasoning levels, service tiers, modalities, and tool
+capabilities are validated and retained as one daemon-owned unit; Workshop does
+not clone an arbitrary bundled Codex model as a local fallback.
+It returns `{ok, baseUrl, status}` so a runner can distinguish
+an available runtime from an explicit `not_installed`, `unavailable`, or
+`error` prerequisite. The nested `status` retains the UI's product status fields
+and adds stable `outcome` / `code` fields. Runners may skip only
+`unmet_prerequisite` with `weights_unavailable` or `hardware_unsupported`;
+`runtime_unavailable` is a product error. `status`, `inference`, and
+`model/unload` otherwise return the same redacted DTOs used by the UI. Unload
+keeps the production `{released, conflict, detail}` semantics. The daemon API
+key remains in the host process.
 
 Successful policy rollouts also return `traceCorrelation` using
 `synth.trace-correlation.v1`. It is **correlation proof**, not a Trace V5
@@ -136,3 +180,10 @@ The **evals** repo owns cases, runner, graders, compose, and results under
 `evals/workshop/`. It vendors these protocol types and asserts
 `synth.eval-driver.v1` at connect. No package imports across the two repos.
 Each `run-manifest.json` records the Workshop `sourceRevision` it drove.
+Health instance diagnostics also expose the launcher's validated
+`executableDigest` when it is a qualified SHA-256. If a development launcher
+starts before the binary exists, the running app hashes its own executable as
+the provenance fallback. Session exports include a
+top-level, typed `providerBinding` with provider, model, endpoint class,
+credential-binding class, brokered status, and `fallbackAllowed: false`; raw
+endpoints and credentials are deliberately excluded.

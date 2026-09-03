@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
     env,
+    ffi::{c_void, CString},
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
@@ -39,7 +40,7 @@ pub struct TerminalInfo {
     pub shell: String,
     pub title: String,
     pub status: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub created_at: u64,
     pub exit_code: Option<u32>,
 }
@@ -48,7 +49,7 @@ pub struct TerminalInfo {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalEvent {
     pub terminal_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub sequence: u64,
     pub kind: String,
     pub data_base64: Option<String>,
@@ -63,6 +64,180 @@ struct TerminalSession {
     child: Mutex<Option<Box<dyn Child + Send + Sync>>>,
     sequence: AtomicU64,
     scrollback: Mutex<VecDeque<(usize, TerminalEvent)>>,
+    #[cfg(target_os = "macos")]
+    ghostty: Mutex<Option<GhosttySurface>>,
+}
+
+#[derive(Clone, Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTerminalFrame {
+    pub x: f64,
+    pub top: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTerminalMountRequest {
+    pub terminal_id: String,
+    pub frame: NativeTerminalFrame,
+    pub font_family: String,
+    pub font_size: f32,
+}
+
+impl NativeTerminalFrame {
+    #[cfg(target_os = "macos")]
+    fn appkit_rect(&self) -> (f64, f64, f64, f64) {
+        (
+            self.x.max(0.0),
+            self.top.max(0.0),
+            self.width.max(1.0),
+            self.height.max(1.0),
+        )
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct GhosttyCallbackContext {
+    session: Arc<TerminalSession>,
+}
+
+#[cfg(target_os = "macos")]
+struct GhosttySurface {
+    handle: *mut c_void,
+    _callback: Box<GhosttyCallbackContext>,
+}
+
+#[cfg(target_os = "macos")]
+unsafe impl Send for GhosttySurface {}
+
+#[cfg(target_os = "macos")]
+unsafe impl Sync for GhosttySurface {}
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn synth_ghostty_host_create(
+        parent: *mut c_void,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        font_family: *const std::ffi::c_char,
+        font_size: f32,
+        write: Option<extern "C" fn(*const u8, usize, *mut c_void)>,
+        resize: Option<extern "C" fn(u16, u16, *mut c_void)>,
+        userdata: *mut c_void,
+    ) -> *mut c_void;
+    fn synth_ghostty_host_receive(handle: *mut c_void, bytes: *const u8, count: usize);
+    fn synth_ghostty_host_finish(handle: *mut c_void, exit_code: u32, runtime_ms: u64);
+    fn synth_ghostty_host_set_frame(
+        handle: *mut c_void,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    );
+    fn synth_ghostty_host_set_visible(handle: *mut c_void, visible: bool);
+    fn synth_ghostty_host_focus(handle: *mut c_void);
+    fn synth_ghostty_host_destroy(handle: *mut c_void);
+}
+
+#[cfg(target_os = "macos")]
+impl GhosttySurface {
+    fn new(
+        parent: *mut c_void,
+        session: Arc<TerminalSession>,
+        frame: &NativeTerminalFrame,
+        font_family: &str,
+        font_size: f32,
+    ) -> Result<Self> {
+        let mut callback = Box::new(GhosttyCallbackContext { session });
+        let userdata = (&mut *callback as *mut GhosttyCallbackContext).cast::<c_void>();
+        let font_family = CString::new(font_family)
+            .unwrap_or_else(|_| CString::new("Menlo").expect("static font family is valid"));
+        let (x, y, width, height) = frame.appkit_rect();
+        let handle = unsafe {
+            synth_ghostty_host_create(
+                parent,
+                x,
+                y,
+                width,
+                height,
+                font_family.as_ptr(),
+                font_size.clamp(10.0, 20.0),
+                Some(ghostty_write),
+                Some(ghostty_resize),
+                userdata,
+            )
+        };
+        if handle.is_null() {
+            return Err(anyhow!("libghostty could not create a terminal surface"));
+        }
+        Ok(Self {
+            handle,
+            _callback: callback,
+        })
+    }
+
+    fn receive(&self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            unsafe { synth_ghostty_host_receive(self.handle, bytes.as_ptr(), bytes.len()) };
+        }
+    }
+
+    fn finish(&self, exit_code: u32, runtime_ms: u64) {
+        unsafe { synth_ghostty_host_finish(self.handle, exit_code, runtime_ms) };
+    }
+
+    fn set_frame(&self, frame: &NativeTerminalFrame) {
+        let (x, y, width, height) = frame.appkit_rect();
+        unsafe { synth_ghostty_host_set_frame(self.handle, x, y, width, height) };
+    }
+
+    fn set_visible(&self, visible: bool) {
+        unsafe { synth_ghostty_host_set_visible(self.handle, visible) };
+    }
+
+    fn focus(&self) {
+        unsafe { synth_ghostty_host_focus(self.handle) };
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for GhosttySurface {
+    fn drop(&mut self) {
+        unsafe { synth_ghostty_host_destroy(self.handle) };
+    }
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn ghostty_write(bytes: *const u8, count: usize, userdata: *mut c_void) {
+    if bytes.is_null() || userdata.is_null() || count == 0 {
+        return;
+    }
+    let context = unsafe { &*userdata.cast::<GhosttyCallbackContext>() };
+    let data = unsafe { std::slice::from_raw_parts(bytes, count) };
+    if let Ok(mut writer) = context.session.writer.lock() {
+        let _ = writer.write_all(data);
+        let _ = writer.flush();
+    }
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn ghostty_resize(cols: u16, rows: u16, userdata: *mut c_void) {
+    if userdata.is_null() {
+        return;
+    }
+    let context = unsafe { &*userdata.cast::<GhosttyCallbackContext>() };
+    if let Ok(master) = context.session.master.lock() {
+        let _ = master.resize(PtySize {
+            rows: clamp_rows(rows),
+            cols: clamp_cols(cols),
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+    }
 }
 
 impl TerminalSession {
@@ -82,6 +257,30 @@ impl TerminalSession {
             }
         }
         event
+    }
+
+    #[cfg(target_os = "macos")]
+    fn feed_ghostty(&self, bytes: &[u8]) {
+        if let Ok(surface) = self.ghostty.lock() {
+            if let Some(surface) = surface.as_ref() {
+                surface.receive(bytes);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn finish_ghostty(&self, exit_code: u32) {
+        let runtime_ms = self
+            .info
+            .read()
+            .ok()
+            .and_then(|info| now_millis().checked_sub(info.created_at))
+            .unwrap_or(0);
+        if let Ok(surface) = self.ghostty.lock() {
+            if let Some(surface) = surface.as_ref() {
+                surface.finish(exit_code, runtime_ms);
+            }
+        }
     }
 }
 
@@ -161,6 +360,8 @@ impl TerminalManager {
             child: Mutex::new(Some(child)),
             sequence: AtomicU64::new(0),
             scrollback: Mutex::new(VecDeque::new()),
+            #[cfg(target_os = "macos")]
+            ghostty: Mutex::new(None),
         });
         self.sessions
             .write()
@@ -225,6 +426,116 @@ impl TerminalManager {
         Ok(())
     }
 
+    pub fn mount_native(
+        &self,
+        id: &str,
+        parent: *mut c_void,
+        frame: &NativeTerminalFrame,
+        font_family: &str,
+        font_size: f32,
+    ) -> Result<bool> {
+        #[cfg(target_os = "macos")]
+        {
+            let session = self.session(id)?;
+            let mut mounted = session
+                .ghostty
+                .lock()
+                .map_err(|_| anyhow!("libghostty surface unavailable"))?;
+            if let Some(surface) = mounted.as_ref() {
+                surface.set_frame(frame);
+                surface.set_visible(true);
+                return Ok(true);
+            }
+            let surface = GhosttySurface::new(
+                parent,
+                session.clone(),
+                frame,
+                font_family,
+                font_size,
+            )?;
+            if let Ok(scrollback) = session.scrollback.lock() {
+                for (_, event) in scrollback.iter() {
+                    if let Some(encoded) = event.data_base64.as_deref() {
+                        if let Ok(bytes) = STANDARD.decode(encoded) {
+                            surface.receive(&bytes);
+                        }
+                    }
+                }
+            }
+            surface.set_visible(true);
+            surface.focus();
+            *mounted = Some(surface);
+            return Ok(true);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (id, parent, frame, font_family, font_size);
+            Ok(false)
+        }
+    }
+
+    pub fn set_native_frame(&self, id: &str, frame: &NativeTerminalFrame) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        if let Some(surface) = self
+            .session(id)?
+            .ghostty
+            .lock()
+            .map_err(|_| anyhow!("libghostty surface unavailable"))?
+            .as_ref()
+        {
+            surface.set_frame(frame);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (id, frame);
+        Ok(())
+    }
+
+    pub fn set_native_visible(&self, id: &str, visible: bool) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        if let Some(surface) = self
+            .session(id)?
+            .ghostty
+            .lock()
+            .map_err(|_| anyhow!("libghostty surface unavailable"))?
+            .as_ref()
+        {
+            surface.set_visible(visible);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (id, visible);
+        Ok(())
+    }
+
+    pub fn focus_native(&self, id: &str) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        if let Some(surface) = self
+            .session(id)?
+            .ghostty
+            .lock()
+            .map_err(|_| anyhow!("libghostty surface unavailable"))?
+            .as_ref()
+        {
+            surface.focus();
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = id;
+        Ok(())
+    }
+
+    pub fn unmount_native(&self, id: &str) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            self.session(id)?
+                .ghostty
+                .lock()
+                .map_err(|_| anyhow!("libghostty surface unavailable"))?
+                .take();
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = id;
+        Ok(())
+    }
+
     pub fn close(&self, id: &str) -> Result<()> {
         let session = self
             .sessions
@@ -285,6 +596,8 @@ fn spawn_reader(app: AppHandle, session: Arc<TerminalSession>, mut reader: Box<d
                         },
                         size,
                     );
+                    #[cfg(target_os = "macos")]
+                    session.feed_ghostty(&buffer[..size]);
                     let _ = app.emit(crate::contract::events::EventChannel::TERMINAL, event);
                 }
                 Err(error) => {
@@ -314,6 +627,8 @@ fn spawn_reader(app: AppHandle, session: Arc<TerminalSession>, mut reader: Box<d
             info.status = "exited".into();
             info.exit_code = exit_code;
         }
+        #[cfg(target_os = "macos")]
+        session.finish_ghostty(exit_code.unwrap_or(0));
         let event = session.record(
             TerminalEvent {
                 terminal_id: session.info.read().unwrap().id.clone(),

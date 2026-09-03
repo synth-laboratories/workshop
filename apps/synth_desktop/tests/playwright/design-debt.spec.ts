@@ -21,6 +21,7 @@ test.describe("design locks (must pass)", () => {
 	test("composer model menu does not advertise deferred LoRA adapters", async ({ page }) => {
 		await page.getByTestId("composer-model").click();
 		const menu = page.getByTestId("composer-model-menu");
+		await menu.getByTestId("composer-model-access-local").click();
 		await expect(menu).toBeVisible();
 		await expect(menu.getByText("Laguna LoRAs")).toHaveCount(0);
 		await expect(menu.getByText("Remote LoRAs")).toHaveCount(0);
@@ -50,6 +51,8 @@ test.describe("design locks (must pass)", () => {
 		await page.getByRole("button", { name: "About", exact: true }).click();
 		const changelog = page.getByTestId("about-changelog");
 		await expect(changelog).toBeVisible();
+		await expect(changelog).toContainText("Version 0.4.0");
+		await expect(changelog).toContainText("Version 0.3.0");
 		await expect(changelog).toContainText("Version 0.1.0");
 		await expect(changelog).toContainText("New");
 		await expect(changelog).toContainText("Improved");
@@ -272,7 +275,8 @@ test.describe("design debt (expected fail until fixed)", () => {
 				status: "draft",
 				rendererKind: "template",
 				bindings: {
-					spec: {
+					schemaVersion: "synth.visual-bindings.v1",
+					inputs: [{ input: "spec", kind: "inline", data: {
 						title: "Laguna Prompt Trim Preinstall",
 						blocks: [
 							{ type: "metrics", items: [
@@ -281,7 +285,7 @@ test.describe("design debt (expected fail until fixed)", () => {
 							] },
 							{ type: "note", text: "Compact visual operations load only when needed." }
 						]
-					}
+					} }]
 				},
 				sessionId: null,
 				messageId: null,
@@ -326,13 +330,14 @@ test.describe("design debt (expected fail until fixed)", () => {
 				status: "draft",
 				rendererKind: "template",
 				bindings: {
-					spec: {
+					schemaVersion: "synth.visual-bindings.v1",
+					inputs: [{ input: "spec", kind: "inline", data: {
 						title: "Malformed ranked bars",
 						blocks: [
 							{ type: "ranked-bars", title: "Broken" },
 							{ type: "note", text: "Still visible after skipping the bad block." }
 						]
-					}
+					} }]
 				},
 				sessionId: null,
 				messageId: null,
@@ -392,6 +397,8 @@ test.describe("design debt (expected fail until fixed)", () => {
 					return row as never;
 				},
 				async probeContainer(id: string) { return this.getContainer(id); },
+				async reconcileContainer(id: string) { return this.getContainer(id); },
+				async restartContainer(id: string) { return this.getContainer(id); },
 				async listTraces() { return []; },
 				async getTrace() { throw new Error("none"); },
 				async chooseTraceInput() { return null; },
@@ -434,6 +441,8 @@ test.describe("design debt (expected fail until fixed)", () => {
 				async getContainer() { throw new Error("none"); },
 				async registerContainer() { throw new Error("none"); },
 				async probeContainer() { throw new Error("none"); },
+				async reconcileContainer() { throw new Error("none"); },
+				async restartContainer() { throw new Error("none"); },
 				async listTraces() {
 					return [{
 						id: "debt-trace",

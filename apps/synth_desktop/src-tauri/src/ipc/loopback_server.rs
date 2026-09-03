@@ -13,12 +13,73 @@ use hyper_util::rt::TokioIo;
 use serde_json::Value;
 use std::convert::Infallible;
 use std::future::Future;
+use std::net::{IpAddr, SocketAddr};
 
 pub type LoopbackBody = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
 
 /// Accept loop used by the credential broker and JSON IPC servers.
+///
+/// IPC stays loopback-only. The provider proxy uses
+/// [`serve_connections_allowing`] for Docker-bridge peers.
 pub async fn serve_connections<F, Fut>(
     listener: tokio::net::TcpListener,
+    on_request: F,
+) -> Result<()>
+where
+    F: Fn(Request<Incoming>, SocketAddr) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response<LoopbackBody>, Infallible>> + Send + 'static,
+{
+    serve_connections_allowing(listener, |ip| ip.is_loopback(), on_request).await
+}
+
+/// Accept loop with a caller-supplied peer allowlist.
+pub async fn serve_connections_allowing<F, Fut, P>(
+    listener: tokio::net::TcpListener,
+    peer_ok: P,
+    on_request: F,
+) -> Result<()>
+where
+    F: Fn(Request<Incoming>, SocketAddr) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response<LoopbackBody>, Infallible>> + Send + 'static,
+    P: Fn(IpAddr) -> bool + Clone + Send + Sync + 'static,
+{
+    loop {
+        let (stream, peer) = listener
+            .accept()
+            .await
+            .context("accept a connection on a Synth Desktop loopback server")?;
+        if !peer_ok(peer.ip()) {
+            crate::platform::logging::report(
+                "ipc",
+                "eprintln",
+                format!("synth-desktop: rejected IPC peer {peer}"),
+            );
+            continue;
+        }
+        let on_request = on_request.clone();
+        tauri::async_runtime::spawn(async move {
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |request| on_request(request, peer));
+            if let Err(error) = http1::Builder::new()
+                .max_buf_size(crate::limits::LOOPBACK_MAX_HEADER_BYTES)
+                .serve_connection(io, service)
+                .await
+            {
+                crate::platform::logging::report(
+                    "ipc",
+                    "eprintln",
+                    format!("synth-desktop: loopback connection ended: {error}"),
+                );
+            }
+        });
+    }
+}
+
+/// Unix-domain HTTP accept loop. There is no TCP peer to check; the socket
+/// path's mode (0600) is the trust boundary.
+#[cfg(unix)]
+pub async fn serve_unix_connections<F, Fut>(
+    listener: tokio::net::UnixListener,
     on_request: F,
 ) -> Result<()>
 where
@@ -29,7 +90,7 @@ where
         let (stream, _peer) = listener
             .accept()
             .await
-            .context("accept a connection on a Synth Desktop loopback server")?;
+            .context("accept a connection on a Synth Desktop unix server")?;
         let on_request = on_request.clone();
         tauri::async_runtime::spawn(async move {
             let io = TokioIo::new(stream);
@@ -39,7 +100,11 @@ where
                 .serve_connection(io, service)
                 .await
             {
-                eprintln!("synth-desktop: loopback connection ended: {error}");
+                crate::platform::logging::report(
+                    "ipc",
+                    "eprintln",
+                    format!("synth-desktop: unix connection ended: {error}"),
+                );
             }
         });
     }
@@ -53,14 +118,32 @@ pub struct JsonHttpRequest {
     pub authorization: Option<String>,
     pub body: Value,
     pub raw_headers: hyper::HeaderMap,
+    /// Accepted socket peer; `None` only for requests built directly in tests.
+    pub peer: Option<std::net::SocketAddr>,
+}
+
+/// Length-safe token equality: rejects on length without inspecting bytes,
+/// then OR-folds every byte so match position never shapes timing.
+pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right.iter())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }
 
 /// JSON response with optional extra headers (e.g. protocol version).
+/// `raw_body` is used for native SSE so sidecar HTTP can pass event-stream
+/// bytes without wrapping them as JSON.
 #[derive(Debug)]
 pub struct JsonHttpResponse {
     pub status: StatusCode,
     pub body: Value,
     pub extra_headers: Vec<(&'static str, String)>,
+    pub raw_body: Option<Vec<u8>>,
+    pub content_type: Option<String>,
 }
 
 impl JsonHttpResponse {
@@ -69,6 +152,18 @@ impl JsonHttpResponse {
             status: StatusCode::OK,
             body,
             extra_headers: Vec::new(),
+            raw_body: None,
+            content_type: None,
+        }
+    }
+
+    pub fn sse(body: Vec<u8>) -> Self {
+        Self {
+            status: StatusCode::OK,
+            body: serde_json::json!({}),
+            extra_headers: Vec::new(),
+            raw_body: Some(body),
+            content_type: Some("text/event-stream".into()),
         }
     }
 
@@ -77,21 +172,41 @@ impl JsonHttpResponse {
             status,
             body: serde_json::json!({ "error": message.into() }),
             extra_headers: Vec::new(),
+            raw_body: None,
+            content_type: None,
+        }
+    }
+
+    pub fn with_status(status: StatusCode, body: Value) -> Self {
+        Self {
+            status,
+            body,
+            extra_headers: Vec::new(),
+            raw_body: None,
+            content_type: None,
         }
     }
 }
 
 pub fn json_response(status: StatusCode, body: Value) -> Response<LoopbackBody> {
     let payload = serde_json::to_vec(&body).unwrap_or_else(|_| b"{\"error\":\"encode\"}".to_vec());
+    bytes_response(status, "application/json", payload)
+}
+
+pub fn bytes_response(
+    status: StatusCode,
+    content_type: &str,
+    payload: Vec<u8>,
+) -> Response<LoopbackBody> {
     Response::builder()
         .status(status)
-        .header("content-type", "application/json")
+        .header("content-type", content_type)
         .body(
             Full::new(Bytes::from(payload))
                 .map_err(|never| match never {})
                 .boxed(),
         )
-        .expect("static JSON response")
+        .expect("static loopback response")
 }
 
 /// Hyper accept loop that parses JSON bodies and dispatches to a router.
@@ -113,10 +228,10 @@ where
     F: Fn(JsonHttpRequest) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = JsonHttpResponse> + Send + 'static,
 {
-    serve_connections(listener, move |request| {
+    serve_connections(listener, move |request, peer| {
         let handler = handler.clone();
         async move {
-            let parsed = match parse_json_request(request, max_body_bytes).await {
+            let parsed = match parse_json_request(request, peer, max_body_bytes).await {
                 Ok(parsed) => parsed,
                 Err(response) => return Ok(response),
             };
@@ -124,8 +239,20 @@ where
                 status,
                 body,
                 extra_headers,
+                raw_body,
+                content_type,
             } = handler(parsed).await;
-            let mut response = json_response(status, body);
+            let mut response = if let Some(raw) = raw_body {
+                bytes_response(
+                    status,
+                    content_type
+                        .as_deref()
+                        .unwrap_or("application/octet-stream"),
+                    raw,
+                )
+            } else {
+                json_response(status, body)
+            };
             for (name, value) in extra_headers {
                 if let Ok(header) = hyper::header::HeaderValue::from_str(&value) {
                     response.headers_mut().insert(name, header);
@@ -139,6 +266,7 @@ where
 
 async fn parse_json_request(
     request: Request<Incoming>,
+    peer: std::net::SocketAddr,
     max_body_bytes: usize,
 ) -> Result<JsonHttpRequest, Response<LoopbackBody>> {
     let method = request.method().clone();
@@ -181,5 +309,20 @@ async fn parse_json_request(
         authorization,
         body,
         raw_headers,
+        peer: Some(peer),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::constant_time_eq;
+
+    #[test]
+    fn constant_time_eq_matches_semantics_of_eq() {
+        assert!(constant_time_eq(b"synth_eval_abc", b"synth_eval_abc"));
+        assert!(!constant_time_eq(b"synth_eval_abc", b"synth_eval_abd"));
+        assert!(!constant_time_eq(b"synth_eval_abc", b"synth_eval_ab"));
+        assert!(constant_time_eq(b"", b""));
+        assert!(!constant_time_eq(b"", b"x"));
+    }
 }

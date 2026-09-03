@@ -17,7 +17,10 @@ the `lint:app-css` gate is measuring.
 ## Why this exists
 
 `WORKSHOP_QUALITY_STYLE_GUIDE.md` §3 has prescribed an 8px rhythm and three radii
-since 2026-08-09. Measured against `app.css` at 7,678 lines, the codebase had:
+since 2026-08-09. The baseline was remeasured on 2026-08-19 against the
+byte-identical `f64dcf80` release-base stylesheet (not raised by this chart
+lane), so the gate continues to reject new literals rather than failing every
+unchanged candidate. Measured against `app.css` at 7,678 lines, the codebase had:
 
 - **372** distinct hex colors, against 20 color tokens
 - **25** distinct font sizes, nine of them half-pixel

@@ -456,13 +456,18 @@ class RuntimeService:
         instances.mkdir(parents=True, exist_ok=True)
         path = instances / f"{visual_id}.tsx"
         if tsx is None:
+            template = resolve_visual_template(root, visual["templateId"])
+            shell_path = template.get("shellPath")
+            if not shell_path:
+                raise RuntimeError(f'visual template {visual["templateId"]} has no TSX shell')
+            shell_import = "../" + Path(shell_path).relative_to(root).with_suffix("").as_posix()
             tsx = (
                 f'/* Auto-saved visual instance */\n'
                 f'export const visualId = "{visual_id}";\n'
                 f'export const templateId = "{visual["templateId"]}";\n'
                 f'export const title = {json.dumps(visual["title"])};\n'
                 f'export const bindings = {json.dumps(visual.get("bindings") or {}, indent=2)} as const;\n'
-                f'export {{ default as Shell }} from "../templates/{visual["templateId"]}/shell";\n'
+                f'export {{ default as Shell }} from {json.dumps(shell_import)};\n'
             )
         path.write_text(tsx, encoding="utf-8")
         return self.inventory.update_visual(visual_id, {"tsxPath": str(path)})

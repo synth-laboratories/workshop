@@ -12,6 +12,14 @@ env_file = "~/.synth-desktop/.env"
 api_key_env = "SYNTH_API_KEY"
 worker_key_env = "SMR_WORKER_API_KEY" # internal Codex activity only
 
+# Provider keys are loaded only from env_file. Workshop never copies them into
+# Keychain or into optimizer/container processes.
+[credentials.providers.openai]
+variable = "OPENAI_API_KEY"
+
+[credentials.providers.openrouter]
+variable = "OPENROUTER_API_KEY"
+
 [intern.endpoints]
 local-slot1 = "http://127.0.0.1:41109"
 staging = "https://api-dev.usesynth.ai"
@@ -34,6 +42,14 @@ allowed_roots = ["/Users/you/Documents/GitHub"]
 # "gpt-5.6-luna" = "v1"
 # "laguna-xs-2.1" = "none" # may be forced to "v1" or "v2"
 # "laguna-s-2.1" = "none"
+
+# Add an OpenRouter target without rebuilding Desktop. `model` is the exact
+# provider slug. Keep OpenRouter credentials in the adjacent .env file; do
+# not place keys or prices in config.toml.
+# [[models.openrouter]]
+# id = "ox-alpha"
+# model = "stealth/ox-alpha"
+# enabled = true
 
 # ~/.synth-desktop/.env
 # SYNTH_API_KEY=...

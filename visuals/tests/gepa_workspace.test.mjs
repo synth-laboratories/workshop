@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { projectAtCursor } from "../templates/optimizer.run.v1/components/projectEvents.ts";
-import { candidatePalette, elapsedLabel, generationPalette, incumbentCandidateIds, orderedScoredCandidates } from "../templates/optimizer.run.v1/overlays/gepa/model.ts";
+import { projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
+import { projectRunViewV2 } from "../families/optimizers/_shared/optimizer.run.v1/components/projectRunViewV2.ts";
+import { candidatePalette, elapsedLabel, generationPalette, incumbentCandidateIds, orderedScoredCandidates } from "../families/optimizers/_shared/optimizer.run.v1/overlays/gepa/model.ts";
 
 // Condensed from the real banking77_gepa_sol_med_45856f25 run: same event
 // types, field names, and decision values, with the 140 per-rollout events
@@ -15,6 +16,96 @@ test("generation colors are stable and keep the seed neutral", () => {
   assert.equal(candidatePalette({ generation: 1 }).color, "#7c3aed");
   assert.notEqual(candidatePalette({ generation: 0 }).color, candidatePalette({ generation: 1 }).color);
   assert.deepEqual(generationPalette(6), generationPalette(0), "the bounded palette repeats deterministically");
+});
+
+test("durable setup events retain task, dataset, container, and selected taskset context", () => {
+  const projected = projectAtCursor(RUN, [
+    {
+      ...base, sequenceNumber: 1, type: "optimizer.state.transitioned",
+      delta: { from: "created", to: "initializing", trigger: "run_started", details: {
+        train_ids: Array.from({ length: 50 }, (_, index) => `train:${index}`),
+        heldout_ids: Array.from({ length: 50 }, (_, index) => `test:${index}`),
+        policy_model: "openai/gpt-5.6-luna", proposer_model: "openai/gpt-5.6-luna"
+      } }
+    },
+    { ...base, sequenceNumber: 2, type: "gepa.run.started", delta: { container_url: "http://127.0.0.1:8127" } },
+    {
+      ...base, sequenceNumber: 3, type: "container.contract.verified", delta: {
+        container_spec_id: "banking77-gepa-b-v6", workshop_instance: "B",
+        credential_mode: "workshop_ephemeral_proxy", runtime_family: "banking77",
+        reward_authority: "container_evaluator", evaluator_id: "banking77-evaluator-v1",
+        retention: "run", scale_leases: 4,
+        dataset: {
+          source: "PolyAI/banking77", config: "test", revision: "evals:abc", row_count: 3080,
+          label_count: 77, dataset_digest: "sha256:dataset",
+          splits: { train: { count: 2114 }, selection: { count: 623 }, heldout: { count: 343 } }
+        },
+        policy_refs: [{ harness: "banking77_classifier", config: "chatgpt_proxy" }]
+      }
+    },
+    {
+      ...base, sequenceNumber: 4, type: "container.task_info.loaded", delta: {
+        task: { id: "banking77-intents-v1", name: "Banking77 intent classification", description: "Classify one message.", task_family: "banking77", version: "v1" },
+        dataset: {
+          source: "PolyAI/banking77", config: "test", revision: "evals:abc", row_count: 3080,
+          label_count: 77, dataset_digest: "sha256:dataset",
+          splits: { train: { count: 2114 }, selection: { count: 623 }, heldout: { count: 343 } }
+        }
+      }
+    },
+    { ...base, sequenceNumber: 5, type: "container.program.loaded", delta: { program_id: "banking77-classifier-v1", mutable_fields: ["classification_system_prompt"] } },
+    { ...base, sequenceNumber: 6, type: "taskset.tasks.loaded", delta: { minibatch_rows: 20, reflection_rows: 50, pareto_rows: 50, heldout_rows: 50, task_pools: { pareto: Array.from({ length: 50 }, (_, index) => `train:${index}`) } } }
+  ]);
+
+  assert.deepEqual(projected.gepa.contract.task, {
+    id: "banking77-intents-v1", name: "Banking77 intent classification", objective: undefined,
+    description: "Classify one message.", family: "banking77", version: "v1", outputKind: undefined
+  });
+  assert.deepEqual(projected.gepa.contract.dataset, {
+    source: "PolyAI/banking77", config: "test", revision: "evals:abc", digest: "sha256:dataset",
+    rowCount: 3080, labelCount: 77, splits: { train: 2114, selection: 623, heldout: 343 }
+  });
+  assert.deepEqual(projected.gepa.contract.splits, { train: 50, minibatch: 20, reflection: 50, pareto: 50, heldout: 50 });
+  assert.deepEqual(projected.gepa.contract.container, {
+    url: "http://127.0.0.1:8127", verified: true, specId: "banking77-gepa-b-v6", workshopInstance: "B",
+    credentialMode: "workshop_ephemeral_proxy", evaluatorId: "banking77-evaluator-v1",
+    runtimeFamily: "banking77", targetId: undefined, rewardAuthority: "container_evaluator",
+    policyHarness: "banking77_classifier", policyConfig: "chatgpt_proxy", scaleLeases: 4, retention: "run"
+  });
+});
+
+test("live run view exposes durable setup and measured concurrency", () => {
+  const view = {
+    algorithm: "gepa",
+    header: {
+      runId: RUN.id, algorithm: "gepa", lifecycle: "running", phase: "selection",
+      condition: "healthy", placement: "search.gepa.local", specId: "spec", specDigest: "sha256:spec",
+      executionBindings: [], inputRefs: [], outputRefs: [], visualRefs: [],
+      usage: { costUsd: .06, promptTokens: 100, completionTokens: 10 },
+      evidence: { completeness: "partial", refs: [] }, terminal: null,
+      projectionSchemaVersion: "gepa.projection.v2", asOfSequence: 50, projectionRevision: 50
+    },
+    projection: {
+      candidates: {}, candidateOrder: [], proposerCalls: [], evaluations: [],
+      contract: {
+        task: { id: "banking77-intents-v1", name: "Banking77 intent classification" },
+        program: { id: "banking77-classifier-v1", mutableFields: ["classification_system_prompt"] },
+        objectiveSet: { frontierType: "per_example", selectionObjective: "outcome_reward", objectives: [{ name: "outcome_reward", direction: "maximize" }] },
+        splits: { train: 100, minibatch: 40, reflection: 100, pareto: 100, heldout: 100 },
+        dataset: { source: "PolyAI/banking77", rowCount: 3080, labelCount: 77, splits: { train: 2114, selection: 623, heldout: 343 } },
+        container: { verified: true, specId: "banking77-gepa-b-v6", workshopInstance: "B", url: "http://127.0.0.1:8127", policyModel: "openai/gpt-5.6-luna" }
+      },
+      runtime: { configuredRolloutWorkers: 50, staticRolloutWorkers: 50, estimatedEffectiveConcurrency: 17.5, rolloutsPerMinute: 600, rolloutSubmissionMode: "async", maxDispatchChunkSize: 50 }
+    }
+  };
+  const projected = projectRunViewV2(RUN, view);
+  assert.equal(projected.gepa.contract.task.id, "banking77-intents-v1");
+  assert.equal(projected.gepa.contract.dataset.labelCount, 77);
+  assert.equal(projected.gepa.contract.container.workshopInstance, "B");
+  assert.equal(projected.gepa.models.policy, "openai/gpt-5.6-luna");
+  assert.equal(projected.gepa.runtime.configuredRolloutWorkers, 50);
+  assert.equal(projected.gepa.runtime.estimatedEffectiveConcurrency, 17.5);
+  assert.equal(projected.gepa.runtime.rolloutsPerMinute, 600);
 });
 
 function solEvents() {
@@ -312,6 +403,28 @@ test("observed rollout throughput uses completion timestamps, not configured cap
   assert.equal(projected.gepa.runtime.activeWorkers, 3);
   assert.equal(projected.gepa.runtime.semaphoreSize, 3);
   assert.equal(projected.gepa.runtime.queuedRollouts, 4);
+});
+
+test("runtime receipts expose configured, effective, and uncached throughput", () => {
+  const projected = projectAtCursor(RUN, [{
+    ...base,
+    sequenceNumber: 1,
+    type: "runtime.job.completed",
+    delta: {
+      lane: "rollout",
+      configured_rollout_workers: 1,
+      static_rollout_workers: 8,
+      estimated_effective_concurrency: 7.3,
+      rollout_submission_mode: "async",
+      cache_misses: 8,
+      wall_seconds: 60
+    }
+  }]);
+  assert.equal(projected.gepa.runtime.configuredRolloutWorkers, 1);
+  assert.equal(projected.gepa.runtime.staticRolloutWorkers, 8);
+  assert.equal(projected.gepa.runtime.estimatedEffectiveConcurrency, 7.3);
+  assert.equal(projected.gepa.runtime.rolloutSubmissionMode, "async");
+  assert.equal(projected.gepa.runtime.rolloutsPerMinute, 8);
 });
 
 test("live cost sums only when every completed rollout reports cost", () => {

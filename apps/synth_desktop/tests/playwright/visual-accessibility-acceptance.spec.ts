@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const RECEIPT_DIR = process.env.SYNTH_EXTERNAL_VISUAL_RECEIPTS ??
-  "/Users/joshuapurtell/Documents/Codex/2026-08-12/let/receipts/external-acceptance/visuals";
+  resolve(import.meta.dirname, "../../test-results/external-acceptance/visuals");
 const VISUAL_ROOT = resolve(import.meta.dirname, "../../../../visuals");
 
 type Json = Record<string, any>;
@@ -41,36 +41,56 @@ function geloFixture(): Json {
   };
 }
 
-function digbenchFixture(): Json {
-  const fixture = json("templates/live.digbench.v1/examples/events.json");
-  const events = fixture.events as Json[];
+const FIXTURES: Fixture[] = [
+  { id: "vis_a11y_gepa", family: "GEPA", templateId: "optimizer.run.v1", data: json("families/optimizers/_shared/optimizer.run.v1/examples/gepa_events.json"), testId: "visual-optimizer-run" },
+  { id: "vis_a11y_gelo", family: "GELO", templateId: "optimizer.run.v1", data: geloFixture(), testId: "visual-optimizer-run" },
+  { id: "vis_a11y_sft", family: "SFT", templateId: "optimizer.run.v1", data: json("families/optimizers/_shared/optimizer.run.v1/examples/sft_events.json"), testId: "visual-optimizer-run" },
+  { id: "vis_a11y_craftax", family: "Craftax", templateId: "live.craftax.v1", data: { ...json("families/first_class_example_containers/live.craftax.v1/examples/events.json"), replay_ms: 10 }, testId: "visual-live-craftax" },
+  { id: "vis_a11y_harbor", family: "Harbor", templateId: "live.harbor_eval.v1", data: { ...json("families/first_class_example_containers/live.harbor_eval.v1/examples/events.json"), replay_ms: 10 }, testId: "visual-live-harbor-eval" }
+];
+
+function optimizerRunView(fixture: Fixture): Json | undefined {
+  if (!["GEPA", "GELO", "SFT"].includes(fixture.family)) return undefined;
+	const fixtureRun = fixture.data.run && typeof fixture.data.run === "object" ? fixture.data.run as Json : {};
+  const algorithm = String(fixtureRun.algorithmId ?? (fixture.family === "GELO" ? "go-ex" : fixture.family.toLowerCase()));
+	const runId = String(fixtureRun.id ?? fixture.id);
+  const projection = algorithm === "gepa"
+    ? {
+        phase: "complete", usage: { steps: 1 },
+        candidates: { cand_accessibility: { id: "cand_accessibility", source: "seed", trainReward: 0.5, gateAccepted: true } },
+        candidateOrder: ["cand_accessibility"], seedCandidateId: "cand_accessibility",
+        selectedCandidateId: "cand_accessibility", frontierHistory: ["cand_accessibility"],
+        incumbentId: "cand_accessibility", rolloutsScored: 1, rolloutBudget: 1
+      }
+    : algorithm === "go-ex"
+      ? { phase: "selection", candidateIds: ["cand_accessibility"], selectedCandidateId: "cand_accessibility", themes: ["survival"], childEvalRunIds: [] }
+      : { phase: "complete", usage: { steps: 1 }, trainLoss: 0.25, checkpoints: ["ckpt_accessibility"], selectedCheckpointId: "ckpt_accessibility" };
   return {
-    ...fixture,
-    replay_ms: 10,
-    events: [
-      ...events.map((event) => ({ ...event, lane: "basic-react", run_id: "digbench_basic" })),
-      ...events.map((event) => ({ ...event, lane: "agentic-mcp", run_id: "digbench_agentic" }))
-    ]
+    algorithm,
+    header: {
+	      runId, algorithm, lifecycle: "terminal", phase: "complete", condition: "healthy",
+	      placement: "local_python_process", specId: `spec-${runId}`, specDigest: `sha256:${runId}`,
+      executionBindings: [], inputRefs: [], outputRefs: [], visualRefs: [], artifacts: [],
+      usage: { promptTokens: 1, completionTokens: 1, steps: 1 },
+      work: { succeeded: 1, unit: "steps", fixedDenominator: false },
+      evidence: { completeness: "complete", refs: [] }, failureRef: null,
+      terminal: { kind: "completed", finalSequence: 1, evidence: { completeness: "complete", refs: [] }, sealedAt: "2026-08-12T22:00:01.000Z" },
+      projectionSchemaVersion: `optimizer.${algorithm}.projection.v2`, asOfSequence: 1, projectionRevision: 1
+    },
+    projection,
+    result: { verdict: "completed", work: { succeeded: 1, unit: "steps", fixedDenominator: false } }
   };
 }
 
-const FIXTURES: Fixture[] = [
-  { id: "vis_a11y_gepa", family: "GEPA", templateId: "optimizer.run.v1", data: json("templates/optimizer.run.v1/examples/gepa_events.json"), testId: "visual-optimizer-run" },
-  { id: "vis_a11y_gelo", family: "GELO", templateId: "optimizer.run.v1", data: geloFixture(), testId: "visual-optimizer-run" },
-  { id: "vis_a11y_sft", family: "SFT", templateId: "optimizer.run.v1", data: json("templates/optimizer.run.v1/examples/sft_events.json"), testId: "visual-optimizer-run" },
-  { id: "vis_a11y_craftax", family: "Craftax", templateId: "live.craftax.v1", data: { ...json("templates/live.craftax.v1/examples/events.json"), replay_ms: 10 }, testId: "visual-live-craftax" },
-  { id: "vis_a11y_harbor", family: "Harbor", templateId: "live.harbor_eval.v1", data: { ...json("templates/live.harbor_eval.v1/examples/events.json"), replay_ms: 10 }, testId: "visual-live-harbor-eval" },
-  { id: "vis_a11y_digbench", family: "dig.bench", templateId: "live.digbench.v1", data: digbenchFixture(), testId: "visual-live-digbench" }
-];
-
 function record(fixture: Fixture): VisualRecord {
+	const runViewV2 = optimizerRunView(fixture);
   return {
     schemaVersion: "synth.desktop-visual.v1", id: fixture.id, currentRevision: 1,
     title: `${fixture.family} accessibility acceptance`, templateId: fixture.templateId,
     status: "saved", rendererKind: "template",
     bindings: { schemaVersion: "synth.visual-bindings.v1", slots: [{
       slot: fixture.templateId === "optimizer.run.v1" ? "optimizer_run" : "stream",
-      kind: "inline", data: fixture.data
+      kind: "inline", data: runViewV2 ? { ...fixture.data, runViewV2 } : fixture.data
     }] },
     sessionId: null, messageId: null, runId: fixture.id, traceId: null,
     parentVisualId: null, sourceAgentId: "acceptance", sourceModel: "fixture",
@@ -177,17 +197,12 @@ test("V6: axe, browser AX tree, keyboard names, focus, reduced motion, and 200% 
         await page.keyboard.press("ArrowLeft");
         await expect(scrub).toBeFocused();
       } else if (fixture.family === "Craftax") {
+        await visual.getByRole("button", { name: "Replay", exact: true }).click();
         const lane = visual.getByRole("navigation", { name: "Rollout lanes" }).getByRole("button").first();
         await expect(lane).toBeVisible();
         await lane.focus();
         await page.keyboard.press("Enter");
         await expect(lane).toHaveAttribute("aria-current", "true");
-      } else if (fixture.family === "dig.bench") {
-        const lane = visual.getByRole("navigation", { name: "Harness lanes" }).getByRole("button").first();
-        await expect(lane).toBeVisible();
-        await lane.focus();
-        await page.keyboard.press("Enter");
-        await expect(lane).toHaveAttribute("aria-pressed", "true");
       }
 
       const ax = await cdp.send("Accessibility.getFullAXTree");

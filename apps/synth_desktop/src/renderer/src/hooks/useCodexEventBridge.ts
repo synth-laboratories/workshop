@@ -1,12 +1,13 @@
-import { useEffect, type MutableRefObject } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
 import type { Session } from "@synth/runtime-protocol";
 import {
 	codexResumeRequest,
 	isCodexCompactionEvent
 } from "../runtime/codexTurn";
+import { publicError } from "../runtime/publicError";
 import { codexEventToRuntime } from "../runtime/nativeCodex";
 import { dispatchRuntimeEvent } from "../stores/sessionStore";
-import type { CodexBridge } from "../bridge";
+import type { CodexBridge, CodexEvent } from "../bridge";
 import type { DesktopPreferences } from "../preferences";
 
 export type CodexUsageSnapshot = {
@@ -47,26 +48,39 @@ export function useCodexEventBridge(args: {
 	autoCompactTokenLimits: DesktopPreferences["agentContext"]["autoCompactTokenLimits"];
 	localBaseUrl: string | undefined;
 	showToast: (message: string) => void;
+	/** A native event proves that an accepted turn actually began making progress. */
+	onTurnActivity?: (sessionId: string) => void;
+	onRawEvent?: (event: CodexEvent) => void;
 	onOauthReauthRequired?: () => void;
 	onCodexUsage?: (usage: CodexUsageSnapshot) => void;
 }): void {
-	const {
-		nativeCodex,
-		allocateNativeSequence,
-		sessionsRef,
-		manualCompactionPendingRef,
-		queuedCompactionRef,
-		staleRunFenceRef,
-		autoCompactTokenLimits,
-		localBaseUrl,
-		showToast,
-		onOauthReauthRequired,
-		onCodexUsage
-	} = args;
+	const { nativeCodex } = args;
+	// The Tauri listener is installed asynchronously. Reinstalling it whenever an
+	// inline callback changes creates a real event-loss window after every event:
+	// dispatch -> React render -> unlisten -> async listen. Keep one transport
+	// subscription and let it read the current handlers/configuration instead.
+	const currentRef = useRef(args);
+	currentRef.current = args;
 
 	useEffect(() => {
 		if (!nativeCodex) return;
 		return nativeCodex.onEvent((event) => {
+			const {
+				allocateNativeSequence,
+				sessionsRef,
+				manualCompactionPendingRef,
+				queuedCompactionRef,
+				staleRunFenceRef,
+				autoCompactTokenLimits,
+				localBaseUrl,
+				showToast,
+				onTurnActivity,
+				onRawEvent,
+				onOauthReauthRequired,
+				onCodexUsage
+			} = currentRef.current;
+			onTurnActivity?.(event.sessionId);
+			onRawEvent?.(event);
 			const usage = codexUsageFromEvent(event);
 			if (usage) onCodexUsage?.(usage);
 			if (event.method === "turn/failed" && event.params.code === "codex_oauth_reauth_required") {
@@ -106,7 +120,7 @@ export function useCodexEventBridge(args: {
 					.then(() => showToast("Compacting context…"))
 					.catch((reason) => {
 						manualCompactionPendingRef.current.delete(event.sessionId);
-						showToast(reason instanceof Error ? reason.message : String(reason));
+						showToast(publicError(reason));
 					});
 			}
 			dispatchRuntimeEvent(runtimeEvent, {
@@ -114,17 +128,5 @@ export function useCodexEventBridge(args: {
 				title: updatedThreadName
 			});
 		});
-	}, [
-		allocateNativeSequence,
-		autoCompactTokenLimits,
-		localBaseUrl,
-		manualCompactionPendingRef,
-		nativeCodex,
-		onOauthReauthRequired,
-		onCodexUsage,
-		queuedCompactionRef,
-		sessionsRef,
-		showToast,
-		staleRunFenceRef
-	]);
+	}, [nativeCodex]);
 }

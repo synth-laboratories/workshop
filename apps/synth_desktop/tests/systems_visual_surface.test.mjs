@@ -21,6 +21,8 @@ test("static systems maps retain Mermaid-class source and rendition controls", (
 	for (const label of ["Zoom in", "Zoom out", "Fit", "Source", "Copy source", "Export SVG", "Retry"]) assert.ok(surface.includes(label), label);
 	assert.match(surface, /rendition\?\.\(visualId, "svg"/);
 	assert.match(surface, /SYSTEMS MAP · 2D/);
+	for (const cleanup of ["onPointerCancel", "onLostPointerCapture", "releasePointerCapture"]) assert.ok(surface.includes(cleanup), cleanup);
+	assert.match(surface, /retryToken\.current === token/);
 });
 
 test("dynamic systems explainers are declarative and expose deterministic playback controls", () => {
@@ -39,6 +41,19 @@ test("dynamic systems explainers are declarative and expose deterministic playba
 	assert.match(surface, /edgeGeometry/);
 	assert.match(surface, /styleClass\(state\.style\)/);
 	assert.doesNotMatch(surface, /dangerouslySetInnerHTML|eval\(|new Function|<iframe/);
+	assert.match(surface, /retryToken\.current === token/);
+});
+
+test("Mermaid pan cleanup and retry are revision safe", () => {
+	const surface = read("components/MermaidVisual.tsx");
+	for (const cleanup of ["onPointerCancel", "onLostPointerCapture", "releasePointerCapture"]) assert.ok(surface.includes(cleanup), cleanup);
+	assert.match(surface, /retryToken\.current !== token/);
+});
+
+test("systems surfaces have bounded responsive native presentation", () => {
+	const css = read("styles/app.css");
+	for (const contract of [".systems-visual-stage", ".systems-dynamic-stage", "object-fit: contain", ".systems-dynamic-timeline", "@media (max-width: 480px)"]) assert.ok(css.includes(contract), contract);
+	assert.match(css, /\.systems-visual-actions \{[\s\S]*flex-wrap: wrap/);
 });
 
 test("systems authoring requires screenshot-backed collision and density review", () => {
@@ -55,14 +70,16 @@ test("systems authoring requires screenshot-backed collision and density review"
 
 test("visual MCP exposes image-backed review capture", () => {
 	const mcp = readFileSync(new URL("../src-tauri/src/bin/synth_visuals_mcp.rs", import.meta.url), "utf8");
+	const ipc = readFileSync(new URL("../src-tauri/src/visuals_ipc.rs", import.meta.url), "utf8");
 	const stdio = readFileSync(new URL("../src-tauri/src/ipc/mcp_stdio.rs", import.meta.url), "utf8");
 	assert.match(mcp, /capture_review/);
 	assert.match(mcp, /visual_capture_review/);
 	assert.match(mcp, /screenshot_path/);
 	assert.match(mcp, /_mcpImage/);
 	assert.match(mcp, /deterministic-svg/);
-	assert.match(mcp, /desktop-window/);
-	assert.match(mcp, /screencapture/);
+	assert.match(mcp, /\/v1\/review-window\/capture/);
+	assert.match(ipc, /\/v1\/review-window\/capture/);
+	assert.doesNotMatch(mcp, /\/usr\/sbin\/screencapture/);
 	assert.match(stdio, /"type": "image"/);
 	assert.match(stdio, /object\.remove\("_mcpImage"\)/);
 });

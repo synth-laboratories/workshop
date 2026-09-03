@@ -4,6 +4,7 @@ import { loadDeviceUsage } from "../runtime/deviceUsage";
 import type { DeviceUsageSummary } from "../components/UsageSheet";
 import type { SynthAccountSummary, SynthBackendSettings } from "../bridge";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 
 /**
  * Account / billing shell state. Keeps the Account Snapshot refresh path out of
@@ -28,7 +29,9 @@ export function useAccountShell(showToast: (message: string) => void) {
 	}, []);
 
 	useEffect(() => {
-		refreshAccountSummary();
+		// Relaunch is an account reconciliation boundary. Avoid rendering a stale
+		// cached local-only snapshot before the paired cloud identity is checked.
+		refreshAccountSummary(true);
 		void loadDeviceUsage()
 			.then(setAccountUsage)
 			.catch(() => setAccountUsage(null));
@@ -55,7 +58,7 @@ export function useAccountShell(showToast: (message: string) => void) {
 				);
 				window.setTimeout(() => refreshAccountSummary(true), 4_000);
 			} catch (reason) {
-				showToast(reason instanceof Error ? reason.message : String(reason));
+				showToast(publicError(reason));
 			}
 		},
 		[accountSummary?.billing?.upgradeTier, refreshAccountSummary, showToast]

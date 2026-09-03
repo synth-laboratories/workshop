@@ -16,7 +16,10 @@ import {
 	applyLocalSessionStatus,
 	applyRuntimeEvent,
 	applyTurnAccepted,
+	EMPTY_SESSION_STORE_STATE,
 	mergeReplayedRuntimeEvents,
+	pruneLiveTurns,
+	selectChatPresence,
 	selectSessionRunning,
 	selectWorkingChatIds,
 	type ApplyRuntimeEventOptions,
@@ -30,8 +33,12 @@ export {
 	applyTurnAccepted,
 	appendRuntimeEvent,
 	mergeReplayedRuntimeEvents,
+	pruneLiveTurns,
+	selectChatBusy,
+	selectChatPresence,
 	selectSessionRunning,
 	selectWorkingChatIds,
+	sessionRecoveryNotice,
 	statusFromRuntimeEvent
 } from "./applyRuntimeEvent";
 
@@ -39,10 +46,7 @@ type Listener = () => void;
 
 const EMPTY_EVENTS: RuntimeEvent[] = [];
 
-let cached: SessionStoreState = {
-	sessions: [],
-	eventsBySession: {}
-};
+let cached: SessionStoreState = EMPTY_SESSION_STORE_STATE;
 const listeners = new Set<Listener>();
 
 function commit(next: SessionStoreState): SessionStoreState {
@@ -72,23 +76,26 @@ export function getEventsBySession(): Record<string, RuntimeEvent[]> {
 }
 
 export function resetSessionStore(
-	next: SessionStoreState = { sessions: [], eventsBySession: {} }
+	next: SessionStoreState = EMPTY_SESSION_STORE_STATE
 ): SessionStoreState {
 	return commit(next);
 }
 
+/**
+ * Boot and refresh both land here. Note what is *not* rebuilt: `liveTurns`
+ * carries over untouched and starts empty, so a freshly hydrated session list
+ * can never present a persisted `running` row as Working.
+ */
 export function replaceSessions(sessions: Session[]): SessionStoreState {
-	return commit({ ...cached, sessions });
+	return commit({ ...cached, sessions, liveTurns: pruneLiveTurns(cached.liveTurns, sessions) });
 }
 
 export function mergeInternSessions(internSessions: Session[]): SessionStoreState {
-	return commit({
-		...cached,
-		sessions: [
-			...cached.sessions.filter((session) => session.target.kind !== "intern"),
-			...internSessions
-		]
-	});
+	const sessions = [
+		...cached.sessions.filter((session) => session.target.kind !== "intern"),
+		...internSessions
+	];
+	return commit({ ...cached, sessions, liveTurns: pruneLiveTurns(cached.liveTurns, sessions) });
 }
 
 export function upsertSession(session: Session): SessionStoreState {
@@ -141,6 +148,15 @@ export function replaceSessionEvents(
 	});
 }
 
+export function evictSessionEvents(sessionIds: Iterable<string>): SessionStoreState {
+	const evicted = new Set(sessionIds);
+	if (evicted.size === 0 || !Object.keys(cached.eventsBySession).some((id) => evicted.has(id))) return cached;
+	const eventsBySession = Object.fromEntries(
+		Object.entries(cached.eventsBySession).filter(([id]) => !evicted.has(id))
+	);
+	return commit({ ...cached, eventsBySession });
+}
+
 export function mergeSessionReplay(
 	replay: ReadonlyArray<readonly [string, RuntimeEvent[]]>
 ): SessionStoreState {
@@ -175,13 +191,31 @@ export function useSessionRunning(sessionId: string | null | undefined): boolean
 		if (!sessionId) return false;
 		return selectSessionRunning(
 			state.sessions.find((session) => session.id === sessionId),
-			state.eventsBySession[sessionId] ?? EMPTY_EVENTS
+			state.eventsBySession[sessionId] ?? EMPTY_EVENTS,
+			state.liveTurns
 		);
 	});
 }
 
 export function useWorkingChatIds(): Set<string> {
-	return useSessionStore((state) => selectWorkingChatIds(state.sessions));
+	return useSessionStore((state) => selectWorkingChatIds(state.sessions, state.liveTurns));
+}
+
+export function useChatPresence(sessionId: string | null | undefined) {
+	return useSessionStore((state) =>
+		selectChatPresence(
+			sessionId ? state.sessions.find((session) => session.id === sessionId) : null,
+			state.liveTurns
+		)
+	);
+}
+
+export function useLiveTurns(): Record<string, string> {
+	return useSessionStore((state) => state.liveTurns);
+}
+
+export function getLiveTurns(): Record<string, string> {
+	return cached.liveTurns;
 }
 
 /**

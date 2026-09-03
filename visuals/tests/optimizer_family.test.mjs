@@ -10,8 +10,8 @@ import {
   formatChildEvalCost,
   formatChildEvalReward,
   projectAtCursor,
-} from "../templates/optimizer.run.v1/components/projectEvents.ts";
-import { normalizeOptimizerEvents } from "../templates/optimizer.run.v1/components/normalizeEvents.ts";
+} from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
+import { normalizeOptimizerEvents } from "../families/optimizers/_shared/optimizer.run.v1/components/normalizeEvents.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -21,7 +21,7 @@ function loadFixture(rel) {
 
 test("GEPA evaluations fixture is resource-refs, not NEV/frames", () => {
   const fixture = loadFixture(
-    "templates/optimizer.gepa.evaluations.v1/examples/events.json",
+    "families/optimizers/gepa/optimizer.gepa.evaluations.v1/examples/events.json",
   );
   const refs = extractContainerRolloutRefs(fixture.events);
   assert.ok(refs.length >= 2, "expected child container_rollout refs");
@@ -41,7 +41,7 @@ test("GEPA evaluations fixture is resource-refs, not NEV/frames", () => {
 
 test("missing child eval reward stays em dash, never 0", () => {
   const fixture = loadFixture(
-    "templates/optimizer.gepa.evaluations.v1/examples/events.json",
+    "families/optimizers/gepa/optimizer.gepa.evaluations.v1/examples/events.json",
   );
   const refs = extractContainerRolloutRefs(fixture.events);
   const missing = refs.find((ref) => ref.attributes?.reward == null);
@@ -57,7 +57,7 @@ test("missing child eval reward stays em dash, never 0", () => {
 });
 
 test("GEPA live fixture has no env frames and omits usage until present", () => {
-  const fixture = loadFixture("templates/optimizer.gepa.live.v1/examples/events.json");
+  const fixture = loadFixture("families/optimizers/gepa/optimizer.gepa.live.v1/examples/events.json");
   assert.equal(fixtureHasEnvFrames(fixture.events), false);
   const start = projectAtCursor(fixture.run, fixture.events, 1);
   assert.equal(formatMissingNumber(start.usage.costUsd), "—");
@@ -525,12 +525,14 @@ test("live templates do not import fixture fallbacks", () => {
   for (const template of [
     "live.craftax.v1",
     "live.harbor_eval.v1",
-    "live.digbench.v1",
     "live.eval_stream.v1",
     "live.intern_acceptance.v1",
     "live.container_rollouts.v1",
   ]) {
-    const shell = readFileSync(join(root, "templates", template, "shell.tsx"), "utf8");
+    const family = template === "live.intern_acceptance.v1"
+      ? "compatibility"
+      : "first_class_example_containers";
+    const shell = readFileSync(join(root, "families", family, template, "shell.tsx"), "utf8");
     assert.doesNotMatch(shell, /import\s+\w*[Ff]ixture|\?\?\s+liveFixture|return\s+liveFixture/);
   }
 });

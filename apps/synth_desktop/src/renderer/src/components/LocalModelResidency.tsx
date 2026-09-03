@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { LagunaStatus } from "../bridge";
+import { publicError } from "../runtime/publicError";
 
 function compactModelName(value: string): string {
 	return value.split("/").at(-1)?.replace(/-mlx$/i, "") ?? value;
@@ -94,7 +95,7 @@ export function LocalModelResidency({ status, onFreeMemory }: { status: LagunaSt
 						setFreeing(true);
 						setFreeError(null);
 						try { await onFreeMemory(); }
-						catch (reason) { setFreeError(reason instanceof Error ? reason.message : String(reason)); }
+						catch (reason) { setFreeError(publicError(reason)); }
 						finally { setFreeing(false); }
 					}}>{freeing ? "Freeing memory…" : "Free memory"}</button>
 				</div>

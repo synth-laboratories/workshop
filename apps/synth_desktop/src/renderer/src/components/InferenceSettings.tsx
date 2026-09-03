@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { COMMANDS, invokeCommand } from "../bridge";
-import type { LagunaStatus } from "../bridge";
+import { fromGenerated, spectaCommands } from "../bridge";
 
 /**
  * Editor for the Laguna daemon's runtime settings (`/v1/synth/settings`).
@@ -65,7 +64,7 @@ export const CALIBRATED_LOCAL_CODING_SETTINGS: Partial<DaemonSettings> = {
 	default_top_k: 20,
 	default_reasoning_effort: "high",
 	idle_unload_after_seconds: 900,
-	prompt_cache_slots: 4,
+	prompt_cache_slots: 2,
 	queue_capacity: 9
 };
 
@@ -141,8 +140,8 @@ function isTauri(): boolean {
 export function defaultSettingsTransport(): SettingsTransport {
 	if (!isTauri()) return unavailableTransport;
 	tauriTransport ??= {
-		snapshot: () => invokeCommand<SettingsExchange>(COMMANDS.LAGUNA_SETTINGS_SNAPSHOT),
-		update: (patch) => invokeCommand<SettingsExchange>(COMMANDS.LAGUNA_SETTINGS_UPDATE, { patch })
+		snapshot: () => fromGenerated(spectaCommands.lagunaSettingsSnapshot()),
+		update: (patch) => fromGenerated(spectaCommands.lagunaSettingsUpdate(patch))
 	};
 	return tauriTransport;
 }
@@ -306,7 +305,7 @@ export function InferenceSettings({ transport, controller }: InferenceSettingsPr
 	useEffect(() => {
 		if (view.state !== "unsupported") return;
 		if (!isTauri()) return;
-		void invokeCommand<LagunaStatus>(COMMANDS.LAGUNA_GET_STATUS)
+		void fromGenerated(spectaCommands.lagunaGetStatus())
 			.then((status) => setDaemon({ detail: status.detail ?? status.phase, baseUrl: status.baseUrl }))
 			.catch(() => undefined);
 	}, [view.state]);
@@ -371,7 +370,7 @@ export function InferenceSettings({ transport, controller }: InferenceSettingsPr
 					Use calibrated defaults
 				</button>
 				<p className="settings-runtime-copy">
-					Temperature 1.0 · top p 1.0 · top k 20 · reasoning on · unload after 15 minutes · 4 cache slots · queue 9
+					Temperature 1.0 · top p 1.0 · top k 20 · reasoning on · unload after 15 minutes · 2 cache slots · queue 9
 				</p>
 				{rejection?.field === null ? (
 					<span className="pref-field-error" role="alert" data-testid="inference-preset-error">
@@ -492,9 +491,10 @@ export function InferenceSettings({ transport, controller }: InferenceSettingsPr
 						label="Prompt cache slots"
 						value={settings.prompt_cache_slots}
 						min={1}
-						max={32}
+						max={2}
 						step={1}
 						testId="inference-prompt-cache-slots"
+						caption="Bounded to 2 for unified-memory safety"
 						error={fieldError("prompt_cache_slots")}
 						onCommit={(value) => control.commit("prompt_cache_slots", value)}
 					/>

@@ -1,16 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { EXECUTION_TARGETS, LAUNCH_PICKER_TARGETS, TARGET_GROUP_LABEL } from "../types/landing";
-import type { ExecutionTargetOption, LandingState } from "../types/landing";
+import { apiProviderForTarget, EXECUTION_TARGETS, isOpenRouterTargetId, LAUNCH_PICKER_TARGETS, MODEL_ACCESS_LABEL, MODEL_ACCESS_ORDER, modelAccessForTarget, TARGET_GROUP_LABEL } from "../types/landing";
+import { targetOptionForId } from "../runtime/modelCatalog";
+import type { ExecutionTargetOption, LandingState, ModelAccessKind } from "../types/landing";
 import { SynthLogo } from "./SynthLogo";
-import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
+import type { LagunaPolicy } from "../bridge/types";
+import { policyLabel } from "../runtime/lagunaPolicies";
+import { ComposerLayoutHost } from "./ComposerLayout";
 
 type Props = {
 	state: LandingState;
-	selectedTargetId: string;
-	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
-	onConfigureModels?: () => void;
-	onResolveBilling?: () => void;
 };
 
 export function ModelPicker({
@@ -22,7 +21,10 @@ export function ModelPicker({
 	onSelectTarget,
 	onConfigureAccount,
 	onConfigureModels,
-	onResolveBilling
+	onResolveBilling,
+	lagunaPolicies = [],
+	selectedLagunaPolicyId = null,
+	onSelectLagunaPolicy
 }: {
 	selectedTargetId: string;
 	apiKeyConfigured?: boolean;
@@ -34,10 +36,20 @@ export function ModelPicker({
 	onConfigureAccount?: () => void;
 	onConfigureModels?: () => void;
 	onResolveBilling?: () => void;
+	lagunaPolicies?: LagunaPolicy[];
+	selectedLagunaPolicyId?: string | null;
+	onSelectLagunaPolicy?: (modelId: string | null) => void;
 }) {
 	const [open, setOpen] = useState(false);
+	const [activeAccess, setActiveAccess] = useState<ModelAccessKind | null>(null);
 	const ref = useRef<HTMLDivElement>(null);
-	const selected = EXECUTION_TARGETS.find((t) => t.id === selectedTargetId) ?? EXECUTION_TARGETS[0];
+	const selected = targetOptionForId(selectedTargetId) ?? EXECUTION_TARGETS[0];
+	const selectedLagunaPolicy = lagunaPolicies.find((policy) =>
+		policy.isBase ? selectedLagunaPolicyId === null : policy.modelId === selectedLagunaPolicyId
+	);
+	const selectedLabel = selectedTargetId === "local-laguna" && selectedLagunaPolicy
+		? policyLabel(selectedLagunaPolicy)
+		: selected.label;
 	// The dropdown must stay inside the viewport with an 8px inset, never cover
 	// the composer, and flip above the trigger when the space below is tighter
 	// than the space above. Content taller than the slot scrolls internally.
@@ -102,18 +114,17 @@ export function ModelPicker({
 			<button
 				type="button"
 				className="model-pill"
-				onClick={() => setOpen((v) => !v)}
+				onClick={() => setOpen((v) => {
+					if (!v) setActiveAccess(null);
+					return !v;
+				})}
 				data-testid="model-picker"
 				aria-label="Select execution target"
 				aria-expanded={open}
 				aria-controls="model-dropdown"
 				aria-haspopup="listbox"
 			>
-				<ProviderMark
-					kind={providerMarkForTarget(selectedTargetId)}
-					className={`model-pill-logo model-pill-logo-${providerMarkForTarget(selectedTargetId)}`}
-				/>
-				<span className="model-pill-label">{selected.label}</span>
+				<span className="model-pill-label">{selectedLabel}</span>
 				<svg className="model-pill-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden>
 					<path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" fill="none" />
 				</svg>
@@ -132,21 +143,76 @@ export function ModelPicker({
 						}
 						: undefined}
 				>
-					{(["local", "remote", "subscription", "cloud"] as const).map((group) => {
+					{activeAccess === null ? MODEL_ACCESS_ORDER.map((access) => (
+						<button
+							key={access}
+							type="button"
+							role="option"
+							aria-selected={modelAccessForTarget(selected) === access}
+							className={`model-option model-access-option${modelAccessForTarget(selected) === access ? " selected" : ""}`}
+							data-testid={`model-access-${access}`}
+							onClick={() => setActiveAccess(access)}
+						>
+							<span className="model-option-label">{MODEL_ACCESS_LABEL[access]}</span>
+							<span className="model-option-desc">{access === "local" ? "Models on this Mac" : access === "api" ? "Synth and third-party providers" : "Your ChatGPT subscription"} ›</span>
+						</button>
+					)) : <>
+						<button type="button" className="model-option model-access-back" data-testid="model-access-back" onClick={() => setActiveAccess(null)}>
+							<span className="model-option-label">‹ {MODEL_ACCESS_LABEL[activeAccess]}</span>
+							<span className="model-option-desc">All access methods</span>
+						</button>
+					{(["local", "cloud", "remote", "subscription"] as const).filter((group) => {
+						const sample = LAUNCH_PICKER_TARGETS.find((target) => target.group === group);
+						return sample ? modelAccessForTarget(sample) === activeAccess : false;
+					}).map((group) => {
 						const items = LAUNCH_PICKER_TARGETS.filter((t) => t.group === group);
 						if (!items.length) return null;
 						return (
 							<div key={group} className="model-dropdown-group">
-								<div className="model-dropdown-group-label">{TARGET_GROUP_LABEL[group]}</div>
+								<div className="model-dropdown-group-label">{activeAccess === "api" ? apiProviderForTarget(items[0]) : TARGET_GROUP_LABEL[group]}</div>
 								{items.map((target: ExecutionTargetOption) => {
+									if (target.id === "local-laguna" && lagunaPolicies.length) {
+										return lagunaPolicies.map((policy) => {
+											const policyId = policy.isBase ? null : policy.modelId;
+											const selectedHere = selectedTargetId === target.id && selectedLagunaPolicyId === policyId;
+											return (
+												<button
+													key={policy.modelId}
+													type="button"
+													role="option"
+													aria-selected={selectedHere}
+													data-testid={`model-option-local-laguna-${policy.isBase ? "base" : policy.modelId}`}
+													className={`model-option${selectedHere ? " selected" : ""}`}
+													onClick={() => {
+														onSelectTarget(target.id);
+														onSelectLagunaPolicy?.(policyId);
+														setOpen(false);
+													}}
+												>
+													<span className="model-option-label">{policyLabel(policy)}</span>
+													<span className="model-option-desc">{policy.isBase ? "Base model · This Mac" : "Fine-tuned model · This Mac"}</span>
+												</button>
+											);
+										});
+									}
 									const needsSynthKey =
 										target.id.startsWith("synth-cloud-") && apiKeyConfigured !== true;
 									const needsOpenRouterKey =
-										target.id.startsWith("openrouter-") && openrouterApiKeyConfigured !== true;
+										isOpenRouterTargetId(target.id) && openrouterApiKeyConfigured !== true;
 									const needsCodexOauth =
 										target.id.startsWith("chatgpt-") && codexOauthConfigured !== true;
 									const allowanceBlocked =
 										target.id.startsWith("synth-cloud-") && !needsSynthKey && Boolean(cloudBlockedReason);
+									if (target.selectable === false) {
+										return (
+											<div key={target.id} className="model-option is-disabled" data-testid={`model-option-${target.id}`}>
+												<span className="model-option-copy" role="option" aria-selected={false} aria-disabled="true">
+													<span className="model-option-label">{target.label}</span>
+													<span className="model-option-desc">{target.diagnostic ?? target.availability ?? "Unavailable"}</span>
+												</span>
+											</div>
+										);
+									}
 									if (allowanceBlocked) {
 										return (
 											<div
@@ -228,7 +294,7 @@ export function ModelPicker({
 								})}
 							</div>
 						);
-					})}
+					})}</>}
 				</div>
 			) : null}
 		</div>
@@ -237,11 +303,7 @@ export function ModelPicker({
 
 export function LandingPage({
 	state,
-	selectedTargetId,
-	onSelectTarget,
 	onConfigureAccount,
-	onConfigureModels,
-	onResolveBilling
 }: Props) {
 	const [accountChoiceMade, setAccountChoiceMade] = useState(
 		() => window.localStorage.getItem("synth.accountChoiceMade") === "1"
@@ -252,20 +314,7 @@ export function LandingPage({
 				<div className="synth-logo-wrap">
 					<SynthLogo className="synth-logo" />
 				</div>
-				<div className="landing-title-row">
-					<p className="landing-title">Start a new conversation using</p>
-					<ModelPicker
-						selectedTargetId={selectedTargetId}
-						apiKeyConfigured={state.apiKeyConfigured}
-						openrouterApiKeyConfigured={state.openrouterApiKeyConfigured}
-						codexOauthConfigured={state.codexOauthConfigured}
-						cloudBlockedReason={state.cloudBlockedReason}
-						onSelectTarget={onSelectTarget}
-						onConfigureAccount={onConfigureAccount}
-						onConfigureModels={onConfigureModels}
-						onResolveBilling={onResolveBilling}
-					/>
-				</div>
+				<h1 className="landing-title">Start a new conversation with Workshop</h1>
 				{!state.apiKeyConfigured && !accountChoiceMade ? (
 					<div className="quick-actions" data-testid="first-run-account-choice">
 						<button type="button" className="quick-card" onClick={() => {
@@ -280,6 +329,7 @@ export function LandingPage({
 					</div>
 				) : null}
 			</div>
+			<ComposerLayoutHost />
 		</div>
 	);
 }

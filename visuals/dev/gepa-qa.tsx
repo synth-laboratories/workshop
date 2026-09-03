@@ -2,9 +2,9 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import "../../apps/synth_desktop/src/renderer/src/styles/app.css";
 import "../chrome/tokens.css";
-import { GepaWorkspace } from "../templates/optimizer.run.v1/overlays/gepa/GepaWorkspace.tsx";
-import { projectAtCursor, type OptimizerRun, type ProjectedState } from "../templates/optimizer.run.v1/components/projectEvents.ts";
-import { normalizeOptimizerEvents } from "../templates/optimizer.run.v1/components/normalizeEvents.ts";
+import { GepaWorkspace } from "../families/optimizers/_shared/optimizer.run.v1/overlays/gepa/GepaWorkspace.tsx";
+import { projectAtCursor, type OptimizerRun, type ProjectedState } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
+import { normalizeOptimizerEvents } from "../families/optimizers/_shared/optimizer.run.v1/components/normalizeEvents.ts";
 
 const candidates = [
   { id: "gepa_seed", source: "seed", status: "full_train_evaluated", score: 0.71, train_reward: 0.71, sequence: 12 },
@@ -24,14 +24,21 @@ const fixtureProjected: ProjectedState = {
   cursorSeq: 82, summary: { status: "running" }, timeline: [], usage: { costUsd: 0.08 }, logs: [], artifacts: [], execution: { bindings: [] },
   gepa: {
     candidates, frontier: [{ candidateId: "gepa_2" }, { candidateId: "gepa_3" }], reflections: [], budget: {}, limits: [{ kind: "total_rollouts", max: 100, spent: 80 }, { kind: "cost_usd", max: 2, spent: 0.08 }],
-    contract: { task: { id: "banking77", name: "Banking77 intent classification" }, program: { id: "banking77_classifier", mutableFields: ["system_prompt"] }, objectiveSet: { frontierType: "per_example", selectionObjective: "accuracy", objectives: [{ name: "accuracy", direction: "maximize", aggregation: "mean" }] }, splits: { minibatch: 10, reflection: 10, pareto: 50, heldout: 20 }, container: { rewardAuthority: "container", policyHarness: "chat_completions" } },
+    contract: {
+      task: { id: "banking77-intents-v1", name: "Banking77 intent classification", description: "Classify each Banking77 customer message into exactly one catalog intent label.", family: "banking77", version: "v1" },
+      program: { id: "banking77-classifier-v1", mutableFields: ["classification_system_prompt"] },
+      objectiveSet: { frontierType: "per_example", selectionObjective: "accuracy", objectives: [{ name: "accuracy", direction: "maximize", aggregation: "mean" }] },
+      splits: { train: 50, minibatch: 20, reflection: 50, pareto: 50, heldout: 50 },
+      dataset: { source: "PolyAI/banking77", config: "test", revision: "evals:7fde918e", digest: "sha256:d8818d40c6329ce6b727180b5e2e7c210e3aa1efab6120518b1d2db14682927e", rowCount: 3080, labelCount: 77, splits: { train: 2114, selection: 623, heldout: 343 } },
+      container: { verified: true, specId: "banking77-gepa-b-v6", url: "http://127.0.0.1:8127", workshopInstance: "B", credentialMode: "workshop_ephemeral_proxy", evaluatorId: "banking77-evaluator-v1", runtimeFamily: "banking77", rewardAuthority: "container_evaluator", policyHarness: "banking77_classifier", retention: "run" }
+    },
     frontierHistory: [{ sequence: 12, bestCandidateId: "gepa_seed", bestTrainReward: .71, bestCandidateSolved: 35, optimisticSolved: 35, totalExamples: 50, coverageSemantics: "solved_reward_positive", frontierSize: 1, addedCandidateIds: ["gepa_seed"], removedCandidateIds: [] }, { sequence: 54, generation: 1, bestCandidateId: "gepa_2", bestTrainReward: .79, bestCandidateSolved: 40, optimisticSolved: 44, totalExamples: 50, coverageSemantics: "solved_reward_positive", frontierSize: 2, addedCandidateIds: ["gepa_2"], removedCandidateIds: [] }],
     stages: [
       { id: "seed", label: "Seed evaluation", status: "completed" }, { id: "proposal", label: "Reflection + proposal", status: "completed" },
       { id: "minibatch", label: "Minibatch gate", status: "active" }, { id: "full_train", label: "Full train evaluation", status: "pending" },
       { id: "heldout", label: "Heldout", status: "pending" }, { id: "complete", label: "Complete", status: "pending" }
     ],
-    evaluations, failedAttempts: [{ candidateId: "gepa_3", sequence: 81, stage: "candidate_minibatch", exampleId: "banking77:5", jobId: "job-5", attempt: 3, maxAttempts: 3, failureClass: "stream_timeout", message: "policy stream timed out after durable cursor 218" }],
+    evaluations, failedAttempts: [{ candidateId: "gepa_3", sequence: 81, stage: "candidate_minibatch", exampleId: "banking77:5", jobId: "job-5", attempt: 3, maxAttempts: 3, failureClass: "stream_timeout", message: "policy stream timed out after recorded cursor 218" }],
     coverage: [{ candidateId: "gepa_3", stage: "candidate_minibatch", required: 10, scored: 8, failed: 1, pending: 1, complete: false, promotionEligible: false, sequence: 82 }],
     proposerTraces: [], activity: { phase: "rollout_running", label: "Evaluating minibatch", proposalActive: false, evaluationActive: true, evaluationStage: "candidate_minibatch", activeCandidateIds: ["gepa_3"], generation: 2, sequence: 82, terminal: false },
     incumbentId: "gepa_2", best: { candidateId: "gepa_3", trainReward: 0.82 }, models: { proposer: "gpt-5.6-sol", policy: "gpt-5.6-luna" }, timing: { startedAt: "2026-08-13T01:00:00Z", lastEventAt: "2026-08-13T01:08:00Z" }, rolloutsCompleted: 80,
@@ -87,7 +94,7 @@ function App() {
 
   const jobState = projected.gepa?.runtime.job?.state;
   const bridgeLabel = live
-    ? `${jobState && jobState !== "running" ? jobState.toUpperCase() : "LIVE"} · ${run.id} · ${live.events.length} durable events`
+    ? `${jobState && jobState !== "running" ? jobState.toUpperCase() : "LIVE"} · ${run.id} · ${live.events.length} recorded events`
     : `FIXTURE · ${error ?? "connecting to live event bridge"}`;
   const bridgeColor = jobState === "terminated" || jobState === "failed" ? "#b23830" : live ? "#16a36a" : "#a36b16";
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Time-Dynamic Explainers"
+  short_description: "Author polished systems explanations over time"
+  default_prompt: "Use $author-time-dynamic-explainers to teach this mechanism as a time-dynamic Workshop visual."

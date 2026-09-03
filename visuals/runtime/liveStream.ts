@@ -1,20 +1,28 @@
 /**
  * W0 live-eval bind + reducer contract.
  *
- * Slot `stream` only (not `live` or `jobs`). Bind a declared stream URL.
+ * Input `stream` only (not `live` or `jobs`). Bind a declared stream URL.
  * Missing reward / usage / cost stay missing. Heartbeats and
  * `stream.subscribed` do not become evidence.
  */
 
-export const LIVE_EVAL_SLOT = "stream";
+export const LIVE_EVAL_INPUT = "stream";
+/** Alias of `LIVE_EVAL_INPUT` so existing imports compile. */
+export const LIVE_EVAL_SLOT = LIVE_EVAL_INPUT;
 export const FORBIDDEN_LIVE_EVAL_SLOTS = ["live", "jobs"] as const;
+
+function isDeclaredLiveEvalAuxiliary(slot: string, templateId: string): boolean {
+  // Craftax keeps `stream` as its only gameplay transport. The optional
+  // optimizer input contributes run lifecycle, evidence disposition, and
+  // proxy usage; it must never be interpreted as a replacement stream.
+  return templateId === "live.craftax.v1" && slot === "optimizer_run";
+}
 
 const LIVE_EVAL_TEMPLATE_PREFIXES = [
   "live.harbor",
   "live.container",
   "live.eval",
-  "live.craftax",
-  "live.digbench"
+  "live.craftax"
 ] as const;
 
 export type DeclaredStreamDescriptor = {
@@ -35,6 +43,8 @@ export type LiveEnvelope = {
   type?: string | null;
   ts?: string;
   occurred_at?: string;
+  /** Stable, one-based acceptance order assigned at the ingest boundary. */
+  logical_time?: number;
   run_id?: string;
   rollout_id?: string;
   lane?: string | null;
@@ -60,10 +70,10 @@ export function isLiveEvalTemplate(templateId: string): boolean {
 
 export function assertLiveEvalSlot(slot: string, templateId?: string): string | null {
   if (FORBIDDEN_LIVE_EVAL_SLOTS.includes(slot as (typeof FORBIDDEN_LIVE_EVAL_SLOTS)[number])) {
-    return `Forbidden live-eval slot "${slot}"; bind slot "${LIVE_EVAL_SLOT}"`;
+    return `Forbidden live-eval input "${slot}"; bind input "${LIVE_EVAL_INPUT}"`;
   }
-  if (templateId && isLiveEvalTemplate(templateId) && slot !== LIVE_EVAL_SLOT) {
-    return `Live eval template "${templateId}" must bind slot "${LIVE_EVAL_SLOT}", not "${slot}"`;
+  if (templateId && isLiveEvalTemplate(templateId) && slot !== LIVE_EVAL_INPUT && !isDeclaredLiveEvalAuxiliary(slot, templateId)) {
+    return `Live eval template "${templateId}" must bind input "${LIVE_EVAL_INPUT}", not "${slot}"`;
   }
   return null;
 }
@@ -122,16 +132,81 @@ export function isControlEnvelope(event: LiveEnvelope): boolean {
   );
 }
 
+/** Placement `includeKinds` matches envelope `kind` or `type`. */
+export function eventMatchesIncludeKinds(
+  event: { kind?: string | null; type?: string | null },
+  includeKinds?: string[]
+): boolean {
+  if (!includeKinds?.length) return true;
+  const labels = [event.kind, event.type].filter(
+    (value): value is string => typeof value === "string" && value.length > 0
+  );
+  return includeKinds.some((kind) => labels.includes(kind));
+}
+
+function payloadString(event: LiveEnvelope, ...keys: string[]): string {
+  const payload = event.payload;
+  if (!payload) return "";
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return "";
+}
+
+/**
+ * Producers may carry transport identity in the envelope payload. Promote that
+ * declared identity at the ingestion boundary so every viewer gets the same
+ * rollout-local de-duplication and lane projection without knowing a producer's
+ * wire shape.
+ */
+export function envelopeScope(event: LiveEnvelope): string {
+  const streamId = typeof event.stream_id === "string" && event.stream_id.length > 0
+    ? event.stream_id
+    : payloadString(event, "stream_id", "stream.id");
+  return streamId
+    || event.rollout_id
+    || payloadString(event, "rollout_id")
+    || event.lane
+    || payloadString(event, "lane")
+    || event.run_id
+    || payloadString(event, "run_id")
+    || "run";
+}
+
+function normalizeEnvelopeIdentity(event: LiveEnvelope): LiveEnvelope {
+  const rolloutId = event.rollout_id || payloadString(event, "rollout_id");
+  const lane = event.lane || payloadString(event, "lane") || rolloutId;
+  const runId = event.run_id || payloadString(event, "run_id");
+  const streamId = typeof event.stream_id === "string" && event.stream_id.length > 0
+    ? event.stream_id
+    : payloadString(event, "stream_id", "stream.id");
+  if (!rolloutId && !lane && !runId && !streamId) return event;
+  return {
+    ...event,
+    ...(rolloutId ? { rollout_id: rolloutId } : {}),
+    ...(lane ? { lane } : {}),
+    ...(runId ? { run_id: runId } : {}),
+    ...(streamId ? { stream_id: streamId } : {}),
+  };
+}
+
 export function envelopeIdentity(event: LiveEnvelope, index: number): string {
   // Sequence/event_id is monotonic only within a rollout. A multiplexed run
   // legitimately contains ten `event_id: "1"` records, so identity must keep
   // the producer lane. Treating event_id as globally unique silently drops
   // all but one lane while still making the aggregate lane count look valid.
-  const scope = event.rollout_id ?? event.lane ?? event.run_id ?? "run";
+  const streamId = typeof event.stream_id === "string" && event.stream_id.length > 0
+    ? event.stream_id
+    : payloadString(event, "stream_id", "stream.id");
+  const sequence = event.sequence_number ?? event.sequence;
+  if (streamId && sequence != null && String(sequence).length > 0) {
+    return `${streamId}:${sequence}`;
+  }
+  const scope = envelopeScope(event);
   if (typeof event.event_id === "string" && event.event_id.length > 0) {
     return `${scope}:${event.event_id}`;
   }
-  const sequence = event.sequence_number ?? event.sequence;
   if (sequence != null && String(sequence).length > 0) {
     return `${scope}:${sequence}`;
   }
@@ -165,6 +240,15 @@ export function ingestLiveEnvelopeBatch(
   const touchedSequenceScopes = new Set<string>();
   const conflicts = [...state.conflicts];
   let ready = state.ready;
+  // Replayed pages can already carry the receiver clock. Continue after its
+  // high-water mark; otherwise assign ticks in the exact order envelopes are
+  // accepted below. Controls and duplicates never consume a tick.
+  let nextLogicalTime = events.reduce((maximum, row) => {
+    const value = typeof row.logical_time === "number" && Number.isFinite(row.logical_time)
+      ? row.logical_time
+      : 0;
+    return Math.max(maximum, value);
+  }, 0) + 1;
 
   for (const event of incoming) {
     const id = envelopeIdentity(event, events.length);
@@ -180,8 +264,15 @@ export function ingestLiveEnvelopeBatch(
       ready ||= String(event.kind ?? event.type ?? "") === "stream.subscribed";
       continue;
     }
-    events.push(event);
-    const scope = String(event.rollout_id ?? event.lane ?? event.run_id ?? "run");
+    const suppliedLogicalTime = typeof event.logical_time === "number"
+      && Number.isInteger(event.logical_time)
+      && event.logical_time > 0
+      ? event.logical_time
+      : undefined;
+    const logicalTime = suppliedLogicalTime ?? nextLogicalTime;
+    nextLogicalTime = Math.max(nextLogicalTime, logicalTime + 1);
+    events.push({ ...normalizeEnvelopeIdentity(event), logical_time: logicalTime });
+    const scope = envelopeScope(event);
     const rawSequence = event.sequence_number ?? event.sequence;
     const sequence = typeof rawSequence === "number" ? rawSequence : Number(rawSequence);
     if (!Number.isFinite(sequence)) continue;

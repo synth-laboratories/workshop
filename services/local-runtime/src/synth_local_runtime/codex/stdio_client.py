@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+# Luna/XHigh proposer turns can legitimately exceed two minutes. Keep the
+# transport ceiling aligned with Workshop's optimizer proposer ceiling so the
+# lower layer cannot silently terminate an otherwise healthy GEPA generation.
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 300.0
+
+
 class CodexAppServerClient:
     def __init__(
         self,
@@ -82,7 +88,13 @@ class CodexAppServerClient:
         self.notify("initialized", None)
         return result
 
-    def request(self, method: str, params: Any, *, timeout: float = 120) -> dict[str, Any]:
+    def request(
+        self,
+        method: str,
+        params: Any,
+        *,
+        timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
         request_id = self._reserve_id()
         with self._lock:
             self._pending[request_id] = None

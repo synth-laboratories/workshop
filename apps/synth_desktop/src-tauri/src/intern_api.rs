@@ -49,7 +49,7 @@ impl From<Option<InternBindingRequest>> for RuntimeBinding {
 pub struct InternTarget {
     pub kind: String,
     pub mode: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub binding: Option<Value>,
 }
@@ -92,9 +92,9 @@ pub struct InternSessionWire {
     pub created_at: String,
     pub updated_at: String,
     pub status: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub state_generation: Option<i64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub latest_cursor: i64,
     pub active_run_id: Option<String>,
     #[specta(type = specta_typescript::Unknown)]

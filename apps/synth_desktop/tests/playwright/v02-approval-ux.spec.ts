@@ -1,6 +1,6 @@
 /**
  * v0.2 approval UX: a pending shell approval must pin above Working…,
- * expose Reject / Approve once, and disappear when the turn stops.
+ * expose Reject / Approve once, and terminalize when its origin stops.
  */
 import { expect, test } from "./browser.fixture";
 
@@ -34,6 +34,12 @@ async function installPendingApproval(page: import("@playwright/test").Page, run
 	];
 	if (!running) {
 		events.push(journalEvent(4, "run.cancelled", { runId: "turn-approval" }));
+		events.push(journalEvent(5, "approval.expired", {
+			approvalId: "appr_shell_1",
+			kind: "shell_command",
+			decision: "expired",
+			reason: "origin_turn_ended"
+		}));
 	}
 	await page.addInitScript(({ rows, live }) => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
@@ -71,7 +77,15 @@ async function installPendingApproval(page: import("@playwright/test").Page, run
 			close: async () => undefined,
 			onEvent: (next: (event: Event) => void) => {
 				listener = next;
-				return () => { listener = undefined; };
+				const timer = live ? window.setTimeout(() => next({
+					sessionId: "v02-approval-session",
+					method: "turn/started",
+					params: { turnId: "turn-approval" }
+				}), 100) : undefined;
+				return () => {
+					if (timer !== undefined) window.clearTimeout(timer);
+					listener = undefined;
+				};
 			}
 		};
 		(window as typeof window & { synthCore?: unknown }).synthCore = {
@@ -113,9 +127,10 @@ test("[v0.2] pending approval pins above Working and exposes Reject / Approve on
 	expect(cardBox!.y, "approval card must sit above Working…").toBeLessThan(workingBox!.y);
 });
 
-test("[v0.2] stale approval cards hide after the turn stops", async ({ page }) => {
+test("[v0.2] stopped turns show terminal approval history instead of dead buttons", async ({ page }) => {
 	await installPendingApproval(page, false);
 	await expect(page.getByTestId("model-working")).toHaveCount(0);
 	await expect(page.locator(".approval-card")).toHaveCount(0);
 	await expect(page.getByRole("button", { name: "Approve once" })).toHaveCount(0);
+	await expect(page.getByText("Permission expired", { exact: true })).toBeVisible();
 });

@@ -1,27 +1,20 @@
-//! W0 live-eval bind contract: slot `stream` only; never guess Craftax/Harbor URLs.
+//! W0 live-eval bind contract: input `stream` only; never guess Craftax/Harbor URLs.
 
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
-pub const LIVE_EVAL_SLOT: &str = "stream";
+pub const LIVE_EVAL_INPUT: &str = "stream";
+pub const LIVE_EVAL_SLOT: &str = LIVE_EVAL_INPUT;
 pub const FORBIDDEN_LIVE_EVAL_SLOTS: &[&str] = &["live", "jobs"];
 pub const LIVE_CRAFTAX_TEMPLATE: &str = "live.craftax.v1";
 pub const LIVE_HARBOR_TEMPLATE: &str = "live.harbor_eval.v1";
-pub const LIVE_DIGBENCH_TEMPLATE: &str = "live.digbench.v1";
 pub const CRAFTAX_TEN_LANE_SEEDS: [i64; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-const SECRET_BINDING_KEYS: &[&str] = &[
-    "authorization",
-    "digbench_api_token",
-    "api_token",
-    "worker_token",
-    "bearer",
-];
+const SECRET_BINDING_KEYS: &[&str] = &["authorization", "api_token", "worker_token", "bearer"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LiveEvalFamily {
     Craftax,
     Harbor,
-    Digbench,
 }
 
 impl LiveEvalFamily {
@@ -29,7 +22,6 @@ impl LiveEvalFamily {
         match self {
             Self::Craftax => "craftax",
             Self::Harbor => "harbor",
-            Self::Digbench => "digbench",
         }
     }
 
@@ -37,7 +29,6 @@ impl LiveEvalFamily {
         match self {
             Self::Craftax => LIVE_CRAFTAX_TEMPLATE,
             Self::Harbor => LIVE_HARBOR_TEMPLATE,
-            Self::Digbench => LIVE_DIGBENCH_TEMPLATE,
         }
     }
 }
@@ -58,7 +49,7 @@ pub fn is_never_declared_stream_url(source: &str) -> bool {
 
 pub fn assert_live_eval_slot(slot: &str) -> Result<()> {
     if FORBIDDEN_LIVE_EVAL_SLOTS.contains(&slot) {
-        bail!("Forbidden live-eval slot \"{slot}\"; bind slot \"{LIVE_EVAL_SLOT}\"");
+        bail!("Forbidden live-eval input \"{slot}\"; bind input \"{LIVE_EVAL_INPUT}\"");
     }
     Ok(())
 }
@@ -97,9 +88,6 @@ pub fn classify_live_eval_family(
         if token.contains("harbor") {
             return Some(LiveEvalFamily::Harbor);
         }
-        if token.contains("digbench") || token.contains("dig.bench") {
-            return Some(LiveEvalFamily::Digbench);
-        }
         if token.contains("craftax") {
             return Some(LiveEvalFamily::Craftax);
         }
@@ -135,51 +123,108 @@ pub fn assert_template_matches_family(template_id: &str, family: LiveEvalFamily)
     )
 }
 
-fn advertised_live_frames(info: &Value) -> &str {
-    info.get("live_frames")
-        .and_then(Value::as_str)
-        .unwrap_or("unsupported")
+/// The container's frame advertisement, wherever and however it spells it.
+///
+/// Type- and nesting-aware on purpose: the Harbor facade nests its claim under
+/// `capabilities` and spells it as a boolean, and the old top-level
+/// `as_str()` read silently defaulted that to "unsupported" — a contradictory
+/// advertisement passed registration instead of being refused. Absence is
+/// `None`, not a claim.
+fn advertised_live_frames(info: &Value) -> Option<String> {
+    [
+        "/live_frames",
+        "/capabilities/live_frames",
+        "/metadata/live_frames",
+        "/metadata/capabilities/live_frames",
+    ]
+    .iter()
+    .find_map(|path| info.pointer(path))
+    .and_then(|value| match value {
+        Value::Bool(claimed) => Some(if *claimed { "true" } else { "false" }.to_string()),
+        Value::String(text) => Some(text.clone()),
+        _ => None,
+    })
 }
 
 /// Harbor must not advertise map frames. Desktop refuses rather than invent a Craftax view.
 pub fn assert_harbor_live_frames(info: &Value) -> Result<()> {
-    let frames = advertised_live_frames(info);
+    let Some(frames) = advertised_live_frames(info) else {
+        return Ok(());
+    };
     if frames.eq_ignore_ascii_case("native") || frames.eq_ignore_ascii_case("true") {
-        bail!("Harbor must not advertise live_frames={frames}");
+        bail!(
+            "Harbor must not advertise live_frames={frames}; refusing registration of a \
+             contradictory capability declaration"
+        );
     }
     Ok(())
 }
 
-/// dig.bench is text-only. Native frames would be a Craftax-shaped lie.
-pub fn assert_digbench_live_frames(info: &Value) -> Result<()> {
-    let frames = advertised_live_frames(info);
-    if frames.eq_ignore_ascii_case("native") || frames.eq_ignore_ascii_case("true") {
-        bail!("dig.bench must not advertise live_frames={frames}");
-    }
-    Ok(())
-}
-
-/// Harbor policies are a property of the inspected environment. A caller may
-/// preserve its already-bound refs, but Desktop must never substitute legacy
-/// policies for a newly discovered package such as DeepSWE.
-pub fn harbor_policy_pins(info: &Value, requested: Option<&Value>) -> Result<Vec<Value>> {
-    let source = requested.or_else(|| info.get("policy_refs"));
-    let pins = if let Some(value) = source {
+pub fn harbor_policy_pins(requested: Option<&Value>) -> Result<Vec<Value>> {
+    let pins = if let Some(value) = requested {
         if let Some(arr) = value.as_array() {
             arr.clone()
         } else {
             bail!("Harbor policyRefs must be an array of policy_ref objects");
         }
     } else {
-        bail!("Harbor requires policy_refs advertised by the inspected environment");
+        vec![
+            json!({"harness": "harbor_fused", "config": "luna_med"}),
+            json!({"harness": "harbor_fused", "config": "sol_med"}),
+        ]
     };
     require_harbor_policy_pins(&pins)?;
     Ok(pins)
 }
 
-pub fn require_harbor_policy_pins(pins: &[Value]) -> Result<()> {
+fn is_visualsbench(info: &Value) -> bool {
+    ["benchmark_family", "task_family", "target_id", "dataset"]
+        .iter()
+        .filter_map(|key| info.get(*key).and_then(Value::as_str))
+        .any(|value| value.to_ascii_lowercase().contains("visualsbench"))
+}
+
+pub fn visualsbench_policy_pins(requested: Option<&Value>) -> Result<Vec<Value>> {
+    let pins = if let Some(value) = requested {
+        value
+            .as_array()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("VisualsBench policyRefs must be an array"))?
+    } else {
+        vec![json!({
+            "harness": "harbor_fused",
+            "config": "luna_med",
+            "policy": "codex",
+            "mcp_bind": "synth_visuals"
+        })]
+    };
     if pins.is_empty() {
-        bail!("Harbor requires at least one advertised policy_ref before start");
+        bail!("VisualsBench requires an explicitly pinned Codex policy_ref");
+    }
+    for pin in &pins {
+        if pin.get("harness").and_then(Value::as_str) != Some("harbor_fused")
+            || pin
+                .get("config")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .is_empty()
+            || pin.get("policy").and_then(Value::as_str) != Some("codex")
+            || pin.get("mcp_bind").and_then(Value::as_str) != Some("synth_visuals")
+        {
+            bail!("VisualsBench policy_ref requires harbor_fused + Codex + mcp_bind=synth_visuals");
+        }
+    }
+    Ok(pins)
+}
+
+pub fn require_visualsbench_start_policy(policy_ref: &Value) -> Result<()> {
+    visualsbench_policy_pins(Some(&json!([policy_ref])))?;
+    Ok(())
+}
+
+pub fn require_harbor_policy_pins(pins: &[Value]) -> Result<()> {
+    if pins.len() < 2 {
+        bail!("C5-02: Harbor requires two policy_refs registered before start");
     }
     for pin in pins {
         let harness = pin.get("harness").and_then(Value::as_str).unwrap_or("");
@@ -194,63 +239,7 @@ pub fn require_harbor_policy_pins(pins: &[Value]) -> Result<()> {
     Ok(())
 }
 
-pub fn digbench_policy_pins(requested: Option<&Value>) -> Result<Vec<Value>> {
-    let pins = if let Some(value) = requested {
-        if let Some(arr) = value.as_array() {
-            arr.clone()
-        } else {
-            bail!("dig.bench policyRefs must be an array of policy_ref objects");
-        }
-    } else {
-        vec![
-            json!({"harness": "react_legal_actions", "config": "react_legal_actions"}),
-            json!({"harness": "codex", "config": "agentic_codex", "mcp_bind": "digbench-mcp"}),
-        ]
-    };
-    require_digbench_policy_pins(&pins)?;
-    Ok(pins)
-}
-
-pub fn require_digbench_policy_pins(pins: &[Value]) -> Result<()> {
-    if pins.len() < 2 {
-        bail!("C8-04: dig.bench requires basic and agentic policy_refs before start_session");
-    }
-    let mut has_basic = false;
-    let mut has_agentic = false;
-    for pin in pins {
-        let harness = pin.get("harness").and_then(Value::as_str).unwrap_or("");
-        let config = pin.get("config");
-        if harness.is_empty() {
-            bail!("C8-04: dig.bench policy_ref requires harness");
-        }
-        if config.is_none() || config == Some(&Value::Null) {
-            bail!("C8-04: dig.bench policy_ref requires config");
-        }
-        let mcp = pin
-            .get("mcp_bind")
-            .or_else(|| pin.pointer("/config/mcp_bind"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        if harness == "react_legal_actions" || harness == "react" {
-            if mcp == "digbench-mcp" {
-                bail!("C8-04: basic dig.bench harness must leave mcp_bind unused");
-            }
-            has_basic = true;
-        }
-        if harness == "codex" {
-            if mcp != "digbench-mcp" {
-                bail!("C8-04: agentic dig.bench policy_ref requires mcp_bind=digbench-mcp");
-            }
-            has_agentic = true;
-        }
-    }
-    if !has_basic || !has_agentic {
-        bail!("C8-04: dig.bench requires basic (ReAct/next-action) and agentic (Codex + digbench-mcp) policy_refs");
-    }
-    Ok(())
-}
-
-/// `/reward` authority for dig.bench is env status. Incomplete stays null, never 0.
+/// `/reward` authority from env status. Incomplete stays null, never 0.
 pub fn reward_from_env_status(status: &str) -> Option<f64> {
     match status {
         "completed" => Some(1.0),
@@ -275,10 +264,7 @@ fn walk_for_live_secrets(value: &Value, key: &str) -> Result<()> {
     }
     match value {
         Value::String(text) => {
-            if text.contains("DIGBENCH_API_TOKEN")
-                || text.contains("sk_env_")
-                || text.to_ascii_lowercase().contains("bearer ")
-            {
+            if text.contains("sk_env_") || text.to_ascii_lowercase().contains("bearer ") {
                 bail!("token must never appear in live eval log or bindings");
             }
             Ok(())
@@ -356,8 +342,8 @@ pub fn craftax_ten_lane_pins(
 pub fn pending_stream_bindings() -> Value {
     json!({
         "schemaVersion": "synth.visual-bindings.v1",
-        "slots": [{
-            "slot": LIVE_EVAL_SLOT,
+        "inputs": [{
+            "input": LIVE_EVAL_INPUT,
             "kind": "inline",
             "schema": "synth.trace-stream-event.v1",
             "data": { "events": [] }
@@ -368,8 +354,8 @@ pub fn pending_stream_bindings() -> Value {
 pub fn live_sse_bindings(source: &str) -> Value {
     json!({
         "schemaVersion": "synth.visual-bindings.v1",
-        "slots": [{
-            "slot": LIVE_EVAL_SLOT,
+        "inputs": [{
+            "input": LIVE_EVAL_INPUT,
             "kind": "live_sse",
             "schema": "synth.trace-stream-event.v1",
             "source": source
@@ -377,6 +363,9 @@ pub fn live_sse_bindings(source: &str) -> Value {
     })
 }
 
+/// Container registration metadata for a live-eval visual — not the visual
+/// binding envelope (`{ schemaVersion, inputs }`). `input` is canonical;
+/// `slot` is the same value for old `liveEval.slot` readers.
 pub fn live_eval_bind_metadata(
     family: LiveEvalFamily,
     info: &Value,
@@ -384,15 +373,15 @@ pub fn live_eval_bind_metadata(
 ) -> Result<Value> {
     match family {
         LiveEvalFamily::Harbor => assert_harbor_live_frames(info)?,
-        LiveEvalFamily::Digbench => assert_digbench_live_frames(info)?,
         LiveEvalFamily::Craftax => {}
     }
     let mut bind = serde_json::Map::new();
     bind.insert("family".into(), json!(family.as_str()));
     bind.insert("templateId".into(), json!(family.template_id()));
+    bind.insert("input".into(), json!(LIVE_EVAL_INPUT));
     bind.insert("slot".into(), json!(LIVE_EVAL_SLOT));
     match family {
-        LiveEvalFamily::Harbor | LiveEvalFamily::Digbench => {
+        LiveEvalFamily::Harbor => {
             bind.insert("liveFrames".into(), json!("unsupported"));
         }
         LiveEvalFamily::Craftax => {
@@ -403,16 +392,17 @@ pub fn live_eval_bind_metadata(
     }
     match family {
         LiveEvalFamily::Harbor => {
-            bind.insert(
-                "policyRefs".into(),
-                json!(harbor_policy_pins(info, policy_refs)?),
-            );
-        }
-        LiveEvalFamily::Digbench => {
-            bind.insert(
-                "policyRefs".into(),
-                json!(digbench_policy_pins(policy_refs)?),
-            );
+            if is_visualsbench(info) {
+                bind.insert("benchmarkFamily".into(), json!("visualsbench"));
+                bind.insert("mcpBind".into(), json!("synth_visuals"));
+                bind.insert("requiresVisualsMcp".into(), json!(true));
+                bind.insert(
+                    "policyRefs".into(),
+                    json!(visualsbench_policy_pins(policy_refs)?),
+                );
+            } else {
+                bind.insert("policyRefs".into(), json!(harbor_policy_pins(policy_refs)?));
+            }
         }
         LiveEvalFamily::Craftax => {
             if let Some(refs) = policy_refs {
@@ -449,8 +439,10 @@ mod tests {
     #[test]
     fn pending_visual_is_honest_empty_inline_data() {
         let bindings = pending_stream_bindings();
-        let slot = &bindings["slots"][0];
-        assert_eq!(slot["slot"], LIVE_EVAL_SLOT);
+        assert!(bindings.get("slots").is_none());
+        let slot = &bindings["inputs"][0];
+        assert_eq!(slot["input"], LIVE_EVAL_INPUT);
+        assert!(slot.get("slot").is_none());
         assert_eq!(slot["kind"], "inline");
         assert_eq!(slot["data"]["events"], json!([]));
         assert!(slot.get("source").is_none());
@@ -459,8 +451,10 @@ mod tests {
     #[test]
     fn live_sse_bindings_use_declared_source() {
         let bindings = live_sse_bindings("http://127.0.0.1:8098/rollouts/r1/stream");
-        let slot = &bindings["slots"][0];
-        assert_eq!(slot["slot"], LIVE_EVAL_SLOT);
+        assert!(bindings.get("slots").is_none());
+        let slot = &bindings["inputs"][0];
+        assert_eq!(slot["input"], LIVE_EVAL_INPUT);
+        assert!(slot.get("slot").is_none());
         assert_eq!(slot["kind"], "live_sse");
         assert_eq!(slot["source"], "http://127.0.0.1:8098/rollouts/r1/stream");
     }
@@ -492,18 +486,15 @@ mod tests {
             Some(LiveEvalFamily::Harbor)
         );
         assert_eq!(
-            classify_live_eval_family(&json!({"target_id": "craftax_react"}), None),
+            classify_live_eval_family(&json!({"target_id": "craftax_engine"}), None),
             Some(LiveEvalFamily::Craftax)
         );
-        assert_eq!(
-            classify_live_eval_family(&json!({}), Some("digbench_mock")),
-            Some(LiveEvalFamily::Digbench)
-        );
+        assert!(classify_live_eval_family(&json!({}), Some("digbench_mock")).is_none());
         assert!(classify_live_eval_family(&json!({"target_id": "unknown"}), None).is_none());
     }
 
     #[test]
-    fn harbor_template_binds_advertised_policies_before_start() {
+    fn harbor_template_and_two_policies_before_start() {
         assert_eq!(LiveEvalFamily::Harbor.template_id(), LIVE_HARBOR_TEMPLATE);
         assert!(assert_template_matches_family(
             "live.container_rollouts.v1",
@@ -515,18 +506,35 @@ mod tests {
         );
         assert!(assert_harbor_live_frames(&json!({"live_frames": "native"})).is_err());
         assert!(assert_harbor_live_frames(&json!({"live_frames": "unsupported"})).is_ok());
-        let info = json!({
-            "live_frames": "unsupported",
-            "policy_refs": [{"harness": "codex_agentic", "config": "agentic_codex"}]
-        });
-        let pins = harbor_policy_pins(&info, None).unwrap();
-        assert_eq!(pins.len(), 1);
+        // A contradictory advertisement must be refused however it is spelled:
+        // boolean rather than string, and nested under capabilities/metadata.
+        assert!(assert_harbor_live_frames(&json!({"live_frames": true})).is_err());
+        assert!(
+            assert_harbor_live_frames(&json!({"capabilities": {"live_frames": true}})).is_err()
+        );
+        assert!(
+            assert_harbor_live_frames(&json!({"capabilities": {"live_frames": "native"}})).is_err()
+        );
+        assert!(assert_harbor_live_frames(
+            &json!({"metadata": {"capabilities": {"live_frames": true}}})
+        )
+        .is_err());
+        assert!(assert_harbor_live_frames(&json!({"live_frames": false})).is_ok());
+        assert!(assert_harbor_live_frames(&json!({})).is_ok());
+        let pins = harbor_policy_pins(None).unwrap();
+        assert_eq!(pins.len(), 2);
         assert!(require_harbor_policy_pins(&[]).is_err());
         assert!(require_harbor_policy_pins(&[json!({"harness": "harbor_fused"})]).is_err());
-        let bind = live_eval_bind_metadata(LiveEvalFamily::Harbor, &info, None).unwrap();
+        let bind = live_eval_bind_metadata(
+            LiveEvalFamily::Harbor,
+            &json!({"live_frames": "unsupported"}),
+            None,
+        )
+        .unwrap();
         assert_eq!(bind["templateId"], LIVE_HARBOR_TEMPLATE);
+        assert_eq!(bind["input"], "stream");
         assert_eq!(bind["slot"], "stream");
-        assert_eq!(bind["policyRefs"].as_array().map(Vec::len), Some(1));
+        assert_eq!(bind["policyRefs"].as_array().map(Vec::len), Some(2));
         assert_eq!(
             resolve_live_eval_template(None, Some(LiveEvalFamily::Harbor)).unwrap(),
             LIVE_HARBOR_TEMPLATE
@@ -541,58 +549,58 @@ mod tests {
 
     #[test]
     fn harbor_register_writes_exact_live_eval_metadata() {
-        let bind = live_eval_bind_metadata(
-            LiveEvalFamily::Harbor,
-            &json!({"policy_refs": [{"harness": "codex_agentic", "config": "agentic_codex"}]}),
-            None,
-        )
-        .unwrap();
+        let bind = live_eval_bind_metadata(LiveEvalFamily::Harbor, &json!({}), None).unwrap();
         assert_eq!(
             bind,
             json!({
                 "family": "harbor",
                 "templateId": "live.harbor_eval.v1",
+                "input": "stream",
                 "slot": "stream",
                 "liveFrames": "unsupported",
                 "policyRefs": [
-                    {"harness": "codex_agentic", "config": "agentic_codex"}
+                    {"harness": "harbor_fused", "config": "luna_med"},
+                    {"harness": "harbor_fused", "config": "sol_med"}
                 ]
             })
         );
         assert!(live_eval_bind_metadata(
             LiveEvalFamily::Harbor,
-            &json!({"live_frames": "native", "policy_refs": [{"harness": "codex_agentic", "config": "agentic_codex"}]}),
+            &json!({"live_frames": "native"}),
             None
         )
         .is_err());
-        assert!(live_eval_bind_metadata(LiveEvalFamily::Harbor, &json!({}), None).is_err());
         assert!(assert_live_eval_slot(bind["slot"].as_str().unwrap()).is_ok());
     }
 
     #[test]
-    fn digbench_register_pins_basic_and_agentic_before_start_session() {
-        assert_eq!(
-            LiveEvalFamily::Digbench.template_id(),
-            LIVE_DIGBENCH_TEMPLATE
-        );
-        assert!(assert_digbench_live_frames(&json!({"live_frames": "native"})).is_err());
-        let bind = live_eval_bind_metadata(LiveEvalFamily::Digbench, &json!({}), None).unwrap();
-        assert_eq!(bind["templateId"], LIVE_DIGBENCH_TEMPLATE);
+    fn visualsbench_harbor_pins_codex_and_visuals_mcp() {
+        let bind = live_eval_bind_metadata(
+            LiveEvalFamily::Harbor,
+            &json!({
+                "runtime_family":"harbor",
+                "benchmark_family":"visualsbench",
+                "live_frames":"unsupported"
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(bind["templateId"], "live.harbor_eval.v1");
+        assert_eq!(bind["input"], "stream");
         assert_eq!(bind["slot"], "stream");
-        assert_eq!(bind["liveFrames"], "unsupported");
-        let pins = bind["policyRefs"].as_array().unwrap();
-        assert_eq!(pins.len(), 2);
-        assert_eq!(pins[0]["harness"], "react_legal_actions");
-        assert!(pins[0].get("mcp_bind").is_none());
-        assert_eq!(pins[1]["harness"], "codex");
-        assert_eq!(pins[1]["mcp_bind"], "digbench-mcp");
-        assert!(require_digbench_policy_pins(&[]).is_err());
-        assert!(require_digbench_policy_pins(&[json!({
-            "harness": "react_legal_actions",
-            "config": "react_legal_actions",
-            "mcp_bind": "digbench-mcp"
-        })])
+        assert_eq!(bind["benchmarkFamily"], "visualsbench");
+        assert_eq!(bind["requiresVisualsMcp"], true);
+        assert_eq!(bind["policyRefs"][0]["policy"], "codex");
+        assert_eq!(bind["policyRefs"][0]["mcp_bind"], "synth_visuals");
+        assert!(require_visualsbench_start_policy(&bind["policyRefs"][0]).is_ok());
+        assert!(require_visualsbench_start_policy(&json!({
+            "harness":"harbor_fused", "config":"luna_med", "policy":"codex"
+        }))
         .is_err());
+    }
+
+    #[test]
+    fn live_eval_bindings_refuse_secrets() {
         assert_eq!(reward_from_env_status("completed"), Some(1.0));
         assert_eq!(reward_from_env_status("game_over"), Some(0.0));
         assert_eq!(reward_from_env_status("running"), None);
@@ -601,7 +609,7 @@ mod tests {
             "Authorization": "Bearer secret-token"
         }))
         .is_err());
-        assert!(assert_no_live_secrets(&json!({"text": "DIGBENCH_API_TOKEN=leak"})).is_err());
+        assert!(assert_no_live_secrets(&json!({"text": "sk_env_leak"})).is_err());
         assert!(assert_no_live_secrets(&json!({"observation": "inspect"})).is_ok());
     }
 

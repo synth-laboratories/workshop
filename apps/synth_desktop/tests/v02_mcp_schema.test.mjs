@@ -20,6 +20,7 @@ const ADVERTISED = [
 	"visual_authoring_context",
 	"visual_review",
 	"visual_capture_review",
+	"visual_chart",
 	"visual_mark_ready",
 	"visual_open_in_pane",
 	"visual_show",

@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "analysis.annotation_workbench.v1",
+  "title": "Annotation workbench",
+  "genre": "analysis",
+  "family": "analysis",
+  "version": "1.0.0",
+  "description": "Machine-generated Trace V5 analysis: campaign coverage, findings, milestones, rubric judgments, and audit. A projection bound to immutable trace, evidence-head, and optional verifier-result digests — never annotation authority, never human visual_annotations.",
+  "accent": "#F05F22",
+  "shell": "shell.tsx",
+  "tags": [
+    "annotation",
+    "trace-v5",
+    "analysis",
+    "rubric",
+    "workbench"
+  ],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": [
+        "idle",
+        "declared",
+        "replaying",
+        "error",
+        "connecting",
+        "reconnecting"
+      ],
+      "minimumRolloutCount": 0,
+      "minimumRenderedFrameCount": 0,
+      "minimumSemanticEventCount": 1,
+      "requireTerminal": true
+    }
+  },
+  "inputs": [
+    {
+      "name": "evidence",
+      "description": "Bounded annotation workbench projection (campaign, jobs, findings, milestones, audit). Content-addressed evidence-head digest when kind is annotation_evidence_head.",
+      "accepts": [
+        "annotation_evidence_head",
+        "inline",
+        "fixture",
+        "local_cas"
+      ],
+      "required": true,
+      "schema": "synth.annotation-workbench.v1"
+    },
+    {
+      "name": "trace",
+      "description": "Sealed Trace V5 identity the findings cite. Optional: the evidence projection already carries a compact span index for drill-down.",
+      "accepts": [
+        "trace_v5",
+        "inline",
+        "fixture",
+        "local_cas"
+      ],
+      "required": false,
+      "schema": "synth.trace.v5"
+    },
+    {
+      "name": "rubric",
+      "description": "VerifierResultV2 digest. Absent or empty evidence renders Unavailable, never a zero score.",
+      "accepts": [
+        "verifier_result_v2",
+        "inline",
+        "fixture",
+        "local_cas"
+      ],
+      "required": false,
+      "schema": "synth.verifier-result.v2"
+    }
+  ]
+}
