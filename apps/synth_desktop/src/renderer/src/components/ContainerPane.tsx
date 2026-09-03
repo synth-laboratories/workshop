@@ -265,10 +265,11 @@ export function ContainerPane({
 	const capabilityMetadata = interfaces(info.capabilities);
 	const capabilities = capabilityMetadata.chips;
 	const actions = strings(info.action_names);
-	const taskInfo = object(metadata.taskInfo);
+	const taskInfoValue = metadata.taskInfo;
+	const taskInfo = object(taskInfoValue);
 	const taskCatalogReported = metadata.taskCatalog != null;
 	const taskDefinitionsReported = taskCatalogReported || metadata.taskInfo != null;
-	const catalog = useMemo(() => taskMetadata(metadata.taskCatalog, taskInfo), [metadata.taskCatalog, metadata.taskInfo]);
+	const catalog = useMemo(() => taskMetadata(metadata.taskCatalog, taskInfoValue), [metadata.taskCatalog, taskInfoValue]);
 	const tasks = catalog.tasks;
 	const instances = catalog.instances;
 	const policyState = object(metadata.policyState);
