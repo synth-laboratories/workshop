@@ -37,7 +37,7 @@ printf '%s' "$default_instance" | jq -e '
   .mode == "development" and
   .product == "workshop" and
   .releaseLine == "v0.9" and
-  .appVersion == "0.9.5" and
+  .appVersion == "0.9.7" and
   (.sourceRoot | length > 0) and
   (.sourceRevision | length > 0) and
   .hotReload.renderer == true and
@@ -138,7 +138,7 @@ fi
 jq -e '
   .identifier == "com.synth.desktop.v09.dev.alpha" and
   .productName == "Synth Workshop v0.9 · alpha" and
-  .version == "0.9.5" and
+  .version == "0.9.7" and
   (.bundle.icon | length) == 2 and
   .bundle.targets == ["app"] and
   .bundle.resources == {} and
