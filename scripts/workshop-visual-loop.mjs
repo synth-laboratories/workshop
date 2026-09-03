@@ -12,7 +12,8 @@
 // Usage:
 //   workshop-visual-loop.mjs --instance qa-abc --task banking77 --job eval \
 //     [--frames 40] [--interval-ms 3000] [--out DIR] [--timeout-ms 1800000]
-//     [--workspace PATH] [--prompt TEXT | --prompt-file PATH] [--no-run]
+//     [--workspace PATH] [--prompt TEXT | --prompt-file PATH]
+//     [--approve-credential-leases] [--no-run]
 
 import { createHash } from "node:crypto";
 import { createConnection } from "node:net";
@@ -36,9 +37,11 @@ const TASKS = {
 		container: "banking77",
 		label: "Banking77",
 		recipes: {
-			eval: "eval.banking77.annotated.v1",
-			annotated_eval: "eval.banking77.live_annotated.v1",
-			gepa: "gepa.banking77.qa.v1"
+			eval: { id: "eval.banking77.annotated.v1", source: "workspace" },
+			annotated_eval: { id: "eval.banking77.live_annotated.v1", source: "workspace" },
+			gepa: { id: "gepa.banking77.qa.v1", source: "workspace" },
+			sft: { id: "sft.banking77.nemotron-lightning.tinker.v1", source: "catalog" },
+			cispo: { id: "cispo.banking77.tinker.v1", source: "catalog" }
 		}
 	},
 	craftax: {
@@ -47,9 +50,9 @@ const TASKS = {
 		container: "craftax-gamebench-rust",
 		label: "Craftax",
 		recipes: {
-			eval: "eval.craftax.gold.annotated.v1",
-			annotated_eval: "eval.craftax.gold.live_annotated.v1",
-			gepa: "gepa.craftax.smoke.v1"
+			eval: { id: "eval.craftax.gold.annotated.v1", source: "workspace" },
+			annotated_eval: { id: "eval.craftax.gold.live_annotated.v1", source: "workspace" },
+			sft: { id: "sft.craftax.nemotron-nano.tinker.v1", source: "catalog" }
 		}
 	},
 	healthbench: {
@@ -58,8 +61,8 @@ const TASKS = {
 		container: "healthbench2",
 		label: "HealthBench",
 		recipes: {
-			eval: "eval.healthbench.annotated.v1",
-			annotated_eval: "eval.healthbench.live_annotated.v1"
+			eval: { id: "eval.healthbench.annotated.v1", source: "workspace" },
+			annotated_eval: { id: "eval.healthbench.live_annotated.v1", source: "workspace" }
 		}
 	},
 	runebench: { port: 8104, family: "runebench", container: "runebench", label: "RuneBench", recipes: {} }
@@ -87,6 +90,7 @@ function parseArgs(argv) {
 		else if (flag === "--out") args.out = next();
 		else if (flag === "--prompt") args.prompt = next();
 		else if (flag === "--prompt-file") args.prompt = readFileSync(next(), "utf8");
+		else if (flag === "--approve-credential-leases") args.approveCredentialLeases = true;
 		else if (flag === "--no-run") args.run = false;
 		else throw new Error(`unknown flag ${flag}`);
 	}
@@ -95,6 +99,39 @@ function parseArgs(argv) {
 		throw new Error(`--task must be one of ${Object.keys(TASKS).join(", ")}`);
 	}
 	return args;
+}
+
+/** Pending requests in session order, paired with no later terminal decision. */
+export function unresolvedApprovals(events = []) {
+	const settled = new Set(
+		events
+			.filter((event) => event.kind === "approval.granted" || event.kind === "approval.denied" || event.kind === "approval.expired")
+			.map((event) => event.payload?.approvalId)
+			.filter(Boolean)
+	);
+	return events
+		.filter((event) => event.kind === "approval.requested")
+		.filter((event) => event.payload?.approvalId && !settled.has(event.payload.approvalId));
+}
+
+/**
+ * A workspace-managed declaration is pinned to its manifest source digest,
+ * while an ad-hoc registration is pinned to the live capability block. They
+ * are two valid provenance schemes and must not overwrite one another merely
+ * because their hashes intentionally name different things.
+ */
+export function containerDeclarationIsCurrent(registered, revision, capabilityHash) {
+	if (registered?.status !== "ready" || registered?.metadata?.gitRevision !== revision) return false;
+	const origin = registered?.metadata?.declarationOrigin;
+	if (origin) {
+		return origin.sourceRevision === revision &&
+			origin.sourceDigest === registered.metadata.manifestHash;
+	}
+	return registered?.metadata?.manifestHash === capabilityHash;
+}
+
+function isBoundedCredentialLease(event) {
+	return event?.payload?.kind === "credential_access" && event?.payload?.consent === "issue_lease";
 }
 
 const dataRoot = (instance) =>
@@ -183,6 +220,8 @@ export function canonicalJson(value) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const stage = (name, detail = {}) =>
+	process.stderr.write(`${JSON.stringify({ event: "visual_qa.stage", name, at: new Date().toISOString(), ...detail })}\n`);
 
 /**
  * One capture, recorded into the run's evidence directory.
@@ -205,6 +244,48 @@ async function capture(conn, dir, name, request) {
 	} catch (error) {
 		return { name, ok: false, error: error.message, request };
 	}
+}
+
+/**
+ * A semantic screenshot is evidence of what an operator could see, not merely
+ * evidence that a backing API changed. Bring the visual into Workshop's side
+ * panel and require the capture receipt to confirm that the panel is open.
+ */
+async function showVisual(conn, visualId, sessionId) {
+	await ipc(conn, "POST", `/v1/visuals/${visualId}/show`, { sessionId }, 10_000);
+	// `show` commits synchronously, but React still needs one paint before the
+	// host snapshot. This is deliberately a render settle, not a run-state wait.
+	await sleep(350);
+}
+
+async function captureSemanticState(conn, dir, state, observation, previousDigest) {
+	const candidate = await capture(conn, dir, `candidate-${state}`, { scope: "app" });
+	// `visual_show` uses the Visuals workspace's right-hand preview column. The
+	// global chat side-panel flag remains false on that route, so either state
+	// is a valid operator-visible presentation.
+	const visible =
+		candidate.ok !== false &&
+		(candidate.appState?.sidePanelOpen === true || candidate.appState?.route === "visuals");
+	const changed = candidate.digest && candidate.digest !== previousDigest;
+	if (!visible || !changed) {
+		return {
+			accepted: false,
+			record: {
+				...candidate,
+				name: `candidate-${state}`,
+				semanticState: null,
+				semanticCandidate: state,
+				semanticRejected: !visible ? "visual side panel was not visible" : "image was identical to the previous semantic state",
+				observation
+			}
+		};
+	}
+	const portablePath = join(dir, `state-${state}.png`);
+	copyFileSync(candidate.portablePath, portablePath);
+	return {
+		accepted: true,
+		record: { ...candidate, name: `state-${state}`, portablePath, semanticState: state, observation }
+	};
 }
 
 /**
@@ -348,7 +429,7 @@ function prompt(task, job) {
 	const recipe = spec.recipes?.[job];
 	const shared = [
 		recipe
-			? `Use the exact workspace recipe \`${recipe}\`. Do not substitute another recipe id.`
+			? `Use the exact ${recipe.source} recipe \`${recipe.id}\`. Do not substitute another recipe id.`
 			: "",
 		`The QA-owned ${spec.label} service is at http://127.0.0.1:${spec.port}.`,
 		`Register that URL as task family ${spec.family} if it is not already registered, then probe it.`,
@@ -411,6 +492,8 @@ async function recordWhile(conn, dir, running, { frames, intervalMs, sessionId }
 	const records = [];
 	const observations = [];
 	const seenStates = new Set();
+	let shownVisualId = null;
+	let lastSemanticDigest = null;
 	let index = 0;
 	let nextPeriodicAt = 0;
 	while (running.active) {
@@ -418,6 +501,12 @@ async function recordWhile(conn, dir, running, { frames, intervalMs, sessionId }
 		const catalog = await ipc(conn, "GET", "/v1/visuals", undefined, 5_000).catch(() => ({}));
 		const candidates = (catalog.visuals ?? []).filter((visual) => visual.sessionId === sessionId);
 		const visual = candidates.find((item) => item.templateId === "live.annotated_rollouts.v1") ?? candidates[0];
+		if (visual?.id && visual.id !== shownVisualId) {
+			await showVisual(conn, visual.id, sessionId).catch((error) => {
+				stage("visual_show_failed", { visualId: visual.id, error: error.message });
+			});
+			shownVisualId = visual.id;
+		}
 		const runId = optimizerRunId(visual);
 		const runPayload = runId
 			? await ipc(conn, "GET", `/v1/optimizers/runs/${runId}`, undefined, 5_000).catch(() => ({}))
@@ -444,9 +533,19 @@ async function recordWhile(conn, dir, running, { frames, intervalMs, sessionId }
 			semantic.push("mid-run");
 		}
 		for (const state of semantic) {
-			const shot = await capture(conn, dir, `state-${state}`, { scope: "app" });
-			records.push({ ...shot, semanticState: state, observation: observed });
-			seenStates.add(state);
+			const result = await captureSemanticState(conn, dir, state, observed, lastSemanticDigest);
+			records.push(result.record);
+			if (result.accepted) {
+				seenStates.add(state);
+				lastSemanticDigest = result.record.digest;
+				stage("semantic_state_captured", { state, visualId: visual.id, digest: result.record.digest });
+			} else {
+				stage("semantic_state_rejected", {
+					state,
+					visualId: visual.id,
+					reason: result.record.semanticRejected
+				});
+			}
 		}
 
 		if (index < frames && now >= nextPeriodicAt) {
@@ -463,8 +562,10 @@ async function recordWhile(conn, dir, running, { frames, intervalMs, sessionId }
 
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
+	stage("main_start", { instance: args.instance, task: args.task, job: args.job });
 	const evalDriver = descriptor(args.instance, "eval-driver.json");
 	const visuals = descriptor(args.instance, "visuals-ipc.json");
+	stage("descriptors_loaded");
 	const startedAt = new Date().toISOString();
 	const slug = [args.task, args.job].filter(Boolean).join("-") || "adhoc";
 	const dir = args.out ?? join(dataRoot(args.instance), "visual-qa", `${slug}-${Date.now().toString(36)}`);
@@ -483,25 +584,34 @@ async function main() {
 				`no ${args.job} recipe is declared for ${args.task}; author one in the workspace before running this job`
 			);
 		}
-		const declared = readdirSync(join(dataRoot(args.instance), "../workspace/workshop.recipes"))
-			.filter((entry) => entry.endsWith(".toml"))
-			.map((entry) => entry.replace(/\.toml$/, ""));
-		if (!declared.includes(recipe)) {
-			throw new Error(
-				`recipe \`${recipe}\` is not declared in the instance workspace. Declared: ${declared.join(", ")}`
+		if (recipe.source === "workspace") {
+			const recipeRoot = join(
+				args.workspace ?? join(dataRoot(args.instance), "../workspace"),
+				"workshop.recipes"
 			);
+			const declared = readdirSync(recipeRoot)
+				.filter((entry) => entry.endsWith(".toml"))
+				.map((entry) => entry.replace(/\.toml$/, ""));
+			if (!declared.includes(recipe.id)) {
+				throw new Error(
+					`recipe \`${recipe.id}\` is not declared in ${recipeRoot}. Declared: ${declared.join(", ")}`
+				);
+			}
 		}
 	}
 
+	stage("driver_health_start");
 	const health = await driver(evalDriver, "GET", "/v1/health");
 	if (health.ok !== true) throw new Error("eval driver health check failed");
 	const sourceRevision = health.instance?.buildRevision ?? evalDriver.sourceRevision;
+	stage("driver_ready", { sourceRevision });
 
 	// Register the task container before the agent needs it. Without this the
 	// agent correctly refuses to start -- it has no URL-registration tool of its
 	// own -- and the run reports an honest failure that says nothing about the
 	// visuals. Registration is idempotent on base URL.
 	if (args.run) {
+		stage("container_preflight", { task: args.task });
 		const spec = TASKS[args.task];
 		const probe = await fetch(`http://127.0.0.1:${spec.port}/health`).catch(() => null);
 		if (!probe?.ok) {
@@ -520,11 +630,19 @@ async function main() {
 					"admission would refuse every task until it does\n"
 			);
 		}
+		const info = await fetch(`http://127.0.0.1:${spec.port}/info`)
+			.then((response) => (response.ok ? response.json() : null))
+			.catch(() => null);
+		const healthPayload = await probe.json().catch(() => ({}));
 		// `gitRevision` is not decoration: admission reads it off the registered
 		// record (not off /health) and refuses paid work without it, because a
 		// result that cannot name the source that produced it is not evidence.
 		// `capabilities.revision` is the policy pin the same gate requires.
-		const revision = process.env.SYNTH_QA_CONTAINER_REVISION ?? spec.revision;
+		const revision =
+			process.env.SYNTH_QA_CONTAINER_REVISION ??
+			spec.revision ??
+			info?.runtime_identity?.producer_source_revision ??
+			healthPayload?.runtime_identity?.producer_source_revision;
 		if (!revision) {
 			throw new Error(
 				`no source revision for ${spec.label}; set SYNTH_QA_CONTAINER_REVISION to the producing commit`
@@ -533,9 +651,6 @@ async function main() {
 		// Admission pins the container's declared live-eval capability block, so
 		// the digest has to be *of that block* -- an invented one would pin
 		// nothing and defeat the check it satisfies.
-		const info = await fetch(`http://127.0.0.1:${spec.port}/info`)
-			.then((response) => (response.ok ? response.json() : null))
-			.catch(() => null);
 		const declaration = info?.capabilities;
 		if (!declaration) {
 			throw new Error(`${spec.label} serves no capability declaration at /info; nothing to pin`);
@@ -543,29 +658,43 @@ async function main() {
 		const manifestHash = `sha256:${createHash("sha256")
 			.update(canonicalJson(declaration))
 			.digest("hex")}`;
-		await ipc(visuals, "POST", "/v1/containers", {
-			name: spec.container,
-			baseUrl: `http://127.0.0.1:${spec.port}`,
-			location: "local",
-			taskFamily: spec.family,
-			metadata: { gitRevision: revision, manifestHash, capabilities: { revision } }
-		});
+		const registered = (registry.containers ?? []).find(
+			(container) =>
+				container.taskFamily === spec.family &&
+				container.baseUrl === `http://127.0.0.1:${spec.port}`
+		);
+		const declarationIsCurrent = containerDeclarationIsCurrent(registered, revision, manifestHash);
+		if (!declarationIsCurrent) {
+			stage("container_register", { task: args.task });
+			await ipc(visuals, "POST", "/v1/containers", {
+				name: spec.container,
+				baseUrl: `http://127.0.0.1:${spec.port}`,
+				location: "local",
+				taskFamily: spec.family,
+				metadata: { gitRevision: revision, manifestHash, capabilities: { revision } }
+			});
+		}
+		stage("container_ready", { task: args.task, reused: declarationIsCurrent });
 	}
 
 	// Before anything runs: what the app looked like at rest. Without this the
 	// review cannot tell a defect the run caused from one that was already there.
 	const captures = [await capture(visuals, dir, "00-app-at-rest", { scope: "app" })];
+	stage("app_at_rest_captured", { ok: captures[0].ok !== false });
 
 	let sessionId;
 	let terminal;
 	if (args.run) {
 		const body = args.prompt ?? prompt(args.task, args.job);
 		sessionId = `vq_${Date.now().toString(36)}`;
+		stage("session_create", { sessionId, workspace: args.workspace ?? null });
 		await driver(evalDriver, "POST", "/v1/sessions", {
 			sessionId,
 			...(args.workspace ? { workspace: args.workspace } : {})
 		});
+		stage("session_created", { sessionId });
 		await driver(evalDriver, "POST", `/v1/sessions/${sessionId}/messages`, { body });
+		stage("session_prompted", { sessionId });
 		writeFileSync(join(dir, "prompt.txt"), `${body}\n`);
 
 		// The recording runs beside the wait: the driver holds one HTTP exchange
@@ -581,6 +710,26 @@ async function main() {
 				terminal = await driver(evalDriver, "POST", `/v1/sessions/${sessionId}/wait_terminal`, {
 					timeoutMs: Math.min(20_000, remaining)
 				});
+				if (terminal?.terminal !== true) {
+					const snapshot = await driver(evalDriver, "GET", `/v1/sessions/${sessionId}/export`);
+					for (const request of unresolvedApprovals(snapshot.events)) {
+						const approvalId = request.payload.approvalId;
+						stage("approval_required", {
+							approvalId,
+							kind: request.payload.kind,
+							consent: request.payload.consent ?? null
+						});
+						if (!args.approveCredentialLeases || !isBoundedCredentialLease(request)) {
+							throw new Error(
+								`approval_required:${request.payload.kind}:${request.payload.consent ?? "unknown"}:${approvalId}`
+							);
+						}
+						await driver(evalDriver, "POST", `/v1/sessions/${sessionId}/approvals/${approvalId}`, {
+							decision: "once"
+						});
+						stage("credential_lease_approved", { approvalId, decision: "once" });
+					}
+				}
 			} while (terminal?.terminal !== true);
 		} finally {
 			running.active = false;
@@ -588,11 +737,14 @@ async function main() {
 			captures.push(...recorded);
 			writeFileSync(join(dir, "lifecycle-observations.json"), `${JSON.stringify(recorded.observations ?? [], null, 2)}\n`);
 		}
-		writeFileSync(join(dir, "terminal.json"), `${JSON.stringify(terminal, null, 2)}\n`);
-		captures.push(await capture(visuals, dir, "state-terminal", { scope: "app" }));
-
 		const exported = await driver(evalDriver, "GET", `/v1/sessions/${sessionId}/export`);
 		writeFileSync(join(dir, "session-export.json"), `${JSON.stringify(exported, null, 2)}\n`);
+		writeFileSync(join(dir, "terminal.json"), `${JSON.stringify(terminal, null, 2)}\n`);
+		const foreground = (exported.visuals ?? [])
+			.map((entry) => entry?.visual)
+			.find((visual) => visual?.templateId === "live.annotated_rollouts.v1") ?? exported.visuals?.[0]?.visual;
+		if (foreground?.id) await showVisual(visuals, foreground.id, sessionId);
+		captures.push(await capture(visuals, dir, "state-terminal", { scope: "app" }));
 
 		// Every visual the run produced, photographed in isolation the way
 		// authoring review sees it, then again inside the app.

@@ -1544,16 +1544,26 @@ dev_instance() {
     # local CUA loop.
     # Instance builds carry the QA control plane; release artifacts never
     # enable this feature.
-    # Packaging pins synth-mlx-rl 5d6db143 + lock sha. The sibling working
-    # tree is often dirty WIP and will fail closed; prefer the v0.8 pin.
+    # The staging script is the authority for the exact source + lock pin.
+    # Prefer the canonical release checkout; an older compatibility worktree
+    # can be present and healthy while still being the wrong pinned revision.
     if [[ -z "${SYNTH_MLX_RL_PROJECT_ROOT:-}" ]]; then
-      if [[ -f "$REPO_SIBLING_ROOT/synth-mlx-rl-v08-compat/pyproject.toml" ]]; then
-        SYNTH_MLX_RL_PROJECT_ROOT="$REPO_SIBLING_ROOT/synth-mlx-rl-v08-compat"
-      elif [[ -f "$REPO_SIBLING_ROOT/synth-mlx-rl-v08-pinned/pyproject.toml" ]]; then
-        SYNTH_MLX_RL_PROJECT_ROOT="$REPO_SIBLING_ROOT/synth-mlx-rl-v08-pinned"
-      else
-        SYNTH_MLX_RL_PROJECT_ROOT="$REPO_SIBLING_ROOT/synth-mlx-rl"
-      fi
+      # Match on revision, not on name. Every candidate here is present and
+      # healthy; only one is the revision mlx_runtime.rs will verify at install
+      # time, and picking by name staged a runtime the app then refused with
+      # "manifest does not match the pinned catalog".
+      mlx_pin="$(rg -o 'MLX_RUNTIME_SOURCE_REVISION: &str = "([0-9a-f]{40})"' --replace '$1' -m1 \
+        "$ROOT/apps/synth_desktop/src-tauri/src/optimizers/mlx_runtime.rs" 2>/dev/null || true)"
+      for candidate in synth-mlx-rl synth-mlx-rl-v08-pinned synth-mlx-rl-v08-compat; do
+        candidate_root="$REPO_SIBLING_ROOT/$candidate"
+        [[ -f "$candidate_root/pyproject.toml" ]] || continue
+        if [[ -z "$mlx_pin" ]] \
+          || [[ "$(git -C "$candidate_root" rev-parse HEAD 2>/dev/null)" == "$mlx_pin" ]]; then
+          SYNTH_MLX_RL_PROJECT_ROOT="$candidate_root"
+          break
+        fi
+      done
+      SYNTH_MLX_RL_PROJECT_ROOT="${SYNTH_MLX_RL_PROJECT_ROOT:-$REPO_SIBLING_ROOT/synth-mlx-rl}"
     fi
     export SYNTH_MLX_RL_PROJECT_ROOT
     "$ROOT/scripts/stage-mlx-runtime-distribution.sh"

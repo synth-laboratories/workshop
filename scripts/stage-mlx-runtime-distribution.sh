@@ -5,8 +5,18 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT="${SYNTH_MLX_RL_PROJECT_ROOT:-$(dirname "$ROOT")/synth-mlx-rl}"
 TARGET="$ROOT/runtime-distributions/mlx-rl"
 VERSION="0.6.0"
-EXPECTED_SOURCE_REVISION="6b4595f9bf1a65efe895d1f145ad9f5e4913d971"
-EXPECTED_LOCK_SHA256="7f14b704ba9a6c30e6ced5cc88fc2ba6a58a936a9531cfaf168cbb664f83c420"
+# Derived from the Rust catalog, never restated. mlx_runtime.rs is what
+# verifies the manifest at install time, so a constant copied here can drift
+# from it -- and did: this script staged 6b4595f9 while the app demanded
+# 5d6db143, so every packaged build produced a runtime the app then refused
+# with "manifest does not match the pinned catalog".
+MLX_CATALOG="$ROOT/apps/synth_desktop/src-tauri/src/optimizers/mlx_runtime.rs"
+EXPECTED_SOURCE_REVISION="$(rg -o 'MLX_RUNTIME_SOURCE_REVISION: &str = "([0-9a-f]{40})"' --replace '$1' -m1 "$MLX_CATALOG")"
+EXPECTED_LOCK_SHA256="$(rg -o 'MLX_RUNTIME_LOCK_SHA256: &str =\s*\n?\s*"([0-9a-f]{64})"' --replace '$1' -m1 --multiline "$MLX_CATALOG")"
+[[ -n "$EXPECTED_SOURCE_REVISION" && -n "$EXPECTED_LOCK_SHA256" ]] || {
+  echo "[mlx-runtime] cannot read the pinned catalog from $MLX_CATALOG" >&2
+  exit 1
+}
 UV="${SYNTH_OPTIMIZER_UV_PATH:-}"
 
 if [[ ! -f "$PROJECT/pyproject.toml" ]] || ! rg -q '^name = "synth-mlx-rl"$' "$PROJECT/pyproject.toml"; then
