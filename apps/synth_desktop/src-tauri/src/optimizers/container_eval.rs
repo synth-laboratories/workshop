@@ -3940,6 +3940,8 @@ async fn persist_progress(
     let cost_ceiling_usd = spec.cost_ceiling_usd;
     let provider = spec.provider.clone();
     let model = spec.model.clone();
+    let provider_receipt_authoritative =
+        !provider.trim().is_empty() && !model.trim().is_empty();
     let run_before_patch = service.get(run_id.to_string()).await?;
     let started_at = run_before_patch
         .started_at
@@ -3987,7 +3989,11 @@ async fn persist_progress(
                 }),
             );
             run.summary = Value::Object(summary);
-            run.usage = usage_with_authoritative_provider_receipt(usage, &run.usage);
+            run.usage = progress_usage_projection(
+                usage,
+                &run.usage,
+                provider_receipt_authoritative,
+            );
             Ok(())
         })
         .await?;
@@ -4327,6 +4333,25 @@ fn usage_with_authoritative_provider_receipt(
         .extra
         .insert("policyUsage".into(), policy.to_json());
     measured
+}
+
+/// Mutable progress projections may include the container runtime's own model
+/// accounting. For provider-backed evals that is an observability lane, not a
+/// billing lane: the Workshop proxy receipt is authoritative and can
+/// legitimately report a different token basis (including zero token fields
+/// with a settled cost). Preserve durable optimizer usage until that receipt
+/// arrives instead of letting a final progress patch reintroduce producer
+/// tokens immediately before reconciliation.
+fn progress_usage_projection(
+    measured: super::models::OptimizerUsageSummary,
+    current: &super::models::OptimizerUsageSummary,
+    provider_receipt_authoritative: bool,
+) -> super::models::OptimizerUsageSummary {
+    if provider_receipt_authoritative {
+        current.clone()
+    } else {
+        usage_with_authoritative_provider_receipt(measured, current)
+    }
 }
 
 #[derive(Default)]
@@ -6251,6 +6276,54 @@ mod tests {
             merged.cost_usd, None,
             "an unpriced provider receipt is not a producer subtotal"
         );
+    }
+
+    #[test]
+    fn provider_backed_progress_does_not_commit_runtime_token_accounting() {
+        let measured = usage_from_records(
+            &[json!({
+                "usage": {
+                    "calls": 21,
+                    "prompt_tokens": 469_547,
+                    "completion_tokens": 1_949,
+                    "cost_usd": 0.018021
+                }
+            })],
+            4.0,
+        );
+        let current = crate::optimizers::models::OptimizerUsageSummary {
+            rollouts: 1,
+            ..Default::default()
+        };
+
+        let projected = progress_usage_projection(measured, &current, true);
+        assert_eq!(projected.calls, 0);
+        assert_eq!(projected.prompt_tokens, 0);
+        assert_eq!(projected.completion_tokens, 0);
+        assert_eq!(projected.cost_usd, None);
+        assert_eq!(projected.rollouts, 1);
+    }
+
+    #[test]
+    fn local_progress_keeps_measured_usage() {
+        let measured = usage_from_records(
+            &[json!({
+                "usage": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 7,
+                    "cost_usd": 0.001
+                }
+            })],
+            4.0,
+        );
+        let projected = progress_usage_projection(
+            measured,
+            &crate::optimizers::models::OptimizerUsageSummary::default(),
+            false,
+        );
+        assert_eq!(projected.prompt_tokens, 40);
+        assert_eq!(projected.completion_tokens, 7);
+        assert_eq!(projected.cost_usd, Some(0.001));
     }
 
     #[test]
