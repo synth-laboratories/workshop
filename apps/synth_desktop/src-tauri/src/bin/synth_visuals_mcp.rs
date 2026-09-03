@@ -1715,11 +1715,27 @@ fn capture_svg_review(
     let is_chart = renderer_kind == "chart";
     // A chart declares its own theme in the spec; asking for one here would let
     // the capture disagree with the pane. Diagrams keep their fixed pairing.
+    let stored_systems_theme = if renderer_kind.starts_with("systems") {
+        request("GET", &format!("/v1/visuals/{id}/renditions"), None)?
+            .get("renditions")
+            .and_then(Value::as_array)
+            .and_then(|renditions| {
+                renditions.iter().find(|rendition| {
+                    rendition.get("format").and_then(Value::as_str) == Some("svg")
+                        && rendition.get("sizeClass").and_then(Value::as_str) == Some("pane")
+                })
+            })
+            .and_then(|rendition| rendition.get("theme"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    } else {
+        None
+    };
     let theme_request = if is_chart {
         json!({"size":"pane"})
     } else {
         json!({
-            "theme": if renderer_kind == "mermaid" { "light" } else { "dark" },
+            "theme": stored_systems_theme.as_deref().unwrap_or_else(|| if renderer_kind == "mermaid" { "light" } else { "dark" }),
             "size":"pane"
         })
     };
