@@ -148,7 +148,15 @@ function RolloutBar({ lane, selected, onClick }: { lane: Lane; selected: boolean
   const findings = activeFindings(lane).length;
   return <button type="button" onClick={onClick} aria-pressed={selected} data-testid={`rollout-bar-${lane.name}`} style={{ width: "100%", display: "grid", gridTemplateColumns: "minmax(120px, 1.4fr) minmax(110px, 2fr) auto", gap: 10, alignItems: "center", padding: "8px 10px", border: selected ? "1px solid var(--sv-accent)" : "1px solid var(--sv-border)", borderRadius: 8, background: selected ? "#fff8f3" : "var(--sv-surface)", color: "var(--sv-text)", cursor: "pointer", textAlign: "left" }}>
     <span style={{ minWidth: 0 }}><strong style={{ display: "block", whiteSpace: "nowrap", fontSize: 11 }}>{rolloutDisplayName(lane)}</strong><span className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 9 }}>{progressLabel(lane)}</span></span>
-    <span style={{ display: "grid", gap: 4 }}><span style={{ display: "block", height: 7, borderRadius: 9, overflow: "hidden", background: "var(--sv-border)" }}><span style={{ display: "block", width: `${pct}%`, height: "100%", background: lane.status === "failed" ? "#d84b3f" : "var(--sv-accent)", transition: "width 180ms ease" }} /></span><span className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lane.lastAnnotation}</span></span>
+    {/*
+      The bar is progress, and a finished rollout is always 100% of it. Left of
+      a signed score it was read as the score: two HealthBench rollouts scoring
+      -0.14 and +0.06 drew identical full-width bars, so the row's most visually
+      dominant element said "these two are the same" about its own headline
+      number. A bar with nothing left to encode gives its space to the last
+      annotation, which is the part still worth reading.
+    */}
+    <span style={{ display: "grid", gap: 4, minWidth: 0 }}>{lane.status === "finished" ? null : <span style={{ display: "block", height: 7, borderRadius: 9, overflow: "hidden", background: "var(--sv-border)" }}><span style={{ display: "block", width: `${pct}%`, height: "100%", background: lane.status === "failed" ? "#d84b3f" : "var(--sv-accent)", transition: "width 180ms ease" }} /></span>}<span className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lane.lastAnnotation}</span></span>
     <span className="sv-mono" style={{ fontSize: 9, textAlign: "right", whiteSpace: "nowrap" }}>{outcomeLabel(lane)}<br />{findings} finding{findings === 1 ? "" : "s"}</span>
   </button>;
 }
