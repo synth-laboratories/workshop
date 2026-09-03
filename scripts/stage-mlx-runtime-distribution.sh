@@ -19,6 +19,13 @@ EXPECTED_LOCK_SHA256="$(rg -o 'MLX_RUNTIME_LOCK_SHA256: &str =\s*\n?\s*"([0-9a-f
 }
 UV="${SYNTH_OPTIMIZER_UV_PATH:-}"
 
+# Only consulted when the staged wheelhouse cannot be reused. A verified
+# distribution is immutable input to a build, so requiring a clean release
+# checkout to *reuse* it made packaging depend on a live source folder that
+# has nothing left to contribute -- and failed the build outright when that
+# folder was dirty or parked at another revision, which is how this ran
+# aground: the wheelhouse on disk already matched the pin exactly.
+require_release_source() {
 if [[ ! -f "$PROJECT/pyproject.toml" ]] || ! rg -q '^name = "synth-mlx-rl"$' "$PROJECT/pyproject.toml"; then
   echo "[mlx-runtime] synth-mlx-rl source is unavailable at $PROJECT" >&2
   echo "[mlx-runtime] set SYNTH_MLX_RL_PROJECT_ROOT to the release checkout" >&2
@@ -42,6 +49,7 @@ if [[ "$LOCK_SHA256" != "$EXPECTED_LOCK_SHA256" ]]; then
   echo "[mlx-runtime] expected uv.lock $EXPECTED_LOCK_SHA256, got $LOCK_SHA256" >&2
   exit 1
 fi
+}
 
 # A matching wheelhouse is enough for CUA/debug packaging. Rebuilding with
 # `uv build` is Killed:9 on this machine (Homebrew uv / memory pressure) and
@@ -88,6 +96,8 @@ if reuse_existing_wheelhouse; then
   echo "[mlx-runtime] reusing verified wheelhouse at $TARGET"
   exit 0
 fi
+
+require_release_source
 
 if [[ -z "$UV" ]]; then
   for candidate in /opt/homebrew/bin/uv /usr/local/bin/uv "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do

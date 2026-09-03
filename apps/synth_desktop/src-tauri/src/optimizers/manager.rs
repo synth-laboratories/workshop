@@ -64,9 +64,9 @@ const MANIFEST_FILE: &str = "manifest.json";
 const WHEELHOUSE_MANIFEST_FILE: &str = "wheelhouse-manifest.json";
 const EMBEDDED_DISTRIBUTION_MANIFEST_FILE: &str = "manifest.json";
 const EMBEDDED_DISTRIBUTION_SCHEMA: &str = "synth.optimizer-runtime-distribution.v1";
-const OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "686f41c413b9368e0dee5bcefa91bc89a2631084";
+const OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "96d7bbabf7c23f80732c57ca08e69f66ffcdf873";
 const OPTIMIZER_DISTRIBUTION_LOCK_SHA256: &str =
-    "b2c0d9b7c9920ea2cc3d51619709f247b00e3f5919bf15538a6f9d41022e43dd";
+    "b3dd2c3171fbf37aa78ff14ce6fb9edb43d546ae9fbadd9c5809aeb5c2edb160";
 const RUNTIME_LEASE_FILE: &str = "runtime-lease.json";
 #[cfg(test)]
 const TEST_REAL_CHILD_SENTINEL: &str = ".test-real-child";
@@ -1018,7 +1018,18 @@ impl OptimizerManager {
     /// healthy. Recipe entry points use this rather than spawning a package on
     /// their own.
     pub async fn ensure_ready(&self) -> Result<OptimizerSidecarStatus> {
-        if self.version()?.is_none() {
+        // Reinstall when the installed sidecar is below the contract floor, not
+        // only when nothing is installed at all. Checking presence alone made a
+        // version pin inert on every instance that already had an older sidecar:
+        // raising `min_supported` shipped a new wheel in the bundle that no
+        // existing instance ever installed, so runs kept executing on the old
+        // code while the app reported the new pin. A floor that only applies to
+        // first installs is not a floor.
+        let installed = self.version()?;
+        let below_floor = installed
+            .as_ref()
+            .is_some_and(|hit| !OPTIMIZERS_CONTRACT.meets_floor(&hit.version));
+        if installed.is_none() || below_floor {
             self.install(None)?;
         }
         self.start().await

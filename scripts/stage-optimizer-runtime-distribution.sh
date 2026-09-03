@@ -5,8 +5,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="$ROOT/runtime-distributions/optimizers"
 VERSION="0.2.20"
-EXPECTED_SOURCE_REVISION="96d7bbabf7c23f80732c57ca08e69f66ffcdf873"
-EXPECTED_LOCK_SHA256="b3dd2c3171fbf37aa78ff14ce6fb9edb43d546ae9fbadd9c5809aeb5c2edb160"
+# Derived from the Rust catalog, never restated. manager.rs is what verifies
+# the embedded distribution at install time, so constants copied here can drift
+# from it -- and did: bumping only this script staged 0.2.20 while the app
+# still demanded 686f41c4, and the install failed with "embedded Optimizers
+# distribution does not match the release pin". Same defect the MLX staging
+# script already carried, for the same reason.
+OPTIMIZER_CATALOG="$ROOT/apps/synth_desktop/src-tauri/src/optimizers/manager.rs"
+EXPECTED_SOURCE_REVISION="$(rg -o 'OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "([0-9a-f]{40})"' --replace '$1' -m1 "$OPTIMIZER_CATALOG")"
+EXPECTED_LOCK_SHA256="$(rg -o 'OPTIMIZER_DISTRIBUTION_LOCK_SHA256: &str =\s*\n?\s*"([0-9a-f]{64})"' --replace '$1' -m1 --multiline "$OPTIMIZER_CATALOG")"
+[[ -n "$EXPECTED_SOURCE_REVISION" && -n "$EXPECTED_LOCK_SHA256" ]] || {
+  echo "[optimizers-runtime] cannot read the pinned catalog from $OPTIMIZER_CATALOG" >&2
+  exit 1
+}
 PROJECT="${SYNTH_OPTIMIZER_DISTRIBUTION_SOURCE:-}"
 
 verify_existing_distribution() {
