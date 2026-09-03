@@ -605,7 +605,7 @@ export function Sidebar({
 				 */}
 
 				{/*
-				 * ── Plugins ──
+				 * ── Integrations ──
 				 * One section for every capability the user can open. Built-in
 				 * surfaces and managed plugins share the shelf; only managed
 				 * rows carry lifecycle status, and a managed row is never
@@ -617,13 +617,13 @@ export function Sidebar({
 						<button
 							type="button"
 							className="section-header-label"
-								onClick={onOpenPlugins}
-								aria-expanded={pluginsOpen}
+							onClick={onOpenPlugins}
+							aria-expanded={pluginsOpen}
 							aria-controls="sidebar-plugins"
 						>
-							Plugins
+							Integrations
 						</button>
-						<button type="button" className="section-action" aria-label={pluginsOpen ? "Collapse plugins" : "Expand plugins"} onClick={() => setPluginsOpen((value) => !value)}>
+						<button type="button" className="section-action" aria-label={pluginsOpen ? "Collapse integrations" : "Expand integrations"} onClick={() => setPluginsOpen((value) => !value)}>
 							<SectionChevron open={pluginsOpen} />
 						</button>
 					</div>

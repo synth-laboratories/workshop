@@ -2235,7 +2235,7 @@ export function useAppController() {
 			: view.kind === "inference"
 				? "Inference"
 			: view.kind === "plugins"
-				? "Plugins"
+				? "Integrations"
 				: view.kind === "async"
 					? "Intern · Background"
 					: view.kind === "sync"
