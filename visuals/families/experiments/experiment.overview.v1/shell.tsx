@@ -384,8 +384,13 @@ function AssessmentPanel({ assessment }: { assessment?: Assessment }) {
  * variant scores.
  */
 function measured(value: unknown): string {
-  if (typeof value === "number" && Number.isFinite(value)) return value.toFixed(2);
-  return text(value) ?? MISSING;
+  if (typeof value !== "number" || !Number.isFinite(value)) return text(value) ?? MISSING;
+  // Signed, because these quantities can be negative and half of them showing
+  // a sign is worse than none showing one. A HealthBench run listed its two
+  // rewards as `-0.14` and `0.06`: one marked, one bare, so the pair read as a
+  // signed number beside a magnitude. The trace workstation and the annotated
+  // rollout rows already write `+1.00` for the same quantity.
+  return `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(2)}`;
 }
 
 function ProgressPanel({ progress, status }: { progress?: Progress; status?: string }) {

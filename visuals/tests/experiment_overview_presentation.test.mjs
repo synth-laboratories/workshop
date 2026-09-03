@@ -22,7 +22,10 @@ test("a measured quantity keeps its decimals, so it cannot be read as a count", 
   // the same number as `1` in the metric cards, `1` in the variants row and
   // `1.000` in the assessment prose, while sibling surfaces write `1.00`.
   assert.doesNotMatch(source, /function display\(/);
-  assert.match(source, /function measured\(value: unknown\): string \{[\s\S]*?value\.toFixed\(2\)/);
+  assert.match(source, /function measured\(value: unknown\): string \{[\s\S]*?Math\.abs\(value\)\.toFixed\(2\)/);
+  // Signed, so direction survives: `-0.14` beside a bare `0.06` reads as a
+  // signed number next to a magnitude.
+  assert.match(source, /value >= 0 \? "\+" : "−"/);
   for (const site of [
     /measured\(metric\.value\)/,
     /measured\(arm\.score\)/,
