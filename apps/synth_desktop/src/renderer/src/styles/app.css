@@ -8826,7 +8826,12 @@ html.visual-expanded .sidebar {
 
 .optimizer-filters,
 .optimizer-actions { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.optimizer-filters { flex: 1; }
+/* Eight variable-width controls in one row. The wrap used to be gated on an
+   820px *window* query, but this toolbar lives inside a pane that is narrower
+   than the window, so the row ran past the pane's right edge at ordinary widths
+   and took the `To` date filter off-screen with it. A toolbar of controls that
+   cannot be measured in advance wraps at whatever width it actually gets. */
+.optimizer-filters { flex: 1; flex-wrap: wrap; row-gap: 7px; }
 .optimizer-search { display: flex; align-items: center; gap: 7px; min-width: 170px; flex: 1; height: 34px; padding: 0 10px; border: 1px solid var(--color-border); border-radius: 8px; background: #fff; color: var(--color-text-faint); }
 .optimizer-search:focus-within { border-color: var(--color-accent); box-shadow: 0 0 0 3px var(--color-accent-subtle); }
 .optimizer-search input { width: 100%; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent; font-size: 12.5px; }
@@ -8994,7 +8999,6 @@ html.visual-expanded .sidebar {
 }
 
 @media (max-width: 820px) {
-	.optimizer-filters { flex-wrap: wrap; }
 	.optimizer-search { flex-basis: 100%; }
 }
 
