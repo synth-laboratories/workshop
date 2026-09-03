@@ -1338,6 +1338,15 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
   // Gated on streamOnly so the absence is always stated once, in the note
   // below, before any environment-shaped surface is dropped.
   const environmentless = streamOnly && !branding.frameCentric && environmentAbsent;
+  // Frame evidence this surface presents for the bound run, across every
+  // trial rather than only the selected one. The pane shows one frame at a
+  // time, so counting the selected trial made the run's frame evidence appear
+  // and disappear as a reviewer scrubbed — and readiness harvested a zero from
+  // a run whose frames were plainly on screen.
+  const renderedFrameCount = useMemo(
+    () => trials.reduce((total, row) => total + row.view.frames.filter((entry) => entry.media).length, 0),
+    [trials]
+  );
   const frameFactSource = selectedFrameFact.sources.length ? selectedFrameFact.sources.join(", ") : "not_reported";
   const frameFactReason = selectedFrameFact.unavailableReasons.length
     ? selectedFrameFact.unavailableReasons.join(", ")
@@ -1375,7 +1384,7 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
       observation={{
         transportState: props.loadError ? "error" : terminal ? "terminal" : "live",
         rolloutCount: aggregateRollouts ?? trials.length,
-        renderedFrameCount: view?.frames.filter((row) => row.media).length ?? 0,
+        renderedFrameCount,
         semanticEventCount: view?.events.length ?? 0,
         terminal,
         error: props.loadError ?? null

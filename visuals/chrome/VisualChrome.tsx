@@ -23,6 +23,13 @@ export type SurfaceObservation = {
 
 export function surfaceObservationAttributes(observation: SurfaceObservation) {
   return {
+    // Marks this element as the *template's* published observation. Workshop's
+    // host renders its own transport wrapper around every shell, and a plain
+    // `[data-visual-transport-state]` query found the wrapper first: a static
+    // projection that declared `terminal` was harvested as the wrapper's
+    // `idle`, and a surface with frames on screen was harvested as zero frames
+    // because the wrapper publishes no counts.
+    "data-visual-observation": "template",
     "data-visual-transport-state": observation.transportState,
     "data-visual-rollout-count": observation.rolloutCount ?? 0,
     "data-visual-rendered-frame-count": observation.renderedFrameCount ?? 0,

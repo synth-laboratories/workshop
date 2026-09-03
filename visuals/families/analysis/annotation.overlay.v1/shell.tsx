@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { VisualChrome } from "../../../chrome/VisualChrome.tsx";
+import { UnresolvedInputNotice } from "../../../chrome/UnresolvedInputNotice.tsx";
 import { TimelineScrubber } from "../../../chrome/TimelineScrubber.tsx";
+import { resolveTemplateInput } from "../../../runtime/resolvedInput.ts";
 import type { RolloutStep, TraceAnnotationMarker, VisualBinding } from "../../../runtime/types.ts";
 import markersFixture from "../../../fixtures/annotation_markers.json";
 import rolloutFixture from "../../../fixtures/rollout_steps.json";
@@ -32,22 +34,43 @@ const KIND_COLOR: Record<string, string> = {
   acceptance: "#3d78bb"
 };
 
-function asAnn(raw: unknown): AnnPayload {
-  if (raw && typeof raw === "object" && Array.isArray((raw as AnnPayload).markers)) {
-    return raw as AnnPayload;
-  }
-  return markersFixture as AnnPayload;
+function asAnn(raw: unknown): AnnPayload | null {
+  if (!raw || typeof raw !== "object") return null;
+  return Array.isArray((raw as AnnPayload).markers) ? raw as AnnPayload : null;
 }
 
-function asTrace(raw: unknown): TracePayload {
-  if (raw && typeof raw === "object") return raw as TracePayload;
-  return rolloutFixture as TracePayload;
+/**
+ * A trace this overlay can scrub, or `null`.
+ *
+ * Accepting any object and then reading `trace.steps ?? rolloutFixture.steps`
+ * meant a real retained Trace V5 projection was overlaid on the bundled
+ * example's steps.
+ */
+function asTrace(raw: unknown): TracePayload | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as TracePayload;
+  if (!Array.isArray(candidate.steps) || candidate.steps.length === 0) return null;
+  return candidate;
 }
 
 export function Shell(props: ShellProps) {
-  const trace = asTrace(props.data?.trace ?? props.trace ?? rolloutFixture);
-  const ann = asAnn(props.data?.annotations ?? props.annotations ?? markersFixture);
-  const steps = trace.steps ?? (rolloutFixture as { steps: RolloutStep[] }).steps;
+  const resolvedTrace = resolveTemplateInput<TracePayload>({
+    input: "trace",
+    candidates: [props.data?.trace, props.trace],
+    bindings: props.bindings,
+    accept: asTrace,
+    fixture: rolloutFixture
+  });
+  const resolvedAnn = resolveTemplateInput<AnnPayload>({
+    input: "annotations",
+    candidates: [props.data?.annotations, props.annotations],
+    bindings: props.bindings,
+    accept: asAnn,
+    fixture: markersFixture
+  });
+  const trace = resolvedTrace.value ?? { steps: [] as RolloutStep[] };
+  const ann = resolvedAnn.value ?? { markers: [] as TraceAnnotationMarker[] };
+  const steps = trace.steps ?? [];
   const [index, setIndex] = useState(0);
 
   const markersAt = useMemo(
@@ -65,6 +88,23 @@ export function Shell(props: ShellProps) {
     return ann.markers.map((m) => m.step_index ?? m.turn ?? 0);
   }, [ann.markers]);
 
+  // After every hook. Without a trace there is no timeline to overlay, so the
+  // pane says which input is missing instead of overlaying real markers on the
+  // bundled example's steps.
+  if (resolvedTrace.status === "unresolved") {
+    return (
+      <VisualChrome
+        kicker="Overlay only · sealed Trace V5"
+        title={props.title ?? "Annotation overlay"}
+        lede={props.lede}
+        testId="visual-annotation-overlay"
+        footer="annotation.overlay.v1 · synth.rollout_annotations.v1 spirit"
+      >
+        <UnresolvedInputNotice unresolved={resolvedTrace.unresolved} />
+      </VisualChrome>
+    );
+  }
+
   return (
     <VisualChrome
       kicker="Overlay only · sealed Trace V5"
@@ -76,6 +116,9 @@ export function Shell(props: ShellProps) {
       testId="visual-annotation-overlay"
       footer="annotation.overlay.v1 · synth.rollout_annotations.v1 spirit"
     >
+      {resolvedAnn.status === "unresolved" ? (
+        <UnresolvedInputNotice unresolved={resolvedAnn.unresolved} testId="visual-annotation-overlay-markers-unresolved" />
+      ) : null}
       <div
         role="img"
         aria-label="Trace timeline with annotation markers"

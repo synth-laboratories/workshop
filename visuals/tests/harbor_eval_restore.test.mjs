@@ -234,3 +234,104 @@ test("a run-wide family is not mistaken for a per-task identity", async () => {
   ]);
   assert.equal(trials[0].taskInstanceId, null, "the family names every trial and so names none");
 });
+
+// ---------------------------------------------------------------------------
+// Visual QA ship blockers, 2026-09-03.
+// ---------------------------------------------------------------------------
+
+test("the template's own observation wins over the host's transport wrapper", async () => {
+  const { selectObservationSurface } = await import("../runtime/observationSurface.ts");
+  const element = (attributes) => ({
+    attributes,
+    getAttribute: (name) => attributes[name] ?? null,
+    hasAttribute: (name) => name in attributes
+  });
+  // Document order: the host wrapper comes first and says `idle`.
+  const wrapper = element({ "data-visual-transport-state": "idle" });
+  const template = element({
+    "data-visual-observation": "template",
+    "data-visual-transport-state": "terminal",
+    "data-visual-rendered-frame-count": "12"
+  });
+  assert.equal(selectObservationSurface([wrapper, template]), template);
+
+  // A template that writes the attributes by hand is still recognised.
+  const handWritten = element({
+    "data-visual-transport-state": "live",
+    "data-visual-rollout-count": "4"
+  });
+  assert.equal(selectObservationSurface([wrapper, handWritten]), handWritten);
+
+  // With nothing else, the wrapper is still the answer rather than nothing.
+  assert.equal(selectObservationSurface([wrapper]), wrapper);
+  assert.equal(selectObservationSurface([]), undefined);
+});
+
+test("the shared chrome marks the observation it publishes", () => {
+  assert.match(read("chrome/VisualChrome.tsx"), /"data-visual-observation": "template",/);
+  assert.match(
+    read("families/first_class_example_containers/live.craftax.v1/shell.tsx"),
+    /data-visual-observation="template"/
+  );
+});
+
+test("frame evidence is counted across the run, not only the selected trial", () => {
+  const source = read("families/first_class_example_containers/_shared/traceWorkbench.tsx");
+  assert.match(source, /const renderedFrameCount = useMemo\(/);
+  assert.match(source, /trials\.reduce\(\(total, row\) => total \+ row\.view\.frames\.filter/);
+  assert.doesNotMatch(source, /renderedFrameCount: view\?\.frames\.filter/);
+});
+
+test("the anonymous data prop does not shadow a single declared input", async () => {
+  const { anonymousDataProp } = await import("../runtime/bind.ts");
+  const acceptance = { events: [{ kind: "acceptance", payload: { decision: "pass" } }] };
+  // `live.intern_acceptance.v1` reads `props.data ?? props.acceptance`. Handing
+  // it the whole map made it read `{ acceptance: {...} }`, find no `events`,
+  // and rest at "awaiting source" while fully resolved.
+  assert.deepEqual(anonymousDataProp({ acceptance }), acceptance);
+  // Several inputs have no unambiguous anonymous payload; the map is kept.
+  const many = { trace: { steps: [] }, annotations: { markers: [] } };
+  assert.deepEqual(anonymousDataProp(many), many);
+  // An optimizer payload still wins, as does a bound optimizer_run.
+  assert.equal(anonymousDataProp({ acceptance }, "payload"), "payload");
+  assert.equal(anonymousDataProp({ optimizer_run: "run", other: 1 }), "run");
+});
+
+test("a fixture binding resolves from packaged assets instead of failing closed", async () => {
+  const { bindTemplateSlots } = await import("../runtime/bind.ts");
+  const template = {
+    id: "annotation.overlay.v1",
+    inputs: [{ name: "annotations", accepts: ["fixture"], required: true }]
+  };
+  const loaded = [];
+  const result = await bindTemplateSlots(
+    template,
+    [{ input: "annotations", kind: "fixture", source: "fixtures/annotation_markers.json" }],
+    {
+      loadFixture: async (source) => {
+        loaded.push(source);
+        return { markers: [{ kind: "note", step_index: 0 }] };
+      }
+    }
+  );
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(loaded, ["fixtures/annotation_markers.json"]);
+  assert.deepEqual(result.slots.annotations.data, { markers: [{ kind: "note", step_index: 0 }] });
+});
+
+test("a fixture binding that already carries its payload needs no loader", async () => {
+  const { bindTemplateSlots } = await import("../runtime/bind.ts");
+  const result = await bindTemplateSlots(
+    { id: "t", inputs: [{ name: "annotations", accepts: ["fixture"], required: true }] },
+    [{ input: "annotations", kind: "fixture", data: { markers: [] } }],
+    {}
+  );
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.slots.annotations.data, { markers: [] });
+});
+
+test("an unbound container-rollouts surface says so instead of waiting forever", () => {
+  const source = read("families/first_class_example_containers/live.container_rollouts.v1/shell.tsx");
+  assert.match(source, /!hasSource && bindingFor\(props\.bindings, "stream"\) === null/);
+  assert.match(source, /no rollout stream is bound to this visual/);
+});

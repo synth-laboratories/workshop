@@ -1,9 +1,11 @@
 import { useMemo, useState } from "react";
 import { VisualChrome, MetricStrip } from "../../../chrome/VisualChrome.tsx";
+import { UnresolvedInputNotice } from "../../../chrome/UnresolvedInputNotice.tsx";
+import { bindingFor } from "../../../runtime/resolvedInput.ts";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber, formatMissingUsd, missingNumber } from "../../../runtime/liveStream.ts";
 import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
-import type { LiveEvalEvent } from "../../../runtime/types.ts";
+import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
 
 type StreamPayload = { run_id?: string; events?: LiveEvalEvent[]; sse_url?: string };
 type Lane = {
@@ -90,7 +92,12 @@ function LaneReplay({ laneEvents, streamBase }: { laneEvents: LiveEvalEvent[]; s
   </article>;
 }
 
-export type ShellProps = LiveTemplateProps & { title?: string; lede?: string; stream?: StreamPayload };
+export type ShellProps = LiveTemplateProps & {
+  title?: string;
+  lede?: string;
+  stream?: StreamPayload;
+  bindings?: VisualBinding[] | { inputs?: VisualBinding[]; slots?: VisualBinding[] };
+};
 
 export function Shell(props: ShellProps) {
   const stream = props.stream ?? {};
@@ -114,6 +121,30 @@ export function Shell(props: ShellProps) {
   const allAchievements = new Set(lanes.flatMap((lane) => lane.achievements));
   const recent = visibleEvents.slice(-8).reverse();
   const streamBase = stream.sse_url ? new URL(stream.sse_url, window.location.href) : null;
+
+  // Nothing was ever bound to `stream`. Four panes of "waiting for the first
+  // rollout" read as a stalled connection; this surface has no connection to
+  // stall. Say what is missing instead, after every hook above has run.
+  if (!hasSource && bindingFor(props.bindings, "stream") === null) {
+    return (
+      <VisualChrome
+        kicker="Container eval · live"
+        title={props.title ?? "Live rollout progress"}
+        lede={props.lede}
+        testId="visual-live-container-rollouts"
+        footer="live.container_rollouts.v1 · synth.rollout.event.v1"
+      >
+        <UnresolvedInputNotice
+          unresolved={{
+            input: "stream",
+            kind: null,
+            source: null,
+            reason: "no rollout stream is bound to this visual, so there is no rollout evidence to show"
+          }}
+        />
+      </VisualChrome>
+    );
+  }
 
   return <VisualChrome kicker="Container eval · live" live={live} title={props.title ?? "Live rollout progress"} lede={props.lede ?? "Watch real rollout position, outcomes, and engine activity as they arrive."} testId="visual-live-container-rollouts" footer="live.container_rollouts.v1 · synth.rollout.event.v1">
     <MetricStrip metrics={[{ label: "Rollouts", value: `${done}/${lanes.length || "—"} done` }, { label: "Total reward", value: formatMissingNumber(totalReward) }, { label: "Achievements", value: String(allAchievements.size) }, { label: "Stream", value: !hasSource ? "awaiting source" : !ready ? "connecting" : live ? "receiving" : done ? "complete" : "waiting" }]} />

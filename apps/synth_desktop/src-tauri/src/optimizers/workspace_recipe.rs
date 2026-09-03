@@ -1312,6 +1312,12 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         "retry_max_wait",
         "min_actions",
         "max_actions",
+        // The inner sandbox of a nested agentic CLI. Registering a policy
+        // config replaces the container's seeded configuration, so a recipe
+        // that cannot name this key silently drops the seed's sandbox — which
+        // is how the 2026-09-03 DeepSWE sample ran every task under a
+        // namespace sandbox its container could not create.
+        "sandbox",
     ];
     for key in parsed.policy.keys() {
         if !POLICY_KEYS.contains(&key.as_str()) {

@@ -825,6 +825,7 @@ export function Shell(props: ShellProps) {
 		className={`craftax-live-viewer theme-${config.theme} density-${config.density}`}
 		data-testid="visual-live-craftax"
 		data-visual-landmark="gameplay-dashboard"
+		data-visual-observation="template"
 		data-visual-transport-state={transportState}
 		data-visual-event-source={optimizerEvents ? "optimizer-journal" : declaredStreamCount > 0 ? "declared-stream" : "fixture"}
 		data-visual-rollout-count={lanes.length}

@@ -88,10 +88,16 @@ async function resolveBinding(
     case "inline":
       return dig(binding.data, binding.path);
     case "fixture": {
+      // A fixture binding may already carry its payload (authoring, tests).
+      // Only a path needs the loader.
+      if (binding.data !== undefined) return dig(binding.data, binding.path);
+      if (!binding.source) {
+        throw new Error(`fixture binding for input "${bindingInputName(binding) ?? "?"}" requires a source path`);
+      }
       if (!ctx.loadFixture) {
         throw new Error(`No fixture loader for input "${bindingInputName(binding) ?? "?"}"`);
       }
-      return dig(await ctx.loadFixture(binding.source!), binding.path);
+      return dig(await ctx.loadFixture(binding.source), binding.path);
     }
     case "trace_v5": {
       if (!binding.source) {
@@ -424,6 +430,31 @@ export function resolveVisualBindings(value: unknown): ResolvedVisualBindings {
 /** Desktop passes the bindings envelope; some hosts still pass a raw input array. */
 export function bindingSlots(value: unknown): VisualBinding[] {
   return resolveVisualBindings(value).slots;
+}
+
+/**
+ * The value of the anonymous `data` prop a host passes beside named inputs.
+ *
+ * `data` is a direct-preview compatibility affordance: a single-input template
+ * may read it instead of its declared input name. Handing it the *whole* map
+ * of resolved inputs broke that contract — `live.intern_acceptance.v1` reads
+ * `props.data ?? props.acceptance`, received `{ acceptance: {...} }`, found no
+ * `events` on it, and rested at `awaiting source` while holding a fully
+ * resolved inline binding.
+ *
+ * So: an optimizer payload wins, then an `optimizer_run` input, then the sole
+ * resolved input when there is exactly one. With several inputs there is no
+ * unambiguous anonymous payload, and the map is passed as before.
+ */
+export function anonymousDataProp(
+  resolvedProps: Record<string, unknown>,
+  optimizerPayload?: unknown
+): unknown {
+  if (optimizerPayload !== undefined && optimizerPayload !== null) return optimizerPayload;
+  if (resolvedProps.optimizer_run !== undefined) return resolvedProps.optimizer_run;
+  const names = Object.keys(resolvedProps);
+  if (names.length === 1) return resolvedProps[names[0]];
+  return resolvedProps;
 }
 
 export function propsFromBindings(value: unknown): { props: Record<string, unknown>; errors: string[] } {

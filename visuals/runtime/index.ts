@@ -60,6 +60,7 @@ export {
   createJsonFixtureLoader,
   isVisualBindings,
   bindingSlots,
+  anonymousDataProp,
   propsFromBindings,
   resolveVisualBindings
 } from "./bind.ts";

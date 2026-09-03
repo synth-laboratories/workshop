@@ -2,6 +2,7 @@ import { Component, useEffect, useMemo, useRef, useState, type ComponentType, ty
 import type { ArtifactRef } from "../types/landing";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import {
+	anonymousDataProp,
 	bindTemplateSlots,
 	bindingInputName,
 	consumeInjectedRendererCrash,
@@ -13,6 +14,7 @@ import {
 	replayStreamsFromBindings,
 	resolveTemplate,
 	resolveVisualBindings,
+	selectObservationSurface,
 	selectRenderedProjection,
 	compileSourcedModule,
 	isSourcedTemplate,
@@ -21,6 +23,7 @@ import {
 import { publicError, toPublicError, type PublicError } from "../runtime/publicError";
 import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } from "../bridge";
 import { loadVisualShell } from "../runtime/visualsLoader";
+import { loadPackagedFixture } from "../visuals/packagedFixtures";
 import { bridges } from "../runtime/desktopBridge";
 import { subscribeToRun } from "../runtime/runProgress/subscription";
 import { useOptimizerRun } from "../hooks/useRunRead";
@@ -604,8 +607,12 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					binding.kind === "live_sse"
 					|| binding.kind === "optimizer_run"
 					|| binding.kind === "inline"
-					|| binding.kind === "fixture"
 				) return false;
+				// A stored fixture binding carries a path, not a payload.
+				// Treating it as synchronous meant nothing ever loaded it and
+				// the pane failed with "has not been resolved by the Rust
+				// runtime". It resolves here, from the packaged assets.
+				if (binding.kind === "fixture") return binding.data === undefined;
 				return binding.data === undefined;
 			}),
 		[resolvedBindings]
@@ -1005,8 +1012,11 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			if (!bridges.analysis) throw new Error(`No verifier-result loader for ${source}`);
 			return bridges.analysis.projection("verifier_result_v2", source);
 		};
-		void bindTemplateSlots(template, bindings, {
-			loadTraceV5,
+		void bindTemplateSlots(template, bindings, { loadTraceV5,
+			// A stored fixture binding carries a path, not a payload; without a
+			// loader the pane failed with "has not been resolved by the Rust
+			// runtime" instead of rendering the packaged asset it named.
+			loadFixture: async (source: string) => loadPackagedFixture(source),
 			loadLocalCas,
 			loadQuerySnapshot,
 			loadRun,
@@ -1433,7 +1443,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				visualMetadata={artifact.metadata}
 				loadError={optimizerLoadError ?? undefined}
 				{...(optimizerPayload ?? {})}
-				data={optimizerPayload ?? resolvedProps.optimizer_run ?? resolvedProps}
+				data={anonymousDataProp(resolvedProps, optimizerPayload)}
 				comparison={comparisonPayload ?? undefined}
 				replay={replayClient}
 				media={mediaClient}
@@ -1505,7 +1515,14 @@ function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactR
 				window.clearTimeout(fallback);
 				fallback = null;
 			}
-			const surface = host.querySelector("[data-visual-transport-state]");
+			// The host wraps every shell in its own transport element, so a bare
+			// `[data-visual-transport-state]` query harvested the wrapper rather
+			// than the template's published observation — reading `idle` over a
+			// declared `terminal`, and zero frames over a surface that has none
+			// of the count attributes at all. Prefer the template's own.
+			const surface = selectObservationSurface(
+				Array.from(host.querySelectorAll("[data-visual-transport-state]"))
+			);
 			if (!surface) return;
 			const rawError = surface.getAttribute("data-visual-error")?.trim();
 			const observation = {
