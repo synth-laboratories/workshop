@@ -588,19 +588,36 @@ function Hud({ step }: { step: TraceStep | null }) {
   );
 }
 
+/**
+ * What a rail row carries when nothing ever acted on the call.
+ *
+ * Every row of the Banking77 rollout read "no environment action", which is
+ * true of a classification task by construction and so told the reviewer
+ * nothing about the call it labelled. The model's own answer is the fact that
+ * belongs in that space.
+ */
+function decisionLine(step: TraceStep): string {
+  const decided = (step.content.message ?? step.content.reasoning ?? "").trim();
+  if (!decided) return "this call recorded no answer";
+  const [first] = decided.split("\n");
+  return first.length > 96 ? `${first.slice(0, 95)}…` : first;
+}
+
 /** The complete ordered trajectory. Every call, always — playback never hides one. */
 function TrajectoryRail({
   view,
   selected,
   onSelect,
   query,
-  onQuery
+  onQuery,
+  environmentless
 }: {
   view: EvalTraceView;
   selected: number;
   onSelect: (index: number) => void;
   query: string;
   onQuery: (value: string) => void;
+  environmentless: boolean;
 }) {
   const railRef = useRef<HTMLDivElement | null>(null);
   const activeRef = useRef<HTMLButtonElement | null>(null);
@@ -641,7 +658,14 @@ function TrajectoryRail({
       <input
         value={query}
         onChange={(event) => onQuery(event.target.value)}
-        placeholder="Search calls, actions, achievements"
+        placeholder={
+          // Offering "actions, achievements" to a classification rollout names
+          // two things the search can never match and implies the task has
+          // them. The rail searches reasoning and messages either way.
+          environmentless
+            ? "Search calls, reasoning, answers"
+            : "Search calls, actions, achievements"
+        }
         aria-label="Search the trajectory"
         style={{
           padding: "var(--sv-sp-2)",
@@ -700,7 +724,9 @@ function TrajectoryRail({
                     ? step.action.applied.map((row) => row.name).join(" · ")
                     : step.status === "running"
                       ? "deciding…"
-                      : "no environment action"}
+                      : environmentless
+                        ? decisionLine(step)
+                        : "no environment action"}
                 </span>
                 <span style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
                   {step.status === "running" ? <Chip label="running" tone="accent" /> : null}
@@ -731,7 +757,15 @@ function TrajectoryRail({
 }
 
 /** Observation → decision → applied → outcome, with raw behind disclosure. */
-function CallDetail({ view, step }: { view: EvalTraceView; step: TraceStep | null }) {
+function CallDetail({
+  view,
+  step,
+  environmentless
+}: {
+  view: EvalTraceView;
+  step: TraceStep | null;
+  environmentless: boolean;
+}) {
   if (!step) {
     return (
       <p style={{ margin: 0, color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-meta)" }}>
@@ -873,6 +907,13 @@ function CallDetail({ view, step }: { view: EvalTraceView; step: TraceStep | nul
         </details>
       ) : null}
 
+      {/* "Applied by the environment · The environment applied no action for
+          this call" is literally true on every Banking77 call and structurally
+          misleading: it teaches the framework's shape to a reader looking at a
+          task that has no environment at all. Recorded evidence still wins —
+          the section returns the moment a call has an applied or rejected
+          row, whatever the rollout looked like before it. */}
+      {environmentless && !step.action.applied.length && !step.action.rejected.length ? null : (
       <div style={section}>
         <p style={heading}>Applied by the environment</p>
         {step.action.applied.length ? (
@@ -918,6 +959,7 @@ function CallDetail({ view, step }: { view: EvalTraceView; step: TraceStep | nul
           </div>
         ) : null}
       </div>
+      )}
 
       <div style={section}>
         <p style={heading}>Changed</p>
@@ -1154,6 +1196,23 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
   const importedSeal = typeof run?.objective === "string" && String(run.objective).startsWith("imported from");
   const framesAbsent = view !== null && view.frames.length === 0 && view.coverage.framesRetained === 0;
   const streamOnly = importedSeal || (!branding.frameCentric && framesAbsent);
+  // Banking77 is a text classification task: no environment ever acts, so no
+  // call carries an applied, proposed or rejected action and no rollout unlocks
+  // an achievement. Reading that from the rollout's own record rather than from
+  // a second branding flag is what keeps the generic shell honest — it is bound
+  // to whatever run the backend hands it and cannot know in advance whether the
+  // next one is a classifier or a game. Frame-centric families are excluded by
+  // declaration, for the same reason their frame-absence copy is kept: there a
+  // missing environment is a defect worth naming, not the task's nature.
+  const environmentAbsent = view !== null && view.steps.length > 0 && view.steps.every((row) => (
+    row.action.applied.length === 0
+    && row.action.proposed.length === 0
+    && row.action.rejected.length === 0
+    && row.achievements.length === 0
+  ));
+  // Gated on streamOnly so the absence is always stated once, in the note
+  // below, before any environment-shaped surface is dropped.
+  const environmentless = streamOnly && !branding.frameCentric && environmentAbsent;
   const frameFactSource = selectedFrameFact.sources.length ? selectedFrameFact.sources.join(", ") : "not_reported";
   const frameFactReason = selectedFrameFact.unavailableReasons.length
     ? selectedFrameFact.unavailableReasons.join(", ")
@@ -1276,13 +1335,31 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
           className="trace-workbench-layout"
           style={{
             display: "grid",
-            gridTemplateColumns: "var(--tw-main-columns, minmax(320px, 3fr) minmax(240px, 2fr))",
+            // A frame viewer that cannot hold a frame should not hold a column
+            // either. Banking77 kept the full 3fr frame column and centred a
+            // single sentence in roughly nine hundred pixels of it; the note
+            // becomes a banner and the trajectory takes the whole width.
+            gridTemplateColumns: streamOnly
+              ? "var(--tw-main-columns, minmax(0, 1fr))"
+              : "var(--tw-main-columns, minmax(320px, 3fr) minmax(240px, 2fr))",
+            gridTemplateRows: streamOnly ? "auto minmax(0, 1fr)" : undefined,
             gap: "var(--sv-sp-4)",
             height: "var(--tw-main-height, 720px)",
             minHeight: 0
           }}
         >
-          <section className="trace-workbench-frame-column" style={{ display: "grid", gridTemplateRows: "1fr auto auto", minHeight: 0 }}>
+          <section
+            className="trace-workbench-frame-column"
+            style={{
+              display: "grid",
+              // Without a frame the note, the HUD and the retention receipts
+              // are the whole column, so they sit at their own height at the
+              // top instead of being stretched across the viewer's row.
+              gridTemplateRows: streamOnly ? "auto" : "1fr auto auto",
+              alignContent: streamOnly ? "start" : "stretch",
+              minHeight: 0
+            }}
+          >
             {streamOnly ? (
               <div
                 data-testid={`${branding.testId}-stream-only`}
@@ -1305,11 +1382,16 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
                   : importedSeal
                     ? "Imported seal has no native step/frame identity; showing stream events only."
                     : "This run recorded no environment frames; showing stream events only."}
+                {/* Say it once, here, rather than repeating a per-call denial
+                    in the inspector for every call in the rollout. */}
+                {environmentless
+                  ? " No call on this rollout recorded an environment action or an achievement either, so the per-call environment section is not shown."
+                  : ""}
               </div>
             ) : (
               <FrameCanvas frame={frame} media={media} loaded={loaded} branding={branding} />
             )}
-            {streamOnly ? <span /> : <div
+            {streamOnly ? null : <div
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -1391,8 +1473,9 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
               onSelect={selectCall}
               query={query}
               onQuery={setQuery}
+              environmentless={environmentless}
             />
-            <CallDetail view={view} step={step} />
+            <CallDetail view={view} step={step} environmentless={environmentless} />
           </section>
         </div>
       )}
