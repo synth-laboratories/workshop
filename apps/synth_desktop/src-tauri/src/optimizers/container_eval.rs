@@ -42,11 +42,33 @@ const WORKBENCH_TEMPLATE: &str = "trace.workbench.v1";
 /// are prepared, so the pane shows the summary layer over the underlying events.
 const LIVE_ANNOTATION_TEMPLATE: &str = "live.annotated_rollouts.v1";
 const LIVE_ANNOTATION_VISUAL_ROLE: &str = "live_annotation";
+const LIVE_EVAL_VISUAL_ROLE: &str = "live_eval";
+const HARBOR_LIVE_TEMPLATE: &str = "live.harbor_eval.v1";
+const CRAFTAX_LIVE_TEMPLATE: &str = "live.craftax.v1";
 const EVAL_ALGORITHM_ID: &str = "eval";
 const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
 const DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT: Duration =
     crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT;
+
+fn live_eval_visual_spec(
+    declared_template: Option<&str>,
+    has_live_annotation: bool,
+) -> Option<(&str, &str, &str)> {
+    if has_live_annotation {
+        return Some((
+            LIVE_ANNOTATION_TEMPLATE,
+            LIVE_ANNOTATION_VISUAL_ROLE,
+            "live_annotation_provisional",
+        ));
+    }
+    match declared_template {
+        Some(template @ (HARBOR_LIVE_TEMPLATE | CRAFTAX_LIVE_TEMPLATE)) => {
+            Some((template, LIVE_EVAL_VISUAL_ROLE, "live_eval_provisional"))
+        }
+        _ => None,
+    }
+}
 
 /// A failure of the evidence lane — durable events, projections, the terminal
 /// manifest, or the chat-owned visual — as opposed to a failure of the compute.
@@ -711,7 +733,7 @@ async fn start_eval(
     // appears only after there is something to see cannot show a rollout
     // starting, which is the thing it exists to show.
     let workbench_id = mint_workbench_visual(service, &run, &spec).await?;
-    let live_annotation_visual_id = mint_live_annotation_visual(service, &run, &spec).await?;
+    let live_eval_visual_id = mint_live_eval_visual(service, &run, &spec).await?;
     let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run.id.clone(), cancel_tx)
@@ -721,7 +743,7 @@ async fn start_eval(
     let planned_trials = examples.len();
     let worker_visual_id = visual_id.clone();
     let worker_workbench_id = workbench_id.clone();
-    let worker_live_visual_id = live_annotation_visual_id.clone();
+    let worker_live_visual_id = live_eval_visual_id.clone();
     let worker_spec = spec.clone();
     tokio::spawn(async move {
         if let Err(error) = run_eval_worker(
@@ -1066,39 +1088,60 @@ async fn mint_workbench_visual(
     Ok(visual_id)
 }
 
-/// Lane C's pane. Minted honestly empty (`pending_stream_bindings`) with the
-/// run, then bound per rollout after prepare; absent when the recipe does not
-/// declare a live annotation protocol.
-async fn mint_live_annotation_visual(
+/// The run's declared live pane. It is minted honestly empty
+/// (`pending_stream_bindings`) with the run, then bound per rollout after
+/// prepare. A plain Harbor/Craftax eval gets its family-specific viewer; a
+/// recipe with Lane C annotations gets the annotated-rollouts superset.
+///
+/// The experiment overview remains a separate summary artifact. Previously we
+/// replaced its template with `live.harbor_eval.v1` while leaving its
+/// `experiment` binding intact. The renderer quite correctly found no stream
+/// and rested on `connecting` for the entire rollout.
+async fn mint_live_eval_visual(
     service: &OptimizerService,
     run: &OptimizerRunRecord,
     spec: &EvalSpec,
 ) -> Result<Option<String>> {
-    if spec.live_annotation.is_none() {
+    let declared_template = run
+        .summary
+        .pointer("/effectiveContract/primaryVisual/templateId")
+        .and_then(Value::as_str);
+    let Some((template_id, role, semantics)) =
+        live_eval_visual_spec(declared_template, spec.live_annotation.is_some())
+    else {
         return Ok(None);
-    }
+    };
+    let bindings = if spec.live_annotation.is_some() {
+        json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "inputs": [{
+                "input": "stream", "kind": "inline", "schema": "synth.trace-stream-event.v1", "data": { "events": [] }
+            }, {
+                "input": "optimizer_run", "kind": "optimizer_run", "source": run.id,
+            }]
+        })
+    } else {
+        crate::visuals::pending_stream_bindings()
+    };
     let (visual_id, _event) = service
         .publish_chat_owned_visual(ChatVisualPublication {
             run_id: run.id.clone(),
             session_ref: run.session_ref.clone(),
-            template_id: LIVE_ANNOTATION_TEMPLATE.into(),
-            title: format!("{} · live annotations", spec.title),
-            bindings: json!({
-                "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
-                "inputs": [{
-                    "input": "stream", "kind": "inline", "schema": "synth.trace-stream-event.v1", "data": { "events": [] }
-                }, {
-                    "input": "optimizer_run", "kind": "optimizer_run", "source": run.id,
-                }]
-            }),
+            template_id: template_id.into(),
+            title: if spec.live_annotation.is_some() {
+                format!("{} · live annotations", spec.title)
+            } else {
+                format!("{} · live", spec.title)
+            },
+            bindings,
             metadata: json!({
                 "optimizerRunId": run.id,
                 "recipeId": spec.recipe_id,
-                "semantics": "live_annotation_provisional",
+                "semantics": semantics,
                 "protocolId": spec.live_annotation.as_ref().map(|source| source.spec.protocol_id.clone()),
             }),
             status: VisualStatus::Live,
-            role: LIVE_ANNOTATION_VISUAL_ROLE.into(),
+            role: role.into(),
         })
         .await?;
     Ok(Some(visual_id))
@@ -1250,11 +1293,6 @@ async fn mint_experiment_visual(
     spec: &EvalSpec,
     total: usize,
 ) -> Result<String> {
-    let template_id = run
-        .summary
-        .pointer("/effectiveContract/primaryVisual/templateId")
-        .and_then(Value::as_str)
-        .unwrap_or(EXPERIMENT_TEMPLATE);
     let progress = inline_progress_projection(service, &run.id).await?;
     // One publication, not five calls: mint-or-reuse, bind to the run, publish
     // the durable show, select it for the owning chat, and shelve it in that
@@ -1263,7 +1301,7 @@ async fn mint_experiment_visual(
         .publish_chat_owned_visual(ChatVisualPublication {
             run_id: run.id.clone(),
             session_ref: run.session_ref.clone(),
-            template_id: template_id.into(),
+            template_id: EXPERIMENT_TEMPLATE.into(),
             title: spec.title.clone(),
             // The overview is minted before the workstation exists, so the
             // first projection carries no drill-down target. `persist_progress`
@@ -2479,7 +2517,12 @@ async fn append_eval_terminal(
             || json!({ "reward": record.get("reward").cloned().unwrap_or(Value::Null) }),
         );
     let evidence_refs = eval_terminal_evidence_refs(spec, record)?;
-    let usage_delta = terminal_usage_reconciliation(record, cancelled, spec.cost_ceiling_usd);
+    let usage_delta = terminal_usage_reconciliation(
+        record,
+        cancelled,
+        spec.cost_ceiling_usd,
+        !spec.provider.trim().is_empty() && !spec.model.trim().is_empty(),
+    );
     let evidence_state = record
         .get("evidenceState")
         .and_then(Value::as_str)
@@ -2555,7 +2598,28 @@ fn terminal_usage_reconciliation(
     record: &Value,
     cancelled: bool,
     cost_ceiling_usd: f64,
+    provider_receipt_authoritative: bool,
 ) -> Map<String, Value> {
+    // A provider-backed container reports its agent/runtime accounting in the
+    // terminal record, but the Workshop proxy is the billing authority. Those
+    // domains are not directly comparable: Codex, for example, reports cached
+    // context tokens that the provider receipt accounts for separately. Keep
+    // the producer values in the retained record and wait for the proxy receipt
+    // to populate optimizer usage; otherwise the later authoritative receipt
+    // can look smaller and incorrectly fail a successfully scored run.
+    if provider_receipt_authoritative {
+        return Map::from_iter([
+            ("rollouts".into(), json!(1)),
+            (
+                "usage_completeness".into(),
+                json!(if cancelled {
+                    "partial"
+                } else {
+                    "pending_provider_receipt"
+                }),
+            ),
+        ]);
+    }
     let measured = usage_from_records(std::slice::from_ref(record), cost_ceiling_usd);
     let reported_blob = record.get("usage").unwrap_or(&Value::Null);
     let reported_tokens = usage_token_pair(reported_blob);
@@ -6142,6 +6206,27 @@ mod tests {
             "status": "failed",
             "reward": 1.0,
         })));
+    }
+
+    #[test]
+    fn provider_backed_terminal_keeps_runtime_tokens_out_of_billing_usage() {
+        let record = json!({
+            "usage": {
+                "prompt_tokens": 256_782,
+                "completion_tokens": 1_660,
+                "cache_tokens": 238_040,
+                "cost_usd": 0.0114359,
+            }
+        });
+        let delta = terminal_usage_reconciliation(&record, false, 4.0, true);
+        assert_eq!(delta["rollouts"], json!(1));
+        assert_eq!(
+            delta["usage_completeness"],
+            json!("pending_provider_receipt")
+        );
+        assert!(delta.get("prompt_tokens").is_none());
+        assert!(delta.get("completion_tokens").is_none());
+        assert!(delta.get("cost_usd").is_none());
     }
 
     fn provider_usage_receipt(
@@ -10178,6 +10263,32 @@ max_total_rollouts = 1
 #[cfg(test)]
 mod live_annotation_binding_tests {
     use super::*;
+
+    #[test]
+    fn declared_harbor_and_craftax_templates_get_a_real_live_stream_visual() {
+        for template in [HARBOR_LIVE_TEMPLATE, CRAFTAX_LIVE_TEMPLATE] {
+            assert_eq!(
+                live_eval_visual_spec(Some(template), false),
+                Some((template, LIVE_EVAL_VISUAL_ROLE, "live_eval_provisional"))
+            );
+        }
+        assert_eq!(
+            live_eval_visual_spec(Some(EXPERIMENT_TEMPLATE), false),
+            None
+        );
+    }
+
+    #[test]
+    fn annotated_eval_uses_the_annotation_superset_visual() {
+        assert_eq!(
+            live_eval_visual_spec(Some(HARBOR_LIVE_TEMPLATE), true),
+            Some((
+                LIVE_ANNOTATION_TEMPLATE,
+                LIVE_ANNOTATION_VISUAL_ROLE,
+                "live_annotation_provisional"
+            ))
+        );
+    }
 
     #[test]
     fn merge_replaces_the_placeholder_keeps_streams_and_dedupes_by_source() {
