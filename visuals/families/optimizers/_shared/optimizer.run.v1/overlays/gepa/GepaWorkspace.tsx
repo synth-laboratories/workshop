@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatMissingUsd } from "../../../../../../runtime/liveStream.ts";
 import type { ReactNode } from "react";
+import { optimizerFailureDetail } from "../../components/projectEvents.ts";
 import type { OptimizerRun, ProjectedState } from "../../components/projectEvents.ts";
 import {
   projectRunViewV2,
@@ -495,13 +496,40 @@ export function GepaWorkspace({
           statusText={presentation.text}
           statusTone={presentation.tone}
           live={presentation.dot}
-          headline={terminal ? (gepa.runtime.job?.reason?.replaceAll("_", " ") ?? "Run ended") : gepa.activity.label}
+          headline={terminal
+            ? (gepa.runtime.job?.reason?.replaceAll("_", " ")
+              ?? (run.status === "failed" ? "Search failed" : "Run ended"))
+            : gepa.activity.label}
           detail={gepa.activity.detail !== gepa.activity.label ? gepa.activity.detail : undefined}
           metrics={metrics}
           lanes={lanes}
           receipt={<JobTerminationNotice gepa={gepa} runId={run.id} durableEventCount={projected.cursorSeq} />}
           testId="gepa-run-header"
         />
+      ) : null}
+      {/*
+        A failed search that does not say why. This surface read "FAILED / Run
+        ended" over four zeroed metrics and twenty-five unreported fields,
+        while the run's own error said `container GET /program failed with HTTP
+        404`. Every panel below is empty *because* of that error, so without it
+        a reader sees a search that produced nothing and cannot tell whether
+        the prompt was bad, the budget ran out, or it never started at all.
+        SftWorkspace already states its failure this way.
+      */}
+      {run.status === "failed" && optimizerFailureDetail(run.error) ? (
+        <section className="sv-panel" aria-label="Why this run failed" data-testid="gepa-failure">
+          <div className="sv-panel-head">
+            <h4>Why this search failed</h4>
+            <span className="sv-mono">no candidate was proposed</span>
+          </div>
+          <div className="sv-panel-body">
+            <p className="sv-failure-detail">{optimizerFailureDetail(run.error)}</p>
+            <p className="sv-empty">
+              The panels below are empty because the search was refused before it
+              began, not because it ran and found nothing.
+            </p>
+          </div>
+        </section>
       ) : null}
       <SearchOverviewPanel gepa={gepa} />
       <section
