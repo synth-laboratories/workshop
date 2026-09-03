@@ -116,7 +116,15 @@ function normalizeRun(raw: Record<string, unknown>): OptimizerRun {
     usage: (raw.usage as OptimizerRun["usage"]) ?? undefined,
     executionBindings: (raw.executionBindings as Array<Record<string, unknown>>) ??
       (raw.execution_bindings as Array<Record<string, unknown>>) ??
-      undefined
+      undefined,
+    // Why the run failed. This normalizer rebuilds the run field by field, and
+    // omitting `error` here is what made every "Why this run failed" panel
+    // inert: GEPA's and SFT/CISPO's both test `run.error`, the host delivers it
+    // -- it is in the run's stored payload -- and it was dropped on the way in.
+    // A failed Banking77 CISPO run showed a four-item checklist headed "What is
+    // still needed" while its own record held "training job failed: POST
+    // .../v1/runs: Connection refused".
+    error: raw.error ?? undefined
   };
 }
 

@@ -11,6 +11,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
 
 const RUN = {
@@ -106,4 +107,20 @@ test("a run that succeeded carries no failure detail on its summary", () => {
     { ...base, sequenceNumber: 1, type: "optimizer.run.completed", delta: { status: "completed" } }
   ]);
   assert.equal(projected.summary.failureDetail, undefined);
+});
+
+test("the shell's run normalizer carries the failure reason through", () => {
+  // `normalizeRun` rebuilds the run field by field, and omitting `error` here
+  // darkened every "Why this run failed" panel in the family at once: GEPA's
+  // and SFT/CISPO's both test `run.error`, the host delivers it -- it is in the
+  // run's stored payload_json -- and it was dropped on the way in. A failed
+  // Banking77 CISPO run showed a four-item checklist headed "What is still
+  // needed" while its own record held "training job failed: ... Connection
+  // refused".
+  const shell = readFileSync(
+    new URL("../families/optimizers/_shared/optimizer.run.v1/components/FamilyShell.tsx", import.meta.url),
+    "utf8"
+  );
+  const normalizer = shell.slice(shell.indexOf("function normalizeRun"), shell.indexOf("export function OptimizerFamilyShell"));
+  assert.match(normalizer, /error: raw\.error \?\? undefined/);
 });
