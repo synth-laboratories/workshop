@@ -570,6 +570,9 @@ export type CispoState = {
   rewardVariance: number | null;
   advantageMean: number | null;
   advantageStd: number | null;
+  clippedTokenFraction: number | null;
+  importanceRatioMean: number | null;
+  klProxy: number | null;
   optimizerSteps: number;
   warmStartArtifactId: string | null;
   checkpointIds: string[];
@@ -946,6 +949,9 @@ export function projectAtCursor(
   let cispoRewardVariance: number | null = null;
   let cispoAdvantageMean: number | null = null;
   let cispoAdvantageStd: number | null = null;
+  let cispoClippedTokenFraction: number | null = null;
+  let cispoImportanceRatioMean: number | null = null;
+  let cispoKlProxy: number | null = null;
   let cispoOptimizerSteps = 0;
   const cispoRolloutGroups: CispoState["rolloutGroups"] = [];
   let cispoZeroAdvantageGroups = 0;
@@ -2517,6 +2523,15 @@ export function projectAtCursor(
     if (event.type === "cispo.zero_advantage.detected") {
       cispoZeroAdvantageGroups += 1;
     }
+    if (event.type === "cispo.importance_ratio.measured") {
+      cispoClippedTokenFraction = missingNumber(
+        event.delta?.clipped_token_fraction ?? event.delta?.clippedTokenFraction
+      ) ?? cispoClippedTokenFraction;
+      cispoImportanceRatioMean = missingNumber(
+        event.delta?.mean_ratio ?? event.delta?.meanRatio
+      ) ?? cispoImportanceRatioMean;
+      cispoKlProxy = missingNumber(event.delta?.kl_proxy ?? event.delta?.klProxy) ?? cispoKlProxy;
+    }
     if (event.type === "cispo.rollout_group.completed") {
       const rewards = Array.isArray(event.delta?.rewards) ? event.delta.rewards : [];
       const advantages = Array.isArray(event.delta?.advantages) ? event.delta.advantages : [];
@@ -3078,6 +3093,9 @@ export function projectAtCursor(
         rewardVariance: cispoRewardVariance,
         advantageMean: cispoAdvantageMean,
         advantageStd: cispoAdvantageStd,
+        clippedTokenFraction: cispoClippedTokenFraction,
+        importanceRatioMean: cispoImportanceRatioMean,
+        klProxy: cispoKlProxy,
         optimizerSteps: cispoOptimizerSteps > 0 ? cispoOptimizerSteps : points.length,
         warmStartArtifactId: warmStart,
         checkpointIds: checkpoints.map((ckpt) => String(ckpt.id ?? "")).filter(Boolean),

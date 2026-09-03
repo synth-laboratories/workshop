@@ -41,6 +41,12 @@ function cispoEvents() {
     {
       ...base,
       sequenceNumber: next(),
+      type: "cispo.importance_ratio.measured",
+      delta: { clipped_token_fraction: 0.125, mean_ratio: 1.1, kl_proxy: 0.03 }
+    },
+    {
+      ...base,
+      sequenceNumber: next(),
       type: "training.checkpoint.created",
       item: { kind: "checkpoint", id: "cispo-ckpt-1", status: "created", raw: { step: 1 } }
     },
@@ -81,6 +87,9 @@ test("CISPO runs project onto the shared training workspace with CISPO identity"
   assert.equal(projected.cispo.rewardVariance, 0.12);
   assert.equal(projected.cispo.advantageMean, 0.08);
   assert.equal(projected.cispo.advantageStd, 0.31);
+  assert.equal(projected.cispo.clippedTokenFraction, 0.125);
+  assert.equal(projected.cispo.importanceRatioMean, 1.1);
+  assert.equal(projected.cispo.klProxy, 0.03);
   assert.equal(projected.cispo.optimizerSteps, 1);
   assert.equal(projected.cispo.warmStartArtifactId, "sft-adapter-7");
   assert.deepEqual(projected.cispo.checkpointIds, ["cispo-ckpt-1"]);

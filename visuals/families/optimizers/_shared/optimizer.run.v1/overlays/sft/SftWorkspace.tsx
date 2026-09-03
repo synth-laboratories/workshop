@@ -765,6 +765,14 @@ function CispoLearningSignalPanel({
             ? `${formatMissingNumber(cispo.clipLow)} … ${formatMissingNumber(cispo.clipHigh)}`
             : "—"}
         </dd>
+        <dt>Tokens clipped</dt>
+        <dd className="sv-mono">
+          {cispo.clippedTokenFraction == null ? "—" : percent(cispo.clippedTokenFraction, 1)}
+        </dd>
+        <dt>Mean ratio</dt>
+        <dd className="sv-mono">{formatMissingNumber(cispo.importanceRatioMean)}</dd>
+        <dt>KL proxy</dt>
+        <dd className="sv-mono">{formatMissingNumber(cispo.klProxy)}</dd>
         <dt>Group size</dt>
         <dd className="sv-mono">{formatMissingNumber(cispo.groupSize, 0)}</dd>
         <dt>Rollout groups</dt>
