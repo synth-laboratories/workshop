@@ -42,6 +42,12 @@ struct Connection {
     token: String,
 }
 
+// The host capture path may spend 3s settling, 8s waiting for the requested
+// surface, then 10s + 25s on its two snapshot attempts. A 10s socket read
+// timeout made a healthy slow capture surface as EAGAIN before the host could
+// return its receipt or its real error.
+const CAPTURE_IPC_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
 fn connection_file() -> PathBuf {
     instance_paths::ipc_connection_file(
         &["SYNTH_DESKTOP_IPC_FILE", "SYNTH_VISUALS_IPC_FILE"],
@@ -64,7 +70,7 @@ fn request(method: &str, path: &str, body: Value) -> Result<Value, String> {
     let mut stream =
         TcpStream::connect_timeout(&addr, Duration::from_secs(10)).map_err(|e| e.to_string())?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
+        .set_read_timeout(Some(CAPTURE_IPC_READ_TIMEOUT))
         .map_err(|e| e.to_string())?;
     let payload = serde_json::to_vec(&body).map_err(|e| e.to_string())?;
     let wire = format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", connection.token, payload.len());
@@ -377,6 +383,11 @@ mod tests {
         assert!(required.is_none(), "capture must require no argument: {required:?}");
         let described = capture["description"].as_str().unwrap();
         assert!(described.contains("current size"), "{described}");
+    }
+
+    #[test]
+    fn capture_ipc_outlives_the_hosts_slowest_snapshot_path() {
+        assert!(CAPTURE_IPC_READ_TIMEOUT > Duration::from_secs(3 + 8 + 10 + 25));
     }
 
     #[test]

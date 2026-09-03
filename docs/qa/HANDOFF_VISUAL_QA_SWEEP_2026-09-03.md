@@ -113,8 +113,9 @@ Two are self-contained and have now been exercised:
 - `analysis.chart.v1` — see §3e.
 - `diagram.mermaid.v1` — `vis_540e5c76cc024a669e02596a401a4d8d`, rendered and
   inspected at 1280×900 and 760×900. Both deterministic review captures passed.
-  The separate `workshop_capture` host path returned `EAGAIN` twice; do not conflate
-  that host-capture failure with the successful Mermaid render/review path.
+  The separate `workshop_capture` host path returned `EAGAIN` twice because the display
+  adapter's 10-second socket timeout was shorter than the host's bounded capture path;
+  the adapter now waits 60 seconds.
 
 ### 3b. `visual_chart` spec shape is easy to get wrong
 
@@ -217,8 +218,6 @@ database, check the type, check the normalizer, in that order.
 
 1. Decide §3a — which unexercised templates justify standing up a run. That is the only
    remaining work with real defect yield, and it is a scoping call, not an engineering one.
-2. Investigate the repeated `EAGAIN` from `workshop_capture`; deterministic Mermaid
-   review capture still works.
 
 The defect rate held near **two per surface across the original nine surfaces**, and it
 did not fall off as the sweep went on — the last two surfaces produced the traceback
