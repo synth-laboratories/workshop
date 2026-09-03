@@ -649,7 +649,10 @@ async fn start_eval(
         // worker are started so an existing narrower capability for this run
         // is refused pre-dispatch rather than failing on call 41. The worker's
         // later route lookup reuses this exact capability.
-        if let Err(error) = container_openai_proxy_base(&run.id, &spec) {
+        if let Err(error) = provider_needs_credentials(&spec.provider)
+            .then(|| container_openai_proxy_base(&run.id, &spec))
+            .transpose()
+        {
             let detail = format!("provider capability preflight failed: {error:#}");
             append_terminal(service, &run.id, "failed", detail).await?;
             return Err(error);
@@ -2674,6 +2677,17 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
     )
 }
 
+/// Whether this recipe holds a provider credential at all.
+///
+/// A container-local policy such as `dataset_gold` or `scripted_react` declares
+/// `provider = "none"` and issues no external model call. Asking the secrets
+/// proxy for a capability on its behalf cannot succeed -- there is no variable
+/// to map -- and the denial reads as a credential misconfiguration rather than
+/// as what it is: a recipe that needs no credential.
+fn provider_needs_credentials(provider: &str) -> bool {
+    !matches!(provider.trim().to_ascii_lowercase().as_str(), "" | "none")
+}
+
 fn container_openai_proxy_base(run_id: &str, spec: &EvalSpec) -> Result<String> {
     let secrets = crate::secrets::live().ok_or_else(|| {
         secrets_proxy_error(
@@ -2748,7 +2762,9 @@ async fn register_policy_pin(
     // A container-backed policy may intentionally hold no provider secret of
     // its own while still requiring Workshop to register a scoped proxy route.
     // Only an already-advertised immutable config may skip registration.
-    let openai_base = Some(container_openai_proxy_base(run_id, spec)?);
+    let openai_base = provider_needs_credentials(&spec.provider)
+        .then(|| container_openai_proxy_base(run_id, spec))
+        .transpose()?;
     if let Some(code) = spec.policy_code.as_deref() {
         let response = client
             .put(format!("{base}/policy"))
@@ -5542,6 +5558,32 @@ async fn append_cancelled_terminal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recipe_without_a_provider_requests_no_credential() {
+        // `dataset_gold` and `scripted_react` run entirely inside the container
+        // and issue no external model call. Asking the secrets proxy for a
+        // capability on their behalf can only be denied, and the denial reads
+        // as a credential misconfiguration instead of as a recipe that needs
+        // no credential -- which is what blocked every Banking77 and Craftax
+        // annotated eval.
+        for declared in ["none", "None", "  none  ", ""] {
+            assert!(
+                !provider_needs_credentials(declared),
+                "provider {declared:?} must not request a lease"
+            );
+        }
+    }
+
+    #[test]
+    fn a_paid_recipe_still_requests_its_credential() {
+        for declared in ["openrouter", "openai", "groq"] {
+            assert!(
+                provider_needs_credentials(declared),
+                "provider {declared:?} must still request a lease"
+            );
+        }
+    }
     const CLASSIFY_EVAL: &str = "eval.banking77.baseline.v1";
     const HEALTH_EVAL: &str = "eval.healthbench.smoke.v1";
     use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
