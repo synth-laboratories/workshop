@@ -1,6 +1,6 @@
 id = "eval.banking77.gold.v1"
 algorithm = "eval"
-title = "Banking77 · gold baseline · annotated"
+title = "Banking77 · gold baseline"
 container = "banking77"
 provider = "none"
 model = "dataset_gold"

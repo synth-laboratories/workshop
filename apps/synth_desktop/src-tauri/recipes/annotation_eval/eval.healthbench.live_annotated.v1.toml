@@ -1,0 +1,33 @@
+id = "eval.healthbench.live_annotated.v1"
+title = "HealthBench · Annotated Rollouts"
+algorithm = "eval"
+container = "healthbench2"
+provider = "openrouter"
+model = "meta-llama/llama-3.1-8b-instruct"
+locality = "container"
+requires_credential_advertisement = false
+family = "healthbench"
+harness = "chat_completion"
+policy_config = "openrouter_llama31_8b"
+train_seeds = [7, 8]
+concurrency = 2
+
+[bounds]
+max_cost_usd = 2.00
+max_total_rollouts = 2
+
+[policy]
+max_calls = 16
+max_steps = 1
+
+[live_annotation]
+protocol_id = "healthbench.live.v1"
+protocol_source = "domains/healthbench/annotations/live_protocol.py"
+
+[annotation]
+enabled = true
+annotators = ["healthbench.rubric_outcomes"]
+label = "post_rollout"
+
+[annotation.throughput]
+deterministic = 4

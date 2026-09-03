@@ -1324,6 +1324,10 @@ export_instance_env() {
   export SYNTH_DESKTOP_WORKSPACE="$WORKSPACE"
   export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
   export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
+  # Feature-enabled instance builds still require an explicit runtime opt-in.
+  # Raw `tauri dev` executables have no embedded instance descriptor, so the
+  # legacy instance-name environment variable cannot safely provide identity.
+  export SYNTH_DESKTOP_EVAL_DRIVER=1
   # Named development instances may execute an operator-pinned image already
   # present in the local OCI daemon. The Rust admission check still requires a
   # full sha256 identity; release builds ignore this development-only lane.

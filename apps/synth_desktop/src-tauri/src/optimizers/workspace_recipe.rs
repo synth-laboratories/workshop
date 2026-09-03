@@ -38,6 +38,10 @@ const BUNDLED_ANNOTATION_EVAL_RECIPES: &[(&str, &str)] = &[
         include_str!("../../recipes/annotation_eval/eval.banking77.annotated.v1.toml"),
     ),
     (
+        "eval.banking77.live_annotated.v1.toml",
+        include_str!("../../recipes/annotation_eval/eval.banking77.live_annotated.v1.toml"),
+    ),
+    (
         "eval.deepswe.annotated.v1.toml",
         include_str!("../../recipes/annotation_eval/eval.deepswe.annotated.v1.toml"),
     ),
@@ -48,6 +52,10 @@ const BUNDLED_ANNOTATION_EVAL_RECIPES: &[(&str, &str)] = &[
     (
         "eval.healthbench.annotated.v1.toml",
         include_str!("../../recipes/annotation_eval/eval.healthbench.annotated.v1.toml"),
+    ),
+    (
+        "eval.healthbench.live_annotated.v1.toml",
+        include_str!("../../recipes/annotation_eval/eval.healthbench.live_annotated.v1.toml"),
     ),
     (
         "eval.craftax.gold.live_annotated.v1.toml",
@@ -2186,7 +2194,7 @@ paid = 2
         let (_dir, workspace) = write_workspace();
         assert_eq!(
             ensure_bundled_annotation_eval_recipes(&workspace).unwrap(),
-            6
+            8
         );
         assert_eq!(
             ensure_bundled_annotation_eval_recipes(&workspace).unwrap(),
@@ -2194,18 +2202,20 @@ paid = 2
             "existing files are not overwritten"
         );
         let recipes = load_recipes(&workspace).unwrap();
-        assert_eq!(recipes.len(), 6);
+        assert_eq!(recipes.len(), 8);
         let mut ids: Vec<_> = recipes.iter().map(|recipe| recipe.id.as_str()).collect();
         ids.sort();
         assert_eq!(
             ids,
             vec![
                 "eval.banking77.annotated.v1",
+                "eval.banking77.live_annotated.v1",
                 "eval.code_policy.annotated.v1",
                 "eval.craftax.gold.annotated.v1",
                 "eval.craftax.gold.live_annotated.v1",
                 "eval.deepswe.annotated.v1",
                 "eval.healthbench.annotated.v1",
+                "eval.healthbench.live_annotated.v1",
             ]
         );
         let live = recipes
@@ -2218,6 +2228,43 @@ paid = 2
         assert_eq!(protocol.configuration.get("judge_every_calls"), Some(&serde_json::json!(3)));
         assert!(protocol.model.is_none(), "the bundled recipe does not pick a judge model");
         assert!(live.annotation.is_some(), "live findings never replace the sealed post-hoc lane");
+        for (id, protocol_id, protocol_source) in [
+            (
+                "eval.banking77.live_annotated.v1",
+                "banking77.live.v1",
+                "domains/banking77/annotations/live_protocol.py",
+            ),
+            (
+                "eval.healthbench.live_annotated.v1",
+                "healthbench.live.v1",
+                "domains/healthbench/annotations/live_protocol.py",
+            ),
+        ] {
+            let recipe = recipes.iter().find(|recipe| recipe.id == id).unwrap();
+            let protocol = recipe
+                .live_annotation
+                .as_ref()
+                .expect("live lane declared");
+            assert_eq!(protocol.protocol_id, protocol_id);
+            assert_eq!(protocol.protocol_source, protocol_source);
+            assert!(
+                recipe.annotation.is_some(),
+                "live findings never replace the sealed post-hoc lane"
+            );
+        }
+        let healthbench_live = recipes
+            .iter()
+            .find(|recipe| recipe.id == "eval.healthbench.live_annotated.v1")
+            .unwrap();
+        assert_eq!(healthbench_live.policy_config, "openrouter_llama31_8b");
+        assert_eq!(
+            healthbench_live.model,
+            "meta-llama/llama-3.1-8b-instruct"
+        );
+        assert!(
+            !healthbench_live.requires_credential_advertisement,
+            "HealthBench inference stays inside the credentialed container"
+        );
         let craftax = recipes
             .iter()
             .find(|recipe| recipe.id == "eval.craftax.gold.annotated.v1")

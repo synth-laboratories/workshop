@@ -209,6 +209,7 @@ rebuild_names="$(env_names_for rebuild-run)"
 [[ -n "$build_names" && "$build_names" == "$run_names" && "$run_names" == "$rebuild_names" ]]
 for required in SYNTH_DESKTOP_DATA_ROOT SYNTH_DESKTOP_CONFIG SYNTH_CODEX_HOME \
   SYNTH_DESKTOP_SOURCE_REVISION \
+  SYNTH_DESKTOP_EVAL_DRIVER \
   SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE SYNTH_COMPUTER_USE_PARENT_REQUIREMENT CARGO_TARGET_DIR; do
   [[ ",$build_names," == *",$required,"* ]] || { echo "launch env missing $required" >&2; exit 1; }
 done

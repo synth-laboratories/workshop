@@ -1,0 +1,35 @@
+id = "eval.banking77.live_annotated.v1"
+title = "Banking77 · Annotated Rollouts"
+algorithm = "eval"
+container = "banking77"
+provider = "none"
+model = "dataset_gold"
+locality = "container"
+family = "banking77"
+harness = "dataset_gold"
+policy_config = "dataset_gold"
+train_seeds = [0, 1, 2, 3]
+concurrency = 4
+
+[bounds]
+max_cost_usd = 0.01
+max_total_rollouts = 4
+
+[policy]
+max_calls = 1
+max_steps = 1
+
+[live_annotation]
+protocol_id = "banking77.live.v1"
+protocol_source = "domains/banking77/annotations/live_protocol.py"
+
+[annotation]
+annotators = [
+  "banking77.prediction_vs_label",
+  "banking77.response_form",
+  "banking77.episode_integrity",
+]
+label = "post_rollout"
+
+[annotation.throughput]
+deterministic = 4

@@ -656,7 +656,7 @@ fn craftax_image_pythonpath() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
-                .join("Documents/GitHub/evals/containers/images/craftax-gamebench-rust")
+                .join("GitHub/evals/containers/images/craftax-gamebench-rust")
         })
 }
 fn resolve_secret(name: &str) -> Result<String> {
