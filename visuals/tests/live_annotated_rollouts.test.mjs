@@ -74,6 +74,21 @@ test("run configuration strip reads optimizer authority with event fallbacks", (
   assert.match(shell, /not reported/);
 });
 
+test("presentation foregrounds decisions and progressively discloses raw evidence", () => {
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.annotated_rollouts.v1/shell.tsx"), "utf8");
+  const adapters = readFileSync(join(root, "families/first_class_example_containers/live.annotated_rollouts.v1/adapters.tsx"), "utf8");
+  assert.match(shell, /data-testid="review-summary"/);
+  assert.match(shell, /Review weakest rollout/);
+  assert.match(shell, /What needs attention/);
+  assert.match(shell, /Run details/);
+  assert.match(shell, /Replay timeline/);
+  assert.match(shell, /Event activity/);
+  assert.match(shell, /Trace V5 policy detail/);
+  assert.match(shell, /Raw rollout events/);
+  assert.match(shell, /defaultOpen=\{index === 0\}/);
+  assert.match(adapters, /Prompt and model response/);
+});
+
 test("rollout and annotation streams fold into one lane with a summary layer over the underlying events", () => {
   const lanes = projectLanes([...laneEvents("roll_a"), ...laneEvents("roll_b").slice(0, 9)]);
   assert.deepEqual(lanes.map((lane) => lane.name), ["roll_a", "roll_b"]);

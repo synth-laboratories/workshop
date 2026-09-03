@@ -91,8 +91,7 @@ function HealthBenchDetails({ lane }: { lane: Lane }) {
   const response = text(lane.task.response) ?? text(lane.task.answer);
   return <div style={{ display: "grid", gap: 10 }}>
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}><Fact label="Rubric items">{grades.length || number(lane.task.items) || "waiting"}</Fact><Fact label="Criteria met">{grades.length ? `${met}/${grades.length}` : number(lane.task.met) ?? "—"}</Fact><Fact label="Outcome">{outcomeLabel(lane)}</Fact><Fact label="Finish reason">{text(lane.task.finish_reason) ?? "—"}</Fact></div>
-    {prompt ? <Fact label="Clinical prompt">{prompt}</Fact> : null}
-    {response ? <Fact label="Model response">{response}</Fact> : null}
+    {prompt || response ? <details style={{ padding: "8px 10px", border: "1px solid var(--sv-border)", borderRadius: 7, background: "var(--sv-canvas)" }}><summary style={{ cursor: "pointer", fontSize: 10, fontWeight: 700 }}>Prompt and model response</summary><div style={{ display: "grid", gap: 10, marginTop: 10 }}>{prompt ? <Fact label="Clinical prompt">{prompt}</Fact> : null}{response ? <Fact label="Model response">{response}</Fact> : null}</div></details> : null}
   </div>;
 }
 
