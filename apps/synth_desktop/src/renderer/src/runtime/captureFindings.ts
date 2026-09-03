@@ -31,6 +31,11 @@ export type SurfaceElement = {
 	 * viewport inside such an ancestor is the intended design, not a defect.
 	 */
 	inHorizontalScroller?: boolean;
+	/**
+	 * True when this element or an ancestor has a running CSS animation, so its
+	 * rect may be mid-transition rather than at its settled layout position.
+	 */
+	inActiveAnimation?: boolean;
 };
 
 export type FindingCategory =
@@ -75,7 +80,7 @@ export function findHorizontalOverflow(
 ): Finding[] {
 	const limit = viewport.width + 1;
 	return elements
-		.filter((element) => !element.inHorizontalScroller)
+		.filter((element) => !element.inHorizontalScroller && !element.inActiveAnimation)
 		.filter((element) => element.rect.width > 0 && element.rect.x + element.rect.width > limit + 4)
 		.map((element) => ({
 			category: "responsive-geometry" as const,
@@ -234,12 +239,19 @@ export function collectSurface(root: Document, limit = 4000): SurfaceElement[] {
 		// usually a wrapper several levels up (`.optimizer-trials-scroll` holds
 		// a table, whose thead, tbody, tr, th and td all inherit the exemption).
 		let inHorizontalScroller = false;
+		// An entrance animation displaces the rect from its layout position, and
+		// `getBoundingClientRect` reports the displaced box. The pane's
+		// `visual-in` keyframe starts at `translateX(12px)`, so a frame caught
+		// inside its 0.22s window reads as 12px of overflow through every
+		// descendant. That is a photograph of a transition, not a layout defect.
+		let inActiveAnimation = window.getComputedStyle(element).animationName !== "none";
 		for (let parent = element.parentElement; parent; parent = parent.parentElement) {
-			const overflowX = window.getComputedStyle(parent).overflowX;
-			if (overflowX === "auto" || overflowX === "scroll") {
+			const parentStyle = window.getComputedStyle(parent);
+			if (parentStyle.overflowX === "auto" || parentStyle.overflowX === "scroll") {
 				inHorizontalScroller = true;
-				break;
 			}
+			if (parentStyle.animationName !== "none") inActiveAnimation = true;
+			if (inHorizontalScroller && inActiveAnimation) break;
 		}
 		out.push({
 			tag: element.tagName.toLowerCase(),
@@ -252,7 +264,8 @@ export function collectSurface(root: Document, limit = 4000): SurfaceElement[] {
 			text: ownText(element),
 			overflowX: style.overflowX,
 			textOverflow: style.textOverflow,
-			inHorizontalScroller
+			inHorizontalScroller,
+			inActiveAnimation
 		});
 	}
 	return out;

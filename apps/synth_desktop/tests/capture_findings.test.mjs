@@ -103,6 +103,24 @@ test("content inside its own horizontal scroller is not a pane overflow", () => 
 	);
 });
 
+test("geometry caught mid-animation is not a layout defect", () => {
+	const viewport = { width: 1280 };
+	// `visual-in` starts at translateX(12px), so a frame inside its 0.22s
+	// window puts the pane and every descendant 12px past the right edge.
+	const midEntrance = element({
+		testid: "visual-pane",
+		rect: { x: 12, y: 0, width: 1280, height: 900 },
+		inActiveAnimation: true
+	});
+	assert.deepEqual(findHorizontalOverflow([midEntrance], viewport), []);
+
+	// Settled at the same displacement, it is a real overflow.
+	assert.equal(
+		findHorizontalOverflow([{ ...midEntrance, inActiveAnimation: false }], viewport).length,
+		1
+	);
+});
+
 test("visually hidden text is not a truncation defect", () => {
 	// The sr-only idiom clips text to roughly a pixel on purpose. Reporting it
 	// puts a standing false positive on every frame, which trains the reader to
