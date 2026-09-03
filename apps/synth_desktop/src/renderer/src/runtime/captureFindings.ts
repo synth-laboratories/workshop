@@ -268,3 +268,22 @@ export function installCaptureAudit(): void {
 			})
 		);
 }
+
+/*
+ * Re-install when this module is hot-replaced.
+ *
+ * `installCaptureAudit` is called from an effect with an empty dependency
+ * array, and react-refresh deliberately does not re-run those. So editing a
+ * rule updated the module while `window.__synthCaptureAudit` kept calling the
+ * previous module's closure: the audit reported results from code that no
+ * longer existed, with nothing to indicate it. A QA tool that silently answers
+ * from stale rules is worse than one that is down, because its output still
+ * looks like measurement.
+ *
+ * Typed locally rather than through `vite/client` so this file needs no
+ * ambient types, and guarded so it compiles away in a production build.
+ */
+const hot = (import.meta as ImportMeta & {
+	hot?: { accept(callback: (module?: { installCaptureAudit?: () => void }) => void): void };
+}).hot;
+hot?.accept((module) => module?.installCaptureAudit?.());
