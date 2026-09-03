@@ -6085,6 +6085,13 @@ mod tests {
                     let path = request.path.split('?').next().unwrap_or(&request.path);
                     let family = opts.family;
                     match (request.method.as_str(), path) {
+                        ("GET", "/health") => JsonHttpResponse::ok(json!({
+                            "ok": true,
+                            "runtime_identity": {
+                                "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                "producer_source_revision": "containers@fixture"
+                            }
+                        })),
                         ("GET", "/info") => JsonHttpResponse::ok(json!({
                             "runtime_family": family,
                             "scale_leases": 10,
@@ -8413,6 +8420,13 @@ max_total_rollouts = 4
                     let path = request.path.split('?').next().unwrap_or(&request.path).to_string();
                     let query = request.path.split_once('?').map(|(_, q)| q.to_string()).unwrap_or_default();
                     match (request.method.as_str(), path.as_str()) {
+                        ("GET", "/health") => JsonHttpResponse::ok(json!({
+                            "ok": true,
+                            "runtime_identity": {
+                                "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                "producer_source_revision": "containers@fixture"
+                            }
+                        })),
                         ("GET", "/info") => JsonHttpResponse::ok(json!({
                             "runtime_family": "craftax",
                             "scale_leases": 4,

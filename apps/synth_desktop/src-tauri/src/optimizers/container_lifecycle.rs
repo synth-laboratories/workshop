@@ -1418,6 +1418,10 @@ include = ["launch-a.sh", "launch-b.sh"]
             "SYNTH_CONTAINER_PRODUCER_SOURCE_REVISION".into(),
             "producer@new".into(),
         );
+        // The test deliberately burns 650 ms proving that the old endpoint
+        // cannot satisfy readiness, then waits one second for the replacement.
+        // Leave scheduling headroom when the full optimizer suite is loaded.
+        spec.launch.readiness_timeout_seconds = 4;
         let db = Arc::new(Database::open(dir.path().join("state.sqlite3")).unwrap());
 
         let ensured = ensure_spec(&db, &spec).await.unwrap();

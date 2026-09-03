@@ -2015,7 +2015,7 @@ provider = "openai"
 model = "gpt-4.1-nano"
 locality = "container"
 [bounds]
-max_cost_usd = 8.00
+max_cost_usd = 11.00
 max_total_rollouts = 1
 "#,
         )

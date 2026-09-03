@@ -7465,6 +7465,7 @@ fn map_from(value: Value) -> Map<String, Value> {
 #[cfg(test)]
 pub(in crate::optimizers) mod tests {
     use super::*;
+    use crate::optimizers::kernel::{RunCollection, RunCollectionQuery};
     use crate::storage::{ContentStore, Storage};
     use tempfile::tempdir;
     use tokio::sync::watch;
@@ -8143,8 +8144,13 @@ pub(in crate::optimizers) mod tests {
             json!("late_probe")
         );
 
-        let view = serde_json::to_value(svc.run_view_v2(run.id).await.unwrap()).unwrap();
-        assert_eq!(view["header"]["asOfSequence"], json!(6));
+        let view =
+            serde_json::to_value(svc.run_view_v2(run.id.clone()).await.unwrap()).unwrap();
+        assert_eq!(
+            view["header"]["asOfSequence"],
+            json!(7),
+            "the current projection advances for the late amendment"
+        );
         assert_eq!(
             view["header"]["evidence"]["completeness"],
             json!("unusable"),
@@ -8691,10 +8697,27 @@ pub(in crate::optimizers) mod tests {
             2
         );
 
-        let view = serde_json::to_value(svc.run_view_v2(run.id).await.unwrap()).unwrap();
+        let view =
+            serde_json::to_value(svc.run_view_v2(run.id.clone()).await.unwrap()).unwrap();
         assert_eq!(view["header"]["artifacts"].as_array().unwrap().len(), 2);
+        assert!(
+            view["projection"]["workItems"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+            "the bounded first-paint view does not inline pageable work items"
+        );
+        let artifacts = svc
+            .run_collection(
+                run.id.clone(),
+                RunCollection::Artifacts,
+                RunCollectionQuery::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(artifacts.total, 2);
+        assert_eq!(artifacts.rows[0].parent_id.as_deref(), Some("eval:trial:0"));
         assert_eq!(
-            view["projection"]["workItems"][0]["artifactRefs"][0]["artifactId"],
+            artifacts.rows[0].details["artifactId"],
             "trial-result"
         );
     }
@@ -11211,7 +11234,7 @@ pub(in crate::optimizers) mod tests {
             .get_state(run.id.clone(), "run.evidence".into(), None)
             .await
             .unwrap();
-        assert_eq!(current.cursor_seq, terminal_cursor);
+        assert_eq!(current.cursor_seq, terminal_cursor + 1);
         assert!(
             current.data["refs"]
                 .as_array()
@@ -11225,8 +11248,8 @@ pub(in crate::optimizers) mod tests {
         assert!(
             batch
                 .iter()
-                .all(|slice| slice.cursor_seq == terminal_cursor),
-            "default reads resolve the sealed projection, not the amendment event cursor"
+                .all(|slice| slice.cursor_seq == terminal_cursor + 1),
+            "default reads resolve the current amended projection"
         );
         let still_sealed = svc.terminal_manifest(run.id).await.unwrap().unwrap();
         assert_eq!(still_sealed["terminalCursor"], json!(terminal_cursor));
