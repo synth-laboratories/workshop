@@ -1,0 +1,92 @@
+# QA-owned local task services.
+#
+# GEPA refuses a container spec that no approved workshop.containers.toml
+# names: the file is the operator's statement that a URL is one Workshop may
+# drive. Inferring it from a live registration would let any reachable port
+# become a container.
+#
+# working_directory is resolved under the workspace, so the image directories
+# are linked in at containers/ rather than named by absolute path.
+
+[[container]]
+id = "banking77"
+url = "http://127.0.0.1:8099"
+health = "/health"
+contract = "synth.container.live-eval.v1"
+locality = "container"
+family = "banking77"
+credential_providers = ["openrouter"]
+
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "containers/banking77"
+command = ["/Users/joshuapurtell/GitHub/evals/.venv/bin/python", "-m", "banking77_classify", "--port", "8099"]
+readiness_timeout_seconds = 120
+shutdown_grace_seconds = 10
+expected_port = 8099
+image_ref = "evals-banking77"
+health_target = "banking77_classify"
+
+[container.launch.source]
+revision_policy = "exact-or-dirty-digest"
+tracked_revision = "66b75560dc9ced6c72e94c7ead126a30d2474219"
+include = ["containers/banking77/image.toml"]
+
+# health_target is the target the service names on /health, not the image
+# directory: healthbench2 reports `healthbench_chat` and the Craftax image
+# reports `craftax_react`. Declaring the directory name instead produces
+# `container_identity_mismatch`, which reads like a wiring bug and is not one.
+
+[[container]]
+id = "healthbench2"
+url = "http://127.0.0.1:8114"
+health = "/health"
+contract = "synth.container.live-eval.v1"
+locality = "container"
+family = "healthbench"
+# Only `openrouter` is an accepted declaration: the host mints proxy routes
+# for that provider alone, and admission walks every container in this file,
+# so naming `groq` or `openai` here does not merely fail healthbench2 -- it
+# refuses admission for banking77 and craftax too. The container reaches its
+# other providers through its own configuration, not through this list.
+credential_providers = ["openrouter"]
+
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "containers/healthbench2"
+command = ["/Users/joshuapurtell/GitHub/evals/.venv/bin/python", "-m", "healthbench_chat", "--port", "8114"]
+readiness_timeout_seconds = 120
+shutdown_grace_seconds = 10
+expected_port = 8114
+image_ref = "evals-healthbench2"
+health_target = "healthbench_chat"
+
+[container.launch.source]
+revision_policy = "exact-or-dirty-digest"
+tracked_revision = "66b75560dc9ced6c72e94c7ead126a30d2474219"
+include = ["containers/healthbench2/image.toml"]
+
+[[container]]
+id = "craftax-gamebench-rust"
+url = "http://127.0.0.1:8097"
+health = "/health"
+contract = "synth.container.live-eval.v1"
+locality = "container"
+family = "craftax"
+credential_providers = ["openrouter"]
+
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "containers/craftax-gamebench-rust"
+command = ["/Users/joshuapurtell/GitHub/evals/.venv/bin/python", "-m", "craftax_gold", "--port", "8097"]
+readiness_timeout_seconds = 120
+shutdown_grace_seconds = 10
+expected_port = 8097
+image_ref = "evals-craftax-gamebench-rust"
+health_target = "craftax_react"
+
+[container.launch.source]
+revision_policy = "exact-or-dirty-digest"
+tracked_revision = "66b75560dc9ced6c72e94c7ead126a30d2474219"
+include = ["containers/craftax-gamebench-rust/image.toml"]
+
