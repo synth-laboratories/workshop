@@ -20,6 +20,13 @@ import { publicError } from "./runtime/publicError";
 import { conversationMarkdown } from "./runtime/chatCopy";
 import { copyText } from "./runtime/clipboard";
 import { eventsToMessages } from "./runtime/sessionView";
+import {
+	CAPTURE_EVENT,
+	currentCaptureRequest,
+	isCapturePluginId,
+	markCaptureReady,
+	type CaptureRequest
+} from "./runtime/captureSurface";
 import { MainRoutes } from "./routes";
 import { bridges } from "./runtime/desktopBridge";
 import type { WhisperRuntimeStatus } from "./bridge";
@@ -55,6 +62,36 @@ export default function App() {
 		}
 		return () => window.removeEventListener("synth:visual-review-capture", openReviewSurface);
 	}, [c.setView]);
+
+	// Host surface capture. `app` and `element` photograph the app where it
+	// already stands, so they route nowhere; only a plugin capture navigates,
+	// and it acknowledges after the route has actually changed rather than on
+	// the request, which is the difference between a screenshot of the page and
+	// a screenshot of the page it was leaving.
+	const [captureRequest, setCaptureRequest] = useState<CaptureRequest | undefined>(currentCaptureRequest);
+	useEffect(() => {
+		const onCapture = (event: Event) => setCaptureRequest((event as CustomEvent<CaptureRequest>).detail);
+		window.addEventListener(CAPTURE_EVENT, onCapture);
+		return () => window.removeEventListener(CAPTURE_EVENT, onCapture);
+	}, []);
+	useEffect(() => {
+		if (!captureRequest?.active) return;
+		if (captureRequest.route && isCapturePluginId(captureRequest.target)) {
+			c.setView({ kind: captureRequest.target });
+		}
+	}, [captureRequest, c.setView]);
+	useEffect(() => {
+		if (!captureRequest?.active) return;
+		const { scope, target } = captureRequest;
+		if (scope === "app") {
+			const frame = requestAnimationFrame(() => markCaptureReady("app", "app"));
+			return () => cancelAnimationFrame(frame);
+		}
+		if (!scope || !target) return;
+		if (scope === "plugin" && c.view.kind !== target) return;
+		const frame = requestAnimationFrame(() => markCaptureReady(scope, target));
+		return () => cancelAnimationFrame(frame);
+	}, [captureRequest, c.view.kind]);
 
 	useEffect(() => {
 		let unlisten: (() => void) | undefined;

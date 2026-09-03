@@ -652,6 +652,9 @@ async fn dispatch_request(
     if method == "POST" && path == "/v1/review-window/capture" {
         return capture_review_window(app, &json_body).await;
     }
+    if method == "POST" && path == "/v1/capture" {
+        return capture_surface(app, &json_body).await;
+    }
     if path.starts_with("/v1/plugins") {
         return dispatch_plugins(method, path, json_body, core, app).await;
     }
@@ -877,114 +880,484 @@ fn reset_review_capture_scroll(app: &AppHandle) -> Result<()> {
         .context("reset review capture scroll position")
 }
 
-/// Resize the main window, snapshot its own webview, restore — one call.
-///
-/// The snapshot is the app photographing its own WKWebView surface, so this
-/// needs no Screen Recording TCC grant, no window-identity resolution, and no
-/// visibility: it captures correctly while occluded or backgrounded. Holding
-/// resize and restore on this side also means a helper that dies mid-capture
-/// can no longer strand the user's window at the review size.
+/// The certified review capture: `capture_surface` with the visual scope and a
+/// required viewport. Keeping it a caller rather than a second implementation
+/// is what stops the review path and the agent-facing one from drifting.
 #[cfg(target_os = "macos")]
 async fn capture_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
-    let output = body
-        .get("outputPath")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .context("review capture requires outputPath")?;
-    let output = PathBuf::from(output);
-    if !output.is_absolute() {
-        anyhow::bail!("review capture outputPath must be absolute");
-    }
-    let root = VISUALS_DATA_ROOT
-        .get()
-        .context("visuals IPC data root is not initialized")?;
-    // The caller names the file; this side refuses to write outside its own
-    // data root. Canonicalize both ends so `..` segments cannot slip past a
-    // prefix check.
-    let parent = output
-        .parent()
-        .context("review capture outputPath requires a parent directory")?;
-    fs::create_dir_all(parent)?;
-    let canonical_root = fs::canonicalize(root).context("resolve visuals data root")?;
-    let canonical_parent =
-        fs::canonicalize(parent).context("resolve review capture output directory")?;
-    if !canonical_parent.starts_with(&canonical_root) {
-        anyhow::bail!(
-            "review capture outputPath must stay under the visuals data root {}",
-            canonical_root.display()
-        );
-    }
     let visual_id = body
         .get("visualId")
         .or_else(|| body.get("visual_id"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .context("review capture requires visualId")?;
-    // Enter review mode before resizing so React has the entire settle window
-    // to select the requested visual and lay out its primary surface.
-    set_review_capture_mode(app, visual_id, true)?;
-    let resize = match resize_review_window(app, body) {
-        Ok(resize) => resize,
+        .context("review capture requires visualId")?
+        .to_string();
+    // A review is always taken at an explicit breakpoint, so unlike a general
+    // capture it refuses to fall back to the window's current size.
+    body.get("width")
+        .and_then(Value::as_f64)
+        .context("review window width is required")?;
+    body.get("height")
+        .and_then(Value::as_f64)
+        .context("review window height is required")?;
+    let mut request = body.clone();
+    request["scope"] = json!("visual");
+    request["target"] = json!(visual_id);
+    capture_surface(app, &request).await
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn capture_review_window(_app: &AppHandle, _body: &Value) -> Result<Value> {
+    anyhow::bail!("UnsupportedCapturePlatform: host webview snapshot requires macOS")
+}
+
+/* ── Surface capture ─────────────────────────────────────────────────────────
+ *
+ * One pipeline behind every screenshot the host takes of itself.
+ *
+ * `capture_review_window` grew for a single job: photograph one visual, in
+ * isolation, at a review viewport. Everything it learned on the way — resize
+ * and restore on this side of the IPC so a dying helper cannot strand the
+ * user's window, wait for a renderer acknowledgement rather than a fixed
+ * sleep, snapshot the app's own WKWebView so no Screen Recording grant and no
+ * window visibility are required — applies just as well to photographing a
+ * plugin page or the whole app. It was only the *subject* that was hard-wired.
+ *
+ * So the subject became a parameter. `CaptureScope` says what to photograph;
+ * the orchestration below is shared, and `capture_review_window` is now a thin
+ * caller of it so the certified review path and the new agent-facing one
+ * cannot drift.
+ */
+
+/// What a capture is a picture of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CaptureScope {
+    /// The app exactly as it stands: real chrome, current route, current
+    /// scroll. The default subject for "what does Workshop look like now".
+    App,
+    /// One plugin destination, with the app's chrome intact around it.
+    Plugin(String),
+    /// One visual, isolated from the surrounding chrome. The review subject.
+    Visual(String),
+    /// One element, addressed by `data-testid`, cropped out of an app capture.
+    Element(String),
+}
+
+/// Plugin destinations the renderer can be routed to. Mirrors the `ALLOWED`
+/// list in `dispatch_display_plugins`; a capture must not be able to name a
+/// destination the display contract does not admit.
+const CAPTURE_PLUGINS: [&str; 7] = [
+    "visuals",
+    "reports",
+    "experiments",
+    "optimizers",
+    "inventory",
+    "inference",
+    "computer-use",
+];
+
+impl CaptureScope {
+    fn parse(scope: &str, target: Option<&str>) -> Result<Self> {
+        let target = target.map(str::trim).filter(|value| !value.is_empty());
+        match scope {
+            "app" => Ok(Self::App),
+            "plugin" => {
+                let id = target.context("capture scope `plugin` requires a target plugin id")?;
+                if !CAPTURE_PLUGINS.contains(&id) {
+                    anyhow::bail!(
+                        "unknown capture plugin `{id}`; expected one of {}",
+                        CAPTURE_PLUGINS.join(", ")
+                    );
+                }
+                Ok(Self::Plugin(id.to_string()))
+            }
+            "visual" => Ok(Self::Visual(
+                target
+                    .context("capture scope `visual` requires a target visual id")?
+                    .to_string(),
+            )),
+            "element" => Ok(Self::Element(
+                target
+                    .context("capture scope `element` requires a target data-testid")?
+                    .to_string(),
+            )),
+            other => anyhow::bail!(
+                "unknown capture scope `{other}`; expected app, plugin, visual, or element"
+            ),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::App => "app",
+            Self::Plugin(_) => "plugin",
+            Self::Visual(_) => "visual",
+            Self::Element(_) => "element",
+        }
+    }
+
+    fn target(&self) -> Option<&str> {
+        match self {
+            Self::App => None,
+            Self::Plugin(id) | Self::Visual(id) | Self::Element(id) => Some(id),
+        }
+    }
+
+    /// Scroll is app state everywhere except a review, where the subject is the
+    /// visual's own top-of-surface and a carried-over scroll offset is noise.
+    fn resets_scroll(&self) -> bool {
+        matches!(self, Self::Visual(_))
+    }
+
+    /// The renderer only has to route somewhere for a scope that names a
+    /// destination. `element` crops whatever is already on screen.
+    fn routes(&self) -> bool {
+        matches!(self, Self::Plugin(_) | Self::Visual(_))
+    }
+}
+
+/// A CSS-pixel rectangle read from the renderer, before scaling.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CaptureRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Crop a captured PNG to one element's box.
+///
+/// The snapshot is in device pixels and the rectangle arrives in CSS pixels, so
+/// the scale factor has to be applied here — a 2x display otherwise crops the
+/// top-left quadrant of the intended region and calls it the element. Kept pure
+/// and separate from the window plumbing so the arithmetic is testable without
+/// a display.
+#[cfg(target_os = "macos")]
+pub(crate) fn crop_png(bytes: &[u8], rect: CaptureRect, scale: f64) -> Result<Vec<u8>> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder.read_info().context("decode capture for crop")?;
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buffer).context("read capture pixels")?;
+    if info.bit_depth != png::BitDepth::Eight {
+        anyhow::bail!("capture crop supports 8-bit images only");
+    }
+    let channels = info.color_type.samples();
+    let (image_width, image_height) = (info.width as i64, info.height as i64);
+
+    // Round outward: a half-pixel box that rounds inward clips the element's
+    // own border, which is exactly the evidence a layout review is looking at.
+    let left = ((rect.x * scale).floor() as i64).clamp(0, image_width);
+    let top = ((rect.y * scale).floor() as i64).clamp(0, image_height);
+    let right = (((rect.x + rect.width) * scale).ceil() as i64).clamp(left, image_width);
+    let bottom = (((rect.y + rect.height) * scale).ceil() as i64).clamp(top, image_height);
+    let (width, height) = ((right - left) as usize, (bottom - top) as usize);
+    if width == 0 || height == 0 {
+        anyhow::bail!(
+            "element is not visible in the capture: its box resolved to {width}x{height} pixels"
+        );
+    }
+
+    let stride = info.width as usize * channels;
+    let mut cropped = Vec::with_capacity(width * height * channels);
+    for row in 0..height {
+        let start = (top as usize + row) * stride + left as usize * channels;
+        cropped.extend_from_slice(&buffer[start..start + width * channels]);
+    }
+
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, width as u32, height as u32);
+        encoder.set_color(info.color_type);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().context("write cropped PNG header")?;
+        writer
+            .write_image_data(&cropped)
+            .context("write cropped PNG pixels")?;
+    }
+    Ok(out)
+}
+
+/// Announce a non-review capture to the renderer.
+///
+/// Deliberately a second, parallel protocol rather than a rename of the review
+/// one: `visual` scope keeps emitting exactly what it emitted before, so the
+/// certified capture → review → mark_ready chain and the CSS that isolates a
+/// reviewed visual are untouched by this addition.
+#[cfg(target_os = "macos")]
+fn set_capture_mode(app: &AppHandle, scope: &CaptureScope, active: bool) -> Result<()> {
+    let window = app
+        .get_webview_window("main")
+        .context("capture requires the main Desktop window")?;
+    let detail = serde_json::to_string(&json!({
+        "active": active,
+        "scope": scope.name(),
+        "target": scope.target(),
+        "route": scope.routes(),
+    }))?;
+    window
+        .eval(format!(
+            "window.__synthCapture={detail};document.documentElement.removeAttribute('data-synth-capture-ready');document.documentElement.toggleAttribute('data-synth-capture',{active});window.dispatchEvent(new CustomEvent('synth:capture',{{detail:window.__synthCapture}}));"
+        ))
+        .context("set renderer capture mode")
+}
+
+/// Read one JS expression out of the renderer as a string.
+#[cfg(target_os = "macos")]
+async fn eval_string(app: &AppHandle, script: &str, timeout: std::time::Duration) -> Result<String> {
+    let window = app
+        .get_webview_window("main")
+        .context("capture requires the main Desktop window")?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let sender = std::sync::Arc::new(std::sync::Mutex::new(Some(sender)));
+    let callback_sender = std::sync::Arc::clone(&sender);
+    window
+        .eval_with_callback(script, move |value| {
+            if let Some(sender) = callback_sender
+                .lock()
+                .ok()
+                .and_then(|mut sender| sender.take())
+            {
+                let _ = sender.send(value);
+            }
+        })
+        .context("evaluate renderer expression")?;
+    tokio::time::timeout(timeout, receiver)
+        .await
+        .context("renderer did not answer in time")?
+        .context("renderer answer channel closed")
+}
+
+/// Wait for the renderer to acknowledge that it is showing the requested
+/// surface. Same contract as the review path: a bounded wait, then capture
+/// anyway, because an already-focused route may not rerun its effect and a
+/// valid surface must not be refused for want of a duplicate acknowledgement.
+#[cfg(target_os = "macos")]
+async fn wait_for_capture_surface(app: &AppHandle, scope: &CaptureScope) -> Result<()> {
+    let Some(target) = scope.target() else {
+        return Ok(());
+    };
+    let expected = format!("{}:{target}", scope.name());
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if let Ok(value) = eval_string(
+            app,
+            "document.documentElement.dataset.synthCaptureReady || ''",
+            std::time::Duration::from_millis(250),
+        )
+        .await
+        {
+            if value.contains(&expected) {
+                return Ok(());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// The on-screen box of one `data-testid`, in CSS pixels.
+#[cfg(target_os = "macos")]
+async fn capture_element_rect(app: &AppHandle, testid: &str) -> Result<CaptureRect> {
+    // The id travels as a JSON string literal so a quote in it cannot end the
+    // selector and run as script.
+    let literal = serde_json::to_string(testid)?;
+    let script = format!(
+        "(()=>{{const el=document.querySelector(`[data-testid=${{CSS.escape?CSS.escape({literal}):{literal}}}]`)||document.querySelector('[data-testid='+JSON.stringify({literal})+']');if(!el)return '';const r=el.getBoundingClientRect();return JSON.stringify({{x:r.x,y:r.y,width:r.width,height:r.height}});}})()"
+    );
+    let raw = eval_string(app, &script, std::time::Duration::from_secs(2)).await?;
+    let trimmed = raw.trim().trim_matches('"').replace("\\\"", "\"");
+    if trimmed.is_empty() {
+        anyhow::bail!("no element with data-testid `{testid}` is on screen");
+    }
+    let parsed: Value = serde_json::from_str(&trimmed)
+        .with_context(|| format!("element rect for `{testid}` was not JSON: {raw}"))?;
+    let number = |key: &str| -> Result<f64> {
+        parsed
+            .get(key)
+            .and_then(Value::as_f64)
+            .with_context(|| format!("element rect for `{testid}` is missing {key}"))
+    };
+    let rect = CaptureRect {
+        x: number("x")?,
+        y: number("y")?,
+        width: number("width")?,
+        height: number("height")?,
+    };
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        anyhow::bail!("element `{testid}` has no on-screen box to capture");
+    }
+    Ok(rect)
+}
+
+/// The caller names the file; this side refuses to write outside its own data
+/// root. Both ends are canonicalized so `..` segments cannot slip past the
+/// prefix check.
+fn resolve_capture_output(body: &Value) -> Result<PathBuf> {
+    let output = body
+        .get("outputPath")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("capture requires outputPath")?;
+    let output = PathBuf::from(output);
+    if !output.is_absolute() {
+        anyhow::bail!("capture outputPath must be absolute");
+    }
+    let root = VISUALS_DATA_ROOT
+        .get()
+        .context("visuals IPC data root is not initialized")?;
+    let parent = output
+        .parent()
+        .context("capture outputPath requires a parent directory")?;
+    fs::create_dir_all(parent)?;
+    let canonical_root = fs::canonicalize(root).context("resolve visuals data root")?;
+    let canonical_parent =
+        fs::canonicalize(parent).context("resolve capture output directory")?;
+    if !canonical_parent.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "capture outputPath must stay under the visuals data root {}",
+            canonical_root.display()
+        );
+    }
+    Ok(output)
+}
+
+/// Resize if asked, snapshot the app's own webview, restore — one call.
+///
+/// The snapshot needs no Screen Recording TCC grant, no window-identity
+/// resolution, and no visibility: it captures correctly while the app is
+/// occluded or backgrounded. Holding resize and restore on this side means a
+/// helper that dies mid-capture cannot strand the user's window at the capture
+/// size. A capture with no requested viewport never resizes at all, because
+/// "what does the app look like right now" must not begin by changing it.
+#[cfg(target_os = "macos")]
+pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Value> {
+    let scope = CaptureScope::parse(
+        body.get("scope").and_then(Value::as_str).unwrap_or("app"),
+        body.get("target")
+            .or_else(|| body.get("visualId"))
+            .or_else(|| body.get("visual_id"))
+            .and_then(Value::as_str),
+    )?;
+    let output = resolve_capture_output(body)?;
+    let viewport = match (
+        body.get("width").and_then(Value::as_f64),
+        body.get("height").and_then(Value::as_f64),
+    ) {
+        (Some(width), Some(height)) => Some((width, height)),
+        (None, None) => None,
+        _ => anyhow::bail!("a capture viewport needs both width and height"),
+    };
+
+    // Enter capture mode before resizing so React has the entire settle window
+    // to route to the requested surface and lay it out.
+    match &scope {
+        CaptureScope::Visual(id) => set_review_capture_mode(app, id, true)?,
+        other => set_capture_mode(app, other, true)?,
+    }
+    let leave_capture_mode = |app: &AppHandle| match &scope {
+        CaptureScope::Visual(id) => set_review_capture_mode(app, id, false),
+        other => set_capture_mode(app, other, false),
+    };
+
+    let geometry = match capture_window_geometry(app, viewport) {
+        Ok(geometry) => geometry,
         Err(error) => {
-            let _ = set_review_capture_mode(app, visual_id, false);
+            let _ = leave_capture_mode(app);
             return Err(error);
         }
     };
-    // Do not `?` between here and the restore: the window is resized, and any
-    // early return from this span leaves it that way.
+    // Do not `?` between here and the restore: the window may be resized, and
+    // any early return from this span leaves it that way.
     tokio::time::sleep(REVIEW_CAPTURE_SETTLE).await;
-    let snapshot = match wait_for_review_capture_surface(app, visual_id).await {
-        Ok(()) => match reset_review_capture_scroll(app) {
-            Ok(()) => match app.get_webview_window("main") {
-                Some(window) => {
-                    crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT)
-                        .await
+
+    let snapshot = match &scope {
+        CaptureScope::Visual(id) => wait_for_review_capture_surface(app, id).await,
+        other => wait_for_capture_surface(app, other).await,
+    }
+    .and_then(|()| {
+        if scope.resets_scroll() {
+            reset_review_capture_scroll(app)
+        } else {
+            Ok(())
+        }
+    });
+    let mut cropped_to = None;
+    let snapshot = match snapshot {
+        Ok(()) => match app.get_webview_window("main") {
+            Some(window) => {
+                match crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT)
+                    .await
+                {
+                    Ok(bytes) => match &scope {
+                        CaptureScope::Element(testid) => {
+                            match capture_element_rect(app, testid).await {
+                                Ok(rect) => {
+                                    cropped_to = Some(rect);
+                                    crop_png(&bytes, rect, geometry.scale)
+                                }
+                                Err(error) => Err(error),
+                            }
+                        }
+                        _ => Ok(bytes),
+                    },
+                    Err(error) => Err(error),
                 }
-                None => Err(anyhow::anyhow!(
-                    "review capture requires the main Desktop window"
-                )),
-            },
-            Err(error) => Err(error),
+            }
+            None => Err(anyhow::anyhow!("capture requires the main Desktop window")),
         },
         Err(error) => Err(error),
     };
-    let restore = resize
-        .get("previous")
-        .cloned()
-        .context("review window resize omitted its previous size")
-        .and_then(|previous| resize_review_window(app, &previous));
-    let review_mode_restore = set_review_capture_mode(app, visual_id, false);
+
+    let restore = match viewport {
+        Some(_) => resize_review_window(
+            app,
+            &json!({"width": geometry.previous.0, "height": geometry.previous.1}),
+        )
+        .map(|_| ()),
+        // Nothing was resized, so there is nothing to put back.
+        None => Ok(()),
+    };
+    let capture_mode_restore = leave_capture_mode(app);
     let written = match &snapshot {
-        Ok(bytes) => fs::write(&output, bytes).context("write review capture PNG"),
+        Ok(bytes) => fs::write(&output, bytes).context("write capture PNG"),
         Err(_) => Ok(()),
     };
-    // A failed restore leaves the user's window at the review viewport; it has
+
+    // A failed restore leaves the user's window at the capture viewport; it has
     // to reach the caller even when the capture itself failed.
-    match (snapshot, restore, review_mode_restore, written) {
+    match (snapshot, restore, capture_mode_restore, written) {
         (Err(capture), Err(restore), _, _) => Err(anyhow::anyhow!(
             "{capture:#}; additionally the Desktop window was not restored: {restore:#}"
         )),
         (Err(capture), Ok(_), _, _) => Err(capture),
         (Ok(_), Err(restore), _, _) => Err(anyhow::anyhow!(
-            "captured review but failed to restore Desktop window: {restore:#}"
+            "captured but failed to restore Desktop window: {restore:#}"
         )),
-        (Ok(_), Ok(_), Err(review_mode_restore), _) => Err(anyhow::anyhow!(
-            "captured review but failed to restore the renderer layout: {review_mode_restore:#}"
+        (Ok(_), Ok(_), Err(restore), _) => Err(anyhow::anyhow!(
+            "captured but failed to restore the renderer layout: {restore:#}"
         )),
         (Ok(_), Ok(_), Ok(()), Err(write)) => Err(write),
         (Ok(bytes), Ok(_), Ok(()), Ok(())) => {
             let (width, height) = png_dimensions(&bytes).unwrap_or((0, 0));
             Ok(json!({
                 "path": output.to_string_lossy(),
+                "scope": scope.name(),
+                "target": scope.target(),
                 "width": width,
                 "height": height,
-                "previous": resize.get("previous"),
-                "current": resize.get("current"),
-                "scaleFactor": resize.get("scaleFactor"),
-                "windowLabel": resize.get("windowLabel"),
-                "processId": resize.get("processId"),
+                "previous": {"width": geometry.previous.0, "height": geometry.previous.1},
+                "current": {"width": geometry.current.0, "height": geometry.current.1},
+                "resized": viewport.is_some(),
+                "croppedTo": cropped_to.map(|rect| json!({
+                    "x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height
+                })),
+                "scaleFactor": geometry.scale,
+                "windowLabel": geometry.label,
+                "processId": std::process::id(),
                 "captureMode": "host-webview-snapshot",
                 "restored": true,
             }))
@@ -992,8 +1365,56 @@ async fn capture_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
     }
 }
 
+#[cfg(target_os = "macos")]
+struct CaptureGeometry {
+    previous: (u64, u64),
+    current: (u64, u64),
+    scale: f64,
+    label: String,
+}
+
+/// Resize to the requested viewport, or just report the window as it stands.
+#[cfg(target_os = "macos")]
+fn capture_window_geometry(
+    app: &AppHandle,
+    viewport: Option<(f64, f64)>,
+) -> Result<CaptureGeometry> {
+    let window = app
+        .get_webview_window("main")
+        .context("capture requires the main Desktop window")?;
+    let scale = window.scale_factor().context("read display scale factor")?;
+    let label = window.label().to_string();
+    let Some((width, height)) = viewport else {
+        let size = window
+            .inner_size()
+            .context("read capture window size")?
+            .to_logical::<f64>(scale);
+        let logical = (size.width.round() as u64, size.height.round() as u64);
+        return Ok(CaptureGeometry {
+            previous: logical,
+            current: logical,
+            scale,
+            label,
+        });
+    };
+    let resize = resize_review_window(app, &json!({"width": width, "height": height}))?;
+    let read = |key: &str, field: &str| -> u64 {
+        resize
+            .get(key)
+            .and_then(|value| value.get(field))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    Ok(CaptureGeometry {
+        previous: (read("previous", "width"), read("previous", "height")),
+        current: (read("current", "width"), read("current", "height")),
+        scale,
+        label,
+    })
+}
+
 #[cfg(not(target_os = "macos"))]
-async fn capture_review_window(_app: &AppHandle, _body: &Value) -> Result<Value> {
+pub(crate) async fn capture_surface(_app: &AppHandle, _body: &Value) -> Result<Value> {
     anyhow::bail!("UnsupportedCapturePlatform: host webview snapshot requires macOS")
 }
 
@@ -5562,6 +5983,129 @@ mod diagnostics_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_scope_names_its_subject_or_refuses() {
+        assert_eq!(CaptureScope::parse("app", None).unwrap(), CaptureScope::App);
+        // A target on an app capture is meaningless, not fatal: there is
+        // nothing to point it at, and refusing would only make the tool fussy.
+        assert_eq!(
+            CaptureScope::parse("app", Some("visuals")).unwrap(),
+            CaptureScope::App
+        );
+        assert_eq!(
+            CaptureScope::parse("plugin", Some("visuals")).unwrap(),
+            CaptureScope::Plugin("visuals".into())
+        );
+        assert_eq!(
+            CaptureScope::parse("visual", Some("vis_1")).unwrap(),
+            CaptureScope::Visual("vis_1".into())
+        );
+        assert_eq!(
+            CaptureScope::parse("element", Some("visuals-preview")).unwrap(),
+            CaptureScope::Element("visuals-preview".into())
+        );
+
+        // A scope that names a destination must actually name one. Whitespace
+        // is not a target: it would route nowhere and photograph whatever the
+        // window happened to be showing.
+        for (scope, target) in [
+            ("plugin", None),
+            ("plugin", Some("   ")),
+            ("visual", None),
+            ("element", None),
+        ] {
+            assert!(CaptureScope::parse(scope, target).is_err(), "{scope} {target:?}");
+        }
+        // Only destinations the display contract admits.
+        assert!(CaptureScope::parse("plugin", Some("settings")).is_err());
+        assert!(CaptureScope::parse("window", None).is_err());
+    }
+
+    #[test]
+    fn only_a_visual_capture_routes_away_and_resets_scroll() {
+        // Scroll position is app state; a capture that silently scrolled the
+        // user's window to the top would be photographing a different app than
+        // the one it was asked about. Only a review, whose subject is the
+        // visual's own surface, resets it.
+        assert!(CaptureScope::Visual("vis_1".into()).resets_scroll());
+        assert!(!CaptureScope::App.resets_scroll());
+        assert!(!CaptureScope::Plugin("visuals".into()).resets_scroll());
+        assert!(!CaptureScope::Element("x".into()).resets_scroll());
+
+        // `element` crops what is already on screen, so it must not navigate.
+        assert!(CaptureScope::Plugin("visuals".into()).routes());
+        assert!(CaptureScope::Visual("vis_1".into()).routes());
+        assert!(!CaptureScope::App.routes());
+        assert!(!CaptureScope::Element("x".into()).routes());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn solid_png(width: u32, height: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            // Encode the x coordinate into red and y into green so a crop can
+            // be checked for position, not just for size.
+            let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+            for y in 0..height {
+                for x in 0..width {
+                    pixels.extend_from_slice(&[x as u8, y as u8, 0, 255]);
+                }
+            }
+            writer.write_image_data(&pixels).unwrap();
+        }
+        out
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn crop_applies_the_display_scale_factor() {
+        // The rect arrives in CSS pixels and the snapshot is in device pixels.
+        // Without the scale factor a 2x display crops the top-left quadrant of
+        // the intended region and calls it the element.
+        let image = solid_png(200, 200);
+        let rect = CaptureRect { x: 10.0, y: 20.0, width: 30.0, height: 40.0 };
+
+        let at_1x = crop_png(&image, rect, 1.0).unwrap();
+        assert_eq!(png_dimensions(&at_1x), Some((30, 40)));
+
+        let at_2x = crop_png(&image, rect, 2.0).unwrap();
+        assert_eq!(png_dimensions(&at_2x), Some((60, 80)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn crop_rounds_outward_so_a_border_is_not_clipped() {
+        // A half-pixel box that rounded inward would shave the element's own
+        // border — exactly the evidence a layout review is looking at.
+        let image = solid_png(100, 100);
+        let rect = CaptureRect { x: 10.5, y: 10.5, width: 20.2, height: 20.2 };
+        let cropped = crop_png(&image, rect, 1.0).unwrap();
+        assert_eq!(png_dimensions(&cropped), Some((21, 21)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn crop_clamps_to_the_image_and_refuses_an_offscreen_element() {
+        let image = solid_png(100, 100);
+
+        // Partly offscreen: keep the visible part rather than failing.
+        let overhang = CaptureRect { x: 80.0, y: 80.0, width: 40.0, height: 40.0 };
+        assert_eq!(
+            png_dimensions(&crop_png(&image, overhang, 1.0).unwrap()),
+            Some((20, 20))
+        );
+
+        // Entirely offscreen has nothing to show, and a zero-pixel PNG would be
+        // a worse answer than an error that says the element is not visible.
+        let gone = CaptureRect { x: 400.0, y: 400.0, width: 10.0, height: 10.0 };
+        let error = crop_png(&image, gone, 1.0).unwrap_err().to_string();
+        assert!(error.contains("not visible"), "{error}");
+    }
 
     #[test]
     fn agent_secret_workload_selects_only_fixed_wire_operations() {
