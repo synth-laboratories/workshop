@@ -216,6 +216,18 @@ function RunAggregateHeader({
     ? null
     : providerPromptTokens + providerCompletionTokens;
   const providerCost = finite(runLifecycle?.usage.costUsd);
+  /**
+   * A zero call count next to real money is not a measurement of zero.
+   *
+   * HealthBench billed $0.030046 against `calls: 0` -- the proxy receipt
+   * carried the spend but attributed none of the calls -- and the header
+   * printed `0 billed calls · $0.030046`, asserting as fact something the
+   * cost beside it contradicts. Nothing was ever charged for no calls, so
+   * treat that pairing the same way a missing field is treated: say the
+   * count is unreconciled rather than publish a zero the receipt disproves.
+   */
+  const providerCallsReconciled = providerCalls !== null
+    && !(providerCalls === 0 && (providerCost ?? 0) > 0);
   const maxRollouts = finite(bounds.maximumRollouts) ?? (rolloutCount || null);
   const callsPerRollout = finite(bounds.maximumModelCallsPerRollout);
   const stepsPerRollout = finite(bounds.maximumStepsPerRollout);
@@ -300,6 +312,14 @@ function RunAggregateHeader({
     : `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
   const exactCount = (value: number) => value.toLocaleString("en-US", { maximumFractionDigits: 0 });
   const exactUsd = (value: number) => `$${value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
+  /**
+   * `1 trace` / `2 traces`, from a singular noun. A count and the noun it
+   * counts are formatted together so no call site can get one right and the
+   * other wrong -- naming the units inline is what stops `2 + 2` from being
+   * read as arithmetic, and it is only an improvement if it also reads as
+   * English at one.
+   */
+  const counted = (value: number, noun: string) => `${exactCount(value)} ${noun}${value === 1 ? "" : "s"}`;
   const providerSummary = (value: number | null): ReportedFactSummary<number> => ({
     authoritative: true,
     value,
@@ -366,13 +386,19 @@ function RunAggregateHeader({
       <div className="trace-workbench-priority" aria-label="Run outcome" style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: "var(--sv-sp-2)" }}>
         <div><span>Progress</span><strong>{terminalCount}/{rolloutCount}</strong><small>{failed ? `${failed} failed` : "complete"}</small></div>
         <div><span>Mean reward</span><strong>{reward(mean)}</strong><small>{scoredTrials}/{terminalCount} scored</small></div>
-        <div><span>Evidence</span><strong>{aggregate ? `${aggregate.evaluatorEvidence} + ${aggregate.traceCount}` : `${terminalCount} rollouts`}</strong><small>{aggregate ? "grader + traces" : "retained records"}</small></div>
+        {/*
+          `2 + 2` under the caption `grader + traces` is read as arithmetic
+          before it is read as two counts -- the eye sums it to 4. Naming each
+          unit beside its own number removes the operator reading entirely;
+          the caption then says what the pair is rather than how to parse it.
+        */}
+        <div><span>Evidence</span><strong>{aggregate ? `${counted(aggregate.evaluatorEvidence, "grade")} + ${counted(aggregate.traceCount, "trace")}` : counted(terminalCount, "rollout")}</strong><small>{aggregate ? "retained evidence" : "retained records"}</small></div>
       </div>
       <details className="trace-workbench-run-details" style={{ marginTop: "var(--sv-sp-2)" }}>
-        <summary>Run details <span>{providerCalls === null ? "usage not reconciled" : `${exactCount(providerCalls)} billed calls`}{providerCost === null ? "" : ` · ${exactUsd(providerCost)}`}</span></summary>
+        <summary>Run details <span>{providerCallsReconciled ? `${exactCount(providerCalls ?? 0)} billed calls` : "calls not reconciled"}{providerCost === null ? "" : ` · ${exactUsd(providerCost)}`}</span></summary>
         <div className="trace-workbench-usage" style={{ display: "grid", gridTemplateColumns: "var(--tw-usage-columns, repeat(auto-fit,minmax(130px,1fr)))", gap: "var(--sv-sp-3)" }}>
           {usageCard("Rollouts", { authoritative: false, value: startedTrials, present: rolloutCount, total: rolloutCount, sources: [], unavailableReasons: [], contractErrors: [] }, maxRollouts, (value) => String(value))}
-          {providerCalls === null
+          {!providerCallsReconciled
             ? usageCard("Model calls", callUsage, callLimit)
             : usageCard("Provider calls", providerSummary(providerCalls), callLimit, exactCount, { valueSuffix: " billed", coverage: "run-level receipt", source: "Workshop proxy" })}
           {usageCard("Environment steps", stepUsage, stepLimit)}
@@ -1394,7 +1420,7 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
                 {/* Say it once, here, rather than repeating a per-call denial
                     in the inspector for every call in the rollout. */}
                 {environmentless
-                  ? " No call on this rollout recorded an environment action or an achievement either, so the per-call environment section is not shown."
+                  ? " No call on this rollout recorded an environment action or an achievement, so the per-call environment section is not shown."
                   : ""}
               </div>
             ) : (
@@ -1471,17 +1497,22 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
             className="trace-workbench-call-column"
             style={{
               display: "grid",
-              // Beside a frame viewer the rail is worth a fixed share of a tall
-              // column. Once the frame column is gone the same 40% floor became
-              // a hole: a one-call Banking77 rollout drew its single chip and
-              // then held roughly two hundred empty pixels before "Observed",
-              // which reads as a rendering fault rather than as spacing.
-              // fit-content keeps the ceiling — a long trajectory still grows to
-              // 40% and scrolls inside the rail — while a short one takes only
-              // the height its calls actually need.
-              gridTemplateRows: streamOnly
-                ? "var(--tw-call-rows, fit-content(40%) minmax(0, 1fr))"
-                : "var(--tw-call-rows, minmax(140px, 40%) 1fr)",
+              // A 40% floor under the trajectory rail reserves height the calls
+              // may not need. A one-call rollout drew its single chip and then
+              // held hundreds of empty pixels before "Observed", which reads as
+              // a rendering fault rather than as spacing.
+              //
+              // This was first fixed only for the stream-only layout, on the
+              // reasoning that beside a frame viewer the rail is worth a fixed
+              // share of a tall column. A one-call Craftax rollout disproves
+              // that: the frame makes the column taller, so the same floor
+              // reserves *more* empty rail, not less. The frame sits in its own
+              // grid column and keeps its height either way.
+              //
+              // fit-content keeps the ceiling — a long trajectory still grows
+              // to 40% and scrolls inside the rail — while a short one takes
+              // only the height its calls actually need.
+              gridTemplateRows: "var(--tw-call-rows, fit-content(40%) minmax(0, 1fr))",
               gap: "var(--sv-sp-3)",
               minHeight: 0
             }}

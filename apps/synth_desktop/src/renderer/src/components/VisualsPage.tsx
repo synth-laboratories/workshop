@@ -52,6 +52,18 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 	const [loading, setLoading] = useState(true);
 	const [listEpoch, setListEpoch] = useState(0);
 	const [focusVisualId, setFocusVisualId] = useState<string | null>(null);
+	/**
+	 * Counts review-capture requests so each one re-publishes readiness.
+	 *
+	 * The host clears `data-synth-review-capture-ready` on every request and
+	 * then waits for the renderer to set it again. Keying that acknowledgement
+	 * on the selected visual alone meant a request for the visual already on
+	 * screen changed no dependency, so the effect never re-ran and the flag
+	 * stayed cleared: capturing the same visual twice in a row failed the
+	 * second time, every time, while the page showed the right visual. A
+	 * counter makes each request its own event rather than a state change.
+	 */
+	const [reviewRequestSeq, setReviewRequestSeq] = useState(0);
 	const [listWidth, setListWidth] = useState(() => getPreferences().layout.last.visualsListWidth);
 	const updateListWidth = (width: number) => {
 		setListWidth(width);
@@ -200,6 +212,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 			setSearch("");
 			setSelectedId(request.visualId);
 			setFocusVisualId(request.visualId);
+			setReviewRequestSeq((seq) => seq + 1);
 		};
 		const onReviewCapture = (event: Event) => {
 			applyReviewRequest((event as CustomEvent<ReviewRequest>).detail);
@@ -218,11 +231,30 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 		if (!focusVisualId || selected?.id !== focusVisualId) return;
 		const request = (window as Window & { __synthVisualReviewCapture?: { active?: boolean; visualId?: string } }).__synthVisualReviewCapture;
 		if (!request?.active || request.visualId !== selected.id) return;
-		const frame = requestAnimationFrame(() => {
+		// Acknowledge after a paint when there is one, and after a short delay
+		// when there is not.
+		//
+		// macOS suspends requestAnimationFrame for an occluded window, and
+		// capture is driven from a terminal with Workshop in the background --
+		// so the frame that publishes readiness is exactly the frame the OS is
+		// entitled to withhold. The timeout is what makes the acknowledgement
+		// independent of whether the window is frontmost.
+		//
+		// Whichever fires first wins and cancels the other; the flag is set
+		// once either way.
+		let settled = false;
+		const acknowledge = () => {
+			if (settled) return;
+			settled = true;
 			document.documentElement.dataset.synthReviewCaptureReady = selected.id;
-		});
-		return () => cancelAnimationFrame(frame);
-	}, [focusVisualId, selected?.id]);
+		};
+		const frame = requestAnimationFrame(acknowledge);
+		const fallback = window.setTimeout(acknowledge, 150);
+		return () => {
+			cancelAnimationFrame(frame);
+			window.clearTimeout(fallback);
+		};
+	}, [focusVisualId, selected?.id, reviewRequestSeq]);
 
 	function admissionIdentity(visual: VisualRecord): string {
 		return formatVisualAdmissionIdentity({
