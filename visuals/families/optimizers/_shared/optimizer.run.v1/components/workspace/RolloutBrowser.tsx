@@ -15,6 +15,7 @@ export type RolloutRow = {
   exampleId?: string;
   stage?: string;
   reward?: number | null;
+  completed?: boolean;
   costUsd?: number;
   usage?: Record<string, unknown>;
   streamId?: string;
@@ -35,7 +36,7 @@ const PAGE_SIZE = 20;
 
 function matchesFilter(row: RolloutRow, filter: Filter): boolean {
   if (filter === "all") return true;
-  if (filter === "active") return row.reward == null;
+  if (filter === "active") return row.completed !== true && row.reward == null;
   if (filter === "failures") return row.reward != null && row.reward <= 0;
   return row.reward != null && row.reward > 0;
 }
@@ -59,7 +60,7 @@ function RolloutInspector({ row, onClose }: { row: RolloutRow; onClose: () => vo
         <dd style={{ margin: 0 }}>{row.stage ? row.stage.replaceAll("_", " ") : "—"}</dd>
         <dt style={{ color: "var(--sv-text-faint)" }}>Reward</dt>
         <dd style={{ margin: 0 }} data-testid={`gepa-eval-reward-${row.id}`}>
-          {row.reward == null ? "pending" : formatMissingNumber(row.reward)}
+          {row.reward == null ? (row.completed ? "not loaded" : "pending") : formatMissingNumber(row.reward)}
         </dd>
         <dt style={{ color: "var(--sv-text-faint)" }}>Cost</dt>
         <dd style={{ margin: 0 }}>{row.costUsd != null && row.costUsd > 0 ? formatMissingUsd(row.costUsd) : "unavailable"}</dd>
@@ -141,33 +142,46 @@ export function RolloutBrowser({
       <div className="sv-section-head">
         <h3>Evaluations</h3>
         <span className="sv-mono">
-          {loading && rows.length === 0 ? "loading" : `${totalShown} shown of ${totalRows ?? rows.length} ${itemLabel}`}
+          {loading && rows.length === 0
+            ? "loading"
+            : rows.length === 0
+              ? "none yet"
+              : `${totalShown} shown of ${totalRows ?? rows.length} ${itemLabel}`}
           {stale ? " · refreshing" : ""}
         </span>
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-        {(["all", "failures", "passes", "active"] as const).map((option) => (
-          <button
-            key={option}
-            type="button"
-            className="sv-btn"
-            aria-pressed={filter === option}
-            data-testid={`eval-filter-${option}`}
-            onClick={() => setFilter(option)}
-          >
-            {option === "all" ? "All" : option === "failures" ? "Failures" : option === "passes" ? "Passes" : "In flight"}
-          </button>
-        ))}
-        <input
-          type="search"
-          value={search}
-          placeholder="Find example or rollout ID"
-          aria-label="Search rollouts"
-          data-testid="eval-search"
-          onChange={(event) => setSearch(event.target.value)}
-          style={{ flex: "1 1 180px", minWidth: 140, padding: "5px 9px", border: "1px solid var(--sv-border-strong)", borderRadius: 8, font: "inherit", fontSize: 12 }}
-        />
-      </div>
+      {/*
+        Controls for a set that does not exist. With no rollouts, four filter
+        chips and a search box offer to narrow nothing, and `0 shown of 0
+        rollouts` restates the empty line below it in the language of a filter
+        result -- as if a filter were hiding something. The empty state says
+        what will appear and when; that is the whole message until a row exists.
+      */}
+      {rows.length > 0 ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+          {(["all", "failures", "passes", "active"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              className="sv-btn"
+              aria-pressed={filter === option}
+              data-testid={`eval-filter-${option}`}
+              onClick={() => setFilter(option)}
+            >
+              {option === "all" ? "All" : option === "failures" ? "Failures" : option === "passes" ? "Passes" : "In flight"}
+            </button>
+          ))}
+          <input
+            type="search"
+            value={search}
+            placeholder="Find example or rollout ID"
+            aria-label="Search rollouts"
+            data-testid="eval-search"
+            onChange={(event) => setSearch(event.target.value)}
+            style={{ flex: "1 1 180px", minWidth: 140, padding: "5px 9px", border: "1px solid var(--sv-border-strong)", borderRadius: 8, font: "inherit", fontSize: 12 }}
+          />
+        </div>
+      ) : null}
       {rows.length === 0 ? (
         <p style={{ color: "var(--sv-text-faint)", fontSize: 12, margin: 0 }}>{emptyText}</p>
       ) : (
@@ -175,11 +189,12 @@ export function RolloutBrowser({
           {groups.map((group) => {
             const all = byGroup.get(group.key) ?? [];
             const matching = filteredByGroup.get(group.key) ?? [];
-            const completed = all.filter((row) => row.reward != null);
-            const solved = completed.filter((row) => (row.reward ?? 0) > 0).length;
-            const failures = completed.length - solved;
-            const mean = completed.length > 0
-              ? completed.reduce((sum, row) => sum + (row.reward ?? 0), 0) / completed.length
+            const completed = all.filter((row) => row.completed === true || row.reward != null);
+            const scored = completed.filter((row) => row.reward != null);
+            const solved = scored.filter((row) => (row.reward ?? 0) > 0).length;
+            const failures = scored.length - solved;
+            const mean = scored.length > 0
+              ? scored.reduce((sum, row) => sum + (row.reward ?? 0), 0) / scored.length
               : undefined;
             const isOpen = openGroup === group.key;
             const page = pageByGroup[group.key] ?? 0;
@@ -199,7 +214,7 @@ export function RolloutBrowser({
                   <span className="sv-mono" style={{ marginLeft: "auto", color: "var(--sv-text-muted)" }}>
                     {completed.length}/{all.length} done
                     {mean != null ? ` · mean ${mean.toFixed(2)}` : ""}
-                    {completed.length > 0 ? ` · ${solved} solved · ${failures} failed` : ""}
+                    {scored.length > 0 ? ` · ${solved} solved · ${failures} failed` : ""}
                   </span>
                 </button>
                 {isOpen ? (

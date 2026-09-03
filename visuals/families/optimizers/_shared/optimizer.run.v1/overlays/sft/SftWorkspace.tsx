@@ -324,7 +324,7 @@ function CurvesPanel({
         <NotEnoughData
           have={0}
           need={2}
-          noun="loss samples"
+          noun="loss sample"
           detail={`${points.length} durable step records reached step ${latest?.step ?? "—"}, but the provider did not emit train or validation loss.`}
           testId="sft-curves-loss-unavailable"
         />
@@ -896,7 +896,8 @@ export function SftWorkspace({
           groupKey: `iteration-${group.iteration ?? "unknown"}`,
           sequence: group.sequence,
           stage: group.label ?? undefined,
-          reward: group.rewardMean ?? undefined
+          reward: group.rewardMean ?? undefined,
+          completed: group.completed
         });
       }
       return { groups, rows };

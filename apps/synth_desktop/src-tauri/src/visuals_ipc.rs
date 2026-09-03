@@ -801,7 +801,19 @@ const REVIEW_CAPTURE_SETTLE: std::time::Duration = std::time::Duration::from_sec
 
 /// The whole snapshot round trip, resize excluded. Bounds the window a wedged
 /// WebKit could hold the resized viewport, and the IPC route with it.
+/// First snapshot attempt. `setAfterScreenUpdates(true)` waits for the renderer
+/// to commit a frame, so this budget is really "how long may a repaint take",
+/// not how long the encode takes.
 const REVIEW_CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Second attempt, after the first has already forced layout and paint.
+///
+/// A terminal SFT surface -- 2917 events, checkpoint curves, a rollout ledger --
+/// missed the 10s budget on its first frame, and the run's most important
+/// capture was lost with nothing to retry it. The cheapest fix is to ask twice:
+/// the first attempt pays for layout, the second usually returns immediately.
+/// A longer single timeout would make every genuinely dead webview wait twice
+/// as long before saying so.
+const REVIEW_CAPTURE_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 
 /// Tell the React shell to make one selected visual the only visible surface
 /// while a review image is taken. This is deliberately an ephemeral renderer
@@ -1038,7 +1050,9 @@ pub(crate) fn crop_png(bytes: &[u8], rect: CaptureRect, scale: f64) -> Result<Ve
     let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     let mut reader = decoder.read_info().context("decode capture for crop")?;
     let mut buffer = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buffer).context("read capture pixels")?;
+    let info = reader
+        .next_frame(&mut buffer)
+        .context("read capture pixels")?;
     if info.bit_depth != png::BitDepth::Eight {
         anyhow::bail!("capture crop supports 8-bit images only");
     }
@@ -1104,7 +1118,11 @@ fn set_capture_mode(app: &AppHandle, scope: &CaptureScope, active: bool) -> Resu
 
 /// Read one JS expression out of the renderer as a string.
 #[cfg(target_os = "macos")]
-async fn eval_string(app: &AppHandle, script: &str, timeout: std::time::Duration) -> Result<String> {
+async fn eval_string(
+    app: &AppHandle,
+    script: &str,
+    timeout: std::time::Duration,
+) -> Result<String> {
     let window = app
         .get_webview_window("main")
         .context("capture requires the main Desktop window")?;
@@ -1203,7 +1221,10 @@ async fn capture_element_rect(app: &AppHandle, testid: &str) -> Result<CaptureRe
 async fn harvest_capture_evidence(app: &AppHandle) -> (Value, Value) {
     let state = eval_string(
         app,
-        "document.documentElement.dataset.synthAppState || ''",
+        r#"JSON.stringify({
+            ...JSON.parse(document.documentElement.dataset.synthAppState || '{}'),
+            visualRenderError: document.querySelector('[data-testid="visual-invalid"]')?.textContent?.trim() || undefined
+        })"#,
         std::time::Duration::from_millis(500),
     )
     .await
@@ -1262,8 +1283,7 @@ fn resolve_capture_output(body: &Value) -> Result<PathBuf> {
         .context("capture outputPath requires a parent directory")?;
     fs::create_dir_all(parent)?;
     let canonical_root = fs::canonicalize(root).context("resolve visuals data root")?;
-    let canonical_parent =
-        fs::canonicalize(parent).context("resolve capture output directory")?;
+    let canonical_parent = fs::canonicalize(parent).context("resolve capture output directory")?;
     if !canonical_parent.starts_with(&canonical_root) {
         anyhow::bail!(
             "capture outputPath must stay under the visuals data root {}",
@@ -1337,9 +1357,22 @@ pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Val
     let snapshot = match snapshot {
         Ok(()) => match app.get_webview_window("main") {
             Some(window) => {
-                match crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT)
-                    .await
-                {
+                let first = crate::visuals::snapshot::capture_webview_png(
+                    &window,
+                    REVIEW_CAPTURE_TIMEOUT,
+                )
+                .await;
+                let attempt = match first {
+                    Err(_) => {
+                        crate::visuals::snapshot::capture_webview_png(
+                            &window,
+                            REVIEW_CAPTURE_RETRY_TIMEOUT,
+                        )
+                        .await
+                    }
+                    ok => ok,
+                };
+                match attempt {
                     Ok(bytes) => match &scope {
                         CaptureScope::Element(testid) => {
                             match capture_element_rect(app, testid).await {
@@ -2464,7 +2497,10 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             // A live annotation protocol pin is part of rollout identity; the
             // caller names an installed anprev_ revision and the container
             // declares the sibling channel in the descriptor.
-            if let Some(revision) = body.get("annotation_protocol_revision_id").and_then(Value::as_str) {
+            if let Some(revision) = body
+                .get("annotation_protocol_revision_id")
+                .and_then(Value::as_str)
+            {
                 prepare_body["annotation_protocol_revision_id"] = json!(revision);
             }
             let mut response = client
@@ -3369,7 +3405,19 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
-            let (visual, event) = registry.show(id.to_string(), session_id).await?;
+            let foreground_owner = body
+                .get("foregroundOwner")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let (visual, mut event) = registry.show(id.to_string(), session_id).await?;
+            if foreground_owner {
+                if let Some(payload) = event.get_mut("payload").and_then(Value::as_object_mut) {
+                    // Presentation intent is broadcast-only. The durable
+                    // visual.show record remains an ownership fact; reopening
+                    // Workshop must not replay an old QA navigation request.
+                    payload.insert("foregroundOwner".into(), Value::Bool(true));
+                }
+            }
             core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
             Ok(json!({"opened": true, "visual": visual, "event": event}))
         }
@@ -5346,10 +5394,7 @@ async fn dispatch_analysis(
                 .or_else(|| body.get("campaignId"))
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            let title = body
-                .get("title")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let title = body.get("title").and_then(Value::as_str).map(str::to_owned);
             let session_id = body
                 .get("sessionRef")
                 .or_else(|| body.get("session_id"))
@@ -5390,11 +5435,10 @@ async fn dispatch_analysis(
             core.storage()
                 .database()
                 .run_read(move |conn| {
-                    let campaigns =
-                        crate::session::annotation_projection::list_campaigns_for_eval(
-                            conn,
-                            &eval_run_id,
-                        )?;
+                    let campaigns = crate::session::annotation_projection::list_campaigns_for_eval(
+                        conn,
+                        &eval_run_id,
+                    )?;
                     Ok(json!({ "campaigns": campaigns }))
                 })
                 .await
@@ -5409,8 +5453,9 @@ async fn dispatch_analysis(
             core.storage()
                 .database()
                 .run_read(move |conn| {
-                    let findings =
-                        crate::session::annotation_projection::list_findings_for_trace(conn, &digest)?;
+                    let findings = crate::session::annotation_projection::list_findings_for_trace(
+                        conn, &digest,
+                    )?;
                     Ok(json!({ "findings": findings }))
                 })
                 .await
@@ -6083,7 +6128,10 @@ mod tests {
             ("visual", None),
             ("element", None),
         ] {
-            assert!(CaptureScope::parse(scope, target).is_err(), "{scope} {target:?}");
+            assert!(
+                CaptureScope::parse(scope, target).is_err(),
+                "{scope} {target:?}"
+            );
         }
         // Only destinations the display contract admits.
         assert!(CaptureScope::parse("plugin", Some("settings")).is_err());
@@ -6136,7 +6184,12 @@ mod tests {
         // Without the scale factor a 2x display crops the top-left quadrant of
         // the intended region and calls it the element.
         let image = solid_png(200, 200);
-        let rect = CaptureRect { x: 10.0, y: 20.0, width: 30.0, height: 40.0 };
+        let rect = CaptureRect {
+            x: 10.0,
+            y: 20.0,
+            width: 30.0,
+            height: 40.0,
+        };
 
         let at_1x = crop_png(&image, rect, 1.0).unwrap();
         assert_eq!(png_dimensions(&at_1x), Some((30, 40)));
@@ -6151,7 +6204,12 @@ mod tests {
         // A half-pixel box that rounded inward would shave the element's own
         // border — exactly the evidence a layout review is looking at.
         let image = solid_png(100, 100);
-        let rect = CaptureRect { x: 10.5, y: 10.5, width: 20.2, height: 20.2 };
+        let rect = CaptureRect {
+            x: 10.5,
+            y: 10.5,
+            width: 20.2,
+            height: 20.2,
+        };
         let cropped = crop_png(&image, rect, 1.0).unwrap();
         assert_eq!(png_dimensions(&cropped), Some((21, 21)));
     }
@@ -6162,7 +6220,12 @@ mod tests {
         let image = solid_png(100, 100);
 
         // Partly offscreen: keep the visible part rather than failing.
-        let overhang = CaptureRect { x: 80.0, y: 80.0, width: 40.0, height: 40.0 };
+        let overhang = CaptureRect {
+            x: 80.0,
+            y: 80.0,
+            width: 40.0,
+            height: 40.0,
+        };
         assert_eq!(
             png_dimensions(&crop_png(&image, overhang, 1.0).unwrap()),
             Some((20, 20))
@@ -6170,7 +6233,12 @@ mod tests {
 
         // Entirely offscreen has nothing to show, and a zero-pixel PNG would be
         // a worse answer than an error that says the element is not visible.
-        let gone = CaptureRect { x: 400.0, y: 400.0, width: 10.0, height: 10.0 };
+        let gone = CaptureRect {
+            x: 400.0,
+            y: 400.0,
+            width: 10.0,
+            height: 10.0,
+        };
         let error = crop_png(&image, gone, 1.0).unwrap_err().to_string();
         assert!(error.contains("not visible"), "{error}");
     }
