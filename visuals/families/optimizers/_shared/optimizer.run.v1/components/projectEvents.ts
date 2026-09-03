@@ -531,10 +531,29 @@ export function optimizerFailureDetail(error: unknown): string | undefined {
   if (!source) return undefined;
   const container = source.match(/container error:\s*([^\n]+)/i)?.[1]?.trim();
   if (container) return container;
-  return source
-    .split("\n")
+  const lines = source.split("\n");
+  // A Python traceback ends with its exception. Reading from the top gave the
+  // first line that was not obvious noise, which on a real GEPA failure was
+  // `[telemetry-warning] ... VictoriaLogs write URL not configured` -- a
+  // warning about logging, printed under the heading "Why this search failed",
+  // while the exception four screens below said `container GET /program failed
+  // with HTTP 404`. Naming the wrong cause confidently is worse than naming
+  // none, so when the text is a traceback, take the exception it ends with.
+  if (lines.some((line) => /^Traceback \(most recent call last\)/.test(line.trim()))) {
+    const raised = lines
+      .filter((line) => line.trim() && !/^\s/.test(line) && !/^Traceback \(/.test(line))
+      .at(-1);
+    if (raised?.trim()) return raised.trim();
+  }
+  return lines
     .map((line) => line.trim())
-    .find((line) => line && !line.includes("resource_tracker") && !line.startsWith("warnings.warn"));
+    .find((line) => (
+      line
+      && !line.includes("resource_tracker")
+      && !line.startsWith("warnings.warn")
+      // Telemetry could not be written. That is never why a run failed.
+      && !/^\[telemetry-warning\]/.test(line)
+    ));
 }
 
 /** One evaluated seed for a single policy arm. */

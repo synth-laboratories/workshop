@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
+import { optimizerFailureDetail, projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
 
 const RUN = {
   id: "gepa_failure_detail",
@@ -123,4 +123,34 @@ test("the shell's run normalizer carries the failure reason through", () => {
   );
   const normalizer = shell.slice(shell.indexOf("function normalizeRun"), shell.indexOf("export function OptimizerFamilyShell"));
   assert.match(normalizer, /error: raw\.error \?\? undefined/);
+});
+
+test("a traceback reports the exception it ends with, not the noise it starts with", () => {
+  // A real GEPA failure. Read from the top, the first line that is not obvious
+  // noise is a warning about logging -- printed under "Why this search failed"
+  // while the actual exception sat four screens below it.
+  const stderrTail = [
+    "[telemetry-warning] [synth-optimizers] warning: VictoriaLogs write URL not configured for synth-optimizers; VL event skipped",
+    "Traceback (most recent call last):",
+    "  File \"<frozen runpy>\", line 203, in _run_module_as_main",
+    "  File \".../synth_optimizers/gepa.py\", line 1631, in _http_json",
+    "    raise ValueError(f\"container GET {path} failed with HTTP {response.status}\")",
+    "    ^^^^^^^^^^^^^^^^^^^",
+    "ValueError: container GET /program failed with HTTP 404"
+  ].join("\n");
+  assert.equal(optimizerFailureDetail({ stderrTail }), "ValueError: container GET /program failed with HTTP 404");
+});
+
+test("a telemetry warning is never offered as a cause", () => {
+  // Telemetry could not be written. That is never why a run failed.
+  assert.equal(
+    optimizerFailureDetail({ stderrTail: "[telemetry-warning] VictoriaLogs write URL not configured\nreal cause here" }),
+    "real cause here"
+  );
+});
+
+test("messages that are not tracebacks keep their existing reading", () => {
+  assert.equal(optimizerFailureDetail({ message: "hosted job rejected: unknown base model" }), "hosted job rejected: unknown base model");
+  assert.equal(optimizerFailureDetail({ message: "container error: boom" }), "boom");
+  assert.equal(optimizerFailureDetail(undefined), undefined);
 });
