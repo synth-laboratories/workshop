@@ -35,13 +35,19 @@ export function Shell(props: ShellProps) {
   );
   const hasSource = declaredStreamCount > 0 || Boolean(stream.events);
 
-  const { events, state, error } = useLiveEvalStream({
+  const { events, state, error, ready } = useLiveEvalStream({
     replay: props.replay,
     fixtureEvents,
     visualId: props.visualId,
     revision: props.revision
   });
   const live = state === "live";
+  // A bound inline or fixture stream is finite. Once every declared event has
+  // been replayed the surface is complete, not live, and "waiting" is a claim
+  // about a source that has already said everything it has to say.
+  const declared = stream.events?.length ?? null;
+  const complete =
+    state === "terminal" || (declared !== null && declared > 0 && events.length >= declared);
   const cells = events.filter((e) => e.kind === "acceptance");
   const passes = cells.filter((e) => e.payload.decision === "pass").length;
   const fails = cells.filter((e) => e.payload.decision === "fail").length;
@@ -60,7 +66,18 @@ export function Shell(props: ShellProps) {
           { label: "Cells", value: String(cells.length) },
           { label: "Pass", value: String(passes) },
           { label: "Fail", value: String(fails) },
-          { label: "Mode", value: live ? "live" : hasSource ? "idle" : "awaiting source" }
+          {
+            label: "Mode",
+            value: !hasSource
+              ? "awaiting source"
+              : complete
+                ? "complete"
+                : live
+                  ? "live"
+                  : ready
+                    ? "idle"
+                    : "connecting"
+          }
         ]}
       />
 
@@ -73,7 +90,7 @@ export function Shell(props: ShellProps) {
       <section className="sv-section" aria-label="Acceptance cells" aria-live="polite">
         <div className="sv-section-head">
           <h3>Cells</h3>
-          <span className="sv-mono">{live ? "LIVE" : "caught up"}</span>
+          <span className="sv-mono">{complete ? "complete" : live ? "LIVE" : "caught up"}</span>
         </div>
         <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
           {cells.map((e, i) => {
@@ -118,7 +135,9 @@ export function Shell(props: ShellProps) {
           })}
           {cells.length === 0 ? (
             <li style={{ color: "var(--sv-text-faint)", padding: 8 }}>
-              Waiting for acceptance decisions…
+              {complete
+                ? `This stream carried no acceptance decisions${declared ? ` in its ${declared} retained events` : ""}.`
+                : "Waiting for acceptance decisions…"}
             </li>
           ) : null}
         </ul>
