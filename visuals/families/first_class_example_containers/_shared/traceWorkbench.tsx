@@ -158,7 +158,12 @@ function FactMetadata({ summary }: { summary: ReportedFactSummary<unknown> }) {
       style={{ display: "grid", gap: 1, color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}
     >
       <span>source: {summary.sources.length ? summary.sources.join(", ") : "not_reported"}</span>
-      <span>unavailable reason: {summary.unavailableReasons.length ? summary.unavailableReasons.join(", ") : "none"}</span>
+      {/* Only when there is one. "unavailable reason: none" is the same
+          non-statement as "errors: none", and it sat under every healthy
+          rollout. contractErrors beside it was already conditional. */}
+      {summary.unavailableReasons.length ? (
+        <span>unavailable reason: {summary.unavailableReasons.join(", ")}</span>
+      ) : null}
       {summary.contractErrors.length ? <span>contract: {summary.contractErrors.join("; ")}</span> : null}
     </div>
   );
@@ -353,47 +358,52 @@ function RunAggregateHeader({
           {formatDuration(elapsedSeconds)} · {finite(summary.concurrency) === null ? "concurrency unavailable" : `${summary.concurrency} parallel`}
         </span>
       </div>
-      <div className="trace-workbench-usage" style={{ display: "grid", gridTemplateColumns: "var(--tw-usage-columns, repeat(auto-fit,minmax(130px,1fr)))", gap: "var(--sv-sp-3)" }}>
-        {usageCard("Rollouts", { authoritative: false, value: startedTrials, present: rolloutCount, total: rolloutCount, sources: [], unavailableReasons: [], contractErrors: [] }, maxRollouts, (value) => String(value))}
-        {providerCalls === null
-          ? usageCard("Model calls", callUsage, callLimit)
-          : usageCard("Provider calls", providerSummary(providerCalls), callLimit, exactCount, { valueSuffix: " billed", coverage: "run-level receipt", source: "Workshop proxy" })}
-        {usageCard("Environment steps", stepUsage, stepLimit)}
-        {usageCard("Runtime tokens", terminalFacts.runtimeTokens === null ? tokenUsage : { ...tokenUsage, value: terminalFacts.runtimeTokens }, tokenLimit, exactCount, { coverage: `${terminalFacts.reportedTokenRollouts || tokenUsage.present}/${rolloutCount} terminal records`, source: "container runtime" })}
-        {providerTokens === null ? null : usageCard("Provider tokens", providerSummary(providerTokens), tokenLimit, exactCount, { valueSuffix: " billed", coverage: `${exactCount(providerPromptTokens ?? 0)} prompt + ${exactCount(providerCompletionTokens ?? 0)} completion`, source: "Workshop proxy" })}
-        {runLifecycle?.usage.costSource === "workshop_proxy"
-          ? usageCard("Provider cost", providerSummary(providerCost), costLimit, exactUsd, { coverage: "run-level receipt", source: "Workshop proxy" })
-          : usageCard("Cost", costUsage, costLimit, exactUsd)}
-        {usageCard("Frames", frameUsage, null)}
+      <div className="trace-workbench-priority" aria-label="Run outcome" style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: "var(--sv-sp-2)" }}>
+        <div><span>Progress</span><strong>{terminalCount}/{rolloutCount}</strong><small>{failed ? `${failed} failed` : "complete"}</small></div>
+        <div><span>Mean reward</span><strong>{reward(mean)}</strong><small>{scoredTrials}/{terminalCount} scored</small></div>
+        <div><span>Evidence</span><strong>{aggregate ? `${aggregate.evaluatorEvidence} + ${aggregate.traceCount}` : `${terminalCount} rollouts`}</strong><small>{aggregate ? "grader + traces" : "retained records"}</small></div>
       </div>
-      <div className="trace-workbench-distributions" style={{ display: "grid", gridTemplateColumns: "var(--tw-distribution-columns, repeat(auto-fit,minmax(260px,1fr)))", gap: "var(--sv-sp-4)", marginTop: "var(--sv-sp-3)", paddingTop: "var(--sv-sp-3)", borderTop: "1px solid var(--sv-border)" }}>
-        <div>
-          <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)", textTransform: "uppercase" }}>Rewards</div>
-          <div style={{ ...mono, marginTop: 3, fontSize: "var(--sv-fs-meta)" }}>
-            {scoredTrials}/{terminalCount} terminal rewards · mean {reward(mean)} · median {reward(median)} · range {reward(rewardMin)}–{reward(rewardMax)}
-            {aggregate ? ` · ${aggregate.evaluatorEvidence} evaluator evidence · ${aggregate.traceCount} traces` : ""}
+      <details className="trace-workbench-run-details" style={{ marginTop: "var(--sv-sp-2)" }}>
+        <summary>Run details <span>{providerCalls === null ? "usage not reconciled" : `${exactCount(providerCalls)} billed calls`}{providerCost === null ? "" : ` · ${exactUsd(providerCost)}`}</span></summary>
+        <div className="trace-workbench-usage" style={{ display: "grid", gridTemplateColumns: "var(--tw-usage-columns, repeat(auto-fit,minmax(130px,1fr)))", gap: "var(--sv-sp-3)" }}>
+          {usageCard("Rollouts", { authoritative: false, value: startedTrials, present: rolloutCount, total: rolloutCount, sources: [], unavailableReasons: [], contractErrors: [] }, maxRollouts, (value) => String(value))}
+          {providerCalls === null
+            ? usageCard("Model calls", callUsage, callLimit)
+            : usageCard("Provider calls", providerSummary(providerCalls), callLimit, exactCount, { valueSuffix: " billed", coverage: "run-level receipt", source: "Workshop proxy" })}
+          {usageCard("Environment steps", stepUsage, stepLimit)}
+          {usageCard("Runtime tokens", terminalFacts.runtimeTokens === null ? tokenUsage : { ...tokenUsage, value: terminalFacts.runtimeTokens }, tokenLimit, exactCount, { coverage: `${terminalFacts.reportedTokenRollouts || tokenUsage.present}/${rolloutCount} terminal records`, source: "container runtime" })}
+          {providerTokens === null ? null : usageCard("Provider tokens", providerSummary(providerTokens), tokenLimit, exactCount, { valueSuffix: " billed", coverage: `${exactCount(providerPromptTokens ?? 0)} prompt + ${exactCount(providerCompletionTokens ?? 0)} completion`, source: "Workshop proxy" })}
+          {runLifecycle?.usage.costSource === "workshop_proxy"
+            ? usageCard("Provider cost", providerSummary(providerCost), costLimit, exactUsd, { coverage: "run-level receipt", source: "Workshop proxy" })
+            : usageCard("Cost", costUsage, costLimit, exactUsd)}
+          {usageCard("Frames", frameUsage, null)}
+        </div>
+        <div className="trace-workbench-distributions" style={{ display: "grid", gridTemplateColumns: "var(--tw-distribution-columns, repeat(auto-fit,minmax(260px,1fr)))", gap: "var(--sv-sp-4)", marginTop: "var(--sv-sp-3)", paddingTop: "var(--sv-sp-3)", borderTop: "1px solid var(--sv-border)" }}>
+          <div>
+            <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)", textTransform: "uppercase" }}>Reward distribution</div>
+            <div style={{ ...mono, marginTop: 3, fontSize: "var(--sv-fs-meta)" }}>median {reward(median)} · range {reward(rewardMin)}–{reward(rewardMax)}</div>
+            <div style={{ display: "flex", alignItems: "end", gap: 4, height: 34, marginTop: 5 }}>
+              {buckets.map((bucket, index) => (
+                <button key={index} type="button" aria-label={`${bucket.low.toFixed(2)} to ${bucket.high.toFixed(2)} · ${bucket.count} seeds`} title={`${bucket.low.toFixed(2)} to ${bucket.high.toFixed(2)} · ${bucket.count} seeds`} onClick={() => onFilter(filter?.kind === "reward" && filter.low === bucket.low ? null : { kind: "reward", ...bucket })} style={{ flex: 1, height: `${Math.max(5, bucket.count / Math.max(...buckets.map((row) => row.count), 1) * 100)}%`, border: "1px solid var(--sv-accent)", borderRadius: "3px 3px 0 0", background: filter?.kind === "reward" && filter.low === bucket.low ? "var(--sv-accent)" : "var(--sv-accent-soft)", cursor: "pointer" }} />
+              ))}
+            </div>
           </div>
-          <div style={{ display: "flex", alignItems: "end", gap: 4, height: 34, marginTop: 5 }}>
-            {buckets.map((bucket, index) => (
-              <button key={index} type="button" title={`${bucket.low.toFixed(2)} to ${bucket.high.toFixed(2)} · ${bucket.count} seeds`} onClick={() => onFilter(filter?.kind === "reward" && filter.low === bucket.low ? null : { kind: "reward", ...bucket })} style={{ flex: 1, height: `${Math.max(5, bucket.count / Math.max(...buckets.map((row) => row.count), 1) * 100)}%`, border: "1px solid var(--sv-accent)", borderRadius: "3px 3px 0 0", background: filter?.kind === "reward" && filter.low === bucket.low ? "var(--sv-accent)" : "var(--sv-accent-soft)", cursor: "pointer" }} />
-            ))}
+          <div>
+            <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)", textTransform: "uppercase" }}>Achievements · unique seeds / eligible · occurrences · first · best</div>
+            <div style={{ display: "grid", gap: 3, maxHeight: 76, overflowY: "auto", marginTop: 4 }}>
+              {achievementFacts.authoritative && achievementFacts.value === null ? (
+                <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-meta)" }}>Achievements unavailable.</span>
+              ) : achievements.length ? achievements.map((row) => (
+                <button className="trace-workbench-achievement" key={row.name} type="button" onClick={() => onFilter(filter?.kind === "achievement" && filter.name === row.name ? null : { kind: "achievement", name: row.name })} style={{ display: "grid", gridTemplateColumns: "var(--tw-achievement-columns, minmax(120px,1fr) auto)", gap: 8, padding: "2px 4px", border: "1px solid transparent", borderRadius: 4, background: filter?.kind === "achievement" && filter.name === row.name ? "var(--sv-accent-soft)" : "transparent", color: "var(--sv-text)", cursor: "pointer", textAlign: "left" }}>
+                  <span style={{ ...mono, overflow: "hidden", textOverflow: "ellipsis" }}>{row.name}</span>
+                  <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}>{row.seeds}/{trials.length} · {row.occurrences === null ? "occurrences unavailable" : `${row.occurrences}×`} · first {row.firstSeed ?? MISSING} · best {row.bestSeed ?? MISSING}</span>
+                </button>
+              )) : <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-meta)" }}>{achievementFacts.authoritative ? "No achievements achieved." : "No achievements reported yet."}</span>}
+              <FactMetadata summary={achievementFacts} />
+            </div>
           </div>
         </div>
-        <div>
-          <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)", textTransform: "uppercase" }}>Achievements · unique seeds / eligible · occurrences · first · best</div>
-          <div style={{ display: "grid", gap: 3, maxHeight: 76, overflowY: "auto", marginTop: 4 }}>
-            {achievementFacts.authoritative && achievementFacts.value === null ? (
-              <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-meta)" }}>Achievements unavailable.</span>
-            ) : achievements.length ? achievements.map((row) => (
-              <button className="trace-workbench-achievement" key={row.name} type="button" onClick={() => onFilter(filter?.kind === "achievement" && filter.name === row.name ? null : { kind: "achievement", name: row.name })} style={{ display: "grid", gridTemplateColumns: "var(--tw-achievement-columns, minmax(120px,1fr) auto)", gap: 8, padding: "2px 4px", border: "1px solid transparent", borderRadius: 4, background: filter?.kind === "achievement" && filter.name === row.name ? "var(--sv-accent-soft)" : "transparent", color: "var(--sv-text)", cursor: "pointer", textAlign: "left" }}>
-                <span style={{ ...mono, overflow: "hidden", textOverflow: "ellipsis" }}>{row.name}</span>
-                <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}>{row.seeds}/{trials.length} · {row.occurrences === null ? "occurrences unavailable" : `${row.occurrences}×`} · first {row.firstSeed ?? MISSING} · best {row.bestSeed ?? MISSING}</span>
-              </button>
-            )) : <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-meta)" }}>{achievementFacts.authoritative ? "No achievements achieved." : "No achievements reported yet."}</span>}
-            <FactMetadata summary={achievementFacts} />
-          </div>
-        </div>
-      </div>
+      </details>
     </section>
   );
 }
@@ -840,6 +850,29 @@ function CallDetail({ view, step }: { view: EvalTraceView; step: TraceStep | nul
         ) : null}
       </div>
 
+      {step.rubric.length ? (
+        <details className="trace-workbench-rubric" style={section}>
+          <summary style={{ cursor: "pointer" }}>
+            <span style={heading}>Verifier &amp; rubric</span>{" "}
+            <strong style={{ ...mono, fontSize: "var(--sv-fs-meta)" }}>
+              {step.rubric.filter((grade) => grade.met === true).length}/{step.rubric.length} met
+            </strong>
+          </summary>
+          <div style={{ display: "grid", gap: "var(--sv-sp-2)", marginTop: "var(--sv-sp-2)" }}>
+            {step.rubric.map((grade, index) => (
+              <details key={`${grade.index ?? index}-${grade.criterion}`} style={{ padding: "var(--sv-sp-2)", border: "1px solid var(--sv-border)", borderRadius: "var(--sv-radius-sm)", background: "var(--sv-surface-muted)" }}>
+                <summary style={{ cursor: "pointer", fontSize: "var(--sv-fs-meta)" }}>
+                  <Chip label={grade.met === true ? "met" : grade.met === false ? "unmet" : "unavailable"} tone={grade.met === true ? "ok" : grade.met === false ? "bad" : "muted"} />{" "}
+                  {grade.points === null ? null : <span style={{ ...mono, color: "var(--sv-text-faint)" }}>{grade.points > 0 ? "+" : ""}{grade.points} · </span>}
+                  <span>{grade.criterion}</span>
+                </summary>
+                {grade.explanation ? <p style={{ ...body, marginTop: "var(--sv-sp-2)", color: "var(--sv-text-muted)" }}>{grade.explanation}</p> : null}
+              </details>
+            ))}
+          </div>
+        </details>
+      ) : null}
+
       <div style={section}>
         <p style={heading}>Applied by the environment</p>
         {step.action.applied.length ? (
@@ -1125,10 +1158,16 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
   const frameFactReason = selectedFrameFact.unavailableReasons.length
     ? selectedFrameFact.unavailableReasons.join(", ")
     : "none";
+  // Append the reason only when there is one, for the same reason as above:
+  // "0 frames · source: trusted_trace_v5 · unavailable reason: none" invites a
+  // reader to hunt for a failure that did not happen.
+  const frameReasonSuffix = selectedFrameFact.unavailableReasons.length
+    ? ` · unavailable reason: ${frameFactReason}`
+    : "";
   const terminalFrameCopy = selectedFrameFact.authoritative
     ? selectedFrameFact.value === null
-      ? `Frames unavailable · source: ${frameFactSource} · unavailable reason: ${frameFactReason}`
-      : `${selectedFrameFact.value} frames · source: ${frameFactSource} · unavailable reason: ${frameFactReason}`
+      ? `Frames unavailable · source: ${frameFactSource}${frameReasonSuffix}`
+      : `${selectedFrameFact.value} frame${selectedFrameFact.value === 1 ? "" : "s"} · source: ${frameFactSource}${frameReasonSuffix}`
     : view
       ? `${view.coverage.framesRetained}/${view.coverage.framesDeclared} frame observations retained · ${view.coverage.uniqueCasBlobs} unique CAS blob${view.coverage.uniqueCasBlobs === 1 ? "" : "s"}`
       : "";
@@ -1251,7 +1290,7 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
                 style={{
                   display: "grid",
                   placeItems: "center",
-                  minHeight: 320,
+                  minHeight: branding.frameCentric ? 320 : 72,
                   padding: "var(--sv-sp-4)",
                   border: "1px solid var(--sv-warn-edge)",
                   borderRadius: "var(--sv-radius-lg)",
