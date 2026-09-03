@@ -1192,6 +1192,54 @@ async fn capture_element_rect(app: &AppHandle, testid: &str) -> Result<CaptureRe
     Ok(rect)
 }
 
+/// What the app was showing, and what its own layout audit found, read at the
+/// moment of the capture.
+///
+/// A screenshot proves a state rendered; it does not say the state is
+/// defensible. Harvesting both here — inside the same held viewport, before the
+/// window is restored — is what makes a capture reviewable evidence rather than
+/// an image somebody has to squint at later.
+#[cfg(target_os = "macos")]
+async fn harvest_capture_evidence(app: &AppHandle) -> (Value, Value) {
+    let state = eval_string(
+        app,
+        "document.documentElement.dataset.synthAppState || ''",
+        std::time::Duration::from_millis(500),
+    )
+    .await
+    .ok()
+    .and_then(|raw| parse_renderer_json(&raw))
+    .unwrap_or(Value::Null);
+    let audit = eval_string(
+        app,
+        "(window.__synthCaptureAudit && window.__synthCaptureAudit()) || ''",
+        std::time::Duration::from_secs(3),
+    )
+    .await
+    .ok()
+    .and_then(|raw| parse_renderer_json(&raw))
+    .unwrap_or(Value::Null);
+    (state, audit)
+}
+
+/// `eval_with_callback` hands back the JS value already serialized, so a string
+/// result arrives quoted and escaped. Unwrap one layer before parsing, and fall
+/// back to the raw text so a protocol change degrades to "unavailable" rather
+/// than to a wrong record.
+#[cfg(target_os = "macos")]
+fn parse_renderer_json(raw: &str) -> Option<Value> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "\"\"" {
+        return None;
+    }
+    if let Ok(Value::String(inner)) = serde_json::from_str::<Value>(trimmed) {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&inner) {
+            return Some(parsed);
+        }
+    }
+    serde_json::from_str::<Value>(trimmed).ok()
+}
+
 /// The caller names the file; this side refuses to write outside its own data
 /// root. Both ends are canonicalized so `..` segments cannot slip past the
 /// prefix check.
@@ -1312,6 +1360,13 @@ pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Val
         Err(error) => Err(error),
     };
 
+    // Before the restore: the audit must measure the viewport that was
+    // photographed, not the one the window goes back to.
+    let (app_state, audit) = match &snapshot {
+        Ok(_) => harvest_capture_evidence(app).await,
+        Err(_) => (Value::Null, Value::Null),
+    };
+
     let restore = match viewport {
         Some(_) => resize_review_window(
             app,
@@ -1343,10 +1398,23 @@ pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Val
         (Ok(_), Ok(_), Ok(()), Err(write)) => Err(write),
         (Ok(bytes), Ok(_), Ok(()), Ok(())) => {
             let (width, height) = png_dimensions(&bytes).unwrap_or((0, 0));
+            let diagnostics = crate::instance::diagnostics();
             Ok(json!({
+                "schemaVersion": "synth.surface-capture.v1",
                 "path": output.to_string_lossy(),
+                "digest": format!("sha256:{:x}", sha2::Sha256::digest(&bytes)),
                 "scope": scope.name(),
                 "target": scope.target(),
+                "capturedAt": chrono::Utc::now().to_rfc3339(),
+                "instance": {
+                    "name": diagnostics.name,
+                    "mode": diagnostics.mode,
+                    "appVersion": diagnostics.app_version,
+                    "sourceRevision": diagnostics.source_revision,
+                    "buildRevision": diagnostics.build_revision,
+                },
+                "appState": app_state,
+                "audit": audit,
                 "width": width,
                 "height": height,
                 "previous": {"width": geometry.previous.0, "height": geometry.previous.1},

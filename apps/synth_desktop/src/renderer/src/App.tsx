@@ -25,8 +25,10 @@ import {
 	currentCaptureRequest,
 	isCapturePluginId,
 	markCaptureReady,
+	publishAppState,
 	type CaptureRequest
 } from "./runtime/captureSurface";
+import { installCaptureAudit } from "./runtime/captureFindings";
 import { MainRoutes } from "./routes";
 import { bridges } from "./runtime/desktopBridge";
 import type { WhisperRuntimeStatus } from "./bridge";
@@ -62,6 +64,26 @@ export default function App() {
 		}
 		return () => window.removeEventListener("synth:visual-review-capture", openReviewSurface);
 	}, [c.setView]);
+
+	// The audit is a function the host calls during a capture, so it has to be
+	// installed before the first one arrives rather than on demand.
+	useEffect(() => {
+		installCaptureAudit();
+	}, []);
+
+	// What the app was showing when a capture was taken. Published continuously
+	// rather than assembled during a capture: a screenshot record whose state
+	// was gathered after the shutter has no guarantee it describes the frame.
+	useEffect(() => {
+		publishAppState({
+			route: c.view.kind,
+			chatId: c.view.kind === "chat" ? c.view.chatId : undefined,
+			visiblePluginIds: c.preferences.navigation?.visiblePluginIds,
+			terminalOpen: c.terminalOpen,
+			sidePanelOpen: c.showSidePanel,
+			sidePanelTab: c.sidePanelTab
+		});
+	}, [c.view, c.preferences.navigation, c.terminalOpen, c.showSidePanel, c.sidePanelTab]);
 
 	// Host surface capture. `app` and `element` photograph the app where it
 	// already stands, so they route nowhere; only a plugin capture navigates,

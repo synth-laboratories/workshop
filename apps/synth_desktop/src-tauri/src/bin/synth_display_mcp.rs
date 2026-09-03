@@ -92,7 +92,9 @@ fn tools() -> Value {
             "scope":{"type":"string","enum":["app","plugin","visual","element"],"description":"What to photograph. Defaults to app."},
             "target":{"type":"string","description":"Plugin id for scope=plugin, visual id for scope=visual, data-testid for scope=element. Omitted for scope=app."},
             "viewport":{"type":"object","properties":{"width":{"type":"integer","minimum":320,"maximum":2400},"height":{"type":"integer","minimum":400,"maximum":1800}},"required":["width","height"],"additionalProperties":false,"description":"Optional CSS viewport. Resizes the window for the capture and restores it."},
-            "label":{"type":"string","description":"Short slug for the filename, so a sequence of captures is legible on disk."}
+            "label":{"type":"string","description":"Short slug for the filename, so a sequence of captures is legible on disk."},
+            "frames":{"type":"integer","minimum":2,"maximum":600,"description":"Record a filmstrip of this many frames instead of one still. Use to watch a live run: the window is never resized during a recording, so `viewport` is rejected with frames."},
+            "interval_ms":{"type":"integer","minimum":250,"maximum":60000,"description":"Milliseconds between filmstrip frames. Default 2000."}
         },"additionalProperties":false}}
     ]})
 }
@@ -188,7 +190,6 @@ fn capture(args: &Value) -> Result<Value, String> {
         .map(PathBuf::from)
         .unwrap_or_else(env::temp_dir)
         .join("surface-captures");
-    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let label = args
         .get("label")
         .and_then(Value::as_str)
@@ -197,17 +198,26 @@ fn capture(args: &Value) -> Result<Value, String> {
     let size = viewport
         .map(|(width, height)| format!("{width}x{height}"))
         .unwrap_or_else(|| "window".into());
+
+    let frames = args.get("frames").and_then(Value::as_u64);
+    if let Some(frames) = frames {
+        if viewport.is_some() {
+            // Resizing between frames would make the recording a series of
+            // relayouts rather than a record of the run.
+            return Err("frames and viewport cannot be combined: a recording never resizes the window".into());
+        }
+        return record(&body, &root, &label, frames, args);
+    }
+
+    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%3fZ");
     let path = root.join(format!("{scope}-{label}-{size}-{stamp}.png"));
-    body["outputPath"] = json!(path.to_string_lossy());
-
-    let mut receipt = request("POST", "/v1/capture", body)?;
+    let mut receipt = capture_once(&body, &path)?;
     let png = fs::read(&path).map_err(|error| error.to_string())?;
     if let Some(object) = receipt.as_object_mut() {
-        object.insert("capturedAt".into(), json!(stamp.to_string()));
         object.insert(
             "instruction".into(),
-            json!("Inspect the attached PNG before describing this surface."),
+            json!("Inspect the attached PNG before describing this surface. `audit.findings` is the machine-checkable subset only; it is not a substitute for looking."),
         );
         object.insert(
             "_mcpImage".into(),
@@ -215,6 +225,102 @@ fn capture(args: &Value) -> Result<Value, String> {
         );
     }
     Ok(receipt)
+}
+
+fn capture_once(body: &Value, path: &std::path::Path) -> Result<Value, String> {
+    let mut body = body.clone();
+    body["outputPath"] = json!(path.to_string_lossy());
+    request("POST", "/v1/capture", body)
+}
+
+/// A filmstrip of the app while something is happening to it.
+///
+/// The frames are the record; the mp4 is a convenience rendered from them when
+/// ffmpeg is present. Keeping the PNGs authoritative means a recording stays
+/// inspectable frame by frame, with each frame carrying its own digest, app
+/// state, and layout audit — which is what a later review actually reads.
+fn record(
+    body: &Value,
+    root: &std::path::Path,
+    label: &str,
+    frames: u64,
+    args: &Value,
+) -> Result<Value, String> {
+    let interval = args
+        .get("interval_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(2000);
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%3fZ");
+    let dir = root.join(format!("recording-{label}-{stamp}"));
+    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+
+    let mut records = Vec::new();
+    let mut findings = 0_u64;
+    let mut failures = Vec::new();
+    for index in 0..frames {
+        if index > 0 {
+            std::thread::sleep(Duration::from_millis(interval));
+        }
+        let path = dir.join(format!("frame-{index:04}.png"));
+        match capture_once(body, &path) {
+            Ok(receipt) => {
+                findings += receipt
+                    .pointer("/audit/findings")
+                    .and_then(Value::as_array)
+                    .map(|list| list.len() as u64)
+                    .unwrap_or(0);
+                records.push(receipt);
+            }
+            // One bad frame must not discard the rest of a long recording.
+            Err(error) => failures.push(json!({"frame": index, "error": error})),
+        }
+    }
+    if records.is_empty() {
+        return Err(format!(
+            "no frame was captured: {}",
+            serde_json::to_string(&failures).unwrap_or_default()
+        ));
+    }
+
+    let fps = (1000.0 / interval as f64).clamp(1.0, 30.0);
+    let video = mux(&dir, fps);
+    let last = fs::read(dir.join(format!("frame-{:04}.png", records.len() - 1)))
+        .or_else(|_| fs::read(dir.join("frame-0000.png")))
+        .map_err(|error| error.to_string())?;
+    Ok(json!({
+        "schemaVersion": "synth.surface-recording.v1",
+        "directory": dir.to_string_lossy(),
+        "frames": records.len(),
+        "requestedFrames": frames,
+        "intervalMs": interval,
+        "video": video,
+        "failures": failures,
+        "totalFindings": findings,
+        "records": records,
+        "instruction": "Frames are the record; the mp4 is a rendering of them. Inspect frames where `audit.findings` is non-empty, and compare the first and last frames for live-update stability.",
+        "_mcpImage": {"data": base64::engine::general_purpose::STANDARD.encode(last), "mimeType": "image/png"}
+    }))
+}
+
+/// Best effort. A recording without ffmpeg is still a complete record, so a
+/// missing or failing muxer is reported, never fatal.
+fn mux(dir: &std::path::Path, fps: f64) -> Value {
+    let output = dir.join("recording.mp4");
+    let result = std::process::Command::new("ffmpeg")
+        .args(["-y", "-framerate", &format!("{fps:.3}"), "-i"])
+        .arg(dir.join("frame-%04d.png"))
+        // Even dimensions are required by yuv420p, and a captured window is
+        // routinely odd-sized on a Retina display.
+        .args(["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-pix_fmt", "yuv420p"])
+        .arg(&output)
+        .output();
+    match result {
+        Ok(done) if done.status.success() => json!({"path": output.to_string_lossy(), "fps": fps}),
+        Ok(done) => json!({
+            "unavailable": String::from_utf8_lossy(&done.stderr).lines().last().unwrap_or("ffmpeg failed")
+        }),
+        Err(error) => json!({"unavailable": error.to_string()}),
+    }
 }
 
 fn display(args: &Value) -> Result<Value, String> {

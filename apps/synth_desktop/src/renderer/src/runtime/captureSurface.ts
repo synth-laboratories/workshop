@@ -59,3 +59,28 @@ export function captureReadyToken(scope: CaptureScope, target: string): string {
 export function markCaptureReady(scope: CaptureScope, target: string): void {
 	document.documentElement.dataset.synthCaptureReady = captureReadyToken(scope, target);
 }
+
+/**
+ * What the app is showing, published continuously onto the document element.
+ *
+ * The host reads this during a capture. It is published on every change rather
+ * than assembled on request because a record gathered after the shutter cannot
+ * be proven to describe the frame that was photographed.
+ */
+export type PublishedAppState = {
+	route: string;
+	chatId?: string;
+	visiblePluginIds?: readonly string[];
+	terminalOpen?: boolean;
+	sidePanelOpen?: boolean;
+	sidePanelTab?: string;
+};
+
+export function publishAppState(state: PublishedAppState): void {
+	try {
+		document.documentElement.dataset.synthAppState = JSON.stringify(state);
+	} catch {
+		// A state that cannot serialize must not take the app down; the capture
+		// receipt simply records that the app state was unavailable.
+	}
+}
