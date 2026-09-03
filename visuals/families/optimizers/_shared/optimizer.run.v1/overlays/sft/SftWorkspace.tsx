@@ -20,6 +20,7 @@ import { formatMissingNumber, formatMissingUsd } from "../../../../../../runtime
 import { optimizerFailureDetail } from "../../components/projectEvents.ts";
 import type { OptimizerRun, ProjectedState } from "../../components/projectEvents.ts";
 import {
+  counted,
   NotEnoughData,
   StageTimeline,
   WorkspaceHeader,
@@ -310,7 +311,7 @@ function CurvesPanel({
   return (
     <Panel
       title="Training curves"
-      aside={`${metricSeries?.total ?? points.length} durable records`}
+      aside={counted(metricSeries?.total ?? points.length, "durable record")}
       testId="sft-live-curves"
     >
       {metricSeries && metricSeries.status === "error" ? (
@@ -325,7 +326,7 @@ function CurvesPanel({
           have={0}
           need={2}
           noun="loss sample"
-          detail={`${points.length} durable step records reached step ${latest?.step ?? "—"}, but the provider did not emit train or validation loss.`}
+          detail={`${counted(points.length, "durable step record")} reached step ${latest?.step ?? "—"}, but the provider did not emit train or validation loss.`}
           testId="sft-curves-loss-unavailable"
         />
       ) : points.length < 2 ? (

@@ -110,6 +110,19 @@ export function WorkspaceHeader({
 }
 
 /**
+ * `3 loss samples` / `1 loss sample`, from a singular noun.
+ *
+ * Counted nouns were being written by hand at each call site, and each site got
+ * it wrong in its own way: one passed an already-plural noun to a helper that
+ * pluralizes ("0 loss sampless"), two others hardcoded the "s" and printed
+ * "1 durable records". A count and its noun always travel together, so they
+ * should be formatted together.
+ */
+export function counted(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/**
  * One honest stat instead of chart furniture. A plot drawn from fewer points
  * than it needs reads as a broken chart, not as "no trend yet", so every
  * series-backed panel routes through here before it draws axes.
@@ -130,7 +143,7 @@ export function NotEnoughData({
 }) {
   return (
     <div className="sv-not-enough" data-testid={testId}>
-      <strong className="sv-mono">{have} {noun}{have === 1 ? "" : "s"}</strong>
+      <strong className="sv-mono">{counted(have, noun)}</strong>
       {detail ? <span className="sv-not-enough-detail">{detail}</span> : null}
       <span className="sv-not-enough-need">
         {need === 2 ? "A trend needs at least 2." : `At least ${need} are needed to plot this.`}
