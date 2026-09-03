@@ -173,6 +173,9 @@ export type ShellProps = {
 
 const MISSING = "—";
 
+/** A run that has ended: nothing further will arrive for it. */
+const TERMINAL_EXPERIMENT_STATUSES = ["completed", "failed", "cancelled", "canceled", "terminated", "finished", "succeeded"];
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -398,8 +401,7 @@ function ProgressPanel({ progress, status }: { progress?: Progress; status?: str
   const total = progress?.total;
   const determinate = completed != null && total != null && total > 0;
   const percent = determinate ? Math.max(0, Math.min(100, completed / total * 100)) : 0;
-  const terminal = ["completed", "failed", "cancelled", "canceled", "terminated", "finished", "succeeded"]
-    .includes((progress?.phase ?? status ?? "").trim().toLowerCase());
+  const terminal = TERMINAL_EXPERIMENT_STATUSES.includes((progress?.phase ?? status ?? "").trim().toLowerCase());
   // Read from `status`, not from `progress.phase`: the phase of a failed run
   // is still "Finished", which is exactly how the bar came to look successful.
   const failed = ["failed", "cancelled", "canceled", "terminated", "degraded"]
@@ -459,10 +461,32 @@ function ReferenceChip({ label, kind, value, containerId }: { label: string; kin
   return <button type="button" data-reference-kind={kind} data-reference-value={value} data-reference-container-id={containerId} title={value} style={{ display: "inline-flex", alignItems: "center", gap: 4, maxWidth: "100%", padding: "3px 7px", border: "1px solid #d8c8b9", borderRadius: 6, background: "#fffaf4", color: "#5b4032", cursor: "pointer", fontFamily: "var(--sv-mono)", fontSize: 9.5 }}><span aria-hidden>{kind === "path" ? "▧" : "◈"}</span><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span></button>;
 }
 
-function RolloutTable({ rollouts, containerId, unavailableTraceIds }: { rollouts: Rollout[]; containerId?: string; unavailableTraceIds?: Set<string> }) {
+function RolloutTable({ rollouts, containerId, unavailableTraceIds, terminal }: { rollouts: Rollout[]; containerId?: string; unavailableTraceIds?: Set<string>; terminal?: boolean }) {
   if (!rollouts.length) return null;
-  const columns = ["Rollout", "State", "Reward", "Steps", "Calls", "Tokens", "Cost", "Achievements", "Trace"];
-  return <section className="sv-section" style={{ padding: 0, overflowX: "auto" }} aria-label="Rollout results"><table style={{ width: "100%", minWidth: 720, borderCollapse: "collapse", fontSize: 9 }}><thead><tr>{columns.map((label) => <th key={label} style={{ padding: "4px 6px", borderBottom: "1px solid var(--sv-border)", color: "var(--sv-text-faint)", textAlign: label === "Rollout" || label === "State" || label === "Trace" ? "left" : "right", fontSize: 9.5 }}>{label}</th>)}</tr></thead><tbody>{rollouts.map((rollout, index) => <tr key={rollout.id ?? index}><th scope="row" style={{ padding: 6, borderBottom: "1px solid var(--sv-border)", textAlign: "left" }}>{rollout.label ?? (rollout.seed != null ? `Seed ${rollout.seed}` : rollout.id)}</th><td style={{ maxWidth: 220, padding: 6, color: statusTone(rollout.status), textTransform: "capitalize" }}><strong>{rollout.status ?? MISSING}</strong>{rollout.stopReason ? <small title={rollout.stopReason} style={{ display: "block", marginTop: 2, overflow: "hidden", color: rollout.status === "failed" ? "#b42318" : "var(--sv-text-faint)", fontWeight: 400, textOverflow: "ellipsis", textTransform: "none", whiteSpace: "nowrap" }}>{rollout.stopReason}</small> : null}</td><td style={{ padding: 6, textAlign: "right" }}>{rollout.reward == null ? MISSING : measured(rollout.reward)}</td><td style={{ padding: 6, textAlign: "right" }}>{rollout.steps ?? MISSING}</td><td style={{ padding: 6, textAlign: "right" }}>{rollout.modelCalls ?? MISSING}</td><td style={{ padding: 6, textAlign: "right" }}>{rollout.tokens ?? MISSING}</td><td style={{ padding: 6, textAlign: "right" }}>{rollout.costUsd == null ? MISSING : `$${rollout.costUsd.toFixed(4)}`}</td><td style={{ padding: 6, textAlign: "right" }}>{rollout.achievements ?? MISSING}</td><td style={{ padding: 6 }}>{rollout.traceId ? unavailableTraceIds?.has(rollout.traceId) ? <span title="A lite seal retains provenance but cannot be opened in the Trace V5 inspector." style={{ color: "var(--sv-text-faint)" }}>Unavailable</span> : <ReferenceChip label="Open trace" kind="trace" value={rollout.traceId} containerId={containerId} /> : MISSING}</td></tr>)}</tbody></table></section>;
+  /**
+   * Columns nothing will ever fill.
+   *
+   * A Banking77 classification run carried Steps, Calls, Tokens and
+   * Achievements columns whose every cell was "—": a game's scoreboard over a
+   * task with no environment, which is the surface this codebase has already
+   * stopped showing elsewhere.
+   *
+   * Only on a terminal run. A live table that dropped and re-added columns as
+   * the first value arrived would shift every cell sideways mid-read, which is
+   * worse than the empty column it removes. Reward, State and Trace always
+   * stay: an empty Reward column is a fact about the run, not clutter.
+   */
+  const droppable = { Steps: "steps", Calls: "modelCalls", Tokens: "tokens", Cost: "costUsd", Achievements: "achievements" } as const;
+  const empty = new Set(
+    terminal
+      ? Object.entries(droppable)
+        .filter(([, field]) => rollouts.every((row) => row[field as keyof Rollout] == null))
+        .map(([label]) => label)
+      : []
+  );
+  const columns = ["Rollout", "State", "Reward", "Steps", "Calls", "Tokens", "Cost", "Achievements", "Trace"]
+    .filter((label) => !empty.has(label));
+  return <section className="sv-section" style={{ padding: 0, overflowX: "auto" }} aria-label="Rollout results"><table style={{ width: "100%", minWidth: 720, borderCollapse: "collapse", fontSize: 9 }}><thead><tr>{columns.map((label) => <th key={label} style={{ padding: "4px 6px", borderBottom: "1px solid var(--sv-border)", color: "var(--sv-text-faint)", textAlign: label === "Rollout" || label === "State" || label === "Trace" ? "left" : "right", fontSize: 9.5 }}>{label}</th>)}</tr></thead><tbody>{rollouts.map((rollout, index) => <tr key={rollout.id ?? index}><th scope="row" style={{ padding: 6, borderBottom: "1px solid var(--sv-border)", textAlign: "left" }}>{rollout.label ?? (rollout.seed != null ? `Seed ${rollout.seed}` : rollout.id)}</th><td style={{ maxWidth: 220, padding: 6, color: statusTone(rollout.status), textTransform: "capitalize" }}><strong>{rollout.status ?? MISSING}</strong>{rollout.stopReason ? <small title={rollout.stopReason} style={{ display: "block", marginTop: 2, overflow: "hidden", color: rollout.status === "failed" ? "#b42318" : "var(--sv-text-faint)", fontWeight: 400, textOverflow: "ellipsis", textTransform: "none", whiteSpace: "nowrap" }}>{rollout.stopReason}</small> : null}</td><td style={{ padding: 6, textAlign: "right" }}>{rollout.reward == null ? MISSING : measured(rollout.reward)}</td>{empty.has("Steps") ? null : <td style={{ padding: 6, textAlign: "right" }}>{rollout.steps ?? MISSING}</td>}{empty.has("Calls") ? null : <td style={{ padding: 6, textAlign: "right" }}>{rollout.modelCalls ?? MISSING}</td>}{empty.has("Tokens") ? null : <td style={{ padding: 6, textAlign: "right" }}>{rollout.tokens ?? MISSING}</td>}{empty.has("Cost") ? null : <td style={{ padding: 6, textAlign: "right" }}>{rollout.costUsd == null ? MISSING : `$${rollout.costUsd.toFixed(4)}`}</td>}{empty.has("Achievements") ? null : <td style={{ padding: 6, textAlign: "right" }}>{rollout.achievements ?? MISSING}</td>}<td style={{ padding: 6 }}>{rollout.traceId ? unavailableTraceIds?.has(rollout.traceId) ? <span title="A lite seal retains provenance but cannot be opened in the Trace V5 inspector." style={{ color: "var(--sv-text-faint)" }}>Unavailable</span> : <ReferenceChip label="Open trace" kind="trace" value={rollout.traceId} containerId={containerId} /> : MISSING}</td></tr>)}</tbody></table></section>;
 }
 
 function TraceList({ traces, containerId }: { traces: TraceReference[]; containerId?: string }) {
@@ -567,7 +591,7 @@ export function Shell(props: ShellProps) {
       <Metrics metrics={metrics} />
       <ComparisonTable arms={experiment.arms ?? []} comparison={experiment.comparison} />
       {experiment.arms?.length ? <Arms arms={experiment.arms} /> : null}
-      <RolloutTable rollouts={rollouts} containerId={typeof experiment.runtime?.containerId === "string" ? experiment.runtime.containerId : undefined} unavailableTraceIds={unavailableTraceIds} />
+      <RolloutTable rollouts={rollouts} terminal={TERMINAL_EXPERIMENT_STATUSES.includes(status.trim().toLowerCase())} containerId={typeof experiment.runtime?.containerId === "string" ? experiment.runtime.containerId : undefined} unavailableTraceIds={unavailableTraceIds} />
       <AssessmentPanel assessment={experiment.assessment} />
     </Disclosure> : null}
     {experiment.evidence?.length ? <Disclosure title="Supporting evidence" summary={`${experiment.evidence.length} items`}><EvidenceList evidence={experiment.evidence} /></Disclosure> : null}

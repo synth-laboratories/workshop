@@ -47,7 +47,27 @@ test("a finished run is not given an ETA", () => {
   const source = read(SHELL);
   // `ETA —` reports a not-applicable field as a measurement that went missing.
   assert.match(source, /\.\.\.\(terminal \? \[\] : \[\["ETA", progress\?\.eta\] as const\]\)/);
-  assert.match(source, /const terminal = \[[\s\S]*?"completed"[\s\S]*?\]\s*\n?\s*\.includes\(/);
+  // One list of terminal statuses, shared with the rollout table.
+  assert.match(source, /const TERMINAL_EXPERIMENT_STATUSES = \[[^\]]*"completed"[^\]]*\]/);
+  assert.match(source, /const terminal = TERMINAL_EXPERIMENT_STATUSES\.includes\(/);
   // Elapsed, usage and cost still mean something about a run that has ended.
   assert.match(source, /\["Elapsed", progress\?\.elapsed\][\s\S]{0,200}\["Cost", progress\?\.cost\]/);
+});
+
+test("a terminal run drops the columns nothing filled, and keeps the ones it did", () => {
+  const source = read(SHELL);
+  // A Banking77 classification run carried Steps, Calls, Tokens and
+  // Achievements columns whose every cell was "—": a game's scoreboard over a
+  // task with no environment. HealthBench, on the same template, has real
+  // token and cost values and must keep those columns.
+  assert.match(source, /const droppable = \{ Steps: "steps", Calls: "modelCalls", Tokens: "tokens", Cost: "costUsd", Achievements: "achievements" \}/);
+  assert.match(source, /rollouts\.every\(\(row\) => row\[field as keyof Rollout\] == null\)/);
+  // Only once the run has ended: a live table that dropped and re-added a
+  // column as the first value arrived would shift every cell sideways.
+  assert.match(source, /terminal\s*\n?\s*\? Object\.entries\(droppable\)/);
+  assert.match(source, /: \[\]\s*\n?\s*\);/);
+  // Rollout, State, Reward and Trace are never dropped -- an empty Reward
+  // column is a fact about the run, not clutter.
+  const columns = source.slice(source.indexOf('const columns = ["Rollout"'), source.indexOf("return <section", source.indexOf('const columns = ["Rollout"')));
+  for (const kept of ["Rollout", "State", "Reward", "Trace"]) assert.ok(!columns.includes(`droppable.${kept}`));
 });
