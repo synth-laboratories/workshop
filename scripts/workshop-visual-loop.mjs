@@ -14,6 +14,7 @@
 //     [--frames 40] [--interval-ms 3000] [--out DIR] [--timeout-ms 1800000]
 //     [--prompt TEXT | --prompt-file PATH] [--no-run]
 
+import { createHash } from "node:crypto";
 import { createConnection } from "node:net";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -127,6 +128,21 @@ function ipc(conn, method, path, body, timeoutMs = 120_000) {
 			resolve(parsed);
 		});
 	});
+}
+
+/**
+ * Key-sorted JSON, so the same declaration always hashes the same way. A digest
+ * that changed with key order would pin nothing.
+ */
+export function canonicalJson(value) {
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (value && typeof value === "object") {
+		return `{${Object.keys(value)
+			.sort()
+			.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+			.join(",")}}`;
+	}
+	return JSON.stringify(value ?? null);
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -346,11 +362,48 @@ async function main() {
 		if (!probe?.ok) {
 			throw new Error(`${spec.label} is not serving on 127.0.0.1:${spec.port}; start it before running the loop`);
 		}
+		// Admission walks every registered container, not only the family being
+		// asked for, and refuses the whole request on the first one that cannot
+		// name its source. One undeclared container therefore blocks every other
+		// task, so re-declare any that are already serving.
+		const registry = await ipc(visuals, "GET", "/v1/containers", undefined).catch(() => ({}));
+		for (const container of registry.containers ?? []) {
+			const declared = container?.metadata?.gitRevision;
+			if (declared || !container?.baseUrl) continue;
+			process.stderr.write(
+				`warning: container ${container.taskFamily ?? container.id} declares no source revision; ` +
+					"admission would refuse every task until it does\n"
+			);
+		}
+		// `gitRevision` is not decoration: admission reads it off the registered
+		// record (not off /health) and refuses paid work without it, because a
+		// result that cannot name the source that produced it is not evidence.
+		// `capabilities.revision` is the policy pin the same gate requires.
+		const revision = process.env.SYNTH_QA_CONTAINER_REVISION ?? spec.revision;
+		if (!revision) {
+			throw new Error(
+				`no source revision for ${spec.label}; set SYNTH_QA_CONTAINER_REVISION to the producing commit`
+			);
+		}
+		// Admission pins the container's declared live-eval capability block, so
+		// the digest has to be *of that block* -- an invented one would pin
+		// nothing and defeat the check it satisfies.
+		const info = await fetch(`http://127.0.0.1:${spec.port}/info`)
+			.then((response) => (response.ok ? response.json() : null))
+			.catch(() => null);
+		const declaration = info?.capabilities;
+		if (!declaration) {
+			throw new Error(`${spec.label} serves no capability declaration at /info; nothing to pin`);
+		}
+		const manifestHash = `sha256:${createHash("sha256")
+			.update(canonicalJson(declaration))
+			.digest("hex")}`;
 		await ipc(visuals, "POST", "/v1/containers", {
 			name: `${spec.family}-qa`,
 			baseUrl: `http://127.0.0.1:${spec.port}`,
 			location: "local",
-			taskFamily: spec.family
+			taskFamily: spec.family,
+			metadata: { gitRevision: revision, manifestHash, capabilities: { revision } }
 		});
 	}
 
