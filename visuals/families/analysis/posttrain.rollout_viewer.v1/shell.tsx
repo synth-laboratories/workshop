@@ -52,6 +52,10 @@ function RewardSparkline({ steps }: { steps: RolloutStep[] }) {
     <svg
       viewBox={`0 0 ${w} ${h}`}
       width="100%"
+      // Without a height bound a two-step trajectory scaled its sparkline to
+      // the full pane width and turned one reward into a wall-sized diagonal.
+      style={{ maxHeight: 72 }}
+      preserveAspectRatio="none"
       role="img"
       aria-label={`Cumulative reward sparkline ending at ${acc.toFixed(2)}`}
     >

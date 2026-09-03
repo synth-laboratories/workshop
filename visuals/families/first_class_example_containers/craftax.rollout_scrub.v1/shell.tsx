@@ -112,7 +112,8 @@ function FrameCanvas({ step }: { step: RolloutStep }) {
 function HudPanel({ step }: { step: RolloutStep }) {
   const hud = (step.meta?.hud ?? {}) as Hud;
   const vitals = hud.vitals ?? step.metrics ?? {};
-  const inventory = Object.entries(hud.inventory ?? {}).filter(([, n]) => Number(n) > 0);
+  const reportedInventory = hud.inventory;
+  const inventory = Object.entries(reportedInventory ?? {}).filter(([, n]) => Number(n) > 0);
   const unlocked = step.achievements ?? [];
 
   return (
@@ -130,8 +131,11 @@ function HudPanel({ step }: { step: RolloutStep }) {
           {hud.pos?.length === 2 ? ` · ${hud.pos[0]},${hud.pos[1]}` : ""}
         </div>
         {VITALS.map(([name, color]) => {
-          const value = Number(vitals[name] ?? 0);
-          const pct = Math.max(0, Math.min(value / 9, 1)) * 100;
+          // A vital the producer never reported is unknown, not empty. Coercing
+          // it to 0 drew a full row of empty bars that read as a dying agent.
+          const raw = vitals[name];
+          const value = typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+          const pct = value === null ? 0 : Math.max(0, Math.min(value / 9, 1)) * 100;
           return (
             <div
               key={name}
@@ -139,23 +143,26 @@ function HudPanel({ step }: { step: RolloutStep }) {
             >
               <span style={{ width: 48, fontSize: 11, color: "var(--sv-text-muted)" }}>{name}</span>
               <div
-                role="progressbar"
-                aria-label={`${name} ${value} of 9`}
-                aria-valuenow={value}
-                aria-valuemin={0}
-                aria-valuemax={9}
+                role={value === null ? undefined : "progressbar"}
+                aria-label={value === null ? `${name} not reported` : `${name} ${value} of 9`}
+                aria-valuenow={value ?? undefined}
+                aria-valuemin={value === null ? undefined : 0}
+                aria-valuemax={value === null ? undefined : 9}
                 style={{
                   flex: 1,
                   height: 6,
-                  background: "#e2e6ec",
+                  background: value === null ? "transparent" : "#e2e6ec",
+                  border: value === null ? "1px dashed var(--sv-border)" : undefined,
                   borderRadius: 3,
                   overflow: "hidden"
                 }}
               >
-                <div style={{ width: `${pct}%`, height: "100%", background: color }} />
+                {value === null ? null : (
+                  <div style={{ width: `${pct}%`, height: "100%", background: color }} />
+                )}
               </div>
               <span className="sv-mono" style={{ width: 16, textAlign: "right" }}>
-                {value}
+                {value === null ? "—" : value}
               </span>
             </div>
           );
@@ -193,7 +200,11 @@ function HudPanel({ step }: { step: RolloutStep }) {
               </span>
             ))
           ) : (
-            <span style={{ color: "var(--sv-text-faint)", fontSize: 11 }}>empty</span>
+            // "empty" is a claim about the agent's bag. An unreported
+            // inventory is a claim about the producer.
+            <span style={{ color: "var(--sv-text-faint)", fontSize: 11 }}>
+              {reportedInventory ? "empty" : "not reported"}
+            </span>
           )}
         </div>
       </div>
@@ -280,6 +291,16 @@ export function Shell(props: ShellProps) {
       title={props.title ?? `Rollout ${rollout?.id ?? ""}`.trim()}
       lede={props.lede ?? (rollout?.model ? `Model ${rollout.model}` : undefined)}
       testId="visual-craftax-rollout-scrub"
+      // The bound rollout is finite and already complete. `renderedFrameCount`
+      // counts the turns this surface can actually present, which is what the
+      // template's own contract asks for.
+      observation={{
+        transportState: "terminal",
+        rolloutCount: 1,
+        renderedFrameCount: steps.filter((entry) => typeof entry.meta?.ascii === "string").length,
+        semanticEventCount: steps.length,
+        terminal: true
+      }}
       footer="craftax.rollout_scrub.v1 · text projection required for a11y / CUA"
     >
       <div

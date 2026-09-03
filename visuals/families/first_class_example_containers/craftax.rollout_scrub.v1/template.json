@@ -27,7 +27,11 @@
       "minimumRolloutCount": 1,
       "minimumRenderedFrameCount": 1,
       "minimumSemanticEventCount": 1,
-      "requireTerminal": false
+      "requireTerminal": false,
+      "authoringAffordances": [
+        "temporalControls",
+        "realEvidence"
+      ]
     }
   },
   "inputs": [

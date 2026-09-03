@@ -26,21 +26,39 @@ function asSlice(raw: unknown): MatrixSlice | null {
   const candidate = raw as MatrixSlice;
   if (!Array.isArray(candidate.points) || candidate.points.length === 0) return null;
   const numeric = (value: unknown) => typeof value === "number" && Number.isFinite(value);
-  if (!candidate.points.every((point) => numeric(point?.achievements) && numeric(point?.cost_usd))) {
-    return null;
-  }
+  if (!candidate.points.every((point) => numeric(point?.achievements))) return null;
   return candidate;
 }
 
-function formatCostUsd(cost: number): string {
+function formatCostUsd(cost: number | null | undefined): string {
+  if (typeof cost !== "number" || !Number.isFinite(cost)) return "cost not reported";
   if (cost === 0) return "$0.00";
   if (cost < 0.01) return `$${cost.toFixed(5).replace(/0+$/, "")}`;
   return `$${cost.toFixed(2)}`;
 }
 
 function ParetoChart({ points }: { points: EvalMatrixPoint[] }) {
+  // A cost axis cannot place a point whose cost was never reported. Plotting
+  // it at zero would put an unmeasured model on the "free" edge of the
+  // frontier, which is the strongest claim this chart can make.
+  const priced = points.filter(
+    (point) => typeof point.cost_usd === "number" && Number.isFinite(point.cost_usd)
+  );
   const maxAch = Math.max(...points.map((p) => p.achievements), 1);
-  const maxCost = Math.max(...points.map((p) => p.cost_usd), 0.01);
+  const maxCost = Math.max(...priced.map((p) => p.cost_usd as number), 0.01);
+
+  if (priced.length === 0) {
+    return (
+      <p
+        role="note"
+        data-testid="pareto-no-cost"
+        style={{ margin: 0, padding: "var(--sv-sp-3)", border: "1px solid var(--sv-border)", borderRadius: 9, fontSize: 12, color: "var(--sv-text-muted)" }}
+      >
+        No point in this slice reported an inference cost, so the cost axis has nothing to place.
+        Achievement coverage below is measured; cost is unavailable, not zero.
+      </p>
+    );
+  }
 
   return (
     <div className="pareto-plot" role="img" aria-label="Pareto chart of achievements versus cost per rollout">
@@ -63,8 +81,8 @@ function ParetoChart({ points }: { points: EvalMatrixPoint[] }) {
           stroke="rgba(240,95,34,0.45)"
           strokeWidth="2"
         />
-        {points.map((m) => {
-          const x = 50 + (m.cost_usd / maxCost) * 230;
+        {priced.map((m) => {
+          const x = 50 + ((m.cost_usd as number) / maxCost) * 230;
           const y = 160 - (m.achievements / maxAch) * 130;
           return (
             <g key={`${m.model}-${m.effort ?? ""}`}>
@@ -205,6 +223,16 @@ export function Shell(props: ShellProps) {
       title={props.title ?? slice.title ?? "Craftax eval matrix"}
       lede={props.lede}
       testId="visual-craftax-eval-matrix"
+      // A bound slice is a finished measurement: nothing further is coming, so
+      // the surface is terminal the moment it renders. Without this the
+      // readiness harvest fell back to the host's transport wrapper and read
+      // the pane as `idle`.
+      observation={{
+        transportState: "terminal",
+        rolloutCount: points.reduce((total, point) => total + (point.n ?? 0), 0),
+        semanticEventCount: points.length,
+        terminal: true
+      }}
       footer="craftax.eval_matrix.v1 · usesynth.ai/evals/craftax"
     >
       <section className="sv-section">

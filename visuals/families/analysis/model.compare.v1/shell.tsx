@@ -1,5 +1,6 @@
 import { VisualChrome } from "../../../chrome/VisualChrome.tsx";
 import { UnresolvedInputNotice } from "../../../chrome/UnresolvedInputNotice.tsx";
+import { formatMissingNumber, formatMissingUsd } from "../../../runtime/liveStream.ts";
 import { resolveTemplateInput } from "../../../runtime/resolvedInput.ts";
 import type { VisualBinding } from "../../../runtime/types.ts";
 import compareFixture from "../../../fixtures/model_compare.json";
@@ -7,10 +8,15 @@ import compareFixture from "../../../fixtures/model_compare.json";
 type CompareRow = {
   model: string;
   effort?: string;
-  mean_achievements: number;
-  mean_reward: number;
-  cost_usd: number;
-  success_rate: number;
+  /**
+   * A producer that reported no achievements, no cost, or no success rate
+   * leaves the field null. Null renders as missing; it never becomes a zero,
+   * which would read as "free" or "never succeeded".
+   */
+  mean_achievements?: number | null;
+  mean_reward?: number | null;
+  cost_usd?: number | null;
+  success_rate?: number | null;
   sparkline?: number[];
 };
 
@@ -34,15 +40,15 @@ function asCompare(raw: unknown): ComparePayload | null {
   if (!Array.isArray(candidate.rows) || candidate.rows.length === 0) return null;
   // Every cell in this table is `toFixed`ed. A row missing its numbers is not
   // a row this template can render, and used to be replaced by an example one.
+  // A row must name a model and report at least one measurement. Everything
+  // else may be honestly absent.
   const numeric = (value: unknown) => typeof value === "number" && Number.isFinite(value);
   if (
     !candidate.rows.every(
       (row) =>
         typeof row?.model === "string"
-        && numeric(row.mean_achievements)
-        && numeric(row.mean_reward)
-        && numeric(row.cost_usd)
-        && numeric(row.success_rate)
+        && row.model.trim().length > 0
+        && [row.mean_achievements, row.mean_reward, row.cost_usd, row.success_rate].some(numeric)
     )
   ) {
     return null;
@@ -102,7 +108,8 @@ export function Shell(props: ShellProps) {
   }
 
   const data = resolved.value;
-  const best = [...data.rows].sort((a, b) => b.mean_achievements - a.mean_achievements)[0];
+  const ranked = data.rows.filter((row) => typeof row.mean_reward === "number");
+  const best = [...ranked].sort((a, b) => (b.mean_reward ?? 0) - (a.mean_reward ?? 0))[0];
 
   return (
     <VisualChrome
@@ -136,10 +143,14 @@ export function Shell(props: ShellProps) {
                     </strong>
                   </td>
                   <td className="sv-mono">{row.effort ?? "—"}</td>
-                  <td className="sv-mono">{row.mean_achievements.toFixed(1)}</td>
-                  <td className="sv-mono">{row.mean_reward.toFixed(2)}</td>
-                  <td className="sv-mono">${row.cost_usd.toFixed(2)}</td>
-                  <td className="sv-mono">{Math.round(row.success_rate * 100)}%</td>
+                  <td className="sv-mono">
+                    {typeof row.mean_achievements === "number" ? row.mean_achievements.toFixed(1) : "—"}
+                  </td>
+                  <td className="sv-mono">{formatMissingNumber(row.mean_reward)}</td>
+                  <td className="sv-mono">{formatMissingUsd(row.cost_usd)}</td>
+                  <td className="sv-mono">
+                    {typeof row.success_rate === "number" ? `${Math.round(row.success_rate * 100)}%` : "—"}
+                  </td>
                   <td>
                     {row.sparkline ? (
                       <Spark values={row.sparkline} label={row.model} />

@@ -251,7 +251,12 @@ export type EvalMatrixPoint = {
   model: string;
   effort?: string;
   achievements: number;
-  cost_usd: number;
+  /**
+   * Null when the producer reported no cost. A container-scored family with no
+   * provider spend has an unknown charge, not a zero one, and `$0.00` on a
+   * cost axis reads as "free".
+   */
+  cost_usd: number | null;
   n?: number;
   accent?: boolean;
   achievement_rates?: Record<string, number>;
