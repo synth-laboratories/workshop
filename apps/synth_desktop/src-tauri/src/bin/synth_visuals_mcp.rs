@@ -1609,7 +1609,7 @@ fn capture_review(args: &Value) -> Result<Value, String> {
     // impossible for contract-free templates such as the Trace inspector, with
     // no path that could ever succeed.
     let observation = if capture_mode == "host-webview-snapshot" {
-        let response = request("GET", &format!("/v1/review-observations/{id}"), None)?;
+        let response = wait_for_review_observation(id, revision)?;
         let observed = response
             .get("observation")
             .cloned()
@@ -1677,6 +1677,29 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         "instruction": "Inspect the attached PNG image before submitting visual_review. If any collision, truncation, crossing, weak hierarchy, or excessive density is visible, update and capture again.",
         "_mcpImage": {"data":base64::engine::general_purpose::STANDARD.encode(png),"mimeType":"image/png"}
     }))
+}
+
+/// Host capture opens the requested React visual before photographing it.
+/// Large retained runs can take a moment to hydrate and publish their matching
+/// observation, especially when the app is occluded. Treat that as one bounded
+/// capture transaction instead of forcing callers into a second blind retry.
+fn wait_for_review_observation(id: &str, revision: i64) -> Result<Value, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let response = request("GET", &format!("/v1/review-observations/{id}"), None)?;
+        let observed_revision = response
+            .pointer("/observation/renderedRevision")
+            .and_then(Value::as_i64);
+        let required = response
+            .get("required")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        if observed_revision == Some(revision) || !required || std::time::Instant::now() >= deadline
+        {
+            return Ok(response);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 fn capture_svg_review(
