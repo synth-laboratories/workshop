@@ -170,9 +170,18 @@ function BaselinePanel({ sft, isCispo }: { sft: SftState; isCispo?: boolean }) {
           </details>
         </>
       ) : aggregate ? (
+        /* `sftAggregateBaseline` only matches a `selection`-role record, so this
+           is the unchanged policy on the split the run uses to CHOOSE a
+           checkpoint. The heldout panel scores that same unchanged policy on the
+           locked heldout split, and the two disagree by ordinary split-to-split
+           variation — the 2026-09-02 Banking77 SFT run read 79.50% on selection
+           and 81.25% on heldout, 400 examples each. Naming the split on both
+           surfaces is what stops a reader treating that gap as a reporting error
+           and discarding the uplift claim that rests on the heldout arm. */
         <dl className="sv-kv">
+          <dt>Split</dt><dd>selection · not the locked heldout split</dd>
           <dt>Examples scored</dt><dd>{formatMissingNumber(aggregate.n, 0)}</dd>
-          <dt>{aggregate.metric}</dt><dd>{percent(aggregate.score, 1)}</dd>
+          <dt>Selection {aggregate.metric}</dt><dd>{percent(aggregate.score, 1)}</dd>
           <dt>Policy</dt><dd>unchanged base</dd>
           <dt>Checkpoint</dt>
           <dd>{aggregate.checkpointId ? <Identifier value={aggregate.checkpointId} max={28} /> : "—"}</dd>
@@ -436,11 +445,23 @@ function ComparisonPanel({
   aggregate: SftHeldoutSummary | null;
 }) {
   if (!comparison && aggregate) {
+    // Both arms here live on the locked heldout split, and the base arm is
+    // reconstructed as trained − uplift because services report the selected
+    // checkpoint's score and the paired delta but never the base score itself.
+    // It is therefore a different measurement from the baseline panel's number,
+    // which is the same unchanged policy on the selection split. Each is
+    // authoritative for its own split; only this pair can license an uplift
+    // claim, and leaving them unlabelled invites a reader to read the gap as a
+    // contradiction and distrust the claim.
     return (
-      <Panel title="Heldout comparison — base vs selected" testId="sft-comparison">
+      <Panel
+        title="Heldout comparison — base vs selected"
+        aside="locked heldout split"
+        testId="sft-comparison"
+      >
         <div className="sv-arms">
           <div className="sv-arm" data-arm="base">
-            <span className="sv-micro-label">unchanged base</span>
+            <span className="sv-micro-label">unchanged base · heldout</span>
             <strong>{formatMissingNumber(aggregate.baseScore)}</strong>
           </div>
           <div className="sv-arm" data-arm="trained">
@@ -457,6 +478,13 @@ function ComparisonPanel({
           <dt>Verdict</dt><dd>{aggregate.verdict ?? "not reported"}</dd>
           <dt>Uplift claim</dt><dd>{aggregate.claimReady ? "supported" : "not established"}</dd>
         </dl>
+        <p className="sv-note">
+          Both arms are scored on the locked heldout split, and the base arm is
+          derived as the selected checkpoint's score minus the reported paired
+          uplift rather than measured on its own. The baseline panel reports the
+          same unchanged policy on the selection split, so the two base numbers
+          differ; neither one corrects the other.
+        </p>
       </Panel>
     );
   }
@@ -1020,7 +1048,9 @@ export function SftWorkspace({
       value: aggregateBaseline
         ? percent(aggregateBaseline.score, 1)
         : formatMissingNumber(sftDistribution((sft.baseline?.seeds ?? []).map((seed) => seed.reward)).mean),
-      title: "Unchanged student on the frozen baseline seeds."
+      title: aggregateBaseline
+        ? "Unchanged student on the selection split, not on the locked heldout split."
+        : "Unchanged student on the frozen baseline seeds."
     },
     { tier: isCispo ? "detail" : "primary", label: "Step / epoch", value: `${formatMissingNumber(latest?.step, 0)} / ${formatMissingNumber(latest?.epoch, 0)}` },
     { tier: "detail", label: "Train loss", value: formatMissingNumber(latest?.trainLoss) },

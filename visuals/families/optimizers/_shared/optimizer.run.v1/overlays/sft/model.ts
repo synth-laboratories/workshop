@@ -39,6 +39,12 @@ export function sftDistinctEvaluations(sft: SftState): Array<Record<string, unkn
  * Public SFT services may report the unchanged student as one aggregate
  * selection evaluation instead of hundreds of `baseline_rollout` events.
  * Preserve that evidence as an aggregate; never manufacture per-example rows.
+ *
+ * The matched record is by construction a `selection`-role evaluation, so this
+ * score belongs to the selection split. It is not comparable with the base arm
+ * of `sftHeldoutSummary`, which is measured on the locked heldout split: the
+ * two are expected to differ, and rendering either in place of the other would
+ * misreport what a run's uplift was measured against.
  */
 export function sftAggregateBaseline(sft: SftState): SftAggregateBaseline | null {
   const evaluation = [...sft.evaluations].reverse().find((candidate) => {
@@ -228,7 +234,10 @@ export type SftHeldoutSummary = {
   checkpointId?: string;
 };
 
-/** Aggregate paired result emitted by classification trainers. */
+/**
+ * Aggregate paired result emitted by classification trainers, measured on the
+ * locked heldout split — a different split from `sftAggregateBaseline`.
+ */
 export function sftHeldoutSummary(sft: SftState): SftHeldoutSummary | null {
   const evaluation = [...sft.evaluations].reverse().find((candidate) => {
     const phase = String(candidate.phase ?? candidate.role ?? candidate.split ?? "");
@@ -243,6 +252,11 @@ export function sftHeldoutSummary(sft: SftState): SftHeldoutSummary | null {
   const ciHigh = Number(evaluation.ciHigh ?? evaluation.ci_high);
   return {
     paired,
+    // Reconstructed, because producers report the selected checkpoint's score
+    // and the paired uplift but not the base arm's own score. Recomputing it
+    // keeps the arm from disappearing from the comparison; it does not make it
+    // an independently reported measurement, and any surface showing it has to
+    // say which split it came from.
     baseScore: Number.isFinite(trainedScore) ? trainedScore - uplift : null,
     trainedScore: Number.isFinite(trainedScore) ? trainedScore : null,
     absoluteUplift: uplift,
