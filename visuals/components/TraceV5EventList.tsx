@@ -78,10 +78,10 @@ export function TraceV5EventList({
           const open = expanded.has(item.id);
           return (
             <article key={item.id} data-testid={`trace-v5-item-${item.id}`} data-annotation-kind="trace_item" data-annotation-id={item.id} style={{ display: "grid", gridTemplateColumns: "42px minmax(0, 1fr)", gap: 8 }}>
-              <aside style={{ paddingTop: 9, textAlign: "right", color: "var(--sv-text-faint)" }}><div className="sv-mono" style={{ fontSize: 9 }}>#{item.sequence}</div><time style={{ fontSize: 8 }}>{clock(item.occurredAt)}</time></aside>
+              <aside style={{ paddingTop: 9, textAlign: "right", color: "var(--sv-text-faint)" }}><div className="sv-mono" style={{ fontSize: 9 }}>#{item.sequence}</div><time style={{ fontSize: 9.5 }}>{clock(item.occurredAt)}</time></aside>
               <div style={{ border: `1px solid ${selectedItemId === item.id ? "var(--sv-accent)" : "var(--sv-border)"}`, borderRadius: 9, overflow: "hidden", background: "var(--sv-surface)" }}>
                 <header style={{ display: "flex", alignItems: "center", gap: 7, padding: "7px 9px", background: meta.tint, borderBottom: "1px solid var(--sv-border)" }}>
-                  <span className="sv-mono" aria-hidden style={{ fontWeight: 800 }}>{meta.glyph}</span><strong style={{ fontSize: 10.5 }}>{meta.label}</strong><span className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 8.5 }}>{item.kind}</span>{item.status ? <span style={{ marginLeft: "auto", fontSize: 9, fontWeight: 700 }}>{item.status}</span> : null}
+                  <span className="sv-mono" aria-hidden style={{ fontWeight: 800 }}>{meta.glyph}</span><strong style={{ fontSize: 10.5 }}>{meta.label}</strong><span className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 9.5 }}>{item.kind}</span>{item.status ? <span style={{ marginLeft: "auto", fontSize: 9, fontWeight: 700 }}>{item.status}</span> : null}
                 </header>
                 <div style={{ padding: 10 }}>
                   <strong style={{ display: "block", fontSize: 11.5 }}>{item.title}</strong>

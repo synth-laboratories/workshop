@@ -114,10 +114,10 @@ function CraftaxComparison({ summary }: { summary: CraftaxSummary }) {
         return <article key={rollout.rollout_id ?? rollout.lane} style={{ padding: 12, border: `1px solid ${isWinner ? "#8dcfaf" : "var(--sv-border)"}`, borderRadius: 10, background: isWinner ? "#f2fbf6" : "var(--sv-surface)" }}>
           <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
             <div><strong style={{ textTransform: "capitalize" }}>{rollout.reasoning_effort ?? rollout.lane ?? "policy"}</strong><div className="sv-mono" style={{ fontSize: 9, color: "var(--sv-text-faint)", marginTop: 2 }}>{rollout.model ?? "model"}</div></div>
-            <div style={{ textAlign: "right" }}><span style={{ fontSize: 22, fontWeight: 800 }}>{rollout.reward ?? "—"}</span><div style={{ fontSize: 8, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--sv-text-faint)" }}>reward</div></div>
+            <div style={{ textAlign: "right" }}><span style={{ fontSize: 22, fontWeight: 800 }}>{rollout.reward ?? "—"}</span><div style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--sv-text-faint)" }}>reward</div></div>
           </div>
           <dl style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8, margin: "12px 0 0" }}>
-            {[["tokens", tokens(usage.total_tokens)], ["cost", usd(usage.estimated_usd)], ["calls", String(usage.calls ?? rollout.model_calls?.length ?? "—")], ["steps", String(rollout.env_steps ?? rollout.actions?.length ?? "—")]].map(([label, value]) => <div key={label}><dt style={{ fontSize: 8, textTransform: "uppercase", color: "var(--sv-text-faint)" }}>{label}</dt><dd className="sv-mono" style={{ margin: "3px 0 0", fontSize: 10, fontWeight: 700 }}>{value}</dd></div>)}
+            {[["tokens", tokens(usage.total_tokens)], ["cost", usd(usage.estimated_usd)], ["calls", String(usage.calls ?? rollout.model_calls?.length ?? "—")], ["steps", String(rollout.env_steps ?? rollout.actions?.length ?? "—")]].map(([label, value]) => <div key={label}><dt style={{ fontSize: 9.5, textTransform: "uppercase", color: "var(--sv-text-faint)" }}>{label}</dt><dd className="sv-mono" style={{ margin: "3px 0 0", fontSize: 10, fontWeight: 700 }}>{value}</dd></div>)}
           </dl>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 10 }}>
             {(rollout.achievements ?? []).map((achievement, index) => <span key={`${achievement.step}-${achievement.name}-${index}`} title={`step ${achievement.step ?? "?"}`} style={{ padding: "3px 6px", borderRadius: 12, background: "#fff4d8", color: "#6b4d00", fontSize: 9 }}>★ {achievement.name || "achievement"}</span>)}
@@ -130,14 +130,14 @@ function CraftaxComparison({ summary }: { summary: CraftaxSummary }) {
       <div style={{ minWidth: 150 + steps.length * 46 }}>
         <div style={{ display: "grid", gridTemplateColumns: `150px repeat(${steps.length}, 46px)`, background: "var(--sv-surface-muted, #f7f7f8)", borderBottom: "1px solid var(--sv-border)" }}>
           <div style={{ padding: "7px 9px", fontSize: 9, fontWeight: 700 }}>Aligned action trace</div>
-          {steps.map((step) => <div key={step} className="sv-mono" style={{ padding: "7px 2px", textAlign: "center", fontSize: 8, color: "var(--sv-text-faint)" }}>{step}</div>)}
+          {steps.map((step) => <div key={step} className="sv-mono" style={{ padding: "7px 2px", textAlign: "center", fontSize: 9.5, color: "var(--sv-text-faint)" }}>{step}</div>)}
         </div>
         {rollouts.map((rollout) => {
           const actionByStep = new Map((rollout.actions ?? []).map((action) => [action.step, action]));
           const achievementSteps = new Set((rollout.achievements ?? []).map((achievement) => achievement.step));
           return <div key={rollout.rollout_id ?? rollout.lane} style={{ display: "grid", gridTemplateColumns: `150px repeat(${steps.length}, 46px)`, borderBottom: "1px solid var(--sv-border)" }}>
-            <div style={{ padding: "8px 9px", fontSize: 10 }}><strong style={{ textTransform: "capitalize" }}>{rollout.reasoning_effort ?? rollout.lane}</strong><div style={{ color: "var(--sv-text-faint)", fontSize: 8 }}>{rollout.reward ?? "—"} reward</div></div>
-            {steps.map((step) => { const action = actionByStep.get(step); return <div key={step} title={`Step ${step}: ${action?.action ?? "no action"}${action?.transition ? ` · ${action.transition}` : ""}${action?.reason ? ` · ${action.reason}` : ""}`} style={{ position: "relative", padding: "8px 2px", borderLeft: "1px solid var(--sv-border)", textAlign: "center", fontSize: 8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", background: achievementSteps.has(step) ? "#fff8df" : "transparent" }}>{compactAction(action?.action)}{achievementSteps.has(step) ? <span aria-label="achievement" style={{ position: "absolute", top: 1, right: 2, color: "#b67a00" }}>★</span> : null}</div>; })}
+            <div style={{ padding: "8px 9px", fontSize: 10 }}><strong style={{ textTransform: "capitalize" }}>{rollout.reasoning_effort ?? rollout.lane}</strong><div style={{ color: "var(--sv-text-faint)", fontSize: 9.5 }}>{rollout.reward ?? "—"} reward</div></div>
+            {steps.map((step) => { const action = actionByStep.get(step); return <div key={step} title={`Step ${step}: ${action?.action ?? "no action"}${action?.transition ? ` · ${action.transition}` : ""}${action?.reason ? ` · ${action.reason}` : ""}`} style={{ position: "relative", padding: "8px 2px", borderLeft: "1px solid var(--sv-border)", textAlign: "center", fontSize: 9.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", background: achievementSteps.has(step) ? "#fff8df" : "transparent" }}>{compactAction(action?.action)}{achievementSteps.has(step) ? <span aria-label="achievement" style={{ position: "absolute", top: 1, right: 2, color: "#b67a00" }}>★</span> : null}</div>; })}
           </div>;
         })}
       </div>
