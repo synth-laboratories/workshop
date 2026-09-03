@@ -13,7 +13,63 @@
 | GEPA search | `vis_9ca20b4c89ae4ebda81f87b79a4c2a77` | 3 | Bundled Banking77 preview | Overview, candidate exploration, Pareto/frontier |
 | CISPO training | `vis_6066c13d4b234eaab02eec4995514df2` | 3 | Bundled preview | Overview, identity, training/evaluation sections |
 
-The screenshots were captured from the running Workshop app during this QA pass and emitted in the parent Codex task. The three optimizer visuals are previews because this instance has no persisted SFT, GEPA, or CISPO run to bind. They must not be read as evidence of a completed production run or real uplift.
+The screenshots were captured from the running Workshop app during this QA pass. The three optimizer visuals are previews because this instance has no persisted SFT, GEPA, or CISPO run to bind. They must not be read as evidence of a completed production run or real uplift.
+
+## Screenshot catalogue
+
+### Suite in Workshop
+
+The `Banking77` registry filter keeps the four review surfaces together in the left rail while the selected visual remains open in the right-hand preview.
+
+![Banking77 visual suite open in Workshop](assets/banking77-visual-suite-2026-09-02/suite-open.jpeg)
+
+### Eval review
+
+The aggregate leads with the outcome and compact rollout lanes.
+
+![Banking77 eval overview](assets/banking77-visual-suite-2026-09-02/eval-overview.jpeg)
+
+Selecting a lane reveals its task summary and evidence navigation.
+
+![Banking77 eval rollout detail](assets/banking77-visual-suite-2026-09-02/eval-rollout-detail.jpeg)
+
+The rubric view demonstrates the misleading `Rubric · 2` badge: the panel contains verifier fallback information but no structured rubric rows.
+
+![Banking77 eval rubric and verifier detail](assets/banking77-visual-suite-2026-09-02/eval-rubric-detail.jpeg)
+
+### SFT training preview
+
+The overview combines run status, stage navigation, training curves, and checkpoints.
+
+![Banking77 SFT overview](assets/banking77-visual-suite-2026-09-02/sft-overview.jpeg)
+
+The lower state exposes selection and heldout evaluation summaries plus dataset provenance.
+
+![Banking77 SFT evaluations and provenance](assets/banking77-visual-suite-2026-09-02/sft-evaluations-provenance.jpeg)
+
+### GEPA search preview
+
+The overview places run metrics above setup, outcome, and candidate summary.
+
+![Banking77 GEPA overview](assets/banking77-visual-suite-2026-09-02/gepa-overview.jpeg)
+
+Candidate exploration expands stage navigation, the hill climb, frontier, filters, and the inspector.
+
+![Banking77 GEPA candidate exploration](assets/banking77-visual-suite-2026-09-02/gepa-candidate-exploration.jpeg)
+
+The frontier state makes both the zero-dimension empty-state problem and the oversized sticky header visible.
+
+![Banking77 GEPA frontier](assets/banking77-visual-suite-2026-09-02/gepa-frontier.jpeg)
+
+### CISPO training preview
+
+The overview correctly foregrounds CISPO-specific clip, group, variance, advantage, and warm-start identity.
+
+![Banking77 CISPO overview](assets/banking77-visual-suite-2026-09-02/cispo-overview.jpeg)
+
+The scrolled state shows the sticky metric block covering much of the evidence canvas and the generic SFT-shaped evaluation hierarchy beneath it.
+
+![Banking77 CISPO evaluation sections](assets/banking77-visual-suite-2026-09-02/cispo-evaluations.jpeg)
 
 ## What already works
 
@@ -96,4 +152,3 @@ This preserves the depth already present while making the first screen answer th
 3. Reorder GEPA around outcome/current activity and add its zero-dimension empty state.
 4. Consolidate SFT/CISPO absence warnings and specialize the CISPO body.
 5. Shorten library-card identity and provenance lines.
-
