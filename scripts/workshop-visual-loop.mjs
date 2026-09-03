@@ -16,7 +16,7 @@
 
 import { createHash } from "node:crypto";
 import { createConnection } from "node:net";
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -36,9 +36,9 @@ const TASKS = {
 		container: "banking77",
 		label: "Banking77",
 		recipes: {
-			eval: "eval.banking77.qa.v1",
+			eval: "eval.banking77.annotated.v1",
 			annotated_eval: "eval.banking77.live_annotated.v1",
-			gepa: "gepa.banking77.v1"
+			gepa: "gepa.banking77.qa.v1"
 		}
 	},
 	craftax: {
@@ -47,9 +47,9 @@ const TASKS = {
 		container: "craftax-gamebench-rust",
 		label: "Craftax",
 		recipes: {
-			eval: "eval.craftax.qa.v1",
+			eval: "eval.craftax.gold.annotated.v1",
 			annotated_eval: "eval.craftax.gold.live_annotated.v1",
-			gepa: "gepa.craftax.v1"
+			gepa: "gepa.craftax.smoke.v1"
 		}
 	},
 	healthbench: {
@@ -58,9 +58,8 @@ const TASKS = {
 		container: "healthbench2",
 		label: "HealthBench",
 		recipes: {
-			eval: "eval.healthbench.qa.v1",
-			annotated_eval: "eval.healthbench.live_annotated.v1",
-			gepa: "gepa.healthbench.v1"
+			eval: "eval.healthbench.annotated.v1",
+			annotated_eval: "eval.healthbench.live_annotated.v1"
 		}
 	},
 	runebench: { port: 8104, family: "runebench", container: "runebench", label: "RuneBench", recipes: {} }
@@ -379,12 +378,86 @@ function prompt(task, job) {
  * chart with one point - and the stills are the durable surfaces a reviewer
  * will actually open afterwards.
  */
-async function recordWhile(conn, dir, running, { frames, intervalMs }) {
+function optimizerRunId(visual) {
+	return visual?.bindings?.inputs?.find((input) => input.kind === "optimizer_run")?.source ?? null;
+}
+
+function runProgress(run) {
+	const progress = run?.summary?.progress ?? {};
+	const completed = Number(
+		progress.completed ??
+		progress.authoritative?.completed ??
+		run?.summary?.completedRollouts ??
+		0
+	);
+	const total = Number(
+		progress.total ??
+		progress.authoritative?.total ??
+		run?.summary?.bounds?.maximumRollouts ??
+		0
+	);
+	return { completed, total };
+}
+
+/**
+ * Capture observable lifecycle milestones, not elapsed-time guesses.
+ *
+ * The polling interval is intentionally short because a local gold run can
+ * finish in under a second. Every semantic filename is backed by the visual or
+ * optimizer state recorded beside it in `observations`; periodic frames remain
+ * available as a fallback, but they never receive semantic names.
+ */
+async function recordWhile(conn, dir, running, { frames, intervalMs, sessionId }) {
 	const records = [];
-	for (let index = 0; index < frames && running.active; index += 1) {
-		records.push(await capture(conn, dir, `frame-${String(index).padStart(4, "0")}`, { scope: "app" }));
-		if (index + 1 < frames && running.active) await sleep(intervalMs);
+	const observations = [];
+	const seenStates = new Set();
+	let index = 0;
+	let nextPeriodicAt = 0;
+	while (running.active) {
+		const now = Date.now();
+		const catalog = await ipc(conn, "GET", "/v1/visuals", undefined, 5_000).catch(() => ({}));
+		const candidates = (catalog.visuals ?? []).filter((visual) => visual.sessionId === sessionId);
+		const visual = candidates.find((item) => item.templateId === "live.annotated_rollouts.v1") ?? candidates[0];
+		const runId = optimizerRunId(visual);
+		const runPayload = runId
+			? await ipc(conn, "GET", `/v1/optimizers/runs/${runId}`, undefined, 5_000).catch(() => ({}))
+			: {};
+		const run = runPayload.run ?? null;
+		const progress = runProgress(run);
+		const observed = {
+			at: new Date().toISOString(),
+			visualId: visual?.id ?? null,
+			templateId: visual?.templateId ?? null,
+			visualRevision: visual?.currentRevision ?? null,
+			optimizerRunId: runId,
+			runStatus: run?.status ?? null,
+			progress
+		};
+		observations.push(observed);
+
+		const semantic = [];
+		if (visual && !seenStates.has("subscribed")) semantic.push("subscribed");
+		if (run && progress.completed > 0 && progress.completed < Math.max(progress.total, 2) && !seenStates.has("early-live")) {
+			semantic.push("early-live");
+		}
+		if (run && progress.total > 1 && progress.completed / progress.total >= 0.5 && progress.completed < progress.total && !seenStates.has("mid-run")) {
+			semantic.push("mid-run");
+		}
+		for (const state of semantic) {
+			const shot = await capture(conn, dir, `state-${state}`, { scope: "app" });
+			records.push({ ...shot, semanticState: state, observation: observed });
+			seenStates.add(state);
+		}
+
+		if (index < frames && now >= nextPeriodicAt) {
+			const shot = await capture(conn, dir, `frame-${String(index).padStart(4, "0")}`, { scope: "app" });
+			records.push({ ...shot, semanticState: null, observation: observed });
+			index += 1;
+			nextPeriodicAt = now + intervalMs;
+		}
+		await sleep(Math.min(250, Math.max(50, intervalMs)));
 	}
+	records.observations = observations;
 	return records;
 }
 
@@ -398,6 +471,27 @@ async function main() {
 	mkdirSync(dir, { recursive: true });
 	visuals.instance = args.instance;
 	visuals.runSlug = `${slug}-${Date.now().toString(36)}`;
+
+	// A recipe id is only real if the workspace declares it. An invented id
+	// costs a whole agent session to discover, and the failure looks like a
+	// product blocker rather than a typo in this table -- which is exactly what
+	// happened when three ids here were wrong.
+	if (args.run && !args.prompt) {
+		const recipe = TASKS[args.task].recipes?.[args.job];
+		if (!recipe) {
+			throw new Error(
+				`no ${args.job} recipe is declared for ${args.task}; author one in the workspace before running this job`
+			);
+		}
+		const declared = readdirSync(join(dataRoot(args.instance), "../workspace/workshop.recipes"))
+			.filter((entry) => entry.endsWith(".toml"))
+			.map((entry) => entry.replace(/\.toml$/, ""));
+		if (!declared.includes(recipe)) {
+			throw new Error(
+				`recipe \`${recipe}\` is not declared in the instance workspace. Declared: ${declared.join(", ")}`
+			);
+		}
+	}
 
 	const health = await driver(evalDriver, "GET", "/v1/health");
 	if (health.ok !== true) throw new Error("eval driver health check failed");
@@ -478,7 +572,7 @@ async function main() {
 		// at a time, and a run that only reports its terminal state has no
 		// evidence of how it got there.
 		const running = { active: true };
-		const recording = recordWhile(visuals, dir, running, args);
+		const recording = recordWhile(visuals, dir, running, { ...args, sessionId });
 		const deadline = Date.now() + args.timeoutMs;
 		try {
 			do {
@@ -490,7 +584,9 @@ async function main() {
 			} while (terminal?.terminal !== true);
 		} finally {
 			running.active = false;
-			captures.push(...(await recording));
+			const recorded = await recording;
+			captures.push(...recorded);
+			writeFileSync(join(dir, "lifecycle-observations.json"), `${JSON.stringify(recorded.observations ?? [], null, 2)}\n`);
 		}
 		writeFileSync(join(dir, "terminal.json"), `${JSON.stringify(terminal, null, 2)}\n`);
 		captures.push(await capture(visuals, dir, "state-terminal", { scope: "app" }));

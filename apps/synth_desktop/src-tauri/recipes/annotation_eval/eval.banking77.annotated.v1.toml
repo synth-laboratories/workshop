@@ -4,6 +4,9 @@ container = "banking77"
 provider = "none"
 model = "dataset_gold"
 locality = "container"
+family = "banking77"
+harness = "dataset_gold"
+policy_config = "dataset_gold"
 train_seeds = [0]
 
 [bounds]
