@@ -10,7 +10,8 @@ import {
   composeEventStreamSlot,
   composePlacementNeedsOptimizerRun,
   composePlacementNeedsStream,
-  parseComposeSpec
+  parseComposeSpec,
+  type ComposePlacement
 } from "../../../runtime/composeSpec.ts";
 import { optimizerEventsToLiveEval } from "../../../runtime/optimizerCompose.ts";
 import type { LiveTemplateProps, TransportState } from "../../../runtime/replayClient.ts";
@@ -178,7 +179,7 @@ export function Shell(props: ShellProps) {
   const optimizerState = optimizerTransportState(optimizerBound, optimizerEvents.length);
   const live = (needsStream && state === "live") || (needsOptimizerRun && optimizerState === "live");
 
-  function sourceFor(placement: { component: string; input?: string; slot?: string }): {
+  function sourceFor(placement: ComposePlacement): {
     events: LiveEvalEvent[];
     state: TransportState;
     error: string | null;

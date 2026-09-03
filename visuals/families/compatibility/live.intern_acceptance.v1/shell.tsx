@@ -104,7 +104,7 @@ export function Shell(props: ShellProps) {
                     {decision}
                   </div>
                   <div className="sv-mono" style={{ color: "var(--sv-text-faint)" }}>
-                    {e.ts.slice(11, 19)}
+                    {e.ts ? e.ts.slice(11, 19) : "—"}
                   </div>
                 </div>
                 <div>

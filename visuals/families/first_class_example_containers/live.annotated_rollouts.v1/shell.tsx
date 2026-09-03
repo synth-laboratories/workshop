@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type DetailsHTMLAttributes } from "react";
 import { VisualChrome } from "../../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber } from "../../../runtime/liveStream.ts";
@@ -203,6 +203,16 @@ function rubricTabLabel(lane: Lane): string {
   return `Rubric · ${grades.filter((row) => row.criteria_met === true).length}/${grades.length}`;
 }
 
+/**
+ * `<details defaultOpen>` is not a DOM attribute: React drops the unknown prop,
+ * so the first rubric criterion never actually opened. Map it onto the real
+ * `open` attribute, and leave it `undefined` when closed so the element stays
+ * uncontrolled and a reader's own toggling survives the next render.
+ */
+function Details({ defaultOpen, ...rest }: DetailsHTMLAttributes<HTMLDetailsElement> & { defaultOpen?: boolean }) {
+  return <details {...rest} open={defaultOpen || undefined} />;
+}
+
 function RubricEvidence({ lane }: { lane: Lane }) {
   const grades = rubricGrades(lane);
   return <div style={{ display: "grid", gap: 8 }}>
@@ -211,7 +221,7 @@ function RubricEvidence({ lane }: { lane: Lane }) {
       const criterion = String(grade.rubric_text ?? grade.criterion ?? grade.rubric_id ?? `Rubric ${index + 1}`);
       const explanation = grade.explanation ?? grade.rationale ?? grade.reason ?? grade.grader_feedback;
       const points = typeof grade.points === "number" ? grade.points : typeof grade.score === "number" ? grade.score : null;
-      return <li key={`${String(grade.rubric_id ?? "rubric")}-${index}`}><details defaultOpen={index === 0} style={{ border: "1px solid var(--sv-border)", borderLeft: `3px solid ${grade.criteria_met ? "#39a46b" : "#d84b3f"}`, borderRadius: 7, background: "var(--sv-surface)" }}><summary style={{ display: "grid", gridTemplateColumns: "52px minmax(0, 1fr) auto", gap: 8, alignItems: "center", padding: "8px 10px", cursor: "pointer", fontSize: 10 }}><strong style={{ color: grade.criteria_met ? "#238a57" : "#c2553f" }}>{grade.criteria_met ? "MET" : "UNMET"}</strong><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{criterion}</span><span className="sv-mono">{points == null ? "—" : `${points} pts`}</span></summary><div style={{ padding: "0 10px 10px 70px" }}>{explanation != null ? <p style={{ margin: 0, color: "var(--sv-text-muted)", fontSize: 10 }}>{String(explanation)}</p> : <p style={{ margin: 0, color: "var(--sv-text-faint)", fontSize: 10 }}>No grader explanation was emitted.</p>}<div className="sv-mono" style={{ marginTop: 6, color: "var(--sv-text-faint)", fontSize: 9 }}>{grade.logical_time != null ? `t=${String(grade.logical_time)} · ` : ""}{grade.rubric_id != null ? `rubric ${String(grade.rubric_id)}` : `rubric ${index + 1}`}</div></div></details></li>;
+      return <li key={`${String(grade.rubric_id ?? "rubric")}-${index}`}><Details defaultOpen={index === 0} style={{ border: "1px solid var(--sv-border)", borderLeft: `3px solid ${grade.criteria_met ? "#39a46b" : "#d84b3f"}`, borderRadius: 7, background: "var(--sv-surface)" }}><summary style={{ display: "grid", gridTemplateColumns: "52px minmax(0, 1fr) auto", gap: 8, alignItems: "center", padding: "8px 10px", cursor: "pointer", fontSize: 10 }}><strong style={{ color: grade.criteria_met ? "#238a57" : "#c2553f" }}>{grade.criteria_met ? "MET" : "UNMET"}</strong><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{criterion}</span><span className="sv-mono">{points == null ? "—" : `${points} pts`}</span></summary><div style={{ padding: "0 10px 10px 70px" }}>{explanation != null ? <p style={{ margin: 0, color: "var(--sv-text-muted)", fontSize: 10 }}>{String(explanation)}</p> : <p style={{ margin: 0, color: "var(--sv-text-faint)", fontSize: 10 }}>No grader explanation was emitted.</p>}<div className="sv-mono" style={{ marginTop: 6, color: "var(--sv-text-faint)", fontSize: 9 }}>{grade.logical_time != null ? `t=${String(grade.logical_time)} · ` : ""}{grade.rubric_id != null ? `rubric ${String(grade.rubric_id)}` : `rubric ${index + 1}`}</div></div></Details></li>;
     })}</ol> : <p style={{ margin: 0, color: "var(--sv-text-faint)", fontSize: 10 }}>This rollout did not emit structured rubric grades. Verifier events and reward authority are still shown below when available.</p>}
   </div>;
 }

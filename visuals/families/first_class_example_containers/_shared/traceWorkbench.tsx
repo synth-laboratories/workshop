@@ -242,9 +242,12 @@ function RunAggregateHeader({
   const rewardMax = terminalFacts.rewardMax ?? (rewards.length ? rewards[rewards.length - 1] : null);
   const bucketCount = Math.min(5, Math.max(1, rewards.length));
   const span = rewardMin !== null && rewardMax !== null ? rewardMax - rewardMin : 0;
-  const buckets = rewards.length ? Array.from({ length: bucketCount }, (_, index) => {
-    const low = rewardMin === null ? 0 : rewardMin + (span * index) / bucketCount;
-    const high = rewardMax === null ? 0 : index === bucketCount - 1 ? rewardMax : rewardMin + (span * (index + 1)) / bucketCount;
+  // A histogram needs both ends of the domain. Guard on the pair rather than on
+  // each end separately: `rewardMin + …` with a null min silently reads as 0 and
+  // would draw an imputed domain over a range that was never measured.
+  const buckets = rewards.length && rewardMin !== null && rewardMax !== null ? Array.from({ length: bucketCount }, (_, index) => {
+    const low = rewardMin + (span * index) / bucketCount;
+    const high = index === bucketCount - 1 ? rewardMax : rewardMin + (span * (index + 1)) / bucketCount;
     const inclusiveHigh = index === bucketCount - 1;
     const count = rewards.filter((value) => value >= low && (inclusiveHigh ? value <= high : value < high)).length;
     return { low, high, inclusiveHigh, count };
@@ -310,7 +313,9 @@ function RunAggregateHeader({
     label: string,
     usage: ReportedFactSummary<number>,
     limit: number | null,
-    formatter = tokens,
+    // Only ever called on a value already narrowed to a number; absence is
+    // rendered by usageCard itself, not delegated to the formatter.
+    formatter: (value: number) => string = tokens,
     options?: { valueSuffix?: string; coverage?: string; source?: string }
   ) => {
     const ratio = usage.value !== null && limit !== null && limit > 0 ? usage.value / limit : null;
@@ -1041,7 +1046,7 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
 		if (!sealed) return row;
 		const sealedView = craftaxTraceFromSealedTrace(sealed.projection, {
 			traceId: row.rolloutId ?? row.trialId,
-			scenario: row.view.task.scenario,
+			scenario: row.view.task.id,
 			seed: row.seed,
 			status: row.state,
 			model: row.view.run.model,

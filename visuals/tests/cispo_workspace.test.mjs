@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { algorithmLabel } from "../families/optimizers/_shared/optimizer.run.v1/components/algorithmLabel.ts";
 import { projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
+import { projectRunViewV2 } from "../families/optimizers/_shared/optimizer.run.v1/components/projectRunViewV2.ts";
 import { projectedScalar } from "../families/optimizers/cispo/optimizer.cispo.live.v1/collectionHydration.ts";
 
 const RUN = {
@@ -203,5 +204,94 @@ test("one zero-advantage group does not become a run-wide no-learning-signal cla
 test("CISPO collection telemetry cannot overwrite authoritative group size", () => {
   assert.equal(projectedScalar(2, 1), 2);
   assert.equal(projectedScalar(null, 1), 1);
-  assert.equal(projectedScalar(undefined, "1"), undefined);
+  // Absence is `null`, the sentinel `CispoState` uses for an unreported scalar.
+  assert.equal(projectedScalar(undefined, "1"), null);
+});
+
+test("CISPO V2 first paint keeps group counts and importance diagnostics", () => {
+  const projected = projectRunViewV2(RUN, {
+    algorithm: "cispo",
+    header: {
+      runId: RUN.id,
+      algorithm: "cispo",
+      lifecycle: "terminal",
+      condition: "completed",
+      placement: "hosted",
+      specId: "cispo.banking77.tinker.v1",
+      specDigest: "sha256:spec",
+      executionBindings: [],
+      inputRefs: [],
+      outputRefs: [],
+      visualRefs: [],
+      usage: { steps: 50 },
+      evidence: { completeness: "complete", refs: [] },
+      terminal: { kind: "completed", finalSequence: 100, sealedAt: "2026-09-03T00:00:00Z" },
+      projectionSchemaVersion: "cispo.projection.v5",
+      asOfSequence: 100,
+      projectionRevision: 100
+    },
+    projection: {
+      workItems: [
+        { workItemId: "1:0", kind: "training_step", lifecycle: "terminal", terminal: "completed" },
+        { workItemId: "1:1", kind: "training_step", lifecycle: "terminal", terminal: "completed" }
+      ],
+      rolloutGroupCount: 2,
+      groupSize: 64,
+      rewardVariance: 0.05,
+      learningSignalGroups: 1,
+      zeroAdvantageGroups: 1,
+      clippedTokenFraction: 0.011,
+      importanceRatioMean: 77.09,
+      klProxy: 3.72,
+      optimizerSteps: 50,
+      noLearningSignal: false,
+      checkpoints: []
+    }
+  });
+
+  assert.equal(projected.cispo.rolloutGroups.length, 2);
+  assert.equal(projected.cispo.learningSignalGroups, 1);
+  assert.equal(projected.cispo.zeroAdvantageGroups, 1);
+  assert.equal(projected.cispo.clippedTokenFraction, 0.011);
+  assert.equal(projected.cispo.importanceRatioMean, 77.09);
+  assert.equal(projected.cispo.klProxy, 3.72);
+});
+
+test("CISPO bounded V2 first paint reconstructs compact rollout group count", () => {
+  const projected = projectRunViewV2(RUN, {
+    algorithm: "cispo",
+    header: {
+      runId: RUN.id,
+      algorithm: "cispo",
+      lifecycle: "terminal",
+      condition: "completed",
+      placement: "hosted",
+      specId: "cispo.banking77.tinker.v1",
+      specDigest: "sha256:spec",
+      executionBindings: [],
+      inputRefs: [],
+      outputRefs: [],
+      visualRefs: [],
+      usage: { steps: 50 },
+      evidence: { completeness: "complete", refs: [] },
+      terminal: { kind: "completed", finalSequence: 100, sealedAt: "2026-09-03T00:00:00Z" },
+      projectionSchemaVersion: "cispo.projection.v5",
+      asOfSequence: 100,
+      projectionRevision: 100
+    },
+    projection: {
+      workItems: [],
+      rolloutGroupCount: 150,
+      groupSize: 64,
+      learningSignalGroups: 126,
+      zeroAdvantageGroups: 24,
+      optimizerSteps: 50,
+      noLearningSignal: false,
+      checkpoints: []
+    }
+  });
+
+  assert.equal(projected.cispo.rolloutGroups.length, 150);
+  assert.equal(projected.cispo.rolloutGroups[0].id, "group-1");
+  assert.equal(projected.cispo.rolloutGroups[149].id, "group-150");
 });

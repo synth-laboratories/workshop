@@ -145,11 +145,13 @@ function trial(row: RunCollectionRowLike): EvalTrial | null {
 function EvalWorkspaceFromCollections({
   projected,
   run,
+  analysisCampaigns,
   collections,
   debug
 }: {
   projected: ProjectedState;
   run: OptimizerRun;
+  analysisCampaigns?: AnalysisCampaign[];
   collections?: RunCollectionsClient;
   debug: ReactNode;
 }) {
@@ -180,7 +182,7 @@ function EvalWorkspaceFromCollections({
     };
     return { ...projected, eval: next };
   }, [candidatePage.page, evaluationPage.page, projected]);
-  return <EvalWorkspace projected={hydrated} run={run} debug={debug} />;
+  return <EvalWorkspace projected={hydrated} run={run} analysisCampaigns={analysisCampaigns} debug={debug} />;
 }
 
 export function Shell(props: ShellProps) {

@@ -63,7 +63,10 @@ export function projectAgentTurns(events: LiveEvalEvent[]): AgentTurnProjection 
       : terminalSource && terminalSequence !== null && terminalSequence >= sequence(raw[0], open.index)
         ? parentTerminalPolicyCallClosure(terminalSource, terminalSequence)
         : null;
-    const nextPolicyOpenedIndex = events.findIndex((event, index) => index > open.index && event.kind === "span.policy.opened");
+    // `open` is reassigned to undefined at the end of this flush, so the guard
+    // above does not narrow it inside a callback. Read the index once.
+    const openIndex = open.index;
+    const nextPolicyOpenedIndex = events.findIndex((event, index) => index > openIndex && event.kind === "span.policy.opened");
     const causalWindow = events.slice(open.index + 1, nextPolicyOpenedIndex < 0 ? events.length : nextPolicyOpenedIndex);
     const producedSteps = causalWindow
       .filter((event) => event.kind === "frame" || event.kind === "span.step.closed")
