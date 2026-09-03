@@ -67,7 +67,7 @@ export type LaneEvent = {
 
 export type LlmCall = {
   callId: string;
-  role: "policy" | "annotator";
+  role: "policy" | "verifier" | "annotator";
   model?: string;
   provider?: string;
   status: "running" | "completed" | "failed";
@@ -468,6 +468,7 @@ function identityValues(payload: Record<string, unknown>): string[] {
 export function llmCalls(lane: Lane): LlmCall[] {
   const calls: LlmCall[] = [];
   let policy: LlmCall | undefined;
+  let verifier: LlmCall | undefined;
   const annotators = new Map<string, LlmCall>();
   for (const row of lane.trace) {
     if (row.stream === "rollout" && (row.kind === "span.policy.opened" || (row.kind === "span.policy.plan" && !policy))) {
@@ -493,6 +494,31 @@ export function llmCalls(lane: Lane): LlmCall[] {
         policy.status = str(row.payload.status) === "failed" ? "failed" : "completed";
         policy.endedAt = row.logicalTime;
         policy = undefined;
+      }
+    }
+    if (row.stream === "rollout" && row.kind === "span.evaluator.opened") {
+      verifier = {
+        callId: identityValues(row.payload)[0] ?? `verifier:${row.sequence ?? calls.length + 1}`,
+        role: "verifier",
+        model: str(row.payload.model) ?? str(row.payload.wire_model),
+        provider: str(row.payload.provider),
+        status: "running",
+        startedAt: row.logicalTime,
+        sourceSequences: [],
+        events: [],
+        findings: [],
+      };
+      calls.push(verifier);
+    }
+    if (verifier && row.stream === "rollout") {
+      verifier.events.push(row);
+      if (row.sequence != null && !verifier.sourceSequences.includes(row.sequence)) verifier.sourceSequences.push(row.sequence);
+      verifier.model ??= str(row.payload.model) ?? str(row.payload.wire_model);
+      verifier.provider ??= str(row.payload.provider);
+      if (row.kind === "span.evaluator.closed") {
+        verifier.status = str(row.payload.status) === "failed" ? "failed" : "completed";
+        verifier.endedAt = row.logicalTime;
+        verifier = undefined;
       }
     }
     if (row.kind === "annotation.model.requested") {
