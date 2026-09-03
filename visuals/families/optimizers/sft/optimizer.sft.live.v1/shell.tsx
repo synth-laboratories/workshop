@@ -103,7 +103,18 @@ function SftWorkspaceFromCollections({
       }
     };
   }, [metricPage.page, projected]);
-  return <SftWorkspace projected={hydrated} run={run} debug={debug} />;
+  return (
+    <SftWorkspace
+      projected={hydrated}
+      run={run}
+      debug={debug}
+      metricSeries={{
+        status: metricPage.status,
+        total: metricPage.page?.total,
+        error: metricPage.error
+      }}
+    />
+  );
 }
 
 export function Shell(props: ShellProps) {

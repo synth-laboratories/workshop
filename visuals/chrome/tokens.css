@@ -1175,3 +1175,18 @@
 .sv-table td[data-direction="down"] { color: var(--sv-bad-fg); }
 .sv-table tr[data-winner="true"] th { font-weight: 700; }
 .sv-table tr[data-eliminated="true"] { color: var(--sv-text-faint); }
+
+/* The reason a run ended badly. Reads as evidence, not as a stack trace: a
+   failed run whose surface omits why it failed sends the reader to the logs. */
+.sv-failure-detail {
+  margin: 0 0 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--sv-bad-edge);
+  border-left: 3px solid var(--sv-bad-fg);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-bad-bg);
+  color: var(--sv-text);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}

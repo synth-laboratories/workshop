@@ -93,6 +93,9 @@ function CispoWorkspaceFromCollections({
     const cispo = projected.cispo
       ? {
           ...projected.cispo,
+          rolloutGroups: projected.cispo.rolloutGroups ?? [],
+          zeroAdvantageGroups: projected.cispo.zeroAdvantageGroups ?? 0,
+          learningSignalGroups: projected.cispo.learningSignalGroups ?? 0,
           groupSize: projectedScalar(
             projected.cispo.groupSize,
             latest.group_size ?? latest.groupSize ?? latest.group_count

@@ -93,9 +93,10 @@ export function sftStages(sft: SftState, status: string, promotedCheckpointId?: 
   );
   const selected = promotedCheckpointId != null ||
     sft.checkpoints.some((ckpt) => ckpt.selected === true || ckpt.promoted === true);
-  const upliftClaimed = sft.checkpoints.some((ckpt) => ckpt.promoted === true);
   const comparison = sftComparison(sft);
   const heldoutSummary = sftHeldoutSummary(sft);
+  const upliftClaimed = sft.checkpoints.some((ckpt) => ckpt.promoted === true)
+    || heldoutSummary?.claimReady === true;
   const settle = (started: boolean, done: boolean): WorkspaceStage["status"] => {
     if (done) return "completed";
     if (started) return terminal ? (failed ? "failed" : "completed") : "active";
@@ -464,7 +465,14 @@ export function sftMissingPrerequisites(sft: SftState): SftPrerequisite[] {
   const missing: SftPrerequisite[] = [];
   const funnel = sftCurationFunnel(sft);
   const hasBaseline = (sft.baseline?.seeds.length ?? 0) > 0 || sftAggregateBaseline(sft) != null;
-  const hasCollection = funnel.steps.some((step) => step.count != null) || funnel.accepted.length > 0;
+  // Direct supervised recipes may begin from an already versioned corpus.
+  // In that case teacher collection is not missing evidence: the dataset
+  // digest is the provenance boundary and collection/curation are genuinely
+  // not applicable to this run.
+  const hasVersionedDataset = typeof sft.dataset.digest === "string" && sft.dataset.digest.length > 0;
+  const hasCollection = hasVersionedDataset
+    || funnel.steps.some((step) => step.count != null)
+    || funnel.accepted.length > 0;
   const hasTraining = sft.points.length > 0;
   const hasEvaluations = sftDistinctEvaluations(sft).length > 0;
   const hasHeldout = sftComparison(sft) != null || sftHeldoutSummary(sft) != null;

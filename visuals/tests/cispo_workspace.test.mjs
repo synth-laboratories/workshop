@@ -123,7 +123,7 @@ test("CISPO derives group size from streamed rewards and retains selection evide
       ...base,
       sequenceNumber: 1,
       type: "cispo.rollout_group.completed",
-      delta: { rewards: [0, 0], reward_variance: 0 }
+      delta: { group_id: "1:0", iteration: 1, label: "cash_withdrawal", rewards: [0, 0], reward_mean: 0, reward_variance: 0 }
     },
     {
       ...base,
@@ -154,11 +154,41 @@ test("CISPO derives group size from streamed rewards and retains selection evide
     }
   ]);
   assert.equal(projected.cispo.groupSize, 2);
+  assert.equal(projected.cispo.rolloutGroups.length, 1);
+  assert.deepEqual(projected.cispo.rolloutGroups[0], {
+    id: "1:0",
+    iteration: 1,
+    label: "cash_withdrawal",
+    rewardMean: 0,
+    rewardVariance: 0,
+    size: 2,
+    sequence: 1
+  });
   assert.equal(projected.sft.checkpoints[0].selected, true);
   assert.equal(projected.sft.checkpoints[0].promoted, false);
   assert.equal(projected.sft.evaluations.length, 1);
   assert.equal(projected.sft.evaluations[0].role, "checkpoint");
   assert.equal(projected.sft.evaluations[0].calibration_accuracy, 0);
+});
+
+test("one zero-advantage group does not become a run-wide no-learning-signal claim", () => {
+  const projected = projectAtCursor(RUN, [
+    {
+      ...base,
+      sequenceNumber: 1,
+      type: "cispo.zero_advantage.detected",
+      delta: { group_id: "1:0" }
+    },
+    {
+      ...base,
+      sequenceNumber: 2,
+      type: "cispo.rollout_group.completed",
+      delta: { group_id: "1:1", iteration: 1, rewards: [0, 1], reward_mean: 0.5, reward_variance: 0.25 }
+    }
+  ]);
+  assert.equal(projected.cispo.noLearningSignal, false);
+  assert.equal(projected.cispo.zeroAdvantageGroups, 1);
+  assert.equal(projected.cispo.learningSignalGroups, 1);
 });
 
 test("CISPO collection telemetry cannot overwrite authoritative group size", () => {

@@ -515,7 +515,7 @@ export type ProjectedState = {
   dag?: DagState;
 };
 
-function optimizerFailureDetail(error: unknown): string | undefined {
+export function optimizerFailureDetail(error: unknown): string | undefined {
   if (!error) return undefined;
   const value = typeof error === "object" && !Array.isArray(error)
     ? error as Record<string, unknown>
@@ -573,6 +573,17 @@ export type CispoState = {
   optimizerSteps: number;
   warmStartArtifactId: string | null;
   checkpointIds: string[];
+  rolloutGroups: Array<{
+    id: string;
+    iteration: number | null;
+    label: string | null;
+    rewardMean: number | null;
+    rewardVariance: number | null;
+    size: number;
+    sequence: number;
+  }>;
+  zeroAdvantageGroups: number;
+  learningSignalGroups: number;
   noLearningSignal: boolean;
 };
 
@@ -936,6 +947,9 @@ export function projectAtCursor(
   let cispoAdvantageMean: number | null = null;
   let cispoAdvantageStd: number | null = null;
   let cispoOptimizerSteps = 0;
+  const cispoRolloutGroups: CispoState["rolloutGroups"] = [];
+  let cispoZeroAdvantageGroups = 0;
+  let cispoLearningSignalGroups = 0;
   let cispoWarmStartArtifactId: string | null =
     typeof run.summary?.warmStartArtifactId === "string" ? run.summary.warmStartArtifactId
       : typeof run.summary?.trainingArtifactId === "string" ? run.summary.trainingArtifactId
@@ -2500,6 +2514,9 @@ export function projectAtCursor(
     if (event.type === "cispo.no_learning_signal") {
       cispoNoLearningSignal = true;
     }
+    if (event.type === "cispo.zero_advantage.detected") {
+      cispoZeroAdvantageGroups += 1;
+    }
     if (event.type === "cispo.rollout_group.completed") {
       const rewards = Array.isArray(event.delta?.rewards) ? event.delta.rewards : [];
       const advantages = Array.isArray(event.delta?.advantages) ? event.delta.advantages : [];
@@ -2509,6 +2526,16 @@ export function projectAtCursor(
       const advantageMean = missingNumber(event.delta?.meanAdvantage ?? event.delta?.advantage_mean);
       if (rewardVariance != null) cispoRewardVariance = rewardVariance;
       if (advantageMean != null) cispoAdvantageMean = advantageMean;
+      if (rewardVariance != null && rewardVariance > 0) cispoLearningSignalGroups += 1;
+      cispoRolloutGroups.push({
+        id: String(event.delta?.group_id ?? event.delta?.groupId ?? `group-${event.sequenceNumber}`),
+        iteration: missingNumber(event.delta?.iteration),
+        label: typeof event.delta?.label === "string" ? event.delta.label : null,
+        rewardMean: missingNumber(event.delta?.reward_mean ?? event.delta?.rewardMean),
+        rewardVariance,
+        size: observedGroupSize,
+        sequence: event.sequenceNumber
+      });
     }
     if (event.type === "training.warm_start" || event.type === "cispo.warm_start") {
       const id = event.delta?.training_artifact_id ?? event.delta?.trainingArtifactId ?? event.item?.id;
@@ -3054,6 +3081,9 @@ export function projectAtCursor(
         optimizerSteps: cispoOptimizerSteps > 0 ? cispoOptimizerSteps : points.length,
         warmStartArtifactId: warmStart,
         checkpointIds: checkpoints.map((ckpt) => String(ckpt.id ?? "")).filter(Boolean),
+        rolloutGroups: cispoRolloutGroups,
+        zeroAdvantageGroups: cispoZeroAdvantageGroups,
+        learningSignalGroups: cispoLearningSignalGroups,
         noLearningSignal: cispoNoLearningSignal
       };
     }

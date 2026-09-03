@@ -119,13 +119,44 @@ export function useCollectionPage(
       return;
     }
     if (client.subscribePage) {
-      return client.subscribePage(collection, stableQuery, (next) => {
+      let cancelled = false;
+      let directReadStarted = false;
+      const directRead = () => {
+        if (directReadStarted) return;
+        directReadStarted = true;
+        void client.page(collection, stableQuery).then(
+          (page) => {
+            if (!cancelled) setState({ status: "ready", page });
+          },
+          (reason) => {
+            if (!cancelled) {
+              setState((current) => ({
+                status: "error",
+                page: current.page,
+                error: reason instanceof Error ? reason.message : String(reason)
+              }));
+            }
+          }
+        );
+      };
+      const unsubscribe = client.subscribePage(collection, stableQuery, (next) => {
         setState({
           status: next.status === "unavailable" ? "error" : next.status,
           page: next.page,
           error: next.error
         });
+        // The shared store is preferred because it coalesces identical reads.
+        // A host can nevertheless expose the direct collection bridge before
+        // its shared store transport has initialized. Do not silently fall
+        // back to the one-point summary in that transient state.
+        if (!next.page && (next.status === "unavailable" || next.status === "error")) {
+          directRead();
+        }
       });
+      return () => {
+        cancelled = true;
+        unsubscribe();
+      };
     }
     let cancelled = false;
     setState((current) => ({ ...current, status: "loading" }));

@@ -17,6 +17,7 @@ import { useMemo } from "react";
 import type { ReactNode } from "react";
 import { Identifier } from "../../../../../../chrome/Identifier.tsx";
 import { formatMissingNumber, formatMissingUsd } from "../../../../../../runtime/liveStream.ts";
+import { optimizerFailureDetail } from "../../components/projectEvents.ts";
 import type { OptimizerRun, ProjectedState } from "../../components/projectEvents.ts";
 import {
   NotEnoughData,
@@ -46,12 +47,13 @@ const TERMINAL_STATUSES = SFT_TERMINAL_STATUSES;
 
 function statusChip(
   status: string,
-  verdict?: string
+  verdict?: string,
+  claimReady = false
 ): { text: string; tone?: "live" | "ok" | "bad" | "warn"; dot: boolean } {
   if (status === "failed") return { text: "Failed", tone: "bad", dot: false };
   if (["canceled", "cancelled"].includes(status)) return { text: "Canceled", tone: "warn", dot: false };
   if (TERMINAL_STATUSES.includes(status)) {
-    if (verdict === "improvement_demonstrated") {
+    if (verdict === "improvement_demonstrated" || claimReady) {
       return { text: "Completed · improvement demonstrated", tone: "ok", dot: false };
     }
     if (verdict === "inconclusive") {
@@ -184,6 +186,7 @@ function BaselinePanel({ sft, isCispo }: { sft: SftState; isCispo?: boolean }) {
 function CurationPanel({ sft }: { sft: SftState }) {
   const funnel = useMemo(() => sftCurationFunnel(sft), [sft]);
   const hasAnything = funnel.steps.some((step) => step.count != null) || funnel.accepted.length > 0;
+  const hasVersionedDataset = typeof sft.dataset.digest === "string" && sft.dataset.digest.length > 0;
   const widest = Math.max(1, ...funnel.steps.map((step) => step.count ?? 0));
   return (
     <Panel
@@ -192,7 +195,11 @@ function CurationPanel({ sft }: { sft: SftState }) {
       testId="sft-curation"
     >
       {!hasAnything ? (
-        <p className="sv-empty">No teacher collection or curation has been reported yet.</p>
+        <p className="sv-empty">
+          {hasVersionedDataset
+            ? "Direct supervised corpus supplied with a durable dataset digest; teacher collection and curation are not part of this recipe."
+            : "No teacher collection or curation has been reported yet."}
+        </p>
       ) : (
         <>
           <div className="sv-stack-tight sv-stack">
@@ -280,7 +287,13 @@ function CurationPanel({ sft }: { sft: SftState }) {
 
 /* ── Phase E · training ─────────────────────────────────────────────────── */
 
-function CurvesPanel({ sft }: { sft: SftState }) {
+function CurvesPanel({
+  sft,
+  metricSeries
+}: {
+  sft: SftState;
+  metricSeries?: { status: string; total?: number; error?: string };
+}) {
   const points = sft.points;
   const maxStep = Math.max(1, ...points.map((point) => point.step));
   const losses = points.flatMap((point) =>
@@ -295,9 +308,26 @@ function CurvesPanel({ sft }: { sft: SftState }) {
     .join(" ");
   const latest = points.at(-1);
   return (
-    <Panel title="Training curves" aside={`${points.length} aligned records`} testId="sft-live-curves">
+    <Panel
+      title="Training curves"
+      aside={`${metricSeries?.total ?? points.length} durable records`}
+      testId="sft-live-curves"
+    >
+      {metricSeries && metricSeries.status === "error" ? (
+        <p className="sv-callout" data-tone="warn" role="status">
+          Detailed metric series unavailable; showing the latest projected step. {metricSeries.error ?? ""}
+        </p>
+      ) : null}
       {points.length === 0 ? (
         <p className="sv-empty">Loss metrics stream here once the training job reports its first step.</p>
+      ) : losses.length === 0 ? (
+        <NotEnoughData
+          have={0}
+          need={2}
+          noun="loss samples"
+          detail={`${points.length} durable step records reached step ${latest?.step ?? "—"}, but the provider did not emit train or validation loss.`}
+          testId="sft-curves-loss-unavailable"
+        />
       ) : points.length < 2 ? (
         // One dot on a full pair of axes reads as a broken chart. State the
         // sample instead, and switch to the plot when a trend exists.
@@ -696,8 +726,22 @@ function CispoLearningSignalPanel({
   cispo: NonNullable<ProjectedState["cispo"]>;
 }) {
   const variance = cispo.rewardVariance;
-  const verdict = cispo.noLearningSignal
+  const rolloutGroups = cispo.rolloutGroups ?? [];
+  const learningSignalGroups = cispo.learningSignalGroups
+    ?? rolloutGroups.filter((group) => group.rewardVariance != null && group.rewardVariance > 0).length;
+  const zeroAdvantageGroups = cispo.zeroAdvantageGroups ?? 0;
+  const verdict = cispo.noLearningSignal && learningSignalGroups === 0
     ? { text: "Stopped truthfully — uniform group, no fabricated advantage", tone: "warn" as const }
+    : learningSignalGroups > 0
+      ? {
+          text: `${learningSignalGroups} of ${rolloutGroups.length} groups carried reward variation`,
+          tone: "ok" as const
+        }
+      : zeroAdvantageGroups > 0
+        ? {
+            text: `${zeroAdvantageGroups} uniform group${zeroAdvantageGroups === 1 ? "" : "s"} so far; waiting for usable variation`,
+            tone: "warn" as const
+          }
     : typeof variance === "number" && Number.isFinite(variance)
       ? variance > 0
         ? { text: "Rewards vary within the group, so advantage is defined", tone: "ok" as const }
@@ -723,6 +767,10 @@ function CispoLearningSignalPanel({
         </dd>
         <dt>Group size</dt>
         <dd className="sv-mono">{formatMissingNumber(cispo.groupSize, 0)}</dd>
+        <dt>Rollout groups</dt>
+        <dd className="sv-mono">{String(rolloutGroups.length)}</dd>
+        <dt>Uniform groups</dt>
+        <dd className="sv-mono">{String(zeroAdvantageGroups)}</dd>
       </dl>
     </Panel>
   );
@@ -730,11 +778,33 @@ function CispoLearningSignalPanel({
 
 function PrerequisitesPanel({
   missing,
-  isCispo
+  isCispo,
+  failure
 }: {
   missing: SftPrerequisite[];
   isCispo?: boolean;
+  /** Why the run ended, when it ended badly. */
+  failure?: string;
 }) {
+  // A rejected run has not stalled part-way through a sequence; it never ran.
+  // Listing its untouched stages as "what is still needed" tells the reader to
+  // go collect evidence when the actual next step is to fix the rejection, and
+  // the reason is the one thing the surface must not omit.
+  if (failure) {
+    return (
+      <Panel
+        title="Why this run failed"
+        aside="no stage was reached"
+        testId={isCispo ? "cispo-failure" : "sft-failure"}
+      >
+        <p className="sv-failure-detail">{failure}</p>
+        <p className="sv-empty">
+          The stages below are empty because the job was rejected before it
+          started, not because it is still in progress.
+        </p>
+      </Panel>
+    );
+  }
   if (missing.length === 0) return null;
   return (
     <Panel
@@ -760,11 +830,13 @@ export function SftWorkspace({
   projected,
   run,
   debug,
+  metricSeries,
   embedded = false
 }: {
   projected: ProjectedState;
   run: OptimizerRun;
   debug?: ReactNode;
+  metricSeries?: { status: string; total?: number; error?: string };
   embedded?: boolean;
 }) {
   const sft = projected.sft;
@@ -774,17 +846,53 @@ export function SftWorkspace({
   const status = sft ? sftEffectiveStatus(sft, reportedStatus) : reportedStatus;
   const nested = (projected.summary.summary as Record<string, unknown> | undefined) ?? {};
   const promotedCheckpointId = typeof nested.promotedCheckpointId === "string" ? nested.promotedCheckpointId : undefined;
-  const stages = useMemo(
-    () => sft ? sftStages(sft, status, promotedCheckpointId) : [],
-    [sft, status, promotedCheckpointId]
-  );
+  const stages = useMemo(() => {
+    if (!sft) return [];
+    const base = sftStages(sft, status, promotedCheckpointId);
+    if (!isCispo || !cispo) return base;
+    return base
+      .filter((stage) => ["baseline", "training", "checkpoints", "evaluation", "heldout"].includes(stage.id))
+      .map((stage) => stage.id === "training"
+        ? {
+            ...stage,
+            label: "Rollout groups + updates",
+            detail: `${(cispo.rolloutGroups ?? []).length} groups · ${cispo.optimizerSteps} updates`
+          }
+        : stage);
+  }, [sft, status, promotedCheckpointId, isCispo, cispo]);
   const comparison = useMemo(() => (sft ? sftComparison(sft) : null), [sft]);
-  const missingPrerequisites = useMemo(() => (sft ? sftMissingPrerequisites(sft) : []), [sft]);
+  const missingPrerequisites = useMemo(() => {
+    const missing = sft ? sftMissingPrerequisites(sft) : [];
+    // CISPO learns from online rollout groups; SFT teacher collection and
+    // curation are not prerequisites for this algorithm.
+    return isCispo ? missing.filter((item) => item.id !== "collection") : missing;
+  }, [sft, isCispo]);
   const heldoutSummary = useMemo(() => (sft ? sftHeldoutSummary(sft) : null), [sft]);
   const campaignData = useMemo(() => {
     if (!sft) return { groups: [] as RolloutGroup[], rows: [] as RolloutRow[] };
     const groups: RolloutGroup[] = [];
     const rows: RolloutRow[] = [];
+    if (isCispo && cispo) {
+      const seenIterations = new Set<number | null>();
+      for (const group of cispo.rolloutGroups ?? []) {
+        if (!seenIterations.has(group.iteration)) {
+          seenIterations.add(group.iteration);
+          groups.push({
+            key: `iteration-${group.iteration ?? "unknown"}`,
+            title: group.iteration == null ? "Iteration" : `Iteration ${group.iteration}`,
+            subtitle: "CISPO rollout groups"
+          });
+        }
+        rows.push({
+          id: group.id,
+          groupKey: `iteration-${group.iteration ?? "unknown"}`,
+          sequence: group.sequence,
+          stage: group.label ?? undefined,
+          reward: group.rewardMean ?? undefined
+        });
+      }
+      return { groups, rows };
+    }
     for (const campaign of sft.campaigns) {
       groups.push({
         key: campaign.id,
@@ -807,21 +915,23 @@ export function SftWorkspace({
       }
     }
     return { groups, rows };
-  }, [sft]);
+  }, [sft, isCispo, cispo]);
 
   if (!sft) return null;
 
   const improvementVerdict = typeof nested.improvementVerdict === "string"
     ? nested.improvementVerdict
     : undefined;
-  const chip = statusChip(status, improvementVerdict);
+  const chip = statusChip(status, improvementVerdict, heldoutSummary?.claimReady === true);
   const terminal = TERMINAL_STATUSES.includes(status);
   const latest = sft.points.at(-1);
   const aggregateBaseline = sftAggregateBaseline(sft);
   const readyCount = sft.checkpoints.filter((ckpt) => ckpt.ready === true || ckpt.promoted === true).length;
   const costUsd = projected.usage.costUsd;
   const activeStage = stages.find((stage) => stage.status === "active");
-  const upliftClaimed = sft.checkpoints.some((ckpt) => ckpt.promoted === true) || improvementVerdict === "improvement_demonstrated";
+  const upliftClaimed = sft.checkpoints.some((ckpt) => ckpt.promoted === true)
+    || improvementVerdict === "improvement_demonstrated"
+    || heldoutSummary?.claimReady === true;
   const selectedId = typeof nested.selectedCheckpointId === "string"
     ? nested.selectedCheckpointId
     : typeof sft.lineage?.selectedCheckpointId === "string"
@@ -909,7 +1019,7 @@ export function SftWorkspace({
       tier: isCispo ? "detail" : "primary",
       label: "Uplift",
       value: upliftClaimed ? "demonstrated" : "not claimed",
-      title: "Green only when improvement_verdict is improvement_demonstrated. Zero-score or no-baseline cohorts cannot claim uplift."
+      title: "Green only when the canonical verdict demonstrates improvement or the paired heldout evaluation is claim-ready. Zero-score or no-baseline cohorts cannot claim uplift."
     },
     {
       tier: "detail",
@@ -943,7 +1053,7 @@ export function SftWorkspace({
         </div>
       ) : null}
 
-      <PrerequisitesPanel missing={missingPrerequisites} isCispo={isCispo} />
+      <PrerequisitesPanel missing={missingPrerequisites} isCispo={isCispo} failure={failureDetail} />
 
       {/* CISPO's unit of work is the rollout group, so it leads; SFT's is the
           curated dataset, so its baseline and curation lead instead. Below the
@@ -963,7 +1073,7 @@ export function SftWorkspace({
       )}
 
       <div className="sv-workspace-canvas">
-        <CurvesPanel sft={sft} />
+      <CurvesPanel sft={sft} metricSeries={metricSeries} />
         <CheckpointRail sft={sft} promotedCheckpointId={promotedCheckpointId} />
       </div>
 

@@ -10,6 +10,7 @@ import {
   sftDistribution,
   sftHeldoutSummary,
   sftEffectiveStatus,
+  sftMissingPrerequisites,
   sftStages
 } from "../families/optimizers/_shared/optimizer.run.v1/overlays/sft/model.ts";
 
@@ -131,6 +132,8 @@ test("classification heldout summaries surface paired uplift without rollout arm
         projectionSchemaVersion: "sft_projection.v1", asOfSequence: 3000, projectionRevision: 3000
       },
       projection: {
+        checkpoints: ["ckpt_25"],
+        selectedCheckpointId: "ckpt_25",
         evaluations: [{
           id: "heldout:ckpt_25", phase: "heldout", checkpointId: "ckpt_25",
           score: 0.52, delta: 0.16, ciLow: 0.11, ciHigh: 0.21,
@@ -145,7 +148,38 @@ test("classification heldout summaries surface paired uplift without rollout arm
   assert.equal(summary.trainedScore, 0.52);
   assert.deepEqual(summary.upliftCi, [0.11, 0.21]);
   assert.equal(summary.claimReady, true);
-  assert.equal(sftStages(projected.sft, "completed").find((stage) => stage.id === "heldout").status, "completed");
+  const stages = sftStages(projected.sft, "completed");
+  assert.equal(stages.find((stage) => stage.id === "heldout").status, "completed");
+  assert.equal(stages.find((stage) => stage.id === "promotion").detail, "uplift claimed");
+});
+
+test("versioned direct-supervised datasets do not require teacher collection", () => {
+  const projected = projectRunViewV2(
+    { ...RUN, status: "completed" },
+    {
+      algorithm: "sft",
+      header: {
+        runId: RUN.id, algorithm: "sft", lifecycle: "terminal", condition: "healthy",
+        placement: "hosted", specId: "spec-1", specDigest: "sha256:spec",
+        executionBindings: [], inputRefs: [], outputRefs: [], visualRefs: [],
+        usage: { steps: 100 }, evidence: { completeness: "complete", refs: [] },
+        terminal: { kind: "completed", finalSequence: 4, sealedAt: "2026-09-03T00:00:00Z" },
+        projectionSchemaVersion: "sft_projection.v1", asOfSequence: 4, projectionRevision: 4
+      },
+      projection: {
+        datasetDigest: "sha256:curated-corpus",
+        evaluations: [{
+          id: "heldout", phase: "heldout", score: 0.88, delta: 0.06,
+          pairedN: 400, verdict: "material_uplift", claimReady: true
+        }]
+      }
+    }
+  );
+  projected.sft.points = [{ step: 100 }];
+  assert.equal(
+    sftMissingPrerequisites(projected.sft).some((item) => item.id === "collection"),
+    false
+  );
 });
 
 test("SFT stages: ready checkpoint is never presented as promoted", () => {
