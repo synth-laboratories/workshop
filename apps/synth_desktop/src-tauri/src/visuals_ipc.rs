@@ -25,18 +25,15 @@ use crate::visuals::{TemplateMeta, TemplateObservationContract};
 use base64::Engine;
 
 const MAX_SCRIPTED_ROLLOUTS: u64 = 10;
-const BASE_AUTHORING_CHECKS: [&str; 6] = [
-    "rendered",
-    "noOverflow",
-    "primarySurfaceVisible",
-    "temporalControls",
-    "traceInspector",
-    "realEvidence",
-];
+const BASE_AUTHORING_CHECKS: [&str; 3] = ["rendered", "noOverflow", "primarySurfaceVisible"];
+const EVIDENCE_AUTHORING_CHECKS: [&str; 3] = ["temporalControls", "traceInspector", "realEvidence"];
 
 fn required_authoring_checks(template: &TemplateMeta) -> Vec<&'static str> {
     let mut checks = BASE_AUTHORING_CHECKS.to_vec();
     checks.push("screenshotInspected");
+    if template.observation_contract.is_some() {
+        checks.extend(EVIDENCE_AUTHORING_CHECKS);
+    }
     if template.id.starts_with("diagram.") {
         checks.push("noTextCollisions");
         checks.push("focalDensity");
@@ -6467,6 +6464,7 @@ mod tests {
     fn review(width: u64, passing: bool, observation: Option<&RenderedVisualObservation>) -> Value {
         let checks: serde_json::Map<String, Value> = BASE_AUTHORING_CHECKS
             .iter()
+            .chain(EVIDENCE_AUTHORING_CHECKS.iter())
             .chain(["screenshotInspected", "imageReplay"].iter())
             .map(|check| ((*check).to_string(), json!(passing)))
             .collect();
@@ -6599,6 +6597,28 @@ mod tests {
         assert!(required_authoring_checks(&template).contains(&"imageReplay"));
         template.observation_contract = None;
         assert!(!required_authoring_checks(&template).contains(&"imageReplay"));
+    }
+
+    #[test]
+    fn static_diagram_requires_visual_checks_not_live_evidence_controls() {
+        let template = crate::visuals::resolve_template("diagram.mermaid.v1").unwrap();
+        let required = required_authoring_checks(&template);
+        for check in [
+            "rendered",
+            "noOverflow",
+            "primarySurfaceVisible",
+            "screenshotInspected",
+            "noTextCollisions",
+            "focalDensity",
+        ] {
+            assert!(required.contains(&check), "missing {check}");
+        }
+        for check in ["temporalControls", "traceInspector", "realEvidence"] {
+            assert!(
+                !required.contains(&check),
+                "static diagram required {check}"
+            );
+        }
     }
 
     #[test]

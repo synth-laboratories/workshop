@@ -1,8 +1,13 @@
 # Handoff — visual QA sweep, 2026-09-03
 
-Branch `codex/capture-review-pipeline`, 10 commits, `4d6c898a..3f21eb5f`. **No upstream
-configured; nothing is pushed.** 338/338 visuals tests, `visuals/` and app typecheck
-both clean.
+Branch `codex/capture-review-pipeline`. The focused visual-review fixes are 10 commits,
+`4d6c898a^..3f21eb5f`; the branch also contains the earlier capture/review-pipeline
+work. **No upstream configured; nothing is pushed.** 338/338 visuals tests,
+`visuals/` and app typecheck both clean at handoff time.
+
+Completion note: the branch is now published at
+`origin/codex/capture-review-pipeline`; the no-upstream statement above describes the
+state of the original `245a9b7b` handoff.
 
 The work was: capture every visual surface, look at it, fix what the machine audit
 cannot see. Every defect below was reported as `0 findings` by the capture audit —
@@ -17,19 +22,19 @@ The instance is `visualqa` (v0.9), a **cua-live shell against Vite**, so rendere
 template edits hot-reload with no rebuild.
 
 ```bash
-cd /private/tmp/claude-501/-Users-joshuapurtell-GitHub/<session>/scratchpad/loop
-
 # list visuals / runs
-node mcp.mjs visualqa visuals visual_list '{}'
-node mcp.mjs visualqa optimizers optimizer_list_runs '{}'
+./scripts/workshop-mcp.mjs call visualqa visuals visual_list '{}'
+./scripts/workshop-mcp.mjs call visualqa optimizers optimizer_list_runs '{}'
 
 # capture one visual, isolated, deterministic
-node mcp.mjs visualqa display workshop_capture '{"scope":"visual","target":"vis_..."}'
+./scripts/workshop-mcp.mjs call visualqa display workshop_capture \
+  '{"scope":"visual","target":"vis_..."}'
 # -> {"path": ".../data/surface-captures/visual-vis-...-<ts>.png"}
 ```
 
-`mcp.mjs` and `tools.mjs` (tool lister) are in that scratchpad — **copy them into the
-repo if you want them to survive**, they are session-scoped today.
+List an adapter's tools with
+`./scripts/workshop-mcp.mjs list visualqa <adapter>`. The helper is now in the
+repository; the original scratchpad copies are no longer required.
 
 If the instance is down:
 
@@ -78,6 +83,7 @@ Reviewed by eye, defects found and fixed:
 | `live.craftax.v1` | Craftax |
 | `trace.rollout_inspector.v1` | Banking77 |
 | `analysis.chart.v1` | probe chart authored by hand |
+| `diagram.mermaid.v1` | QA sequence-diagram probe, wide + compact deterministic captures |
 
 Not reviewed, and **why it is not just laziness**: `trace.workbench.v1` × glm/llama are
 the same template on dead runs; the surface is now the best-covered one in the repo.
@@ -86,9 +92,9 @@ the same template on dead runs; the surface is now the best-covered one in the r
 
 ## 3. What is left
 
-### 3a. Thirty templates have no visual instance at all
+### 3a. Twenty-nine templates have no visual instance at all
 
-`visual_list_templates` returns 39; 9 have instances. The rest have never been
+`visual_list_templates` returns 39; 10 have instances. The rest have never been
 rendered by anything: `live.harbor_eval.v1`, `craftax.rollout_scrub.v1`,
 `craftax.eval_matrix.v1`, `optimizer.gepa.frontier.v1`, `optimizer.sft.dataset.v1`,
 `optimizer.sft.checkpoints.v1`, `optimizer.sft.rollouts.v1`, `optimizer.sft.examples.v1`,
@@ -103,9 +109,12 @@ these need a real bound run to populate them. Fabricating plausible data would d
 the purpose — the whole value of this sweep was that the defects only showed up against
 real evidence. Pick the templates worth standing up a run for.
 
-Two are self-contained and can be exercised immediately:
-- `analysis.chart.v1` — done, see §3d.
-- `diagram.mermaid.v1` — `visual_create` with `arguments.content`; untried.
+Two are self-contained and have now been exercised:
+- `analysis.chart.v1` — see §3e.
+- `diagram.mermaid.v1` — `vis_540e5c76cc024a669e02596a401a4d8d`, rendered and
+  inspected at 1280×900 and 760×900. Both deterministic review captures passed.
+  The separate `workshop_capture` host path returned `EAGAIN` twice; do not conflate
+  that host-capture failure with the successful Mermaid render/review path.
 
 ### 3b. `visual_chart` spec shape is easy to get wrong
 
@@ -120,20 +129,33 @@ Four attempts failed before it worked. The traps, all in
 - `BarSeries` uses `name`, not `label`.
 - Every panel is `deny_unknown_fields`.
 
-Worth a schema example in the tool description; it cost more turns than the QA did.
+The durable MCP documentation and chart contract now include a minimal schema example.
 
-### 3c. Observation, not yet a defect: null bars
+### 3c. Static diagrams were asked to certify live-evidence controls
+
+Exercising the Mermaid readiness path found that every template inherited
+`temporalControls`, `traceInspector`, and `realEvidence`. Those checks are meaningful for
+templates with a rendered-observation contract, but not for a static Mermaid diagram;
+the gate therefore encouraged agents to submit meaningless `true` values. The check
+selection now reserves those three controls for evidence-backed templates. Static
+diagrams still require rendered, overflow, visibility, screenshot-inspection,
+text-collision, and focal-density checks.
+
+### 3d. Observation, not yet a defect: null bars
 
 In `analysis.chart.v1`, a `null` category renders as a short **grey stub** — clearly
 distinct from the orange zero-lines beside it, so the "never renders as zero" contract
 holds. But the declared contract says "a gap or a hatched cell", and a short bar can
 read as a small measured value. Someone should decide whether the stub is good enough.
 
-### 3d. The probe visual
+### 3e. The probe visuals
 
 `vis_03a4969a3c2c48318688409fec67da2a` ("QA chart probe") is a draft I authored to
 exercise the chart template. No delete tool is exposed on the visuals adapter; remove it
 through the UI if you want the registry clean.
+
+`vis_540e5c76cc024a669e02596a401a4d8d` ("QA Mermaid Probe") is the saved,
+two-viewport-reviewed sequence diagram used for the tenth covered template.
 
 ---
 
@@ -193,15 +215,12 @@ database, check the type, check the normalizer, in that order.
 
 ## 6. Recommended order for whoever picks this up
 
-1. **Push the branch.** Ten commits exist only on this machine.
-2. Decide §3a — which unexercised templates justify standing up a run. That is the only
+1. Decide §3a — which unexercised templates justify standing up a run. That is the only
    remaining work with real defect yield, and it is a scoping call, not an engineering one.
-3. If you want cheap coverage first: `diagram.mermaid.v1` needs no run data.
-4. Fold `mcp.mjs` / `tools.mjs` into `scripts/` so the capture loop is not
-   session-scoped.
-5. Consider whether §3b deserves a schema example in the `visual_chart` tool description.
+2. Investigate the repeated `EAGAIN` from `workshop_capture`; deterministic Mermaid
+   review capture still works.
 
-The defect rate held at roughly **two per surface across nine surfaces**, and it did not
-fall off as the sweep went on — the last two surfaces produced the traceback
+The defect rate held near **two per surface across the original nine surfaces**, and it
+did not fall off as the sweep went on — the last two surfaces produced the traceback
 misattribution and the empty-column scoreboard. Assume unreviewed surfaces still hold
 defects at that rate.

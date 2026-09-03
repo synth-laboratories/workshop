@@ -120,7 +120,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Author or revise an ad-hoc data chart and get the rendered PNG back in one call. Pass a synth.visual.chart-spec.v1 object as spec; omit visual_id to create, pass it to revise. Panels either carry literal values or derive them from bound evidence \u2014 bind a trace digest, fixture, CAS blob, or query snapshot with slot/kind/source and the host reads it, so charting a trace does not mean pasting its numbers. Renders deterministically in the host, so no Desktop window has to be open. Null values render as gaps, hatched cells, or em dashes \u2014 never as zero.",
+      "description": "Author or revise an ad-hoc data chart and get the rendered PNG back in one call. Pass a synth.visual.chart-spec.v1 object as spec; omit visual_id to create, pass it to revise. Minimal literal spec: {\"version\":1,\"panels\":[{\"kind\":\"metrics\",\"items\":[{\"label\":\"Mean reward\",\"value\":\"0.42\"}]},{\"kind\":\"bars\",\"categories\":[\"base\",\"candidate\"],\"series\":[{\"name\":\"reward\",\"values\":[0.31,0.42]}]}]}. Use version, not schemaVersion; metric value is a display string; bar series use name, not label. Panels either carry literal values or derive them from bound evidence \u2014 bind a trace digest, fixture, CAS blob, or query snapshot with slot/kind/source and the host reads it, so charting a trace does not mean pasting its numbers. Renders deterministically in the host, so no Desktop window has to be open. Null values render as gaps, hatched cells, or em dashes \u2014 never as zero.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
