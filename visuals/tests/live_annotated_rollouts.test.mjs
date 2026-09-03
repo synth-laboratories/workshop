@@ -398,3 +398,16 @@ test("consumer controls and protocol rebinds are shown as history, and the lane 
   assert.equal(eventDetail(events[6]), "protocol rebound → anprev_b (state carried)");
   assert.equal(eventDetail(events[4]), "control refused · annotation_protocol_unknown");
 });
+
+test("a score that can be negative carries its sign either way", () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const adapters = readFileSync(join(root, "families/first_class_example_containers/live.annotated_rollouts.v1/adapters.tsx"), "utf8");
+  // Two HealthBench rollouts listed as `score −0.14` and `score 0.06` read as
+  // one signed number beside one unsigned magnitude, not as two scores either
+  // side of zero. The trace workstation already writes `+1.00` for this.
+  assert.match(adapters, /function signedScore[\s\S]*?value >= 0 \? `\+\$\{formatted\}` : formatted/);
+  assert.match(adapters, /family === "healthbench"[^\n]*signedScore\(reward\)/);
+  assert.match(adapters, /return `reward \$\{signedScore\(reward\)\}`/);
+  // A peak rate is a magnitude, not a signed score, and keeps its plain format.
+  assert.match(adapters, /family === "runescape"[^\n]*peak \$\{formatMissingNumber\(reward\)\} XP\/min/);
+});

@@ -34,13 +34,31 @@ export function progressLabel(lane: Lane): string {
   return lane.total ? `${lane.done}/${lane.total}` : lane.status;
 }
 
+/**
+ * A score that can be negative carries its sign either way.
+ *
+ * Two HealthBench rollouts listed as `score −0.14` and `score 0.06`: the
+ * negative one is marked and the positive one is bare, so the pair reads as
+ * one signed number beside one unsigned magnitude rather than as two scores
+ * either side of zero. The trace workstation already writes `+1.00` for the
+ * same quantity; matching it keeps direction legible in a screenshot, which
+ * is how these rows are usually read.
+ *
+ * Magnitudes -- a peak rate, a count -- are not signed and do not come here.
+ */
+function signedScore(value: number | null | undefined): string {
+  const formatted = formatMissingNumber(value);
+  if (formatted === "—") return formatted;
+  return typeof value === "number" && value >= 0 ? `+${formatted}` : formatted;
+}
+
 export function outcomeLabel(lane: Lane): string {
   const reward = lane.metrics.cumulative_reward ?? lane.reward ?? number(lane.task.reward_value);
   const family = taskFamily(lane);
   if (family === "banking77") return reward == null ? "unscored" : reward >= 1 ? "correct" : "incorrect";
-  if (family === "healthbench") return reward == null ? "score —" : `score ${formatMissingNumber(reward)}`;
+  if (family === "healthbench") return reward == null ? "score —" : `score ${signedScore(reward)}`;
   if (family === "runescape") return reward == null ? "score —" : `peak ${formatMissingNumber(reward)} XP/min`;
-  return `reward ${formatMissingNumber(reward)}`;
+  return `reward ${signedScore(reward)}`;
 }
 
 function Fact({ label, children }: { label: string; children: ReactNode }) {
