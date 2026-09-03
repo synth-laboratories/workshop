@@ -709,14 +709,23 @@ async fn dispatch_human_annotations(
     app: &AppHandle,
 ) -> Result<Value> {
     use crate::human_annotations::models::{
-        HumanAnnotationCancelRequest, HumanAnnotationCreateRequest, HumanAnnotationExportRequest,
-        HumanAnnotationListQuery,
+        HumanAnnotationCampaignActionRequest, HumanAnnotationCampaignAdjudicateRequest,
+        HumanAnnotationCampaignCreateRequest, HumanAnnotationCancelRequest,
+        HumanAnnotationCreateRequest, HumanAnnotationExportRequest, HumanAnnotationListQuery,
+        HumanAnnotationPreviewRequest, HumanAnnotationSupersedeRequest,
     };
     let service = crate::human_annotations::from_core(core);
     match (method, path) {
         ("POST", "/v1/human-annotations/create") => Ok(serde_json::to_value(
             service
                 .create(serde_json::from_value::<HumanAnnotationCreateRequest>(
+                    body,
+                )?)
+                .await?,
+        )?),
+        ("POST", "/v1/human-annotations/preview") => Ok(serde_json::to_value(
+            service
+                .preview(serde_json::from_value::<HumanAnnotationPreviewRequest>(
                     body,
                 )?)
                 .await?,
@@ -736,13 +745,20 @@ async fn dispatch_human_annotations(
             Ok(serde_json::to_value(view)?)
         }
         ("POST", "/v1/human-annotations/get") => {
+            if let Some(result_id) = body
+                .get("resultId")
+                .or_else(|| body.get("result_id"))
+                .and_then(Value::as_str)
+            {
+                return service.sealed_result(result_id.to_owned()).await;
+            }
             let id = body
                 .get("taskId")
                 .or_else(|| body.get("task_id"))
                 .or_else(|| body.get("sessionId"))
                 .or_else(|| body.get("session_id"))
                 .and_then(Value::as_str)
-                .context("taskId required")?
+                .context("taskId, sessionId, or resultId required")?
                 .to_owned();
             Ok(serde_json::to_value(service.status(id).await?)?)
         }
@@ -765,6 +781,46 @@ async fn dispatch_human_annotations(
                 )?)
                 .await?,
         )?),
+        ("POST", "/v1/human-annotations/supersede") => {
+            let task = service
+                .supersede(serde_json::from_value::<HumanAnnotationSupersedeRequest>(
+                    body,
+                )?)
+                .await?;
+            app.emit(
+                "human-annotation:show",
+                serde_json::json!({"sessionId":task.session_id}),
+            )?;
+            Ok(serde_json::to_value(task)?)
+        }
+        ("POST", "/v1/human-annotations/campaign/create") => {
+            service
+                .campaign_create(serde_json::from_value::<
+                    HumanAnnotationCampaignCreateRequest,
+                >(body)?)
+                .await
+        }
+        ("POST", "/v1/human-annotations/campaign/status") => {
+            let id = body
+                .get("campaignId")
+                .and_then(Value::as_str)
+                .context("campaignId required")?;
+            service.campaign_status(id.to_owned()).await
+        }
+        ("POST", "/v1/human-annotations/campaign/close") => {
+            service
+                .campaign_close(serde_json::from_value::<
+                    HumanAnnotationCampaignActionRequest,
+                >(body)?)
+                .await
+        }
+        ("POST", "/v1/human-annotations/campaign/adjudicate") => {
+            service
+                .campaign_adjudicate(serde_json::from_value::<
+                    HumanAnnotationCampaignAdjudicateRequest,
+                >(body)?)
+                .await
+        }
         _ => anyhow::bail!("unsupported human annotation IPC route {method} {path}"),
     }
 }
@@ -1434,11 +1490,13 @@ pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Val
     // rejected correct captures of a visual reviewed through the page.
     let mut review_acknowledged = false;
     let snapshot = match &scope {
-        CaptureScope::Visual(id) => wait_for_review_capture_surface(app, id)
-            .await
-            .map(|acknowledged| {
-                review_acknowledged = acknowledged;
-            }),
+        CaptureScope::Visual(id) => {
+            wait_for_review_capture_surface(app, id)
+                .await
+                .map(|acknowledged| {
+                    review_acknowledged = acknowledged;
+                })
+        }
         other => wait_for_capture_surface(app, other).await,
     }
     .and_then(|()| {

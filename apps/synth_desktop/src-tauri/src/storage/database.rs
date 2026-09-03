@@ -2,13 +2,13 @@ use super::migrations::{apply_migrations, schema_version};
 use super::models::{CoreDiagnostics, SCHEMA_VERSION};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 use tokio::task::spawn_blocking;
 
 /// Time spent waiting for a transaction to begin, split by intent.
@@ -52,9 +52,17 @@ fn note_wait(read: bool, started: Instant, acquired: bool) {
     }
     let micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     let (count, total, max) = if read {
-        (&LOCK_WAIT.reads, &LOCK_WAIT.read_wait_us, &LOCK_WAIT.read_wait_max_us)
+        (
+            &LOCK_WAIT.reads,
+            &LOCK_WAIT.read_wait_us,
+            &LOCK_WAIT.read_wait_max_us,
+        )
     } else {
-        (&LOCK_WAIT.writes, &LOCK_WAIT.write_wait_us, &LOCK_WAIT.write_wait_max_us)
+        (
+            &LOCK_WAIT.writes,
+            &LOCK_WAIT.write_wait_us,
+            &LOCK_WAIT.write_wait_max_us,
+        )
     };
     count.fetch_add(1, Ordering::Relaxed);
     total.fetch_add(micros, Ordering::Relaxed);
@@ -259,7 +267,9 @@ const READ_BUSY_TIMEOUT_MS: u32 = 5_000;
 
 fn connect_read(path: &Path) -> Result<Connection> {
     let conn = connect(path)?;
-    conn.busy_timeout(std::time::Duration::from_millis(u64::from(READ_BUSY_TIMEOUT_MS)))?;
+    conn.busy_timeout(std::time::Duration::from_millis(u64::from(
+        READ_BUSY_TIMEOUT_MS,
+    )))?;
     Ok(conn)
 }
 
@@ -343,7 +353,11 @@ impl Storage {
                     let (reads, read_us, read_max, writes, write_us, write_max, timeouts) =
                         lock_wait_snapshot();
                     let avg = |total: u64, count: u64| -> i64 {
-                        if count == 0 { 0 } else { (total / count).min(i64::MAX as u64) as i64 }
+                        if count == 0 {
+                            0
+                        } else {
+                            (total / count).min(i64::MAX as u64) as i64
+                        }
                     };
                     let clamp = |value: u64| value.min(i64::MAX as u64) as i64;
                     super::models::LockWaitDiagnostics {
@@ -399,7 +413,9 @@ mod tests {
             may_release.recv_timeout(Duration::from_secs(10)).ok();
             drop(tx);
         });
-        writer_has_lock.recv_timeout(Duration::from_secs(5)).unwrap();
+        writer_has_lock
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
 
         let reader_path = path.clone();
         let started = Instant::now();

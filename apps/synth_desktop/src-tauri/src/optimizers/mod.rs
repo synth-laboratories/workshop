@@ -2,7 +2,6 @@
 
 pub mod admission;
 pub(crate) mod annotation_stage;
-pub(crate) mod live_annotation;
 mod artifacts;
 mod cispo;
 mod cispo_client;
@@ -18,6 +17,7 @@ pub(crate) mod eval_runtime;
 mod event_contract;
 pub mod events;
 pub mod inline_eval;
+pub(crate) mod live_annotation;
 pub(crate) use events::strip_frame_bodies_for_ipc;
 mod experiment_bind;
 mod frames;

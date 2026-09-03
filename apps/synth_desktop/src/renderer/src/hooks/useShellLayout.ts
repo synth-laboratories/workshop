@@ -9,7 +9,7 @@ import {
 import { restoreFocusIfLost } from "../runtime/restoreFocus";
 import { fitPaneWidth } from "../runtime/layoutGeometry";
 
-export type SidePanelTab = "visual" | "outputs" | "inference" | "trace" | "diagnostics" | "errors";
+export type SidePanelTab = "visual" | "outputs" | "inference" | "trace" | "diagnostics" | "errors" | "review";
 
 export type ShellLayoutState = {
 	sidebarVisible: boolean;

@@ -17,9 +17,10 @@ use std::{
 use crate::error::StructuredFailure;
 
 /// Product ceiling. Workspace `[bounds]` may be stricter, never looser.
-/// $10 leaves room for a multi-generation Banking77 GEPA under Workshop B's
-/// $50 auto-approval policy without removing the hard recipe rail.
-pub const PRODUCT_MAX_COST_USD: f64 = 10.00;
+/// Matches Workshop B's bounded-approval ceiling. Individual recipes remain
+/// responsible for declaring a tighter, evidence-based envelope; the exact
+/// amount is still shown for per-run operator approval.
+pub const PRODUCT_MAX_COST_USD: f64 = 50.00;
 pub const PRODUCT_MAX_TOTAL_ROLLOUTS: i64 = 480;
 
 const RECIPE_FILE: &str = "workshop.recipe.toml";
@@ -113,6 +114,11 @@ pub struct WorkspaceRecipe {
     pub policy_source: Option<String>,
     pub train_seeds: Vec<i64>,
     pub heldout_seeds: Vec<i64>,
+    /// Optional exact container task identities, positionally aligned with
+    /// the corresponding seed pools. Empty means the legacy family/seed
+    /// identity is used.
+    pub train_task_instance_ids: Vec<String>,
+    pub heldout_task_instance_ids: Vec<String>,
     pub minibatch_size: usize,
     pub concurrency: usize,
     pub proposer_model: Option<String>,
@@ -466,6 +472,10 @@ struct RecipeFile {
     train_seeds: Option<Vec<i64>>,
     #[serde(default)]
     heldout_seeds: Option<Vec<i64>>,
+    #[serde(default)]
+    train_task_instance_ids: Option<Vec<String>>,
+    #[serde(default)]
+    heldout_task_instance_ids: Option<Vec<String>>,
     #[serde(default)]
     minibatch_size: Option<usize>,
     #[serde(default)]
@@ -989,6 +999,10 @@ pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
             "harness": recipe.harness,
             "config": recipe.policy_config,
         },
+        "taskInstanceIds": {
+            "train": recipe.train_task_instance_ids,
+            "heldout": recipe.heldout_task_instance_ids,
+        },
         "credentialInputs": credential_inputs,
         "expectedVisual": match recipe.algorithm {
             AlgorithmKind::Gepa => "optimizer.gepa.v1",
@@ -1328,6 +1342,43 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
     let train_seeds = parsed
         .train_seeds
         .unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    let normalize_task_ids = |pool: &str,
+                              ids: Option<Vec<String>>,
+                              seeds: &[i64]|
+     -> Result<Vec<String>> {
+        let ids = ids
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .collect::<Vec<_>>();
+        if ids.iter().any(String::is_empty) {
+            bail!(
+                "recipe `{}` {pool}_task_instance_ids contains an empty task id",
+                parsed.id
+            );
+        }
+        if !ids.is_empty() && ids.len() != seeds.len() {
+            bail!(
+                "recipe `{}` {pool}_task_instance_ids must contain exactly {} entries to match {pool}_seeds; got {}",
+                parsed.id,
+                seeds.len(),
+                ids.len()
+            );
+        }
+        let unique = ids.iter().collect::<std::collections::BTreeSet<_>>();
+        if unique.len() != ids.len() {
+            bail!(
+                "recipe `{}` {pool}_task_instance_ids contains duplicates",
+                parsed.id
+            );
+        }
+        Ok(ids)
+    };
+    let heldout_seeds = parsed.heldout_seeds.unwrap_or_default();
+    let train_task_instance_ids =
+        normalize_task_ids("train", parsed.train_task_instance_ids, &train_seeds)?;
+    let heldout_task_instance_ids =
+        normalize_task_ids("heldout", parsed.heldout_task_instance_ids, &heldout_seeds)?;
     let minibatch_size = parsed.minibatch_size.unwrap_or(1);
     if minibatch_size == 0 || minibatch_size > train_seeds.len() {
         bail!(
@@ -1362,7 +1413,9 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
             .policy_source
             .filter(|value| !value.trim().is_empty()),
         train_seeds,
-        heldout_seeds: parsed.heldout_seeds.unwrap_or_default(),
+        heldout_seeds,
+        train_task_instance_ids,
+        heldout_task_instance_ids,
         minibatch_size,
         concurrency: parsed.concurrency.unwrap_or(1).max(1),
         proposer_model: parsed.proposer_model,
@@ -1991,6 +2044,7 @@ family = "classify"
 harness = "desktop_eval"
 policy_config = "classify_default"
 train_seeds = [0, 1]
+train_task_instance_ids = ["classify/account", "classify/card"]
 [bounds]
 max_cost_usd = 0.50
 max_total_rollouts = 10
@@ -2003,7 +2057,39 @@ max_total_rollouts = 10
         assert_eq!(recipe.bounds.max_cost_usd, 0.50);
         assert_eq!(recipe.bounds.max_total_rollouts, 10);
         assert_eq!(recipe.train_seeds, vec![0, 1]);
-        assert!(recipe.annotation.is_none(), "annotation stage is off by default");
+        assert_eq!(
+            recipe.train_task_instance_ids,
+            vec!["classify/account", "classify/card"]
+        );
+        assert!(
+            recipe.annotation.is_none(),
+            "annotation stage is off by default"
+        );
+    }
+
+    #[test]
+    fn rejects_task_instance_ids_that_do_not_align_with_seed_pool() {
+        let (_dir, workspace) = write_workspace();
+        fs::write(
+            workspace.join(RECIPE_FILE),
+            r#"
+id = "eval.bad-task-map.v1"
+algorithm = "eval"
+container = "deepswe"
+model = "openai/gpt-5.6-luna"
+locality = "container"
+train_seeds = [0, 1]
+train_task_instance_ids = ["deepswe/only-one"]
+[bounds]
+max_cost_usd = 1.0
+max_total_rollouts = 2
+"#,
+        )
+        .unwrap();
+        let error = find_recipe(&workspace, "eval.bad-task-map.v1")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("must contain exactly 2 entries"), "{error}");
     }
 
     #[tokio::test]
@@ -2023,7 +2109,7 @@ provider = "openai"
 model = "gpt-4.1-nano"
 locality = "container"
 [bounds]
-max_cost_usd = 11.00
+max_cost_usd = 51.00
 max_total_rollouts = 1
 "#,
         )
@@ -2075,20 +2161,13 @@ max_total_rollouts = 1
 
         let catalog = load_session_recipes(storage.database(), "attached-session").unwrap();
         assert!(catalog.iter().any(|recipe| recipe.id == "eval.attached.v1"));
-        let (source_root, recipe) = find_session_recipe(
-            storage.database(),
-            "attached-session",
-            "eval.attached.v1",
-        )
-        .unwrap();
+        let (source_root, recipe) =
+            find_session_recipe(storage.database(), "attached-session", "eval.attached.v1")
+                .unwrap();
         assert_eq!(source_root, attached.canonicalize().unwrap());
         assert_eq!(recipe.id, "eval.attached.v1");
-        let error = find_session_recipe(
-            storage.database(),
-            "attached-session",
-            "gepa.stale.v1",
-        )
-        .unwrap_err();
+        let error = find_session_recipe(storage.database(), "attached-session", "gepa.stale.v1")
+            .unwrap_err();
         assert!(error.to_string().contains("exceeds product cap"));
     }
 
@@ -2152,7 +2231,11 @@ paid = 2
                 continue;
             }
             expected.push(path.file_stem().unwrap().to_string_lossy().into_owned());
-            fs::copy(&path, workspace.join(RECIPES_DIR).join(path.file_name().unwrap())).unwrap();
+            fs::copy(
+                &path,
+                workspace.join(RECIPES_DIR).join(path.file_name().unwrap()),
+            )
+            .unwrap();
         }
         expected.sort();
         assert_eq!(
@@ -2224,10 +2307,22 @@ paid = 2
             .unwrap();
         let protocol = live.live_annotation.as_ref().expect("live lane declared");
         assert_eq!(protocol.protocol_id, "craftax.live.v1");
-        assert_eq!(protocol.protocol_source, "domains/craftax/annotations/live_protocol.py");
-        assert_eq!(protocol.configuration.get("judge_every_calls"), Some(&serde_json::json!(3)));
-        assert!(protocol.model.is_none(), "the bundled recipe does not pick a judge model");
-        assert!(live.annotation.is_some(), "live findings never replace the sealed post-hoc lane");
+        assert_eq!(
+            protocol.protocol_source,
+            "domains/craftax/annotations/live_protocol.py"
+        );
+        assert_eq!(
+            protocol.configuration.get("judge_every_calls"),
+            Some(&serde_json::json!(3))
+        );
+        assert!(
+            protocol.model.is_none(),
+            "the bundled recipe does not pick a judge model"
+        );
+        assert!(
+            live.annotation.is_some(),
+            "live findings never replace the sealed post-hoc lane"
+        );
         for (id, protocol_id, protocol_source) in [
             (
                 "eval.banking77.live_annotated.v1",
@@ -2241,10 +2336,7 @@ paid = 2
             ),
         ] {
             let recipe = recipes.iter().find(|recipe| recipe.id == id).unwrap();
-            let protocol = recipe
-                .live_annotation
-                .as_ref()
-                .expect("live lane declared");
+            let protocol = recipe.live_annotation.as_ref().expect("live lane declared");
             assert_eq!(protocol.protocol_id, protocol_id);
             assert_eq!(protocol.protocol_source, protocol_source);
             assert!(
@@ -2257,10 +2349,7 @@ paid = 2
             .find(|recipe| recipe.id == "eval.healthbench.live_annotated.v1")
             .unwrap();
         assert_eq!(healthbench_live.policy_config, "openrouter_llama31_8b");
-        assert_eq!(
-            healthbench_live.model,
-            "meta-llama/llama-3.1-8b-instruct"
-        );
+        assert_eq!(healthbench_live.model, "meta-llama/llama-3.1-8b-instruct");
         assert!(
             !healthbench_live.requires_credential_advertisement,
             "HealthBench inference stays inside the credentialed container"
@@ -2280,8 +2369,18 @@ paid = 2
             .find(|recipe| recipe.id == "eval.banking77.annotated.v1")
             .unwrap();
         assert!(banking.annotation.is_some());
+        let deepswe = recipes
+            .iter()
+            .find(|recipe| recipe.id == "eval.deepswe.annotated.v1")
+            .unwrap();
+        assert!(deepswe.annotation.is_some());
+        assert_eq!(deepswe.train_task_instance_ids.len(), 5);
+        assert_eq!(
+            deepswe.policy.get("sandbox"),
+            Some(&serde_json::json!("danger-full-access")),
+            "DeepSWE runs inside an already isolated task container; the inner Codex sandbox cannot use Linux user namespaces there"
+        );
         for id in [
-            "eval.deepswe.annotated.v1",
             "eval.code_policy.annotated.v1",
             "eval.healthbench.annotated.v1",
         ] {

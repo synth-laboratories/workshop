@@ -525,6 +525,38 @@ function sftProjection(base: ProjectedState, view: OptimizerRunViewV2Like): void
 
 function cispoProjection(base: ProjectedState, view: OptimizerRunViewV2Like, run: OptimizerRun): void {
   const projection = view.projection;
+  const detailedRolloutGroups = (records(projection.workItems) as WorkItem[])
+    .filter((item) => item.kind === "training_step")
+    .map((item, index) => {
+      const parsedIteration = Number(item.workItemId.split(":", 1)[0]);
+      return {
+        id: item.workItemId,
+        iteration: Number.isFinite(parsedIteration) ? parsedIteration : null,
+        label: null,
+        rewardMean: null,
+        rewardVariance: null,
+        size: numberOrNull(projection.groupSize) ?? 0,
+        sequence: index + 1,
+        completed: workStatus(item) === "completed"
+      };
+    });
+  // Detailed work items are intentionally removed from bounded first paint.
+  // Preserve the truthful run-level count with compact placeholders until a
+  // user opens the paged rollout-group collection.
+  const rolloutGroupCount = numberOrNull(projection.rolloutGroupCount)
+    ?? detailedRolloutGroups.length;
+  const rolloutGroups = detailedRolloutGroups.length > 0
+    ? detailedRolloutGroups
+    : Array.from({ length: rolloutGroupCount }, (_, index) => ({
+        id: `group-${index + 1}`,
+        iteration: null,
+        label: null,
+        rewardMean: null,
+        rewardVariance: null,
+        size: numberOrNull(projection.groupSize) ?? 0,
+        sequence: index + 1,
+        completed: view.header.lifecycle === "terminal"
+      }));
   sftProjection(base, view);
   const clip = record(projection.clipConfig);
   base.cispo = {
@@ -541,9 +573,9 @@ function cispoProjection(base: ProjectedState, view: OptimizerRunViewV2Like, run
     optimizerSteps: numberOrNull(projection.optimizerSteps) ?? (typeof view.header.usage.steps === "number" ? view.header.usage.steps : 0),
     warmStartArtifactId: typeof projection.warmStartId === "string" ? projection.warmStartId : null,
     checkpointIds: strings(projection.checkpoints),
-    rolloutGroups: [],
-    zeroAdvantageGroups: 0,
-    learningSignalGroups: 0,
+    rolloutGroups,
+    zeroAdvantageGroups: numberOrNull(projection.zeroAdvantageGroups) ?? 0,
+    learningSignalGroups: numberOrNull(projection.learningSignalGroups) ?? 0,
     noLearningSignal: projection.noLearningSignal === true
   };
 }

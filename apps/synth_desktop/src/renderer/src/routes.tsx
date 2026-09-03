@@ -41,6 +41,7 @@ import { MittenFrame } from "./components/MittenFrame";
 import type { SidePanelTab } from "./hooks/useShellLayout";
 import { ResponsesTracePanel } from "./components/ResponsesTracePanel";
 import { ErrorsLogsPanel } from "./components/ErrorsLogsPanel";
+import { HumanAnnotationWorkspace } from "./components/HumanAnnotationWorkspace";
 import { sessionIsLocalChat } from "./runtime/sessionView";
 import { bridges, isDesktopApp } from "./runtime/desktopBridge";
 import {
@@ -274,6 +275,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 	} = props;
 	const [transcriptCollapsed, setTranscriptCollapsed] = useState(false);
 	const [openVisualTabs, setOpenVisualTabs] = useState<ArtifactRef[]>([]);
+	const [humanAnnotationSessionId, setHumanAnnotationSessionId] = useState<string | null>(null);
 	const [experimentSectionOwnsVisualPane, setExperimentSectionOwnsVisualPane] = useState(true);
 	useEffect(() => {
 		if (view.kind === "experiments") setExperimentSectionOwnsVisualPane(true);
@@ -281,6 +283,16 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 	useEffect(() => {
 		if (!showSidePanel) setTranscriptCollapsed(false);
 	}, [showSidePanel]);
+	useEffect(() => {
+		const annotations = bridges.humanAnnotations;
+		if (!annotations) return;
+		return annotations.onShow((sessionId) => {
+			setHumanAnnotationSessionId(sessionId);
+			setSidePanelTab("review");
+			setSidePanelOpen(true);
+			setTranscriptCollapsed(true);
+		});
+	}, [setSidePanelOpen, setSidePanelTab]);
 	useEffect(() => {
 		if (!openArtifact) return;
 		setOpenVisualTabs((current) => {
@@ -768,12 +780,25 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 									|| tabId === "inference"
 									|| tabId === "trace"
 									|| tabId === "diagnostics"
+									|| tabId === "review"
 								) {
 									setSidePanelTab(tabId);
 								}
 							}}
 							onClose={() => setSidePanelOpen(false)}
 							tabs={[
+								...(humanAnnotationSessionId ? [{
+									id: "review",
+									label: "Review",
+									title: "Human annotation review",
+									kind: "document" as const,
+									content: <HumanAnnotationWorkspace sessionId={humanAnnotationSessionId} focused={transcriptCollapsed} onFocusedChange={setTranscriptCollapsed} onClose={() => {
+										setHumanAnnotationSessionId(null);
+										setTranscriptCollapsed(false);
+										setSidePanelTab("outputs");
+									}} />,
+									onClose: () => { setHumanAnnotationSessionId(null); setTranscriptCollapsed(false); setSidePanelTab("outputs"); }
+								}] : []),
 								...openVisualTabs.map((artifact) => ({
 										id: `visual:${artifact.id}`,
 										label: artifact.displayName?.trim() || artifact.title || "Visual",

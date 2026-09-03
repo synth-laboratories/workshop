@@ -350,6 +350,29 @@ export const commands = {
 	visualsRenditions: (visualId: string) => typedError<VisualRendition[], AppError_Serialize>(__TAURI_INVOKE("visuals_renditions", { visualId })),
 	visualsRendition: (visualId: string, format: string | null, theme: string | null, sizeClass: string | null) => typedError<VisualAsset, AppError_Serialize>(__TAURI_INVOKE("visuals_rendition", { visualId, format, theme, sizeClass })),
 	visualsRender: (visualId: string) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_render", { visualId })),
+	humanAnnotationCreate: (request: HumanAnnotationCreateRequest) => typedError<HumanAnnotationTaskRef, AppError_Serialize>(__TAURI_INVOKE("human_annotation_create", { request })),
+	humanAnnotationPreview: (request: HumanAnnotationPreviewRequest) => typedError<HumanAnnotationTaskPreview, AppError_Serialize>(__TAURI_INVOKE("human_annotation_preview", { request })),
+	humanAnnotationSessionOpen: (sessionId: string) => typedError<HumanAnnotationSessionView, AppError_Serialize>(__TAURI_INVOKE("human_annotation_session_open", { sessionId })),
+	humanAnnotationShow: (sessionId: string) => typedError<HumanAnnotationSessionView, AppError_Serialize>(__TAURI_INVOKE("human_annotation_show", { sessionId })),
+	humanAnnotationAnswerSet: (request: HumanAnnotationAnswerRequest) => typedError<HumanAnnotationMutationReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_answer_set", { request })),
+	humanAnnotationAnswerClear: (sessionId: string, expectedRevision: number, questionId: string) => typedError<HumanAnnotationMutationReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_answer_clear", { sessionId, expectedRevision, questionId })),
+	humanAnnotationCommentCreate: (request: HumanAnnotationCommentRequest) => typedError<HumanAnnotationMutationReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_comment_create", { request })),
+	humanAnnotationAudioBegin: (request: HumanAnnotationAudioBeginRequest) => typedError<HumanAnnotationAudioReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_audio_begin", { request })),
+	humanAnnotationAudioAppend: (request: HumanAnnotationAudioChunkRequest) => typedError<HumanAnnotationAudioReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_audio_append", { request })),
+	humanAnnotationAudioFinish: (request: HumanAnnotationAudioFinishRequest) => typedError<HumanAnnotationAudioReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_audio_finish", { request })),
+	humanAnnotationAudioRead: (sessionId: string, attachmentId: string) => typedError<HumanAnnotationAudioData, AppError_Serialize>(__TAURI_INVOKE("human_annotation_audio_read", { sessionId, attachmentId })),
+	humanAnnotationAudioTranscribe: (request: HumanAnnotationAudioTranscribeRequest) => typedError<HumanAnnotationMutationReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_audio_transcribe", { request })),
+	humanAnnotationTranscriptCorrect: (request: HumanAnnotationTranscriptRequest) => typedError<HumanAnnotationMutationReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_transcript_correct", { request })),
+	humanAnnotationSubmit: (request: HumanAnnotationSubmitRequest) => typedError<HumanAnnotationResultReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_submit", { request })),
+	humanAnnotationList: (query: HumanAnnotationListQuery) => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("human_annotation_list", { query })),
+	humanAnnotationStatus: (id: string) => typedError<HumanAnnotationStatus, AppError_Serialize>(__TAURI_INVOKE("human_annotation_status", { id })),
+	humanAnnotationCancel: (request: HumanAnnotationCancelRequest) => typedError<HumanAnnotationStatus, AppError_Serialize>(__TAURI_INVOKE("human_annotation_cancel", { request })),
+	humanAnnotationExport: (request: HumanAnnotationExportRequest) => typedError<HumanAnnotationExportReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_export", { request })),
+	humanAnnotationCampaignCreate: (request: HumanAnnotationCampaignCreateRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("human_annotation_campaign_create", { request })),
+	humanAnnotationCampaignStatus: (campaignId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("human_annotation_campaign_status", { campaignId })),
+	humanAnnotationCampaignClose: (request: HumanAnnotationCampaignActionRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("human_annotation_campaign_close", { request })),
+	humanAnnotationCampaignAdjudicate: (request: HumanAnnotationCampaignAdjudicateRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("human_annotation_campaign_adjudicate", { request })),
+	humanAnnotationSupersede: (request: HumanAnnotationSupersedeRequest) => typedError<HumanAnnotationTaskRef, AppError_Serialize>(__TAURI_INVOKE("human_annotation_supersede", { request })),
 	reportsList: (query: {
 	status: string | null,
 	search: string | null,
@@ -889,9 +912,29 @@ export type CispoProjection = {
 	meanAdvantage: number | null,
 	advantageStd?: number | null,
 	rewardVariance?: number | null,
+	/**
+	 *  Number of distinct rollout groups whose rewards were non-uniform.
+	 *  This is a run-level learning-signal count, not a sample count.
+	 */
+	learningSignalGroups?: number,
+	/**
+	 *  Uniform groups are locally uninformative, but do not imply the whole
+	 *  run lacked a learning signal.
+	 */
+	zeroAdvantageGroups?: number,
+	/**
+	 *  Distinct rollout groups observed by the reducer. This compact scalar
+	 *  survives the bounded first-paint wire view after detailed work items
+	 *  are removed and is therefore the canonical UI count.
+	 */
+	rolloutGroupCount?: number,
 	groupSize?: number | null,
 	optimizerSteps?: number,
+	clippedTokenFraction?: number | null,
+	importanceRatioMean?: number | null,
+	klProxy?: number | null,
 	checkpoints: string[],
+	selectedCheckpointId?: string | null,
 	childEvalRunIds: string[],
 	noLearningSignal: boolean,
 	policyCheckpointId: string | null,
@@ -1981,6 +2024,199 @@ export type HostedTrainingModelCatalog = {
 	livePreflightRequired: boolean,
 	models: HostedTrainingModel[],
 	total: number,
+};
+
+export type HumanAnnotationAnswerRequest = {
+	sessionId: string,
+	expectedRevision: number,
+	questionId: string,
+	answer: unknown,
+};
+
+export type HumanAnnotationAudioBeginRequest = {
+	sessionId: string,
+	mediaType: string,
+	metadata: unknown | null,
+};
+
+export type HumanAnnotationAudioChunkRequest = {
+	attachmentId: string,
+	chunkIndex: number,
+	base64Data: string,
+};
+
+export type HumanAnnotationAudioData = {
+	attachmentId: string,
+	mediaType: string,
+	base64Data: string,
+};
+
+export type HumanAnnotationAudioFinishRequest = {
+	attachmentId: string,
+	durationMs: number | null,
+};
+
+export type HumanAnnotationAudioReceipt = {
+	attachmentId: string,
+	state: string,
+	casDigest: string | null,
+	byteSize: number | null,
+};
+
+export type HumanAnnotationAudioTranscribeRequest = {
+	sessionId: string,
+	expectedRevision: number,
+	attachmentId: string,
+};
+
+export type HumanAnnotationCampaignActionRequest = {
+	campaignId: string,
+	rationale: string,
+};
+
+export type HumanAnnotationCampaignAdjudicateRequest = {
+	campaignId: string,
+	resultIds: string[],
+	decision: unknown,
+	rationale: string,
+	adjudicatorId: string | null,
+};
+
+export type HumanAnnotationCampaignCreateRequest = {
+	campaign: unknown,
+};
+
+export type HumanAnnotationCancelRequest = {
+	taskId: string,
+	reason: string,
+};
+
+export type HumanAnnotationCommentRequest = {
+	sessionId: string,
+	expectedRevision: number,
+	evidenceDigest: string,
+	selector: unknown,
+	bodyText: string | null,
+	audioAttachmentId: string | null,
+};
+
+export type HumanAnnotationCreateRequest = {
+	task: unknown,
+	/**
+	 *  Evaluator-owned answer keys. Persisted separately and never returned in
+	 *  the reviewer task or agent status projection.
+	 */
+	sealedAnswerKeys: unknown | null,
+	idempotencyKey: string,
+	reviewerId: string | null,
+	createdBy: string | null,
+};
+
+export type HumanAnnotationExportReceipt = {
+	resultId: string,
+	format: string,
+	exportDigest: string,
+	byteSize: number,
+};
+
+export type HumanAnnotationExportRequest = {
+	resultId: string,
+	format: string,
+};
+
+export type HumanAnnotationListQuery = {
+	campaignId: string | null,
+	state: string | null,
+	limit: number | null,
+};
+
+export type HumanAnnotationMutationReceipt = {
+	sessionId: string,
+	draftRevision: number,
+	state: string,
+	updatedAt: string,
+};
+
+export type HumanAnnotationPreviewRequest = {
+	task: unknown,
+	sealedAnswerKeys: unknown | null,
+	reviewerId: string | null,
+};
+
+export type HumanAnnotationResultReceipt = {
+	taskId: string,
+	sessionId: string,
+	resultId: string,
+	resultDigest: string,
+	sealDigest: string,
+	state: string,
+	submittedAt: string,
+};
+
+export type HumanAnnotationSessionView = {
+	schemaVersion: string,
+	taskId: string,
+	sessionId: string,
+	taskDigest: string,
+	task: unknown,
+	state: string,
+	draftRevision: number,
+	answers: unknown,
+	presentation: unknown,
+	comments: unknown[],
+	attachments: unknown[],
+	result: unknown | null,
+	updatedAt: string,
+};
+
+export type HumanAnnotationStatus = {
+	taskId: string,
+	sessionId: string,
+	taskDigest: string,
+	state: string,
+	revision: number,
+	resultId: string | null,
+	resultDigest: string | null,
+	sealDigest: string | null,
+	updatedAt: string,
+};
+
+export type HumanAnnotationSubmitRequest = {
+	sessionId: string,
+	expectedRevision: number,
+};
+
+export type HumanAnnotationSupersedeRequest = {
+	resultId: string,
+	reason: string,
+	reviewerId: string | null,
+};
+
+export type HumanAnnotationTaskPreview = {
+	schemaVersion: string,
+	taskDigest: string,
+	title: string,
+	questionCount: number,
+	requiredQuestionCount: number,
+	evidenceCount: number,
+	evidence: unknown,
+	presentation: unknown,
+	warnings: string[],
+};
+
+export type HumanAnnotationTaskRef = {
+	taskId: string,
+	sessionId: string,
+	taskDigest: string,
+	state: string,
+	created: boolean,
+};
+
+export type HumanAnnotationTranscriptRequest = {
+	sessionId: string,
+	expectedRevision: number,
+	attachmentId: string,
+	correctedText: string,
 };
 
 export type ImportPreview = {
@@ -4149,6 +4385,7 @@ export type TrainingEvaluationSummary = {
 	phase?: string | null,
 	step?: number,
 	score?: number | null,
+	metric?: string | null,
 	loss?: number | null,
 	delta?: number | null,
 	macroF1?: number | null,

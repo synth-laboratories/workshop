@@ -284,8 +284,13 @@ fn attach_identity(draft: OptimizerEventDraft, fact: &CoercedFact) -> OptimizerE
 fn training_vocabulary(kind: &str) -> &'static str {
     match kind {
         "job.queued" => "training.job.queued",
-        "job.started" | "job.resumed" => "training.job.started",
-        "job.succeeded" | "job.completed" => TRAINING_JOB_COMPLETED,
+        "job.started" | "job.resumed" | "sft.training.started" | "cispo.training.started" => {
+            "training.job.started"
+        }
+        "job.succeeded"
+        | "job.completed"
+        | "sft.training.completed"
+        | "cispo.training.completed" => TRAINING_JOB_COMPLETED,
         "job.failed" => TRAINING_JOB_FAILED,
         "job.cancelled" => TRAINING_JOB_CANCELLED,
         "training.metric" | "metric" => "training.metrics",
@@ -300,7 +305,10 @@ fn training_vocabulary(kind: &str) -> &'static str {
         "sft.dataset.validated" => "training.dataset.validated",
         "cispo.rollout_group.completed" => "training.rollout_group.completed",
         "cispo.group_advantage.computed" => "training.group_advantage.computed",
-        "cispo.zero_advantage.detected" => "training.no_learning_signal",
+        // One uniform group is a local diagnostic, not a terminal/global claim
+        // that the run has no learning signal. A later group in the same run
+        // may still have reward variance and produce a valid update.
+        "cispo.zero_advantage.detected" => "training.zero_advantage.detected",
         _ => "training.event",
     }
 }
@@ -311,14 +319,17 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
     match kind {
         "job.queued" => OptimizerEventDraft::new("optimizer.run.queued", algorithm)
             .delta(Map::from_iter([("status".into(), json!("queued"))])),
-        "job.started" => OptimizerEventDraft::new("optimizer.run.started", algorithm)
-            .delta(Map::from_iter([("status".into(), json!("running"))])),
+        "job.started" | "sft.training.started" | "cispo.training.started" => {
+            OptimizerEventDraft::new("optimizer.run.started", algorithm)
+                .delta(Map::from_iter([("status".into(), json!("running"))]))
+        }
         "job.resumed" => OptimizerEventDraft::new("optimizer.run.resumed", algorithm)
             .delta(Map::from_iter([("status".into(), json!("running"))])),
-        "job.succeeded" | "job.completed" => {
-            OptimizerEventDraft::new(TRAINING_JOB_COMPLETED, algorithm)
-                .delta(Map::from_iter([("status".into(), json!("succeeded"))]))
-        }
+        "job.succeeded"
+        | "job.completed"
+        | "sft.training.completed"
+        | "cispo.training.completed" => OptimizerEventDraft::new(TRAINING_JOB_COMPLETED, algorithm)
+            .delta(Map::from_iter([("status".into(), json!("succeeded"))])),
         "job.failed" => OptimizerEventDraft::new(TRAINING_JOB_FAILED, algorithm)
             .level("error")
             .delta(Map::from_iter([("status".into(), json!("failed"))]))
@@ -384,12 +395,13 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
             OptimizerEventDraft::new("sft.training.metrics", algorithm)
                 .delta(sft_metric_delta(payload))
         }
-        "cispo.update.completed"
-        | "cispo.step.metrics"
-        | "cispo.training.metrics"
-        | "cispo.importance_ratio.measured" => {
+        "cispo.update.completed" | "cispo.step.metrics" | "cispo.training.metrics" => {
             OptimizerEventDraft::new("training.metrics", algorithm)
                 .delta(cispo_metric_delta(payload))
+        }
+        "cispo.importance_ratio.measured" => {
+            OptimizerEventDraft::new("cispo.importance_ratio.measured", algorithm)
+                .delta(payload.as_object().cloned().unwrap_or_default())
         }
         "cispo.rollout_group.completed" => {
             let mut delta = payload.as_object().cloned().unwrap_or_default();
@@ -420,7 +432,7 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
             OptimizerEventDraft::new("cispo.rollout_group.completed", algorithm).delta(delta)
         }
         "cispo.zero_advantage.detected" => {
-            OptimizerEventDraft::new("cispo.no_learning_signal", algorithm)
+            OptimizerEventDraft::new("cispo.zero_advantage.detected", algorithm)
                 .delta(payload.as_object().cloned().unwrap_or_default())
         }
         "sft.checkpoint.created" | "sft.checkpoint.ready" | "cispo.checkpoint.created" => {
@@ -706,6 +718,22 @@ mod tests {
     }
 
     #[test]
+    fn hosted_algorithm_lifecycle_names_drive_run_status() {
+        let started =
+            adapt_source_fact("sft", &native_event(1, "sft.training.started", json!({}))).unwrap();
+        assert_eq!(started.draft.event_type, "optimizer.run.started");
+        assert_eq!(started.draft.delta["status"], "running");
+
+        let completed = adapt_source_fact(
+            "cispo",
+            &native_event(2, "cispo.training.completed", json!({})),
+        )
+        .unwrap();
+        assert_eq!(completed.draft.event_type, TRAINING_JOB_COMPLETED);
+        assert_eq!(completed.draft.delta["status"], "succeeded");
+    }
+
+    #[test]
     fn cispo_metrics_use_the_shared_training_vocabulary() {
         let adapted = adapt_source_fact(
             "cispo",
@@ -737,6 +765,37 @@ mod tests {
         assert_eq!(rollout.draft.event_type, "cispo.rollout_group.completed");
         assert_eq!(rollout.draft.delta["groupId"], "1:0");
         assert_eq!(rollout.draft.delta["workItemId"], "1:0");
+
+        let uniform = adapt_source_fact(
+            "cispo",
+            &native_event(
+                3,
+                "cispo.zero_advantage.detected",
+                json!({"group_id": "1:0", "rewards": [0.0, 0.0]}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(uniform.draft.event_type, "cispo.zero_advantage.detected");
+        assert_ne!(uniform.draft.event_type, "cispo.no_learning_signal");
+
+        let importance = adapt_source_fact(
+            "cispo",
+            &native_event(
+                4,
+                "cispo.importance_ratio.measured",
+                json!({
+                    "clipped_token_fraction": 0.011,
+                    "mean_ratio": 77.09,
+                    "kl_proxy": 3.72
+                }),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            importance.draft.event_type,
+            "cispo.importance_ratio.measured"
+        );
+        assert_eq!(importance.draft.delta["mean_ratio"], 77.09);
 
         let checkpoint = adapt_source_fact(
             "cispo",

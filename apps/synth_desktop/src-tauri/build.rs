@@ -30,12 +30,15 @@ fn main() {
 fn build_ghostty_host() {
     use std::path::{Path, PathBuf};
 
-    let manifest_dir = PathBuf::from(
-        std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"),
-    );
+    let manifest_dir =
+        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
     let package = manifest_dir.join("ghostty-host");
     let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
-    let swift_configuration = if profile == "release" { "release" } else { "debug" };
+    let swift_configuration = if profile == "release" {
+        "release"
+    } else {
+        "debug"
+    };
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR is set"));
     let target_root = out_dir
         .ancestors()
@@ -43,21 +46,28 @@ fn build_ghostty_host() {
         .expect("OUT_DIR lives below the Cargo target root");
     let scratch = target_root.join("ghostty-host");
 
-    println!("cargo:rerun-if-changed={}", package.join("Package.swift").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        package.join("Package.swift").display()
+    );
     println!(
         "cargo:rerun-if-changed={}",
         package.join("Package.resolved").display()
     );
     println!(
         "cargo:rerun-if-changed={}",
-        package.join("Sources/SynthGhosttyHost/SynthGhosttyHost.swift").display()
+        package
+            .join("Sources/SynthGhosttyHost/SynthGhosttyHost.swift")
+            .display()
     );
 
     let status = std::process::Command::new("swift")
         .args([
             "build",
             "--package-path",
-            package.to_str().expect("Ghostty host package path is UTF-8"),
+            package
+                .to_str()
+                .expect("Ghostty host package path is UTF-8"),
             "--scratch-path",
             scratch.to_str().expect("Ghostty host build path is UTF-8"),
             "--configuration",

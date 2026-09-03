@@ -914,6 +914,39 @@ window.synthWorkspaceScope ??= isTauri
 				return () => { disposed = true; unlisten?.(); };
 			}
 		};
+		window.synthHumanAnnotations ??= {
+			preview: (request) => bridgeResult<Record<string, unknown>>(fromGenerated(spectaCommands.humanAnnotationPreview(wire(request)))),
+			create: (request) => fromGenerated(spectaCommands.humanAnnotationCreate(wire(request))),
+			open: (sessionId) => bridgeResult<import("../bridge").HumanAnnotationSessionView>(fromGenerated(spectaCommands.humanAnnotationSessionOpen(sessionId))),
+			show: (sessionId) => bridgeResult<import("../bridge").HumanAnnotationSessionView>(fromGenerated(spectaCommands.humanAnnotationShow(sessionId))),
+			setAnswer: (request) => fromGenerated(spectaCommands.humanAnnotationAnswerSet(wire(request))),
+			clearAnswer: (sessionId, expectedRevision, questionId) => fromGenerated(spectaCommands.humanAnnotationAnswerClear(sessionId, expectedRevision, questionId)),
+			createComment: (request) => fromGenerated(spectaCommands.humanAnnotationCommentCreate(wire(request))),
+			audioBegin: (request) => fromGenerated(spectaCommands.humanAnnotationAudioBegin(wire(request))),
+			audioAppend: (request) => fromGenerated(spectaCommands.humanAnnotationAudioAppend(wire(request))),
+			audioFinish: (request) => fromGenerated(spectaCommands.humanAnnotationAudioFinish(wire(request))),
+			audioRead: (sessionId, attachmentId) => bridgeResult<{ attachmentId: string; mediaType: string; base64Data: string }>(fromGenerated(spectaCommands.humanAnnotationAudioRead(sessionId, attachmentId))),
+			audioTranscribe: (request) => fromGenerated(spectaCommands.humanAnnotationAudioTranscribe(wire(request))),
+			correctTranscript: (request) => fromGenerated(spectaCommands.humanAnnotationTranscriptCorrect(wire(request))),
+			submit: (request) => fromGenerated(spectaCommands.humanAnnotationSubmit(wire(request))),
+			list: (query = {}) => bridgeResult<Array<Record<string, unknown>>>(fromGenerated(spectaCommands.humanAnnotationList(wire(query)))),
+			status: (id) => fromGenerated(spectaCommands.humanAnnotationStatus(id)),
+			cancel: (request) => fromGenerated(spectaCommands.humanAnnotationCancel(wire(request))),
+			exportResult: (request) => fromGenerated(spectaCommands.humanAnnotationExport(wire(request))),
+			supersede: (request) => fromGenerated(spectaCommands.humanAnnotationSupersede(wire(request))),
+			campaignCreate: (request) => bridgeResult<Record<string, unknown>>(fromGenerated(spectaCommands.humanAnnotationCampaignCreate(wire(request)))),
+			campaignStatus: (campaignId) => bridgeResult<Record<string, unknown>>(fromGenerated(spectaCommands.humanAnnotationCampaignStatus(campaignId))),
+			campaignClose: (request) => bridgeResult<Record<string, unknown>>(fromGenerated(spectaCommands.humanAnnotationCampaignClose(wire(request)))),
+			campaignAdjudicate: (request) => bridgeResult<Record<string, unknown>>(fromGenerated(spectaCommands.humanAnnotationCampaignAdjudicate(wire(request)))),
+			onShow(listener) {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen<{ sessionId: string }>("human-annotation:show", ({ payload }) => listener(payload.sessionId)).then((next) => {
+					if (disposed) next(); else unlisten = next;
+				});
+				return () => { disposed = true; unlisten?.(); };
+			}
+		};
 		window.synthPlugins ??= {
 			status: (pluginId) => fromGenerated(spectaCommands.pluginsStatus(pluginId ?? null)),
 			list: () => fromGenerated(spectaCommands.pluginsList()),
@@ -1001,7 +1034,13 @@ window.synthWorkspaceScope ??= isTauri
 				});
 			}
 		};
-		window.synthOptimizers ??= {
+		// Merge on every installation. Development HMR and staged release
+		// upgrades can retain an older bridge object on `window`; `??=` left new
+		// read-model methods absent until a full process restart, which made live
+		// visuals silently fall back to their one-point summary even though the
+		// durable collection existed.
+		window.synthOptimizers = {
+			...window.synthOptimizers,
 			listAlgorithms: () => fromGenerated(spectaCommands.optimizersAlgorithmsList()) as Promise<import("../bridge").OptimizerAlgorithmInfo[]>,
 			listRecipes: (sessionRef) => fromGenerated(spectaCommands.optimizersRecipesList(sessionRef ?? null)) as Promise<import("../bridge").OptimizerRecipeInfo[]>,
 			startRecipe: (request) => fromGenerated(spectaCommands.optimizersRecipeStart(wire(request))),
@@ -1203,10 +1242,23 @@ export const bridges = {
 	get visuals() {
 		return window.synthVisuals;
 	},
+	get humanAnnotations() {
+		return window.synthHumanAnnotations;
+	},
 	get reports() {
 		return window.synthReports;
 	},
 	get optimizers() {
+		// A long-lived dev/QA webview can retain a bridge installed by an older
+		// renderer revision. Repair it on capability access so newly introduced
+		// bounded read-model methods do not require restarting a paid run or the
+		// Desktop process merely to become visible.
+		if (
+			typeof window.synthOptimizers?.runSummary !== "function"
+			|| typeof window.synthOptimizers?.runCollection !== "function"
+		) {
+			installDesktopBridge();
+		}
 		return window.synthOptimizers;
 	},
 	get secrets() {

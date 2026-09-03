@@ -1497,9 +1497,14 @@ function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactR
 		const visualBridge = bridges.visuals;
 		if (!host || !contract || !bindingsDigest || !artifact.visualId || !artifact.revision || !visualBridge) return;
 		let frame: number | null = null;
+		let fallback: number | null = null;
 		lastPublishedObservation.current = null;
 		const publish = () => {
 			frame = null;
+			if (fallback != null) {
+				window.clearTimeout(fallback);
+				fallback = null;
+			}
 			const surface = host.querySelector("[data-visual-transport-state]");
 			if (!surface) return;
 			const rawError = surface.getAttribute("data-visual-error")?.trim();
@@ -1536,6 +1541,11 @@ function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactR
 		};
 		const schedule = () => {
 			if (frame == null) frame = window.requestAnimationFrame(publish);
+			// macOS suspends requestAnimationFrame for an occluded Workshop
+			// window. Review capture is intentionally host-driven and must still
+			// receive the exact rendered-observation receipt while the app is in
+			// the background, so race rAF with one bounded timer.
+			if (fallback == null) fallback = window.setTimeout(publish, 250);
 		};
 		const observer = new MutationObserver(schedule);
 		observer.observe(host, { subtree: true, childList: true, attributes: true });
@@ -1543,6 +1553,7 @@ function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactR
 		return () => {
 			observer.disconnect();
 			if (frame != null) window.cancelAnimationFrame(frame);
+			if (fallback != null) window.clearTimeout(fallback);
 		};
 	}, [artifact.revision, artifact.visualId, bindingsDigest, contract]);
 

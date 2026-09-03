@@ -70,6 +70,8 @@ export function markCaptureReady(scope: CaptureScope, target: string): void {
 export type PublishedAppState = {
 	route: string;
 	chatId?: string;
+	/** The artifact mounted in Workshop's task-adjacent visual pane. */
+	openVisualId?: string;
 	visiblePluginIds?: readonly string[];
 	terminalOpen?: boolean;
 	sidePanelOpen?: boolean;

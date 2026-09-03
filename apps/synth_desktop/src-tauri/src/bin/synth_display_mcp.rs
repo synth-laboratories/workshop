@@ -135,10 +135,7 @@ fn slug(value: &str) -> String {
 }
 
 fn capture(args: &Value) -> Result<Value, String> {
-    let scope = args
-        .get("scope")
-        .and_then(Value::as_str)
-        .unwrap_or("app");
+    let scope = args.get("scope").and_then(Value::as_str).unwrap_or("app");
     let target = args.get("target").and_then(Value::as_str);
     match scope {
         "app" => {}
@@ -210,7 +207,10 @@ fn capture(args: &Value) -> Result<Value, String> {
         if viewport.is_some() {
             // Resizing between frames would make the recording a series of
             // relayouts rather than a record of the run.
-            return Err("frames and viewport cannot be combined: a recording never resizes the window".into());
+            return Err(
+                "frames and viewport cannot be combined: a recording never resizes the window"
+                    .into(),
+            );
         }
         return record(&body, &root, &label, frames, args);
     }
@@ -317,7 +317,12 @@ fn mux(dir: &std::path::Path, fps: f64) -> Value {
         .arg(dir.join("frame-%04d.png"))
         // Even dimensions are required by yuv420p, and a captured window is
         // routinely odd-sized on a Retina display.
-        .args(["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-pix_fmt", "yuv420p"])
+        .args([
+            "-vf",
+            "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+            "-pix_fmt",
+            "yuv420p",
+        ])
         .arg(&output)
         .output();
     match result {
@@ -380,7 +385,10 @@ mod tests {
         // The viewport is optional on purpose: photographing the app must not
         // begin by resizing the user's window.
         let required = capture["inputSchema"].get("required");
-        assert!(required.is_none(), "capture must require no argument: {required:?}");
+        assert!(
+            required.is_none(),
+            "capture must require no argument: {required:?}"
+        );
         let described = capture["description"].as_str().unwrap();
         assert!(described.contains("current size"), "{described}");
     }

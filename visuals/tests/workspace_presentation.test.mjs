@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
 import { sftMissingPrerequisites } from "../families/optimizers/_shared/optimizer.run.v1/overlays/sft/model.ts";
-import { candidateLabels } from "../families/optimizers/_shared/optimizer.run.v1/overlays/gepa/model.ts";
+import { candidateLabels, gepaReportingLanguage, scoredCandidateCount } from "../families/optimizers/_shared/optimizer.run.v1/overlays/gepa/model.ts";
 
 const visualsRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relative) => readFileSync(join(visualsRoot, relative), "utf8");
@@ -77,13 +77,30 @@ test("colliding candidate display names fall back to stable short ids", () => {
 test("GEPA setup that has reported nothing collapses instead of repeating 'pending'", () => {
   const overview = read(`${SHARED}/overlays/gepa/SearchOverviewPanel.tsx`);
   assert.match(overview, /const unreported = pendingRows === card\.rows\.length/);
-  assert.match(overview, /Not reported yet/);
+  assert.match(overview, /\{missingCard\} · \{card\.rows\.length\} fields/);
   // The outcome and the search contract are rendered before the setup grid.
   assert.equal(
     overview.indexOf("gepa-outcome-card") < overview.indexOf("gepa-experiment-context"),
     true
   );
-  assert.match(overview, /setup incomplete · \$\{setupPending\}\/\$\{setupRows\.length\} fields pending/);
+  assert.match(overview, /reporting\.setupSummary\(setupPending, setupRows\.length\)/);
+});
+
+test("sealed GEPA absence is historical, never presented as pending work", () => {
+  const live = gepaReportingLanguage(false);
+  const sealed = gepaReportingLanguage(true);
+  assert.equal(live.setupSummary(3, 25), "setup incomplete · 3/25 fields pending");
+  assert.equal(sealed.setupSummary(3, 25), "3/25 fields not reported");
+  assert.equal(sealed.missingCard, "Not reported");
+});
+
+test("GEPA scored-candidate count survives compact historical imports", () => {
+  assert.equal(scoredCandidateCount([
+    { id: "seed", train_reward: 0.74 },
+    { id: "winner", score: 0.8 },
+    { id: "pending" },
+    { id: "zero", minibatchReward: 0 }
+  ]), 3);
 });
 
 test("missing SFT prerequisites are stated once, in order, with a reason", () => {

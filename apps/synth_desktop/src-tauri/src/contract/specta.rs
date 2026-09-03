@@ -225,6 +225,29 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::visuals_renditions,
             crate::visuals_rendition,
             crate::visuals_render,
+            crate::human_annotations::human_annotation_create,
+            crate::human_annotations::human_annotation_preview,
+            crate::human_annotations::human_annotation_session_open,
+            crate::human_annotations::human_annotation_show,
+            crate::human_annotations::human_annotation_answer_set,
+            crate::human_annotations::human_annotation_answer_clear,
+            crate::human_annotations::human_annotation_comment_create,
+            crate::human_annotations::human_annotation_audio_begin,
+            crate::human_annotations::human_annotation_audio_append,
+            crate::human_annotations::human_annotation_audio_finish,
+            crate::human_annotations::human_annotation_audio_read,
+            crate::human_annotations::human_annotation_audio_transcribe,
+            crate::human_annotations::human_annotation_transcript_correct,
+            crate::human_annotations::human_annotation_submit,
+            crate::human_annotations::human_annotation_list,
+            crate::human_annotations::human_annotation_status,
+            crate::human_annotations::human_annotation_cancel,
+            crate::human_annotations::human_annotation_export,
+            crate::human_annotations::human_annotation_campaign_create,
+            crate::human_annotations::human_annotation_campaign_status,
+            crate::human_annotations::human_annotation_campaign_close,
+            crate::human_annotations::human_annotation_campaign_adjudicate,
+            crate::human_annotations::human_annotation_supersede,
             crate::reports_list,
             crate::reports_get,
             crate::reports_revision_get,
@@ -549,9 +572,12 @@ mod tests {
         // historical projection the scrubber reads instead of the journal.
         // 297 → 300: experiment update plus the standalone research-journal
         // list and append commands.
-        // 300 → 301: side-effect-free Synth Cloud inference lifecycle read.
+        // 300 → 306: side-effect-free Synth Cloud inference lifecycle plus
+        // intervening release read-model commands.
+        // 306 → 323: first-class human annotation task/session/draft/audio,
+        // transcription, status, cancellation, export, and submission.
         assert_eq!(
-            exported, 301,
+            exported, 323,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

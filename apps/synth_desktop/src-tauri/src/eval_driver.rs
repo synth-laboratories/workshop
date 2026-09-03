@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, sync::Arc, time::Duration};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
@@ -318,6 +318,13 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
         ("POST", "/v1/sessions") | ("POST", "/v1/create_session") => {
             create_session(deps, body).await
         }
+        ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/select") => {
+            let session_id = path
+                .trim_start_matches("/v1/sessions/")
+                .trim_end_matches("/select")
+                .trim_end_matches('/');
+            select_session(deps, session_id)
+        }
         ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/messages") => {
             let session_id = path
                 .trim_start_matches("/v1/sessions/")
@@ -495,6 +502,27 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
         ("POST", "/v1/policy_preflight") => policy_preflight(deps, body).await,
         _ => bail!("unsupported eval driver route {method} {path}"),
     }
+}
+
+fn session_selection_script(session_id: &str) -> Result<String> {
+    if session_id.trim().is_empty() || session_id.contains('/') {
+        bail!("select_session requires one session id");
+    }
+    let session_id = serde_json::to_string(session_id)?;
+    Ok(format!(
+        "window.__synthEval?.invoke('select_session',{{sessionId:{session_id}}});"
+    ))
+}
+
+fn select_session(deps: &EvalDriverDeps, session_id: &str) -> Result<Value> {
+    let window = deps
+        .app
+        .get_webview_window("main")
+        .context("select_session requires the main Desktop window")?;
+    window
+        .eval(session_selection_script(session_id)?)
+        .context("select the QA session in the renderer")?;
+    Ok(json!({"selected": true, "sessionId": session_id}))
 }
 
 fn session_approval_route(path: &str) -> Option<(String, String)> {
@@ -749,6 +777,9 @@ async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -
         .map(|row| Value::String(row.id.clone()))
         .collect::<Vec<_>>();
     let trace_digest = visual.trace_id.clone();
+    let human_reference_results = crate::human_annotations::from_core(core)
+        .submitted_for_subject("visual_revision".into(), visual_id.to_owned())
+        .await?;
     Ok(json!({
         "schemaVersion": "synth.visualsbench-export.v1",
         "sourceRevision": crate::instance::diagnostics().source_revision,
@@ -768,6 +799,7 @@ async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -
         })).collect::<Vec<_>>(),
         "journal": journal,
         "annotations": active_annotations,
+        "humanReferenceResults": human_reference_results,
         "overlayDigest": overlay_digest,
         "nextTurnContext": {
             "visualId": visual_id,
@@ -2930,6 +2962,17 @@ mod tests {
             &json!({"from": "created", "to": "running"})
         ));
         assert!(is_terminal_event("run.completed", &json!({})));
+    }
+
+    #[test]
+    fn session_selection_script_uses_a_json_literal() {
+        let script = session_selection_script("vq_test-1").unwrap();
+        assert_eq!(
+            script,
+            "window.__synthEval?.invoke('select_session',{sessionId:\"vq_test-1\"});"
+        );
+        assert!(session_selection_script("").is_err());
+        assert!(session_selection_script("nested/session").is_err());
     }
 
     #[test]

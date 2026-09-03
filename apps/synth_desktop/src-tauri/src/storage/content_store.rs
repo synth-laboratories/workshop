@@ -88,7 +88,11 @@ fn validate_kind(kind: &str) -> Result<()> {
         // Computer-use captures. Kept in their own kinds so an accessibility
         // tree is never served as an image, and so retention can drop a
         // session's captures without touching anything else.
-        | "computer_use_ax" | "computer_use_screenshots" => Ok(()),
+        | "computer_use_ax" | "computer_use_screenshots"
+        // Reviewer microphone recordings are authoritative source evidence.
+        // Keeping them distinct prevents transcript/export retention from
+        // accidentally deleting or substituting the original audio.
+        | "human_annotation_audio" | "human_annotation_exports" => Ok(()),
         _ => bail!("unsupported content store kind: {kind}"),
     }
 }

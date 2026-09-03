@@ -38,15 +38,9 @@ pub fn upsert_campaign(
     metadata: &Value,
 ) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
-    let traces = serde_json::to_string(
-        metadata.get("traces").unwrap_or(&json!([])),
-    )?;
-    let annotators = serde_json::to_string(
-        metadata.get("annotators").unwrap_or(&json!([])),
-    )?;
-    let coverage = serde_json::to_string(
-        metadata.get("coverage").unwrap_or(&json!({})),
-    )?;
+    let traces = serde_json::to_string(metadata.get("traces").unwrap_or(&json!([])))?;
+    let annotators = serde_json::to_string(metadata.get("annotators").unwrap_or(&json!([])))?;
+    let coverage = serde_json::to_string(metadata.get("coverage").unwrap_or(&json!({})))?;
     let cost = serde_json::to_string(metadata.get("cost").unwrap_or(&json!({})))?;
     let metadata_json = serde_json::to_string(metadata)?;
     conn.execute(
@@ -130,7 +124,9 @@ pub fn upsert_evidence_head(
             updated_at=excluded.updated_at",
         params![
             digest,
-            summary.pointer("/evidenceHead/bundleId").and_then(Value::as_str),
+            summary
+                .pointer("/evidenceHead/bundleId")
+                .and_then(Value::as_str),
             trace_digest,
             summary.pointer("/campaign/id").and_then(Value::as_str),
             annotation_count,
@@ -342,9 +338,7 @@ fn i64_field(value: &Value, snake: &str, camel: &str) -> Option<i64> {
     value
         .get(snake)
         .or_else(|| value.get(camel))
-        .and_then(|item| {
-            item.as_i64().or_else(|| item.as_u64().map(|n| n as i64))
-        })
+        .and_then(|item| item.as_i64().or_else(|| item.as_u64().map(|n| n as i64)))
 }
 
 fn job_object(payload: &Value) -> &Value {
@@ -364,7 +358,10 @@ fn finding_status(raw: Option<&str>) -> &'static str {
 }
 
 fn domain_from_annotator(annotator_id: &str) -> Option<&str> {
-    annotator_id.split('.').next().filter(|part| !part.is_empty())
+    annotator_id
+        .split('.')
+        .next()
+        .filter(|part| !part.is_empty())
 }
 
 pub fn campaign_status_from_jobs(states: &[String]) -> &'static str {
@@ -422,7 +419,9 @@ pub fn apply_job_snapshot(
         .to_string();
     let annotator_digest = text(&request, "annotator_digest", "annotatorDigest");
     let repeat_index = i64_field(&request, "repeat_index", "repeatIndex").unwrap_or(0);
-    let state = text(job, "state", "state").unwrap_or("prepared").to_string();
+    let state = text(job, "state", "state")
+        .unwrap_or("prepared")
+        .to_string();
     let terminal = payload
         .get("terminal")
         .and_then(Value::as_bool)
@@ -434,9 +433,7 @@ pub fn apply_job_snapshot(
     let rejected_count = i64_field(job, "rejected_count", "rejectedCount");
     let failure_reason = job
         .get("error")
-        .and_then(|error| {
-            text(error, "message", "message").or_else(|| text(error, "code", "code"))
-        })
+        .and_then(|error| text(error, "message", "message").or_else(|| text(error, "code", "code")))
         .map(str::to_owned);
     let cost_usd_micros = job
         .pointer("/usage/cost_usd")
@@ -634,7 +631,10 @@ fn job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         abstained_count: row.get(9)?,
         rejected_count: row.get(10)?,
         failure_reason: row.get(11)?,
-        projected: payload.get("projected").and_then(Value::as_bool).unwrap_or(false),
+        projected: payload
+            .get("projected")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -705,7 +705,12 @@ pub fn refresh_campaign_coverage(conn: &Connection, campaign_id: &str) -> Result
         "UPDATE annotation_campaigns
          SET status=?1, coverage_json=?2, updated_at=?3
          WHERE campaign_id=?4",
-        params![status, serde_json::to_string(&coverage)?, now_rfc3339(), campaign_id],
+        params![
+            status,
+            serde_json::to_string(&coverage)?,
+            now_rfc3339(),
+            campaign_id
+        ],
     )?;
     Ok(status.to_string())
 }
@@ -739,7 +744,10 @@ pub fn seed_from_stage_payload(
         let digest = text(job, "trace_digest", "traceDigest");
         let trace_id = text(job, "trace_id", "traceId");
         if let Some(digest) = digest {
-            if !traces.iter().any(|row| row.get("digest").and_then(Value::as_str) == Some(digest)) {
+            if !traces
+                .iter()
+                .any(|row| row.get("digest").and_then(Value::as_str) == Some(digest))
+            {
                 traces.push(json!({ "id": trace_id, "digest": digest }));
             }
         }
@@ -851,9 +859,7 @@ pub fn seed_from_amendments(conn: &Connection) -> Result<usize> {
         else {
             continue;
         };
-        let label = event
-            .pointer("/raw/spec/label")
-            .and_then(Value::as_str);
+        let label = event.pointer("/raw/spec/label").and_then(Value::as_str);
         seeded += seed_from_stage_payload(conn, &run_id, label, &stage)?;
     }
     Ok(seeded)
@@ -892,7 +898,10 @@ pub fn build_workbench_summary(
         .or_else(|| head.get("verifierResultCount"))
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    let findings: Vec<Value> = annotations.iter().filter_map(finding_from_annotation).collect();
+    let findings: Vec<Value> = annotations
+        .iter()
+        .filter_map(finding_from_annotation)
+        .collect();
     let mut taxonomy = std::collections::BTreeMap::<String, i64>::new();
     for finding in &findings {
         if let Some(label) = finding.get("label").and_then(Value::as_str) {
@@ -912,7 +921,10 @@ pub fn build_workbench_summary(
                     .is_some_and(|label| label.starts_with("milestone."))
         })
         .map(|finding| {
-            let label = finding.get("label").and_then(Value::as_str).unwrap_or("milestone");
+            let label = finding
+                .get("label")
+                .and_then(Value::as_str)
+                .unwrap_or("milestone");
             let verified = label.contains("engine_verified")
                 || finding
                     .pointer("/payload/engine_verified")
@@ -980,7 +992,10 @@ pub fn build_workbench_summary(
             })
         })
         .collect();
-    let rubric = rubric_from_verifier_results(head.get("verifier_results").or_else(|| head.get("verifierResults")));
+    let rubric = rubric_from_verifier_results(
+        head.get("verifier_results")
+            .or_else(|| head.get("verifierResults")),
+    );
     json!({
         "schemaVersion": WORKBENCH_SCHEMA,
         "campaign": {
@@ -1135,7 +1150,11 @@ fn finding_from_annotation(annotation: &Value) -> Option<Value> {
     }))
 }
 
-pub fn replace_findings(conn: &Connection, evidence_head_digest: &str, summary: &Value) -> Result<usize> {
+pub fn replace_findings(
+    conn: &Connection,
+    evidence_head_digest: &str,
+    summary: &Value,
+) -> Result<usize> {
     conn.execute(
         "DELETE FROM annotation_findings WHERE evidence_head_digest=?1",
         [evidence_head_digest],
@@ -1158,10 +1177,7 @@ pub fn replace_findings(conn: &Connection, evidence_head_digest: &str, summary: 
             .unwrap_or("unknown");
         let status = finding_status(finding.get("status").and_then(Value::as_str));
         let target = finding.get("target").cloned().unwrap_or(json!({}));
-        let selector = target
-            .get("selector")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let selector = target.get("selector").and_then(Value::as_str).unwrap_or("");
         conn.execute(
             "INSERT INTO annotation_findings(
                 finding_id, evidence_head_digest, job_id, annotator_id, annotation_type,
@@ -1207,7 +1223,8 @@ pub fn project_trace_head(
 ) -> Result<Option<ProjectedHead>> {
     let jobs = list_jobs_for_campaign(conn, campaign_id)?;
     let campaign_status = refresh_campaign_coverage(conn, campaign_id)?;
-    let (session_id, eval_run_id, label, _) = campaign_row(conn, campaign_id)?.unwrap_or((None, None, None, campaign_status.clone()));
+    let (session_id, eval_run_id, label, _) =
+        campaign_row(conn, campaign_id)?.unwrap_or((None, None, None, campaign_status.clone()));
     let domain = jobs
         .first()
         .and_then(|job| domain_from_annotator(&job.annotator_id))
@@ -1233,7 +1250,10 @@ pub fn project_trace_head(
     };
     upsert_evidence_head(conn, &digest, trace_digest, &summary)?;
     replace_findings(conn, &digest, &summary)?;
-    let rubric = summary.get("rubric").cloned().unwrap_or(json!({ "available": false }));
+    let rubric = summary
+        .get("rubric")
+        .cloned()
+        .unwrap_or(json!({ "available": false }));
     if rubric.get("available").and_then(Value::as_bool) == Some(true) {
         let rubric_digest = rubric
             .get("digest")
@@ -1253,9 +1273,10 @@ pub fn project_trace_head(
             Some(&digest),
         )?;
     }
-    for job in jobs.iter().filter(|job| {
-        job.trace_digest == trace_digest || job.trace_id.as_deref() == Some(trace_id)
-    }) {
+    for job in jobs
+        .iter()
+        .filter(|job| job.trace_digest == trace_digest || job.trace_id.as_deref() == Some(trace_id))
+    {
         mark_job_projected(conn, &job.job_id, Some(&digest))?;
     }
     Ok(Some(ProjectedHead {
@@ -1369,10 +1390,7 @@ pub fn record_local_review(
     reviewer: &str,
     rationale: &str,
 ) -> Result<String> {
-    let review_id = format!(
-        "arev_{}",
-        chrono::Utc::now().timestamp_millis()
-    );
+    let review_id = format!("arev_{}", chrono::Utc::now().timestamp_millis());
     conn.execute(
         "INSERT INTO annotation_reviews(
             review_id, finding_id, evidence_head_digest, decision, reviewer, rationale, created_at
@@ -1424,8 +1442,13 @@ mod tests {
             }),
         )
         .unwrap();
-        upsert_unavailable_rubric(&conn, "sha256:missing", "verifier_result_missing", Some("sha256:head"))
-            .unwrap();
+        upsert_unavailable_rubric(
+            &conn,
+            "sha256:missing",
+            "verifier_result_missing",
+            Some("sha256:head"),
+        )
+        .unwrap();
         let head = get_evidence_head(&conn, "sha256:head").unwrap().unwrap();
         assert_eq!(head.trace_digest, "sha256:trace");
         assert_eq!(head.campaign_id.as_deref(), Some("acmp_1"));
@@ -1434,7 +1457,10 @@ mod tests {
         assert!(head.bundle_id.is_none());
         let rubric = get_rubric_result(&conn, "sha256:missing").unwrap().unwrap();
         assert!(!rubric.available);
-        assert_eq!(rubric.unavailable_reason.as_deref(), Some("verifier_result_missing"));
+        assert_eq!(
+            rubric.unavailable_reason.as_deref(),
+            Some("verifier_result_missing")
+        );
         assert_eq!(rubric.summary.get("available"), Some(&json!(false)));
         assert!(rubric.summary.get("score").is_none());
         let payload = projection_payload(&conn, "annotation_evidence_head", "sha256:head").unwrap();
@@ -1479,8 +1505,14 @@ mod tests {
                 }
             ]
         });
-        assert_eq!(seed_from_stage_payload(&conn, "opt_eval_1", Some("post_rollout"), &stage).unwrap(), 1);
-        assert_eq!(seed_from_stage_payload(&conn, "opt_eval_1", Some("post_rollout"), &stage).unwrap(), 0);
+        assert_eq!(
+            seed_from_stage_payload(&conn, "opt_eval_1", Some("post_rollout"), &stage).unwrap(),
+            1
+        );
+        assert_eq!(
+            seed_from_stage_payload(&conn, "opt_eval_1", Some("post_rollout"), &stage).unwrap(),
+            0
+        );
         let jobs = list_jobs_needing_reconcile(&conn).unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].state, "prepared");
@@ -1501,11 +1533,17 @@ mod tests {
             }
         });
         let first = apply_job_snapshot(&conn, Some("acmp_1"), "ctr_1", &payload).unwrap();
-        assert!(first.terminal, "Workshop polls GET /annotation-jobs until terminal");
+        assert!(
+            first.terminal,
+            "Workshop polls GET /annotation-jobs until terminal"
+        );
         assert!(!first.already_projected);
         assert_eq!(first.bundle_digest.as_deref(), Some("sha256:head"));
         let second = apply_job_snapshot(&conn, Some("acmp_1"), "ctr_1", &payload).unwrap();
-        assert!(!second.already_projected, "not projected until the evidence head is written");
+        assert!(
+            !second.already_projected,
+            "not projected until the evidence head is written"
+        );
         let annotations = json!({
             "trace_id": "trace_1",
             "bundle_digest": "sha256:head",
@@ -1571,10 +1609,18 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(finding_count, 2, "re-projecting must replace, not duplicate");
-        let rubric = get_rubric_result(&conn, "unavailable:sha256:head").unwrap().unwrap();
+        assert_eq!(
+            finding_count, 2,
+            "re-projecting must replace, not duplicate"
+        );
+        let rubric = get_rubric_result(&conn, "unavailable:sha256:head")
+            .unwrap()
+            .unwrap();
         assert!(!rubric.available);
-        assert_eq!(rubric.unavailable_reason.as_deref(), Some("verifier_result_missing"));
+        assert_eq!(
+            rubric.unavailable_reason.as_deref(),
+            Some("verifier_result_missing")
+        );
         assert!(rubric.summary.get("score").is_none());
         let third = apply_job_snapshot(&conn, Some("acmp_1"), "ctr_1", &payload).unwrap();
         assert!(third.already_projected);
@@ -1643,7 +1689,8 @@ mod tests {
                     }
                 }
             });
-            let applied = apply_job_snapshot(&conn, Some("acmp_restart"), "ctr_1", &running).unwrap();
+            let applied =
+                apply_job_snapshot(&conn, Some("acmp_restart"), "ctr_1", &running).unwrap();
             assert!(!applied.terminal);
             assert_eq!(applied.state, "running");
             let jobs = list_jobs_needing_reconcile(&conn).unwrap();
@@ -1652,7 +1699,11 @@ mod tests {
         }
         let conn = rusqlite::Connection::open(&path).unwrap();
         let jobs = list_jobs_needing_reconcile(&conn).unwrap();
-        assert_eq!(jobs.len(), 1, "Workshop restart re-reads running jobs from SQLite");
+        assert_eq!(
+            jobs.len(),
+            1,
+            "Workshop restart re-reads running jobs from SQLite"
+        );
         assert_eq!(jobs[0].job_id, "ajob_restart");
         assert_eq!(jobs[0].state, "running");
         let sealed = json!({
@@ -1867,7 +1918,9 @@ mod tests {
         )
         .unwrap()
         .expect("head digest");
-        let head = get_evidence_head(&conn, &projected.digest).unwrap().unwrap();
+        let head = get_evidence_head(&conn, &projected.digest)
+            .unwrap()
+            .unwrap();
         assert_eq!(head.summary["rubric"]["available"], json!(true));
         assert_eq!(head.summary["rubric"]["score"], json!(0.4722222222222222));
         assert_eq!(head.summary["rubric"]["passed"], json!(false));
@@ -1875,7 +1928,10 @@ mod tests {
             head.summary["rubric"]["verifierResultId"],
             json!("vres_2a294bcd197fd15c")
         );
-        assert_eq!(head.summary["rubric"]["criteria"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            head.summary["rubric"]["criteria"].as_array().unwrap().len(),
+            2
+        );
         let rubric = get_rubric_result(
             &conn,
             "sha256:f3b1f77bfb50067ac860cf551277fd038c73ac9fa3d8379ea6b57dddea3fe56d",
@@ -1883,7 +1939,10 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(rubric.available);
-        assert_eq!(rubric.summary.get("score"), Some(&json!(0.4722222222222222)));
+        assert_eq!(
+            rubric.summary.get("score"),
+            Some(&json!(0.4722222222222222))
+        );
         assert_ne!(rubric.summary.get("score"), Some(&json!(0.0)));
     }
 

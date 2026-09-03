@@ -564,6 +564,31 @@ test("reconciliation prefers the sealed trace but never hides what live already 
   assert.equal(reconcileCraftaxTrace(null, complete).source, "sealed");
 });
 
+test("post-hoc verifier grades remain attached when a pre-grading trace seal becomes authoritative", () => {
+  sequence = 0;
+  const policy = [
+    producer("observation", { messages: [{ role: "user", content: "question" }] }),
+    producer("span.policy.opened", {}),
+    producer("action", { content: "answer" }),
+    producer("span.policy.closed", { status: "completed" })
+  ];
+  const live = foldCraftaxTrace([
+    ...policy,
+    producer("rubric.grade", {
+      index: 0,
+      criterion: "Answers the question",
+      criteria_met: true,
+      explanation: "The answer is responsive.",
+      points: 1
+    })
+  ], identity);
+  const sealed = foldCraftaxTrace(policy, { ...identity, sealed: true, status: "completed" });
+  const reconciled = reconcileCraftaxTrace(live, sealed);
+  assert.equal(reconciled.source, "sealed");
+  assert.equal(reconciled.view.steps[0].rubric.length, 1);
+  assert.equal(reconciled.view.steps[0].rubric[0].criterion, "Answers the question");
+});
+
 test("the map renderer is given map rows, never the whole observation", () => {
   const view = foldCraftaxTrace(craftaxEvents(), identity);
   const rows = localMapRows(view.steps[0]);
@@ -586,4 +611,40 @@ test("the map renderer is given map rows, never the whole observation", () => {
     null
   );
   assert.equal(localMapRows(null), null);
+});
+
+test("chat-completion observations and actions become readable call input and output", () => {
+  sequence = 0;
+  const view = foldCraftaxTrace([
+    producer("observation", {
+      messages: [{ role: "user", content: "How should I respond to this symptom?" }]
+    }),
+    producer("span.policy.opened", {}),
+    producer("action", {
+      role: "assistant",
+      content: "Give cautious guidance and recommend appropriate care."
+    }),
+    producer("span.policy.closed", { status: "completed" }),
+    producer("rubric.grade", {
+      index: 0,
+      criterion: "Recommends appropriate professional care.",
+      explanation: "The response explicitly recommends appropriate care.",
+      criteria_met: true,
+      points: 8
+    })
+  ], { ...identity, scenario: "healthbench", sealed: true, status: "completed" });
+
+  assert.equal(view.steps[0].content.observation, "How should I respond to this symptom?");
+  assert.deepEqual(view.steps[0].content.input_messages, [
+    { role: "user", content: "How should I respond to this symptom?", toolCallId: null, name: null }
+  ]);
+  assert.equal(view.steps[0].content.message, "Give cautious guidance and recommend appropriate care.");
+  assert.deepEqual(view.steps[0].action.applied, [], "text output is not an environment action");
+  assert.deepEqual(view.steps[0].rubric, [{
+    index: 0,
+    criterion: "Recommends appropriate professional care.",
+    explanation: "The response explicitly recommends appropriate care.",
+    met: true,
+    points: 8
+  }]);
 });

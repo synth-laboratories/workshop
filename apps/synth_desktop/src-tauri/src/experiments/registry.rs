@@ -247,18 +247,33 @@ pub fn research_log_append(
     conn: &Connection,
     request: ResearchJournalAppendRequest,
 ) -> Result<ResearchJournalEntry> {
-    anyhow::ensure!(!request.body.trim().is_empty(), "research log entry requires a body");
+    anyhow::ensure!(
+        !request.body.trim().is_empty(),
+        "research log entry requires a body"
+    );
     anyhow::ensure!(
         matches!(
             request.entry_kind.as_str(),
-            "observation" | "hypothesis" | "decision" | "result" | "failure" | "limitation" | "follow_up"
+            "observation"
+                | "hypothesis"
+                | "decision"
+                | "result"
+                | "failure"
+                | "limitation"
+                | "follow_up"
         ),
         "unsupported research log entry kind"
     );
     let actor_kind = request.actor_kind.unwrap_or_else(|| "agent".into());
-    anyhow::ensure!(matches!(actor_kind.as_str(), "human" | "agent"), "research log actorKind must be human or agent");
+    anyhow::ensure!(
+        matches!(actor_kind.as_str(), "human" | "agent"),
+        "research log actorKind must be human or agent"
+    );
     if let Some(experiment_id) = request.experiment_id.as_deref() {
-        anyhow::ensure!(get(conn, experiment_id)?.is_some(), "unknown linked experiment");
+        anyhow::ensure!(
+            get(conn, experiment_id)?.is_some(),
+            "unknown linked experiment"
+        );
     }
     if let Some(parent) = request.supersedes_entry_id.as_deref() {
         let exists: bool = conn.query_row(
@@ -317,15 +332,25 @@ pub fn research_log_list(
     )?;
     let rows = stmt.query_map(params![experiment_id, needle], |row| {
         Ok(ResearchJournalEntry {
-            entry_id: row.get(0)?, sequence: row.get(1)?, occurred_at: row.get(2)?,
-            recorded_at: row.get(3)?, author: row.get(4)?, actor_kind: row.get(5)?,
-            entry_kind: row.get(6)?, title: row.get(7)?, body: row.get(8)?,
+            entry_id: row.get(0)?,
+            sequence: row.get(1)?,
+            occurred_at: row.get(2)?,
+            recorded_at: row.get(3)?,
+            author: row.get(4)?,
+            actor_kind: row.get(5)?,
+            entry_kind: row.get(6)?,
+            title: row.get(7)?,
+            body: row.get(8)?,
             tags: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
-            links: serde_json::from_str(&row.get::<_, String>(10)?).unwrap_or_else(|_| serde_json::json!([])),
-            experiment_id: row.get(11)?, supersedes_entry_id: row.get(12)?, source_digest: row.get(13)?,
+            links: serde_json::from_str(&row.get::<_, String>(10)?)
+                .unwrap_or_else(|_| serde_json::json!([])),
+            experiment_id: row.get(11)?,
+            supersedes_entry_id: row.get(12)?,
+            source_digest: row.get(13)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 pub fn finalize(conn: &Connection, request: ExperimentFinalizeRequest) -> Result<ExperimentGroup> {

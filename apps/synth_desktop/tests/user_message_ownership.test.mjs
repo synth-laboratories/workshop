@@ -113,7 +113,7 @@ test("recognized approval lifecycle events retain explicit Synth labels", () => 
 	assert.equal(paid.__active__?.[0]?.label, "Paid compute granted");
 });
 
-test("conversation paid-compute auto-approval is a notice, not a pending modal card", () => {
+test("conversation paid-compute auto-approval stays in the journal, not chat", () => {
 	const activity = eventsToLocalActivity([
 		event({
 			sequence: 4,
@@ -131,17 +131,7 @@ test("conversation paid-compute auto-approval is a notice, not a pending modal c
 			}
 		})
 	], []);
-	const line = activity.__active__?.[0];
-	assert.equal(
-		line?.label,
-		"Auto-approved a $0.06 maximum · $0.06 of $0.25 conversation allowance used"
-	);
-	assert.equal(line?.approvalId, undefined);
-	assert.equal(line?.approvalKind, "paid_compute");
-	assert.match(line?.detail ?? "", /reserved \$0\.06/);
-	assert.match(line?.detail ?? "", /remaining \$0\.19/);
-	assert.equal(line?.approvalPayload?.policyAuto, true);
-	assert.equal(line?.approvalPayload?.reservedUsdMicros, 60_000);
+	assert.deepEqual(activity, {});
 });
 
 test("ineligible paid-compute requests still project a blocking modal card", () => {

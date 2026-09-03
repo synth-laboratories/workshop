@@ -2481,7 +2481,10 @@ mod tests {
         assert_eq!(snapshot.rolling.ttft_p50_ms, Some(1840.0));
         assert_eq!(snapshot.rolling.ttft_p95_ms, None);
         assert_eq!(snapshot.rolling.requests_failed, Some(1));
-        assert_eq!(snapshot.rolling.last_failure_reason.as_deref(), Some("Unknown tool: container_list"));
+        assert_eq!(
+            snapshot.rolling.last_failure_reason.as_deref(),
+            Some("Unknown tool: container_list")
+        );
     }
 
     #[test]

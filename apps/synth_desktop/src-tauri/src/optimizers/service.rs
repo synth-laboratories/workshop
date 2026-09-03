@@ -791,9 +791,7 @@ impl OptimizerService {
             {
                 let _ = super::workspace_recipe::ensure_bundled_annotation_eval_recipes(&workspace);
             }
-            if let Ok(declared) =
-                super::workspace_recipe::load_session_recipes(&self.db, session)
-            {
+            if let Ok(declared) = super::workspace_recipe::load_session_recipes(&self.db, session) {
                 recipes.extend(declared.iter().map(super::workspace_recipe::catalog_entry));
             }
         }
@@ -8144,8 +8142,7 @@ pub(in crate::optimizers) mod tests {
             json!("late_probe")
         );
 
-        let view =
-            serde_json::to_value(svc.run_view_v2(run.id.clone()).await.unwrap()).unwrap();
+        let view = serde_json::to_value(svc.run_view_v2(run.id.clone()).await.unwrap()).unwrap();
         assert_eq!(
             view["header"]["asOfSequence"],
             json!(7),
@@ -8467,7 +8464,10 @@ pub(in crate::optimizers) mod tests {
         // the training routes it serves.
         assert_eq!(negotiate_visual_template("gepa"), "optimizer.gepa.live.v1");
         assert_eq!(negotiate_visual_template("sft"), "optimizer.sft.live.v1");
-        assert_eq!(negotiate_visual_template("cispo"), "optimizer.cispo.live.v1");
+        assert_eq!(
+            negotiate_visual_template("cispo"),
+            "optimizer.cispo.live.v1"
+        );
         assert_eq!(negotiate_visual_template("eval"), "optimizer.eval.live.v1");
 
         // Execution is where a capability claim has to hold up.
@@ -8697,8 +8697,7 @@ pub(in crate::optimizers) mod tests {
             2
         );
 
-        let view =
-            serde_json::to_value(svc.run_view_v2(run.id.clone()).await.unwrap()).unwrap();
+        let view = serde_json::to_value(svc.run_view_v2(run.id.clone()).await.unwrap()).unwrap();
         assert_eq!(view["header"]["artifacts"].as_array().unwrap().len(), 2);
         assert!(
             view["projection"]["workItems"]
@@ -8716,10 +8715,7 @@ pub(in crate::optimizers) mod tests {
             .unwrap();
         assert_eq!(artifacts.total, 2);
         assert_eq!(artifacts.rows[0].parent_id.as_deref(), Some("eval:trial:0"));
-        assert_eq!(
-            artifacts.rows[0].details["artifactId"],
-            "trial-result"
-        );
+        assert_eq!(artifacts.rows[0].details["artifactId"], "trial-result");
     }
 
     #[tokio::test]
@@ -9295,8 +9291,7 @@ pub(in crate::optimizers) mod tests {
             // Historical projections cross the same bounded IPC contract as
             // live run views. Compare like with like: the durable collection
             // rows retain the growing evidence while both wire views omit it.
-            let expected_view =
-                super::super::kernel::project_view(&expected).into_bounded_wire();
+            let expected_view = super::super::kernel::project_view(&expected).into_bounded_wire();
             assert_eq!(
                 historical.view.projection_json(),
                 expected_view.projection_json(),

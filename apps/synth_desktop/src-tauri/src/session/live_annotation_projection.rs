@@ -246,10 +246,7 @@ pub fn seal_contexts(records: &[Value]) -> BTreeMap<String, SealContext> {
                     .get("journalClosed")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
-                journal_high_water: relay
-                    .get("highWater")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
+                journal_high_water: relay.get("highWater").and_then(Value::as_u64).unwrap_or(0),
             },
         );
     }
@@ -273,7 +270,9 @@ pub fn reconcile_one(
     if !resolved {
         return "unresolved";
     }
-    if sealed_labels.contains(&finding.label) || sealed_labels.contains(&format!("{}.{}", finding.kind, finding.label)) {
+    if sealed_labels.contains(&finding.label)
+        || sealed_labels.contains(&format!("{}.{}", finding.kind, finding.label))
+    {
         return "corroborated";
     }
     "resolved"
@@ -291,7 +290,10 @@ pub fn sealed_labels_for_trace(conn: &Connection, trace_digest: &str) -> Result<
         }
         // Milestone-shaped sealed payloads name the milestone they verified.
         for key in ["milestone_id", "milestone", "achievement", "label"] {
-            if let Some(value) = row.pointer(&format!("/payload/{key}")).and_then(Value::as_str) {
+            if let Some(value) = row
+                .pointer(&format!("/payload/{key}"))
+                .and_then(Value::as_str)
+            {
                 labels.insert(value.to_string());
             }
         }
@@ -323,11 +325,13 @@ pub fn replace_run_rows(
         for finding in &fold.findings {
             let reconciliation = reconcile_one(finding, fold, &seal, &sealed_labels);
             *counts.entry(reconciliation).or_default() += 1;
-            *counts.entry(match finding.status.as_str() {
-                "retracted" => "retracted",
-                "superseded" => "superseded",
-                _ => "active",
-            }).or_default() += 1;
+            *counts
+                .entry(match finding.status.as_str() {
+                    "retracted" => "retracted",
+                    "superseded" => "superseded",
+                    _ => "active",
+                })
+                .or_default() += 1;
             conn.execute(
                 "INSERT INTO annotation_provisional_findings(
                     run_id, rollout_id, trial_id, sequence, finding_id, kind, label, status,
@@ -377,7 +381,11 @@ pub fn replace_run_rows(
     }))
 }
 
-pub fn list_run_rows(conn: &Connection, run_id: &str, rollout_id: Option<&str>) -> Result<Vec<Value>> {
+pub fn list_run_rows(
+    conn: &Connection,
+    run_id: &str,
+    rollout_id: Option<&str>,
+) -> Result<Vec<Value>> {
     let mut statement = conn.prepare(
         "SELECT rollout_id, trial_id, sequence, finding_id, kind, label, status, step, confidence,
                 protocol_revision_id, cited_sequences_json, supersedes, superseded_by, retracted_reason,
@@ -541,16 +549,72 @@ mod tests {
         vec![
             envelope(1, None, rollout(1, "trace.opened")),
             envelope(2, None, rollout(2, "observation")),
-            envelope(3, Some("annotation"), annotation(1, "annotation.protocol.bound", json!({"protocol_revision_id": "anprev_a"}))),
+            envelope(
+                3,
+                Some("annotation"),
+                annotation(
+                    1,
+                    "annotation.protocol.bound",
+                    json!({"protocol_revision_id": "anprev_a"}),
+                ),
+            ),
             envelope(4, None, rollout(3, "action")),
-            envelope(5, Some("annotation"), annotation(2, "annotation.finding", json!({"finding_id": "fm:1", "kind": "failure_mode", "label": "feedback_incorporation.repeated_blocked_action", "step": 1, "confidence": 0.5, "evidence": {"sequences": [3]}, "protocol_revision_id": "anprev_a"}))),
-            envelope(6, Some("annotation"), annotation(3, "annotation.finding", json!({"finding_id": "fm:2", "kind": "failure_mode", "label": "feedback_incorporation.repeated_blocked_action", "supersedes": "fm:1", "evidence": {"sequences": [3, 4]}}))),
+            envelope(
+                5,
+                Some("annotation"),
+                annotation(
+                    2,
+                    "annotation.finding",
+                    json!({"finding_id": "fm:1", "kind": "failure_mode", "label": "feedback_incorporation.repeated_blocked_action", "step": 1, "confidence": 0.5, "evidence": {"sequences": [3]}, "protocol_revision_id": "anprev_a"}),
+                ),
+            ),
+            envelope(
+                6,
+                Some("annotation"),
+                annotation(
+                    3,
+                    "annotation.finding",
+                    json!({"finding_id": "fm:2", "kind": "failure_mode", "label": "feedback_incorporation.repeated_blocked_action", "supersedes": "fm:1", "evidence": {"sequences": [3, 4]}}),
+                ),
+            ),
             envelope(7, None, rollout(4, "observation")),
-            envelope(8, Some("annotation"), annotation(4, "annotation.finding", json!({"finding_id": "ach:collect_wood", "kind": "achievement", "label": "collect_wood", "step": 2, "evidence": {"sequences": [4]}, "detail": {"basis": "readout"}}))),
-            envelope(9, Some("annotation"), annotation(5, "annotation.finding.retracted", json!({"finding_id": "fm:2", "reason": "progress resumed"}))),
-            envelope(10, Some("annotation"), annotation(6, "annotation.finding", json!({"finding_id": "ghost", "kind": "note", "label": "cites the future", "evidence": {"sequences": [99]}}))),
-            envelope(11, Some("annotation"), annotation(7, "annotation.closed", json!({"outcome": "completed"}))),
-            envelope(12, Some("annotation"), annotation(8, "capture.closed", json!({"high_water": 7}))),
+            envelope(
+                8,
+                Some("annotation"),
+                annotation(
+                    4,
+                    "annotation.finding",
+                    json!({"finding_id": "ach:collect_wood", "kind": "achievement", "label": "collect_wood", "step": 2, "evidence": {"sequences": [4]}, "detail": {"basis": "readout"}}),
+                ),
+            ),
+            envelope(
+                9,
+                Some("annotation"),
+                annotation(
+                    5,
+                    "annotation.finding.retracted",
+                    json!({"finding_id": "fm:2", "reason": "progress resumed"}),
+                ),
+            ),
+            envelope(
+                10,
+                Some("annotation"),
+                annotation(
+                    6,
+                    "annotation.finding",
+                    json!({"finding_id": "ghost", "kind": "note", "label": "cites the future", "evidence": {"sequences": [99]}}),
+                ),
+            ),
+            envelope(
+                11,
+                Some("annotation"),
+                annotation(7, "annotation.closed", json!({"outcome": "completed"})),
+            ),
+            envelope(
+                12,
+                Some("annotation"),
+                annotation(8, "capture.closed", json!({"high_water": 7})),
+            ),
         ]
     }
 
@@ -558,32 +622,68 @@ mod tests {
     fn fold_keeps_history_and_journal_coverage() {
         let folds = fold_run_events(&sample());
         let fold = &folds["roll_a"];
-        assert_eq!(fold.journal_sequences.iter().copied().collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+        assert_eq!(
+            fold.journal_sequences.iter().copied().collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
         assert_eq!(fold.protocol_revision_id.as_deref(), Some("anprev_a"));
         assert!(fold.annotation_closed);
         assert_eq!(fold.annotation_outcome.as_deref(), Some("completed"));
-        let by_id: BTreeMap<_, _> = fold.findings.iter().map(|row| (row.finding_id.as_str(), row)).collect();
+        let by_id: BTreeMap<_, _> = fold
+            .findings
+            .iter()
+            .map(|row| (row.finding_id.as_str(), row))
+            .collect();
         assert_eq!(by_id["fm:1"].status, "superseded");
         assert_eq!(by_id["fm:1"].superseded_by.as_deref(), Some("fm:2"));
         assert_eq!(by_id["fm:2"].status, "retracted");
-        assert_eq!(by_id["fm:2"].retracted_reason.as_deref(), Some("progress resumed"));
+        assert_eq!(
+            by_id["fm:2"].retracted_reason.as_deref(),
+            Some("progress resumed")
+        );
         assert_eq!(by_id["ach:collect_wood"].status, "provisional");
         assert_eq!(by_id["ach:collect_wood"].basis.as_deref(), Some("readout"));
-        assert_eq!(by_id["ach:collect_wood"].trial_id.as_deref(), Some("trial:craftax:0"));
+        assert_eq!(
+            by_id["ach:collect_wood"].trial_id.as_deref(),
+            Some("trial:craftax:0")
+        );
     }
 
     #[test]
     fn reconciliation_resolves_citations_against_the_verified_journal_only() {
         let folds = fold_run_events(&sample());
         let fold = &folds["roll_a"];
-        let sealed = SealContext { trace_digest: Some("sha256:t".into()), journal_closed: true, journal_high_water: 4 };
+        let sealed = SealContext {
+            trace_digest: Some("sha256:t".into()),
+            journal_closed: true,
+            journal_high_water: 4,
+        };
         let labels: BTreeSet<String> = ["collect_wood".to_string()].into_iter().collect();
-        let by_id: BTreeMap<_, _> = fold.findings.iter().map(|row| (row.finding_id.as_str(), row)).collect();
-        assert_eq!(reconcile_one(by_id["fm:1"], fold, &sealed, &labels), "resolved");
-        assert_eq!(reconcile_one(by_id["ach:collect_wood"], fold, &sealed, &labels), "corroborated");
-        assert_eq!(reconcile_one(by_id["ghost"], fold, &sealed, &labels), "unresolved");
-        let open = SealContext { journal_closed: false, ..sealed.clone() };
-        assert_eq!(reconcile_one(by_id["fm:1"], fold, &open, &labels), "unsealed");
+        let by_id: BTreeMap<_, _> = fold
+            .findings
+            .iter()
+            .map(|row| (row.finding_id.as_str(), row))
+            .collect();
+        assert_eq!(
+            reconcile_one(by_id["fm:1"], fold, &sealed, &labels),
+            "resolved"
+        );
+        assert_eq!(
+            reconcile_one(by_id["ach:collect_wood"], fold, &sealed, &labels),
+            "corroborated"
+        );
+        assert_eq!(
+            reconcile_one(by_id["ghost"], fold, &sealed, &labels),
+            "unresolved"
+        );
+        let open = SealContext {
+            journal_closed: false,
+            ..sealed.clone()
+        };
+        assert_eq!(
+            reconcile_one(by_id["fm:1"], fold, &open, &labels),
+            "unsealed"
+        );
     }
 
     #[test]

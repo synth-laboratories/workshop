@@ -181,7 +181,14 @@ async fn run_worker(
         let stderr = fs::File::create(run_dir.join("craftax.stderr.log"))?;
         Some(
             Command::new(&python)
-                .args(["-m", "craftax_gold", "--port", "8080", "--host", "127.0.0.1"])
+                .args([
+                    "-m",
+                    "craftax_gold",
+                    "--port",
+                    "8080",
+                    "--host",
+                    "127.0.0.1",
+                ])
                 .env("GROQ_API_KEY", &groq)
                 .env("SYNTH_CRAFTAX_GOLD_BIN", &craftax)
                 .env("PYTHONPATH", craftax_image_pythonpath())

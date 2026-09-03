@@ -217,9 +217,10 @@ pub(crate) struct LiveAnnotationSource {
 
 impl LiveAnnotationSource {
     pub(crate) fn resolve(spec: &LiveAnnotationSpec, workspace: &Path) -> Result<Self> {
-        let path = super::workspace_recipe::resolve_workspace_path(workspace, &spec.protocol_source)
-            .map_err(|error| {
-                failure(
+        let path =
+            super::workspace_recipe::resolve_workspace_path(workspace, &spec.protocol_source)
+                .map_err(|error| {
+                    failure(
                     "live_annotation_source_unavailable",
                     format!(
                         "live annotation protocol source `{}` could not be resolved: {error:#}",
@@ -227,7 +228,7 @@ impl LiveAnnotationSource {
                     ),
                     "point live_annotation.protocol_source at a protocol file inside the workspace",
                 )
-            })?;
+                })?;
         let code = std::fs::read_to_string(&path)
             .with_context(|| format!("read live annotation protocol {}", path.display()))?;
         Self::from_code(spec.clone(), code)
@@ -235,7 +236,10 @@ impl LiveAnnotationSource {
 
     pub(crate) fn from_code(spec: LiveAnnotationSpec, code: String) -> Result<Self> {
         if code.trim().is_empty() {
-            bail!("live annotation protocol `{}` is empty", spec.protocol_source);
+            bail!(
+                "live annotation protocol `{}` is empty",
+                spec.protocol_source
+            );
         }
         if code.len() > MAX_PROTOCOL_SOURCE_BYTES {
             bail!(
@@ -376,7 +380,10 @@ pub(crate) async fn read_protocol_state(
     Ok(state)
 }
 
-pub(crate) fn installed_matches(state: &ContainerProtocolState, source: &LiveAnnotationSource) -> bool {
+pub(crate) fn installed_matches(
+    state: &ContainerProtocolState,
+    source: &LiveAnnotationSource,
+) -> bool {
     state.status == "installed"
         && state
             .protocol_revision_id
@@ -458,7 +465,10 @@ pub(crate) async fn register_protocol_pin(
 
 /// Pin JSON from an installed container state, for a mid-run update that has
 /// no workspace spec behind it (the caller supplied the source directly).
-pub(crate) fn pin_from_state(state: &ContainerProtocolState, protocol_source: Option<&str>) -> Result<Value> {
+pub(crate) fn pin_from_state(
+    state: &ContainerProtocolState,
+    protocol_source: Option<&str>,
+) -> Result<Value> {
     let revision = state
         .protocol_revision_id
         .clone()
@@ -559,11 +569,9 @@ max_output_tokens = 600
         )
         .unwrap()
         .unwrap();
-        let source = LiveAnnotationSource::from_code(
-            spec,
-            format!("PROTOCOL = {PROTOCOL_CODE_SCHEMA:?}\n"),
-        )
-        .unwrap();
+        let source =
+            LiveAnnotationSource::from_code(spec, format!("PROTOCOL = {PROTOCOL_CODE_SCHEMA:?}\n"))
+                .unwrap();
         let bound = source
             .with_workshop_proxy(
                 "http://host.docker.internal:18110/cap/wcap_test/v1/providers/openrouter",
@@ -586,12 +594,20 @@ max_output_tokens = 600
     fn refuses_unknown_keys_missing_identity_and_credentials() {
         let unknown = LiveAnnotationSpec::parse(
             "r",
-            &table("[live_annotation]\nprotocol_id = \"x\"\nprotocol_source = \"p.py\"\ncadence = 1\n"),
+            &table(
+                "[live_annotation]\nprotocol_id = \"x\"\nprotocol_source = \"p.py\"\ncadence = 1\n",
+            ),
         )
         .unwrap_err();
-        assert!(unknown.to_string().contains("live_annotation.cadence"), "{unknown:#}");
-        let missing = LiveAnnotationSpec::parse("r", &table("[live_annotation]\nprotocol_source = \"p.py\"\n"))
-            .unwrap_err();
+        assert!(
+            unknown.to_string().contains("live_annotation.cadence"),
+            "{unknown:#}"
+        );
+        let missing = LiveAnnotationSpec::parse(
+            "r",
+            &table("[live_annotation]\nprotocol_source = \"p.py\"\n"),
+        )
+        .unwrap_err();
         assert!(missing.to_string().contains("protocol_id"), "{missing:#}");
         let secret = LiveAnnotationSpec::parse(
             "r",
@@ -636,8 +652,12 @@ max_output_tokens = 600
         assert_eq!(body["configuration"], json!({"a": 1}));
         assert_eq!(body["source_revision"], json!(source.source_revision));
 
-        let bad = LiveAnnotationSource::from_code(source.spec.clone(), "print(1)\n".into()).unwrap_err();
-        assert!(bad.to_string().contains("does not declare PROTOCOL"), "{bad:#}");
+        let bad =
+            LiveAnnotationSource::from_code(source.spec.clone(), "print(1)\n".into()).unwrap_err();
+        assert!(
+            bad.to_string().contains("does not declare PROTOCOL"),
+            "{bad:#}"
+        );
     }
 
     #[test]
@@ -648,30 +668,45 @@ max_output_tokens = 600
         )
         .unwrap()
         .unwrap();
-        let source = LiveAnnotationSource::from_code(
-            spec,
-            format!("PROTOCOL = {PROTOCOL_CODE_SCHEMA:?}\n"),
-        )
-        .unwrap();
-        let state = |revision: Option<&str>, protocol_id: &str, source_revision: &str| ContainerProtocolState {
-            schema_version: PROTOCOL_STATE_SCHEMA.into(),
-            status: "installed".into(),
-            protocol_id: Some(protocol_id.into()),
-            protocol_revision_id: revision.map(str::to_string),
-            source_revision: Some(source_revision.into()),
-            configuration_digest: Some(source.configuration_digest.clone()),
-            credential_state: "not_exposed".into(),
+        let source =
+            LiveAnnotationSource::from_code(spec, format!("PROTOCOL = {PROTOCOL_CODE_SCHEMA:?}\n"))
+                .unwrap();
+        let state = |revision: Option<&str>, protocol_id: &str, source_revision: &str| {
+            ContainerProtocolState {
+                schema_version: PROTOCOL_STATE_SCHEMA.into(),
+                status: "installed".into(),
+                protocol_id: Some(protocol_id.into()),
+                protocol_revision_id: revision.map(str::to_string),
+                source_revision: Some(source_revision.into()),
+                configuration_digest: Some(source.configuration_digest.clone()),
+                credential_state: "not_exposed".into(),
+            }
         };
-        assert!(installed_matches(&state(Some("anprev_1"), "t", &source.source_revision), &source));
-        assert!(!installed_matches(&state(None, "t", &source.source_revision), &source));
-        assert!(!installed_matches(&state(Some("anprev_1"), "other", &source.source_revision), &source));
-        assert!(!installed_matches(&state(Some("anprev_1"), "t", "sha256:stale"), &source));
+        assert!(installed_matches(
+            &state(Some("anprev_1"), "t", &source.source_revision),
+            &source
+        ));
+        assert!(!installed_matches(
+            &state(None, "t", &source.source_revision),
+            &source
+        ));
+        assert!(!installed_matches(
+            &state(Some("anprev_1"), "other", &source.source_revision),
+            &source
+        ));
+        assert!(!installed_matches(
+            &state(Some("anprev_1"), "t", "sha256:stale"),
+            &source
+        ));
     }
 
     #[test]
     fn capability_gate_fails_closed() {
         assert!(require_advertised(&json!({})).is_err());
-        assert!(require_advertised(&json!({"capabilities": {"operations": {"annotation.live": true}}})).is_err());
+        assert!(require_advertised(
+            &json!({"capabilities": {"operations": {"annotation.live": true}}})
+        )
+        .is_err());
         assert!(require_advertised(&json!({"capabilities": {"operations": {
             "annotation.live": true, "annotation.protocol.put": true
         }}}))

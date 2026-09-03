@@ -290,6 +290,7 @@ impl PluginService {
                             .set_status_phase("starting", Some("Starting optimizer sidecar…"))
                             .await;
                         manager.start().await?;
+                        core.optimizers().restore_hosted_sft_mirrors().await;
                         Ok(())
                     }
                     Err(error) => {
@@ -302,11 +303,13 @@ impl PluginService {
             }
             "start" => {
                 manager.start().await?;
+                core.optimizers().restore_hosted_sft_mirrors().await;
                 Ok(())
             }
             "restart" => {
                 manager.stop().await?;
                 manager.start().await?;
+                core.optimizers().restore_hosted_sft_mirrors().await;
                 Ok(())
             }
             "stop" => {

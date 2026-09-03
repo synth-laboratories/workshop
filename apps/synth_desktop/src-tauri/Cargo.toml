@@ -138,6 +138,10 @@ name = "synth-annotations-mcp"
 path = "src/bin/synth_annotations_mcp.rs"
 
 [[bin]]
+name = "synth-human-annotations-mcp"
+path = "src/bin/synth_human_annotations_mcp.rs"
+
+[[bin]]
 name = "synth-diagnostics-mcp"
 path = "src/bin/synth_diagnostics_mcp.rs"
 

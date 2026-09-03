@@ -458,8 +458,15 @@ mod tests {
              caller re-request a boundary event forever"
         );
         assert_eq!(normalize_ranges(&[r(1, 5), r(3, 9)]), vec![r(1, 9)]);
-        assert_eq!(normalize_ranges(&[r(1, 2), r(9, 9)]), vec![r(1, 2), r(9, 9)]);
-        assert_eq!(normalize_ranges(&[r(5, 1)]), vec![], "an inverted span is empty");
+        assert_eq!(
+            normalize_ranges(&[r(1, 2), r(9, 9)]),
+            vec![r(1, 2), r(9, 9)]
+        );
+        assert_eq!(
+            normalize_ranges(&[r(5, 1)]),
+            vec![],
+            "an inverted span is empty"
+        );
     }
 
     #[test]
@@ -473,7 +480,11 @@ mod tests {
             vec![r(501, 1999)]
         );
         assert_eq!(complement(r(1, 100), &[]), vec![r(1, 100)]);
-        assert_eq!(complement(r(1, 100), &[r(1, 100)]), vec![], "nothing to send");
+        assert_eq!(
+            complement(r(1, 100), &[r(1, 100)]),
+            vec![],
+            "nothing to send"
+        );
         assert_eq!(
             complement(r(1, 100), &[r(200, 300)]),
             vec![r(1, 100)],

@@ -522,6 +522,16 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         annotation_review_skill.join("SKILL.md"),
         include_str!("../../../../skills/annotation-review/SKILL.md"),
     )?;
+    let human_annotations_skill = home.join("skills/use-human-annotations");
+    fs::create_dir_all(human_annotations_skill.join("agents"))?;
+    fs::write(
+        human_annotations_skill.join("SKILL.md"),
+        include_str!("../../../../skills/use-human-annotations/SKILL.md"),
+    )?;
+    fs::write(
+        human_annotations_skill.join("agents/openai.yaml"),
+        include_str!("../../../../skills/use-human-annotations/agents/openai.yaml"),
+    )?;
     // Apply the durable Context settings after bundled materialization. This
     // keeps the existing reference-file setup intact while making disabled
     // skills and edited SKILL.md copies authoritative for new sessions.
@@ -540,6 +550,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         "trace-v5-verify",
         "craftax-trace-analysis",
         "annotation-review",
+        "use-human-annotations",
     ] {
         let directory = home.join("skills").join(id);
         if !crate::context::skill_enabled(id) {
@@ -697,6 +708,11 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
             ("synth_secrets", "synth-secrets-mcp", "bundled"),
             ("synth_traces", "synth-traces-mcp", "bundled"),
             ("synth_annotations", "synth-annotations-mcp", "bundled"),
+            (
+                "synth_human_annotations",
+                "synth-human-annotations-mcp",
+                "bundled",
+            ),
             ("synth_diagnostics", "synth-diagnostics-mcp", "bundled"),
             (
                 "synth_computer_use",

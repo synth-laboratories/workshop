@@ -10,16 +10,21 @@
 
 import type { ReactNode } from "react";
 import type { GepaState } from "../../components/projectEvents.ts";
-import { formatDurationMs } from "./model.ts";
+import { formatDurationMs, gepaReportingLanguage, scoredCandidateCount } from "./model.ts";
 
 const PENDING = "pending";
+const NOT_REPORTED = "not reported";
+
+function rowIsMissing(row: SetupRow): boolean {
+  return row.reported === false || row.value === PENDING || row.value === NOT_REPORTED;
+}
 
 function label(value?: string): string {
   return value ? value.replaceAll("_", " ") : PENDING;
 }
 
-function count(value?: number): string {
-  return value == null ? PENDING : value.toLocaleString();
+function count(value?: number, missing = PENDING): string {
+  return value == null ? missing : value.toLocaleString();
 }
 
 function limitLabel(kind: string): string {
@@ -34,8 +39,8 @@ function cardSummary(card: SetupCard): string {
   return `${card.eyebrow}: ${card.title}. ${card.rows.map((row) => `${row.name} ${row.value}`).join(". ")}.`;
 }
 
-function DetailCard({ card }: { card: SetupCard }) {
-  const pendingRows = card.rows.filter((row) => row.reported === false || row.value === PENDING).length;
+function DetailCard({ card, missingCard }: { card: SetupCard; missingCard: string }) {
+  const pendingRows = card.rows.filter(rowIsMissing).length;
   const unreported = pendingRows === card.rows.length;
   return (
     <div
@@ -49,7 +54,7 @@ function DetailCard({ card }: { card: SetupCard }) {
       <strong aria-hidden="true" style={{ display: "block", fontSize: 12 }}>{card.title}</strong>
       {unreported ? (
         <p aria-hidden="true" style={{ margin: "6px 0 0", color: "var(--sv-text-faint)", fontSize: 10.5 }}>
-          Not reported yet · {card.rows.length} fields
+          {missingCard} · {card.rows.length} fields
         </p>
       ) : (
         <dl aria-hidden="true" style={{ display: "grid", gridTemplateColumns: "minmax(78px, .7fr) minmax(0, 1.5fr)", gap: "5px 9px", margin: "8px 0 0", fontSize: 11 }}>
@@ -70,6 +75,7 @@ function Detail({ name, children, title }: { name: string; children: ReactNode; 
 }
 
 export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
+  const reporting = gepaReportingLanguage(gepa.activity.terminal);
   const contract = gepa.contract;
   const objective = contract.objectiveSet;
   const nearest = gepa.nearestLimit;
@@ -82,12 +88,13 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
   const proposerRunning = gepa.proposerTraces.filter((trace) => trace.status === "running").length;
   const proposerCompleted = gepa.proposerTraces.filter((trace) => trace.status === "completed").length;
   const proposerFailed = gepa.proposerTraces.filter((trace) => ["failed", "cancelled", "canceled"].includes(trace.status)).length;
-  const scored = gepa.evaluations.filter((evaluation) => evaluation.reward != null).length;
+  const scored = scoredCandidateCount(gepa.candidates);
   const attached = gepa.evaluations.filter((evaluation) => evaluation.reward == null).length;
-  const endpoint = container?.url?.replace(/^https?:\/\//, "") ?? PENDING;
-  const taskTitle = contract.task?.name ?? contract.task?.id ?? "Task pending";
-  const datasetTitle = dataset?.source ?? "Dataset pending";
-  const containerTitle = container?.specId ?? container?.targetId ?? "Container pending";
+  const endpoint = container?.url?.replace(/^https?:\/\//, "") ?? reporting.missing;
+  const taskTitle = contract.task?.name ?? contract.task?.id ?? (gepa.activity.terminal ? "Task not reported" : "Task pending");
+  const datasetTitle = dataset?.source ?? (gepa.activity.terminal ? "Dataset not reported" : "Dataset pending");
+  const containerTitle = container?.specId ?? container?.targetId ?? (gepa.activity.terminal ? "Container not reported" : "Container pending");
+  const missing = (value?: string) => value ?? reporting.missing;
 
   const cards: SetupCard[] = [
     {
@@ -95,12 +102,12 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
       title: taskTitle,
       testId: "gepa-config-card",
       rows: [
-        { name: "Task ID", value: contract.task?.id ?? PENDING },
-        { name: "Program", value: contract.program?.id ?? PENDING },
-        { name: "Objective", value: objective?.selectionObjective ?? objective?.objectives[0]?.name ?? PENDING },
-        { name: "Mutable", value: contract.program?.mutableFields.join(", ") || PENDING },
-        { name: "Policy", value: gepa.models.policy ?? container?.policyConfig ?? PENDING },
-        { name: "Proposer", value: gepa.models.proposer ?? PENDING }
+        { name: "Task ID", value: missing(contract.task?.id) },
+        { name: "Program", value: missing(contract.program?.id) },
+        { name: "Objective", value: missing(objective?.selectionObjective ?? objective?.objectives[0]?.name) },
+        { name: "Mutable", value: contract.program?.mutableFields.join(", ") || reporting.missing },
+        { name: "Policy", value: missing(gepa.models.policy ?? container?.policyConfig) },
+        { name: "Proposer", value: missing(gepa.models.proposer) }
       ]
     },
     {
@@ -108,12 +115,12 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
       title: datasetTitle,
       testId: "gepa-dataset-card",
       rows: [
-        { name: "Version", value: [dataset?.config, dataset?.revision].filter(Boolean).join(" · ") || PENDING },
-        { name: "Catalog", value: `${count(dataset?.rowCount)} rows · ${count(dataset?.labelCount)} labels`, reported: dataset?.rowCount != null || dataset?.labelCount != null },
-        { name: "Source splits", value: `train ${count(dataset?.splits?.train)} · selection ${count(dataset?.splits?.selection)} · heldout ${count(dataset?.splits?.heldout)}`, reported: dataset?.splits?.train != null || dataset?.splits?.selection != null || dataset?.splits?.heldout != null },
-        { name: "Run taskset", value: `train ${count(contract.splits?.train)} · heldout ${count(contract.splits?.heldout)}`, reported: contract.splits?.train != null || contract.splits?.heldout != null },
-        { name: "Search pools", value: `mini ${count(contract.splits?.minibatch)} · reflect ${count(contract.splits?.reflection)} · Pareto ${count(contract.splits?.pareto)}`, reported: contract.splits?.minibatch != null || contract.splits?.reflection != null || contract.splits?.pareto != null },
-        { name: "Digest", value: dataset?.digest ? `${dataset.digest.slice(0, 18)}…` : PENDING, title: dataset?.digest }
+        { name: "Version", value: [dataset?.config, dataset?.revision].filter(Boolean).join(" · ") || reporting.missing },
+        { name: "Catalog", value: `${count(dataset?.rowCount, reporting.missing)} rows · ${count(dataset?.labelCount, reporting.missing)} labels`, reported: dataset?.rowCount != null || dataset?.labelCount != null },
+        { name: "Source splits", value: `train ${count(dataset?.splits?.train, reporting.missing)} · selection ${count(dataset?.splits?.selection, reporting.missing)} · heldout ${count(dataset?.splits?.heldout, reporting.missing)}`, reported: dataset?.splits?.train != null || dataset?.splits?.selection != null || dataset?.splits?.heldout != null },
+        { name: "Run taskset", value: `train ${count(contract.splits?.train, reporting.missing)} · heldout ${count(contract.splits?.heldout, reporting.missing)}`, reported: contract.splits?.train != null || contract.splits?.heldout != null },
+        { name: "Search pools", value: `mini ${count(contract.splits?.minibatch, reporting.missing)} · reflect ${count(contract.splits?.reflection, reporting.missing)} · Pareto ${count(contract.splits?.pareto, reporting.missing)}`, reported: contract.splits?.minibatch != null || contract.splits?.reflection != null || contract.splits?.pareto != null },
+        { name: "Digest", value: dataset?.digest ? `${dataset.digest.slice(0, 18)}…` : reporting.missing, title: dataset?.digest }
       ]
     },
     {
@@ -121,13 +128,13 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
       title: containerTitle,
       testId: "gepa-container-card",
       rows: [
-        { name: "Binding", value: container?.verified ? "contract verified" : PENDING },
-        { name: "Instance", value: container?.workshopInstance ?? PENDING },
+        { name: "Binding", value: container?.verified ? "contract verified" : reporting.missing },
+        { name: "Instance", value: missing(container?.workshopInstance) },
         { name: "Endpoint", value: endpoint, title: container?.url },
-        { name: "Runtime", value: label(container?.runtimeFamily) },
-        { name: "Evaluator", value: container?.evaluatorId ?? PENDING },
-        { name: "Reward owner", value: label(container?.rewardAuthority) },
-        { name: "Credential", value: label(container?.credentialMode) }
+        { name: "Runtime", value: container?.runtimeFamily ? label(container.runtimeFamily) : reporting.missing },
+        { name: "Evaluator", value: missing(container?.evaluatorId) },
+        { name: "Reward owner", value: container?.rewardAuthority ? label(container.rewardAuthority) : reporting.missing },
+        { name: "Credential", value: container?.credentialMode ? label(container.credentialMode) : reporting.missing }
       ]
     },
     {
@@ -140,13 +147,13 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
         { name: "Proposer", value: `${proposerRunning} running · ${proposerCompleted} complete · ${proposerFailed} failed` },
         { name: "Failures", value: `${gepa.failedAttempts.length.toLocaleString()} exhausted attempts` },
         { name: "Current phase", value: gepa.activity.label },
-        { name: "Generation", value: String(gepa.activity.generation ?? (gepa.proposerTraces.length ? Math.max(...gepa.proposerTraces.map((trace) => trace.generation)) : PENDING)) }
+        { name: "Generation", value: String(gepa.activity.generation ?? (gepa.proposerTraces.length ? Math.max(...gepa.proposerTraces.map((trace) => trace.generation)) : reporting.missing)) }
       ]
     }
   ];
 
   const setupRows = cards.flatMap((card) => card.rows);
-  const setupPending = setupRows.filter((row) => row.reported === false || row.value === PENDING).length;
+  const setupPending = setupRows.filter(rowIsMissing).length;
   const setupIncomplete = setupPending > 0;
 
   return (
@@ -155,10 +162,10 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
         <div style={{ minWidth: 0, border: "1px solid var(--sv-border)", borderRadius: 9, padding: 11 }}>
           <strong style={{ fontSize: 12 }}>Search contract</strong>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "7px 13px", marginTop: 8, fontSize: 11 }}>
-            <span><span style={{ color: "var(--sv-text-faint)" }}>Frontier</span> · {label(objective?.frontierType)}</span>
-            <span><span style={{ color: "var(--sv-text-faint)" }}>Select on</span> · {objective?.selectionObjective ?? PENDING}</span>
-            <span><span style={{ color: "var(--sv-text-faint)" }}>Retention</span> · {label(container?.retention)}</span>
-            <span><span style={{ color: "var(--sv-text-faint)" }}>Scale leases</span> · {container?.scaleLeases ?? PENDING}</span>
+            <span><span style={{ color: "var(--sv-text-faint)" }}>Frontier</span> · {objective?.frontierType ? label(objective.frontierType) : reporting.missing}</span>
+            <span><span style={{ color: "var(--sv-text-faint)" }}>Select on</span> · {objective?.selectionObjective ?? reporting.missing}</span>
+            <span><span style={{ color: "var(--sv-text-faint)" }}>Retention</span> · {container?.retention ? label(container.retention) : reporting.missing}</span>
+            <span><span style={{ color: "var(--sv-text-faint)" }}>Scale leases</span> · {container?.scaleLeases ?? reporting.missing}</span>
           </div>
           {contract.task?.description ? <p style={{ margin: "8px 0 0", color: "var(--sv-text-muted)", fontSize: 10.5 }}>{contract.task.description}</p> : null}
         </div>
@@ -191,12 +198,12 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
         <h3>Experiment setup</h3>
         <span className="sv-mono" data-testid="gepa-setup-completeness">
           {setupIncomplete
-            ? `setup incomplete · ${setupPending}/${setupRows.length} fields pending`
+            ? reporting.setupSummary(setupPending, setupRows.length)
             : "configuration · dataset · container · related work"}
         </span>
       </div>
       <div data-testid="gepa-experiment-context" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(238px, 100%), 1fr))", gap: 9 }}>
-        {cards.map((card) => <DetailCard key={card.testId} card={card} />)}
+        {cards.map((card) => <DetailCard key={card.testId} card={card} missingCard={reporting.missingCard} />)}
       </div>
     </section>
   );

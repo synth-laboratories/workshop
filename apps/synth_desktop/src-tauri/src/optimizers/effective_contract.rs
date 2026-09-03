@@ -207,7 +207,39 @@ fn declared_media_types(metadata: &Value, declaration: &Value) -> BTreeSet<Strin
     .filter_map(Value::as_str)
     .map(|value| value.trim().to_ascii_lowercase())
     .filter(|value| !value.is_empty())
-    .collect()
+        .collect()
+}
+
+fn runtime_family_declaration_matches_benchmark(
+    expected_benchmark: &str,
+    declared_family: &str,
+    metadata: &Value,
+) -> bool {
+    let trusted_runtime_family = metadata
+        .pointer("/info/runtime_family")
+        .or_else(|| metadata.pointer("/info/runtimeFamily"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if !trusted_runtime_family
+        .is_some_and(|runtime| runtime.eq_ignore_ascii_case(declared_family))
+    {
+        return false;
+    }
+
+    [
+        "/info/platform_id",
+        "/info/environment_ref",
+        "/info/evaluation_plan_ref",
+        "/declarationOrigin/declarationId",
+    ]
+    .into_iter()
+    .filter_map(|pointer| metadata.pointer(pointer).and_then(Value::as_str))
+    .any(|identity| {
+        identity
+            .to_ascii_lowercase()
+            .contains(&expected_benchmark.to_ascii_lowercase())
+    })
 }
 
 pub(super) fn negotiate(
@@ -220,7 +252,9 @@ pub(super) fn negotiate(
     let declared = live_eval_declaration(metadata);
     let declared_family = declaration_string(&declared, &["family", "taskFamily"]);
     if let (Some(expected), Some(declared)) = (task_family, declared_family) {
-        if !expected.eq_ignore_ascii_case(declared) {
+        if !expected.eq_ignore_ascii_case(declared)
+            && !runtime_family_declaration_matches_benchmark(expected, declared, metadata)
+        {
             return Err(refusal(
                 ContractRefusalCode::DeclarationContradiction,
                 "liveEval.family",
@@ -230,7 +264,10 @@ pub(super) fn negotiate(
             ));
         }
     }
-    let family = declared_family.or(task_family).map(str::to_string);
+    // The benchmark identity is the useful family for experiment comparison.
+    // A Harbor producer may legitimately declare its generic visual/runtime
+    // family while its trusted producer identity binds the specific benchmark.
+    let family = task_family.or(declared_family).map(str::to_string);
 
     let primary_visual = if let Some(id) = declaration_string(
         &declared,
@@ -423,5 +460,57 @@ mod tests {
             refusal.code,
             ContractRefusalCode::DeclaredTemplateUnavailable
         );
+    }
+
+    #[test]
+    fn harbor_visual_family_is_compatible_with_trusted_deepswe_identity() {
+        let mut available = templates();
+        available.push(template("live.harbor_eval.v1", "live", &["harbor"]));
+        let contract = negotiate(
+            "run-1",
+            "container-1",
+            Some("deepswe"),
+            &json!({
+                "info": {
+                    "runtime_family": "harbor",
+                    "environment_ref": "env:harbor_deepswe"
+                },
+                "declarationOrigin": {
+                    "declarationId": "harbor-deepswe"
+                },
+                "liveEval": {
+                    "family": "harbor",
+                    "templateId": "live.harbor_eval.v1"
+                }
+            }),
+            &available,
+        )
+        .unwrap();
+
+        assert_eq!(contract.family.as_deref(), Some("deepswe"));
+        assert_eq!(
+            contract.primary_visual.template_id.as_deref(),
+            Some("live.harbor_eval.v1")
+        );
+    }
+
+    #[test]
+    fn generic_runtime_family_without_matching_benchmark_identity_is_refused() {
+        let error = negotiate(
+            "run-1",
+            "container-1",
+            Some("healthbench"),
+            &json!({
+                "info": {
+                    "runtime_family": "harbor",
+                    "environment_ref": "env:harbor_deepswe"
+                },
+                "liveEval": {"family": "harbor"}
+            }),
+            &templates(),
+        )
+        .unwrap_err();
+        let refusal = error.downcast_ref::<ContractRefusal>().unwrap();
+        assert_eq!(refusal.code, ContractRefusalCode::DeclarationContradiction);
     }
 }

@@ -570,6 +570,25 @@ impl SidecarTrainingClient {
         self.post("/v1/training/jobs", Some(body)).await
     }
 
+    /// Recreate the volatile sidecar mirror for a durable hosted run after a
+    /// Workshop restart. The hosted service already owns the paid job, so this
+    /// must never submit it again; it only replays the producer log into the
+    /// in-process training job that `watch_job` consumes.
+    pub async fn attach_existing_hosted_job(
+        &self,
+        job_id: &str,
+        placement: &str,
+        recipe_id: &str,
+    ) -> Result<Value> {
+        self.create_job(&json!({
+            "job_id": job_id,
+            "placement": placement,
+            "recipe_id": recipe_id,
+            "config": { "attach_existing": true },
+        }))
+        .await
+    }
+
     pub async fn job(&self, job_id: &str) -> Result<Value> {
         self.get(&format!("/v1/training/jobs/{job_id}")).await
     }
@@ -1110,7 +1129,7 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
                 ("throughput".into(), payload["tokens_per_second"].clone()),
             ]))
         }
-        "cispo.update.completed" | "cispo.step.metrics" | "cispo.importance_ratio.measured" => {
+        "cispo.update.completed" | "cispo.step.metrics" => {
             OptimizerEventDraft::new("training.metrics", algorithm).delta(Map::from_iter([
                 (
                     "step".into(),
@@ -1147,6 +1166,10 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
                         .unwrap_or(Value::Null),
                 ),
             ]))
+        }
+        "cispo.importance_ratio.measured" => {
+            OptimizerEventDraft::new("cispo.importance_ratio.measured", algorithm)
+                .delta(payload.as_object().cloned().unwrap_or_default())
         }
         "sft.checkpoint.created" | "cispo.checkpoint.created" => {
             OptimizerEventDraft::new("sft.checkpoint.ready", algorithm).item(json!({
@@ -1781,11 +1804,13 @@ async fn drive_hosted_sft_job(
     config: &Value,
 ) -> Result<()> {
     let client = SftOptimizerClient::from_env()?;
-    let toml = config
-        .get("config_toml")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("hosted SFT job omitted config_toml"))?;
-    client.submit_toml(job_id, toml).await?;
+    if !attach_existing_requested(config) {
+        let toml = config
+            .get("config_toml")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("hosted SFT job omitted config_toml"))?;
+        client.submit_toml(job_id, toml).await?;
+    }
     let mut cursor = 0u64;
     let mut page_errors = 0u32;
     let mut cancel_sent = false;
@@ -1888,8 +1913,10 @@ async fn drive_hosted_cispo_job(
         );
     }
     let client = CispoOptimizerClient::from_env()?;
-    let payload = hosted_cispo_submit_payload(config)?;
-    client.submit(job_id, &payload).await?;
+    if !attach_existing_requested(config) {
+        let payload = hosted_cispo_submit_payload(config)?;
+        client.submit(job_id, &payload).await?;
+    }
     let mut cursor = 0u64;
     let mut page_errors = 0u32;
     let mut cancel_sent = false;
@@ -1982,6 +2009,13 @@ async fn drive_hosted_cispo_job(
 }
 
 const HOSTED_EVENT_PAGE_LIMIT: usize = 500;
+
+fn attach_existing_requested(config: &Value) -> bool {
+    config
+        .get("attach_existing")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
 
 fn training_event_page_drained(events: &[Value]) -> bool {
     events.is_empty()
@@ -2470,6 +2504,15 @@ mod tests {
         assert_eq!(event["sequence"], 7);
         assert_eq!(event["sequence_number"], 7);
         assert_eq!(event["type"], "cispo.update.completed");
+    }
+
+    #[test]
+    fn hosted_attach_is_explicit_and_defaults_to_submit() {
+        assert!(attach_existing_requested(&json!({"attach_existing": true})));
+        assert!(!attach_existing_requested(&json!({})));
+        assert!(!attach_existing_requested(
+            &json!({"attach_existing": false})
+        ));
     }
 
     #[test]

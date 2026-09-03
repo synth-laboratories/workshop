@@ -212,9 +212,9 @@ impl CredentialBroker {
             .context("the Synth Cloud lifecycle origin is invalid")?;
         url.set_path("");
         {
-            let mut segments = url
-                .path_segments_mut()
-                .map_err(|_| anyhow::anyhow!("the Synth Cloud lifecycle origin cannot carry a path"))?;
+            let mut segments = url.path_segments_mut().map_err(|_| {
+                anyhow::anyhow!("the Synth Cloud lifecycle origin cannot carry a path")
+            })?;
             // Synth Cloud's public gateway is rooted at /api/v1 (the same
             // path apply_synth_cloud_provider gives Codex through this proxy).
             segments.extend(["api", "v1", "models", model]);
@@ -1093,13 +1093,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            status.pointer("/inference_lifecycle/phase").and_then(Value::as_str),
+            status
+                .pointer("/inference_lifecycle/phase")
+                .and_then(Value::as_str),
             Some("warming")
         );
         let request = seen.lock().unwrap().first().cloned().unwrap();
-        assert!(request.starts_with(
-            "GET /api/v1/models/synth_internal%2Flaguna-xs HTTP/1.1"
-        ));
+        assert!(request.starts_with("GET /api/v1/models/synth_internal%2Flaguna-xs HTTP/1.1"));
         assert!(request.contains(&format!("authorization: Bearer {SENTINEL}")));
     }
 

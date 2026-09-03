@@ -102,6 +102,8 @@ struct EvalSpec {
     concurrency: usize,
     train: Vec<i64>,
     heldout: Vec<i64>,
+    train_task_instance_ids: Vec<String>,
+    heldout_task_instance_ids: Vec<String>,
     cost_ceiling_usd: f64,
     maximum_model_calls_per_rollout: u32,
     maximum_steps_per_rollout: u32,
@@ -164,6 +166,8 @@ impl EvalSpec {
                 .map(|seed| seed.0)
                 .collect(),
             heldout: Vec::new(),
+            train_task_instance_ids: Vec::new(),
+            heldout_task_instance_ids: Vec::new(),
             cost_ceiling_usd: recipe.resource_limits.hard_total_cost_micros.as_micros() as f64
                 / 1_000_000.0,
             maximum_model_calls_per_rollout: recipe
@@ -188,7 +192,14 @@ impl EvalSpec {
     }
 
     fn requires_scoped_proxy_registration(&self) -> bool {
-        self.admitted_use_policy.is_some() && provider_needs_credentials(&self.provider)
+        // Provider routes are run-scoped capabilities. An advertised policy
+        // config may prove that the harness/model pair exists, but its stored
+        // base URL necessarily belongs to an earlier run (or is only a
+        // non-routable package placeholder). Re-register every provider-backed
+        // policy for this run so the container receives the freshly issued
+        // Workshop proxy route before any rollout starts. This applies equally
+        // to typed inline specifications and workspace recipes.
+        provider_needs_credentials(&self.provider)
     }
 
     fn blocking_http_timeout(&self) -> Duration {
@@ -263,6 +274,8 @@ impl EvalSpec {
             concurrency: recipe.concurrency,
             train: recipe.train_seeds.clone(),
             heldout: recipe.heldout_seeds.clone(),
+            train_task_instance_ids: recipe.train_task_instance_ids.clone(),
+            heldout_task_instance_ids: recipe.heldout_task_instance_ids.clone(),
             cost_ceiling_usd: recipe.bounds.max_cost_usd,
             maximum_model_calls_per_rollout: recipe
                 .policy
@@ -307,6 +320,8 @@ impl EvalSpec {
             concurrency: 10,
             train: (0..10).collect(),
             heldout: Vec::new(),
+            train_task_instance_ids: Vec::new(),
+            heldout_task_instance_ids: Vec::new(),
             cost_ceiling_usd: 0.50,
             maximum_model_calls_per_rollout: 10,
             maximum_steps_per_rollout: 2_000,
@@ -339,6 +354,8 @@ impl EvalSpec {
             concurrency: 2,
             train: vec![0, 1],
             heldout: vec![100, 101],
+            train_task_instance_ids: Vec::new(),
+            heldout_task_instance_ids: Vec::new(),
             cost_ceiling_usd: 0.50,
             maximum_model_calls_per_rollout: 8,
             maximum_steps_per_rollout: 64,
@@ -362,6 +379,20 @@ impl EvalSpec {
                 seed: *seed,
             }))
             .collect()
+    }
+
+    fn task_instance_id(&self, example: &EvalExample) -> String {
+        let pool = if example.pool == "heldout" {
+            (&self.heldout, &self.heldout_task_instance_ids)
+        } else {
+            (&self.train, &self.train_task_instance_ids)
+        };
+        pool.0
+            .iter()
+            .position(|seed| *seed == example.seed)
+            .and_then(|index| pool.1.get(index))
+            .cloned()
+            .unwrap_or_else(|| format!("{}:seed:{}", self.family, example.seed))
     }
 
     fn policy_config_body(&self, openai_base_url: Option<&str>) -> Option<Value> {
@@ -1281,6 +1312,7 @@ fn experiment_bindings(
             seed_row(
                 record,
                 example,
+                &spec.task_instance_id(example),
                 progress_projection
                     .and_then(|projection| projection.get("rollouts"))
                     .and_then(|rollouts| rollouts.get(index.to_string()))
@@ -1573,10 +1605,16 @@ fn experiment_bindings(
 fn seed_row(
     record: Option<&Value>,
     example: &EvalExample,
+    task_instance_id: &str,
     state: Option<&str>,
     workbench_id: &str,
 ) -> Value {
     let seed = json!(example.seed);
+    let task_label = task_instance_id
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(task_instance_id);
     let reported_facts = record
         .and_then(|record| record.get("reportedFacts"))
         .cloned()
@@ -1595,7 +1633,8 @@ fn seed_row(
     };
     json!({
         "id": record.and_then(|record| record.get("rolloutId")).cloned().unwrap_or_else(|| json!(format!("planned:{}", example.seed))),
-        "label": match seed { Value::Null => "seed".to_string(), ref value => format!("Seed {value}") },
+        "label": if task_instance_id.contains('/') { task_label.to_string() } else { format!("Seed {}", example.seed) },
+        "taskInstanceId": task_instance_id,
         "seed": seed,
         "reward": record.and_then(|record| record.get("reward")).cloned().unwrap_or(Value::Null),
         "status": state.map(|value| json!(value)).or_else(|| record.and_then(|record| record.get("status")).cloned()).unwrap_or_else(|| json!("planned")),
@@ -2740,7 +2779,7 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
         }
     }
     super::admission::provider_use_policy_from_bounds(
-        vec!["chat.completions.create".into()],
+        container_proxy_operations(spec),
         models,
         reasoning_efforts,
         total_calls.min(u32::MAX as u64) as u32,
@@ -2752,6 +2791,17 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
                 .saturating_mul(policy_output_per_trial.saturating_add(annotation_output_per_trial))
         }),
     )
+}
+
+/// Match the run-scoped proxy capability to the provider wire protocol used by
+/// the selected harness. Codex is a Responses client; granting only Chat
+/// Completions produces a correctly routed but unusable capability and every
+/// rollout fails before its first model call.
+fn container_proxy_operations(spec: &EvalSpec) -> Vec<String> {
+    match spec.harness.trim().to_ascii_lowercase().as_str() {
+        "codex_agentic" => vec!["responses.create".into()],
+        _ => vec!["chat.completions.create".into()],
+    }
 }
 
 /// Whether this recipe holds a provider credential at all.
@@ -3131,7 +3181,7 @@ fn failed_record(
     let mut record = json!({
         "pool": example.pool,
         "seed": example.seed,
-        "taskInstanceId": format!("seed:{}", example.seed),
+        "taskInstanceId": spec.task_instance_id(&example),
         "status": "failed",
         "error": error,
         "evaluatorOutcome": {
@@ -3246,7 +3296,7 @@ fn cancelled_record(
     let mut record = json!({
         "pool": example.pool,
         "seed": example.seed,
-        "taskInstanceId": format!("seed:{}", example.seed),
+        "taskInstanceId": spec.task_instance_id(&example),
         "status": "cancelled",
         "cancellation": request.as_ref(),
         "cancellationReceipt": request.as_ref(),
@@ -3710,7 +3760,10 @@ fn verify_complete_native_frame_trace(
 /// environment-step counter. Enforce contiguous frame coverage only when the
 /// terminal record or imported bundle says this rollout is frame-bearing.
 fn requires_native_frame_coverage(terminal_record: &Value, imported: &Value) -> bool {
-    terminal_record.get("steps").and_then(Value::as_u64).is_some()
+    terminal_record
+        .get("steps")
+        .and_then(Value::as_u64)
+        .is_some()
         || imported
             .get("importedFrameCount")
             .and_then(Value::as_u64)
@@ -4270,7 +4323,9 @@ fn usage_with_authoritative_provider_receipt(
         (Some(policy), None, false) => Some(policy),
         _ => None,
     };
-    measured.extra.insert("policyUsage".into(), policy.to_json());
+    measured
+        .extra
+        .insert("policyUsage".into(), policy.to_json());
     measured
 }
 
@@ -4648,7 +4703,7 @@ async fn run_one_example(
         example.seed,
         &Uuid::new_v4().simple().to_string()[..8]
     );
-    let task_instance_id = format!("{}:seed:{}", spec.family, example.seed);
+    let task_instance_id = spec.task_instance_id(&example);
     let trial_id = format!("trial:{}:{}", spec.family, example.seed);
     let work_item_id = format!("eval:trial:{work_index}");
     let mut prepare_body = json!({
@@ -4731,7 +4786,7 @@ async fn run_one_example(
         &rollout_id,
         example.seed,
         example.pool,
-        &spec.family,
+        &task_instance_id,
         &spec.policy_config,
     )
     .await?;
@@ -4767,7 +4822,7 @@ async fn run_one_example(
         rollout_id: &rollout_id,
         seed: example.seed,
         pool: example.pool,
-        scenario: &spec.family,
+        scenario: &task_instance_id,
         base: ctx.base,
         poll_url: &poll_url,
         reward_poll_url: reward_poll_url.as_deref(),
@@ -4972,7 +5027,7 @@ async fn run_one_example(
         "trialId": trial_id,
         "pool": example.pool,
         "seed": example.seed,
-        "taskInstanceId": format!("seed:{}", example.seed),
+        "taskInstanceId": task_instance_id,
         "status": record_status,
         "reportedStatus": reported_status.as_str(),
         "error": terminal_error,
@@ -5598,6 +5653,23 @@ fn container_matches_family(task_family: Option<&str>, metadata: &Value, family:
             candidates.push(value.to_ascii_lowercase());
         }
     }
+    // Harbor is the transport/runtime family, not the benchmark family. The
+    // producer's fresh `/info` document and the manifest declaration retain
+    // the benchmark-specific identity for Harbor-backed containers (for
+    // example `env:harbor_deepswe` and `harbor-deepswe`). Include those
+    // trusted registry fields so an explicitly selected, healthy DeepSWE
+    // container is not rejected merely because its top-level task_family is
+    // the generic `harbor` runtime.
+    for pointer in [
+        "/info/platform_id",
+        "/info/environment_ref",
+        "/info/evaluation_plan_ref",
+        "/declarationOrigin/declarationId",
+    ] {
+        if let Some(value) = metadata.pointer(pointer).and_then(Value::as_str) {
+            candidates.push(value.to_ascii_lowercase());
+        }
+    }
     candidates
         .iter()
         .any(|value| value == family || value.contains(family))
@@ -5718,6 +5790,32 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn harbor_container_uses_producer_identity_to_match_benchmark_family() {
+        let metadata = json!({
+            "info": {
+                "runtime_family": "harbor",
+                "environment_ref": "env:harbor_deepswe"
+            },
+            "declarationOrigin": {
+                "declarationId": "harbor-deepswe"
+            }
+        });
+
+        assert!(container_matches_family(Some("harbor"), &metadata, "deepswe"));
+        assert!(!container_matches_family(Some("harbor"), &metadata, "healthbench"));
+    }
+
+    #[test]
+    fn benchmark_family_match_preserves_top_level_container_identity() {
+        assert!(container_matches_family(
+            Some("banking77"),
+            &json!({}),
+            "banking77"
+        ));
+    }
+
     const CLASSIFY_EVAL: &str = "eval.banking77.baseline.v1";
     const HEALTH_EVAL: &str = "eval.healthbench.smoke.v1";
     use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
@@ -5870,6 +5968,7 @@ mod tests {
                 pool: "train",
                 seed: 1,
             },
+            "banking77:seed:1",
             Some("completed"),
             "vis_workbench",
         );
@@ -6072,13 +6171,15 @@ mod tests {
         });
         svc.append_event_payloads(
             run.id.clone(),
-            vec![OptimizerEventDraft::new("optimizer.usage", EVAL_ALGORITHM_ID)
-                .item(json!({"raw": raw}))
-                .usage_delta(Map::from_iter([
-                    ("prompt_tokens".into(), json!(7635)),
-                    ("completion_tokens".into(), json!(1615)),
-                    ("cost_usd".into(), json!(0.0241)),
-                ]))],
+            vec![
+                OptimizerEventDraft::new("optimizer.usage", EVAL_ALGORITHM_ID)
+                    .item(json!({"raw": raw}))
+                    .usage_delta(Map::from_iter([
+                        ("prompt_tokens".into(), json!(7635)),
+                        ("completion_tokens".into(), json!(1615)),
+                        ("cost_usd".into(), json!(0.0241)),
+                    ])),
+            ],
         )
         .await
         .unwrap();
@@ -8310,6 +8411,33 @@ max_total_rollouts = 4
 
         assert!(spec.requires_scoped_proxy_registration());
         assert!(!spec.requires_credential_advertisement());
+    }
+
+    #[test]
+    fn provider_backed_workspace_eval_requires_scoped_proxy_registration() {
+        let spec = EvalSpec::classify_fixture();
+
+        assert!(spec.admitted_use_policy.is_none());
+        assert!(spec.requires_scoped_proxy_registration());
+    }
+
+    #[test]
+    fn codex_agentic_workspace_eval_uses_responses_capability() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.harness = "codex_agentic".into();
+
+        assert_eq!(container_proxy_operations(&spec), ["responses.create"]);
+    }
+
+    #[test]
+    fn non_codex_workspace_eval_uses_chat_completions_capability() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.harness = "harbor_fused".into();
+
+        assert_eq!(
+            container_proxy_operations(&spec),
+            ["chat.completions.create"]
+        );
     }
 
     #[test]

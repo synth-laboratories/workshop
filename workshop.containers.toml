@@ -6,3 +6,34 @@ contract = "synth.container.live-eval.v1"
 locality = "container"
 family = "craftax"
 credential_providers = ["openrouter"]
+
+# QA-owned local services. Declared here because GEPA refuses a container spec
+# that no approved workshop.containers.toml names -- the file is the operator's
+# statement that this URL is a container Workshop may drive, and inferring it
+# from a live registration would let any reachable port become one.
+[[container]]
+id = "banking77"
+url = "http://127.0.0.1:8099"
+health = "/health"
+contract = "synth.container.live-eval.v1"
+locality = "container"
+family = "banking77"
+credential_providers = ["openrouter", "openai"]
+
+[[container]]
+id = "craftax-gamebench-rust"
+url = "http://127.0.0.1:8097"
+health = "/health"
+contract = "synth.container.live-eval.v1"
+locality = "container"
+family = "craftax"
+credential_providers = ["openrouter", "openai"]
+
+[[container]]
+id = "healthbench2"
+url = "http://127.0.0.1:8114"
+health = "/health"
+contract = "synth.container.live-eval.v1"
+locality = "container"
+family = "healthbench"
+credential_providers = ["openrouter"]

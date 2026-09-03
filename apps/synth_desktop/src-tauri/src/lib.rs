@@ -37,6 +37,7 @@ pub mod error;
 mod eval_driver;
 pub mod experiments;
 mod http;
+pub mod human_annotations;
 mod instance;
 mod intern_api;
 pub mod ipc;
@@ -1068,8 +1069,7 @@ async fn optimizers_recipe_start(
 
 fn optimizer_recipe_fixture_env(recipe_id: &str) -> Option<&'static str> {
     match recipe_id {
-        "sft.craftax.nemotron-nano.tinker.v1"
-        | "sft.banking77.nemotron-lightning.tinker.v1" => {
+        "sft.craftax.nemotron-nano.tinker.v1" | "sft.banking77.nemotron-lightning.tinker.v1" => {
             Some("SYNTH_OPTIMIZERS_SFT_FIXTURE")
         }
         "cispo.banking77.tinker.v1"
@@ -1100,7 +1100,10 @@ fn hosted_fixture_gate_is_limited_to_known_recipe_families() {
         Some("SYNTH_OPTIMIZERS_CISPO_FIXTURE")
     );
     assert_eq!(optimizer_recipe_fixture_env("gepa.banking77.v1"), None);
-    assert_eq!(optimizer_recipe_fixture_env("cispo.unreviewed.tinker.v1"), None);
+    assert_eq!(
+        optimizer_recipe_fixture_env("cispo.unreviewed.tinker.v1"),
+        None
+    );
 }
 
 pub(crate) async fn authorize_optimizer_recipe_start(
@@ -1297,12 +1300,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     }
     let paid = session::approval::ApprovalKind::PaidCompute {
         operation: "optimizer.recipe.start".into(),
-        parameters: serde_json::json!({
-            "recipeId": request.recipe_id,
-            "algorithmId": recipe.get("algorithmId"),
-            "task": recipe.get("task"),
-            "limits": limits,
-        }),
+        parameters: optimizer_recipe_approval_parameters(&recipe, &request.recipe_id, &limits),
         estimated_cost_usd_micros: paid_cap.max_cost_usd_micros,
         requested_cap: paid_cap.clone(),
         requesting_agent,
@@ -1646,6 +1644,21 @@ fn optimizer_recipe_credentials_from_catalog(recipe: &Value, recipe_id: &str) ->
     })
 }
 
+fn optimizer_recipe_approval_parameters(recipe: &Value, recipe_id: &str, limits: &Value) -> Value {
+    serde_json::json!({
+        "recipeId": recipe_id,
+        "algorithmId": recipe.get("algorithmId"),
+        "task": recipe.get("task"),
+        // Paid-compute policy is provider-scoped. Credential env-var names are
+        // implementation details and are not valid provider identities.
+        "model": {
+            "provider": recipe.get("provider"),
+            "id": recipe.get("model"),
+        },
+        "limits": limits,
+    })
+}
+
 #[cfg(test)]
 mod optimizer_recipe_credential_tests {
     use super::*;
@@ -1659,6 +1672,29 @@ mod optimizer_recipe_credential_tests {
         assert_eq!(
             optimizer_recipe_credentials_from_catalog(&recipe, "gepa.openrouter.smoke.v1"),
             vec!["OPENROUTER_API_KEY"]
+        );
+    }
+
+    #[test]
+    fn paid_recipe_approval_carries_the_catalog_provider_identity() {
+        let recipe = serde_json::json!({
+            "algorithmId": "eval",
+            "task": "healthbench",
+            "provider": "openrouter",
+            "model": "meta-llama/llama-3.1-8b-instruct"
+        });
+        let parameters = optimizer_recipe_approval_parameters(
+            &recipe,
+            "eval.healthbench.live_annotated.v1",
+            &serde_json::json!({"maxCostUsd": 2.0}),
+        );
+        assert_eq!(
+            parameters.pointer("/model/provider"),
+            Some(&serde_json::json!("openrouter"))
+        );
+        assert_eq!(
+            parameters.pointer("/model/id"),
+            Some(&serde_json::json!("meta-llama/llama-3.1-8b-instruct"))
         );
     }
 }
@@ -5554,6 +5590,7 @@ pub fn run() {
             );
             let laguna = Arc::new(LagunaManager::new());
             let optimizer_manager = core.optimizers().manager().clone();
+            let human_annotations = human_annotations::from_core(&core);
             let receipts = Arc::new(credential_broker::ReceiptStore::new());
             let broker = Arc::new(
                 credential_broker::CredentialBroker::start(receipts.clone()).map_err(|error| {
@@ -5599,6 +5636,7 @@ pub fn run() {
             app.manage(telemetry);
             app.manage(laguna.clone());
             app.manage(optimizer_manager.clone());
+            app.manage(human_annotations);
             app.manage(supervisor);
 
             // All committed CoreRuntime events reach Tauri through this single

@@ -170,16 +170,34 @@ async fn protocol_update(body: &Value, core: &CoreRuntime, base: &str) -> Result
         .get("code")
         .and_then(Value::as_str)
         .filter(|code| !code.trim().is_empty())
-        .ok_or_else(|| failure("annotation_argument_missing", "code required", "pass the protocol source"))?;
+        .ok_or_else(|| {
+            failure(
+                "annotation_argument_missing",
+                "code required",
+                "pass the protocol source",
+            )
+        })?;
     let protocol_id = body
         .get("protocol_id")
         .and_then(Value::as_str)
         .filter(|id| !id.trim().is_empty())
-        .ok_or_else(|| failure("annotation_argument_missing", "protocol_id required", "pass the protocol id the file declares"))?;
+        .ok_or_else(|| {
+            failure(
+                "annotation_argument_missing",
+                "protocol_id required",
+                "pass the protocol id the file declares",
+            )
+        })?;
     let configuration = match body.get("configuration") {
         None | Some(Value::Null) => json!({}),
         Some(Value::Object(map)) => Value::Object(map.clone()),
-        Some(_) => return Err(failure("annotation_argument_invalid", "configuration must be an object", "pass a JSON object")),
+        Some(_) => {
+            return Err(failure(
+                "annotation_argument_invalid",
+                "configuration must be an object",
+                "pass a JSON object",
+            ))
+        }
     };
     if crate::optimizers::live_annotation::contains_secret_key(&configuration) {
         return Err(failure(
@@ -207,23 +225,37 @@ async fn protocol_update(body: &Value, core: &CoreRuntime, base: &str) -> Result
     let revision = installed
         .get("protocol_revision_id")
         .and_then(Value::as_str)
-        .ok_or_else(|| failure("annotation_container_error", "install omitted protocol_revision_id", "inspect the container"))?
+        .ok_or_else(|| {
+            failure(
+                "annotation_container_error",
+                "install omitted protocol_revision_id",
+                "inspect the container",
+            )
+        })?
         .to_string();
     let mut result = json!({
         "protocol": installed,
         "protocol_revision_id": revision,
         "idempotent": installed.get("idempotent").cloned().unwrap_or(Value::Bool(false)),
     });
-    if let Some(run_id) = body.get("run_id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+    if let Some(run_id) = body
+        .get("run_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
         let client = client()?;
         let state = crate::optimizers::live_annotation::read_protocol_state(&client, base).await?;
         let pin = crate::optimizers::live_annotation::pin_from_state(&state, None)?;
-        crate::optimizers::live_annotation::persist_protocol_pin(core.optimizers(), run_id, &pin).await?;
+        crate::optimizers::live_annotation::persist_protocol_pin(core.optimizers(), run_id, &pin)
+            .await?;
         result["run_pin"] = pin;
     }
     let mut rebinds = Vec::new();
     if let Some(rollouts) = body.get("rollout_ids").and_then(Value::as_array) {
-        let carry_state = body.get("carry_state").and_then(Value::as_bool).unwrap_or(true);
+        let carry_state = body
+            .get("carry_state")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         for rollout in rollouts.iter().filter_map(Value::as_str) {
             let ack = forward(
                 "POST",
@@ -251,24 +283,43 @@ async fn protocol_update(body: &Value, core: &CoreRuntime, base: &str) -> Result
 /// publishes the durable acknowledgement on the annotation stream.
 async fn control_send(body: &Value, base: &str) -> Result<Value> {
     let rollout_id = string_field(body, "rollout_id", "rolloutId").ok_or_else(|| {
-        failure("annotation_argument_missing", "rollout_id required", "pass the rollout id")
+        failure(
+            "annotation_argument_missing",
+            "rollout_id required",
+            "pass the rollout id",
+        )
     })?;
     if rollout_id.contains('/') || rollout_id.is_empty() {
-        return Err(failure("annotation_argument_invalid", "rollout_id is malformed", "pass the rollout id from the run"));
+        return Err(failure(
+            "annotation_argument_invalid",
+            "rollout_id is malformed",
+            "pass the rollout id from the run",
+        ));
     }
-    let op = body
-        .get("op")
-        .and_then(Value::as_str)
-        .ok_or_else(|| failure("annotation_argument_missing", "op required", "one of message, protocol.update, stop"))?;
+    let op = body.get("op").and_then(Value::as_str).ok_or_else(|| {
+        failure(
+            "annotation_argument_missing",
+            "op required",
+            "one of message, protocol.update, stop",
+        )
+    })?;
     let mut control = json!({"schema": "synth.live-annotation-control.v1", "op": op});
     match op {
         "message" => {
             let message = body.get("message").cloned().unwrap_or(Value::Null);
             if !message.is_object() {
-                return Err(failure("annotation_argument_invalid", "message must be an object with a type", "pass {type: note|judge_now|set, ...}"));
+                return Err(failure(
+                    "annotation_argument_invalid",
+                    "message must be an object with a type",
+                    "pass {type: note|judge_now|set, ...}",
+                ));
             }
             if crate::optimizers::live_annotation::contains_secret_key(&message) {
-                return Err(failure("protocol_credential_forbidden", "message must not carry credentials", "messages are evidence, never secrets"));
+                return Err(failure(
+                    "protocol_credential_forbidden",
+                    "message must not carry credentials",
+                    "messages are evidence, never secrets",
+                ));
             }
             control["message"] = message;
         }
@@ -279,7 +330,10 @@ async fn control_send(body: &Value, base: &str) -> Result<Value> {
                 .filter(|id| id.starts_with("anprev_"))
                 .ok_or_else(|| failure("annotation_argument_missing", "protocol_revision_id required", "install the revision first (annotation_protocol_update) and pass its anprev_ id"))?;
             control["protocol_revision_id"] = json!(revision);
-            control["carry_state"] = json!(body.get("carry_state").and_then(Value::as_bool).unwrap_or(true));
+            control["carry_state"] = json!(body
+                .get("carry_state")
+                .and_then(Value::as_bool)
+                .unwrap_or(true));
         }
         "stop" => {
             if let Some(reason) = body.get("reason").and_then(Value::as_str) {
@@ -287,13 +341,22 @@ async fn control_send(body: &Value, base: &str) -> Result<Value> {
             }
         }
         other => {
-            return Err(failure("annotation_argument_invalid", format!("unknown control op `{other}`"), "one of message, protocol.update, stop"));
+            return Err(failure(
+                "annotation_argument_invalid",
+                format!("unknown control op `{other}`"),
+                "one of message, protocol.update, stop",
+            ));
         }
     }
     if let Some(control_id) = body.get("control_id").and_then(Value::as_str) {
         control["control_id"] = json!(control_id);
     }
-    forward("POST", &format!("{base}/rollouts/{rollout_id}/annotations/control"), Some(&control)).await
+    forward(
+        "POST",
+        &format!("{base}/rollouts/{rollout_id}/annotations/control"),
+        Some(&control),
+    )
+    .await
 }
 
 /// Known container error codes keep their identity through the proxy.
@@ -586,7 +649,10 @@ const LUNA_OUTPUT_USD_PER_MILLION: f64 = 10.0;
 
 fn luna_cost_micros(usage: &Value) -> Option<u64> {
     let input = usage.get("input_tokens").and_then(Value::as_f64)?;
-    let output = usage.get("output_tokens").and_then(Value::as_f64).unwrap_or(0.0);
+    let output = usage
+        .get("output_tokens")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
     let cached = usage
         .get("cached_input_tokens")
         .and_then(Value::as_f64)
@@ -1021,11 +1087,7 @@ async fn settle_if_terminal(core: &CoreRuntime, container_id: &str, payload: &Va
     else {
         return Ok(());
     };
-    let outcome = settlement_from_usage(
-        payload
-            .get("job")
-            .and_then(|job| job.get("usage")),
-    );
+    let outcome = settlement_from_usage(payload.get("job").and_then(|job| job.get("usage")));
     let container_id = container_id.to_string();
     core.storage()
         .database()
@@ -1314,7 +1376,9 @@ async fn open_annotation_workbench(
                         )
                     })
                     .await?
-                    .context("annotation workbench trace was not imported by its owning container")?;
+                    .context(
+                        "annotation workbench trace was not imported by its owning container",
+                    )?;
                 core.data().get_trace(local_trace_id).await?
             }
         },
@@ -1767,10 +1831,16 @@ pub(crate) async fn dispatch_free(
     base: &str,
 ) -> Result<Value> {
     match operation {
-        "annotation_protocol_get" => forward("GET", &format!("{base}/annotation-protocol"), None).await,
+        "annotation_protocol_get" => {
+            forward("GET", &format!("{base}/annotation-protocol"), None).await
+        }
         "annotation_provisional_list" => {
             let run_id = string_field(body, "run_id", "runId").ok_or_else(|| {
-                failure("annotation_argument_missing", "run_id required", "pass the eval run id")
+                failure(
+                    "annotation_argument_missing",
+                    "run_id required",
+                    "pass the eval run id",
+                )
             })?;
             let rollout_id = string_field(body, "rollout_id", "rolloutId");
             core.storage()
@@ -1781,7 +1851,8 @@ pub(crate) async fn dispatch_free(
                         &run_id,
                         rollout_id.as_deref(),
                     )?;
-                    let summary = crate::session::live_annotation_projection::run_summary(conn, &run_id)?;
+                    let summary =
+                        crate::session::live_annotation_projection::run_summary(conn, &run_id)?;
                     Ok(json!({
                         "schema": crate::session::live_annotation_projection::PROVISIONAL_SCHEMA,
                         "run_id": run_id,
@@ -2044,11 +2115,20 @@ mod tests {
                         ),
                         ("POST", p) if p.ends_with("/annotations/control") => {
                             if text.contains("\"op\":\"stop\"") {
-                                (202, json!({"accepted": true, "control_id": "ctl:1", "op": "stop", "queued": true}))
+                                (
+                                    202,
+                                    json!({"accepted": true, "control_id": "ctl:1", "op": "stop", "queued": true}),
+                                )
                             } else if text.contains("anprev_0000000000000000") {
-                                (422, json!({"accepted": false, "control_id": "ctl:2", "reason": "annotation_protocol_unknown"}))
+                                (
+                                    422,
+                                    json!({"accepted": false, "control_id": "ctl:2", "reason": "annotation_protocol_unknown"}),
+                                )
                             } else {
-                                (202, json!({"accepted": true, "control_id": "ctl:3", "queued": true}))
+                                (
+                                    202,
+                                    json!({"accepted": true, "control_id": "ctl:3", "queued": true}),
+                                )
                             }
                         }
                         _ => (
@@ -2238,7 +2318,11 @@ mod tests {
             "{}",
             failure.message
         );
-        assert!(failure.message.contains("tracev5_aaaa"), "{}", failure.message);
+        assert!(
+            failure.message.contains("tracev5_aaaa"),
+            "{}",
+            failure.message
+        );
         let set_owner = |owner: &'static str| {
             let digest = digest.clone();
             let core = &core;
@@ -2461,13 +2545,15 @@ mod tests {
                      JOIN annotation_campaigns c ON c.campaign_id=j.campaign_id
                      WHERE j.job_id='ajob_1'",
                     [],
-                    |row| Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                    )),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    },
                 )?)
             })
             .await
@@ -2500,9 +2586,15 @@ mod tests {
         let core = CoreRuntime::open(dir.path()).unwrap();
         let container_id = registered(&core, &base).await;
 
-        let state = dispatch_free("annotation_protocol_get", &json!({}), &core, &container_id, &base)
-            .await
-            .unwrap();
+        let state = dispatch_free(
+            "annotation_protocol_get",
+            &json!({}),
+            &core,
+            &container_id,
+            &base,
+        )
+        .await
+        .unwrap();
         assert_eq!(state["protocol_revision_id"], "anprev_1234567890abcdef");
 
         let installed = dispatch_free(
@@ -2569,10 +2661,23 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert_eq!(bad_op.downcast_ref::<StructuredFailure>().unwrap().code, "annotation_argument_invalid");
+        assert_eq!(
+            bad_op.downcast_ref::<StructuredFailure>().unwrap().code,
+            "annotation_argument_invalid"
+        );
         let lines = seen.lock().unwrap().clone();
-        assert!(lines.iter().any(|line| line == "PUT /annotation-protocol"), "{lines:?}");
-        assert!(lines.iter().filter(|line| *line == "POST /rollouts/roll_a/annotations/control").count() >= 3, "{lines:?}");
+        assert!(
+            lines.iter().any(|line| line == "PUT /annotation-protocol"),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .filter(|line| *line == "POST /rollouts/roll_a/annotations/control")
+                .count()
+                >= 3,
+            "{lines:?}"
+        );
     }
 
     #[test]

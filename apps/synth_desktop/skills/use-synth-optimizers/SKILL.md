@@ -59,6 +59,12 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 
 ## Present the result
 
+Selection is not uplift, and optimizer completion is not uplift. For GEPA,
+SFT, and CISPO, claim improvement only from a paired held-out comparison of the
+unchanged base/seed and the selected artifact on the same untouched examples or
+task identities. Report the paired sample count, interval, practical threshold,
+and regressions; `inconclusive` and `no material uplift` are valid results.
+
 Show the visual before a chat-started run and whenever the user asks to inspect an existing run. The pane and the chat artifact must reference the same visual ID. Report:
 
 - algorithm, objective, run ID, source, execution binding, status, and final cursor;

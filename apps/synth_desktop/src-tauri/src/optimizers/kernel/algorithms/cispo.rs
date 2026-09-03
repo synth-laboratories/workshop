@@ -29,12 +29,34 @@ pub struct CispoProjection {
     pub advantage_std: Option<f64>,
     #[serde(default)]
     pub reward_variance: Option<f64>,
+    /// Number of distinct rollout groups whose rewards were non-uniform.
+    /// This is a run-level learning-signal count, not a sample count.
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
+    pub learning_signal_groups: u64,
+    /// Uniform groups are locally uninformative, but do not imply the whole
+    /// run lacked a learning signal.
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
+    pub zero_advantage_groups: u64,
+    /// Distinct rollout groups observed by the reducer. This compact scalar
+    /// survives the bounded first-paint wire view after detailed work items
+    /// are removed and is therefore the canonical UI count.
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
+    pub rollout_group_count: u64,
     #[serde(default)]
     #[specta(type = Option<specta_typescript::Number>)]
     pub group_size: Option<u64>,
     #[serde(default)]
     #[specta(type = specta_typescript::Number)]
     pub optimizer_steps: u64,
+    #[serde(default)]
+    pub clipped_token_fraction: Option<f64>,
+    #[serde(default)]
+    pub importance_ratio_mean: Option<f64>,
+    #[serde(default)]
+    pub kl_proxy: Option<f64>,
     pub checkpoints: Vec<String>,
     #[serde(default)]
     pub selected_checkpoint_id: Option<String>,
@@ -156,12 +178,10 @@ impl CispoProjection {
                     item.transition(WorkItemLifecycle::Running)?;
                     item.seal_terminal(TerminalKind::Completed)?;
                     self.work_items.push(item);
+                    self.rollout_group_count += 1;
                 }
                 if let Some(adv) = payload.get("meanAdvantage").and_then(|v| v.as_f64()) {
                     self.mean_advantage = Some(adv);
-                    if adv == 0.0 {
-                        self.no_learning_signal = true;
-                    }
                 }
                 let observed_group_size = payload
                     .get("rewards")
@@ -177,10 +197,44 @@ impl CispoProjection {
                     .and_then(Value::as_f64)
                 {
                     self.reward_variance = Some(variance);
+                    if variance > 0.0 {
+                        self.learning_signal_groups += 1;
+                    }
                 }
             }
+            "cispo.zero_advantage.detected" => {
+                self.zero_advantage_groups += 1;
+            }
+            "cispo.importance_ratio.measured" => {
+                self.clipped_token_fraction = payload
+                    .get("clipped_token_fraction")
+                    .or_else(|| payload.get("clippedTokenFraction"))
+                    .and_then(Value::as_f64)
+                    .or(self.clipped_token_fraction);
+                self.importance_ratio_mean = payload
+                    .get("mean_ratio")
+                    .or_else(|| payload.get("meanRatio"))
+                    .and_then(Value::as_f64)
+                    .or(self.importance_ratio_mean);
+                self.kl_proxy = payload
+                    .get("kl_proxy")
+                    .or_else(|| payload.get("klProxy"))
+                    .and_then(Value::as_f64)
+                    .or(self.kl_proxy);
+            }
             "cispo.no_learning_signal" => {
-                self.no_learning_signal = true;
+                // Older hosted producers used this name for one uniform
+                // rollout group. A group identity makes it a local diagnostic;
+                // only an unscoped event is a run-level stop condition.
+                if payload
+                    .get("groupId")
+                    .or_else(|| payload.get("group_id"))
+                    .is_some()
+                {
+                    self.zero_advantage_groups += 1;
+                } else {
+                    self.no_learning_signal = true;
+                }
             }
             "cispo.checkpoint.ready" | "sft.checkpoint.ready" => {
                 if let Some(id) = payload
@@ -321,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_advantage_is_a_typed_no_learning_signal() {
+    fn one_zero_advantage_group_does_not_poison_the_run() {
         let mut projection = CispoProjection::default();
         projection
             .apply(&committed(
@@ -331,8 +385,62 @@ mod tests {
             ))
             .unwrap();
         let result = projection.settle().unwrap();
-        assert!(result.no_learning_signal);
+        assert!(!result.no_learning_signal);
         assert_eq!(result.mean_advantage, Some(0.0));
+    }
+
+    #[test]
+    fn cispo_learning_signal_counts_and_importance_diagnostics_are_projected() {
+        let mut projection = CispoProjection::default();
+        projection
+            .apply(&committed(
+                "cispo.rollout_group.completed",
+                json!({"groupId": "1:0", "rewards": [1.0, 0.0], "reward_variance": 0.25}),
+                1,
+            ))
+            .unwrap();
+        projection
+            .apply(&committed(
+                "cispo.zero_advantage.detected",
+                json!({"groupId": "1:1"}),
+                2,
+            ))
+            .unwrap();
+        projection
+            .apply(&committed(
+                "cispo.no_learning_signal",
+                json!({"group_id": "1:2"}),
+                3,
+            ))
+            .unwrap();
+        projection
+            .apply(&committed(
+                "cispo.importance_ratio.measured",
+                json!({
+                    "clipped_token_fraction": 0.011,
+                    "mean_ratio": 77.09,
+                    "kl_proxy": 3.72
+                }),
+                4,
+            ))
+            .unwrap();
+
+        assert_eq!(projection.learning_signal_groups, 1);
+        assert_eq!(projection.zero_advantage_groups, 2);
+        assert_eq!(projection.rollout_group_count, 1);
+        assert!(!projection.no_learning_signal);
+        assert_eq!(projection.clipped_token_fraction, Some(0.011));
+        assert_eq!(projection.importance_ratio_mean, Some(77.09));
+        assert_eq!(projection.kl_proxy, Some(3.72));
+    }
+
+    #[test]
+    fn unscoped_no_learning_signal_is_run_level() {
+        let mut projection = CispoProjection::default();
+        projection
+            .apply(&committed("cispo.no_learning_signal", json!({}), 1))
+            .unwrap();
+        assert!(projection.no_learning_signal);
     }
 
     #[test]

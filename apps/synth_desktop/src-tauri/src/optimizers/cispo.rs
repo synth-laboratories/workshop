@@ -5,9 +5,10 @@ use super::models::{
     OptimizerQuery, OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
 };
 use super::sidecar_training::{
-    advertised_placement, spawn_watch_worker, training_create_request, tunneled_evaluation_plan,
-    EvaluationContract, SidecarTrainingClient, HOSTED_BANKING77_CISPO_RECIPE, HOSTED_CISPO_RECIPE,
-    LOCAL_MLX_CISPO_RECIPE, PLACEMENT_TRAINING_CISPO_HOSTED, PLACEMENT_TRAINING_CISPO_LOCAL,
+    advertised_placement, require_training_ready, spawn_watch_worker, training_create_request,
+    tunneled_evaluation_plan, EvaluationContract, HOSTED_BANKING77_CISPO_RECIPE,
+    HOSTED_CISPO_RECIPE, LOCAL_MLX_CISPO_RECIPE, PLACEMENT_TRAINING_CISPO_HOSTED,
+    PLACEMENT_TRAINING_CISPO_LOCAL,
 };
 use super::OptimizerService;
 use anyhow::Result;
@@ -138,6 +139,8 @@ fn hosted_cispo_recipe(id: &str, title: &str) -> Value {
         "id": id,
         "title": title,
         "algorithmId": "cispo",
+        "provider": "tinker",
+        "model": "openai/gpt-oss-20b",
         "task": "banking77",
         "placement": PLACEMENT_TRAINING_CISPO_HOSTED,
         "availability": if available { "available" } else { "unavailable" },
@@ -158,6 +161,23 @@ fn hosted_cispo_recipe(id: &str, title: &str) -> Value {
         "credentialInputs": [],
         "prerequisites": hosted_cispo_prerequisites()
     })
+}
+
+#[cfg(test)]
+mod catalog_identity_tests {
+    use super::*;
+
+    #[test]
+    fn hosted_cispo_recipes_name_the_paid_provider_and_model() {
+        assert!(recipe_catalog()
+            .iter()
+            .filter(|recipe| recipe.get("placement").and_then(Value::as_str)
+                == Some("training.cispo.hosted"))
+            .all(|recipe| {
+                recipe.get("provider").and_then(Value::as_str) == Some("tinker")
+                    && recipe.get("model").and_then(Value::as_str) == Some("openai/gpt-oss-20b")
+            }));
+    }
 }
 
 fn hosted_cispo_prerequisites() -> Vec<&'static str> {
@@ -533,11 +553,12 @@ pub async fn restore_mirrors(service: &OptimizerService) {
         return;
     };
     let registered: HashSet<String> = service.registered_local_recipes().await;
-    let Ok(client) = SidecarTrainingClient::from_manager(service.manager()).await else {
+    let Ok(client) = require_training_ready(service, PLACEMENT_TRAINING_CISPO_HOSTED).await else {
         return;
     };
     for run in runs.into_iter().filter(|run| {
-        !matches!(run.status.as_str(), "completed" | "failed" | "cancelled")
+        run.source == "hosted"
+            && !matches!(run.status.as_str(), "completed" | "failed" | "cancelled")
             && !registered.contains(&run.id)
     }) {
         let cursor = run
@@ -545,6 +566,25 @@ pub async fn restore_mirrors(service: &OptimizerService) {
             .get("trainingCursor")
             .and_then(Value::as_u64)
             .unwrap_or(0);
+        let recipe_id = run
+            .project_ref
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(HOSTED_CISPO_RECIPE);
+        if let Err(error) = client
+            .attach_existing_hosted_job(&run.id, PLACEMENT_TRAINING_CISPO_HOSTED, recipe_id)
+            .await
+        {
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!(
+                    "hosted CISPO mirror {} could not reattach: {error:#}",
+                    run.id
+                ),
+            );
+            continue;
+        }
         spawn_watch_worker(service, client.clone(), run.id, cursor).await;
     }
 }

@@ -502,7 +502,7 @@ fn tools() -> Value {
             {"name":"visual_create_from_template","description":"Alias of visual_create. Include a short sensible display_name (2–6 words, unique in the task).","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"display_name":{"type":"string","minLength":1,"maxLength":64,"description":"Short human-readable name, usually 2–6 words, unique within the task."},"props":{"type":"object"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
             {"name":"visual_update","description":"Revise visual bindings, title, short display_name, trusted-template configuration, or Mermaid/systems/chart content","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"display_name":{"type":"string","minLength":1,"maxLength":64,"description":"Short human-readable name, usually 2–6 words."},"content":{"type":"string"},"bindings":{"type":"object","description":"Canonical synth.visual-bindings.v1 envelope: {\"schemaVersion\":\"synth.visual-bindings.v1\",\"inputs\":[{\"input\":...,\"kind\":...,\"source\":...}]}. slot still binds on stored envelopes; new writers emit input/inputs. A slot-keyed map such as {\"stream\":[...]} is legacy, is upgraded with a warning, and will be refused in a later release. Prefer visual_bind_data_source.","properties":{"schemaVersion":{"type":"string","const":"synth.visual-bindings.v1"},"inputs":{"type":"array","items":{"type":"object","properties":{"input":{"type":"string"},"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"data":{}},"required":["kind"]}}},"required":["schemaVersion"]},"status":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_bind_data_source","description":"Bind one input on a visual. This is the only supported way to write bindings: it emits the canonical synth.visual-bindings.v1 envelope. Inline inputs require data; other kinds require source. compose.visual.v1 stream is eval SSE; optimizer_run is optimizer_event.v1 (GEPA/SFT/CISPO). Use mode=append with bindings[] to put several sources on one input. slot still binds; new writers use input.","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"input":{"type":"string","description":"Bind-point name, e.g. spec, stream, optimizer_run"},"slot":{"type":"string","description":"Read-only alias of input on stored envelopes; still binds."},"mode":{"type":"string","enum":["replace","append"],"description":"replace (default) drops existing bindings on this input; append adds to them"},"kind":{"type":"string","enum":["trace_v5","local_cas","live_sse","fixture","inline","run_ref","optimizer_run","optimizer_snapshot","query_snapshot"]},"source":{"type":"string"},"data":{"description":"Required when kind is inline"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"},"schema":{"type":"string"},"bindings":{"type":"array","description":"Several descriptors for one input. Each is {kind, source, data?, poll_url?, path?, schema?}; the named input is authoritative.","items":{"type":"object","properties":{"kind":{"type":"string"},"source":{"type":"string"},"data":{},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"}},"required":["kind"],"additionalProperties":false}}},"required":["instance_id"],"additionalProperties":false}},
-             {"name":"visual_show","description":"Open a visual in the Desktop right pane","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"session_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
+             {"name":"visual_show","description":"Open a visual in the Desktop right pane. Set foreground_owner only for explicit navigation or deterministic capture of the owning conversation.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"session_id":{"type":"string"},"foreground_owner":{"type":"boolean"}},"required":["visual_id"],"additionalProperties":false}},
              {"name":"document_show","description":"Open one workspace file in the Desktop right pane. The path is resolved against this conversation's workspace roots; a path outside them is refused, and a file that cannot be typeset (missing, binary, a directory) comes back with the named reason. Read-only: there is no write or delete counterpart.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path, or a path relative to a workspace root, of the file to open"}},"required":["path"],"additionalProperties":false}},
             {"name":"document_show","description":"Open one workspace file in the Desktop right pane. The path is resolved against this conversation's workspace roots; a path outside them is refused, and a file that cannot be typeset (missing, binary, a directory) comes back with the named reason. Read-only: there is no write or delete counterpart.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path, or a path relative to a workspace root, of the file to open"}},"required":["path"],"additionalProperties":false}},
             {"name":"visual_open_in_pane","description":"Alias of visual_show","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"}},"required":["instance_id"],"additionalProperties":false}},
@@ -932,7 +932,8 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .and_then(Value::as_str)
                 .ok_or("visual_id required")?;
             let body = json!({
-                "sessionId": args.get("session_id").cloned().or_else(|| session_env.map(Value::String))
+                "sessionId": args.get("session_id").cloned().or_else(|| session_env.map(Value::String)),
+                "foregroundOwner": args.get("foreground_owner").and_then(Value::as_bool).unwrap_or(false)
             });
             request("POST", &format!("/v1/visuals/{id}/show"), Some(body))
         }
@@ -1609,7 +1610,7 @@ fn capture_review(args: &Value) -> Result<Value, String> {
     // impossible for contract-free templates such as the Trace inspector, with
     // no path that could ever succeed.
     let observation = if capture_mode == "host-webview-snapshot" {
-        let response = request("GET", &format!("/v1/review-observations/{id}"), None)?;
+        let response = wait_for_review_observation(id, revision)?;
         let observed = response
             .get("observation")
             .cloned()
@@ -1677,6 +1678,29 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         "instruction": "Inspect the attached PNG image before submitting visual_review. If any collision, truncation, crossing, weak hierarchy, or excessive density is visible, update and capture again.",
         "_mcpImage": {"data":base64::engine::general_purpose::STANDARD.encode(png),"mimeType":"image/png"}
     }))
+}
+
+/// Host capture opens the requested React visual before photographing it.
+/// Large retained runs can take a moment to hydrate and publish their matching
+/// observation, especially when the app is occluded. Treat that as one bounded
+/// capture transaction instead of forcing callers into a second blind retry.
+fn wait_for_review_observation(id: &str, revision: i64) -> Result<Value, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let response = request("GET", &format!("/v1/review-observations/{id}"), None)?;
+        let observed_revision = response
+            .pointer("/observation/renderedRevision")
+            .and_then(Value::as_i64);
+        let required = response
+            .get("required")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        if observed_revision == Some(revision) || !required || std::time::Instant::now() >= deadline
+        {
+            return Ok(response);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 fn capture_svg_review(

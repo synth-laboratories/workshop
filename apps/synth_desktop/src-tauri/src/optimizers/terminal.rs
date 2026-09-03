@@ -741,7 +741,10 @@ mod tests {
         assert_eq!(manifest.pointer("/usage/rollouts"), Some(&json!(80)));
         assert_eq!(manifest.pointer("/usage/policyCalls"), Some(&json!(80)));
         assert_eq!(manifest.pointer("/usage/proposerCalls"), Some(&json!(1)));
-        assert_eq!(manifest.pointer("/usage/providerRequests"), Some(&json!(81)));
+        assert_eq!(
+            manifest.pointer("/usage/providerRequests"),
+            Some(&json!(81))
+        );
         assert_eq!(
             manifest.pointer("/gepaEvidence/positiveHeldoutUplift"),
             Some(&json!(false))
@@ -757,7 +760,10 @@ mod tests {
             Some(&json!(8_013))
         );
         assert_eq!(with_receipt.pointer("/usage/policyCalls"), Some(&json!(80)));
-        assert_eq!(with_receipt.pointer("/usage/proposerCalls"), Some(&json!(1)));
+        assert_eq!(
+            with_receipt.pointer("/usage/proposerCalls"),
+            Some(&json!(1))
+        );
     }
 
     #[test]

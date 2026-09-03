@@ -202,7 +202,9 @@ mod tests {
                 let report = collect(conn, "current").unwrap();
                 assert_eq!(report.evicted_renditions, 20);
                 let remaining: i64 = conn
-                    .query_row("SELECT count(*) FROM visual_renditions", [], |row| row.get(0))
+                    .query_row("SELECT count(*) FROM visual_renditions", [], |row| {
+                        row.get(0)
+                    })
                     .unwrap();
                 assert_eq!(remaining, MAX_RETAINED_RENDITIONS);
                 Ok(())

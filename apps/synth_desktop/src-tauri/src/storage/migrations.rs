@@ -69,6 +69,8 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_64,
     MIGRATION_65,
     MIGRATION_66,
+    MIGRATION_67,
+    MIGRATION_68,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -250,10 +252,23 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("annotation_findings", MIGRATION_63),
     ("rubric_results", MIGRATION_63),
     ("annotation_reviews", MIGRATION_63),
-    ("annotation_provisional_findings", LIVE_ANNOTATION_CREATE_ONLY),
-    ("optimizer_run_collection_rows", OPTIMIZER_READ_MODEL_CREATE_ONLY),
-    ("optimizer_projection_checkpoints", OPTIMIZER_READ_MODEL_CREATE_ONLY),
+    (
+        "annotation_provisional_findings",
+        LIVE_ANNOTATION_CREATE_ONLY,
+    ),
+    (
+        "optimizer_run_collection_rows",
+        OPTIMIZER_READ_MODEL_CREATE_ONLY,
+    ),
+    (
+        "optimizer_projection_checkpoints",
+        OPTIMIZER_READ_MODEL_CREATE_ONLY,
+    ),
     ("research_journal_entries", MIGRATION_66),
+    ("human_annotation_tasks", MIGRATION_67),
+    ("human_annotation_sessions", MIGRATION_67),
+    ("human_annotation_results", MIGRATION_67),
+    ("human_annotation_events", MIGRATION_67),
 ];
 
 /// Lane C: provisional findings relayed from a rollout's live annotation
@@ -5160,7 +5175,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(available, 0, "missing verifier evidence must not store a score");
+        assert_eq!(
+            available, 0,
+            "missing verifier evidence must not store a score"
+        );
     }
 }
 
@@ -5415,4 +5433,182 @@ CREATE TABLE research_journal_entries (
 );
 CREATE INDEX research_journal_entries_experiment ON research_journal_entries(experiment_id, sequence);
 CREATE INDEX research_journal_entries_kind ON research_journal_entries(entry_kind, sequence);
+"#;
+
+/// Human review is a separate authority from machine annotation jobs. Tasks are
+/// immutable assignments, sessions are optimistic-concurrency drafts, and
+/// submitted results are append-only sealed revisions. Media bytes live in CAS;
+/// these rows retain their identity, digest, and relationship to the judgment.
+const MIGRATION_67: &str = r#"
+CREATE TABLE IF NOT EXISTS human_annotation_campaigns (
+    campaign_id TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    name TEXT NOT NULL,
+    benchmark_family TEXT,
+    dataset_split TEXT,
+    policy_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT NOT NULL,
+    closed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_tasks (
+    task_id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    campaign_id TEXT REFERENCES human_annotation_campaigns(campaign_id),
+    schema_version TEXT NOT NULL,
+    task_digest TEXT NOT NULL UNIQUE,
+    subject_kind TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    subject_revision INTEGER,
+    subject_digest TEXT NOT NULL,
+    rubric_id TEXT NOT NULL,
+    rubric_digest TEXT NOT NULL,
+    task_json TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    cancelled_at TEXT,
+    cancellation_reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_sessions (
+    session_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES human_annotation_tasks(task_id),
+    reviewer_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    draft_revision INTEGER NOT NULL DEFAULT 0,
+    draft_json TEXT NOT NULL DEFAULT '{}',
+    presentation_json TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    submitted_at TEXT,
+    UNIQUE(task_id, reviewer_id)
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_quiz_keys (
+    task_id TEXT NOT NULL REFERENCES human_annotation_tasks(task_id),
+    question_id TEXT NOT NULL,
+    key_digest TEXT NOT NULL,
+    key_json TEXT NOT NULL,
+    grader_version TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, question_id)
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_answers (
+    answer_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES human_annotation_sessions(session_id),
+    result_id TEXT REFERENCES human_annotation_results(result_id),
+    question_id TEXT NOT NULL,
+    question_revision INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    answer_json TEXT NOT NULL,
+    presented_at TEXT,
+    answered_at TEXT,
+    supersedes_id TEXT REFERENCES human_annotation_answers(answer_id),
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_comments (
+    comment_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES human_annotation_sessions(session_id),
+    result_id TEXT REFERENCES human_annotation_results(result_id),
+    evidence_digest TEXT NOT NULL,
+    selector_json TEXT NOT NULL,
+    body_text TEXT,
+    corrected_transcript TEXT,
+    audio_attachment_id TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    supersedes_id TEXT REFERENCES human_annotation_comments(comment_id),
+    tombstoned INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_attachments (
+    attachment_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES human_annotation_sessions(session_id),
+    kind TEXT NOT NULL,
+    state TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    cas_digest TEXT,
+    byte_size INTEGER,
+    duration_ms INTEGER,
+    machine_transcript TEXT,
+    transcript_digest TEXT,
+    transcript_model TEXT,
+    transcript_language TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_audio_chunks (
+    attachment_id TEXT NOT NULL REFERENCES human_annotation_attachments(attachment_id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    bytes BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (attachment_id, chunk_index)
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_results (
+    result_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES human_annotation_tasks(task_id),
+    session_id TEXT NOT NULL REFERENCES human_annotation_sessions(session_id),
+    result_revision INTEGER NOT NULL,
+    result_digest TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    supersedes_id TEXT REFERENCES human_annotation_results(result_id),
+    created_at TEXT NOT NULL,
+    UNIQUE(session_id, result_revision)
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_result_seals (
+    result_id TEXT PRIMARY KEY REFERENCES human_annotation_results(result_id),
+    schema_version TEXT NOT NULL,
+    seal_digest TEXT NOT NULL UNIQUE,
+    manifest_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_events (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    task_id TEXT NOT NULL,
+    session_id TEXT,
+    kind TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS human_annotation_campaign_state ON human_annotation_campaigns(state, created_at);
+CREATE INDEX IF NOT EXISTS human_annotation_task_state ON human_annotation_tasks(state, created_at);
+CREATE INDEX IF NOT EXISTS human_annotation_task_campaign ON human_annotation_tasks(campaign_id, state);
+CREATE INDEX IF NOT EXISTS human_annotation_session_reviewer ON human_annotation_sessions(reviewer_id, task_id);
+CREATE INDEX IF NOT EXISTS human_annotation_result_task ON human_annotation_results(task_id, created_at);
+CREATE INDEX IF NOT EXISTS human_annotation_answer_session_question ON human_annotation_answers(session_id, question_id);
+CREATE INDEX IF NOT EXISTS human_annotation_comment_evidence ON human_annotation_comments(evidence_digest, session_id);
+CREATE INDEX IF NOT EXISTS human_annotation_event_task ON human_annotation_events(task_id, sequence);
+"#;
+
+/// Campaign decisions are immutable records over already-sealed human results.
+/// They remain separate from reviewer results so adjudication cannot rewrite
+/// either the source judgments or their seals.
+const MIGRATION_68: &str = r#"
+CREATE TABLE IF NOT EXISTS human_annotation_adjudications (
+    adjudication_id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL REFERENCES human_annotation_campaigns(campaign_id),
+    schema_version TEXT NOT NULL,
+    source_result_ids_json TEXT NOT NULL,
+    decision_json TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    adjudicator_id TEXT NOT NULL,
+    decision_digest TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS human_annotation_adjudication_campaign
+    ON human_annotation_adjudications(campaign_id, created_at);
 "#;

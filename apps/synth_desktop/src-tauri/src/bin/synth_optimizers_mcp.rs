@@ -345,7 +345,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             )
         }
         "optimizer_list_algorithms" => request("GET", "/v1/optimizers/algorithms", None),
-		"optimizer_export_snapshot" => request(
+        "optimizer_export_snapshot" => request(
             "POST",
             &format!("/v1/optimizers/runs/{}/snapshot", id()?),
             Some(json!({})),
@@ -366,11 +366,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 None,
             )
         }
-		"optimizer_list_recipes" => request(
+        "optimizer_list_recipes" => request(
             "GET",
             "/v1/optimizers/recipes",
-			Some(json!({ "sessionRef": session_ref() })),
-		),
+            Some(json!({ "sessionRef": session_ref() })),
+        ),
         "optimizer_inspect_local_mlx" => request("GET", "/v1/mlx/inspect", None),
         "optimizer_inspect_training_runtime" => request("GET", "/v1/training/mlx-runtime", None),
         "optimizer_install_training_runtime" => request(

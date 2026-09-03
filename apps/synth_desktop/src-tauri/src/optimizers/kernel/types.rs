@@ -67,7 +67,7 @@ impl AlgorithmKind {
             // summaries so training surfaces read the projection instead of
             // re-reading the event prefix on a timer.
             Self::Sft => "sft.projection.v3",
-            Self::Cispo => "cispo.projection.v3",
+            Self::Cispo => "cispo.projection.v5",
         }
     }
 

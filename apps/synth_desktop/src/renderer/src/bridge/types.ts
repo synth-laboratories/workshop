@@ -588,6 +588,49 @@ export type UpdatesBridge = {
 	openDownload(): Promise<void>;
 };
 
+export type HumanAnnotationSessionView = {
+	schemaVersion: string;
+	taskId: string;
+	sessionId: string;
+	taskDigest: string;
+	task: Record<string, unknown>;
+	state: string;
+	draftRevision: number;
+	answers: Record<string, unknown>;
+	presentation: Record<string, unknown>;
+	comments: Array<Record<string, unknown>>;
+	attachments: Array<Record<string, unknown>>;
+	result?: Record<string, unknown> | null;
+	updatedAt: string;
+};
+
+export type HumanAnnotationsBridge = {
+	preview(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	create(request: Record<string, unknown>): Promise<{ taskId: string; sessionId: string; taskDigest: string; state: string; created: boolean }>;
+	open(sessionId: string): Promise<HumanAnnotationSessionView>;
+	show(sessionId: string): Promise<HumanAnnotationSessionView>;
+	setAnswer(request: Record<string, unknown>): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	clearAnswer(sessionId: string, expectedRevision: number, questionId: string): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	createComment(request: Record<string, unknown>): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	audioBegin(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	audioAppend(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	audioFinish(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	audioRead(sessionId: string, attachmentId: string): Promise<{ attachmentId: string; mediaType: string; base64Data: string }>;
+	audioTranscribe(request: Record<string, unknown>): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	correctTranscript(request: Record<string, unknown>): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	submit(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	list(query?: Record<string, unknown>): Promise<Array<Record<string, unknown>>>;
+	status(id: string): Promise<Record<string, unknown>>;
+	cancel(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	exportResult(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	supersede(request: Record<string, unknown>): Promise<{ taskId: string; sessionId: string; taskDigest: string; state: string; created: boolean }>;
+	campaignCreate(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	campaignStatus(campaignId: string): Promise<Record<string, unknown>>;
+	campaignClose(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	campaignAdjudicate(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	onShow(listener: (sessionId: string) => void): () => void;
+};
+
 export type VisualTemplateMeta = TemplateMeta;
 
 export type VisualsBridge = {

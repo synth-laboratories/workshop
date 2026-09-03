@@ -92,6 +92,14 @@ export type StateDelta = {
   source: "resource_delta" | "state_transition" | "entity_transition";
 };
 
+export type TraceRubricGrade = {
+  index: number | null;
+  criterion: string;
+  explanation: string | null;
+  met: boolean | null;
+  points: number | null;
+};
+
 export type TraceFrame = {
   /** Environment step this frame renders. */
   step: number;
@@ -137,6 +145,8 @@ export type TraceStep = {
     noop: AppliedAction[];
   };
   reward: number | null;
+  /** Verifier judgments emitted after this model call. */
+  rubric: TraceRubricGrade[];
   achievements: string[];
   state_delta: StateDelta[];
   /** Indices into `frames`, in order. A call can own several, or none. */
@@ -386,6 +396,7 @@ function emptyStep(index: number, sequence: number): TraceStep {
     tool_calls: [],
     action: { proposed: [], applied: [], rejected: [], noop: [] },
     reward: null,
+    rubric: [],
     achievements: [],
     state_delta: [],
     frames: [],
@@ -413,9 +424,10 @@ export function foldCraftaxTrace(
   // The observation standing before the next call opens. Craftax emits the
   // observation for step N before the policy is asked what to do next, so this
   // is genuinely "what the policy saw", not a look-ahead.
-  let pendingObservation: { text: string | null; readout: Any | null } = {
+  let pendingObservation: { text: string | null; readout: Any | null; messages: TraceMessage[] } = {
     text: null,
-    readout: null
+    readout: null,
+    messages: []
   };
   let pendingFrames: number[] = [];
   const achievements: string[] = [];
@@ -444,6 +456,9 @@ export function foldCraftaxTrace(
         current.title = `Policy call ${calls}`;
         current.content.observation = pendingObservation.text;
         current.content.readout = pendingObservation.readout;
+        current.content.input_messages = pendingObservation.messages;
+        const system = pendingObservation.messages.find((message) => message.role === "system");
+        if (system && !systemPrompt) systemPrompt = system.content;
         // Frames rendered since the previous call belong to this call's "before"
         // picture; the ones its own actions produce are appended as they arrive.
         current.frames.push(...pendingFrames);
@@ -514,8 +529,11 @@ export function foldCraftaxTrace(
       case "action": {
         const target = step();
         target.raw.push(event.sequence);
+        target.content.message ??= text(payload.content ?? payload.message);
         const turn = num(payload.step ?? payload.turn);
-        const name = String(payload.action ?? payload.name ?? "unknown");
+        const actionName = payload.action ?? payload.name;
+        if (actionName === undefined || actionName === null) break;
+        const name = String(actionName);
         const applied: AppliedAction = { turn, name };
         // `noop` is only ever the producer's own word. A viewer that decided an
         // action "did nothing" by comparing states would be guessing.
@@ -544,6 +562,23 @@ export function foldCraftaxTrace(
         target.raw.push(event.sequence);
         const value = num(payload.value);
         if (value !== null) target.reward = (target.reward ?? 0) + value;
+        break;
+      }
+      case "rubric.grade": {
+        const target = step();
+        target.raw.push(event.sequence);
+        const criterion = text(payload.criterion ?? payload.rubric_item ?? payload.label);
+        if (criterion) {
+          target.rubric.push({
+            index: num(payload.index),
+            criterion,
+            explanation: text(payload.explanation ?? payload.rationale),
+            met: typeof payload.criteria_met === "boolean"
+              ? payload.criteria_met
+              : typeof payload.met === "boolean" ? payload.met : null,
+            points: num(payload.points ?? payload.score)
+          });
+        }
         break;
       }
       case "reward_delta": {
@@ -588,9 +623,12 @@ export function foldCraftaxTrace(
       }
       case "observation": {
         const readout = (payload.readout ?? {}) as Any;
+        const observedMessages = messagesFrom(payload);
+        const lastMessage = [...observedMessages].reverse().find((message) => message.role === "user");
         pendingObservation = {
-          text: text(readout.observation_text ?? payload.grid),
-          readout: Object.keys(readout).length ? readout : null
+          text: text(readout.observation_text ?? payload.grid ?? lastMessage?.content),
+          readout: Object.keys(readout).length ? readout : null,
+          messages: observedMessages
         };
         if (current) current.raw.push(event.sequence);
         break;
@@ -940,10 +978,22 @@ export function reconcileCraftaxTrace(
 		...frame,
 		media: frame.media ?? liveMedia.get(`${frame.sequence}:${frame.step}`) ?? null
 	}));
+	// Verifier grades are an evaluation overlay, not environment semantics. A
+	// container may seal the policy/environment trace before its post-hoc grader
+	// finishes, so keep trace semantics sealed while retaining live grades on
+	// the corresponding model call.
+	const steps = sealed.steps.map((sealedStep, index) => {
+		const liveGrades = live.steps[index]?.rubric ?? [];
+		if (!liveGrades.length) return sealedStep;
+		const grades = new Map(sealedStep.rubric.map((grade) => [`${grade.index}:${grade.criterion}`, grade]));
+		for (const grade of liveGrades) grades.set(`${grade.index}:${grade.criterion}`, grade);
+		return { ...sealedStep, rubric: [...grades.values()] };
+	});
 	return {
 		view: {
 			...sealed,
 			frames,
+			steps,
 			coverage: {
 				...sealed.coverage,
 				framesDeclared: Math.max(sealed.coverage.framesDeclared, live.coverage.framesDeclared),

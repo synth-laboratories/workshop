@@ -539,8 +539,9 @@ mod tests {
                 seed_conversation_budget(conn, "sess-a", &policy(true, 100_000, 250_000))?;
                 try_reserve(conn, "sess-a", "approval-1", Some("sha256:prep"), 60_000)?
                     .expect("first reserve");
-                let second = try_reserve(conn, "sess-a", "approval-2", Some("sha256:prep"), 60_000)?
-                    .expect("retry replaces rather than stacking");
+                let second =
+                    try_reserve(conn, "sess-a", "approval-2", Some("sha256:prep"), 60_000)?
+                        .expect("retry replaces rather than stacking");
                 assert_eq!(second.reserved_usd_micros, 60_000);
                 assert_eq!(second.remaining_usd_micros, 190_000);
                 assert_eq!(active_reservations(conn, "sess-a")?, 60_000);

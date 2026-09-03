@@ -331,9 +331,7 @@ impl CapabilityStore {
         let mut store = self.by_handle.lock().expect("capability store");
         let mut expired = Vec::new();
         for live in store.values_mut() {
-            if (live.status == "granted" || live.status == "active")
-                && now >= live.expires_at_ms
-            {
+            if (live.status == "granted" || live.status == "active") && now >= live.expires_at_ms {
                 live.status = "expired".into();
                 expired.push(live.clone());
             }

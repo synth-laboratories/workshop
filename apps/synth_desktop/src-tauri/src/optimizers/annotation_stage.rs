@@ -135,7 +135,9 @@ impl AnnotationStageSpec {
             .and_then(toml::Value::as_array)
             .filter(|items| !items.is_empty())
             .ok_or_else(|| {
-                anyhow!("recipe `{recipe_id}` annotation.annotators must list at least one annotator")
+                anyhow!(
+                    "recipe `{recipe_id}` annotation.annotators must list at least one annotator"
+                )
             })?;
         if declared.len() > MAX_ANNOTATORS {
             bail!("recipe `{recipe_id}` annotation.annotators lists more than {MAX_ANNOTATORS} annotators");
@@ -169,7 +171,9 @@ impl AnnotationStageSpec {
                         })?;
                     let repeats = match entry.get("repeats") {
                         None => default_repeats,
-                        Some(value) => repeats_of(recipe_id, "annotation.annotators.repeats", value)?,
+                        Some(value) => {
+                            repeats_of(recipe_id, "annotation.annotators.repeats", value)?
+                        }
                     };
                     AnnotatorSpec {
                         annotator_id: id.to_string(),
@@ -180,7 +184,9 @@ impl AnnotationStageSpec {
                         runner_kind: optional_string(recipe_id, entry, "runner_kind")?,
                     }
                 }
-                _ => bail!("recipe `{recipe_id}` annotation.annotators entries must be ids or tables"),
+                _ => bail!(
+                    "recipe `{recipe_id}` annotation.annotators entries must be ids or tables"
+                ),
             };
             if spec.annotator_id.is_empty() {
                 bail!("recipe `{recipe_id}` annotation.annotators contains an empty id");
@@ -233,7 +239,9 @@ impl AnnotationStageSpec {
                 .as_str()
                 .map(str::trim)
                 .filter(|label| !label.is_empty())
-                .ok_or_else(|| anyhow!("recipe `{recipe_id}` annotation.label must be a non-empty string"))?
+                .ok_or_else(|| {
+                    anyhow!("recipe `{recipe_id}` annotation.label must be a non-empty string")
+                })?
                 .to_string(),
         };
         Ok(Some(Self {
@@ -296,7 +304,9 @@ fn optional_string(
             .filter(|value| !value.is_empty())
             .map(|value| Some(value.to_string()))
             .ok_or_else(|| {
-                anyhow!("recipe `{recipe_id}` annotation.annotators.{field} must be a non-empty string")
+                anyhow!(
+                    "recipe `{recipe_id}` annotation.annotators.{field} must be a non-empty string"
+                )
             }),
     }
 }
@@ -368,7 +378,8 @@ pub(crate) struct PaidApprovalGrant {
     pub cap_usd_micros: u64,
 }
 
-pub(crate) type PaidApprovalFuture = Pin<Box<dyn Future<Output = Result<PaidApprovalGrant>> + Send>>;
+pub(crate) type PaidApprovalFuture =
+    Pin<Box<dyn Future<Output = Result<PaidApprovalGrant>> + Send>>;
 pub(crate) type PaidApprover = Arc<dyn Fn(PaidApprovalRequest) -> PaidApprovalFuture + Send + Sync>;
 
 static PAID_APPROVER: RwLock<Option<PaidApprover>> = RwLock::new(None);
@@ -399,7 +410,9 @@ pub(crate) fn installed_paid_approver() -> Option<PaidApprover> {
 /// started from the annotations IPC.
 #[allow(dead_code)] // wired by the composition root (see the lib.rs hook patch)
 pub(crate) fn install_desktop_paid_approver(app: tauri::AppHandle) {
-    use crate::session::approval::{ApprovalBroker, ApprovalDecision, ApprovalKind, PaidComputeCap};
+    use crate::session::approval::{
+        ApprovalBroker, ApprovalDecision, ApprovalKind, PaidComputeCap,
+    };
     use tauri::Manager;
     let approver = paid_approver(move |request: PaidApprovalRequest| {
         let app = app.clone();
@@ -828,7 +841,10 @@ pub(crate) async fn execute(
         .get("campaign_id")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    report.cache_hits = payload.get("cache_hits").and_then(Value::as_u64).unwrap_or(0);
+    report.cache_hits = payload
+        .get("cache_hits")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     report.enqueued = payload.get("enqueued").and_then(Value::as_u64).unwrap_or(0);
     report.refused = payload
         .get("refused")
@@ -1089,7 +1105,9 @@ fn bind_jobs(
                 "{}|{}|{}",
                 item.get("trace_digest")?.as_str()?,
                 item.get("annotator_id")?.as_str()?,
-                item.get("repeat_index").and_then(Value::as_u64).unwrap_or(0)
+                item.get("repeat_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
             ))
         })
         .collect();
@@ -1107,7 +1125,13 @@ fn bind_jobs(
                 if refused_keys.contains(&key) {
                     continue;
                 }
-                expected.push((key, trace_id.to_string(), digest.to_string(), annotator.annotator_id.clone(), repeat));
+                expected.push((
+                    key,
+                    trace_id.to_string(),
+                    digest.to_string(),
+                    annotator.annotator_id.clone(),
+                    repeat,
+                ));
             }
         }
     }
@@ -1293,9 +1317,18 @@ mod tests {
             ("[annotation]\nannotators = []", "at least one annotator"),
             ("[annotation]\nannotators = [\"a\", \"a\"]", "twice"),
             ("[annotation]\nannotators = [\"a\"]\nrepeats = 0", "1..=5"),
-            ("[annotation]\nannotators = [\"a\"]\nmax_cost_usd = -1", "positive finite"),
-            ("[annotation]\nannotators = [\"a\"]\nthroughput = { gpu = 2 }", "annotator class"),
-            ("[annotation]\nannotators = [\"a\"]\nmystery = 1", "not an admitted option"),
+            (
+                "[annotation]\nannotators = [\"a\"]\nmax_cost_usd = -1",
+                "positive finite",
+            ),
+            (
+                "[annotation]\nannotators = [\"a\"]\nthroughput = { gpu = 2 }",
+                "annotator class",
+            ),
+            (
+                "[annotation]\nannotators = [\"a\"]\nmystery = 1",
+                "not an admitted option",
+            ),
             ("[annotation]\nannotators = [{ repeats = 1 }]", "need an id"),
         ];
         for (text, expected) in cases {
@@ -1331,7 +1364,10 @@ mod tests {
         _task: tokio::task::JoinHandle<()>,
     }
 
-    async fn fake_container(paid_jobs: Vec<Value>, refuse_without_reservation: bool) -> FakeContainer {
+    async fn fake_container(
+        paid_jobs: Vec<Value>,
+        refuse_without_reservation: bool,
+    ) -> FakeContainer {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -1462,7 +1498,9 @@ mod tests {
     }
 
     fn parse_spec(text: &str) -> AnnotationStageSpec {
-        AnnotationStageSpec::parse("r", &table(text)).unwrap().unwrap()
+        AnnotationStageSpec::parse("r", &table(text))
+            .unwrap()
+            .unwrap()
     }
 
     #[tokio::test]
@@ -1472,7 +1510,8 @@ mod tests {
         let run_id = sealed_eval_run(&svc, "annot_free", None).await;
         let status_before = svc.get(run_id.clone()).await.unwrap().status;
         let spec = parse_spec("[annotation]\nannotators = [\"craftax.deterministic\", { id = \"generic.reasoning\", repeats = 2 }]");
-        let report = run_after_terminal(&svc, &run_id, &spec, "ctr_1", &container.base, &records()).await;
+        let report =
+            run_after_terminal(&svc, &run_id, &spec, "ctr_1", &container.base, &records()).await;
         assert_eq!(report.status, "submitted", "{report:?}");
         assert_eq!(report.campaign_id.as_deref(), Some("acmp_1"));
         assert_eq!(report.jobs.len(), 6);
@@ -1480,7 +1519,10 @@ mod tests {
         assert_eq!(report.notes, vec!["fake estimate".to_string()]);
         // plan order: trace -> annotator -> repeat
         assert_eq!(report.jobs[0].trace_digest.as_deref(), Some("sha256:1111"));
-        assert_eq!(report.jobs[0].annotator_id.as_deref(), Some("craftax.deterministic"));
+        assert_eq!(
+            report.jobs[0].annotator_id.as_deref(),
+            Some("craftax.deterministic")
+        );
         assert_eq!(report.jobs[2].repeat_index, Some(1));
         assert_eq!(report.jobs[3].trace_digest.as_deref(), Some("sha256:2222"));
         let sent = container.requests.lock().unwrap().clone();
@@ -1496,7 +1538,9 @@ mod tests {
             .with_conn(|conn| recorded_jobs(conn, &run_id))
             .unwrap();
         assert_eq!(jobs.len(), 6);
-        assert!(jobs.iter().any(|(id, digest)| id == "ajob_4" && digest.as_deref() == Some("sha256:2222")));
+        assert!(jobs
+            .iter()
+            .any(|(id, digest)| id == "ajob_4" && digest.as_deref() == Some("sha256:2222")));
         let seeded = svc
             .database()
             .with_conn(|conn| {
@@ -1525,16 +1569,31 @@ mod tests {
             .iter()
             .filter_map(|r| r["kind"].as_str())
             .collect();
-        assert!(kinds.contains(&JOB_REF_KIND) && kinds.contains(&CAMPAIGN_REF_KIND), "{kinds:?}");
-        let events = svc.events_after(run_id.clone(), 0, Some(100)).await.unwrap();
+        assert!(
+            kinds.contains(&JOB_REF_KIND) && kinds.contains(&CAMPAIGN_REF_KIND),
+            "{kinds:?}"
+        );
+        let events = svc
+            .events_after(run_id.clone(), 0, Some(100))
+            .await
+            .unwrap();
         let amendment = events
             .iter()
             .find(|event| event.event_type == "optimizer.evidence.amended")
             .expect("amendment");
-        assert_eq!(amendment.delta["annotationStage"]["status"], json!("submitted"));
+        assert_eq!(
+            amendment.delta["annotationStage"]["status"],
+            json!("submitted")
+        );
         // the terminal manifest is untouched
         // the seal and the run outcome are exactly what they were before lane B
-        assert!(svc.terminal_manifest(run_id.clone()).await.unwrap().is_some(), "still sealed");
+        assert!(
+            svc.terminal_manifest(run_id.clone())
+                .await
+                .unwrap()
+                .is_some(),
+            "still sealed"
+        );
         assert_eq!(svc.get(run_id).await.unwrap().status, status_before);
     }
 
@@ -1563,9 +1622,17 @@ mod tests {
             })
         });
         let spec = parse_spec("[annotation]\nannotators = [\"craftax.deterministic\", \"craftax.belief\"]\nmax_cost_usd = 0.8");
-        let report = execute(&svc, &run_id, &spec, "ctr_1", &container.base, &records(), Some(approver))
-            .await
-            .unwrap();
+        let report = execute(
+            &svc,
+            &run_id,
+            &spec,
+            "ctr_1",
+            &container.base,
+            &records(),
+            Some(approver),
+        )
+        .await
+        .unwrap();
         assert_eq!(report.status, "submitted");
         assert_eq!(report.paid_jobs, 2);
         assert_eq!(report.approval_id.as_deref(), Some("apr_1"));
@@ -1605,14 +1672,26 @@ mod tests {
     #[tokio::test]
     async fn paid_lane_is_skipped_not_fatal_when_it_cannot_be_prepared() {
         let (svc, _dir, _) = service().await;
-        let paid_jobs = vec![json!({"trace_id": "t1", "trace_digest": "sha256:1111", "annotator_id": "craftax.belief", "repeat_index": 0, "model": "m", "max_cost_usd": 0.25})];
+        let paid_jobs = vec![
+            json!({"trace_id": "t1", "trace_digest": "sha256:1111", "annotator_id": "craftax.belief", "repeat_index": 0, "model": "m", "max_cost_usd": 0.25}),
+        ];
         let container = fake_container(paid_jobs, true).await;
         // no session, no max_cost_usd, no approver: the free annotator still runs
         let run_id = sealed_eval_run(&svc, "annot_paid_skipped", None).await;
-        let spec = parse_spec("[annotation]\nannotators = [\"craftax.deterministic\", \"craftax.belief\"]");
-        let report = run_after_terminal(&svc, &run_id, &spec, "ctr_1", &container.base, &records()).await;
+        let spec = parse_spec(
+            "[annotation]\nannotators = [\"craftax.deterministic\", \"craftax.belief\"]",
+        );
+        let report =
+            run_after_terminal(&svc, &run_id, &spec, "ctr_1", &container.base, &records()).await;
         assert_eq!(report.status, "submitted");
-        assert!(report.notes.iter().any(|note| note.contains("paid lane skipped") && note.contains("session")), "{:?}", report.notes);
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("paid lane skipped") && note.contains("session")),
+            "{:?}",
+            report.notes
+        );
         assert_eq!(report.refused.len(), 1);
         assert_eq!(report.refused[0]["reason"], json!("reservation_required"));
         assert_eq!(report.jobs.len(), 3);
@@ -1631,12 +1710,28 @@ mod tests {
             *counter.lock().unwrap() += 1;
             Box::pin(async { Err(anyhow!("must not be asked")) })
         });
-        let spec = parse_spec("[annotation]\nannotators = [\"craftax.belief\"]\nmax_cost_usd = 0.1");
-        let report = execute(&svc, &run_id, &spec, "ctr_1", &container.base, &records(), Some(approver))
-            .await
-            .unwrap();
+        let spec =
+            parse_spec("[annotation]\nannotators = [\"craftax.belief\"]\nmax_cost_usd = 0.1");
+        let report = execute(
+            &svc,
+            &run_id,
+            &spec,
+            "ctr_1",
+            &container.base,
+            &records(),
+            Some(approver),
+        )
+        .await
+        .unwrap();
         assert_eq!(*asked.lock().unwrap(), 0);
-        assert!(report.notes.iter().any(|note| note.contains("annotation.max_cost_usd")), "{:?}", report.notes);
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("annotation.max_cost_usd")),
+            "{:?}",
+            report.notes
+        );
         assert_eq!(report.approval_id, None);
     }
 
@@ -1646,18 +1741,46 @@ mod tests {
         let run_id = sealed_eval_run(&svc, "annot_unreachable", None).await;
         let status_before = svc.get(run_id.clone()).await.unwrap().status;
         let spec = parse_spec("[annotation]\nannotators = [\"craftax.deterministic\"]");
-        let report = run_after_terminal(&svc, &run_id, &spec, "ctr_1", "http://127.0.0.1:9", &records()).await;
+        let report = run_after_terminal(
+            &svc,
+            &run_id,
+            &spec,
+            "ctr_1",
+            "http://127.0.0.1:9",
+            &records(),
+        )
+        .await;
         assert_eq!(report.status, "failed");
-        assert!(report.error.as_deref().unwrap_or_default().contains("annotation/campaigns"), "{:?}", report.error);
-        let events = svc.events_after(run_id.clone(), 0, Some(100)).await.unwrap();
+        assert!(
+            report
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("annotation/campaigns"),
+            "{:?}",
+            report.error
+        );
+        let events = svc
+            .events_after(run_id.clone(), 0, Some(100))
+            .await
+            .unwrap();
         let amendment = events
             .iter()
             .find(|event| event.event_type == "optimizer.evidence.amended")
             .expect("failure is still recorded");
-        assert_eq!(amendment.delta["annotationStage"]["status"], json!("failed"));
+        assert_eq!(
+            amendment.delta["annotationStage"]["status"],
+            json!("failed")
+        );
         assert!(amendment.artifact_refs.is_empty());
         // the seal and the run outcome are exactly what they were before lane B
-        assert!(svc.terminal_manifest(run_id.clone()).await.unwrap().is_some(), "still sealed");
+        assert!(
+            svc.terminal_manifest(run_id.clone())
+                .await
+                .unwrap()
+                .is_some(),
+            "still sealed"
+        );
         assert_eq!(svc.get(run_id).await.unwrap().status, status_before);
     }
 
@@ -1666,7 +1789,15 @@ mod tests {
         let (svc, _dir, _) = service().await;
         let run_id = sealed_eval_run(&svc, "annot_skip", None).await;
         let spec = parse_spec("[annotation]\nannotators = [\"craftax.deterministic\"]");
-        let report = run_after_terminal(&svc, &run_id, &spec, "ctr_1", "http://127.0.0.1:9", &[json!({"reward": 1.0})]).await;
+        let report = run_after_terminal(
+            &svc,
+            &run_id,
+            &spec,
+            "ctr_1",
+            "http://127.0.0.1:9",
+            &[json!({"reward": 1.0})],
+        )
+        .await;
         assert_eq!(report.status, "skipped");
         assert!(report.jobs.is_empty());
     }

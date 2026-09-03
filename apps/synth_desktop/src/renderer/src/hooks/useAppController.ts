@@ -556,6 +556,24 @@ export function useAppController() {
 		return next;
 	}, [nativeIntern]);
 
+	// The DEV eval driver can create a native Codex session without going
+	// through this renderer. Refresh both native session universes on explicit
+	// semantic selection so screenshot automation can foreground the exact
+	// conversation it owns instead of silently photographing the prior chat.
+	const refreshNativeEvalSessions = useCallback(async () => {
+		const [persisted, internSessions] = await Promise.all([
+			nativeCodex?.list() ?? Promise.resolve([]),
+			nativeIntern?.listSessions() ?? Promise.resolve([])
+		]);
+		const restored = persisted
+			.filter((session) => session.status !== "closed")
+			.map(restoreCodexSession);
+		const combined = [...restored, ...internSessions];
+		sessionsRef.current = combined;
+		replaceSessions(combined);
+		return combined;
+	}, [nativeCodex, nativeIntern]);
+
 	const refreshHealth = useCallback(async () => {
 		if (isDesktop && bridges.core && bridges.config && bridges.inventory) {
 			const [core, config, counts, currentLaguna, usage] = await Promise.all([
@@ -1235,6 +1253,7 @@ export function useAppController() {
 		|| sidePanelTab === "trace"
 		|| sidePanelTab === "diagnostics"
 		|| sidePanelTab === "errors"
+		|| sidePanelTab === "review"
 		|| activeLocalModel
 	);
 	const activeSync =
@@ -1562,7 +1581,12 @@ export function useAppController() {
 				openArtifactByViewRef.current[ownerViewKey] = visualId;
 				openArtifactByViewRef.current.window = visualId;
 				if (owner && owner !== activeSessionIdRef.current) {
-					return;
+					if (event.payload?.foregroundOwner !== true) return;
+					if (!sessionsRef.current.some((session) => session.id === owner)) {
+						showToast(`Cannot foreground unknown conversation ${owner}`);
+						return;
+					}
+					setView({ kind: "chat", chatId: owner });
 				}
 				reconcileOpenVisual(visualId, eventRevision, true);
 			}
@@ -2228,7 +2252,8 @@ export function useAppController() {
 			sendToSession,
 			openVisualRecord,
 			openChat,
-			setView
+			setView,
+			refreshNativeSessions: refreshNativeEvalSessions
 		});
 		window.__synthPreferences = preferencesAdapter();
 		// Eval driver is DEV/test-only; keep it out of packaged production builds.
@@ -2247,6 +2272,7 @@ export function useAppController() {
 		openArtifactId,
 		openChat,
 		openVisualRecord,
+		refreshNativeEvalSessions,
 		selectedTargetId,
 		sendToSession,
 		sessions,

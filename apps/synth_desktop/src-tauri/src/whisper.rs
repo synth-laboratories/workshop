@@ -226,6 +226,26 @@ impl WhisperManager {
         result
     }
 
+    /// Transcribe bytes that another trusted subsystem has already persisted.
+    /// The caller remains responsible for retaining the authoritative source
+    /// bytes; Whisper only receives a short-lived local copy.
+    pub(crate) fn transcribe_persisted_bytes(
+        self: &Arc<Self>,
+        bytes: &[u8],
+        mime_type: &str,
+    ) -> Result<WhisperTranscription> {
+        let extension = extension_for_mime(mime_type);
+        let temp_path = env::temp_dir().join(format!(
+            "synth-whisper-persisted-{}.{extension}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&temp_path, bytes)
+            .with_context(|| format!("write temporary audio file {}", temp_path.display()))?;
+        let result = self.transcribe(&temp_path.to_string_lossy());
+        let _ = fs::remove_file(&temp_path);
+        result
+    }
+
     fn stop_runtime(&self) -> Result<()> {
         let mut runtime = self
             .runtime

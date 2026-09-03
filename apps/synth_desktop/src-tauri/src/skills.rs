@@ -83,6 +83,10 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         id: "annotation-review",
         content: include_str!("../../skills/annotation-review/SKILL.md"),
     },
+    BundledSkill {
+        id: "use-human-annotations",
+        content: include_str!("../../skills/use-human-annotations/SKILL.md"),
+    },
 ];
 
 pub(crate) fn bundled_skill_content(id: &str) -> Option<&'static str> {
@@ -175,5 +179,16 @@ mod tests {
                 hit.id
             );
         }
+    }
+
+    #[test]
+    fn advertises_human_annotations_to_workshop_and_agents() {
+        let hit = list_skills()
+            .into_iter()
+            .find(|skill| skill.id == "use-human-annotations")
+            .expect("human annotation skill should be bundled");
+        assert_eq!(hit.name, "use-human-annotations");
+        assert!(hit.description.contains("durable human review tasks"));
+        assert!(hit.description.contains("audio commentary"));
     }
 }

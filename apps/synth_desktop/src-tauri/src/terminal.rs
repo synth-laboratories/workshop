@@ -131,13 +131,7 @@ extern "C" {
     ) -> *mut c_void;
     fn synth_ghostty_host_receive(handle: *mut c_void, bytes: *const u8, count: usize);
     fn synth_ghostty_host_finish(handle: *mut c_void, exit_code: u32, runtime_ms: u64);
-    fn synth_ghostty_host_set_frame(
-        handle: *mut c_void,
-        x: f64,
-        y: f64,
-        width: f64,
-        height: f64,
-    );
+    fn synth_ghostty_host_set_frame(handle: *mut c_void, x: f64, y: f64, width: f64, height: f64);
     fn synth_ghostty_host_set_visible(handle: *mut c_void, visible: bool);
     fn synth_ghostty_host_focus(handle: *mut c_void);
     fn synth_ghostty_host_destroy(handle: *mut c_void);
@@ -446,13 +440,8 @@ impl TerminalManager {
                 surface.set_visible(true);
                 return Ok(true);
             }
-            let surface = GhosttySurface::new(
-                parent,
-                session.clone(),
-                frame,
-                font_family,
-                font_size,
-            )?;
+            let surface =
+                GhosttySurface::new(parent, session.clone(), frame, font_family, font_size)?;
             if let Ok(scrollback) = session.scrollback.lock() {
                 for (_, event) in scrollback.iter() {
                     if let Some(encoded) = event.data_base64.as_deref() {

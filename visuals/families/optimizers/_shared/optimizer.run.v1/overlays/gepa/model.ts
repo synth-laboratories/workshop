@@ -4,6 +4,41 @@ import type { GepaEvaluation, GepaState } from "../../components/projectEvents.t
 
 export type CandidateRecord = Record<string, unknown>;
 
+export type ReportingLanguage = {
+  missing: string;
+  missingCard: string;
+  setupSummary: (missing: number, total: number) => string;
+};
+
+/**
+ * Missing live fields may still arrive; missing terminal fields were simply not
+ * retained by that producer. Keep those states distinct so a sealed/imported
+ * run never reads as if it is still waiting for work.
+ */
+export function gepaReportingLanguage(terminal: boolean): ReportingLanguage {
+  return terminal
+    ? {
+        missing: "not reported",
+        missingCard: "Not reported",
+        setupSummary: (missing, total) => `${missing}/${total} fields not reported`
+      }
+    : {
+        missing: "pending",
+        missingCard: "Not reported yet",
+        setupSummary: (missing, total) => `setup incomplete · ${missing}/${total} fields pending`
+      };
+}
+
+/** Count candidates with an actual score even when detailed rollout rows were not retained. */
+export function scoredCandidateCount(candidates: CandidateRecord[]): number {
+  return candidates.filter((candidate) => [
+    candidate.train_reward,
+    candidate.candidate_train_reward,
+    candidate.minibatchReward,
+    candidate.score
+  ].some((value) => typeof value === "number" && Number.isFinite(value))).length;
+}
+
 const GENERATION_PALETTE = [
   { color: "#2563eb", tint: "#eff6ff" },
   { color: "#7c3aed", tint: "#f5f3ff" },

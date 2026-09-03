@@ -27,14 +27,36 @@ function taskLabel(props: ShellProps): string {
   return candidate?.trim() ?? "Trace";
 }
 
+function displayLabel(value: string): string {
+  const known: Record<string, string> = {
+    banking77: "Banking77",
+    craftax: "Craftax",
+    healthbench: "HealthBench",
+    runebench: "RuneBench"
+  };
+  return known[value.toLowerCase()] ?? value.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function traceTitle(props: ShellProps, task: string): string {
+  const supplied = props.title?.trim();
+  const looksLikePolicyIdentity = supplied?.includes("chat_completion/") || supplied?.includes(" · meta-");
+  if (supplied && !looksLikePolicyIdentity) return supplied;
+  const run = (props.run ?? props.data?.run ?? null) as Record<string, any> | null;
+  const model = typeof run?.summary?.model === "string"
+    ? run.summary.model.split("/").at(-1)?.replace(/[-_]+/g, " ")
+    : null;
+  return `${displayLabel(task)}${model ? ` · ${model}` : ""} · evaluation trace`;
+}
+
 export function Shell(props: ShellProps) {
   const task = taskLabel(props);
   return (
     <TraceWorkbench
       {...props}
+      title={traceTitle(props, task)}
       branding={{
-        label: task,
-        defaultTitle: `${task} trace workstation`,
+        label: displayLabel(task),
+        defaultTitle: `${displayLabel(task)} evaluation trace`,
         testId: "trace-workbench",
         aggregatesTestId: "trace-run-aggregates",
         frameTestId: "trace-native-frame",

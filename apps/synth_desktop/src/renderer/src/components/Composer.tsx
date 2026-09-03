@@ -26,10 +26,12 @@ import { IconSparkle, SlashCommandMenu, type SlashCommandId, type SlashCommandMe
 import type { Skill } from "../runtime/skills";
 import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
+import { MicIcon } from "./MicIcon";
 import type { LagunaPolicy } from "../bridge/types";
 import { compactModelLabel } from "../runtime/modelPresentation";
 import { orderedLagunaPolicies, policyLabel } from "../runtime/lagunaPolicies";
 import { bridges } from "../runtime/desktopBridge";
+import { blobToBase64, recordingToWhisperWav } from "../runtime/whisperAudio";
 import type { PaidComputeAutoApprovalSettings } from "../generated/protocol";
 import { parseUsdAmount } from "../runtime/paidComputeUsd";
 import {
@@ -362,84 +364,6 @@ function IconAsk() {
 
 function IconWorkspace() {
 	return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden><path d="M1.75 4.25h10.5v6.5a1 1 0 01-1 1h-8.5a1 1 0 01-1-1v-6.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/><path d="M1.75 4.25V3.5a1 1 0 011-1h2.1l1.1 1.25h5.3a1 1 0 011 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>;
-}
-
-function IconMic() {
-	return (
-		<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<rect x="6" y="2.25" width="4" height="7" rx="2" stroke="currentColor" strokeWidth="1.3" />
-			<path
-				d="M4.25 8a3.75 3.75 0 007.5 0M8 11.75v2"
-				stroke="currentColor"
-				strokeWidth="1.3"
-				strokeLinecap="round"
-			/>
-		</svg>
-	);
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-	return new Promise((resolve, reject) => {
-		const reader = new FileReader();
-		reader.onloadend = () => {
-			const result = reader.result;
-			if (typeof result !== "string") {
-				reject(new Error("Unexpected FileReader result"));
-				return;
-			}
-			const commaIndex = result.indexOf(",");
-			resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
-		};
-		reader.onerror = () => reject(reader.error ?? new Error("Failed to read recorded audio"));
-		reader.readAsDataURL(blob);
-	});
-}
-
-async function recordingToWhisperWav(blob: Blob): Promise<Blob> {
-	const context = new AudioContext();
-	try {
-		const decoded = await context.decodeAudioData(await blob.arrayBuffer());
-		const targetRate = 16_000;
-		const outputLength = Math.max(1, Math.round(decoded.duration * targetRate));
-		const pcm = new Float32Array(outputLength);
-		for (let outputIndex = 0; outputIndex < outputLength; outputIndex += 1) {
-			const sourceIndex = Math.min(
-				decoded.length - 1,
-				Math.floor((outputIndex * decoded.sampleRate) / targetRate)
-			);
-			let sample = 0;
-			for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
-				sample += decoded.getChannelData(channel)[sourceIndex] ?? 0;
-			}
-			pcm[outputIndex] = sample / decoded.numberOfChannels;
-		}
-
-		const wav = new ArrayBuffer(44 + pcm.length * 2);
-		const view = new DataView(wav);
-		const writeAscii = (offset: number, value: string) => {
-			for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
-		};
-		writeAscii(0, "RIFF");
-		view.setUint32(4, 36 + pcm.length * 2, true);
-		writeAscii(8, "WAVE");
-		writeAscii(12, "fmt ");
-		view.setUint32(16, 16, true);
-		view.setUint16(20, 1, true);
-		view.setUint16(22, 1, true);
-		view.setUint32(24, targetRate, true);
-		view.setUint32(28, targetRate * 2, true);
-		view.setUint16(32, 2, true);
-		view.setUint16(34, 16, true);
-		writeAscii(36, "data");
-		view.setUint32(40, pcm.length * 2, true);
-		for (let index = 0; index < pcm.length; index += 1) {
-			const sample = Math.max(-1, Math.min(1, pcm[index]));
-			view.setInt16(44 + index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-		}
-		return new Blob([wav], { type: "audio/wav" });
-	} finally {
-		await context.close();
-	}
 }
 
 function IconSend() {
@@ -1612,7 +1536,7 @@ export function Composer({
 							onClick={() => void onMicClick()}
 							data-testid="composer-mic"
 						>
-							<IconMic />
+							<MicIcon />
 							{recording ? <span className="sr-only" data-testid="composer-mic-recording">Recording</span> : null}
 						</button>
 						<button

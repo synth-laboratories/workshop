@@ -353,7 +353,9 @@ fn evidence_digest_binding(visual: &VisualRecord) -> Option<String> {
             if descriptor_input_name(&slot).ok().as_deref() == Some("evidence")
                 && slot.get("kind").and_then(Value::as_str) == Some("annotation_evidence_head")
             {
-                slot.get("source").and_then(Value::as_str).map(str::to_owned)
+                slot.get("source")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
             } else {
                 None
             }
@@ -584,11 +586,8 @@ mod tests {
 
     #[test]
     fn annotation_workbench_bindings_are_peer_identities() {
-        let bindings = annotation_workbench_bindings(
-            "sha256:trace",
-            "sha256:head",
-            Some("sha256:rubric"),
-        );
+        let bindings =
+            annotation_workbench_bindings("sha256:trace", "sha256:head", Some("sha256:rubric"));
         let inputs = bindings["inputs"].as_array().expect("inputs");
         assert_eq!(inputs[0]["input"], json!("trace"));
         assert_eq!(inputs[0]["kind"], json!("trace_v5"));

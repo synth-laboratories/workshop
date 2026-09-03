@@ -73,10 +73,13 @@ pub fn recipe_catalog() -> Vec<Value> {
 fn craftax_nemotron_recipe() -> Value {
     let catalog_ok = super::tinker_catalog::TinkerBaseModelCatalog::load().is_ok();
     let service_reason = public_sft_service_reason();
-    let available = catalog_ok && service_reason.is_none();
+    let dataset_reason = craftax_training_jsonl_reason();
+    let available = catalog_ok && service_reason.is_none() && dataset_reason.is_none();
     let availability_reason = if available {
         Value::Null
     } else if let Some(reason) = service_reason {
+        json!(reason)
+    } else if let Some(reason) = dataset_reason {
         json!(reason)
     } else {
         json!("Hosted Tinker base-model catalog is unavailable")
@@ -85,6 +88,8 @@ fn craftax_nemotron_recipe() -> Value {
         "id": HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE,
         "title": "Craftax Nemotron 3.5 Lightning Tinker SFT",
         "algorithmId": "sft",
+        "provider": "tinker",
+        "model": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
         "task": "craftax",
         "availability": if available { "available" } else { "unavailable" },
         "availabilityReason": availability_reason,
@@ -103,10 +108,29 @@ fn craftax_nemotron_recipe() -> Value {
             "synth-optimizers sft service --db … --bind 127.0.0.1:8878",
             "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN",
             "SYNTH_OPTIMIZERS_SFT_SERVICE_URL",
+            "SYNTH_SFT_TRAIN_JSONL (readable, non-empty real training corpus)",
             "SYNTH_OPTIMIZERS_SFT_FIXTURE=1 for unpaid",
             "Craftax gold / GameBench on 127.0.0.1:8098"
         ],
     })
+}
+
+fn craftax_training_jsonl_reason() -> Option<String> {
+    let raw = match std::env::var("SYNTH_SFT_TRAIN_JSONL") {
+        Ok(value) => value,
+        Err(_) => return Some("SYNTH_SFT_TRAIN_JSONL is required for Craftax hosted SFT.".into()),
+    };
+    let path = std::path::Path::new(raw.trim());
+    if raw.trim().is_empty() {
+        return Some("SYNTH_SFT_TRAIN_JSONL is required for Craftax hosted SFT.".into());
+    }
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => None,
+        _ => Some(format!(
+            "SYNTH_SFT_TRAIN_JSONL must name a readable, non-empty file: {}",
+            path.display()
+        )),
+    }
 }
 
 fn banking77_recipe() -> Value {
@@ -128,6 +152,8 @@ fn banking77_recipe() -> Value {
         "id": HOSTED_SFT_BANKING77_RECIPE,
         "title": if reference_mode { "Banking77 GPT-OSS 20B Tinker SFT" } else { "Banking77 Nemotron Lightning Tinker SFT" },
         "algorithmId": "sft",
+        "provider": "tinker",
+        "model": if reference_mode { "openai/gpt-oss-20b" } else { "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16" },
         "task": "banking77",
         "availability": if available { "available" } else { "unavailable" },
         "availabilityReason": availability_reason,
@@ -159,6 +185,19 @@ fn banking77_recipe() -> Value {
             "banking77_classify container on 127.0.0.1:8110"
         ],
     })
+}
+
+#[cfg(test)]
+mod catalog_identity_tests {
+    use super::*;
+
+    #[test]
+    fn hosted_sft_recipes_name_the_paid_provider_and_model() {
+        assert!(recipe_catalog().iter().all(|recipe| {
+            recipe.get("provider").and_then(Value::as_str) == Some("tinker")
+                && recipe.get("model").and_then(Value::as_str).is_some()
+        }));
+    }
 }
 
 fn public_sft_service_reason() -> Option<String> {
@@ -790,11 +829,29 @@ pub async fn restore_hosted_mirrors(service: &OptimizerService) {
     };
     let registered = service.registered_local_recipes().await;
     let Ok(client) =
-        super::sidecar_training::SidecarTrainingClient::from_manager(service.manager()).await
+        super::sidecar_training::require_training_ready(service, PLACEMENT_TRAINING_SFT_HOSTED)
+            .await
     else {
         return;
     };
     for (run_id, cursor) in hosted_runs_needing_restore(&runs, &registered) {
+        let recipe_id = runs
+            .iter()
+            .find(|run| run.id == run_id)
+            .and_then(|run| run.project_ref.as_deref())
+            .filter(|value| !value.is_empty())
+            .unwrap_or(HOSTED_SFT_BANKING77_RECIPE);
+        if let Err(error) = client
+            .attach_existing_hosted_job(&run_id, PLACEMENT_TRAINING_SFT_HOSTED, recipe_id)
+            .await
+        {
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!("hosted SFT mirror {run_id} could not reattach: {error:#}"),
+            );
+            continue;
+        }
         super::sidecar_training::spawn_watch_worker(service, client.clone(), run_id, cursor).await;
     }
 }

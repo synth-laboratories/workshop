@@ -78,12 +78,13 @@ export default function App() {
 		publishAppState({
 			route: c.view.kind,
 			chatId: c.view.kind === "chat" ? c.view.chatId : undefined,
+			openVisualId: c.openArtifactId ?? undefined,
 			visiblePluginIds: c.preferences.navigation?.visiblePluginIds,
 			terminalOpen: c.terminalOpen,
 			sidePanelOpen: c.showSidePanel,
 			sidePanelTab: c.sidePanelTab
 		});
-	}, [c.view, c.preferences.navigation, c.terminalOpen, c.showSidePanel, c.sidePanelTab]);
+	}, [c.view, c.openArtifactId, c.preferences.navigation, c.terminalOpen, c.showSidePanel, c.sidePanelTab]);
 
 	// Host surface capture. `app` and `element` photograph the app where it
 	// already stands, so they route nowhere; only a plugin capture navigates,
