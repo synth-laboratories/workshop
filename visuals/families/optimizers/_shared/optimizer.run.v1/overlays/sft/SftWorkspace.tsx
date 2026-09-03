@@ -749,7 +749,16 @@ function CispoLearningSignalPanel({
         : { text: "Zero reward variance — the group is uniform and carries no gradient", tone: "warn" as const }
       : { text: "Reward variance has not been reported yet", tone: undefined };
   return (
-    <Panel title="Learning signal" testId="cispo-learning-signal">
+    {/*
+      The chip counts groups across the whole run; every row below it is a
+      scalar from the most recent update (collectionHydration reads them off
+      the last metric point). Unlabelled, the two read as a contradiction --
+      "17 of 18 groups carried reward variation" directly above "Reward
+      variance 0.00" looks like one of them is broken, when in fact the newest
+      group is the one uniform group. Saying which update the numbers describe
+      is the whole fix.
+    */}
+    <Panel title="Learning signal" aside="latest update" testId="cispo-learning-signal">
       <p className="sv-stack-tight">
         <span className="sv-chip sv-chip-wrap" data-tone={verdict.tone}>{verdict.text}</span>
       </p>
