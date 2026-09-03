@@ -7,7 +7,19 @@ import { formatMissingNumber, formatMissingUsd, missingNumber } from "../../../r
 import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
 
-type StreamPayload = { run_id?: string; events?: LiveEvalEvent[]; sse_url?: string };
+type StreamPayload = {
+  run_id?: string;
+  events?: LiveEvalEvent[];
+  sse_url?: string;
+  /**
+   * Replay cadence for a bundled stream. Retained evidence is already
+   * complete, so it declares a near-zero rate and settles at once; a demo
+   * fixture keeps the slower default. Without this a capture of a retained
+   * run could only ever catch it mid-replay, reading as `receiving` with no
+   * steps and no reward.
+   */
+  replay_ms?: number;
+};
 type Lane = {
   name: string; status: "starting" | "running" | "finished" | "failed";
   done: number; total?: number; reward?: number; achievements: string[];
@@ -62,6 +74,33 @@ function project(events: LiveEvalEvent[]): Lane[] {
     lane.tokens = num(p.tokens) ?? num(usage.total_tokens) ?? lane.tokens;
     lane.cost = num(p.cost_usd) ?? num(usage.cost_usd) ?? lane.cost;
     if (e.kind === "eval.run.terminal" || e.kind === "run_finished") { lane.status = p.error ? "failed" : "finished"; lane.reward = num(p.reward) ?? lane.reward; }
+    // The container families emit their own vocabulary rather than `snapshot`.
+    // Reading only `snapshot` left four finished rollouts showing "starting ·
+    // 0 steps · reward —" while the activity list beside them printed
+    // `RewardDelta(1.00,total=1.00)` and `Terminal(max_steps)`.
+    if (e.kind === "env.episode.opened") lane.status = "running";
+    if (e.kind === "action_applied" || e.kind === "action") {
+      lane.status = "running";
+      const step = num(p.step_index) ?? num(p.step);
+      if (step != null) lane.done = Math.max(lane.done, step);
+    }
+    if (e.kind === "reward_delta") {
+      const delta = payloadObject(p.payload);
+      lane.reward = num(delta.total_reward) ?? num(p.total_reward) ?? lane.reward;
+    }
+    if (e.kind === "reward_signal") lane.reward = num(p.value) ?? lane.reward;
+    if (e.kind === "achievement_unlocked") {
+      const unlocked = payloadObject(p.payload).achievement ?? p.achievement;
+      if (typeof unlocked === "string" && !lane.achievements.includes(unlocked)) {
+        lane.achievements = [...lane.achievements, unlocked];
+      }
+    }
+    if (e.kind === "terminal" || e.kind === "env.episode.closed") lane.status = "finished";
+    if (e.kind === "status") {
+      const status = String(p.status ?? "").toLowerCase();
+      if (status === "failed" || status === "cancelled") lane.status = "failed";
+      else if (status === "completed" || status === "finished") lane.status = "finished";
+    }
     if (e.kind === "error" || e.kind === "eval.ops.warning") lane.status = "failed";
     lane.last = eventDetail(e);
     lanes.set(name, lane);
@@ -70,8 +109,11 @@ function project(events: LiveEvalEvent[]): Lane[] {
 }
 
 function Vital({ label, value }: { label: string; value?: number }) {
-  const pct = value == null ? 0 : value <= 9 ? value / 9 * 100 : Math.min(100, value);
-  return <div title={`${label}: ${value ?? "unknown"}`} style={{ display: "grid", gap: 3 }}><span className="sv-mono" style={{ fontSize: 9, color: "var(--sv-text-faint)" }}>{label}</span><span style={{ width: 42, height: 4, borderRadius: 9, background: "var(--sv-border)", overflow: "hidden" }}><span style={{ display: "block", width: `${pct}%`, height: "100%", background: pct < 34 ? "#d84b3f" : pct < 67 ? "#e5a226" : "#39a46b" }} /></span></div>;
+  // An unreported vital is unknown, not empty. A flat grey bar in a row of
+  // health meters reads as a dying agent rather than as missing telemetry.
+  const known = typeof value === "number" && Number.isFinite(value);
+  const pct = !known ? 0 : value! <= 9 ? value! / 9 * 100 : Math.min(100, value!);
+  return <div title={`${label}: ${known ? value : "not reported"}`} style={{ display: "grid", gap: 3 }}><span className="sv-mono" style={{ fontSize: 9, color: "var(--sv-text-faint)" }}>{label}</span>{known ? <span style={{ width: 42, height: 4, borderRadius: 9, background: "var(--sv-border)", overflow: "hidden" }}><span style={{ display: "block", width: `${pct}%`, height: "100%", background: pct < 34 ? "#d84b3f" : pct < 67 ? "#e5a226" : "#39a46b" }} /></span> : <span aria-label={`${label} not reported`} style={{ width: 42, height: 4, borderRadius: 9, border: "1px dashed var(--sv-border)" }} />}</div>;
 }
 
 function LaneReplay({ laneEvents, streamBase }: { laneEvents: LiveEvalEvent[]; streamBase: URL | null }) {
@@ -105,7 +147,7 @@ export function Shell(props: ShellProps) {
   const { events, state, error, ready } = useLiveEvalStream({
     replay: props.replay,
     fixtureEvents: declaredStreamCount > 0 ? undefined : stream.events,
-    replayMs: 360,
+    replayMs: stream.replay_ms ?? 360,
     visualId: props.visualId,
     revision: props.revision
   });
