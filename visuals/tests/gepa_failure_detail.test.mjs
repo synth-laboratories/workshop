@@ -82,3 +82,28 @@ test("a failure that says nothing invents no reason", () => {
   assert.equal(projected.summary.status, "failed");
   assert.equal(projected.gepa?.failureDetail, undefined);
 });
+
+test("the recovered reason is on the projection summary, for every workspace", () => {
+  // SFT and CISPO have their own "Why this run failed" panel, and it was just
+  // as inert for the same reason: it also tested `run.error`. A rejected
+  // Banking77 CISPO run showed "Training failed" above a four-item checklist
+  // headed "What is still needed", telling the reader to go collect evidence
+  // when the next step was to fix the rejection.
+  const projected = projectAtCursor(RUN, [
+    {
+      ...base,
+      sequenceNumber: 1,
+      type: "optimizer.run.failed",
+      delta: { status: "failed" },
+      error: { message: "hosted job rejected: unknown base model" }
+    }
+  ]);
+  assert.equal(projected.summary.failureDetail, "hosted job rejected: unknown base model");
+});
+
+test("a run that succeeded carries no failure detail on its summary", () => {
+  const projected = projectAtCursor(RUN, [
+    { ...base, sequenceNumber: 1, type: "optimizer.run.completed", delta: { status: "completed" } }
+  ]);
+  assert.equal(projected.summary.failureDetail, undefined);
+});

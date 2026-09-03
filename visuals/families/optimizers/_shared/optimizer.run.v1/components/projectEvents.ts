@@ -2818,6 +2818,13 @@ export function projectAtCursor(
       source: run.source,
       capabilities: run.capabilities,
       summary,
+      // The recovered failure reason, for every workspace rather than GEPA's
+      // alone. SFT and CISPO have a "Why this run failed" panel that was just
+      // as inert, because it also tested `run.error`: a rejected Banking77
+      // CISPO run showed "Training failed" over a four-item checklist headed
+      // "What is still needed", telling the reader to go collect evidence when
+      // the actual next step was to fix the rejection.
+      failureDetail: optimizerFailureDetail(run.error ?? streamError),
       cursorSeq: maxSeq
     },
     timeline,

@@ -987,7 +987,12 @@ export function SftWorkspace({
     : undefined;
   const chip = statusChip(status, improvementVerdict, heldoutSummary?.claimReady === true);
   const terminal = TERMINAL_STATUSES.includes(status);
-  const failureDetail = status === "failed" ? optimizerFailureDetail(run.error) : undefined;
+  // `run.error` is set only when the host already knew the failure; for a
+  // live or replayed run the reason arrives on the event stream, and the
+  // projection recovers it there.
+  const failureDetail = status === "failed"
+    ? optimizerFailureDetail(run.error) ?? (typeof projected.summary.failureDetail === "string" ? projected.summary.failureDetail : undefined)
+    : undefined;
   const latest = sft.points.at(-1);
   const aggregateBaseline = sftAggregateBaseline(sft);
   const readyCount = sft.checkpoints.filter((ckpt) => ckpt.ready === true || ckpt.promoted === true).length;

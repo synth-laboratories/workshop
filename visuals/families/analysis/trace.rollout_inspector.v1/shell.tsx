@@ -51,11 +51,13 @@ type CraftaxSummary = {
 type Family = "message" | "tool" | "thought" | "model" | "span" | "evidence" | "system";
 function family(item: InspectorItem): Family {
   const kind = item.kind;
-  if (kind.startsWith("evidence.")) return "evidence";
+  if (kind.startsWith("evidence.") || kind.startsWith("reward.") || kind === "reward_signal" || kind === "rubric.grade" || kind.startsWith("span.evaluator")) return "evidence";
   if (kind.startsWith("span.")) return "span";
   if (kind.includes("command_") || kind.startsWith("tool.")) return "tool";
   if (kind.includes("reasoning") || kind.includes("thought")) return "thought";
   if (kind.startsWith("message.") || kind === "codex.agent_message") return "message";
+  if (kind === "observation") return "message";
+  if (kind === "action") return "model";
   if (kind.startsWith("model_call.") || kind.includes("turn_")) return "model";
   return "system";
 }
@@ -80,8 +82,15 @@ function primary(item: InspectorItem): string {
     if (typeof value === "string" && value.trim()) return value;
   }
   if (typeof detail.score === "number") return `Score ${detail.score}`;
+  if (typeof detail.value === "number") return `Reward ${detail.value}`;
+  if (typeof nested.value === "number") return `Reward ${nested.value}`;
   if (typeof detail.call_index === "number") return `Model call ${detail.call_index}`;
-  return item.title ?? item.kind;
+  // No payload worth showing. Returning the item's own name made every caller
+  // print it twice: an evidence row headed `reward.calculation.opened` whose
+  // body was the string `reward.calculation.opened`, and an evidence card
+  // whose subtitle repeated its title. Callers show the name themselves, so
+  // say nothing here and let them render the absence once.
+  return "";
 }
 
 function number(value: unknown): number | undefined {
@@ -173,11 +182,11 @@ function EvidenceReviewSummary({ evidence, digestBound }: { evidence: InspectorI
     <div className="sv-section-head"><h3>Evidence review</h3><span className="sv-mono">none captured</span></div>
     <p style={{ margin: 0, color: "var(--sv-text-faint)", fontSize: 11 }}>This trace has no evaluator evidence to review.</p>
   </section>;
-  const decisive = evidence.filter((item) => /pass|fail|decisive|complete|valid/i.test(item.status ?? "")).length;
+  const decisive = evidence.filter((item) => /pass|fail|decisive|complete|valid|ok|scored/i.test(item.status ?? "")).length;
   return <section className="sv-section" aria-label="Evidence review summary" data-testid="trace-evidence-summary" style={{ marginTop: 14, borderLeft: `4px solid ${decisive === evidence.length ? "#238558" : "#b67a00"}` }}>
     <div className="sv-section-head">
       <h3>Evidence review</h3>
-      <span className="sv-mono">{decisive}/{evidence.length} decisive · {digestBound ? "digest bound" : "unbound"}</span>
+      <span className="sv-mono">{decisive}/{evidence.length} decisive · {digestBound ? "digest bound" : "trace bound"}</span>
     </div>
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 210px), 1fr))", gap: 8 }}>
       {evidence.slice(0, 3).map((item) => {
@@ -188,7 +197,7 @@ function EvidenceReviewSummary({ evidence, digestBound }: { evidence: InspectorI
             <strong style={{ minWidth: 0, fontSize: 11, overflowWrap: "anywhere" }}>{item.title ?? item.kind}</strong>
             <span style={{ flex: "0 0 auto", color: statusColor(item.status), fontSize: 9, fontWeight: 800, textTransform: "uppercase" }}>{item.status ?? "recorded"}</span>
           </div>
-          <p style={{ margin: "6px 0 0", color: "var(--sv-text-faint)", fontSize: 10, lineHeight: 1.4, overflowWrap: "anywhere" }}>{rationale}</p>
+          {rationale ? <p style={{ margin: "6px 0 0", color: "var(--sv-text-faint)", fontSize: 10, lineHeight: 1.4, overflowWrap: "anywhere" }}>{rationale}</p> : null}
           {number(detail.score) != null ? <div className="sv-mono" style={{ marginTop: 6, fontSize: 10 }}>score {number(detail.score)}</div> : null}
         </article>;
       })}
@@ -219,7 +228,7 @@ function EventCard({ item, expanded, onToggle, findings = [] }: { item: Inspecto
         {cited.length ? <span data-testid={`trace-item-findings-${item.item_id}`} style={{ fontSize: 9, fontWeight: 700, color: "var(--sv-accent)" }}>{cited.length} finding{cited.length === 1 ? "" : "s"}</span> : null}
       </header>
       <div style={{ padding: 11 }}>
-        <div className={command ? "sv-mono" : undefined} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: command ? 11 : 12, lineHeight: 1.5, maxHeight: expanded ? "none" : 150, overflow: "hidden" }}>{body}</div>
+        <div className={command ? "sv-mono" : undefined} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: command ? 11 : 12, lineHeight: 1.5, maxHeight: expanded ? "none" : 150, overflow: "hidden" }}>{body || <span style={{ color: "var(--sv-text-faint)", fontSize: 11 }}>This event recorded no payload beyond its name and status.</span>}</div>
         {toolOutput ? <div style={{ marginTop: 9 }}>
           <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--sv-text-faint)", marginBottom: 4 }}>Output</div>
           <pre style={{ margin: 0, padding: 9, borderRadius: 7, background: "#171a20", color: "#d9e1ea", fontSize: 10, lineHeight: 1.45, whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: expanded ? 420 : 100, overflow: "auto" }}>{toolOutput || "No output"}</pre>
@@ -239,7 +248,7 @@ export function Shell({ title, lede, projection, data, analysisFindings = [] }: 
   const [expanded, setExpanded] = useState<Set<string>>(new Set()); const listRef = useRef<HTMLDivElement>(null);
   const [playing, setPlaying] = useState(false); const [playbackIndex, setPlaybackIndex] = useState(0);
   const lanes = visual?.lanes ?? [];
-  const focusedFamilies = new Set<Family>(["message", "tool", "thought", "evidence"]);
+  const focusedFamilies = new Set<Family>(["message", "tool", "thought", "model", "evidence"]);
   const filtered = useMemo(() => items.filter((item) => {
     const needle = query.trim().toLowerCase();
     return (lane === "all" || item.lane_id === lane) &&
@@ -340,7 +349,7 @@ export function Shell({ title, lede, projection, data, analysisFindings = [] }: 
     </> : null}
 
     {tab === "evidence" ? <section className="sv-section" aria-label="Trace evidence">
-      <div className="sv-section-head"><h3>Evaluation evidence</h3><span className="sv-mono">{payload.evidence_digest ? "digest bound" : "no evidence digest"}</span></div>
+      <div className="sv-section-head"><h3>Evaluation evidence</h3><span className="sv-mono">{payload.evidence_digest ? "digest bound" : evidence.length ? "trace-bound events" : "none retained"}</span></div>
       {evidence.map((item) => <div key={item.item_id} style={{ padding: 12, border: "1px solid var(--sv-border)", borderLeft: `4px solid ${statusColor(item.status)}`, borderRadius: 9, marginBottom: 8 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}><strong>{item.title ?? item.kind}</strong><span style={{ color: statusColor(item.status), fontWeight: 700 }}>{item.status}</span></div>
 		<dl style={{ display: "grid", gridTemplateColumns: "minmax(90px,.6fr) 1.4fr", gap: "6px 12px", fontSize: 11, marginBottom: 0 }}>{Object.entries(item.detail ?? {}).map(([key, value]) => <div key={key} style={{ display: "contents" }}><dt style={{ color: "var(--sv-text-faint)" }}>{key}</dt><dd style={{ margin: 0 }}><DetailValue value={value} /></dd></div>)}</dl>
