@@ -3,6 +3,9 @@
 **Date:** 2026-09-03
 **Instance:** `qa-9df00bc0` (`v0.9.5`, source `7e13a7b127d2`)
 **Impact:** GEPA on every container; HealthBench and RuneBench entirely.
+**Status:** root cause superseded — see [Correction](#correction-2026-09-03-later).
+The instance was missing a `[desktop.permissions.paid_compute]` declaration.
+The remaining defect is that the refusal is silent instead of immediate.
 
 ## Symptom
 
@@ -53,6 +56,59 @@ for other kinds: installing the optimizer plugin returned
 `approvalReceiptId: approval-auto-eb6288a0d5a1438e968bae1dde8eeb2f` with no
 human present. So the machinery exists; it is not reaching `PaidCompute` and
 `CredentialAccess` for a driver-created session.
+
+## Correction (2026-09-03, later)
+
+**The paragraphs above are wrong about why, and the wrong conclusion was
+expensive: it framed a configuration gap as a product defect and parked ten
+matrix cells behind a fix nobody needed to write.**
+
+`approval_policy = "never"` governs the *agent tool* approval policy. It says
+nothing about paid compute, which is configured separately and, when the block
+is absent, defaults to requiring a decision. This instance's `config.toml` has
+no `[desktop.permissions.paid_compute]` block at all, so `PaidCompute` had no
+standing authorization to auto-grant against — and the machinery correctly
+refused to invent one.
+
+A sibling instance (`visualqa`) that declares the block:
+
+```toml
+[desktop.permissions.paid_compute]
+auto_approve = true
+max_conversation_usd = "50.00"
+max_request_usd = "35.00"
+providers = ["openrouter", "openai", "tinker"]
+```
+
+runs provider-backed recipes unattended, including a completed Banking77 GEPA
+search (`gepa_gepa_banking77_workspace_v1_98ad28d6`, `$0.288`, 7174 events) and
+a five-seed Craftax evaluation whose usage carries
+`paidComputeApproval.approvalId = approval-auto-c11b4c3d416949859f5a6b97454cd5b4`
+under a `$2.45` cap. Same binary, same code path, same driver-created session
+shape. The only difference is the declaration.
+
+So the hang is the honest behaviour of an instance that was never told what it
+may spend. The `provider = "none"` split in the table above is real, but it is
+a consequence, not the cause: those recipes need no paid-compute grant, so they
+never reach the question.
+
+### What still deserves a fix
+
+Two things survive the correction, both smaller than the original claim:
+
+1. **The refusal should be written, not silent.** An instance with no
+   `paid_compute` block should fail the start immediately and say
+   `paid_compute_unconfigured`, naming the block to add. Waiting forever for a
+   decision that nothing can supply is the actual defect, and it is a
+   diagnostics bug rather than an authorization one.
+2. **Step 7 below still stands.** The GEPA proposer's `api_key_env` falls
+   through to `OPENAI_API_KEY` for any provider that is not `openrouter` or
+   `anthropic`, so a local provider is asked for an OpenAI key. That is
+   independent of approvals.
+
+The workaround noted at the end of this document — `OPENAI_API_KEY` in
+`data/.env` holding the Laguna loopback key — should simply be removed rather
+than justified. It was reached by the wrong diagnosis.
 
 ## Reproduce
 

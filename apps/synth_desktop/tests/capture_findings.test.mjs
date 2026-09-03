@@ -89,6 +89,47 @@ test("only clipped text counts as truncation, never wrapping", () => {
 	assert.deepEqual(findClippedText([element({ scrollWidth: 999, clientWidth: 10, overflowX: "hidden" })]), []);
 });
 
+test("content inside its own horizontal scroller is not a pane overflow", () => {
+	const viewport = { width: 1280 };
+	const wide = { rect: { x: 0, y: 0, width: 1645, height: 200 } };
+
+	// A wide table with no scroller is the defect the rule exists for.
+	assert.equal(findHorizontalOverflow([element(wide)], viewport).length, 1);
+
+	// The same box inside `overflow-x: auto` is the house rule being followed.
+	assert.deepEqual(
+		findHorizontalOverflow([element({ ...wide, inHorizontalScroller: true })], viewport),
+		[]
+	);
+});
+
+test("visually hidden text is not a truncation defect", () => {
+	// The sr-only idiom clips text to roughly a pixel on purpose. Reporting it
+	// puts a standing false positive on every frame, which trains the reader to
+	// skim the real findings.
+	const liveRegion = element({
+		className: "sr-only",
+		testid: "activity-live-region",
+		text: "Working",
+		scrollWidth: 53,
+		clientWidth: 1,
+		overflowX: "hidden"
+	});
+	assert.deepEqual(findClippedText([liveRegion]), []);
+	assert.deepEqual(findIllegibleText([element({ className: "visually-hidden", text: "Loading", fontSize: 1 })]), []);
+
+	// The exemption is by class, not by narrowness: a genuinely squeezed box
+	// still reports.
+	const squeezed = element({
+		className: "experiment-result-summary",
+		text: "failed",
+		scrollWidth: 39,
+		clientWidth: 6,
+		overflowX: "hidden"
+	});
+	assert.equal(findClippedText([squeezed]).length, 1);
+});
+
 test("text below the legibility floor is egregious", () => {
 	assert.deepEqual(findIllegibleText([element({ text: "ok", fontSize: 9 })]), []);
 	const tiny = findIllegibleText([element({ text: "STEP", fontSize: 8 })]);

@@ -50,6 +50,17 @@
 	--ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/*
+ * `small` is `0.8333em`, so an unstyled one inside a 9px parent computes to
+ * 7.5px -- below the legibility floor, and nobody wrote a "7.5px" anywhere to
+ * find. The floor is applied on the bare type selector so it only catches
+ * `small` elements with no rule of their own; anything carrying a class keeps
+ * the size that class asks for.
+ */
+small {
+	font-size: max(9px, 0.8333em);
+}
+
 .sr-only {
 	position: absolute !important;
 	width: 1px !important;
@@ -5050,6 +5061,12 @@ html:not(.sidebar-hidden):not(.visual-expanded) .chat-pane-frame > .titlebar .ti
 .visual-pane:not(.visual-pane-expanded) .cv-plots,
 .visual-pane:not(.visual-pane-expanded) .cv-trace-grid,
 .visual-pane:not(.visual-pane-expanded) .cv-transcript-grid {
+	grid-template-columns: minmax(0, 1fr);
+}
+
+/* Optimizer templates otherwise retain their wide two-column overview inside
+   the 320–480px right panel and are simply clipped at the panel edge. */
+.visual-pane:not(.visual-pane-expanded) .sv-workspace-canvas {
 	grid-template-columns: minmax(0, 1fr);
 }
 

@@ -26,6 +26,11 @@ export type SurfaceElement = {
 	/** Computed `overflow-x` and `text-overflow`, to tell clipping from wrapping. */
 	overflowX: string;
 	textOverflow: string;
+	/**
+	 * True when some ancestor scrolls horizontally. Content wider than the
+	 * viewport inside such an ancestor is the intended design, not a defect.
+	 */
+	inHorizontalScroller?: boolean;
 };
 
 export type FindingCategory =
@@ -53,8 +58,16 @@ export function describe(element: SurfaceElement): string {
 }
 
 /**
- * A box crossing the viewport's right edge. This is the defect that produces a
- * horizontally scrolling pane, and it is never intentional in this app.
+ * A box crossing the viewport's right edge, producing a horizontally scrolling
+ * *pane*.
+ *
+ * Content inside its own horizontal scroller is excluded, because that is the
+ * house rule rather than a violation of it: a wide table is supposed to scroll
+ * within an `overflow-x: auto` container, and its box is then legitimately
+ * wider than the window. Without this exclusion the rule reported a correctly
+ * built table as egregious on every frame — and "egregious" claims a finding is
+ * safe to act on, so acting on it would have meant deleting the very container
+ * that makes the layout correct.
  */
 export function findHorizontalOverflow(
 	elements: SurfaceElement[],
@@ -62,6 +75,7 @@ export function findHorizontalOverflow(
 ): Finding[] {
 	const limit = viewport.width + 1;
 	return elements
+		.filter((element) => !element.inHorizontalScroller)
 		.filter((element) => element.rect.width > 0 && element.rect.x + element.rect.width > limit + 4)
 		.map((element) => ({
 			category: "responsive-geometry" as const,
@@ -77,10 +91,25 @@ export function findHorizontalOverflow(
  * enough: a wrapping element legitimately scrolls, so only elements whose
  * computed style says they hide the overflow are reported.
  */
+/**
+ * Visually hidden text, by the standard clip-to-1px idiom.
+ *
+ * These elements are *supposed* to be smaller than their text: they exist for
+ * screen readers, and sighted clipping is the mechanism, not a defect. Auditing
+ * them reports a live region as a truncation bug on every single frame, which
+ * is worse than a missed finding — a report with a standing false positive
+ * teaches the reader to skim past the real ones.
+ */
+function isVisuallyHidden(element: SurfaceElement): boolean {
+	const classes = (element.className ?? "").trim().split(/\s+/);
+	return classes.some((name) => name === "sr-only" || name === "visually-hidden");
+}
+
 export function findClippedText(elements: SurfaceElement[]): Finding[] {
 	return elements
 		.filter((element) => {
 			if (!element.text || element.clientWidth <= 0) return false;
+			if (isVisuallyHidden(element)) return false;
 			const clips = element.textOverflow === "ellipsis" || element.overflowX === "hidden";
 			return clips && element.scrollWidth > element.clientWidth + 1;
 		})
@@ -98,7 +127,13 @@ export function findClippedText(elements: SurfaceElement[]): Finding[] {
 /** Text too small to read at 100% zoom. */
 export function findIllegibleText(elements: SurfaceElement[], floor = 9): Finding[] {
 	return elements
-		.filter((element) => element.text.length > 0 && element.fontSize > 0 && element.fontSize < floor)
+		.filter(
+			(element) =>
+				element.text.length > 0 &&
+				element.fontSize > 0 &&
+				element.fontSize < floor &&
+				!isVisuallyHidden(element)
+		)
 		.map((element) => ({
 			category: "hierarchy-density" as const,
 			rule: "illegible-text",
@@ -195,6 +230,17 @@ export function collectSurface(root: Document, limit = 4000): SurfaceElement[] {
 		}
 		const style = window.getComputedStyle(element);
 		if (style.visibility === "hidden" || style.display === "none") continue;
+		// Walk to the root rather than checking the parent: the scroller is
+		// usually a wrapper several levels up (`.optimizer-trials-scroll` holds
+		// a table, whose thead, tbody, tr, th and td all inherit the exemption).
+		let inHorizontalScroller = false;
+		for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+			const overflowX = window.getComputedStyle(parent).overflowX;
+			if (overflowX === "auto" || overflowX === "scroll") {
+				inHorizontalScroller = true;
+				break;
+			}
+		}
 		out.push({
 			tag: element.tagName.toLowerCase(),
 			testid: (element as HTMLElement).dataset?.testid,
@@ -205,7 +251,8 @@ export function collectSurface(root: Document, limit = 4000): SurfaceElement[] {
 			fontSize: Number.parseFloat(style.fontSize) || 0,
 			text: ownText(element),
 			overflowX: style.overflowX,
-			textOverflow: style.textOverflow
+			textOverflow: style.textOverflow,
+			inHorizontalScroller
 		});
 	}
 	return out;
