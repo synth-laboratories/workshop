@@ -4357,19 +4357,19 @@ html:not(.sidebar-hidden):not(.visual-expanded) .chat-pane-frame > .titlebar .ti
 .file-type-ts {
 	background: #3178c6;
 	color: #fff;
-	font-size: 7.5px;
+	font-size: 9px;
 }
 
 .file-type-js {
 	background: #f7df1e;
 	color: #222;
-	font-size: 7.5px;
+	font-size: 9px;
 }
 
 .file-type-py {
 	background: #3776ab;
 	color: #fff;
-	font-size: 7.5px;
+	font-size: 9px;
 }
 
 .file-type-cfg {
