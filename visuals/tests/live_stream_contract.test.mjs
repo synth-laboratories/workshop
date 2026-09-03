@@ -21,10 +21,9 @@ test("live.harbor_eval.v1 binds slot stream, not jobs", () => {
   const meta = JSON.parse(
     readFileSync(join(root, "families/first_class_example_containers/live.harbor_eval.v1/template.json"), "utf8"),
   );
-  assert.deepEqual(
-    (meta.inputs ?? meta.slots).map((slot) => slot.name),
-    [LIVE_EVAL_INPUT],
-  );
+  const names = (meta.inputs ?? meta.slots).map((slot) => slot.name);
+  assert.equal(names[0], LIVE_EVAL_INPUT, "the live transport is still the first input");
+  for (const name of names) assert.equal(assertLiveEvalSlot(name, meta.id), null);
   assert.equal(LIVE_EVAL_SLOT, LIVE_EVAL_INPUT);
 });
 

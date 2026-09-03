@@ -2325,7 +2325,12 @@ async fn append_provider_usage_receipt(
         "calls": receipt.calls,
         "promptTokens": receipt.input_tokens,
         "completionTokens": receipt.output_tokens,
+        // Billed calls with no readable usage object are a reconciliation gap.
+        // Publishing them beside a bare `0` is what let the 2026-09-03 DeepSWE
+        // sample present "36 billed calls" as a complete statement.
+        "tokensComplete": receipt.tokens_complete,
         "costUsd": receipt.cost_usd,
+        "costComplete": receipt.cost_usd.is_some(),
         "capabilities": receipt.capabilities,
     });
     let usage_delta = Map::from_iter([
@@ -2342,7 +2347,14 @@ async fn append_provider_usage_receipt(
             json!(receipt.output_tokens - expected_completion),
         ),
         ("cost_usd".into(), cost_delta),
-        ("usage_completeness".into(), json!("reconciled")),
+        (
+            "usage_completeness".into(),
+            json!(if receipt.tokens_complete && receipt.cost_usd.is_some() {
+                "reconciled"
+            } else {
+                "reconciliation_pending"
+            }),
+        ),
     ]);
     service
         .append_event_payloads(
@@ -2419,6 +2431,13 @@ async fn append_eval_plan(
                     ("candidate_id".into(), json!(spec.policy_config)),
                     ("seed".into(), json!(example.seed)),
                     ("scenario".into(), json!(spec.family)),
+                    // The task a reader recognises, carried from the plan so a
+                    // queued row is named before it starts. `seed 3` names
+                    // nothing; `deepswe/numba-stencil-boundary-modes` does.
+                    (
+                        "task_instance_id".into(),
+                        json!(spec.task_instance_id(example)),
+                    ),
                     ("stage".into(), json!("screen")),
                 ]))
                 .raw(json!({ "source": "container_eval" })),
@@ -2856,6 +2875,48 @@ fn container_openai_proxy_base(run_id: &str, spec: &EvalSpec) -> Result<String> 
     Ok(base)
 }
 
+/// Harnesses that run a nested CLI whose own sandbox is implemented with
+/// Linux user namespaces. Workshop's container-eval lane always runs these
+/// inside an already-isolated task container, where a second namespace cannot
+/// be created.
+const NESTED_CLI_HARNESSES: [&str; 1] = ["codex_agentic"];
+
+/// Inner sandboxes that require a fresh user namespace. Inside the task
+/// container `bwrap` cannot create one, so every command the agent runs fails
+/// with `bwrap: No permissions to create a new namespace` while the model is
+/// asked again and again — the exact shape of the 2026-09-03 DeepSWE sample,
+/// which burned 36 provider requests and measured nothing.
+const NAMESPACE_BACKED_SANDBOXES: [&str; 3] = ["workspace-write", "read-only", "workspace_write"];
+
+/// Assert the effective policy configuration Workshop is about to register
+/// still declares a sandbox that can actually run inside the task container.
+fn assert_nested_sandbox_policy(spec: &EvalSpec, body: &Value) -> Result<()> {
+    if !NESTED_CLI_HARNESSES.contains(&spec.harness.as_str()) {
+        return Ok(());
+    }
+    let declared = body
+        .pointer("/config/sandbox")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(sandbox) = declared else {
+        bail!(
+            "policy_sandbox_unset: recipe {} registers policy config `{}` for the nested `{}` harness without declaring [policy] sandbox. Registration replaces the container's seeded configuration, so the seed's sandbox would be lost and the inner CLI would fall back to a namespace sandbox it cannot create inside the task container.",
+            spec.recipe_id,
+            spec.policy_config,
+            spec.harness,
+        );
+    };
+    if NAMESPACE_BACKED_SANDBOXES.contains(&sandbox) {
+        bail!(
+            "policy_sandbox_unsupported_in_container: recipe {} registers policy config `{}` with sandbox `{sandbox}`, which needs a Linux user namespace the already-isolated task container cannot create. Declare [policy] sandbox = \"danger-full-access\"; the task container is the isolation boundary.",
+            spec.recipe_id,
+            spec.policy_config,
+        );
+    }
+    Ok(())
+}
+
 async fn register_policy_pin(
     client: &reqwest::Client,
     base: &str,
@@ -2918,6 +2979,11 @@ async fn register_policy_pin(
         }
         return Ok(pin);
     };
+    // Registering a config id replaces the container's seeded configuration
+    // wholesale: keys the recipe leaves out are dropped, not inherited. For a
+    // nested agentic CLI that silently downgrades the sandbox, so the
+    // effective policy is asserted here, before any provider call is made.
+    assert_nested_sandbox_policy(spec, &body)?;
     let response = client
         .post(format!("{base}/policy-configs"))
         .json(&body)
@@ -3224,6 +3290,11 @@ fn dispatched_failure_record(
     let integrity = error
         .downcast_ref::<eval_relay::RelayIntegrityError>()
         .is_some();
+    // An environment refusal is not a model result and must not be counted as
+    // one. Name it here so the aggregate, the visual and any later comparison
+    // can tell "the container could not run commands" from "the policy tried
+    // and was wrong".
+    let infrastructure = error.downcast_ref::<eval_relay::InfrastructureFailure>();
     let evidence_state = if integrity { "rejected" } else { "missing" };
     let mut record = json!({
         "rolloutId": rollout_id,
@@ -3238,9 +3309,21 @@ fn dispatched_failure_record(
         "lastObservedStep": relay.last_relayed_step,
         "usage": relay.to_json()["observedUsage"].clone(),
         "relay": relay.to_json(),
+        "failureClass": if infrastructure.is_some() {
+            "infrastructure"
+        } else if integrity {
+            "evidence_integrity"
+        } else {
+            "producer"
+        },
+        "infrastructureFailure": infrastructure.map(eval_relay::InfrastructureFailure::to_json),
         "evaluatorOutcome": {
             "status": "failed",
-            "reason": "evaluator_not_reached",
+            "reason": if infrastructure.is_some() {
+                "infrastructure_failure"
+            } else {
+                "evaluator_not_reached"
+            },
             "detail": detail,
             "source": "container_evaluator",
         },
@@ -4332,6 +4415,15 @@ fn usage_with_authoritative_provider_receipt(
     measured
         .extra
         .insert("policyUsage".into(), policy.to_json());
+    // Consumers render tokens as `unavailable` on this flag rather than
+    // printing the zero that a missing usage object leaves behind.
+    measured.extra.insert(
+        "tokenTelemetryComplete".into(),
+        json!(receipt
+            .and_then(|value| value.get("tokensComplete"))
+            .and_then(Value::as_bool)
+            .unwrap_or(policy.calls == 0 || policy.saw_tokens)),
+    );
     measured
 }
 
@@ -6041,6 +6133,7 @@ mod tests {
             calls,
             input_tokens: prompt_tokens,
             output_tokens: completion_tokens,
+            tokens_complete: calls == 0 || prompt_tokens > 0,
             cost_usd,
             digest: format!("sha256:{}", digest_byte.to_string().repeat(64)),
         }
@@ -8500,6 +8593,46 @@ max_total_rollouts = 4
         spec.harness = "codex_agentic".into();
 
         assert_eq!(container_proxy_operations(&spec), ["responses.create"]);
+    }
+
+    #[test]
+    fn a_nested_codex_policy_must_declare_a_sandbox_it_can_actually_create() {
+        // Registering a config id replaces the container's seeded configuration
+        // wholesale. On 2026-09-03 the DeepSWE recipe omitted [policy] sandbox,
+        // the seeded `danger-full-access` was dropped, and every command in
+        // all five tasks failed with a bwrap namespace error.
+        let mut spec = EvalSpec::classify_fixture();
+        spec.harness = "codex_agentic".into();
+        spec.policy_config = "agentic_codex".into();
+
+        let silent = json!({"config_id": "agentic_codex", "config": {"model": "m"}});
+        let error = assert_nested_sandbox_policy(&spec, &silent).unwrap_err();
+        assert!(
+            format!("{error}").contains("policy_sandbox_unset"),
+            "{error}"
+        );
+
+        for refused in ["workspace-write", "read-only", "workspace_write"] {
+            let body = json!({"config_id": "agentic_codex", "config": {"sandbox": refused}});
+            let error = assert_nested_sandbox_policy(&spec, &body).unwrap_err();
+            assert!(
+                format!("{error}").contains("policy_sandbox_unsupported_in_container"),
+                "{refused}: {error}"
+            );
+        }
+
+        let admitted = json!({"config_id": "agentic_codex", "config": {"sandbox": "danger-full-access"}});
+        assert!(assert_nested_sandbox_policy(&spec, &admitted).is_ok());
+    }
+
+    #[test]
+    fn a_non_nested_harness_keeps_its_own_sandbox_contract() {
+        // Only the nested CLI harnesses run a second sandbox inside the task
+        // container; nothing else is asked to declare one.
+        let mut spec = EvalSpec::classify_fixture();
+        spec.harness = "harbor_fused".into();
+        let body = json!({"config_id": "x", "config": {"sandbox": "workspace-write"}});
+        assert!(assert_nested_sandbox_policy(&spec, &body).is_ok());
     }
 
     #[test]

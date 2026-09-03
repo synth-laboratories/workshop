@@ -1,4 +1,6 @@
 import { VisualChrome } from "../../../chrome/VisualChrome.tsx";
+import { UnresolvedInputNotice } from "../../../chrome/UnresolvedInputNotice.tsx";
+import { resolveTemplateInput } from "../../../runtime/resolvedInput.ts";
 import type { VisualBinding } from "../../../runtime/types.ts";
 import compareFixture from "../../../fixtures/model_compare.json";
 
@@ -25,11 +27,27 @@ export type ShellProps = {
   bindings?: VisualBinding[];
 };
 
-function asCompare(raw: unknown): ComparePayload {
-  if (raw && typeof raw === "object" && Array.isArray((raw as ComparePayload).rows)) {
-    return raw as ComparePayload;
+/** A payload this table can render, or `null`. Never the bundled example. */
+function asCompare(raw: unknown): ComparePayload | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as ComparePayload;
+  if (!Array.isArray(candidate.rows) || candidate.rows.length === 0) return null;
+  // Every cell in this table is `toFixed`ed. A row missing its numbers is not
+  // a row this template can render, and used to be replaced by an example one.
+  const numeric = (value: unknown) => typeof value === "number" && Number.isFinite(value);
+  if (
+    !candidate.rows.every(
+      (row) =>
+        typeof row?.model === "string"
+        && numeric(row.mean_achievements)
+        && numeric(row.mean_reward)
+        && numeric(row.cost_usd)
+        && numeric(row.success_rate)
+    )
+  ) {
+    return null;
   }
-  return compareFixture as ComparePayload;
+  return candidate;
 }
 
 function Spark({ values, label }: { values: number[]; label: string }) {
@@ -61,7 +79,29 @@ function Spark({ values, label }: { values: number[]; label: string }) {
 }
 
 export function Shell(props: ShellProps) {
-  const data = asCompare(props.data ?? props.comparison ?? compareFixture);
+  const resolved = resolveTemplateInput<ComparePayload>({
+    input: "comparison",
+    candidates: [props.data, props.comparison],
+    bindings: props.bindings,
+    accept: asCompare,
+    fixture: compareFixture
+  });
+
+  if (resolved.status === "unresolved") {
+    return (
+      <VisualChrome
+        kicker="Model comparison"
+        title={props.title ?? "Multi-model table"}
+        lede={props.lede}
+        testId="visual-model-compare"
+        footer="model.compare.v1"
+      >
+        <UnresolvedInputNotice unresolved={resolved.unresolved} />
+      </VisualChrome>
+    );
+  }
+
+  const data = resolved.value;
   const best = [...data.rows].sort((a, b) => b.mean_achievements - a.mean_achievements)[0];
 
   return (

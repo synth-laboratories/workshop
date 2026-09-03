@@ -82,8 +82,20 @@ test("visuals package exposes the registered templates", () => {
     if (!id.startsWith("diagram.") && meta.rendererKind !== "chart") {
       assert.ok(existsSync(join(path, "shell.tsx")));
     }
-    if (id === "live.harbor_eval.v1" || id === "live.container_rollouts.v1") {
+    if (id === "live.container_rollouts.v1") {
       assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream"]);
+    }
+    if (id === "live.harbor_eval.v1") {
+      // The stream is the live transport; the experiment snapshot is what the
+      // template renders once the producer has sealed and closed that stream.
+      // Neither can be required: an open run has no snapshot yet and a
+      // reopened terminal run has no stream left to join.
+      assert.deepEqual(
+        declaredInputs(meta).map((slot) => slot.name),
+        ["stream", "experiment", "optimizer_run"]
+      );
+      assert.equal(declaredInputs(meta)[1].schema, "synth.experiment.overview.v1");
+      assert.ok(declaredInputs(meta).every((slot) => slot.required !== true));
     }
     if (id === "live.annotated_rollouts.v1") {
       // The superset viewer folds each rollout's stream with its annotation

@@ -11,11 +11,19 @@ export const LIVE_EVAL_INPUT = "stream";
 export const LIVE_EVAL_SLOT = LIVE_EVAL_INPUT;
 export const FORBIDDEN_LIVE_EVAL_SLOTS = ["live", "jobs"] as const;
 
-function isDeclaredLiveEvalAuxiliary(slot: string, templateId: string): boolean {
+const DECLARED_LIVE_EVAL_AUXILIARIES: Record<string, readonly string[]> = {
   // Craftax keeps `stream` as its only gameplay transport. The optional
   // optimizer input contributes run lifecycle, evidence disposition, and
   // proxy usage; it must never be interpreted as a replacement stream.
-  return templateId === "live.craftax.v1" && slot === "optimizer_run";
+  "live.craftax.v1": ["optimizer_run"],
+  // Harbor adds the persisted terminal projection. A sealed run's stream is
+  // closed and can never be rejoined, so reopening the visual has to render
+  // from that snapshot; it is evidence of a finished run, not a transport.
+  "live.harbor_eval.v1": ["experiment", "optimizer_run"]
+};
+
+function isDeclaredLiveEvalAuxiliary(slot: string, templateId: string): boolean {
+  return DECLARED_LIVE_EVAL_AUXILIARIES[templateId]?.includes(slot) ?? false;
 }
 
 const LIVE_EVAL_TEMPLATE_PREFIXES = [

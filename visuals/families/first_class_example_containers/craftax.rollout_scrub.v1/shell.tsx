@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { VisualChrome } from "../../../chrome/VisualChrome.tsx";
+import { UnresolvedInputNotice } from "../../../chrome/UnresolvedInputNotice.tsx";
 import { TimelineScrubber } from "../../../chrome/TimelineScrubber.tsx";
+import { resolveTemplateInput } from "../../../runtime/resolvedInput.ts";
 import type { RolloutStep, VisualBinding } from "../../../runtime/types.ts";
 import rolloutFixture from "../../../fixtures/rollout_steps.json";
 
@@ -32,11 +34,13 @@ const VITALS: [string, string][] = [
   ["mana", "#8a5fd0"]
 ];
 
-function asRollout(raw: unknown): RolloutPayload {
-  if (raw && typeof raw === "object" && Array.isArray((raw as RolloutPayload).steps)) {
-    return raw as RolloutPayload;
-  }
-  return rolloutFixture as RolloutPayload;
+/** A rollout this scrubber can play, or `null`. Never the bundled example. */
+function asRollout(raw: unknown): RolloutPayload | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as RolloutPayload;
+  if (!Array.isArray(candidate.steps) || candidate.steps.length === 0) return null;
+  if (!candidate.steps.every((step) => typeof step?.index === "number")) return null;
+  return candidate;
 }
 
 function FrameCanvas({ step }: { step: RolloutStep }) {
@@ -230,11 +234,19 @@ function HudPanel({ step }: { step: RolloutStep }) {
 }
 
 export function Shell(props: ShellProps) {
-  const rollout = useMemo(
-    () => asRollout(props.data ?? props.rollout ?? rolloutFixture),
-    [props.data, props.rollout]
+  const resolved = useMemo(
+    () =>
+      resolveTemplateInput<RolloutPayload>({
+        input: "rollout",
+        candidates: [props.data, props.rollout],
+        bindings: props.bindings,
+        accept: asRollout,
+        fixture: rolloutFixture
+      }),
+    [props.data, props.rollout, props.bindings]
   );
-  const steps = rollout.steps;
+  const rollout = resolved.value;
+  const steps = rollout?.steps ?? [];
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const step = steps[Math.min(index, Math.max(steps.length - 1, 0))] ?? steps[0];
@@ -247,11 +259,26 @@ export function Shell(props: ShellProps) {
     return () => window.clearInterval(id);
   }, [playing, steps.length]);
 
+  // After every hook, so a pane that loses its binding keeps hook order.
+  if (resolved.status === "unresolved") {
+    return (
+      <VisualChrome
+        kicker="Environment frame · Craftax"
+        title={props.title ?? "Rollout"}
+        lede={props.lede}
+        testId="visual-craftax-rollout-scrub"
+        footer="craftax.rollout_scrub.v1 · text projection required for a11y / CUA"
+      >
+        <UnresolvedInputNotice unresolved={resolved.unresolved} />
+      </VisualChrome>
+    );
+  }
+
   return (
     <VisualChrome
       kicker="Environment frame · Craftax"
-      title={props.title ?? `Rollout ${rollout.id ?? ""}`.trim()}
-      lede={props.lede ?? (rollout.model ? `Model ${rollout.model}` : undefined)}
+      title={props.title ?? `Rollout ${rollout?.id ?? ""}`.trim()}
+      lede={props.lede ?? (rollout?.model ? `Model ${rollout.model}` : undefined)}
       testId="visual-craftax-rollout-scrub"
       footer="craftax.rollout_scrub.v1 · text projection required for a11y / CUA"
     >

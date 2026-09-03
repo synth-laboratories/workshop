@@ -1,4 +1,6 @@
 import { VisualChrome, MetricStrip } from "../../../chrome/VisualChrome.tsx";
+import { UnresolvedInputNotice } from "../../../chrome/UnresolvedInputNotice.tsx";
+import { resolveTemplateInput } from "../../../runtime/resolvedInput.ts";
 import type { EvalMatrixPoint, VisualBinding } from "../../../runtime/types.ts";
 import matrixFixture from "../../../fixtures/craftax_matrix_slice.json";
 import { chunkAchievements, rateFor, type MatrixSlice } from "./components/matrixUtils.ts";
@@ -12,11 +14,22 @@ export type ShellProps = {
   data?: MatrixSlice;
 };
 
-function asSlice(raw: unknown): MatrixSlice {
-  if (raw && typeof raw === "object" && "points" in (raw as object)) {
-    return raw as MatrixSlice;
+/**
+ * A matrix slice this chart can plot, or `null`.
+ *
+ * `"points" in raw` accepted a document with an empty or malformed `points`
+ * and then fell through to the bundled example anyway, so a real Trace V5
+ * binding rendered a mock model/cost matrix.
+ */
+function asSlice(raw: unknown): MatrixSlice | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as MatrixSlice;
+  if (!Array.isArray(candidate.points) || candidate.points.length === 0) return null;
+  const numeric = (value: unknown) => typeof value === "number" && Number.isFinite(value);
+  if (!candidate.points.every((point) => numeric(point?.achievements) && numeric(point?.cost_usd))) {
+    return null;
   }
-  return matrixFixture as MatrixSlice;
+  return candidate;
 }
 
 function formatCostUsd(cost: number): string {
@@ -160,7 +173,29 @@ function AchievementMatrix({
 }
 
 export function Shell(props: ShellProps) {
-  const slice = asSlice(props.data ?? props.matrix ?? matrixFixture);
+  const resolved = resolveTemplateInput<MatrixSlice>({
+    input: "matrix",
+    candidates: [props.data, props.matrix],
+    bindings: props.bindings,
+    accept: asSlice,
+    fixture: matrixFixture
+  });
+
+  if (resolved.status === "unresolved") {
+    return (
+      <VisualChrome
+        kicker="Open-ended agents · Craftax"
+        title={props.title ?? "Craftax eval matrix"}
+        lede={props.lede}
+        testId="visual-craftax-eval-matrix"
+        footer="craftax.eval_matrix.v1 · usesynth.ai/evals/craftax"
+      >
+        <UnresolvedInputNotice unresolved={resolved.unresolved} />
+      </VisualChrome>
+    );
+  }
+
+  const slice = resolved.value;
   const points = slice.points;
   const accent = points.find((p) => p.accent) ?? points[0];
 

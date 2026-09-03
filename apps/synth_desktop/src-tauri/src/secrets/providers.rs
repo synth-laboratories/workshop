@@ -128,8 +128,24 @@ pub fn request_effort(body: &Value) -> Option<&str> {
         .or_else(|| body.get("reasoning_effort").and_then(Value::as_str))
 }
 
+/// Locate the usage object on an OpenAI-compatible body.
+///
+/// Chat Completions puts it at the top level. The Responses API puts it there
+/// too on a non-streaming reply, but nests it under `response` on the
+/// streaming lifecycle events (`response.completed`) that Codex's
+/// `wire_api = "responses"` lane actually returns. Reading only the top level
+/// records the call and its generation id while silently losing every token.
+fn usage_object(body: &Value) -> Value {
+    for pointer in ["/usage", "/response/usage"] {
+        if let Some(usage) = body.pointer(pointer).filter(|value| value.is_object()) {
+            return usage.clone();
+        }
+    }
+    Value::Null
+}
+
 pub fn parse_usage(body: &Value) -> MeasuredUsage {
-    let usage = body.get("usage").cloned().unwrap_or(Value::Null);
+    let usage = usage_object(body);
     let int = |keys: &[&str]| {
         keys.iter()
             .find_map(|key| usage.get(*key).and_then(Value::as_u64))
@@ -176,7 +192,10 @@ pub fn parse_sse_usage(bytes: &[u8]) -> (Option<String>, MeasuredUsage) {
         if response_id.is_none() {
             response_id = response_id_for_owned(&chunk);
         }
-        if chunk.get("usage").is_some_and(Value::is_object) {
+        // Chat Completions reports usage on the final chunk; the Responses
+        // API reports it inside `response` on `response.completed`. Both are
+        // the same accounting record and neither may be dropped.
+        if usage_object(&chunk).is_object() {
             let usage = parse_usage(&chunk);
             measured.input_tokens = usage.input_tokens;
             measured.output_tokens = usage.output_tokens;
@@ -353,6 +372,40 @@ mod tests {
         assert_eq!(usage.input_tokens, 1479);
         assert_eq!(usage.output_tokens, 83);
         assert_eq!(usage.cost_usd, Some(0.0003107));
+    }
+
+    #[test]
+    fn responses_api_usage_is_accounted_from_the_nested_response_object() {
+        // Codex's `wire_api = "responses"` lane returns usage under
+        // `response`, never at the top level. The 2026-09-03 DeepSWE sample
+        // recorded 36 provider calls with 0/0 tokens because only the top
+        // level was read.
+        let usage = parse_usage(&serde_json::json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp-nested",
+                "usage": {"input_tokens": 4211, "output_tokens": 190, "cost": 0.0091}
+            }
+        }));
+        assert_eq!(usage.input_tokens, 4211);
+        assert_eq!(usage.output_tokens, 190);
+        assert_eq!(usage.cost_usd, Some(0.0091));
+    }
+
+    #[test]
+    fn responses_api_sse_usage_and_response_id_are_accounted() {
+        let body = concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-stream\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-stream\",\"usage\":{\"input_tokens\":4211,\"output_tokens\":190,\"cost\":0.0091}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (id, usage) = parse_sse_usage(body.as_bytes());
+        assert_eq!(id.as_deref(), Some("resp-stream"));
+        assert_eq!(usage.calls, 1);
+        assert_eq!(usage.input_tokens, 4211);
+        assert_eq!(usage.output_tokens, 190);
+        assert_eq!(usage.cost_usd, Some(0.0091));
     }
 
     #[test]

@@ -770,6 +770,12 @@ export type TrialView = {
   record: Any | null;
   /** Backend-owned per-seed fact envelope, retained even when nested beside raw. */
   reportedFacts?: unknown;
+  /**
+   * The container task this trial ran, declared per trial rather than per run.
+   * A five-task sweep labelled `seed 0`…`seed 4` names none of its work; the
+   * task instance is what a reader recognises and can look up.
+   */
+  taskInstanceId: string | null;
 };
 
 /**
@@ -794,6 +800,9 @@ export function craftaxTrialsFromRun(
     started: boolean;
     record: Any | null;
     failed: boolean;
+    taskInstanceId: string | null;
+    /** Per-trial `scenario`, which older producers used for task identity. */
+    scenario: string | null;
     workItemId: string | null;
     authoritativeLifecycle: string | null;
     authoritativeTerminal: string | null;
@@ -812,6 +821,8 @@ export function craftaxTrialsFromRun(
         started: false,
         record: null,
         failed: false,
+        taskInstanceId: null,
+        scenario: null,
         workItemId: null,
         authoritativeLifecycle: null,
         authoritativeTerminal: null
@@ -846,6 +857,14 @@ export function craftaxTrialsFromRun(
     row.workItemId ??= workItemId;
     row.seed ??= num(delta.seed ?? item.seed ?? item.raw?.seed);
     row.pool ??= text(delta.pool ?? item.raw?.pool);
+    // `task_instance_id` is the declared name; older runs only carried the
+    // same string in `scenario`, and the terminal record always carries it.
+    row.taskInstanceId ??= text(
+      delta.task_instance_id ?? delta.taskInstanceId
+        ?? item.taskInstanceId ?? item.task_instance_id
+        ?? record.taskInstanceId ?? record.task_instance_id
+    );
+    row.scenario ??= text(delta.scenario);
     if (type === "eval.trial.started") {
       row.started = true;
       row.rolloutId ??= text(delta.rollout_id);
@@ -930,7 +949,11 @@ export function craftaxTrialsFromRun(
       reward: num(record?.reward),
       view,
       record,
-      reportedFacts: row.reportedFacts
+      reportedFacts: row.reportedFacts,
+      // A per-trial scenario that differs from the run-wide one is the task
+      // identity under its older name; the run-wide family is not.
+      taskInstanceId: row.taskInstanceId
+        ?? (row.scenario !== null && row.scenario !== scenario ? row.scenario : null)
     };
   });
 }

@@ -766,6 +766,12 @@ async fn handle(
                     "calls": usage.calls,
                     "input_tokens": usage.input_tokens,
                     "output_tokens": usage.output_tokens,
+                    // A successful provider call always consumes input
+                    // tokens. Zero therefore means "the response carried no
+                    // usage object we could read", which is unknown, not
+                    // free. Say which one it is instead of letting a later
+                    // ledger present the gap as a measured zero.
+                    "tokens_complete": usage.input_tokens > 0 || usage.output_tokens > 0,
                     "cost_usd": usage.cost_usd,
                     "cost_complete": usage.cost_usd.is_some(),
                     "cost_reconciled": cost_reconciled,

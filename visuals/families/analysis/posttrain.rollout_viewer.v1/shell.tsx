@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { VisualChrome, MetricStrip } from "../../../chrome/VisualChrome.tsx";
+import { UnresolvedInputNotice } from "../../../chrome/UnresolvedInputNotice.tsx";
 import { TimelineScrubber } from "../../../chrome/TimelineScrubber.tsx";
+import { resolveTemplateInput } from "../../../runtime/resolvedInput.ts";
 import type { RolloutStep, VisualBinding } from "../../../runtime/types.ts";
 import rolloutFixture from "../../../fixtures/rollout_steps.json";
 
@@ -19,11 +21,13 @@ export type ShellProps = {
   bindings?: VisualBinding[];
 };
 
-function asTrajectory(raw: unknown): Trajectory {
-  if (raw && typeof raw === "object" && Array.isArray((raw as Trajectory).steps)) {
-    return raw as Trajectory;
-  }
-  return rolloutFixture as Trajectory;
+/** A trajectory this viewer can scrub, or `null`. Never the bundled example. */
+function asTrajectory(raw: unknown): Trajectory | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as Trajectory;
+  if (!Array.isArray(candidate.steps) || candidate.steps.length === 0) return null;
+  if (!candidate.steps.every((step) => typeof step?.index === "number")) return null;
+  return candidate;
 }
 
 function RewardSparkline({ steps }: { steps: RolloutStep[] }) {
@@ -57,17 +61,25 @@ function RewardSparkline({ steps }: { steps: RolloutStep[] }) {
 }
 
 export function Shell(props: ShellProps) {
-  const traj = useMemo(
-    () => asTrajectory(props.data ?? props.trajectory ?? rolloutFixture),
-    [props.data, props.trajectory]
+  const resolved = useMemo(
+    () =>
+      resolveTemplateInput<Trajectory>({
+        input: "trajectory",
+        candidates: [props.data, props.trajectory],
+        bindings: props.bindings,
+        accept: asTrajectory,
+        fixture: rolloutFixture
+      }),
+    [props.data, props.trajectory, props.bindings]
   );
-  const steps = traj.steps;
+  const traj = resolved.value;
+  const steps = traj?.steps ?? [];
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const step = steps[Math.min(index, Math.max(steps.length - 1, 0))];
 
   const totalReward =
-    traj.total_reward ??
+    traj?.total_reward ??
     steps.reduce((sum, s) => sum + (s.reward ?? 0), 0);
 
   useEffect(() => {
@@ -78,10 +90,26 @@ export function Shell(props: ShellProps) {
     return () => window.clearInterval(id);
   }, [playing, steps.length]);
 
+  // Every hook above runs on both paths; the honest empty state comes after
+  // them so a pane that loses its binding does not change hook order.
+  if (resolved.status === "unresolved") {
+    return (
+      <VisualChrome
+        kicker="PostTrain · trajectory"
+        title={props.title ?? "Rollout"}
+        lede={props.lede}
+        testId="visual-posttrain-rollout-viewer"
+        footer="posttrain.rollout_viewer.v1"
+      >
+        <UnresolvedInputNotice unresolved={resolved.unresolved} />
+      </VisualChrome>
+    );
+  }
+
   return (
     <VisualChrome
       kicker="PostTrain · trajectory"
-      title={props.title ?? `Rollout ${traj.id ?? ""}`.trim()}
+      title={props.title ?? `Rollout ${traj?.id ?? ""}`.trim()}
       lede={props.lede}
       testId="visual-posttrain-rollout-viewer"
       footer="posttrain.rollout_viewer.v1"
@@ -90,7 +118,7 @@ export function Shell(props: ShellProps) {
         metrics={[
           { label: "Steps", value: String(steps.length) },
           { label: "Total reward", value: totalReward.toFixed(2) },
-          { label: "Model", value: traj.model ?? "—" }
+          { label: "Model", value: traj?.model ?? "—" }
         ]}
       />
 

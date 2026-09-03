@@ -37,6 +37,10 @@ pub(crate) struct ProviderUsageReceipt {
     pub calls: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// False when the run billed provider calls but no response ever carried a
+    /// readable usage object. Zero tokens against a non-zero call count is a
+    /// telemetry gap, not a measurement, and must never render as `0`.
+    pub tokens_complete: bool,
     pub cost_usd: Option<f64>,
     pub digest: String,
 }
@@ -663,6 +667,9 @@ pub(crate) fn provider_usage_receipt(
         calls,
         input_tokens,
         output_tokens,
+        // Derived, not stored: the digest above stays over the same canonical
+        // fields it always covered, so existing receipts keep their identity.
+        tokens_complete: calls == 0 || input_tokens > 0,
         cost_usd: cost_usd_micros.map(|micros| micros as f64 / 1_000_000.0),
         digest,
     }))

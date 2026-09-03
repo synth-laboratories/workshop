@@ -570,7 +570,23 @@ fn usage_evidence(conn: &Connection, run_id: &str) -> Result<(u64, u64, &'static
                 terminal_markers.push(marker.to_string());
             }
         }
-        provider_reconciled |= event.event_type == "optimizer.usage.reconciled";
+        // A provider receipt exists, but it only settles the ledger when it
+        // actually carries tokens and cost. A receipt that recorded billed
+        // calls with no readable usage object marks the run
+        // `reconciliation_pending`, and must not upgrade the run to
+        // `reconciled`.
+        provider_reconciled |= event.event_type == "optimizer.usage.reconciled"
+            && event
+                .usage_delta
+                .as_ref()
+                .and_then(|delta| {
+                    delta
+                        .get("usage_completeness")
+                        .or_else(|| delta.get("usageCompleteness"))
+                        .and_then(Value::as_str)
+                })
+                .map(|marker| marker == "reconciled")
+                .unwrap_or(true);
     }
     let completeness = if provider_reconciled {
         "reconciled"

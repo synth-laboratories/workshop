@@ -11,6 +11,7 @@ import { VisualChrome, MetricStrip } from "../../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber } from "../../../runtime/liveStream.ts";
 import { projectLiveEval } from "../../../runtime/liveEvalReducer.ts";
+import { harborEvalSnapshot, type HarborEvalSnapshot } from "../../../runtime/harborEvalSnapshot.ts";
 import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
 
@@ -28,6 +29,12 @@ export type ShellProps = LiveTemplateProps & {
   stream?: StreamPayload;
   jobs?: StreamPayload;
   data?: StreamPayload;
+  /**
+   * The persisted `synth.experiment.overview.v1` projection for this run.
+   * Present on every optimizer-minted Harbor visual and the only thing that
+   * still speaks after the producer's stream has closed.
+   */
+  experiment?: unknown;
   bindings?: VisualBinding[] | { slots?: VisualBinding[] };
 };
 
@@ -89,6 +96,82 @@ function foldTrials(events: LiveEvalEvent[]): TrialView[] {
   return [...trials.values()];
 }
 
+/** A settled snapshot renders instead of the live fold, never beside it. */
+function SnapshotTrials({ snapshot }: { snapshot: HarborEvalSnapshot }) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const trial = snapshot.trials.find((row) => row.id === selected) ?? snapshot.trials[0];
+  return (
+    <section className="sv-section" aria-label="Trials" data-testid="harbor-snapshot-trials">
+      <div className="sv-section-head">
+        <h3>Trials</h3>
+        <span className="sv-mono">restored from the settled projection</span>
+      </div>
+      <div role="list" style={{ display: "grid", gap: 6 }}>
+        {snapshot.trials.map((row) => (
+          <article
+            key={row.id}
+            role="listitem"
+            style={{
+              padding: "9px 12px",
+              border: `1px solid ${row.id === trial?.id ? "var(--sv-accent)" : "var(--sv-border)"}`,
+              borderRadius: 9
+            }}
+          >
+            <button
+              type="button"
+              className="sv-btn"
+              aria-pressed={row.id === trial?.id}
+              onClick={() => setSelected(row.id)}
+              style={{ width: "100%", border: 0, borderRadius: 0, textAlign: "left", padding: 0, background: "none" }}
+            >
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8 }}>
+                {/* The task, not the seed: `seed 0` names nothing a reader can act on. */}
+                <strong style={{ fontSize: 12.5 }}>{row.label}</strong>
+                {row.seed == null ? null : (
+                  <span className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 11 }}>
+                    seed {row.seed}
+                  </span>
+                )}
+                <span
+                  className="sv-chip"
+                  data-tone={row.status === "failed" ? "bad" : row.reward != null && row.reward > 0 ? "ok" : "warn"}
+                  style={{ marginLeft: "auto" }}
+                >
+                  {row.status}
+                </span>
+              </div>
+            </button>
+            {row.taskInstanceId ? (
+              <p className="sv-mono" style={{ margin: "4px 0 0", fontSize: 11, color: "var(--sv-text-muted)" }}>
+                {row.taskInstanceId}
+              </p>
+            ) : null}
+            {row.id === trial?.id && row.stopReason ? (
+              <p style={{ margin: "6px 0 0", fontSize: 12 }} data-testid="harbor-snapshot-stop-reason">
+                {row.stopReason}
+              </p>
+            ) : null}
+            {row.id === trial?.id ? (
+              <p className="sv-mono" style={{ margin: "6px 0 0", fontSize: 11, color: "var(--sv-text-muted)" }}>
+                reward {row.reward == null ? "not scored" : formatMissingNumber(row.reward)} · trace{" "}
+                {row.traceId ?? "not retained"}
+                {row.workbenchVisualId ? (
+                  <>
+                    {" · "}
+                    <a href={`synth://visual/${row.workbenchVisualId}`} data-testid="harbor-snapshot-workbench-link">
+                      open the trace workstation
+                    </a>
+                  </>
+                ) : null}
+              </p>
+            ) : null}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function Shell(props: ShellProps) {
   const stream = asStream(props.stream ?? props.jobs ?? props.data);
   const declaredStreamCount = props.replay?.streams.length ?? 0;
@@ -122,7 +205,20 @@ export function Shell(props: ShellProps) {
   const trials = useMemo(() => foldTrials(visibleEvents), [visibleEvents]);
   const status = [...visibleEvents].reverse().find((event) => event.kind === "status");
   const statusText = String(status?.payload.status ?? "");
-  const terminal = ["completed", "finished", "failed", "cancelled"].includes(statusText.toLowerCase());
+  const snapshot = useMemo(
+    () => harborEvalSnapshot(props.experiment ?? (props.data as { experiment?: unknown } | undefined)?.experiment),
+    [props.experiment, props.data]
+  );
+  const settled = snapshot?.lifecycle === "terminal";
+  const terminal =
+    settled || ["completed", "finished", "failed", "cancelled"].includes(statusText.toLowerCase());
+  // A reopened terminal visual has no stream to rejoin: the producer sealed
+  // and closed it. Restoring from the persisted snapshot is the only honest
+  // surface, and it must never claim to be `connecting`.
+  const restored = settled && events.length === 0;
+  const statusLabel = restored
+    ? snapshot?.status ?? "terminal"
+    : statusText || (ready ? (live ? "live" : "idle") : hasSource ? "connecting" : "awaiting source");
   const tools = visibleEvents.filter((event) => event.kind === "tools" || event.kind === "stdout" || event.kind === "stderr");
   const visibleTools = showFullStream ? tools : tools.slice(-STREAM_WINDOW);
   const verifiedCount = trials.filter((trial) => trial.status === "verified").length;
@@ -137,16 +233,55 @@ export function Shell(props: ShellProps) {
       footer="live.harbor_eval.v1 · ATIF is a projection of this evidence, not the log"
     >
       <MetricStrip
-        metrics={[
-          { label: "Trials", value: trials.length ? `${verifiedCount}/${trials.length} verified` : "—" },
-          { label: "Reward", value: formatMissingNumber(projection.reward) },
-          { label: "reward.txt", value: projection.has_reward_txt ? "present" : "not yet" },
-          {
-            label: "Status",
-            value: statusText || (ready ? (live ? "live" : "idle") : hasSource ? "connecting" : "awaiting source")
-          }
-        ]}
+        metrics={
+          restored && snapshot
+            ? [
+                {
+                  label: "Trials",
+                  value: `${snapshot.work.succeeded}/${snapshot.work.planned} completed · ${snapshot.work.failed} failed`
+                },
+                { label: "Mean reward", value: formatMissingNumber(snapshot.meanReward) },
+                // Zero is a measurement. An unreconciled ledger is not one, so
+                // it says so rather than printing a total nobody measured.
+                { label: "Usage", value: snapshot.usage.tokens ?? "unavailable" },
+                { label: "Cost", value: snapshot.usage.cost ?? "unavailable" },
+                { label: "Status", value: statusLabel }
+              ]
+            : [
+                { label: "Trials", value: trials.length ? `${verifiedCount}/${trials.length} verified` : "—" },
+                { label: "Reward", value: formatMissingNumber(projection.reward) },
+                { label: "reward.txt", value: projection.has_reward_txt ? "present" : "not yet" },
+                { label: "Status", value: statusLabel }
+              ]
+        }
       />
+
+      {restored && snapshot ? (
+        <section className="sv-section" aria-label="Settled run" data-testid="harbor-restored">
+          <div className="sv-section-head">
+            <h3>Settled run</h3>
+            <span className="sv-mono">{snapshot.elapsed ?? "duration not recorded"}</span>
+          </div>
+          <p style={{ margin: 0, fontSize: 12.5 }}>{snapshot.assessment.summary ?? "This run reached a terminal state."}</p>
+          <p className="sv-mono" style={{ margin: "6px 0 0", fontSize: 11, color: "var(--sv-text-muted)" }}>
+            {[snapshot.runtime.policy, snapshot.runtime.model, snapshot.runtime.provider]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+          <p className="sv-mono" style={{ margin: "6px 0 0", fontSize: 11, color: "var(--sv-text-muted)" }}>
+            evidence {snapshot.evidence.completeness ?? "unknown"} · {snapshot.evidence.refCount} retained reference
+            {snapshot.evidence.refCount === 1 ? "" : "s"}
+            {snapshot.evidence.reason ? ` · ${snapshot.evidence.reason}` : ""}
+          </p>
+          {snapshot.limitations.length ? (
+            <ul style={{ margin: "6px 0 0", paddingLeft: 16, fontSize: 12 }}>
+              {snapshot.limitations.map((limitation) => (
+                <li key={limitation}>{limitation}</li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+      ) : null}
 
       {error ? (
         <p role="alert" style={{ color: "#c2553f" }}>
@@ -154,6 +289,9 @@ export function Shell(props: ShellProps) {
         </p>
       ) : null}
 
+      {restored && snapshot ? <SnapshotTrials snapshot={snapshot} /> : null}
+
+      {restored ? null : (
       <section className="sv-section" aria-label="Replay controls" data-testid="harbor-replay-controls">
         <div className="sv-section-head">
           <h3>Event replay</h3>
@@ -179,6 +317,9 @@ export function Shell(props: ShellProps) {
         </div>
       </section>
 
+      )}
+
+      {restored ? null : (
       <section className="sv-section" aria-label="Trials" data-testid="harbor-trials">
         <div className="sv-section-head">
           <h3>Trials</h3>
@@ -215,6 +356,12 @@ export function Shell(props: ShellProps) {
         )}
       </section>
 
+      )}
+
+      {/* Both remaining panes read a closed stream. On a restored terminal
+          visual they can only say "waiting", which is the exact false claim
+          this template was reopened showing. */}
+      {restored ? null : (
       <section className="sv-section" aria-label="Tool stream" aria-live="polite" data-testid="harbor-tool-stream">
         <div className="sv-section-head">
           <h3>Tool stream</h3>
@@ -238,6 +385,9 @@ export function Shell(props: ShellProps) {
         </ol>
       </section>
 
+      )}
+
+      {restored ? null : (
       <section className="sv-section" aria-label="Full trace" data-testid="harbor-full-trace">
         <div className="sv-section-head">
           <h3>Full trace</h3>
@@ -271,6 +421,7 @@ export function Shell(props: ShellProps) {
           <p style={{ margin: 0, color: "var(--sv-text-faint)", fontSize: 12 }}>Waiting for the first trace event…</p>
         )}
       </section>
+      )}
     </VisualChrome>
   );
 }

@@ -211,6 +211,86 @@ impl std::fmt::Display for RelayIntegrityError {
 
 impl std::error::Error for RelayIntegrityError {}
 
+/// A command inside the task container failed for a reason the model cannot
+/// fix by trying again: the execution environment itself refused. Asking the
+/// policy to retry only spends provider calls, so the rollout is terminated at
+/// the first occurrence and settled as an infrastructure failure.
+#[derive(Clone, Debug)]
+pub(crate) struct InfrastructureFailure {
+    pub reason: &'static str,
+    pub detail: String,
+    pub command: Option<String>,
+    pub exit_code: Option<i64>,
+}
+
+impl InfrastructureFailure {
+    pub(crate) fn to_json(&self) -> Value {
+        json!({
+            "reason": self.reason,
+            "detail": self.detail,
+            "command": self.command,
+            "exitCode": self.exit_code,
+        })
+    }
+}
+
+impl std::fmt::Display for InfrastructureFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.reason, self.detail)
+    }
+}
+
+impl std::error::Error for InfrastructureFailure {}
+
+/// Output fragments that identify a sandbox that could not be created. The
+/// 2026-09-03 DeepSWE sample produced the first of these on every command and
+/// was asked again 36 times before it failed with nothing measured.
+const NAMESPACE_DENIAL_SIGNATURES: [&str; 3] = [
+    "No permissions to create a new namespace",
+    "unprivileged user namespaces",
+    "unprivileged_userns_clone",
+];
+
+fn command_output(item: &Value) -> String {
+    ["aggregated_output", "output", "stdout", "stderr", "text"]
+        .iter()
+        .filter_map(|key| item.get(*key).and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Recognise an environment refusal in a completed policy command.
+///
+/// Only failed `command_execution` items are considered: a successful command
+/// that merely prints the words is evidence, not a failure.
+fn detect_infrastructure_failure(kind: &str, payload: &Value) -> Option<InfrastructureFailure> {
+    if kind != "span.policy.data" {
+        return None;
+    }
+    let item = payload.pointer("/event/item")?;
+    if item.get("type").and_then(Value::as_str) != Some("command_execution") {
+        return None;
+    }
+    if item.get("status").and_then(Value::as_str) != Some("failed") {
+        return None;
+    }
+    let output = command_output(item);
+    let matched = NAMESPACE_DENIAL_SIGNATURES
+        .iter()
+        .find(|signature| output.contains(*signature))?;
+    Some(InfrastructureFailure {
+        reason: "sandbox_namespace_unavailable",
+        detail: format!(
+            "a policy command failed in the task container with `{matched}`. The inner CLI sandbox needs a Linux user namespace this container cannot create; the effective policy sandbox must be `danger-full-access`. Terminated before asking the model again."
+        ),
+        command: item
+            .get("command")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        exit_code: item.get("exit_code").and_then(Value::as_i64),
+    })
+}
+
 /// A bound that was reached, with what it cost.
 ///
 /// Every one of these becomes a durable receipt. The rule the whole module is
@@ -272,6 +352,9 @@ pub(crate) struct RelayOutcome {
     pub annotation_findings_relayed: usize,
     /// The annotation stream reported `closed`; its producer sealed it.
     pub annotation_closed: bool,
+    /// Set when the relay terminated the rollout because the task container
+    /// refused to execute commands at all.
+    pub infrastructure_failure: Option<InfrastructureFailure>,
     pub degradations: Vec<Degradation>,
 }
 
@@ -301,6 +384,10 @@ impl RelayOutcome {
             "lastRelayedStep": self.last_relayed_step,
             "terminalEnvironmentSteps": self.verified_terminal_steps(),
             "abortedByCancellation": self.aborted_by_cancellation,
+            "infrastructureFailure": self
+                .infrastructure_failure
+                .as_ref()
+                .map(InfrastructureFailure::to_json),
             "observedUsage": {
                 "events": self.span_usage_events,
                 "prompt_tokens": self.span_prompt_tokens,
@@ -353,6 +440,64 @@ pub(crate) struct RelayContext<'a> {
     pub settings: RelaySettings,
 }
 
+/// Drain the producer journal until it closes, goes quiet, or the grace
+/// expires. Used after the in-flight rollout request has been dropped, so the
+/// evidence the producer already wrote is never lost with it.
+#[allow(clippy::too_many_arguments)]
+async fn drain_to_quiet(
+    ctx: &RelayContext<'_>,
+    cursor: &mut u64,
+    acked: &mut u64,
+    chain_head: &mut String,
+    journal_v2: &mut Option<bool>,
+    relayed: &mut BTreeSet<u64>,
+    reward_after: &mut u64,
+    reward_ok: &mut bool,
+    annotation_after: &mut u64,
+    annotation_ok: &mut bool,
+    annotation_relayed: &mut BTreeSet<u64>,
+    outcome: &mut RelayOutcome,
+    poll_interval: std::time::Duration,
+) {
+    let started = Instant::now();
+    let mut idle = 0u32;
+    loop {
+        match drain(
+            ctx,
+            cursor,
+            acked,
+            chain_head,
+            journal_v2,
+            relayed,
+            outcome,
+        )
+        .await
+        {
+            Ok(summary) => {
+                outcome.journal_closed |= summary.closed;
+                let _ = drain_reward(ctx, reward_after, reward_ok, relayed, outcome).await;
+                let _ =
+                    drain_annotation(ctx, annotation_after, annotation_ok, annotation_relayed, outcome)
+                        .await;
+                idle = if summary.relayed == 0 {
+                    idle.saturating_add(1)
+                } else {
+                    0
+                };
+                if summary.closed || idle >= SETTLED_IDLE_DRAINS || started.elapsed() >= JOURNAL_DRAIN_GRACE
+                {
+                    break;
+                }
+            }
+            Err(error) => {
+                outcome.note("relay_failed", format!("{error:#}"), 0);
+                break;
+            }
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+}
+
 /// Drain the declared event journal while `rollout` runs, relaying every
 /// semantic event into the optimizer log.
 ///
@@ -400,57 +545,22 @@ where
             // is still drained below, so a cancelled trial keeps its evidence.
             drop(rollout);
             outcome.aborted_by_cancellation = true;
-            let drain_started = Instant::now();
-            let mut cancellation_idle_drains = 0u32;
-            loop {
-                match drain(
-                    ctx,
-                    &mut cursor,
-                    &mut acked,
-                    &mut chain_head,
-                    &mut journal_v2,
-                    &mut relayed,
-                    &mut outcome,
-                )
-                .await
-                {
-                    Ok(summary) => {
-                        outcome.journal_closed |= summary.closed;
-                        let _ = drain_reward(
-                            ctx,
-                            &mut reward_after,
-                            &mut reward_ok,
-                            &mut relayed,
-                            &mut outcome,
-                        )
-                        .await;
-                        let _ = drain_annotation(
-                            ctx,
-                            &mut annotation_after,
-                            &mut annotation_ok,
-                            &mut annotation_relayed,
-                            &mut outcome,
-                        )
-                        .await;
-                        cancellation_idle_drains = if summary.relayed == 0 {
-                            cancellation_idle_drains.saturating_add(1)
-                        } else {
-                            0
-                        };
-                        if summary.closed
-                            || cancellation_idle_drains >= SETTLED_IDLE_DRAINS
-                            || drain_started.elapsed() >= JOURNAL_DRAIN_GRACE
-                        {
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        outcome.note("relay_failed", format!("{error:#}"), 0);
-                        break;
-                    }
-                }
-                tokio::time::sleep(poll_interval).await;
-            }
+            drain_to_quiet(
+                ctx,
+                &mut cursor,
+                &mut acked,
+                &mut chain_head,
+                &mut journal_v2,
+                &mut relayed,
+                &mut reward_after,
+                &mut reward_ok,
+                &mut annotation_after,
+                &mut annotation_ok,
+                &mut annotation_relayed,
+                &mut outcome,
+                poll_interval,
+            )
+            .await;
             outcome.note(
                 "cancelled",
                 format!(
@@ -498,6 +608,38 @@ where
                     &mut outcome,
                 )
                 .await;
+                if let Some(failure) = summary.infrastructure_failure {
+                    // The task container refused to run commands. Retrying is
+                    // another paid provider call for the same refusal, so the
+                    // rollout ends here. The already-written journal is still
+                    // drained: the failing command is the evidence.
+                    if outcome.infrastructure_failure.is_none() {
+                        outcome.infrastructure_failure = Some(failure.clone());
+                    }
+                    outcome.note("infrastructure_failure", failure.to_string(), 0);
+                    if settled.is_none() {
+                        drop(rollout);
+                        drain_to_quiet(
+                            ctx,
+                            &mut cursor,
+                            &mut acked,
+                            &mut chain_head,
+                            &mut journal_v2,
+                            &mut relayed,
+                            &mut reward_after,
+                            &mut reward_ok,
+                            &mut annotation_after,
+                            &mut annotation_ok,
+                            &mut annotation_relayed,
+                            &mut outcome,
+                            poll_interval,
+                        )
+                        .await;
+                        return (Err(anyhow::Error::new(failure)), outcome);
+                    }
+                    let result = settled.unwrap_or_else(|| Err(anyhow::Error::new(failure)));
+                    return (result, outcome);
+                }
                 if settled.is_some() {
                     idle_drains = if summary.relayed == 0 {
                         idle_drains + 1
@@ -642,6 +784,9 @@ struct DrainSummary {
     declares_cursor: bool,
     /// The page declared journal-v2 integrity or retention fields.
     declares_v2: bool,
+    /// The first environment refusal observed in this drain. Present means the
+    /// rollout cannot make progress and must be terminated rather than retried.
+    infrastructure_failure: Option<InfrastructureFailure>,
 }
 
 /// Read every page available at `cursor`, relaying each semantic event.
@@ -712,7 +857,18 @@ async fn drain(
             *cursor = sequence;
             outcome.relayed_events += 1;
             summary.relayed += 1;
+            if summary.infrastructure_failure.is_none() {
+                summary.infrastructure_failure = detect_infrastructure_failure(
+                    event.get("kind").and_then(Value::as_str).unwrap_or(""),
+                    event.get("payload").unwrap_or(&Value::Null),
+                );
+            }
             if outcome.relayed_events >= ctx.settings.event_stream.max_events_per_rollout {
+                break;
+            }
+            if summary.infrastructure_failure.is_some() {
+                // Stop reading forward, but fall through so this page's drafts
+                // are appended: the refusal itself is the evidence.
                 break;
             }
         }
@@ -788,6 +944,7 @@ async fn drain(
         let ack_pending = page_v2 && *acked < *cursor;
         if (!has_more && !ack_pending)
             || outcome.relayed_events >= ctx.settings.event_stream.max_events_per_rollout
+            || summary.infrastructure_failure.is_some()
         {
             return Ok(summary);
         }
@@ -1700,7 +1857,10 @@ pub(crate) async fn append_trial_started(
     rollout_id: &str,
     seed: i64,
     pool: &str,
-    scenario: &str,
+    // The container task instance this trial runs, which is also the
+    // scenario. Named explicitly as well so consumers do not have to know
+    // that the two happen to be the same string here.
+    task_instance_id: &str,
     candidate_id: &str,
 ) -> Result<()> {
     service
@@ -1716,7 +1876,8 @@ pub(crate) async fn append_trial_started(
                         ("candidate_id".into(), json!(candidate_id)),
                         ("seed".into(), json!(seed)),
                         ("pool".into(), json!(pool)),
-                        ("scenario".into(), json!(scenario)),
+                        ("scenario".into(), json!(task_instance_id)),
+                        ("task_instance_id".into(), json!(task_instance_id)),
                         ("stage".into(), json!("screen")),
                     ]))
                     .raw(json!({ "source": "container_eval" })),
@@ -1789,6 +1950,86 @@ mod tests {
                 .unwrap();
         }
         bytes
+    }
+
+    fn command_event(status: &str, output: &str) -> Value {
+        json!({
+            "kind": "codex.event",
+            "event": {
+                "type": "item.completed",
+                "item": {
+                    "id": "item_0",
+                    "type": "command_execution",
+                    "status": status,
+                    "exit_code": 1,
+                    "command": "/bin/bash -lc \"sed -n '1,240p' observation.txt\"",
+                    "aggregated_output": output,
+                },
+            },
+        })
+    }
+
+    #[test]
+    fn a_namespace_denial_is_an_infrastructure_failure_on_its_first_occurrence() {
+        // The exact output the 2026-09-03 DeepSWE sample produced on every
+        // command of all five tasks before spending 36 provider requests.
+        let payload = command_event(
+            "failed",
+            "bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces. On e.g. debian this can be enabled with 'sysctl kernel.unprivileged_userns_clone=1'.\n",
+        );
+        let failure = detect_infrastructure_failure("span.policy.data", &payload)
+            .expect("a namespace denial is recognised");
+        assert_eq!(failure.reason, "sandbox_namespace_unavailable");
+        assert_eq!(failure.exit_code, Some(1));
+        assert!(failure.detail.contains("danger-full-access"), "{failure}");
+        assert!(failure.command.is_some());
+    }
+
+    #[test]
+    fn an_ordinary_failing_command_is_the_model_s_business_and_is_left_alone() {
+        let payload = command_event("failed", "FAILED tests/test_stencil.py::test_boundary\n");
+        assert!(detect_infrastructure_failure("span.policy.data", &payload).is_none());
+    }
+
+    #[test]
+    fn a_successful_command_that_merely_mentions_the_error_is_not_a_failure() {
+        // Reading a log that quotes the message is evidence, not a refusal.
+        let payload = command_event(
+            "completed",
+            "bwrap: No permissions to create a new namespace\n",
+        );
+        assert!(detect_infrastructure_failure("span.policy.data", &payload).is_none());
+        assert!(detect_infrastructure_failure("status", &payload).is_none());
+    }
+
+    #[test]
+    fn every_known_namespace_denial_wording_is_recognised() {
+        for output in [
+            "bwrap: No permissions to create a new namespace",
+            "the kernel does not allow unprivileged user namespaces",
+            "enable it with sysctl kernel.unprivileged_userns_clone=1",
+        ] {
+            assert!(
+                detect_infrastructure_failure("span.policy.data", &command_event("failed", output))
+                    .is_some(),
+                "{output}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_infrastructure_failure_is_published_on_the_relay_outcome() {
+        let mut outcome = RelayOutcome::default();
+        assert_eq!(outcome.to_json()["infrastructureFailure"], Value::Null);
+        outcome.infrastructure_failure = detect_infrastructure_failure(
+            "span.policy.data",
+            &command_event("failed", "bwrap: No permissions to create a new namespace"),
+        );
+        let json = outcome.to_json();
+        assert_eq!(
+            json["infrastructureFailure"]["reason"],
+            json!("sandbox_namespace_unavailable")
+        );
     }
 
     #[test]

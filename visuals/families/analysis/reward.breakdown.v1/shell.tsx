@@ -1,4 +1,6 @@
 import { VisualChrome, MetricStrip } from "../../../chrome/VisualChrome.tsx";
+import { UnresolvedInputNotice } from "../../../chrome/UnresolvedInputNotice.tsx";
+import { resolveTemplateInput } from "../../../runtime/resolvedInput.ts";
 import type { VisualBinding } from "../../../runtime/types.ts";
 import rewardFixture from "../../../fixtures/reward_breakdown.json";
 
@@ -28,15 +30,46 @@ const TYPE_COLOR: Record<string, string> = {
   bonus: "#6f9a4d"
 };
 
-function asReward(raw: unknown): RewardPayload {
-  if (raw && typeof raw === "object" && Array.isArray((raw as RewardPayload).components)) {
-    return raw as RewardPayload;
-  }
-  return rewardFixture as RewardPayload;
+/**
+ * A payload this template can chart, or `null`.
+ *
+ * The total must be a number: a components array beside a missing total used
+ * to fall through to the example, which is how a run with a mean of 0.25
+ * displayed a total of 4.20.
+ */
+function asReward(raw: unknown): RewardPayload | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as RewardPayload;
+  if (!Array.isArray(candidate.components)) return null;
+  if (typeof candidate.total !== "number" || !Number.isFinite(candidate.total)) return null;
+  if (!candidate.components.every((component) => typeof component?.value === "number")) return null;
+  return candidate;
 }
 
 export function Shell(props: ShellProps) {
-  const reward = asReward(props.data ?? props.reward ?? rewardFixture);
+  const resolved = resolveTemplateInput<RewardPayload>({
+    input: "reward",
+    candidates: [props.data, props.reward],
+    bindings: props.bindings,
+    accept: asReward,
+    fixture: rewardFixture
+  });
+
+  if (resolved.status === "unresolved") {
+    return (
+      <VisualChrome
+        kicker="Reward · typed components"
+        title={props.title ?? "Reward breakdown"}
+        lede={props.lede}
+        testId="visual-reward-breakdown"
+        footer="reward.breakdown.v1"
+      >
+        <UnresolvedInputNotice unresolved={resolved.unresolved} />
+      </VisualChrome>
+    );
+  }
+
+  const reward = resolved.value;
   const maxAbs = Math.max(...reward.components.map((c) => Math.abs(c.value)), 0.01);
 
   return (

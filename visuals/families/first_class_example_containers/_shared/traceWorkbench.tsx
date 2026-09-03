@@ -49,6 +49,11 @@ import {
   type EvalAggregateV1
 } from "../../../runtime/evalAggregate.ts";
 import {
+  commandFailureHeadline,
+  projectCommandFailures,
+  type CommandFailureSummary
+} from "../../../runtime/commandFailure.ts";
+import {
   readReportedFacts,
   summarizeAchievementReportedFacts,
   summarizeNumericReportedFact,
@@ -1054,6 +1059,75 @@ function CallDetail({
   );
 }
 
+/** The task a trial ran, falling back to its seed only when nothing names it. */
+function trialLabel(row: TrialView): string {
+  const instance = row.taskInstanceId;
+  if (instance) return instance.includes("/") ? instance.split("/").slice(1).join("/") : instance;
+  return row.seed == null ? row.trialId : `seed ${row.seed}`;
+}
+
+/**
+ * The dominant command failure, stated once at the top.
+ *
+ * `bwrap: No permissions to create a new namespace` was present on every
+ * failed command of the 2026-09-03 DeepSWE sample and visible only by
+ * expanding raw producer JSON one policy call at a time. A cause that explains
+ * every rollout belongs above the rollouts, not inside one of them.
+ */
+function CommandFailureCard({
+  summary,
+  testId
+}: {
+  summary: CommandFailureSummary;
+  testId: string;
+}) {
+  const group = summary.dominant;
+  if (!group) return null;
+  return (
+    <section
+      data-testid={`${testId}-failure-summary`}
+      role="note"
+      style={{
+        marginBottom: "var(--sv-sp-3)",
+        padding: "var(--sv-sp-3)",
+        border: `1px solid ${group.infrastructure ? "var(--sv-warn-edge)" : "var(--sv-border)"}`,
+        borderRadius: "var(--sv-radius-lg)",
+        display: "grid",
+        gap: "var(--sv-sp-1)"
+      }}
+    >
+      <strong style={{ fontSize: "var(--sv-fs-body)" }}>{commandFailureHeadline(summary)}</strong>
+      {group.infrastructure ? (
+        <span style={{ fontSize: "var(--sv-fs-meta)", color: "var(--sv-text-muted)" }}>
+          This is an environment fault, not a model result. Nothing here measures model quality.
+        </span>
+      ) : null}
+      {group.remedy ? (
+        <span style={{ fontSize: "var(--sv-fs-meta)" }}>{group.remedy}</span>
+      ) : null}
+      <code
+        style={{
+          fontSize: "var(--sv-fs-micro)",
+          color: "var(--sv-text-muted)",
+          whiteSpace: "pre-wrap",
+          overflowWrap: "anywhere"
+        }}
+      >
+        {group.sample.command ? `$ ${group.sample.command}\n` : ""}
+        {group.sample.output.trim().split("\n").slice(0, 3).join("\n")}
+      </code>
+      {summary.groups.length > 1 ? (
+        <span style={{ fontSize: "var(--sv-fs-micro)", color: "var(--sv-text-faint)" }}>
+          {summary.groups
+            .slice(1)
+            .map((other) => `${other.title} · ${other.occurrences}`)
+            .join(" · ")}
+        </span>
+      ) : null}
+    </section>
+  );
+}
+
 export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { branding: TraceWorkbenchBranding }) {
   const run = (props.run ?? props.data?.run ?? null) as Any | null;
   const aggregateCandidate = (
@@ -1071,6 +1145,10 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
     [props.events, props.enrichmentEvents]
   );
   const media = props.media ?? NO_MEDIA;
+  const commandFailures = useMemo(
+    () => projectCommandFailures(optimizerEvents),
+    [optimizerEvents]
+  );
 
 	const liveTrials = useMemo(
     () => (run ? craftaxTrialsFromRun(run, optimizerEvents, props.runViewV2 ?? props.data?.runViewV2 ?? null) : []),
@@ -1332,6 +1410,8 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
         testId={branding.aggregatesTestId}
       />
 
+      <CommandFailureCard summary={commandFailures} testId={branding.testId} />
+
       <div
         style={{
           display: "flex",
@@ -1365,8 +1445,11 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
                 ? 1 : .3
             }}
           >
-            <span style={mono}>seed {row.seed ?? MISSING}</span>
-            <span style={{ color: "var(--sv-text-faint)" }}>
+            {/* The task, then the seed. A five-task sweep labelled `seed 0`
+                through `seed 4` names none of the work it did. */}
+            <span>{trialLabel(row)}</span>
+            <span style={{ ...mono, color: "var(--sv-text-faint)" }}>
+              {row.seed == null ? "" : ` · seed ${row.seed}`}
               {row.state === "done" ? ` · ${reward(row.reward)}` : ` · ${row.state}`}
             </span>
           </button>

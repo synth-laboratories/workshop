@@ -36,7 +36,9 @@ test("v0.2 live templates keep stream as transport and Craftax may add optimizer
     const meta = JSON.parse(readFileSync(join(templatePath(id), "template.json"), "utf8"));
     assert.deepEqual(
       (meta.inputs ?? meta.slots).map((slot) => slot.name),
-      id === "live.craftax.v1" ? ["stream", "optimizer_run"] : ["stream"]
+      id === "live.craftax.v1"
+        ? ["stream", "optimizer_run"]
+        : ["stream", "experiment", "optimizer_run"]
     );
     assert.equal(assertLiveEvalSlot("stream"), null);
     if (id === "live.craftax.v1") assert.equal(assertLiveEvalSlot("optimizer_run", id), null);
