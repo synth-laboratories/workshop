@@ -43,6 +43,27 @@ export function candidateName(candidate: CandidateRecord): string {
   return `Proposal ${shortId(String(candidate.id ?? ""))}`;
 }
 
+/**
+ * Display labels are not identities. `candidateName` returns "Seed" for every
+ * parentless candidate, so a run that registered two of them rendered two
+ * indistinguishable frontier rows. Disambiguate collisions with the stable
+ * short id rather than silently presenting two rows as the same candidate.
+ */
+export function candidateLabels(candidates: CandidateRecord[]): Map<string, string> {
+  const counts = new Map<string, number>();
+  for (const candidate of candidates) {
+    const name = candidateName(candidate);
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  const labels = new Map<string, string>();
+  for (const candidate of candidates) {
+    const id = String(candidate.id ?? "");
+    const name = candidateName(candidate);
+    labels.set(id, (counts.get(name) ?? 0) > 1 ? `${name} ${shortId(id)}` : name);
+  }
+  return labels;
+}
+
 export function candidateValues(candidate: CandidateRecord): Record<string, string> {
   for (const key of ["values", "payload"]) {
     const value = candidate[key];

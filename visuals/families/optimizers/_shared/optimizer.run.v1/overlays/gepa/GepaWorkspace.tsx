@@ -27,6 +27,7 @@ import { HillClimbPanel } from "./HillClimbPanel.tsx";
 import { ProposerTracePanel } from "./ProposerTracePanel.tsx";
 import { SearchOverviewPanel } from "./SearchOverviewPanel.tsx";
 import {
+  candidateLabels,
   candidateName,
   elapsedLabel,
   limitOf,
@@ -230,6 +231,7 @@ export function GepaWorkspace({
   const evaluationData = useMemo(() => {
     if (!gepa) return { groups: [] as RolloutGroup[], rows: [] as RolloutRow[] };
     const candidateById = new Map(gepa.candidates.map((candidate) => [String(candidate.id), candidate]));
+    const labels = candidateLabels(gepa.candidates);
     const stageAllowList = stageFilter ? STAGE_FILTER_TO_EVAL[stageFilter] : undefined;
     const rows: RolloutRow[] = [];
     const groups: RolloutGroup[] = [];
@@ -271,8 +273,8 @@ export function GepaWorkspace({
                     <thead>
                       <tr>
                         <th scope="col">Example</th>
-                        <th scope="col">{parent ? candidateName(parent) : "Parent"}</th>
-                        <th scope="col">{candidate ? candidateName(candidate) : "Proposal"}</th>
+                        <th scope="col">{parent ? labels.get(String(parent.id ?? "")) ?? candidateName(parent) : "Parent"}</th>
+                        <th scope="col">{candidate ? labels.get(String(candidate.id ?? "")) ?? candidateName(candidate) : "Proposal"}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -294,7 +296,7 @@ export function GepaWorkspace({
           : undefined;
         groups.push({
           key: groupKey,
-          title: candidate ? candidateName(candidate) : candidateId,
+          title: candidate ? labels.get(candidateId) ?? candidateName(candidate) : candidateId,
           subtitle: stageTitle(stage),
           extras
         });
@@ -376,15 +378,19 @@ export function GepaWorkspace({
       ? (projected.summary.summary as Record<string, number>).bestScore
       : undefined);
 
+  // Four values answer "is the search working?"; the runtime, budget, and model
+  // detail that used to share the pinned header now sits under "Run details".
   const metrics: WorkspaceMetric[] = [
-    ...(!terminal ? [{ label: "Job", value: "Running" }] : []),
+    ...(!terminal ? ([{ tier: "detail", label: "Job", value: "Running" }] satisfies WorkspaceMetric[]) : []),
     {
+      tier: "primary",
       label: "Candidates",
       value: `${gepa.candidates.length}`,
       title: `${gepa.candidates.length} candidate${gepa.candidates.length === 1 ? "" : "s"} registered in this run`,
       testId: "gepa-candidate-count"
     },
     {
+      tier: "primary",
       label: "Rollouts",
       value: `${Math.round(gepa.rolloutsCompleted)}${rolloutLimit?.max != null ? ` / ${Math.round(rolloutLimit.max)}` : ""}`,
       title: rolloutLimit?.max != null
@@ -393,6 +399,7 @@ export function GepaWorkspace({
       testId: "gepa-rollout-count"
     },
     {
+      tier: "detail",
       label: "Configured concurrency",
       value: gepa.runtime.configuredRolloutWorkers != null
         ? `${Math.round(gepa.runtime.configuredRolloutWorkers)}`
@@ -408,6 +415,7 @@ export function GepaWorkspace({
       testId: "gepa-configured-concurrency"
     },
     {
+      tier: "detail",
       label: "Rollouts / min",
       value: gepa.runtime.rolloutsPerMinute != null
         ? gepa.runtime.rolloutsPerMinute.toFixed(1)
@@ -416,6 +424,7 @@ export function GepaWorkspace({
       testId: "gepa-rollout-throughput"
     },
     {
+      tier: "detail",
       label: "Effective concurrency",
       value: gepa.runtime.estimatedEffectiveConcurrency != null
         ? gepa.runtime.estimatedEffectiveConcurrency.toFixed(1)
@@ -427,28 +436,31 @@ export function GepaWorkspace({
         : "Observed parallelism has not been reported yet",
       testId: "gepa-effective-concurrency"
     },
-    { label: "Best train", value: bestScore != null ? bestScore.toFixed(2) : "—" },
-    { label: "Heldout", value: heldoutValue },
+    { tier: "primary", label: "Best train", value: bestScore != null ? bestScore.toFixed(2) : "—" },
+    { tier: "primary", label: "Heldout", value: heldoutValue },
     {
+      tier: "detail",
       label: "Scored results",
       value: rolloutSpent != null
         ? `${Math.round(rolloutSpent)}${rolloutLimit?.max != null ? ` / ${Math.round(rolloutLimit.max)}` : ""}`
         : "—"
     },
     {
+      tier: "detail",
       label: "Proposer calls",
       value: proposerSpent != null ? `${Math.round(proposerSpent)}` : "—"
     },
     {
+      tier: "detail",
       label: "Cost",
       value: costSpent != null && costSpent > 0 ? formatMissingUsd(costSpent) : "unavailable",
       title: costSpent != null && costSpent > 0
         ? costLimit?.max != null ? `Budget ceiling ${formatMissingUsd(costLimit.max)}` : undefined
         : "This run did not report usable cost telemetry"
     },
-    { label: "Elapsed", value: elapsedLabel(gepa.timing, terminal) },
-    ...(gepa.models.proposer ? [{ label: "Proposer", value: gepa.models.proposer }] : []),
-    ...(gepa.models.policy ? [{ label: "Policy", value: gepa.models.policy }] : [])
+    { tier: "detail", label: "Elapsed", value: elapsedLabel(gepa.timing, terminal) },
+    ...(gepa.models.proposer ? ([{ tier: "detail", label: "Proposer", value: gepa.models.proposer }] satisfies WorkspaceMetric[]) : []),
+    ...(gepa.models.policy ? ([{ tier: "detail", label: "Policy", value: gepa.models.policy }] satisfies WorkspaceMetric[]) : [])
   ];
 
   const lanes: WorkspaceLane[] = terminal ? [] : [

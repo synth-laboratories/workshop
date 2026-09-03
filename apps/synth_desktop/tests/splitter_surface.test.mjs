@@ -37,7 +37,9 @@ test("both splitters stack against their actual content containers", () => {
 	assert.match(css, /container-name: main-workbench/);
 	assert.match(css, /container-name: visuals-library/);
 	assert.match(css, /@container main-workbench \(max-width: 900px\)/);
-  assert.match(css, /@container visuals-library \(max-width: 800px\)/);
+	// The split survives to the width where the preview loses its 420px minimum,
+	// not to the width where the list loses a comfortable 320px.
+	assert.match(css, /@container visuals-library \(max-width: 700px\)/);
 	assert.match(css, /\.workbench\.with-visual > \.pane-resize-handle[\s\S]*display: none/);
 	assert.match(css, /\.visuals-layout > \.primary-resize-handle \{ display: none; \}/);
 });

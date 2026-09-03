@@ -8,6 +8,7 @@ import { useState } from "react";
 import { formatMissingNumber } from "../../../../../../runtime/liveStream.ts";
 import type { GepaState } from "../../components/projectEvents.ts";
 import {
+  candidateLabels,
   candidateName,
   candidatePalette,
   candidateValues,
@@ -56,6 +57,7 @@ export function CandidateList({
   onSelect?: (id: string) => void;
 }) {
   const ordered = candidates ?? [...gepa.candidates].sort((a, b) => Number(a.sequence ?? 0) - Number(b.sequence ?? 0));
+  const labels = candidateLabels(gepa.candidates);
   return (
     <section className="sv-section" aria-label="Candidates" style={{ marginTop: 14 }}>
       <div className="sv-section-head">
@@ -91,12 +93,12 @@ export function CandidateList({
               data-annotation-kind="candidate"
               data-annotation-id={id}
               aria-pressed={selected}
-              aria-label={`Inspect candidate ${candidateName(candidate)}`}
+              aria-label={`Inspect candidate ${labels.get(id) ?? candidateName(candidate)}`}
               onClick={() => onSelect?.(id)}
               style={{ borderLeft: `4px solid ${palette.color}`, background: selected ? palette.tint : undefined }}
             >
               <span style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8 }}>
-                <strong style={{ fontSize: 12.5 }}>{candidateName(candidate)}</strong>
+                <strong style={{ fontSize: 12.5 }}>{labels.get(id) ?? candidateName(candidate)}</strong>
                 <span className="sv-mono" style={{ color: "var(--sv-text-faint)" }}>{shortId(id)}</span>
                 <span className="sv-chip" data-tone={statusTone(candidate.status)} style={{ marginLeft: "auto" }}>
                   {statusLabel(candidate.status)}
@@ -179,6 +181,7 @@ export function CandidateInspector({
   const id = String(selected.id);
   const parentId = selected.parentId == null ? undefined : String(selected.parentId);
   const parent = parentId ? gepa.candidates.find((candidate) => String(candidate.id) === parentId) : undefined;
+  const labels = candidateLabels(gepa.candidates);
   const values = candidateValues(selected);
   const parentValues = parent ? candidateValues(parent) : {};
   const valueEntries = Object.entries(values);
@@ -232,7 +235,7 @@ export function CandidateInspector({
   return (
     <section className="sv-section" aria-label="Candidate inspector" data-testid="gepa-selected-candidate" style={{ marginTop: 0 }}>
       <div className="sv-section-head">
-        <h3 style={{ display: "flex", alignItems: "center", gap: 7 }}><span aria-hidden style={{ width: 9, height: 9, borderRadius: "50%", background: palette.color }} />{candidateName(selected)}</h3>
+        <h3 style={{ display: "flex", alignItems: "center", gap: 7 }}><span aria-hidden style={{ width: 9, height: 9, borderRadius: "50%", background: palette.color }} />{labels.get(id) ?? candidateName(selected)}</h3>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span className="sv-chip" data-tone={statusTone(selected.status)}>{statusLabel(selected.status)}</span>
           <button className="sv-btn" type="button" disabled={valueEntries.length === 0} onClick={() => void copyCandidate()} data-testid="copy-gepa-candidate">
@@ -266,7 +269,7 @@ export function CandidateInspector({
         <dd style={{ margin: 0 }}>
           {parent ? (
             <button type="button" className="sv-btn" style={{ padding: "1px 7px", fontSize: 11 }} onClick={() => onSelect?.(String(parent.id))}>
-              {candidateName(parent)}
+              {labels.get(String(parent.id ?? "")) ?? candidateName(parent)}
             </button>
           ) : "seed — no parent"}
           {parent ? " → this candidate" : ""}

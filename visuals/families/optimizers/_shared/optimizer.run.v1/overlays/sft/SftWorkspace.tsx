@@ -19,6 +19,7 @@ import { Identifier } from "../../../../../../chrome/Identifier.tsx";
 import { formatMissingNumber, formatMissingUsd } from "../../../../../../runtime/liveStream.ts";
 import type { OptimizerRun, ProjectedState } from "../../components/projectEvents.ts";
 import {
+  NotEnoughData,
   StageTimeline,
   WorkspaceHeader,
   type WorkspaceMetric
@@ -33,9 +34,11 @@ import {
   sftDistribution,
   sftHeldoutSummary,
   sftEffectiveStatus,
+  sftMissingPrerequisites,
   sftStages,
   type SftComparison,
   type SftHeldoutSummary,
+  type SftPrerequisite,
   type SftState
 } from "./model.ts";
 
@@ -125,10 +128,7 @@ function BaselinePanel({ sft, isCispo }: { sft: SftState; isCispo?: boolean }) {
       testId={isCispo ? "cispo-baseline" : "sft-baseline"}
     >
       {(!baseline || baseline.seeds.length === 0) && !aggregate ? (
-        <p className="sv-empty">
-          No baseline evaluation has been emitted. The untrained student must be scored on the frozen
-          baseline seeds before training, or there is nothing to measure uplift against.
-        </p>
+        <p className="sv-empty">No baseline evaluation has been emitted yet.</p>
       ) : baseline && baseline.seeds.length > 0 ? (
         <>
           <dl className="sv-kv">
@@ -192,10 +192,7 @@ function CurationPanel({ sft }: { sft: SftState }) {
       testId="sft-curation"
     >
       {!hasAnything ? (
-        <p className="sv-empty">
-          No teacher collection or curation has been reported. Trajectories must be sealed and then
-          accepted or rejected with an explicit reason before a dataset can claim provenance.
-        </p>
+        <p className="sv-empty">No teacher collection or curation has been reported yet.</p>
       ) : (
         <>
           <div className="sv-stack-tight sv-stack">
@@ -296,10 +293,21 @@ function CurvesPanel({ sft }: { sft: SftState }) {
     .filter((point) => typeof point[key] === "number")
     .map((point, index) => `${index === 0 ? "M" : "L"} ${x(point.step).toFixed(1)} ${y(point[key] as number).toFixed(1)}`)
     .join(" ");
+  const latest = points.at(-1);
   return (
     <Panel title="Training curves" aside={`${points.length} aligned records`} testId="sft-live-curves">
       {points.length === 0 ? (
         <p className="sv-empty">Loss metrics stream here once the training job reports its first step.</p>
+      ) : points.length < 2 ? (
+        // One dot on a full pair of axes reads as a broken chart. State the
+        // sample instead, and switch to the plot when a trend exists.
+        <NotEnoughData
+          have={points.length}
+          need={2}
+          noun="metric sample"
+          detail={latest ? `step ${latest.step} · train ${formatMissingNumber(latest.trainLoss)} · val ${formatMissingNumber(latest.validationLoss)}` : undefined}
+          testId="sft-curves-single-sample"
+        />
       ) : (
         <>
           <svg viewBox="0 0 400 150" width="100%" role="img" aria-label="Train and validation loss by step">
@@ -425,10 +433,7 @@ function ComparisonPanel({
     return (
       <Panel title="Heldout comparison — base vs promoted" testId="sft-comparison">
         <p className="sv-empty">
-          No paired heldout evaluation has been emitted. Training completing, a checkpoint reaching
-          <strong> ready</strong>, and even a promotion decision are <strong>not</strong> uplift. The promoted
-          checkpoint and the unchanged base student must both run the untouched heldout seeds before
-          any uplift can be reported.
+          No paired heldout evaluation has been emitted, so <strong>no uplift is claimed</strong>.
         </p>
       </Panel>
     );
@@ -666,12 +671,6 @@ function CispoIdentityPanel({
         <dd className="sv-mono">{clip}</dd>
         <dt>Group size</dt>
         <dd className="sv-mono">{formatMissingNumber(cispo.groupSize, 0)}</dd>
-        <dt>Reward variance</dt>
-        <dd className="sv-mono">{formatMissingNumber(cispo.rewardVariance)}</dd>
-        <dt>Advantage mean</dt>
-        <dd className="sv-mono">{formatMissingNumber(cispo.advantageMean)}</dd>
-        <dt>Advantage std</dt>
-        <dd className="sv-mono">{formatMissingNumber(cispo.advantageStd)}</dd>
         <dt>Optimizer steps</dt>
         <dd className="sv-mono">{String(cispo.optimizerSteps)}</dd>
         <dt>Warm-start artifact</dt>
@@ -680,13 +679,77 @@ function CispoIdentityPanel({
         <dd className="sv-mono">
           {cispo.checkpointIds.length > 0 ? cispo.checkpointIds.join(" → ") : "—"}
         </dd>
-        {cispo.noLearningSignal ? (
-          <>
-            <dt>Learning signal</dt>
-            <dd>Stopped truthfully — uniform group, no fabricated advantage</dd>
-          </>
-        ) : null}
       </dl>
+    </Panel>
+  );
+}
+
+/**
+ * CISPO's distinguishing evidence. The generic training sequence below is the
+ * same one SFT uses; what makes a CISPO run readable is whether the group
+ * produced usable advantage at all, so that question gets its own panel at the
+ * top of the canvas rather than a row inside an identity card.
+ */
+function CispoLearningSignalPanel({
+  cispo
+}: {
+  cispo: NonNullable<ProjectedState["cispo"]>;
+}) {
+  const variance = cispo.rewardVariance;
+  const verdict = cispo.noLearningSignal
+    ? { text: "Stopped truthfully — uniform group, no fabricated advantage", tone: "warn" as const }
+    : typeof variance === "number" && Number.isFinite(variance)
+      ? variance > 0
+        ? { text: "Rewards vary within the group, so advantage is defined", tone: "ok" as const }
+        : { text: "Zero reward variance — the group is uniform and carries no gradient", tone: "warn" as const }
+      : { text: "Reward variance has not been reported yet", tone: undefined };
+  return (
+    <Panel title="Learning signal" testId="cispo-learning-signal">
+      <p className="sv-stack-tight">
+        <span className="sv-chip sv-chip-wrap" data-tone={verdict.tone}>{verdict.text}</span>
+      </p>
+      <dl className="sv-kv">
+        <dt>Reward variance</dt>
+        <dd className="sv-mono">{formatMissingNumber(cispo.rewardVariance)}</dd>
+        <dt>Advantage</dt>
+        <dd className="sv-mono">
+          {formatMissingNumber(cispo.advantageMean)} ± {formatMissingNumber(cispo.advantageStd)}
+        </dd>
+        <dt>Clipping</dt>
+        <dd className="sv-mono">
+          {cispo.clipLow != null || cispo.clipHigh != null
+            ? `${formatMissingNumber(cispo.clipLow)} … ${formatMissingNumber(cispo.clipHigh)}`
+            : "—"}
+        </dd>
+        <dt>Group size</dt>
+        <dd className="sv-mono">{formatMissingNumber(cispo.groupSize, 0)}</dd>
+      </dl>
+    </Panel>
+  );
+}
+
+function PrerequisitesPanel({
+  missing,
+  isCispo
+}: {
+  missing: SftPrerequisite[];
+  isCispo?: boolean;
+}) {
+  if (missing.length === 0) return null;
+  return (
+    <Panel
+      title="What is still needed"
+      aside={`${missing.length} outstanding`}
+      testId={isCispo ? "cispo-prerequisites" : "sft-prerequisites"}
+    >
+      <ol className="sv-checklist">
+        {missing.map((item) => (
+          <li key={item.id} data-testid={`sft-prerequisite-${item.id}`}>
+            <strong>{item.label}</strong>
+            <span>{item.why}</span>
+          </li>
+        ))}
+      </ol>
     </Panel>
   );
 }
@@ -716,6 +779,7 @@ export function SftWorkspace({
     [sft, status, promotedCheckpointId]
   );
   const comparison = useMemo(() => (sft ? sftComparison(sft) : null), [sft]);
+  const missingPrerequisites = useMemo(() => (sft ? sftMissingPrerequisites(sft) : []), [sft]);
   const heldoutSummary = useMemo(() => (sft ? sftHeldoutSummary(sft) : null), [sft]);
   const campaignData = useMemo(() => {
     if (!sft) return { groups: [] as RolloutGroup[], rows: [] as RolloutRow[] };
@@ -781,28 +845,34 @@ export function SftWorkspace({
         ? `${activeStage.label}${activeStage.detail ? ` · ${activeStage.detail}` : ""}`
         : "Preparing run";
 
+  // Tiering, not truncation: the header line carries the outcome and the two or
+  // three values that drive the next decision; everything else stays reachable
+  // one click away under "Run details". A flat chip wall hid all of them.
   const metrics: WorkspaceMetric[] = [
     ...(isCispo && cispo
-      ? [
-          { label: "Algorithm", value: "CISPO" },
+      ? ([
+          { label: "Algorithm", value: "CISPO", tier: "detail" },
           {
             label: "Clip",
             value:
               cispo.clipLow != null || cispo.clipHigh != null
                 ? `${formatMissingNumber(cispo.clipLow)} … ${formatMissingNumber(cispo.clipHigh)}`
-                : "—"
+                : "—",
+            tier: "primary"
           },
-          { label: "Group size", value: formatMissingNumber(cispo.groupSize, 0) },
-          { label: "Reward var", value: formatMissingNumber(cispo.rewardVariance) },
+          { label: "Group size", value: formatMissingNumber(cispo.groupSize, 0), tier: "primary" },
+          { label: "Reward var", value: formatMissingNumber(cispo.rewardVariance), tier: "detail" },
           {
             label: "Advantage",
-            value: `${formatMissingNumber(cispo.advantageMean)} ± ${formatMissingNumber(cispo.advantageStd)}`
+            value: `${formatMissingNumber(cispo.advantageMean)} ± ${formatMissingNumber(cispo.advantageStd)}`,
+            tier: "primary"
           },
-          { label: "Opt. steps", value: String(cispo.optimizerSteps) },
-          { label: "Warm start", value: cispo.warmStartArtifactId ?? "none" }
-        ]
+          { label: "Opt. steps", value: String(cispo.optimizerSteps), tier: "detail" },
+          { label: "Warm start", value: cispo.warmStartArtifactId ?? "none", tier: "detail" }
+        ] satisfies WorkspaceMetric[])
       : []),
     {
+      tier: "primary",
       label: "Heldout uplift",
       value: heldoutSummary
         ? signed(heldoutSummary.absoluteUplift)
@@ -818,33 +888,37 @@ export function SftWorkspace({
     {
       // Phase A only. The heldout base arm is a different split and lives in
       // the comparison panel; conflating them would misreport both.
+      tier: "detail",
       label: "Baseline mean",
       value: aggregateBaseline
         ? percent(aggregateBaseline.score, 1)
         : formatMissingNumber(sftDistribution((sft.baseline?.seeds ?? []).map((seed) => seed.reward)).mean),
       title: "Unchanged student on the frozen baseline seeds."
     },
-    { label: "Step / epoch", value: `${formatMissingNumber(latest?.step, 0)} / ${formatMissingNumber(latest?.epoch, 0)}` },
-    { label: "Train loss", value: formatMissingNumber(latest?.trainLoss) },
-    { label: "Val loss", value: formatMissingNumber(latest?.validationLoss) },
-    { label: "Checkpoints", value: sft.checkpoints.length ? `${readyCount}/${sft.checkpoints.length} ready` : "—" },
+    { tier: isCispo ? "detail" : "primary", label: "Step / epoch", value: `${formatMissingNumber(latest?.step, 0)} / ${formatMissingNumber(latest?.epoch, 0)}` },
+    { tier: "detail", label: "Train loss", value: formatMissingNumber(latest?.trainLoss) },
+    { tier: "detail", label: "Val loss", value: formatMissingNumber(latest?.validationLoss) },
+    { tier: isCispo ? "detail" : "primary", label: "Checkpoints", value: sft.checkpoints.length ? `${readyCount}/${sft.checkpoints.length} ready` : "—" },
     {
+      tier: "detail",
       label: "Selected",
       value: selectedId ?? "none yet",
       title: "Selection retains a checkpoint. It is not an uplift claim."
     },
     {
+      tier: isCispo ? "detail" : "primary",
       label: "Uplift",
       value: upliftClaimed ? "demonstrated" : "not claimed",
       title: "Green only when improvement_verdict is improvement_demonstrated. Zero-score or no-baseline cohorts cannot claim uplift."
     },
     {
+      tier: "detail",
       label: "Cost",
       value: costUsd != null && costUsd > 0 ? formatMissingUsd(costUsd) : "unavailable",
       title: costUsd != null && costUsd > 0 ? undefined : "No usable cost telemetry from this run"
     },
     ...(nested.baseModel || sft.lineage?.baseModel
-      ? [{ label: "Base model", value: String(nested.baseModel ?? sft.lineage?.baseModel) }]
+      ? ([{ tier: "detail", label: "Base model", value: String(nested.baseModel ?? sft.lineage?.baseModel) }] satisfies WorkspaceMetric[])
       : [])
   ];
 
@@ -862,27 +936,56 @@ export function SftWorkspace({
       ) : null}
       <StageTimeline stages={stages} testId={isCispo ? "cispo-stage-timeline" : "sft-stage-timeline"} />
 
-      {isCispo && cispo ? <CispoIdentityPanel cispo={cispo} /> : null}
+      {isCispo && cispo ? (
+        <div className="sv-workspace-canvas">
+          <CispoIdentityPanel cispo={cispo} />
+          <CispoLearningSignalPanel cispo={cispo} />
+        </div>
+      ) : null}
 
-      <div className="sv-workspace-canvas">
-        <BaselinePanel sft={sft} isCispo={isCispo} />
-        <CurationPanel sft={sft} />
-      </div>
+      <PrerequisitesPanel missing={missingPrerequisites} isCispo={isCispo} />
+
+      {/* CISPO's unit of work is the rollout group, so it leads; SFT's is the
+          curated dataset, so its baseline and curation lead instead. Below the
+          fork both families share the same training/evidence/provenance tail. */}
+      {isCispo ? (
+        <RolloutBrowser
+          groups={campaignData.groups}
+          rows={campaignData.rows}
+          emptyText="Rollout groups appear here with per-rollout reward and cost as the producer emits them."
+          testId="sft-live-campaigns"
+        />
+      ) : (
+        <div className="sv-workspace-canvas">
+          <BaselinePanel sft={sft} isCispo={isCispo} />
+          <CurationPanel sft={sft} />
+        </div>
+      )}
 
       <div className="sv-workspace-canvas">
         <CurvesPanel sft={sft} />
         <CheckpointRail sft={sft} promotedCheckpointId={promotedCheckpointId} />
       </div>
 
-      <RolloutBrowser
-        groups={campaignData.groups}
-        rows={campaignData.rows}
-        emptyText="Checkpoint evaluation campaigns appear here with per-rollout reward and cost as the producer emits them."
-        testId="sft-live-campaigns"
-      />
+      {isCispo ? null : (
+        <RolloutBrowser
+          groups={campaignData.groups}
+          rows={campaignData.rows}
+          emptyText="Checkpoint evaluation campaigns appear here with per-rollout reward and cost as the producer emits them."
+          testId="sft-live-campaigns"
+        />
+      )}
 
       <ComparisonPanel comparison={comparison} aggregate={heldoutSummary} />
       <EvaluationSummaries sft={sft} />
+
+      {isCispo ? (
+        <div className="sv-workspace-canvas">
+          <BaselinePanel sft={sft} isCispo={isCispo} />
+          <CurationPanel sft={sft} />
+        </div>
+      ) : null}
+
       <ProvenancePanel sft={sft} />
 
       {debug ? (

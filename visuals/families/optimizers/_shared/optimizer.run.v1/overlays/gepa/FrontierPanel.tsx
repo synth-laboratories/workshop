@@ -7,7 +7,8 @@
  */
 
 import type { GepaState } from "../../components/projectEvents.ts";
-import { candidateName, candidatePalette, statusLabel, type CandidateRecord } from "./model.ts";
+import { NotEnoughData } from "../../components/workspace/WorkspaceChrome.tsx";
+import { candidateLabels, candidateName, candidatePalette, statusLabel, type CandidateRecord } from "./model.ts";
 
 type CandidateRow = {
   candidate: CandidateRecord;
@@ -108,6 +109,8 @@ export function FrontierPanel({
 }) {
   const frontierIds = new Set(gepa.frontier.map((member) => String(member.candidateId)));
   const selectable = gepa.candidates.filter(isTrainSelectable);
+  const labels = candidateLabels(gepa.candidates);
+  const nameOf = (candidate: CandidateRecord) => labels.get(String(candidate.id ?? "")) ?? candidateName(candidate);
   const allExamples = [...new Set(selectable.flatMap((candidate) =>
     [...fullTrainScores(gepa, String(candidate.id ?? "")).keys()]
   ))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
@@ -157,9 +160,6 @@ export function FrontierPanel({
         <h3>GEPA Pareto frontier</h3>
         <span className="sv-mono">{frontierRows.length} member{frontierRows.length === 1 ? "" : "s"} · {allExamples.length} example dimensions</span>
       </div>
-      <p style={{ margin: "0 0 9px", color: "var(--sv-text-muted)", fontSize: 11.5 }}>
-        Non-dominated per-example reward vectors. Orange cells mark examples where a candidate is currently best; aggregate mean is context, not a Pareto axis.
-      </p>
       {progress.length ? (
         <div data-testid="gepa-explore-exploit" style={{ border: "1px solid var(--sv-border)", borderRadius: 9, padding: "10px 12px", marginBottom: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
@@ -186,6 +186,23 @@ export function FrontierPanel({
           <p style={{ margin: "8px 0 0", color: "var(--sv-text-faint)", fontSize: 10.5 }}>Orange is what one deployable incumbent solves (exploitation). Gray extension is the optimistic union ever solved by retained frontier members (exploration); it is not a deployable score.</p>
         </div>
       ) : null}
+      {allExamples.length === 0 ? (
+        // With no per-example reward vectors there is no frontier to draw: the
+        // grid, legend, and coverage line described a matrix with zero columns.
+        <NotEnoughData
+          have={0}
+          need={1}
+          noun="example dimension"
+          detail={rows.length
+            ? `${rows.length} train-selectable candidate${rows.length === 1 ? "" : "s"} registered, none with a per-example reward vector yet`
+            : "No candidate has completed a full train evaluation"}
+          testId="gepa-frontier-empty"
+        />
+      ) : (
+      <>
+      <p style={{ margin: "0 0 9px", color: "var(--sv-text-muted)", fontSize: 11.5 }}>
+        Non-dominated per-example reward vectors. Orange cells mark examples where a candidate is currently best; aggregate mean is context, not a Pareto axis.
+      </p>
       <div style={{ border: "1px solid var(--sv-border)", borderRadius: 9, overflow: "hidden" }}>
         <div className="sv-gepa-frontier-grid" style={{ display: "grid", gap: 10, padding: "7px 10px", background: "var(--sv-surface-muted)", borderBottom: "1px solid var(--sv-border)", color: "var(--sv-text-faint)", fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".07em" }}>
           <span>Candidate / selection credit</span><span>Per-example reward vector</span>
@@ -199,13 +216,13 @@ export function FrontierPanel({
             onClick={() => onSelect?.(row.id)}
             data-testid={`frontier-point-${row.id}`}
             aria-pressed={row.id === selectedId}
-            aria-label={`${candidateName(row.candidate)} · ${row.onFrontier ? "Pareto member" : "dominated"} · ${row.wins} winning example cells`}
+            aria-label={`${nameOf(row.candidate)} · ${row.onFrontier ? "Pareto member" : "dominated"} · ${row.wins} winning example cells`}
             className="sv-gepa-frontier-grid"
             style={{ display: "grid", gap: 10, width: "100%", padding: "9px 10px", border: 0, borderLeft: `4px solid ${palette.color}`, borderBottom: "1px solid var(--sv-border)", background: row.id === selectedId ? palette.tint : "var(--sv-surface)", color: "var(--sv-text)", textAlign: "left", cursor: "pointer" }}
           >
             <span>
               <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <strong style={{ fontSize: 11.5 }}>{candidateName(row.candidate)}</strong>
+                <strong style={{ fontSize: 11.5 }}>{nameOf(row.candidate)}</strong>
                 <span className="sv-chip" data-tone={row.onFrontier ? "ok" : frontierPending ? "live" : undefined}>{row.onFrontier ? "frontier" : frontierPending ? "scoring" : "dominated"}</span>
               </span>
               <span className="sv-mono" style={{ display: "block", marginTop: 4, color: "var(--sv-text-muted)", fontSize: 9.5 }}>
@@ -236,11 +253,13 @@ export function FrontierPanel({
         <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, border: "1px solid var(--sv-border)", marginRight: 4 }} />zero / missing</span>
       </div>
       <p style={{ margin: "8px 0 0", color: "var(--sv-text-muted)", fontSize: 11.5 }}>
-        Frontier coverage: {frontierCoverage}/{allExamples.length || "—"} examples solved by at least one retained candidate. This is distinct from the single best candidate's mean reward.
+        Frontier coverage: {frontierCoverage}/{allExamples.length} examples solved by at least one retained candidate. This is distinct from the single best candidate's mean reward.
       </p>
+      </>
+      )}
       {pending.length ? (
         <p style={{ margin: "6px 0 0", color: "var(--sv-text-faint)", fontSize: 11 }}>
-          {gepa.activity.terminal ? "Not train-evaluated before the run ended" : "Awaiting complete full-train vectors"}: {pending.map((candidate) => `${candidateName(candidate)} (${statusLabel(candidate.status)})`).join(", ")}.
+          {gepa.activity.terminal ? "Not train-evaluated before the run ended" : "Awaiting complete full-train vectors"}: {pending.map((candidate) => `${nameOf(candidate)} (${statusLabel(candidate.status)})`).join(", ")}.
         </p>
       ) : null}
     </section>

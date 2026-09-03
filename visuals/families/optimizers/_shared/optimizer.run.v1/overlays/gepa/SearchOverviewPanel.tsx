@@ -1,27 +1,63 @@
+/**
+ * GEPA experiment setup.
+ *
+ * Setup is context, not result. Before a producer has reported its task,
+ * dataset, and container, four full cards of the word "pending" occupied more
+ * area than the seed/incumbent/lift outcome they framed. So the outcome and the
+ * search contract now lead, and a card whose every field is still unreported
+ * collapses to a single honest row instead of six repetitions of "pending".
+ */
+
 import type { ReactNode } from "react";
 import type { GepaState } from "../../components/projectEvents.ts";
 import { formatDurationMs } from "./model.ts";
 
+const PENDING = "pending";
+
 function label(value?: string): string {
-  return value ? value.replaceAll("_", " ") : "pending";
+  return value ? value.replaceAll("_", " ") : PENDING;
 }
 
 function count(value?: number): string {
-  return value == null ? "pending" : value.toLocaleString();
+  return value == null ? PENDING : value.toLocaleString();
 }
 
 function limitLabel(kind: string): string {
   return ({ total_rollouts: "Rollouts", proposer_calls: "Proposer calls", cost_usd: "Cost (USD)", wall_time_seconds: "Wall time" } as Record<string, string>)[kind] ?? label(kind);
 }
 
-function DetailCard({ title, eyebrow, summary, children, testId }: { title: string; eyebrow?: string; summary: string; children: ReactNode; testId?: string }) {
+type SetupRow = { name: string; value: string; title?: string; reported?: boolean };
+type SetupCard = { eyebrow: string; title: string; testId: string; rows: SetupRow[] };
+
+/** Reads the same rows the sighted card shows, so the two cannot drift. */
+function cardSummary(card: SetupCard): string {
+  return `${card.eyebrow}: ${card.title}. ${card.rows.map((row) => `${row.name} ${row.value}`).join(". ")}.`;
+}
+
+function DetailCard({ card }: { card: SetupCard }) {
+  const pendingRows = card.rows.filter((row) => row.reported === false || row.value === PENDING).length;
+  const unreported = pendingRows === card.rows.length;
   return (
-    <div role="group" aria-label={summary} data-testid={testId} style={{ minWidth: 0, border: "1px solid var(--sv-border)", borderRadius: 9, padding: 11, background: "var(--sv-surface)" }}>
-      {eyebrow ? <div aria-hidden="true" style={{ color: "var(--sv-text-faint)", fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 3 }}>{eyebrow}</div> : null}
-      <strong aria-hidden="true" style={{ display: "block", fontSize: 12 }}>{title}</strong>
-      <dl aria-hidden="true" style={{ display: "grid", gridTemplateColumns: "minmax(78px, .7fr) minmax(0, 1.5fr)", gap: "5px 9px", margin: "8px 0 0", fontSize: 11 }}>
-        {children}
-      </dl>
+    <div
+      role="group"
+      aria-label={cardSummary(card)}
+      data-testid={card.testId}
+      data-unreported={unreported ? "true" : undefined}
+      style={{ minWidth: 0, border: "1px solid var(--sv-border)", borderRadius: 9, padding: 11, background: "var(--sv-surface)" }}
+    >
+      <div aria-hidden="true" style={{ color: "var(--sv-text-faint)", fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 3 }}>{card.eyebrow}</div>
+      <strong aria-hidden="true" style={{ display: "block", fontSize: 12 }}>{card.title}</strong>
+      {unreported ? (
+        <p aria-hidden="true" style={{ margin: "6px 0 0", color: "var(--sv-text-faint)", fontSize: 10.5 }}>
+          Not reported yet · {card.rows.length} fields
+        </p>
+      ) : (
+        <dl aria-hidden="true" style={{ display: "grid", gridTemplateColumns: "minmax(78px, .7fr) minmax(0, 1.5fr)", gap: "5px 9px", margin: "8px 0 0", fontSize: 11 }}>
+          {card.rows.map((row) => (
+            <Detail key={row.name} name={row.name} title={row.title}>{row.value}</Detail>
+          ))}
+        </dl>
+      )}
     </div>
   );
 }
@@ -48,84 +84,81 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
   const proposerFailed = gepa.proposerTraces.filter((trace) => ["failed", "cancelled", "canceled"].includes(trace.status)).length;
   const scored = gepa.evaluations.filter((evaluation) => evaluation.reward != null).length;
   const attached = gepa.evaluations.filter((evaluation) => evaluation.reward == null).length;
-  const endpoint = container?.url?.replace(/^https?:\/\//, "") ?? "pending";
+  const endpoint = container?.url?.replace(/^https?:\/\//, "") ?? PENDING;
   const taskTitle = contract.task?.name ?? contract.task?.id ?? "Task pending";
   const datasetTitle = dataset?.source ?? "Dataset pending";
   const containerTitle = container?.specId ?? container?.targetId ?? "Container pending";
 
+  const cards: SetupCard[] = [
+    {
+      eyebrow: "Configuration",
+      title: taskTitle,
+      testId: "gepa-config-card",
+      rows: [
+        { name: "Task ID", value: contract.task?.id ?? PENDING },
+        { name: "Program", value: contract.program?.id ?? PENDING },
+        { name: "Objective", value: objective?.selectionObjective ?? objective?.objectives[0]?.name ?? PENDING },
+        { name: "Mutable", value: contract.program?.mutableFields.join(", ") || PENDING },
+        { name: "Policy", value: gepa.models.policy ?? container?.policyConfig ?? PENDING },
+        { name: "Proposer", value: gepa.models.proposer ?? PENDING }
+      ]
+    },
+    {
+      eyebrow: "Dataset",
+      title: datasetTitle,
+      testId: "gepa-dataset-card",
+      rows: [
+        { name: "Version", value: [dataset?.config, dataset?.revision].filter(Boolean).join(" · ") || PENDING },
+        { name: "Catalog", value: `${count(dataset?.rowCount)} rows · ${count(dataset?.labelCount)} labels`, reported: dataset?.rowCount != null || dataset?.labelCount != null },
+        { name: "Source splits", value: `train ${count(dataset?.splits?.train)} · selection ${count(dataset?.splits?.selection)} · heldout ${count(dataset?.splits?.heldout)}`, reported: dataset?.splits?.train != null || dataset?.splits?.selection != null || dataset?.splits?.heldout != null },
+        { name: "Run taskset", value: `train ${count(contract.splits?.train)} · heldout ${count(contract.splits?.heldout)}`, reported: contract.splits?.train != null || contract.splits?.heldout != null },
+        { name: "Search pools", value: `mini ${count(contract.splits?.minibatch)} · reflect ${count(contract.splits?.reflection)} · Pareto ${count(contract.splits?.pareto)}`, reported: contract.splits?.minibatch != null || contract.splits?.reflection != null || contract.splits?.pareto != null },
+        { name: "Digest", value: dataset?.digest ? `${dataset.digest.slice(0, 18)}…` : PENDING, title: dataset?.digest }
+      ]
+    },
+    {
+      eyebrow: "Container",
+      title: containerTitle,
+      testId: "gepa-container-card",
+      rows: [
+        { name: "Binding", value: container?.verified ? "contract verified" : PENDING },
+        { name: "Instance", value: container?.workshopInstance ?? PENDING },
+        { name: "Endpoint", value: endpoint, title: container?.url },
+        { name: "Runtime", value: label(container?.runtimeFamily) },
+        { name: "Evaluator", value: container?.evaluatorId ?? PENDING },
+        { name: "Reward owner", value: label(container?.rewardAuthority) },
+        { name: "Credential", value: label(container?.credentialMode) }
+      ]
+    },
+    {
+      eyebrow: "Related work",
+      title: `${gepa.candidates.length} candidate${gepa.candidates.length === 1 ? "" : "s"} · ${scored} scored`,
+      testId: "gepa-related-work-card",
+      rows: [
+        { name: "Rollouts", value: `${gepa.rolloutsCompleted.toLocaleString()} completed · ${attached.toLocaleString()} attached` },
+        { name: "Runtime", value: `${gepa.runtime.configuredRolloutWorkers ?? "?"} configured · ${gepa.runtime.estimatedEffectiveConcurrency?.toFixed(1) ?? "?"} effective · ${gepa.runtime.rolloutsPerMinute?.toFixed(1) ?? "?"} rollouts/min` },
+        { name: "Proposer", value: `${proposerRunning} running · ${proposerCompleted} complete · ${proposerFailed} failed` },
+        { name: "Failures", value: `${gepa.failedAttempts.length.toLocaleString()} exhausted attempts` },
+        { name: "Current phase", value: gepa.activity.label },
+        { name: "Generation", value: String(gepa.activity.generation ?? (gepa.proposerTraces.length ? Math.max(...gepa.proposerTraces.map((trace) => trace.generation)) : PENDING)) }
+      ]
+    }
+  ];
+
+  const setupRows = cards.flatMap((card) => card.rows);
+  const setupPending = setupRows.filter((row) => row.reported === false || row.value === PENDING).length;
+  const setupIncomplete = setupPending > 0;
+
   return (
     <section className="sv-section" aria-label="GEPA experiment setup" data-testid="gepa-search-overview" style={{ marginTop: 0 }}>
-      <div className="sv-section-head">
-        <h3>Experiment setup</h3>
-        <span className="sv-mono">configuration · dataset · container · related work</span>
-      </div>
-      <div data-testid="gepa-experiment-context" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(238px, 100%), 1fr))", gap: 9 }}>
-        <DetailCard
-          title={taskTitle}
-          eyebrow="Configuration"
-          summary={`Configuration: ${taskTitle}. Task ID ${contract.task?.id ?? "pending"}. Program ${contract.program?.id ?? "pending"}. Objective ${objective?.selectionObjective ?? objective?.objectives[0]?.name ?? "pending"}. Mutable fields ${contract.program?.mutableFields.join(", ") || "pending"}. Policy ${gepa.models.policy ?? container?.policyConfig ?? "pending"}. Proposer ${gepa.models.proposer ?? "pending"}.`}
-          testId="gepa-config-card"
-        >
-          <Detail name="Task ID">{contract.task?.id ?? "pending"}</Detail>
-          <Detail name="Program">{contract.program?.id ?? "pending"}</Detail>
-          <Detail name="Objective">{objective?.selectionObjective ?? objective?.objectives[0]?.name ?? "pending"}</Detail>
-          <Detail name="Mutable">{contract.program?.mutableFields.join(", ") || "pending"}</Detail>
-          <Detail name="Policy">{gepa.models.policy ?? container?.policyConfig ?? "pending"}</Detail>
-          <Detail name="Proposer">{gepa.models.proposer ?? "pending"}</Detail>
-        </DetailCard>
-
-        <DetailCard
-          title={datasetTitle}
-          eyebrow="Dataset"
-          summary={`Dataset: ${datasetTitle}. Version ${[dataset?.config, dataset?.revision].filter(Boolean).join(" · ") || "pending"}. Catalog ${count(dataset?.rowCount)} rows and ${count(dataset?.labelCount)} labels. Source splits: train ${count(dataset?.splits?.train)}, selection ${count(dataset?.splits?.selection)}, heldout ${count(dataset?.splits?.heldout)}. Run taskset: train ${count(contract.splits?.train)}, heldout ${count(contract.splits?.heldout)}. Search pools: minibatch ${count(contract.splits?.minibatch)}, reflection ${count(contract.splits?.reflection)}, Pareto ${count(contract.splits?.pareto)}.`}
-          testId="gepa-dataset-card"
-        >
-          <Detail name="Version">{[dataset?.config, dataset?.revision].filter(Boolean).join(" · ") || "pending"}</Detail>
-          <Detail name="Catalog">{count(dataset?.rowCount)} rows · {count(dataset?.labelCount)} labels</Detail>
-          <Detail name="Source splits">train {count(dataset?.splits?.train)} · selection {count(dataset?.splits?.selection)} · heldout {count(dataset?.splits?.heldout)}</Detail>
-          <Detail name="Run taskset">train {count(contract.splits?.train)} · heldout {count(contract.splits?.heldout)}</Detail>
-          <Detail name="Search pools">mini {count(contract.splits?.minibatch)} · reflect {count(contract.splits?.reflection)} · Pareto {count(contract.splits?.pareto)}</Detail>
-          <Detail name="Digest" title={dataset?.digest}>{dataset?.digest ? `${dataset.digest.slice(0, 18)}…` : "pending"}</Detail>
-        </DetailCard>
-
-        <DetailCard
-          title={containerTitle}
-          eyebrow="Container"
-          summary={`Container: ${containerTitle}. Binding ${container?.verified ? "contract verified" : "pending"}. Instance ${container?.workshopInstance ?? "pending"}. Endpoint ${endpoint}. Runtime ${label(container?.runtimeFamily)}. Evaluator ${container?.evaluatorId ?? "pending"}. Reward owner ${label(container?.rewardAuthority)}. Credential ${label(container?.credentialMode)}.`}
-          testId="gepa-container-card"
-        >
-          <Detail name="Binding">{container?.verified ? "contract verified" : "pending"}</Detail>
-          <Detail name="Instance">{container?.workshopInstance ?? "pending"}</Detail>
-          <Detail name="Endpoint" title={container?.url}>{endpoint}</Detail>
-          <Detail name="Runtime">{label(container?.runtimeFamily)}</Detail>
-          <Detail name="Evaluator">{container?.evaluatorId ?? "pending"}</Detail>
-          <Detail name="Reward owner">{label(container?.rewardAuthority)}</Detail>
-          <Detail name="Credential">{label(container?.credentialMode)}</Detail>
-        </DetailCard>
-
-        <DetailCard
-          title={`${gepa.candidates.length} candidate${gepa.candidates.length === 1 ? "" : "s"} · ${scored} scored`}
-          eyebrow="Related work"
-          summary={`Related work: ${gepa.candidates.length} candidates, ${scored} scored, ${gepa.rolloutsCompleted} completed rollouts, ${attached} attached rollouts. Runtime ${gepa.runtime.configuredRolloutWorkers ?? "unknown"} configured, ${gepa.runtime.estimatedEffectiveConcurrency?.toFixed(1) ?? "unknown"} effective, ${gepa.runtime.rolloutsPerMinute?.toFixed(1) ?? "unknown"} rollouts per minute. Proposer ${proposerRunning} running, ${proposerCompleted} complete, ${proposerFailed} failed. ${gepa.failedAttempts.length} exhausted attempts. Current phase ${gepa.activity.label}.`}
-          testId="gepa-related-work-card"
-        >
-          <Detail name="Rollouts">{gepa.rolloutsCompleted.toLocaleString()} completed · {attached.toLocaleString()} attached</Detail>
-          <Detail name="Runtime">{gepa.runtime.configuredRolloutWorkers ?? "?"} configured · {gepa.runtime.estimatedEffectiveConcurrency?.toFixed(1) ?? "?"} effective · {gepa.runtime.rolloutsPerMinute?.toFixed(1) ?? "?"} rollouts/min</Detail>
-          <Detail name="Proposer">{proposerRunning} running · {proposerCompleted} complete · {proposerFailed} failed</Detail>
-          <Detail name="Failures">{gepa.failedAttempts.length.toLocaleString()} exhausted attempts</Detail>
-          <Detail name="Current phase">{gepa.activity.label}</Detail>
-          <Detail name="Generation">{gepa.activity.generation ?? (gepa.proposerTraces.length ? Math.max(...gepa.proposerTraces.map((trace) => trace.generation)) : "pending")}</Detail>
-        </DetailCard>
-      </div>
-
-      <div className="sv-gepa-contract-outcome" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.35fr) minmax(230px, .65fr)", gap: 9, marginTop: 9 }}>
+      <div className="sv-gepa-contract-outcome" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.35fr) minmax(230px, .65fr)", gap: 9 }}>
         <div style={{ minWidth: 0, border: "1px solid var(--sv-border)", borderRadius: 9, padding: 11 }}>
           <strong style={{ fontSize: 12 }}>Search contract</strong>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "7px 13px", marginTop: 8, fontSize: 11 }}>
             <span><span style={{ color: "var(--sv-text-faint)" }}>Frontier</span> · {label(objective?.frontierType)}</span>
-            <span><span style={{ color: "var(--sv-text-faint)" }}>Select on</span> · {objective?.selectionObjective ?? "pending"}</span>
+            <span><span style={{ color: "var(--sv-text-faint)" }}>Select on</span> · {objective?.selectionObjective ?? PENDING}</span>
             <span><span style={{ color: "var(--sv-text-faint)" }}>Retention</span> · {label(container?.retention)}</span>
-            <span><span style={{ color: "var(--sv-text-faint)" }}>Scale leases</span> · {container?.scaleLeases ?? "pending"}</span>
+            <span><span style={{ color: "var(--sv-text-faint)" }}>Scale leases</span> · {container?.scaleLeases ?? PENDING}</span>
           </div>
           {contract.task?.description ? <p style={{ margin: "8px 0 0", color: "var(--sv-text-muted)", fontSize: 10.5 }}>{contract.task.description}</p> : null}
         </div>
@@ -153,6 +186,18 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
           </div>;
         })}
       </div> : null}
+
+      <div className="sv-section-head" style={{ marginTop: 12 }}>
+        <h3>Experiment setup</h3>
+        <span className="sv-mono" data-testid="gepa-setup-completeness">
+          {setupIncomplete
+            ? `setup incomplete · ${setupPending}/${setupRows.length} fields pending`
+            : "configuration · dataset · container · related work"}
+        </span>
+      </div>
+      <div data-testid="gepa-experiment-context" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(238px, 100%), 1fr))", gap: 9 }}>
+        {cards.map((card) => <DetailCard key={card.testId} card={card} />)}
+      </div>
     </section>
   );
 }

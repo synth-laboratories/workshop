@@ -251,17 +251,34 @@
   max-width: 100%;
 }
 
+/* The header itself scrolls. Only its identity line pins, so the metric block
+   stops covering the headings and charts it is meant to describe. */
 .sv-workspace-header {
+  margin: 0 -18px;
+  padding: 0 18px 10px;
+  background: var(--sv-surface);
+  border-bottom: 1px solid var(--sv-border);
+}
+
+.sv-workspace-identity {
   position: sticky;
   top: 0;
   z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
   margin: 0 -18px;
-  padding: 12px 18px 10px;
+  padding: 10px 18px;
   background: var(--sv-surface);
-  border-bottom: 1px solid var(--sv-border);
   box-shadow: 0 10px 18px -16px rgba(26, 29, 35, 0.35);
 }
 
+.sv-workspace-identity > * {
+  max-width: 100%;
+}
+
+/* Kept for templates that still compose the older header row directly. */
 .sv-workspace-header-row {
   display: flex;
   align-items: center;
@@ -276,8 +293,26 @@
 .sv-workspace-metrics {
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start;
   gap: 6px;
   margin-top: 8px;
+}
+
+.sv-workspace-metric-more > summary {
+  padding: 6px 9px;
+  border: 1px dashed var(--sv-border-strong);
+  border-radius: 7px;
+  color: var(--sv-text-muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.sv-workspace-metric-more[open] > summary {
+  border-style: solid;
+}
+
+.sv-workspace-metric-more > .sv-workspace-metrics {
+  margin-top: 6px;
 }
 
 .sv-workspace-metric {
@@ -301,6 +336,59 @@
 .sv-workspace-metric strong {
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+}
+
+.sv-checklist {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.sv-chip.sv-chip-wrap {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.sv-checklist > li > strong {
+  display: block;
+  font-size: 11.5px;
+}
+
+.sv-checklist > li > span {
+  display: block;
+  margin-top: 2px;
+  color: var(--sv-text-muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.sv-not-enough {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--sv-border-strong);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-muted);
+}
+
+.sv-not-enough > strong {
+  font-size: 13px;
+}
+
+.sv-not-enough-detail {
+  color: var(--sv-text-muted);
+  font-size: 11px;
+}
+
+.sv-not-enough-need {
+  flex-basis: 100%;
+  color: var(--sv-text-faint);
+  font-size: 10.5px;
 }
 
 .sv-terminal-receipt {
@@ -334,12 +422,13 @@
 }
 
 @media (max-width: 520px) {
-  .sv-workspace-header {
+  .sv-workspace-identity {
     padding-block: 8px;
   }
 
+  .sv-workspace-identity > span:not(.sv-chip),
   .sv-workspace-header-row > span:not(.sv-chip),
-  .sv-workspace-metrics .sv-workspace-metric:nth-child(n + 4) {
+  .sv-workspace-metrics > .sv-workspace-metric:nth-child(n + 4) {
     display: none;
   }
 

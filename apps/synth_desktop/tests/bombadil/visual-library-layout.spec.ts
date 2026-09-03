@@ -77,7 +77,7 @@ const visualsLayout = extract((state: any) => {
 		shortCardUsesIntrinsicRowHeight: !shortCard || getComputedStyle(shortCard).alignSelf === "start",
 		shortCardActionsStayGrouped: !shortActionsRect || !shortMainRect || shortActionsRect.top - shortMainRect.bottom <= 1,
 		columnsUsable: !gridRect || !previewRect || (
-			gridRect.width >= 280 && gridRect.width <= 420 && previewRect.width >= 520 && (
+			gridRect.width >= 240 && gridRect.width <= 420 && previewRect.width >= 420 && (
 				gridRect.right <= previewRect.left - 12
 				|| gridRect.bottom <= previewRect.top - 12
 			)

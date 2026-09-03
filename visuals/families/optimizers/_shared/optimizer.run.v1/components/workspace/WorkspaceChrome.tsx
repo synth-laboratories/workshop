@@ -1,16 +1,42 @@
 import type { ReactNode } from "react";
 
 /**
- * Algorithm-agnostic optimizer workspace chrome: a sticky run header and a
- * semantic stage timeline. GEPA assembles these today; SFT and GELO templates
- * can feed their own stages/lanes/metrics without changes here.
+ * Algorithm-agnostic optimizer workspace chrome: a run header and a semantic
+ * stage timeline. GEPA assembles these today; SFT and GELO templates can feed
+ * their own stages/lanes/metrics without changes here.
+ *
+ * Only the identity line is sticky. The metric block scrolls away with the
+ * canvas, because a two-row pinned header covered the evidence it described.
+ * Templates keep the block short by tiering metrics: two to four `primary`
+ * values stay on the line, everything else folds into `Run details`.
  */
+
+function renderMetric(metric: WorkspaceMetric) {
+  return (
+    <div
+      key={metric.label}
+      className="sv-workspace-metric"
+      title={metric.title}
+      data-testid={metric.testId}
+      aria-hidden="true"
+    >
+      <span>{metric.label}</span>
+      <strong>{metric.value}</strong>
+    </div>
+  );
+}
 
 export type WorkspaceMetric = {
   label: string;
   value: string;
   title?: string;
   testId?: string;
+  /**
+   * "primary" stays on the always-visible header line; "detail" folds into the
+   * `Run details` disclosure. Untiered metrics stay primary so a template that
+   * has not been triaged yet keeps showing everything it used to show.
+   */
+  tier?: "primary" | "detail";
 };
 
 export type WorkspaceLane = {
@@ -41,9 +67,11 @@ export function WorkspaceHeader({
   receipt?: ReactNode;
   testId?: string;
 }) {
+  const primary = metrics.filter((metric) => (metric.tier ?? "primary") === "primary");
+  const detailMetrics = metrics.filter((metric) => metric.tier === "detail");
   return (
     <header className="sv-workspace-header" data-testid={testId}>
-      <div className="sv-workspace-header-row">
+      <div className="sv-workspace-identity">
         <span className="sv-chip" data-tone={statusTone} data-testid="workspace-status">
           {live ? <span className="sv-live-dot" aria-hidden="true" /> : null}
           {statusText}
@@ -66,15 +94,48 @@ export function WorkspaceHeader({
         role="group"
         aria-label={`Run metrics: ${metrics.map((metric) => `${metric.label} ${metric.value}`).join("; ")}`}
       >
-        {metrics.map((metric) => (
-          <div key={metric.label} className="sv-workspace-metric" title={metric.title} data-testid={metric.testId} aria-hidden="true">
-            <span>{metric.label}</span>
-            <strong>{metric.value}</strong>
-          </div>
-        ))}
+        {primary.map(renderMetric)}
+        {detailMetrics.length > 0 ? (
+          <details className="sv-workspace-metric-more" data-testid="workspace-run-details">
+            <summary className="sv-mono" aria-label={`Run details: ${detailMetrics.length} further metrics`}>
+              Run details · {detailMetrics.length}
+            </summary>
+            <div className="sv-workspace-metrics">{detailMetrics.map(renderMetric)}</div>
+          </details>
+        ) : null}
       </div>
       {receipt}
     </header>
+  );
+}
+
+/**
+ * One honest stat instead of chart furniture. A plot drawn from fewer points
+ * than it needs reads as a broken chart, not as "no trend yet", so every
+ * series-backed panel routes through here before it draws axes.
+ */
+export function NotEnoughData({
+  have,
+  need,
+  noun,
+  detail,
+  testId
+}: {
+  have: number;
+  need: number;
+  /** Singular noun for one datum, e.g. "metric sample" or "example dimension". */
+  noun: string;
+  detail?: ReactNode;
+  testId?: string;
+}) {
+  return (
+    <div className="sv-not-enough" data-testid={testId}>
+      <strong className="sv-mono">{have} {noun}{have === 1 ? "" : "s"}</strong>
+      {detail ? <span className="sv-not-enough-detail">{detail}</span> : null}
+      <span className="sv-not-enough-need">
+        {need === 2 ? "A trend needs at least 2." : `At least ${need} are needed to plot this.`}
+      </span>
+    </div>
   );
 }
 

@@ -7688,9 +7688,12 @@ html.visual-expanded .composer-dock {
 	background: var(--color-surface);
 }
 
+/* The split held only down to ~830px of container width, so a normal 1092pt
+   window stacked the list above the preview. The list can go narrower and the
+   preview's true minimum is 420px, so the two panes now survive to ~700px. */
 .visuals-layout {
 	display: grid;
-	grid-template-columns: minmax(280px, min(var(--visuals-list-width, 320px), 420px, calc(100% - 551px))) 7px minmax(520px, 1fr);
+	grid-template-columns: minmax(240px, min(var(--visuals-list-width, 320px), 420px, calc(100% - 451px))) 7px minmax(420px, 1fr);
 	column-gap: 12px;
 	flex: 1;
 	min-height: 0;
@@ -7818,6 +7821,39 @@ html.visual-expanded .composer-dock {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+.visuals-card-family {
+	display: inline-block;
+	margin-right: 6px;
+	padding: 1px 6px;
+	border: 1px solid var(--color-border);
+	border-radius:var(--radius-pill);
+	color: var(--color-text-muted);
+	font-size:var(--font-size-xs);
+	vertical-align: baseline;
+}
+
+.visuals-card-evidence {
+	color: var(--color-text-muted);
+	font-weight: 600;
+}
+
+/* One source line per card. Full identifiers live in the preview's details
+   disclosure, so a long session/run/trace triple cannot wrap the rail. */
+.visual-ops-one-line {
+	display: block;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	overflow-wrap: normal;
+}
+
+.visuals-preview-evidence {
+	margin: 0;
+	color: var(--color-text-muted);
+	font-size:var(--font-size-sm);
+	line-height: 1.45;
 }
 
 .visuals-layout:not(.reports-layout) > .visuals-grid > .visuals-card .visuals-card-actions {
@@ -8135,7 +8171,7 @@ html.visual-expanded .composer-dock {
 	}
 }
 
-@media (max-width: 870px) {
+@media (max-width: 700px) {
 	.visuals-layout {
 		grid-template-columns: 1fr;
 		display: block;
@@ -8147,7 +8183,7 @@ html.visual-expanded .composer-dock {
 	.visuals-layout > .visuals-preview { margin-top: 12px; }
 }
 
-@container visuals-library (max-width: 870px) {
+@container visuals-library (max-width: 700px) {
 	.visuals-layout { display: block; grid-template-columns: minmax(0, 1fr); overflow: auto; }
 	.visuals-layout > .primary-resize-handle { display: none; }
 	.visuals-layout > .visuals-grid,

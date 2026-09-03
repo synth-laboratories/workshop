@@ -166,10 +166,29 @@ function TraceList({ rows, empty }: { rows: LaneEvent[]; empty: string }) {
   </div>;
 }
 
+/**
+ * The tab badge used to count annotation findings while calling them rubric
+ * rows, so `Rubric · 2` opened onto "no rubric rows". Both the badge and the
+ * panel now read the same structured grades, and the tab renames itself to
+ * `Verifier` when there are none.
+ */
+function rubricGrades(lane: Lane): Record<string, unknown>[] {
+  return Array.isArray(lane.task.rubric_grades) ? lane.task.rubric_grades as Record<string, unknown>[] : [];
+}
+
+function rubricTabLabel(lane: Lane): string {
+  const grades = rubricGrades(lane);
+  if (grades.length === 0) {
+    const findings = activeFindings(lane).length;
+    return `Verifier · ${findings} finding${findings === 1 ? "" : "s"}`;
+  }
+  return `Rubric · ${grades.filter((row) => row.criteria_met === true).length}/${grades.length}`;
+}
+
 function RubricEvidence({ lane }: { lane: Lane }) {
-  const grades = Array.isArray(lane.task.rubric_grades) ? lane.task.rubric_grades as Record<string, unknown>[] : [];
+  const grades = rubricGrades(lane);
   return <div style={{ display: "grid", gap: 8 }}>
-    <div className="sv-section-head" style={{ marginBottom: 0 }}><div><h4 style={{ margin: 0, fontSize: 11 }}>Rubric results</h4><span style={{ color: "var(--sv-text-faint)", fontSize: 9 }}>Open a criterion to inspect the grader’s explanation.</span></div><span className="sv-mono">{grades.length ? `${grades.filter((row) => row.criteria_met === true).length}/${grades.length} met` : "no rubric rows"}</span></div>
+    <div className="sv-section-head" style={{ marginBottom: 0 }}><div><h4 style={{ margin: 0, fontSize: 11 }}>Rubric results</h4><span style={{ color: "var(--sv-text-faint)", fontSize: 9 }}>Open a criterion to inspect the grader’s explanation.</span></div><span className="sv-mono">{grades.length ? `${grades.filter((row) => row.criteria_met === true).length}/${grades.length} met` : "Rubric unavailable"}</span></div>
     {grades.length ? <ol style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 5 }}>{grades.map((grade, index) => {
       const criterion = String(grade.rubric_text ?? grade.criterion ?? grade.rubric_id ?? `Rubric ${index + 1}`);
       const explanation = grade.explanation ?? grade.rationale ?? grade.reason ?? grade.grader_feedback;
@@ -180,7 +199,7 @@ function RubricEvidence({ lane }: { lane: Lane }) {
 }
 
 function KeyFindings({ lane, onOpenRubric }: { lane: Lane; onOpenRubric: () => void }) {
-  const grades = Array.isArray(lane.task.rubric_grades) ? lane.task.rubric_grades as Record<string, unknown>[] : [];
+  const grades = rubricGrades(lane);
   const unmet = grades.filter((grade) => grade.criteria_met !== true);
   const met = grades.length - unmet.length;
   const fallback = activeFindings(lane).filter((finding) => finding.kind === "failure_mode");
@@ -188,7 +207,7 @@ function KeyFindings({ lane, onOpenRubric }: { lane: Lane; onOpenRubric: () => v
   return <section aria-label="Key findings" style={{ display: "grid", gap: 8, padding: 11, border: "1px solid var(--sv-border)", borderRadius: 8, background: rows.length ? "#fffaf7" : "var(--sv-canvas)" }}>
     <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}><div><h4 style={{ margin: 0, fontSize: 11 }}>What needs attention</h4><span style={{ color: "var(--sv-text-faint)", fontSize: 9 }}>{rows.length ? `${unmet.length || fallback.length} issue${(unmet.length || fallback.length) === 1 ? "" : "s"}; showing the most important first` : "No active failure findings"}</span></div>{grades.length ? <span className="sv-mono" style={{ fontSize: 10 }}>{met}/{grades.length} criteria met</span> : null}</div>
     {rows.length ? <ol style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 5 }}>{rows.map((row, index) => <li key={`${row}-${index}`} style={{ paddingLeft: 3, fontSize: 10, lineHeight: 1.35 }}>{row}</li>)}</ol> : null}
-    {(unmet.length > 3 || fallback.length > 3 || grades.length > 0) ? <button type="button" onClick={onOpenRubric} style={{ justifySelf: "start", border: 0, padding: 0, background: "transparent", color: "var(--sv-accent)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>Review all rubric evidence →</button> : null}
+    {(unmet.length > 3 || fallback.length > 3 || grades.length > 0) ? <button type="button" onClick={onOpenRubric} style={{ justifySelf: "start", border: 0, padding: 0, background: "transparent", color: "var(--sv-accent)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>{grades.length ? "Review all rubric evidence →" : "Review verifier evidence →"}</button> : null}
   </section>;
 }
 
@@ -246,7 +265,7 @@ function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: 
       {judge != null ? <span title="latest judge progress: 1 advancing, 0 stalled, -1 regressing">judge {judge > 0 ? "advancing" : judge < 0 ? "regressing" : "stalled"}</span> : null}
     </div>
     <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "end" }}><span className="sv-mono" style={{ fontSize: 10, color: "var(--sv-text-faint)" }}>{familyLabel(lane)} · {taskFamily(lane)}</span><span className="sv-mono" style={{ maxWidth: "68%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10, color: "var(--sv-text-faint)" }}>› {lane.last}</span></div>
-    <nav aria-label="Rollout detail sections" style={{ display: "flex", gap: 6, padding: 4, borderRadius: 8, background: "var(--sv-canvas)", border: "1px solid var(--sv-border)" }}>{(["rollout", "verifier", "trace"] as DetailTab[]).map((option) => <button key={option} type="button" aria-pressed={tab === option} onClick={() => setTab(option)} style={{ flex: 1, border: tab === option ? "1px solid var(--sv-border)" : "1px solid transparent", borderRadius: 6, padding: "7px 8px", background: tab === option ? "var(--sv-surface)" : "transparent", color: tab === option ? "var(--sv-text)" : "var(--sv-text-muted)", boxShadow: tab === option ? "0 1px 2px rgba(0,0,0,.05)" : "none", cursor: "pointer", fontSize: 10, fontWeight: 700 }}>{option === "rollout" ? "Summary" : option === "trace" ? `Evidence · ${inspectableCalls.length} calls` : `Rubric · ${active.length}`}</button>)}</nav>
+    <nav aria-label="Rollout detail sections" style={{ display: "flex", gap: 6, padding: 4, borderRadius: 8, background: "var(--sv-canvas)", border: "1px solid var(--sv-border)" }}>{(["rollout", "verifier", "trace"] as DetailTab[]).map((option) => <button key={option} type="button" aria-pressed={tab === option} onClick={() => setTab(option)} style={{ flex: 1, border: tab === option ? "1px solid var(--sv-border)" : "1px solid transparent", borderRadius: 6, padding: "7px 8px", background: tab === option ? "var(--sv-surface)" : "transparent", color: tab === option ? "var(--sv-text)" : "var(--sv-text-muted)", boxShadow: tab === option ? "0 1px 2px rgba(0,0,0,.05)" : "none", cursor: "pointer", fontSize: 10, fontWeight: 700 }}>{option === "rollout" ? "Summary" : option === "trace" ? `Evidence · ${inspectableCalls.length} calls` : rubricTabLabel(lane)}</button>)}</nav>
     {tab === "rollout" ? <section aria-label="Rollout information" style={{ display: "grid", gap: 10 }}>
       <MarkerStrip lane={lane} />
       <TaskDetails lane={lane} streamBase={streamBase} />

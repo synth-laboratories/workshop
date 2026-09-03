@@ -1,5 +1,5 @@
 import type { GepaState } from "../../components/projectEvents.ts";
-import { candidateName, candidatePalette, candidateGeneration, incumbentCandidateIds, orderedScoredCandidates } from "./model.ts";
+import { candidateLabels, candidateName, candidatePalette, candidateGeneration, incumbentCandidateIds, orderedScoredCandidates } from "./model.ts";
 
 const W = 430;
 const H = 190;
@@ -8,6 +8,7 @@ const PAD = { left: 46, right: 18, top: 18, bottom: 34 };
 export function HillClimbPanel({ gepa, onSelect }: { gepa: GepaState; onSelect?: (id: string) => void }) {
   const points = orderedScoredCandidates(gepa);
   if (points.length === 0) return null;
+  const labels = candidateLabels(gepa.candidates);
   const scores = points.map((point) => point.score);
   let min = Math.min(...scores);
   let max = Math.max(...scores);
@@ -49,7 +50,7 @@ export function HillClimbPanel({ gepa, onSelect }: { gepa: GepaState; onSelect?:
             const palette = candidatePalette(point.candidate);
             return (
             <g key={point.id} role="button" tabIndex={0} style={{ cursor: "pointer" }}
-              aria-label={`${candidateName(point.candidate)} scored ${point.score.toFixed(3)}`}
+              aria-label={`${labels.get(point.id) ?? candidateName(point.candidate)} scored ${point.score.toFixed(3)}`}
               onClick={() => onSelect?.(point.id)}
               onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onSelect?.(point.id); }}>
               <circle cx={x(index)} cy={y(point.score)} r={incumbentSet.has(point.id) ? 6 : 4.5} fill={palette.color} stroke={incumbentSet.has(point.id) ? "var(--sv-accent)" : "white"} strokeWidth={incumbentSet.has(point.id) ? 2.5 : 1.5} opacity={incumbentSet.has(point.id) ? 1 : .72} />

@@ -443,3 +443,65 @@ export function sftCurationFunnel(sft: SftState): SftCurationFunnel {
     rejected: sft.curation.candidates.filter((candidate) => !candidate.accepted)
   };
 }
+
+/**
+ * One place for "this has not happened yet".
+ *
+ * Every phase panel used to carry its own paragraph explaining what was missing
+ * and why it mattered. Four such paragraphs pushed the evidence that did exist
+ * below the fold, and the repetition read as failure rather than as sequence.
+ * The workspace now states each prerequisite once, in order, and each panel
+ * keeps a single short line.
+ */
+export type SftPrerequisite = {
+  id: "baseline" | "collection" | "training" | "evaluation" | "heldout";
+  label: string;
+  /** Why the run cannot claim uplift without it. Shown once, in the checklist. */
+  why: string;
+};
+
+export function sftMissingPrerequisites(sft: SftState): SftPrerequisite[] {
+  const missing: SftPrerequisite[] = [];
+  const funnel = sftCurationFunnel(sft);
+  const hasBaseline = (sft.baseline?.seeds.length ?? 0) > 0 || sftAggregateBaseline(sft) != null;
+  const hasCollection = funnel.steps.some((step) => step.count != null) || funnel.accepted.length > 0;
+  const hasTraining = sft.points.length > 0;
+  const hasEvaluations = sftDistinctEvaluations(sft).length > 0;
+  const hasHeldout = sftComparison(sft) != null || sftHeldoutSummary(sft) != null;
+  if (!hasBaseline) {
+    missing.push({
+      id: "baseline",
+      label: "Baseline evaluation of the unchanged student",
+      why: "There is nothing to measure uplift against until the untrained student is scored on the frozen baseline seeds."
+    });
+  }
+  if (!hasCollection) {
+    missing.push({
+      id: "collection",
+      label: "Teacher collection and curation decisions",
+      why: "Trajectories must be sealed and then accepted or rejected with an explicit reason before a dataset can claim provenance."
+    });
+  }
+  if (!hasTraining) {
+    missing.push({
+      id: "training",
+      label: "Training metrics",
+      why: "Loss and step records begin once the training job reports its first step."
+    });
+  }
+  if (!hasEvaluations) {
+    missing.push({
+      id: "evaluation",
+      label: "Checkpoint evaluations",
+      why: "Selection needs at least one scored checkpoint. Selection retains a checkpoint; it is not an uplift claim."
+    });
+  }
+  if (!hasHeldout) {
+    missing.push({
+      id: "heldout",
+      label: "Paired base-vs-selected heldout run",
+      why: "Training completing, a checkpoint reaching ready, and even a promotion decision are not uplift. Only the paired heldout comparison can license the claim."
+    });
+  }
+  return missing;
+}

@@ -10,7 +10,7 @@ import { publicError } from "../runtime/publicError";
 import { formatVisualAdmissionIdentity } from "../types/landing";
 import { VisualOpsLine } from "./VisualOpsLine";
 import { optimizerRunIdFromBindings, traceIdFromBindings, traceSetCountFromBindings } from "../runtime/visualBindings";
-import { SEALED_TRACE_WORKBENCH_TEMPLATES } from "../runtime/templatePresentation";
+import { SEALED_TRACE_WORKBENCH_TEMPLATES, visualCardIdentity, visualEvidenceMode } from "../runtime/templatePresentation";
 import { PluginEmptyState, PluginPage, PluginPageHeader, PluginTabs } from "./PluginPage";
 
 type Tab = "all" | "recent" | "live" | "sealed" | "templates";
@@ -228,6 +228,17 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 		return traceIdFromBindings(visual.bindings) ?? visual.traceId ?? undefined;
 	}
 
+	function cardEvidenceMode(visual: VisualRecord) {
+		return visualEvidenceMode({
+			sessionId: visual.sessionId,
+			runId: visualRunId(visual),
+			traceId: visualTraceId(visual),
+			traceSetCount: visualTraceSetCount(visual),
+			metadata: visual.metadata,
+			bindings: visual.bindings
+		});
+	}
+
 	function visualTraceSetCount(visual: VisualRecord): number | null | undefined {
 		if (visualTraceId(visual)) return undefined;
 		const count = traceSetCountFromBindings(visual.bindings);
@@ -359,26 +370,47 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 					{showRegistryEmpty ? (
 						<PluginEmptyState as="li" title="No visuals yet" description="Visuals created through chat and agent tools will appear here." guidance="Ask the agent to create one in chat." />
 					) : null}
-					{filtered.map((visual) => (
+					{filtered.map((visual) => {
+						const identity = visualCardIdentity(visual.displayName?.trim() || visual.title);
+						const evidenceMode = cardEvidenceMode(visual);
+						return (
 						<li
 							key={visual.id}
 							className={`visuals-card${selected?.id === visual.id ? " active" : ""}`}
 							data-testid={`visuals-card-${visual.id}`}
 							data-visual-id={visual.id}
 						>
-							<button type="button" className="visuals-card-main" onClick={() => { setOpenActionsId(null); setSelectedId(visual.id); }} aria-pressed={selected?.id === visual.id} data-testid={`visuals-row-${visual.id}`}>
-								<strong>{visual.title}</strong>
-								<span className="visuals-card-status">{statusLabel(visual.status)} · rev {visual.currentRevision}</span>
+							<button type="button" className="visuals-card-main" onClick={() => { setOpenActionsId(null); setSelectedId(visual.id); }} aria-pressed={selected?.id === visual.id} data-testid={`visuals-row-${visual.id}`} title={visual.title}>
+								<strong>{identity.name}</strong>
+								<span className="visuals-card-status">
+									{identity.badge ? (
+										<span className="visuals-card-family" data-testid={`visuals-card-family-${visual.id}`}>{identity.badge}</span>
+									) : null}
+									{statusLabel(visual.status)} · rev {visual.currentRevision}
+								</span>
 								<span className="visuals-card-context">{visualKindLabel(visual)}</span>
 							</button>
-							<VisualOpsLine
-								sessionId={visual.sessionId}
-								runId={visualRunId(visual)}
-								traceId={visualTraceId(visual)}
-								traceSetCount={visualTraceSetCount(visual)}
-								testId={`visual-ops-${visual.id}`}
-								compact
-							/>
+							{evidenceMode === "bundled" ? (
+								<span className="visual-ops-line visual-ops-compact visual-ops-one-line" data-testid={`visual-ops-${visual.id}`}>
+									<span className="visuals-card-evidence">Bundled preview</span>
+									{" · "}
+									{visualKindLabel(visual)} examples
+								</span>
+							) : evidenceMode === "unbound" ? (
+								<span className="visual-ops-line visual-ops-compact visual-ops-one-line" data-testid={`visual-ops-${visual.id}`}>
+									<span className="visuals-card-evidence">Not bound</span>
+								</span>
+							) : (
+								<VisualOpsLine
+									sessionId={visual.sessionId}
+									runId={visualRunId(visual)}
+									traceId={visualTraceId(visual)}
+									traceSetCount={visualTraceSetCount(visual)}
+									testId={`visual-ops-${visual.id}`}
+									compact
+									oneLine
+								/>
+							)}
 							<details className="visuals-card-actions" data-testid={`visuals-actions-${visual.id}`} open={openActionsId === visual.id}>
 								<summary aria-label={`Actions for ${visual.title}`} title="More actions" onClick={(event) => { event.preventDefault(); setOpenActionsId((current) => current === visual.id ? null : visual.id); }}>
 									<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="3" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="8" cy="13" r="1.25"/></svg>
@@ -393,9 +425,10 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 								</div>
 							</details>
 						</li>
-					))}
+						);
+					})}
 				</ul>
-				{selected && !focusVisualId ? <PaneResizeHandle value={listWidth} onChange={updateListWidth} minPrimary={280} maxPrimary={420} minSecondary={520} ariaLabel="Resize visual list and preview" direction="primary" resetValue={320} /> : null}
+				{selected && !focusVisualId ? <PaneResizeHandle value={listWidth} onChange={updateListWidth} minPrimary={240} maxPrimary={420} minSecondary={420} ariaLabel="Resize visual list and preview" direction="primary" resetValue={320} /> : null}
 				{selected ? (
 					<div className="visuals-preview" data-testid="visuals-preview">
 						<header className="visuals-preview-header" data-testid="visuals-preview-header">
@@ -431,6 +464,17 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 								<p className="reports-provenance" data-testid="visuals-preview-identity">
 									{admissionIdentity(selected)}
 								</p>
+								{cardEvidenceMode(selected) === "bundled" ? (
+									<p className="visuals-preview-evidence" data-testid="visuals-preview-evidence">
+										<span className="visuals-card-evidence">Bundled preview</span>
+										{" "}Bound to no session, run, or trace: everything shown comes from the {visualKindLabel(selected)} template’s bundled examples, not from a completed run.
+									</p>
+								) : cardEvidenceMode(selected) === "unbound" ? (
+									<p className="visuals-preview-evidence" data-testid="visuals-preview-evidence">
+										<span className="visuals-card-evidence">Not bound</span>
+										{" "}This visual is not currently attached to a session, run, trace, or bundled fixture.
+									</p>
+								) : null}
 								<VisualOpsLine
 									sessionId={selected.sessionId}
 									runId={visualRunId(selected)}
