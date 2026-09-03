@@ -1,7 +1,6 @@
-//! Hosted SFT recipes backed by the public `synth-optimizers` control plane.
-//!
-//! Optimizers-beta remains an internal training executor. Workshop starts, watches,
-//! cancels, and mirrors only public SFT runs before opening `optimizer.sft.live.v1`.
+//! Hosted SFT recipes backed by the public `synth-optimizers` `sft service`
+//! (`TinkerSftExecutor`). Workshop starts, watches, cancels, and mirrors only
+//! public SFT runs before opening `optimizer.sft.live.v1`.
 
 use super::{
     ingest,
@@ -27,11 +26,11 @@ const LOCAL_BANKING77_SLOT: &str = "http://127.0.0.1:8110";
 /// plan and world are the container's, not something this recipe invents.
 const BANKING77_PLAN_REF: &str = "banking77_eval.v1";
 const BANKING77_WORLD_REF: &str = "world:banking77@heldout";
-const BANKING77_CHECKPOINT_STEPS: [u32; 3] = [10, 20, 30];
+const BANKING77_CHECKPOINT_STEPS: [u32; 4] = [25, 50, 75, 100];
 /// Length of training. `optimizers-beta` used to infer this as
 /// `max(checkpoint_steps)`, so the checkpoint list silently decided how long a
 /// run trained. It is now named separately and required.
-const BANKING77_TRAINING_STEPS: u32 = 30;
+const BANKING77_TRAINING_STEPS: u32 = 100;
 const CRAFTAX_CHECKPOINT_STEPS: [u32; 3] = [16, 33, 66];
 /// One pass over the proven 131-row corpus at batch size 2. Tinker samples
 /// with replacement, so this is a named optimizer-step budget, not an epoch.
@@ -53,13 +52,19 @@ const CHECKPOINT_EVALUATION_TIMEOUT_S: u32 = 3600;
 /// counts are product-owned), so cap each paid launch at one fifth of the
 /// five-run acceptance budget. The public service remains the execution
 /// authority and Workshop reconciles actual usage from its event stream.
-const HOSTED_SFT_COST_CEILING_USD: f64 = 10.0;
+const HOSTED_SFT_COST_CEILING_USD: f64 = 15.0;
 /// Allowlisted dataset shards. A caller selects one; it cannot supply a path.
 const BANKING77_SHARDS: [&str; 2] = ["train_a", "train_b"];
 /// Torn-tail reads while the producer appends are transient. Give up only
 /// after the upstream stays unreadable across this many consecutive polls.
 const MAX_CONSECUTIVE_PAGE_ERRORS: u32 = 20;
-const HOSTED_SFT_LORA_RANK: u64 = 8;
+const HOSTED_SFT_LORA_RANK: u64 = 16;
+const CRAFTAX_SFT_LORA_RANK: u64 = 8;
+const BANKING77_SPLIT_SEED: u64 = 20260907;
+const BANKING77_SELECTION_SEED: u64 = 20260908;
+const BANKING77_HELDOUT_SEED: u64 = 20260906;
+const BANKING77_SELECTION_SIZE: u32 = 400;
+const BANKING77_HELDOUT_SIZE: u32 = 400;
 
 pub fn recipe_catalog() -> Vec<Value> {
     vec![craftax_nemotron_recipe(), banking77_recipe()]
@@ -67,17 +72,22 @@ pub fn recipe_catalog() -> Vec<Value> {
 
 fn craftax_nemotron_recipe() -> Value {
     let catalog_ok = super::tinker_catalog::TinkerBaseModelCatalog::load().is_ok();
-    let availability = if catalog_ok && SftOptimizerClient::from_env().is_ok() {
-        "available"
+    let service_reason = public_sft_service_reason();
+    let available = catalog_ok && service_reason.is_none();
+    let availability_reason = if available {
+        Value::Null
+    } else if let Some(reason) = service_reason {
+        json!(reason)
     } else {
-        "unavailable"
+        json!("Hosted Tinker base-model catalog is unavailable")
     };
     json!({
         "id": HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE,
         "title": "Craftax Nemotron 3.5 Lightning Tinker SFT",
         "algorithmId": "sft",
         "task": "craftax",
-        "availability": availability,
+        "availability": if available { "available" } else { "unavailable" },
+        "availabilityReason": availability_reason,
         "limits": {
             "backend": "tinker",
             "checkpointSteps": CRAFTAX_CHECKPOINT_STEPS,
@@ -90,9 +100,10 @@ fn craftax_nemotron_recipe() -> Value {
         },
         "credentialInputs": [],
         "prerequisites": [
-            "SYNTH_OPTIMIZERS_SFT_SERVICE_URL (or local http://127.0.0.1:8878)",
+            "synth-optimizers sft service --db … --bind 127.0.0.1:8878",
             "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN",
-            "TINKER_API_KEY held by the Optimizers-beta executor",
+            "SYNTH_OPTIMIZERS_SFT_SERVICE_URL",
+            "SYNTH_OPTIMIZERS_SFT_FIXTURE=1 for unpaid",
             "Craftax gold / GameBench on 127.0.0.1:8098"
         ],
     })
@@ -100,21 +111,34 @@ fn craftax_nemotron_recipe() -> Value {
 
 fn banking77_recipe() -> Value {
     let catalog_ok = super::tinker_catalog::TinkerBaseModelCatalog::load().is_ok();
-    let availability =
-        if catalog_ok && SftOptimizerClient::from_env().is_ok() && banking77_source().is_ok() {
-            "available"
-        } else {
-            "unavailable"
-        };
+    let service_reason = public_sft_service_reason();
+    let jsonl_ok = banking77_source().is_ok() || banking77_reference_sources().is_ok();
+    let available = catalog_ok && service_reason.is_none() && jsonl_ok;
+    let availability_reason = if available {
+        Value::Null
+    } else if let Some(reason) = service_reason {
+        json!(reason)
+    } else if !jsonl_ok {
+        json!("Set SYNTH_BANKING77_TRAIN_CSV and SYNTH_BANKING77_HELDOUT_CSV for the NanoClassify reference split, or SYNTH_SFT_BANKING77_TRAIN_JSONL for a smoke corpus")
+    } else {
+        json!("Hosted Tinker base-model catalog is unavailable")
+    };
+    let reference_mode = banking77_reference_sources().is_ok();
     json!({
         "id": HOSTED_SFT_BANKING77_RECIPE,
-        "title": "Banking77 Nemotron Lightning Tinker SFT",
+        "title": if reference_mode { "Banking77 GPT-OSS 20B Tinker SFT" } else { "Banking77 Nemotron Lightning Tinker SFT" },
         "algorithmId": "sft",
         "task": "banking77",
-        "availability": availability,
+        "availability": if available { "available" } else { "unavailable" },
+        "availabilityReason": availability_reason,
         "limits": {
             "backend": "tinker",
             "checkpointSteps": BANKING77_CHECKPOINT_STEPS,
+            "trainingSteps": BANKING77_TRAINING_STEPS,
+            "batchSize": 64,
+            "rank": HOSTED_SFT_LORA_RANK,
+            "selectionExamples": BANKING77_SELECTION_SIZE,
+            "heldoutExamples": BANKING77_HELDOUT_SIZE,
             "evaluationPlan": { "phases": ["baseline", "checkpoint", "final"], "checkpointSteps": BANKING77_CHECKPOINT_STEPS, "transport": "tunnel", "metric": "reward" },
             "campaignRolloutsPerCheckpoint": BANKING77_CAMPAIGN_ROLLOUTS,
             "datasetShards": BANKING77_SHARDS,
@@ -125,13 +149,43 @@ fn banking77_recipe() -> Value {
         },
         "credentialInputs": [],
         "prerequisites": [
-            "SYNTH_OPTIMIZERS_SFT_SERVICE_URL (or local http://127.0.0.1:8878)",
+            "synth-optimizers sft service --db … --bind 127.0.0.1:8878",
             "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN",
-            "TINKER_API_KEY held by the Optimizers-beta executor",
-            "SYNTH_SFT_BANKING77_TRAIN_JSONL",
+            "SYNTH_OPTIMIZERS_SFT_SERVICE_URL",
+            "SYNTH_OPTIMIZERS_SFT_FIXTURE=1 for unpaid",
+            "SYNTH_BANKING77_TRAIN_CSV + SYNTH_BANKING77_HELDOUT_CSV (reference)",
+            "or SYNTH_SFT_BANKING77_TRAIN_JSONL (smoke corpus)",
+            "optional SYNTH_BANKING77_HELDOUT_INDICES_JSON for sealed membership",
             "banking77_classify container on 127.0.0.1:8110"
         ],
     })
+}
+
+fn public_sft_service_reason() -> Option<String> {
+    if SftOptimizerClient::from_env().is_ok() {
+        return None;
+    }
+    if std::env::var("SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        return Some(
+            "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN is required to reach the public SFT service."
+                .into(),
+        );
+    }
+    if std::env::var("SYNTH_OPTIMIZERS_SFT_SERVICE_URL")
+        .ok()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return Some("SYNTH_OPTIMIZERS_SFT_SERVICE_URL is empty.".into());
+    }
+    Some(
+        "Public SFT service client is not configured (SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN / SYNTH_OPTIMIZERS_SFT_SERVICE_URL)."
+            .into(),
+    )
 }
 
 pub async fn start(
@@ -169,12 +223,67 @@ fn banking77_source() -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct Banking77ReferenceSources {
+    pub(crate) train_csv: std::path::PathBuf,
+    pub(crate) heldout_csv: std::path::PathBuf,
+    pub(crate) heldout_indices_json: Option<std::path::PathBuf>,
+}
+
+pub(crate) fn banking77_reference_sources() -> Result<Banking77ReferenceSources> {
+    let required = |name: &str| -> Result<std::path::PathBuf> {
+        let raw = std::env::var(name).with_context(|| format!("{name} is required"))?;
+        let path = std::path::PathBuf::from(raw.trim());
+        if !path.is_file() {
+            bail!("{name} is not a file: {}", path.display());
+        }
+        Ok(path)
+    };
+    let heldout_indices_json = std::env::var("SYNTH_BANKING77_HELDOUT_INDICES_JSON")
+        .ok()
+        .map(|raw| std::path::PathBuf::from(raw.trim()))
+        .filter(|path| path.is_file());
+    Ok(Banking77ReferenceSources {
+        train_csv: required("SYNTH_BANKING77_TRAIN_CSV")?,
+        heldout_csv: required("SYNTH_BANKING77_HELDOUT_CSV")?,
+        heldout_indices_json,
+    })
+}
+
 fn banking77_slot_url() -> String {
     std::env::var("SYNTH_CONTAINERS_BANKING77_URL")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| LOCAL_BANKING77_SLOT.into())
+}
+
+fn normalize_banking77_row(line: &str) -> Result<String> {
+    let mut row: serde_json::Value =
+        serde_json::from_str(line).context("decode Banking77 SFT row")?;
+    let object = row
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Banking77 SFT row must be a JSON object"))?;
+    if !object.get("text").is_some_and(serde_json::Value::is_string) {
+        let text = object
+            .get("query")
+            .filter(|value| value.is_string())
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Banking77 SFT row is missing text/query"))?;
+        object.insert("text".into(), text);
+    }
+    if !object
+        .get("category")
+        .is_some_and(serde_json::Value::is_string)
+    {
+        let category = object
+            .get("expected")
+            .filter(|value| value.is_string())
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Banking77 SFT row is missing category/expected"))?;
+        object.insert("category".into(), category);
+    }
+    serde_json::to_string(&row).context("encode normalized Banking77 SFT row")
 }
 
 /// Materialize one allowlisted shard under the instance data root. Two shards
@@ -192,11 +301,12 @@ fn materialize_banking77_shard(shard: &str) -> Result<std::path::PathBuf> {
         })?;
     let source = banking77_source()?;
     let text = std::fs::read_to_string(&source).context("read Banking77 SFT corpus")?;
-    let rows: Vec<&str> = text
+    let rows: Vec<String> = text
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .collect();
+        .map(normalize_banking77_row)
+        .collect::<Result<_>>()?;
     if rows.len() < BANKING77_SHARDS.len() {
         bail!("Banking77 SFT corpus is too small to shard");
     }
@@ -222,18 +332,43 @@ async fn start_banking77(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
-    let catalog = super::tinker_catalog::TinkerBaseModelCatalog::load()?;
-    let model_id = catalog.resolve(request.base_model.as_deref())?;
-    let shard = request
-        .dataset_shard
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(BANKING77_SHARDS[0])
-        .to_string();
-    let shard_path = materialize_banking77_shard(&shard)?;
-    let dataset_digest = dataset_digest_for_path(&shard_path)?;
-    super::sft_result::validate_dataset_digest(&shard_path, &dataset_digest)?;
+    let reference = banking77_reference_sources().ok();
+    let model_id = if reference.is_some() {
+        // NanoClassify's public reference result is a GPT-OSS 20B result. A
+        // different catalog default makes both its prompt renderer and uplift
+        // comparison invalid, even when the CSV split is identical.
+        "openai/gpt-oss-20b".to_string()
+    } else {
+        let catalog = super::tinker_catalog::TinkerBaseModelCatalog::load()?;
+        catalog.resolve(request.base_model.as_deref())?
+    };
+    let reference_mode = reference.is_some();
+    let model_title = if reference_mode {
+        "Banking77 GPT-OSS 20B Tinker SFT"
+    } else {
+        "Banking77 Nemotron Lightning Tinker SFT"
+    };
+    let (shard, shard_path, dataset_digest) = if let Some(sources) = reference.as_ref() {
+        let train_digest = dataset_digest_for_path(&sources.train_csv)?;
+        let heldout_digest = dataset_digest_for_path(&sources.heldout_csv)?;
+        (
+            "nanoclassify_reference".to_string(),
+            sources.train_csv.clone(),
+            content_sha256(format!("{train_digest}\n{heldout_digest}\n").as_bytes()),
+        )
+    } else {
+        let shard = request
+            .dataset_shard
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(BANKING77_SHARDS[0])
+            .to_string();
+        let path = materialize_banking77_shard(&shard)?;
+        let digest = dataset_digest_for_path(&path)?;
+        super::sft_result::validate_dataset_digest(&path, &digest)?;
+        (shard, path, digest)
+    };
     let container_url = banking77_slot_url();
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_banking77_{}_{}", shard, &suffix[..8]);
@@ -245,15 +380,24 @@ async fn start_banking77(
         &container_url,
         &shard_path.to_string_lossy(),
         &dataset_digest,
+        reference.as_ref(),
     );
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
-        algorithm_version: Some("banking77-nemotron-lightning-tinker-v1".into()),
+        algorithm_version: Some(if reference_mode {
+            "banking77-gpt-oss-20b-tinker-v1".into()
+        } else {
+            "banking77-nemotron-lightning-tinker-v1".into()
+        }),
         objective: Some(
             "Banking77 intent SFT · hosted Tinker · banking77_classify checkpoint campaigns".into(),
         ),
         source: Some("hosted".into()),
-        project_ref: Some("banking77@nemotron-lightning-tinker".into()),
+        project_ref: Some(if reference_mode {
+            "banking77@gpt-oss-20b-tinker".into()
+        } else {
+            "banking77@nemotron-lightning-tinker".into()
+        }),
         session_ref: request.session_ref.clone(),
         id: Some(run_id.clone()),
         execution_bindings: Some(vec![
@@ -289,7 +433,7 @@ async fn start_banking77(
                 id: HOSTED_SFT_BANKING77_RECIPE.into(),
                 digest: None,
                 role: Some("configuration".into()),
-                title: Some("Banking77 Nemotron Lightning Tinker SFT".into()),
+                title: Some(model_title.into()),
                 metadata: json!({"backend": "tinker", "baseModel": model_id}),
             },
             OptimizerResourceRef {
@@ -297,8 +441,8 @@ async fn start_banking77(
                 id: training_file.clone(),
                 digest: Some(dataset_digest.clone()),
                 role: Some("train".into()),
-                title: Some(format!("Banking77 SFT corpus · shard {shard}")),
-                metadata: json!({"shard": shard, "shards": BANKING77_SHARDS, "datasetDigest": dataset_digest}),
+                title: Some(format!("Banking77 SFT corpus · {shard}")),
+                metadata: json!({"shard": shard, "shards": BANKING77_SHARDS, "datasetDigest": dataset_digest, "splitStrategy": reference.as_ref().map(|_| "banking77.nanoclassify.v1")}),
             },
         ]),
         capabilities: Some(OptimizerCapabilities::for_algorithm("sft")),
@@ -313,6 +457,11 @@ async fn start_banking77(
             "rank": HOSTED_SFT_LORA_RANK,
             "localSlot": container_url,
             "checkpointSteps": BANKING77_CHECKPOINT_STEPS,
+            "trainingSteps": BANKING77_TRAINING_STEPS,
+            "batchSize": 64,
+            "selectionExamples": BANKING77_SELECTION_SIZE,
+            "heldoutExamples": BANKING77_HELDOUT_SIZE,
+            "heldoutSealed": reference.as_ref().is_some_and(|sources| sources.heldout_indices_json.is_some()),
         })),
         open_visual: request.open_visual.or(Some(true)),
         seed_fixture: None,
@@ -329,6 +478,7 @@ fn banking77_config_toml(
     container_url: &str,
     training_jsonl: &str,
     dataset_digest: &str,
+    reference: Option<&Banking77ReferenceSources>,
 ) -> String {
     let steps = BANKING77_CHECKPOINT_STEPS
         .iter()
@@ -336,10 +486,53 @@ fn banking77_config_toml(
         .collect::<Vec<_>>()
         .join(", ");
     let adapter = lora_adapter_label(HOSTED_SFT_LORA_RANK);
+    let label_taxonomy = super::cispo::BANKING77_LABEL_TAXONOMY
+        .iter()
+        .map(|label| format!("{label:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let reference_contract = reference
+        .map(|_| {
+            let system_prompt = format!(
+                "Classify the customer banking message. Return exactly one label from this list, with no explanation or punctuation:\n{}",
+                super::cispo::BANKING77_LABEL_TAXONOMY.join(", ")
+            );
+            format!(
+                "renderer_version = \"renderers.gpt-oss.low.v1\"\nsystem_prompt = {system_prompt:?}\n"
+            )
+        })
+        .unwrap_or_default();
+    let reference_dataset = reference
+        .map(|sources| {
+            let heldout_indices = sources
+                .heldout_indices_json
+                .as_ref()
+                .map(|path| format!("heldout_indices_json = {:?}\n", path.to_string_lossy()))
+                .unwrap_or_default();
+            format!(
+                r#"
+[dataset]
+recipe_id = "banking77.sft.nanoclassify.v1"
+split_strategy = "banking77.nanoclassify.v1"
+train_csv = {:?}
+heldout_csv = {:?}
+{heldout_indices}split_seed = {BANKING77_SPLIT_SEED}
+selection_seed = {BANKING77_SELECTION_SEED}
+heldout_seed = {BANKING77_HELDOUT_SEED}
+dev_per_class = 10
+selection_size = {BANKING77_SELECTION_SIZE}
+heldout_size = {BANKING77_HELDOUT_SIZE}
+label_taxonomy = [{label_taxonomy}]
+"#,
+                sources.train_csv.to_string_lossy(),
+                sources.heldout_csv.to_string_lossy(),
+            )
+        })
+        .unwrap_or_default();
     format!(
         r#"run_id = "{run_id}"
 backend = "tinker"
-base_model = "{model_id}"
+{reference_contract}base_model = "{model_id}"
 adapter = "{adapter}"
 training_file_id = "{training_file}"
 training_jsonl = "{training_jsonl}"
@@ -347,6 +540,7 @@ dataset_digest = "{dataset_digest}"
 selection_file_id = "file_selection"
 heldout_file_id = "file_heldout"
 accelerator_slots = 1
+rank = {HOSTED_SFT_LORA_RANK}
 checkpoint_steps = [{steps}]
 training_steps = {BANKING77_TRAINING_STEPS}
 max_seq_len = {BANKING77_MAX_SEQ_LEN}
@@ -359,6 +553,21 @@ checkpoint_evaluation_policy_harness = "classify"
 checkpoint_evaluation_plan_ref = "{BANKING77_PLAN_REF}"
 checkpoint_evaluation_world_ref = "{BANKING77_WORLD_REF}"
 checkpoint_evaluation_timeout_s = {CHECKPOINT_EVALUATION_TIMEOUT_S}
+
+[training]
+steps = {BANKING77_TRAINING_STEPS}
+batch_size = 64
+learning_rate = 0.00002
+checkpoint_every_steps = 25
+eval_every_steps = 25
+
+[evaluation]
+max_tokens = 1024
+confidence = 0.95
+bootstrap_resamples = 4000
+minimum_claim_uplift = 0.01
+minimum_paired_examples = 400
+{reference_dataset}
 
 [metadata]
 evaluation_schema = "training.evaluation.plan.v1"
@@ -382,9 +591,9 @@ evaluation_timeout_s = {CHECKPOINT_EVALUATION_TIMEOUT_S}
 api_key_env = "TINKER_API_KEY"
 
 [hyperparameters]
-rank = 8
-batch_size = 2
-lr = 0.001
+rank = 16
+batch_size = 64
+lr = 0.00002
 "#
     )
 }
@@ -748,7 +957,7 @@ fn craftax_nemotron_config_toml(
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(", ");
-    let adapter = lora_adapter_label(HOSTED_SFT_LORA_RANK);
+    let adapter = lora_adapter_label(CRAFTAX_SFT_LORA_RANK);
     let training_jsonl_line = training_jsonl
         .map(|path| format!("training_jsonl = \"{path}\"\n"))
         .unwrap_or_default();
@@ -807,7 +1016,7 @@ sampler_ready_timeout_s = 300
 system_prompt = "You play Craftax. Reply with JSON only."
 
 [hyperparameters]
-rank = 8
+rank = {CRAFTAX_SFT_LORA_RANK}
 batch_size = 2
 lr = 0.001
 "#
@@ -887,6 +1096,7 @@ mod tests {
                     "http://127.0.0.1:8110",
                     "/tmp/train_a.jsonl",
                     "sha256:deadbeef",
+                    None,
                 ),
             ),
             (
@@ -923,9 +1133,12 @@ mod tests {
             "http://127.0.0.1:8110",
             "/tmp/train_a.jsonl",
             "sha256:content",
+            None,
         );
         assert!(toml.contains("backend = \"tinker\""));
-        assert!(toml.contains("checkpoint_steps = [10, 20, 30]"));
+        assert!(toml.contains("checkpoint_steps = [25, 50, 75, 100]"));
+        assert!(toml.contains("batch_size = 64"));
+        assert!(toml.contains("minimum_paired_examples = 400"));
         assert!(toml.contains("campaign_rollouts_per_checkpoint = 2"));
         assert!(toml.contains("checkpoint_evaluation_plan_ref = \"banking77_eval.v1\""));
         assert!(toml.contains("checkpoint_evaluation_world_ref = \"world:banking77@heldout\""));
@@ -940,12 +1153,71 @@ mod tests {
     }
 
     #[test]
+    fn banking77_reference_toml_is_valid_and_pins_nanoclassify_split() {
+        let sources = Banking77ReferenceSources {
+            train_csv: std::path::PathBuf::from("/tmp/banking77-train.csv"),
+            heldout_csv: std::path::PathBuf::from("/tmp/banking77-heldout.csv"),
+            heldout_indices_json: Some(std::path::PathBuf::from("/tmp/heldout-indices.json")),
+        };
+        let raw = banking77_config_toml(
+            "sft_banking77_reference_ab12cd34",
+            "banking77.sft.nanoclassify.v1",
+            "openai/gpt-oss-20b",
+            "http://127.0.0.1:8110",
+            "/tmp/banking77-train.csv",
+            "sha256:content",
+            Some(&sources),
+        );
+        let parsed: toml::Value = toml::from_str(&raw).unwrap();
+        assert_eq!(parsed["base_model"].as_str(), Some("openai/gpt-oss-20b"));
+        assert_eq!(
+            parsed["renderer_version"].as_str(),
+            Some("renderers.gpt-oss.low.v1")
+        );
+        assert!(parsed["system_prompt"].as_str().is_some_and(|value| value
+            .starts_with("Classify the customer banking message. Return exactly one label")));
+        assert_eq!(
+            parsed["dataset"]["split_strategy"].as_str(),
+            Some("banking77.nanoclassify.v1")
+        );
+        assert_eq!(parsed["dataset"]["selection_size"].as_integer(), Some(400));
+        assert_eq!(parsed["dataset"]["heldout_size"].as_integer(), Some(400));
+        assert_eq!(
+            parsed["dataset"]["label_taxonomy"].as_array().map(Vec::len),
+            Some(77)
+        );
+        assert_eq!(parsed["training"]["steps"].as_integer(), Some(100));
+        assert_eq!(parsed["training"]["batch_size"].as_integer(), Some(64));
+        assert_eq!(parsed["evaluation"]["max_tokens"].as_integer(), Some(1024));
+    }
+
+    #[test]
     fn banking77_shard_selection_is_allowlisted_not_a_path() {
         let error = materialize_banking77_shard("../../etc/passwd")
             .unwrap_err()
             .to_string();
         assert!(error.contains("unknown Banking77 dataset shard"), "{error}");
         assert_eq!(BANKING77_SHARDS.len(), 2);
+    }
+
+    #[test]
+    fn banking77_rows_are_normalized_for_the_public_trainer() {
+        let normalized = normalize_banking77_row(
+            r#"{"id":"mipro_1","query":"My card is declined","expected":"card_not_working"}"#,
+        )
+        .unwrap();
+        let row: Value = serde_json::from_str(&normalized).unwrap();
+        assert_eq!(row["id"], "mipro_1");
+        assert_eq!(row["text"], "My card is declined");
+        assert_eq!(row["category"], "card_not_working");
+    }
+
+    #[test]
+    fn banking77_rows_without_labels_fail_closed() {
+        let error = normalize_banking77_row(r#"{"query":"My card is declined"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("category/expected"), "{error}");
     }
 
     #[test]
@@ -960,7 +1232,33 @@ mod tests {
             banking77["limits"]["costCeilingUsd"],
             HOSTED_SFT_COST_CEILING_USD
         );
-        assert_eq!(HOSTED_SFT_COST_CEILING_USD, 10.0);
+        assert_eq!(HOSTED_SFT_COST_CEILING_USD, 15.0);
+    }
+
+    #[test]
+    fn hosted_sft_prerequisites_name_the_public_sft_service() {
+        for recipe in [craftax_nemotron_recipe(), banking77_recipe()] {
+            let text = serde_json::to_string(&recipe).unwrap();
+            assert!(!text.contains("Optimizers-beta"), "{}", recipe["id"]);
+            let prerequisites = recipe["prerequisites"].as_array().unwrap();
+            assert!(prerequisites.iter().any(|item| {
+                item.as_str() == Some("synth-optimizers sft service --db … --bind 127.0.0.1:8878")
+            }));
+            assert!(prerequisites
+                .iter()
+                .any(|item| item.as_str() == Some("SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN")));
+            assert!(prerequisites
+                .iter()
+                .any(|item| item.as_str() == Some("SYNTH_OPTIMIZERS_SFT_SERVICE_URL")));
+            assert!(prerequisites
+                .iter()
+                .any(|item| item.as_str() == Some("SYNTH_OPTIMIZERS_SFT_FIXTURE=1 for unpaid")));
+        }
+        let craftax = serde_json::to_string(&craftax_nemotron_recipe()).unwrap();
+        assert!(craftax.contains("127.0.0.1:8098"));
+        let banking = serde_json::to_string(&banking77_recipe()).unwrap();
+        assert!(banking.contains("SYNTH_SFT_BANKING77_TRAIN_JSONL"));
+        assert!(banking.contains("127.0.0.1:8110"));
     }
 
     #[test]
@@ -1022,6 +1320,7 @@ mod tests {
             "http://127.0.0.1:8110",
             &first.to_string_lossy(),
             &left,
+            None,
         );
         assert!(toml.contains(&format!("dataset_digest = \"{left}\"")));
         assert!(!toml.contains("file_train_run_a") || toml.contains("training_file_id"));
@@ -1036,6 +1335,7 @@ mod tests {
             "http://127.0.0.1:8110",
             "/tmp/train_a.jsonl",
             "sha256:abc",
+            None,
         );
         let craftax = craftax_nemotron_config_toml(
             "sft_c",
@@ -1045,14 +1345,10 @@ mod tests {
             None,
             "sha256:abc",
         );
-        for toml in [banking, craftax] {
-            assert!(toml.contains("adapter = \"lora_r8\""), "{toml}");
-            assert!(
-                toml.contains("rank = 8") || toml.contains("[hyperparameters]\nrank = 8"),
-                "{toml}"
-            );
-            assert!(!toml.contains("lora_r16"), "{toml}");
-        }
+        assert!(banking.contains("adapter = \"lora_r16\""), "{banking}");
+        assert!(banking.contains("rank = 16"), "{banking}");
+        assert!(craftax.contains("adapter = \"lora_r8\""), "{craftax}");
+        assert!(craftax.contains("rank = 8"), "{craftax}");
     }
 
     #[test]

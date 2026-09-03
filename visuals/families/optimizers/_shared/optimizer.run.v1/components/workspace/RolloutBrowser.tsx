@@ -79,6 +79,9 @@ function RolloutInspector({ row, onClose }: { row: RolloutRow; onClose: () => vo
 export function RolloutBrowser({
   groups,
   rows,
+  totalRows,
+  loading = false,
+  stale = false,
   emptyText,
   itemLabel = "rollouts",
   testId,
@@ -87,6 +90,10 @@ export function RolloutBrowser({
 }: {
   groups: RolloutGroup[];
   rows: RolloutRow[];
+  /** Total matching durable rows across server pages. */
+  totalRows?: number;
+  loading?: boolean;
+  stale?: boolean;
   emptyText: string;
   itemLabel?: string;
   testId?: string;
@@ -133,7 +140,10 @@ export function RolloutBrowser({
     <section className="sv-section" aria-label="Evaluation rollouts" data-testid={testId}>
       <div className="sv-section-head">
         <h3>Evaluations</h3>
-        <span className="sv-mono">{totalShown} of {rows.length} {itemLabel}</span>
+        <span className="sv-mono">
+          {loading && rows.length === 0 ? "loading" : `${totalShown} shown of ${totalRows ?? rows.length} ${itemLabel}`}
+          {stale ? " · refreshing" : ""}
+        </span>
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
         {(["all", "failures", "passes", "active"] as const).map((option) => (

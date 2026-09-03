@@ -26,11 +26,16 @@ import {
 import { RolloutBrowser, type RolloutGroup, type RolloutRow } from "../../components/workspace/RolloutBrowser.tsx";
 import {
   SFT_TERMINAL_STATUSES,
+  sftAggregateBaseline,
   sftComparison,
   sftCurationFunnel,
+  sftDistinctEvaluations,
   sftDistribution,
+  sftHeldoutSummary,
+  sftEffectiveStatus,
   sftStages,
   type SftComparison,
+  type SftHeldoutSummary,
   type SftState
 } from "./model.ts";
 
@@ -108,6 +113,7 @@ function Panel({
 
 function BaselinePanel({ sft, isCispo }: { sft: SftState; isCispo?: boolean }) {
   const baseline = sft.baseline;
+  const aggregate = sftAggregateBaseline(sft);
   const distribution = useMemo(
     () => sftDistribution((baseline?.seeds ?? []).map((seed) => seed.reward)),
     [baseline]
@@ -118,12 +124,12 @@ function BaselinePanel({ sft, isCispo }: { sft: SftState; isCispo?: boolean }) {
       aside={baseline?.splitDigest ? `split ${shortDigest(baseline.splitDigest)}` : undefined}
       testId={isCispo ? "cispo-baseline" : "sft-baseline"}
     >
-      {!baseline || baseline.seeds.length === 0 ? (
+      {(!baseline || baseline.seeds.length === 0) && !aggregate ? (
         <p className="sv-empty">
           No baseline evaluation has been emitted. The untrained student must be scored on the frozen
           baseline seeds before training, or there is nothing to measure uplift against.
         </p>
-      ) : (
+      ) : baseline && baseline.seeds.length > 0 ? (
         <>
           <dl className="sv-kv">
             <dt>Seeds scored</dt>
@@ -160,7 +166,15 @@ function BaselinePanel({ sft, isCispo }: { sft: SftState; isCispo?: boolean }) {
             </table>
           </details>
         </>
-      )}
+      ) : aggregate ? (
+        <dl className="sv-kv">
+          <dt>Examples scored</dt><dd>{formatMissingNumber(aggregate.n, 0)}</dd>
+          <dt>{aggregate.metric}</dt><dd>{percent(aggregate.score, 1)}</dd>
+          <dt>Policy</dt><dd>unchanged base</dd>
+          <dt>Checkpoint</dt>
+          <dd>{aggregate.checkpointId ? <Identifier value={aggregate.checkpointId} max={28} /> : "—"}</dd>
+        </dl>
+      ) : null}
     </Panel>
   );
 }
@@ -375,7 +389,38 @@ function CheckpointRail({ sft, promotedCheckpointId }: { sft: SftState; promoted
 
 /* ── Phase G · paired heldout comparison ────────────────────────────────── */
 
-function ComparisonPanel({ comparison }: { comparison: SftComparison | null }) {
+function ComparisonPanel({
+  comparison,
+  aggregate
+}: {
+  comparison: SftComparison | null;
+  aggregate: SftHeldoutSummary | null;
+}) {
+  if (!comparison && aggregate) {
+    return (
+      <Panel title="Heldout comparison — base vs selected" testId="sft-comparison">
+        <div className="sv-arms">
+          <div className="sv-arm" data-arm="base">
+            <span className="sv-micro-label">unchanged base</span>
+            <strong>{formatMissingNumber(aggregate.baseScore)}</strong>
+          </div>
+          <div className="sv-arm" data-arm="trained">
+            <span className="sv-micro-label">{aggregate.checkpointId ?? "selected checkpoint"}</span>
+            <strong>{formatMissingNumber(aggregate.trainedScore)}</strong>
+          </div>
+        </div>
+        <dl className="sv-kv" data-testid="sft-uplift">
+          <dt>Paired examples</dt><dd>{aggregate.paired}</dd>
+          <dt>Accuracy uplift</dt>
+          <dd><span className="sv-delta" data-dir={direction(aggregate.absoluteUplift)}>{signed(aggregate.absoluteUplift)}</span></dd>
+          <dt>95% paired CI</dt>
+          <dd>{aggregate.upliftCi ? `${signed(aggregate.upliftCi[0])} … ${signed(aggregate.upliftCi[1])}` : "—"}</dd>
+          <dt>Verdict</dt><dd>{aggregate.verdict ?? "not reported"}</dd>
+          <dt>Uplift claim</dt><dd>{aggregate.claimReady ? "supported" : "not established"}</dd>
+        </dl>
+      </Panel>
+    );
+  }
   if (!comparison) {
     return (
       <Panel title="Heldout comparison — base vs promoted" testId="sft-comparison">
@@ -509,17 +554,19 @@ function ComparisonPanel({ comparison }: { comparison: SftComparison | null }) {
 /* ── Selection evidence and provenance ──────────────────────────────────── */
 
 function EvaluationSummaries({ sft }: { sft: SftState }) {
-  const selection = sft.evaluations.filter((evaluation) => String(evaluation.role ?? evaluation.split) !== "heldout");
-  const heldout = sft.evaluations.filter((evaluation) => String(evaluation.role ?? evaluation.split) === "heldout");
+  const evaluations = sftDistinctEvaluations(sft);
+  const selection = evaluations.filter((evaluation) => String(evaluation.role ?? evaluation.split) !== "heldout");
+  const heldout = evaluations.filter((evaluation) => String(evaluation.role ?? evaluation.split) === "heldout");
   if (selection.length === 0 && heldout.length === 0) return null;
-  const rows = (list: Array<Record<string, unknown>>, role: string) =>
+  const rows = (list: Array<Record<string, unknown>>) =>
     list.map((evaluation, index) => (
-      <tr key={`${role}-${index}`}>
-        <td>{role}</td>
-        <td className="sv-mono">{String(evaluation.split ?? evaluation.role ?? "—")}</td>
-        <td className="sv-mono">{String(evaluation.metric ?? "—")}</td>
-        <td className="sv-mono">{String(evaluation.score ?? "—")}</td>
-        <td className="sv-mono">{evaluation.accuracy != null ? String(evaluation.accuracy) : "—"}</td>
+      <tr key={`${String(evaluation.role ?? "evaluation")}-${index}`}>
+        <td>{String(evaluation.role ?? "evaluation")}</td>
+        <td className="sv-mono">{String(evaluation.checkpoint_id ?? evaluation.checkpointId ?? "—")}</td>
+        <td className="sv-mono">{String(evaluation.step ?? "—")}</td>
+        <td className="sv-mono">{String(evaluation.metric ?? (evaluation.calibration_accuracy != null ? "calibration accuracy" : evaluation.accuracy != null ? "accuracy" : "—"))}</td>
+        <td className="sv-mono">{String(evaluation.score ?? evaluation.calibration_accuracy ?? evaluation.accuracy ?? "—")}</td>
+        <td className="sv-mono">{String(evaluation.n ?? evaluation.sampleCount ?? evaluation.sample_count ?? "—")}</td>
       </tr>
     ));
   return (
@@ -531,13 +578,13 @@ function EvaluationSummaries({ sft }: { sft: SftState }) {
       <table className="sv-table">
         <thead>
           <tr>
-            <th scope="col">Role</th><th scope="col">Split</th><th scope="col">Metric</th>
-            <th scope="col">Score</th><th scope="col">Accuracy</th>
+            <th scope="col">Role</th><th scope="col">Checkpoint</th><th scope="col">Step</th>
+            <th scope="col">Metric</th><th scope="col">Value</th><th scope="col">N</th>
           </tr>
         </thead>
         <tbody>
-          {rows(selection, "selection")}
-          {rows(heldout, "heldout")}
+          {rows(selection)}
+          {rows(heldout)}
         </tbody>
       </table>
     </Panel>
@@ -660,7 +707,8 @@ export function SftWorkspace({
   const sft = projected.sft;
   const cispo = projected.cispo;
   const isCispo = run.algorithmId === "cispo";
-  const status = String(projected.summary.status ?? run.status ?? "");
+  const reportedStatus = String(projected.summary.status ?? run.status ?? "");
+  const status = sft ? sftEffectiveStatus(sft, reportedStatus) : reportedStatus;
   const nested = (projected.summary.summary as Record<string, unknown> | undefined) ?? {};
   const promotedCheckpointId = typeof nested.promotedCheckpointId === "string" ? nested.promotedCheckpointId : undefined;
   const stages = useMemo(
@@ -668,6 +716,7 @@ export function SftWorkspace({
     [sft, status, promotedCheckpointId]
   );
   const comparison = useMemo(() => (sft ? sftComparison(sft) : null), [sft]);
+  const heldoutSummary = useMemo(() => (sft ? sftHeldoutSummary(sft) : null), [sft]);
   const campaignData = useMemo(() => {
     if (!sft) return { groups: [] as RolloutGroup[], rows: [] as RolloutRow[] };
     const groups: RolloutGroup[] = [];
@@ -704,14 +753,23 @@ export function SftWorkspace({
   const chip = statusChip(status, improvementVerdict);
   const terminal = TERMINAL_STATUSES.includes(status);
   const latest = sft.points.at(-1);
+  const aggregateBaseline = sftAggregateBaseline(sft);
   const readyCount = sft.checkpoints.filter((ckpt) => ckpt.ready === true || ckpt.promoted === true).length;
   const costUsd = projected.usage.costUsd;
   const activeStage = stages.find((stage) => stage.status === "active");
   const upliftClaimed = sft.checkpoints.some((ckpt) => ckpt.promoted === true) || improvementVerdict === "improvement_demonstrated";
-  const selectedId = typeof nested.selectedCheckpointId === "string" ? nested.selectedCheckpointId : promotedCheckpointId;
+  const selectedId = typeof nested.selectedCheckpointId === "string"
+    ? nested.selectedCheckpointId
+    : typeof sft.lineage?.selectedCheckpointId === "string"
+      ? sft.lineage.selectedCheckpointId
+      : promotedCheckpointId;
   const headline = terminal
     ? status === "failed"
       ? "Training failed"
+      : heldoutSummary
+        ? heldoutSummary.claimReady
+          ? `Heldout uplift ${signed(heldoutSummary.absoluteUplift)} over ${heldoutSummary.paired} paired examples`
+          : `Completed · heldout ${heldoutSummary.verdict ?? "inconclusive"} — no uplift claimed`
       : upliftClaimed && comparison
         ? `Heldout uplift ${signed(comparison.absoluteUplift)} over ${comparison.paired} paired seeds`
         : improvementVerdict === "inconclusive"
@@ -746,16 +804,24 @@ export function SftWorkspace({
       : []),
     {
       label: "Heldout uplift",
-      value: comparison ? signed(comparison.absoluteUplift) : "not measured",
-      title: comparison
-        ? `Paired mean difference over ${comparison.paired} seeds, trained minus base.`
+      value: heldoutSummary
+        ? signed(heldoutSummary.absoluteUplift)
+        : comparison
+          ? signed(comparison.absoluteUplift)
+          : "not measured",
+      title: heldoutSummary
+        ? `Paired accuracy difference over ${heldoutSummary.paired} examples, selected checkpoint minus base.`
+        : comparison
+          ? `Paired mean difference over ${comparison.paired} seeds, trained minus base.`
         : "Requires a paired base-vs-promoted run on untouched heldout seeds."
     },
     {
       // Phase A only. The heldout base arm is a different split and lives in
       // the comparison panel; conflating them would misreport both.
       label: "Baseline mean",
-      value: formatMissingNumber(sftDistribution((sft.baseline?.seeds ?? []).map((seed) => seed.reward)).mean),
+      value: aggregateBaseline
+        ? percent(aggregateBaseline.score, 1)
+        : formatMissingNumber(sftDistribution((sft.baseline?.seeds ?? []).map((seed) => seed.reward)).mean),
       title: "Unchanged student on the frozen baseline seeds."
     },
     { label: "Step / epoch", value: `${formatMissingNumber(latest?.step, 0)} / ${formatMissingNumber(latest?.epoch, 0)}` },
@@ -815,7 +881,7 @@ export function SftWorkspace({
         testId="sft-live-campaigns"
       />
 
-      <ComparisonPanel comparison={comparison} />
+      <ComparisonPanel comparison={comparison} aggregate={heldoutSummary} />
       <EvaluationSummaries sft={sft} />
       <ProvenancePanel sft={sft} />
 

@@ -4,6 +4,7 @@
 //! bindings and the driver.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::optimizers::kernel::error::{KernelError, KernelErrorCode, KernelResult};
 use crate::optimizers::kernel::evidence::{EvidenceState, UsageCompleteness};
@@ -35,6 +36,8 @@ pub struct CispoProjection {
     #[specta(type = specta_typescript::Number)]
     pub optimizer_steps: u64,
     pub checkpoints: Vec<String>,
+    #[serde(default)]
+    pub selected_checkpoint_id: Option<String>,
     pub child_eval_run_ids: Vec<String>,
     pub no_learning_signal: bool,
     pub policy_checkpoint_id: Option<String>,
@@ -74,7 +77,10 @@ impl CispoProjection {
                     self.clip_config = config.clone();
                 }
             }
-            "cispo.training.metrics" | "cispo.step.metrics" | "training.step.metrics" => {
+            "cispo.training.metrics"
+            | "cispo.step.metrics"
+            | "training.step.metrics"
+            | "training.metrics" => {
                 self.phase = Some(RunPhase::Training);
                 if let Some(step) = payload.get("step").and_then(|v| v.as_u64()) {
                     self.usage.steps = Some(step);
@@ -87,14 +93,18 @@ impl CispoProjection {
                     }
                     self.advantage_std = point.advantage_std.or(self.advantage_std);
                     self.reward_variance = point.reward_variance.or(self.reward_variance);
-                    self.group_size = point.group_size.or(self.group_size);
+                    if let Some(size) = point.group_size {
+                        self.group_size = Some(self.group_size.unwrap_or(0).max(size));
+                    }
                     self.optimizer_steps = self
                         .optimizer_steps
                         .max(point.optimizer_step.unwrap_or(point.step));
                     self.metrics.push(point);
                 }
             }
-            "cispo.checkpoint_evaluation.completed" | "training.evaluation.completed" => {
+            "cispo.checkpoint_evaluation.completed"
+            | "training.evaluation.completed"
+            | "sft.heldout_evaluation.completed" => {
                 if let Some(child) = payload
                     .get("childEvalRunId")
                     .or_else(|| payload.get("optimizerRunId"))
@@ -153,6 +163,21 @@ impl CispoProjection {
                         self.no_learning_signal = true;
                     }
                 }
+                let observed_group_size = payload
+                    .get("rewards")
+                    .or_else(|| payload.get("advantages"))
+                    .and_then(|value| value.as_array())
+                    .map(|values| values.len() as u64);
+                if let Some(size) = observed_group_size {
+                    self.group_size = Some(self.group_size.unwrap_or(0).max(size));
+                }
+                if let Some(variance) = payload
+                    .get("rewardVariance")
+                    .or_else(|| payload.get("reward_variance"))
+                    .and_then(Value::as_f64)
+                {
+                    self.reward_variance = Some(variance);
+                }
             }
             "cispo.no_learning_signal" => {
                 self.no_learning_signal = true;
@@ -166,6 +191,13 @@ impl CispoProjection {
                     self.checkpoints.push(id.to_string());
                     self.policy_checkpoint_id = Some(id.to_string());
                 }
+            }
+            "cispo.checkpoint.promoted" | "sft.checkpoint.promoted" | "sft.checkpoint.selected" => {
+                self.selected_checkpoint_id = payload
+                    .get("checkpointId")
+                    .or_else(|| payload.get("checkpoint_id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
             }
             "cispo.checkpoint_evaluation.started" => {
                 self.phase = Some(RunPhase::CheckpointEvaluation);
@@ -301,5 +333,62 @@ mod tests {
         let result = projection.settle().unwrap();
         assert!(result.no_learning_signal);
         assert_eq!(result.mean_advantage, Some(0.0));
+    }
+
+    #[test]
+    fn streamed_group_and_selection_survive_the_kernel_projection() {
+        let mut projection = CispoProjection::default();
+        projection
+            .apply(&committed(
+                "cispo.rollout_group.completed",
+                json!({
+                    "groupId": "g1",
+                    "rewards": [0.0, 0.0],
+                    "reward_variance": 0.0
+                }),
+                1,
+            ))
+            .unwrap();
+        projection
+            .apply(&committed(
+                "training.metrics",
+                json!({"step": 1, "group_size": 1, "reward_variance": 0.0}),
+                2,
+            ))
+            .unwrap();
+        projection
+            .apply(&committed(
+                "sft.heldout_evaluation.completed",
+                json!({
+                    "kind": "cispo.checkpoint_eval.completed",
+                    "evaluation": {
+                        "checkpoint_id": "ckpt_1_inference",
+                        "step": 1,
+                        "calibration_accuracy": 0.0,
+                        "n": 1
+                    }
+                }),
+                3,
+            ))
+            .unwrap();
+        projection
+            .apply(&committed(
+                "sft.checkpoint.promoted",
+                json!({"checkpointId": "ckpt_1_inference"}),
+                4,
+            ))
+            .unwrap();
+        assert_eq!(projection.group_size, Some(2));
+        assert_eq!(projection.reward_variance, Some(0.0));
+        assert_eq!(projection.evaluations.len(), 1);
+        assert_eq!(
+            projection.evaluations[0].phase.as_deref(),
+            Some("checkpoint")
+        );
+        assert_eq!(projection.evaluations[0].sample_count, Some(1));
+        assert_eq!(
+            projection.selected_checkpoint_id.as_deref(),
+            Some("ckpt_1_inference")
+        );
     }
 }

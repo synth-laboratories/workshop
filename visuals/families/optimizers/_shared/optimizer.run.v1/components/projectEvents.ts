@@ -2427,8 +2427,12 @@ export function projectAtCursor(
         checkpoints.push({ id, status: "ready", ready: true, selected: false, promoted: false, ...(event.item.raw ?? {}) });
       }
     }
-    if (event.type === "sft.checkpoint.selected" || event.type === "sft.checkpoint.promoted") {
-      const id = String(event.item?.id ?? event.delta?.checkpoint_id ?? "");
+    if (
+      event.type === "sft.checkpoint.selected" ||
+      event.type === "sft.checkpoint.promoted" ||
+      event.type === "training.cispo.checkpoint.promoted"
+    ) {
+      const id = String(event.item?.id ?? event.delta?.checkpoint_id ?? event.delta?.checkpointId ?? "");
       if (id) {
         const claimed = event.delta?.uplift_claimed === true
           || event.delta?.improvement_verdict === "improvement_demonstrated";
@@ -2454,10 +2458,10 @@ export function projectAtCursor(
         };
       }
     }
-    if (event.type === "sft.step.metrics" || event.type === "sft.training.metrics" || event.type === "training.metrics") {
+    if (event.type === "sft.step.metrics" || event.type === "sft.training.metrics" || event.type === "training.metrics" || event.type === "cispo.training.metrics" || event.type === "cispo.update.completed" || event.type === "cispo.step.metrics") {
       const step = missingNumber(event.delta?.step ?? event.delta?.global_step);
       const epoch = missingNumber(event.delta?.epoch);
-      const trainLoss = missingNumber(event.delta?.train_loss ?? event.delta?.trainLoss);
+      const trainLoss = missingNumber(event.delta?.train_loss ?? event.delta?.trainLoss ?? event.delta?.loss);
       const validationLoss = missingNumber(event.delta?.validation_loss ?? event.delta?.validationLoss);
       const learningRate = missingNumber(event.delta?.learning_rate ?? event.delta?.learningRate);
       if (step != null) {
@@ -2479,7 +2483,7 @@ export function projectAtCursor(
       const advantageMean = missingNumber(event.delta?.advantage_mean ?? event.delta?.advantageMean);
       const advantageStd = missingNumber(event.delta?.advantage_std ?? event.delta?.advantageStd ?? event.delta?.advantage_sd);
       const optimizerStep = missingNumber(event.delta?.optimizer_step ?? event.delta?.optimizerStep);
-      if (groupSize != null) cispoGroupSize = groupSize;
+      if (groupSize != null) cispoGroupSize = Math.max(cispoGroupSize ?? 0, groupSize);
       if (rewardVariance != null) cispoRewardVariance = rewardVariance;
       if (advantageMean != null) cispoAdvantageMean = advantageMean;
       if (advantageStd != null) cispoAdvantageStd = advantageStd;
@@ -2495,6 +2499,16 @@ export function projectAtCursor(
     }
     if (event.type === "cispo.no_learning_signal") {
       cispoNoLearningSignal = true;
+    }
+    if (event.type === "cispo.rollout_group.completed") {
+      const rewards = Array.isArray(event.delta?.rewards) ? event.delta.rewards : [];
+      const advantages = Array.isArray(event.delta?.advantages) ? event.delta.advantages : [];
+      const observedGroupSize = Math.max(rewards.length, advantages.length);
+      if (observedGroupSize > 0) cispoGroupSize = Math.max(cispoGroupSize ?? 0, observedGroupSize);
+      const rewardVariance = missingNumber(event.delta?.reward_variance ?? event.delta?.rewardVariance);
+      const advantageMean = missingNumber(event.delta?.meanAdvantage ?? event.delta?.advantage_mean);
+      if (rewardVariance != null) cispoRewardVariance = rewardVariance;
+      if (advantageMean != null) cispoAdvantageMean = advantageMean;
     }
     if (event.type === "training.warm_start" || event.type === "cispo.warm_start") {
       const id = event.delta?.training_artifact_id ?? event.delta?.trainingArtifactId ?? event.item?.id;
@@ -2670,20 +2684,35 @@ export function projectAtCursor(
       event.type === "sft.checkpoint_eval.completed" ||
       event.type === "sft.heldout_evaluation.completed" ||
       event.type === "sft.heldout_eval.completed" ||
-      event.type === "sft.checkpoint_evaluation.completed"
+      event.type === "sft.checkpoint_evaluation.completed" ||
+      event.type === "training.evaluation.completed"
     ) {
       // A paired heldout payload carries arms, not a scalar metric; it is
       // already projected into `comparison`. Only summarize events that
       // actually report a metric or score.
-      const hasScalar = event.delta?.metric != null
-        || event.delta?.score != null
-        || event.delta?.accuracy != null;
+      const nestedEvaluation = event.delta?.evaluation && typeof event.delta.evaluation === "object" && !Array.isArray(event.delta.evaluation)
+        ? event.delta.evaluation as Record<string, unknown>
+        : {};
+      const scalar = { ...(event.delta ?? {}), ...nestedEvaluation };
+      const hasScalar = scalar.metric != null
+        || scalar.score != null
+        || scalar.accuracy != null
+        || scalar.calibration_accuracy != null;
       if (!hasScalar && event.type.includes("heldout")) continue;
+      const kind = String(event.delta?.kind ?? "");
+      const role = event.delta?.role ?? (
+        kind.includes("checkpoint") || event.type.includes("checkpoint")
+          ? "checkpoint"
+          : kind.includes("heldout") || event.type.includes("heldout")
+            ? "heldout"
+            : event.delta?.phase ?? "selection"
+      );
       evaluations.push({
         sequence: event.sequenceNumber,
-        role: event.delta?.role ?? (event.type.includes("heldout") ? "heldout" : "selection"),
+        role,
         measurementOnly: Boolean(event.delta?.measurementOnly),
         ...(event.delta ?? {}),
+        ...nestedEvaluation,
         item: event.item
       });
     }

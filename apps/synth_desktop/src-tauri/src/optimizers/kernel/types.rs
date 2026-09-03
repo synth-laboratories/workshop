@@ -58,9 +58,10 @@ impl AlgorithmKind {
     pub const fn reducer_version(self) -> &'static str {
         match self {
             Self::Eval => "eval.projection.v3",
-            // v3 persists bounded candidate lever values in the projection so
-            // GEPA visuals do not replay the raw journal to render prompt diffs.
-            Self::Gepa => "gepa.projection.v3",
+            // v4 backfills the projection-derived collection rows introduced
+            // by the shared read model. Terminal v3 runs replay once on first
+            // read, then every later open is an indexed summary/page read.
+            Self::Gepa => "gepa.projection.v4",
             Self::GoEx => "go_ex.projection.v3",
             // v3 persists the bounded metric series and checkpoint evaluation
             // summaries so training surfaces read the projection instead of

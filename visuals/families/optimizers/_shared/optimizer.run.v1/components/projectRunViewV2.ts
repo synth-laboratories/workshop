@@ -473,9 +473,19 @@ function sftProjection(base: ProjectedState, view: OptimizerRunViewV2Like): void
     points: step == null ? [] : [{ step, ...(loss == null ? {} : { trainLoss: loss }) }],
     checkpoints: checkpoints.map((id) => ({
       id,
-      status: id === projection.selectedCheckpointId ? "selected" : "ready"
+      status: id === projection.selectedCheckpointId ? "selected" : "ready",
+      ready: true,
+      selected: id === projection.selectedCheckpointId
     })),
-    evaluations: strings(projection.childEvalRunIds).map((optimizerRunId) => ({ optimizerRunId })),
+    evaluations: [
+      ...records(projection.evaluations).map((evaluation) => ({
+        ...evaluation,
+        role: evaluation.phase ?? "selection",
+        checkpoint_id: evaluation.checkpointId ?? evaluation.checkpoint_id,
+        n: evaluation.sampleCount ?? evaluation.sample_count
+      })),
+      ...strings(projection.childEvalRunIds).map((optimizerRunId) => ({ optimizerRunId }))
+    ],
     // Eval campaigns are not a runtime concept in V2.
     campaigns: [],
     dataset: {

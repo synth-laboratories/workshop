@@ -14,12 +14,12 @@ function limitLabel(kind: string): string {
   return ({ total_rollouts: "Rollouts", proposer_calls: "Proposer calls", cost_usd: "Cost (USD)", wall_time_seconds: "Wall time" } as Record<string, string>)[kind] ?? label(kind);
 }
 
-function DetailCard({ title, eyebrow, children, testId }: { title: string; eyebrow?: string; children: ReactNode; testId?: string }) {
+function DetailCard({ title, eyebrow, summary, children, testId }: { title: string; eyebrow?: string; summary: string; children: ReactNode; testId?: string }) {
   return (
-    <div data-testid={testId} style={{ minWidth: 0, border: "1px solid var(--sv-border)", borderRadius: 9, padding: 11, background: "var(--sv-surface)" }}>
-      {eyebrow ? <div style={{ color: "var(--sv-text-faint)", fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 3 }}>{eyebrow}</div> : null}
-      <strong style={{ display: "block", fontSize: 12 }}>{title}</strong>
-      <dl style={{ display: "grid", gridTemplateColumns: "minmax(78px, .7fr) minmax(0, 1.5fr)", gap: "5px 9px", margin: "8px 0 0", fontSize: 11 }}>
+    <div role="group" aria-label={summary} data-testid={testId} style={{ minWidth: 0, border: "1px solid var(--sv-border)", borderRadius: 9, padding: 11, background: "var(--sv-surface)" }}>
+      {eyebrow ? <div aria-hidden="true" style={{ color: "var(--sv-text-faint)", fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 3 }}>{eyebrow}</div> : null}
+      <strong aria-hidden="true" style={{ display: "block", fontSize: 12 }}>{title}</strong>
+      <dl aria-hidden="true" style={{ display: "grid", gridTemplateColumns: "minmax(78px, .7fr) minmax(0, 1.5fr)", gap: "5px 9px", margin: "8px 0 0", fontSize: 11 }}>
         {children}
       </dl>
     </div>
@@ -49,6 +49,9 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
   const scored = gepa.evaluations.filter((evaluation) => evaluation.reward != null).length;
   const attached = gepa.evaluations.filter((evaluation) => evaluation.reward == null).length;
   const endpoint = container?.url?.replace(/^https?:\/\//, "") ?? "pending";
+  const taskTitle = contract.task?.name ?? contract.task?.id ?? "Task pending";
+  const datasetTitle = dataset?.source ?? "Dataset pending";
+  const containerTitle = container?.specId ?? container?.targetId ?? "Container pending";
 
   return (
     <section className="sv-section" aria-label="GEPA experiment setup" data-testid="gepa-search-overview" style={{ marginTop: 0 }}>
@@ -57,7 +60,12 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
         <span className="sv-mono">configuration · dataset · container · related work</span>
       </div>
       <div data-testid="gepa-experiment-context" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(238px, 100%), 1fr))", gap: 9 }}>
-        <DetailCard title={contract.task?.name ?? contract.task?.id ?? "Task pending"} eyebrow="Configuration" testId="gepa-config-card">
+        <DetailCard
+          title={taskTitle}
+          eyebrow="Configuration"
+          summary={`Configuration: ${taskTitle}. Task ID ${contract.task?.id ?? "pending"}. Program ${contract.program?.id ?? "pending"}. Objective ${objective?.selectionObjective ?? objective?.objectives[0]?.name ?? "pending"}. Mutable fields ${contract.program?.mutableFields.join(", ") || "pending"}. Policy ${gepa.models.policy ?? container?.policyConfig ?? "pending"}. Proposer ${gepa.models.proposer ?? "pending"}.`}
+          testId="gepa-config-card"
+        >
           <Detail name="Task ID">{contract.task?.id ?? "pending"}</Detail>
           <Detail name="Program">{contract.program?.id ?? "pending"}</Detail>
           <Detail name="Objective">{objective?.selectionObjective ?? objective?.objectives[0]?.name ?? "pending"}</Detail>
@@ -66,7 +74,12 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
           <Detail name="Proposer">{gepa.models.proposer ?? "pending"}</Detail>
         </DetailCard>
 
-        <DetailCard title={dataset?.source ?? "Dataset pending"} eyebrow="Dataset" testId="gepa-dataset-card">
+        <DetailCard
+          title={datasetTitle}
+          eyebrow="Dataset"
+          summary={`Dataset: ${datasetTitle}. Version ${[dataset?.config, dataset?.revision].filter(Boolean).join(" · ") || "pending"}. Catalog ${count(dataset?.rowCount)} rows and ${count(dataset?.labelCount)} labels. Source splits: train ${count(dataset?.splits?.train)}, selection ${count(dataset?.splits?.selection)}, heldout ${count(dataset?.splits?.heldout)}. Run taskset: train ${count(contract.splits?.train)}, heldout ${count(contract.splits?.heldout)}. Search pools: minibatch ${count(contract.splits?.minibatch)}, reflection ${count(contract.splits?.reflection)}, Pareto ${count(contract.splits?.pareto)}.`}
+          testId="gepa-dataset-card"
+        >
           <Detail name="Version">{[dataset?.config, dataset?.revision].filter(Boolean).join(" · ") || "pending"}</Detail>
           <Detail name="Catalog">{count(dataset?.rowCount)} rows · {count(dataset?.labelCount)} labels</Detail>
           <Detail name="Source splits">train {count(dataset?.splits?.train)} · selection {count(dataset?.splits?.selection)} · heldout {count(dataset?.splits?.heldout)}</Detail>
@@ -75,7 +88,12 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
           <Detail name="Digest" title={dataset?.digest}>{dataset?.digest ? `${dataset.digest.slice(0, 18)}…` : "pending"}</Detail>
         </DetailCard>
 
-        <DetailCard title={container?.specId ?? container?.targetId ?? "Container pending"} eyebrow="Container" testId="gepa-container-card">
+        <DetailCard
+          title={containerTitle}
+          eyebrow="Container"
+          summary={`Container: ${containerTitle}. Binding ${container?.verified ? "contract verified" : "pending"}. Instance ${container?.workshopInstance ?? "pending"}. Endpoint ${endpoint}. Runtime ${label(container?.runtimeFamily)}. Evaluator ${container?.evaluatorId ?? "pending"}. Reward owner ${label(container?.rewardAuthority)}. Credential ${label(container?.credentialMode)}.`}
+          testId="gepa-container-card"
+        >
           <Detail name="Binding">{container?.verified ? "contract verified" : "pending"}</Detail>
           <Detail name="Instance">{container?.workshopInstance ?? "pending"}</Detail>
           <Detail name="Endpoint" title={container?.url}>{endpoint}</Detail>
@@ -85,7 +103,12 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
           <Detail name="Credential">{label(container?.credentialMode)}</Detail>
         </DetailCard>
 
-        <DetailCard title={`${gepa.candidates.length} candidate${gepa.candidates.length === 1 ? "" : "s"} · ${scored} scored`} eyebrow="Related work" testId="gepa-related-work-card">
+        <DetailCard
+          title={`${gepa.candidates.length} candidate${gepa.candidates.length === 1 ? "" : "s"} · ${scored} scored`}
+          eyebrow="Related work"
+          summary={`Related work: ${gepa.candidates.length} candidates, ${scored} scored, ${gepa.rolloutsCompleted} completed rollouts, ${attached} attached rollouts. Runtime ${gepa.runtime.configuredRolloutWorkers ?? "unknown"} configured, ${gepa.runtime.estimatedEffectiveConcurrency?.toFixed(1) ?? "unknown"} effective, ${gepa.runtime.rolloutsPerMinute?.toFixed(1) ?? "unknown"} rollouts per minute. Proposer ${proposerRunning} running, ${proposerCompleted} complete, ${proposerFailed} failed. ${gepa.failedAttempts.length} exhausted attempts. Current phase ${gepa.activity.label}.`}
+          testId="gepa-related-work-card"
+        >
           <Detail name="Rollouts">{gepa.rolloutsCompleted.toLocaleString()} completed · {attached.toLocaleString()} attached</Detail>
           <Detail name="Runtime">{gepa.runtime.configuredRolloutWorkers ?? "?"} configured · {gepa.runtime.estimatedEffectiveConcurrency?.toFixed(1) ?? "?"} effective · {gepa.runtime.rolloutsPerMinute?.toFixed(1) ?? "?"} rollouts/min</Detail>
           <Detail name="Proposer">{proposerRunning} running · {proposerCompleted} complete · {proposerFailed} failed</Detail>

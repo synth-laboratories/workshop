@@ -1003,7 +1003,7 @@ window.synthWorkspaceScope ??= isTauri
 		};
 		window.synthOptimizers ??= {
 			listAlgorithms: () => fromGenerated(spectaCommands.optimizersAlgorithmsList()) as Promise<import("../bridge").OptimizerAlgorithmInfo[]>,
-			listRecipes: () => fromGenerated(spectaCommands.optimizersRecipesList()) as Promise<import("../bridge").OptimizerRecipeInfo[]>,
+			listRecipes: (sessionRef) => fromGenerated(spectaCommands.optimizersRecipesList(sessionRef ?? null)) as Promise<import("../bridge").OptimizerRecipeInfo[]>,
 			startRecipe: (request) => fromGenerated(spectaCommands.optimizersRecipeStart(wire(request))),
 			stageEvalCandidates: (request) =>
 				fromGenerated(spectaCommands.optimizersStageEvalCandidates(wire(request))) as Promise<{ id: string; candidates: { id: string; label: string }[] }>,

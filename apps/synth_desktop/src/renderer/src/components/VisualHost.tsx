@@ -1472,6 +1472,7 @@ function numericAttribute(element: Element, name: string): number {
  * as a passing boolean. */
 function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactRef; children: ReactNode }) {
 	const root = useRef<HTMLDivElement>(null);
+	const lastPublishedObservation = useRef<string | null>(null);
 	const [bindingsDigest, setBindingsDigest] = useState<string | null>(null);
 	const template = artifact.templateId ? resolveTemplate(artifact.templateId) : undefined;
 	const contract = template?.observationContract;
@@ -1489,14 +1490,16 @@ function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactR
 
 	useEffect(() => {
 		const host = root.current;
-		if (!host || !contract || !bindingsDigest || !artifact.visualId || !artifact.revision || !bridges.visuals) return;
+		const visualBridge = bridges.visuals;
+		if (!host || !contract || !bindingsDigest || !artifact.visualId || !artifact.revision || !visualBridge) return;
 		let frame: number | null = null;
+		lastPublishedObservation.current = null;
 		const publish = () => {
 			frame = null;
 			const surface = host.querySelector("[data-visual-transport-state]");
 			if (!surface) return;
 			const rawError = surface.getAttribute("data-visual-error")?.trim();
-			void bridges.visuals?.reportObservation({
+			const observation = {
 				schemaVersion: "synth.rendered-visual-observation.v1",
 				visualId: artifact.visualId!,
 				renderedRevision: artifact.revision!,
@@ -1508,7 +1511,24 @@ function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactR
 				terminal: surface.getAttribute("data-visual-terminal") === "true",
 				error: rawError || null,
 				observedAt: new Date().toISOString()
+			} as const;
+			// Rich visuals can mutate many descendants while their readiness facts
+			// stay unchanged. Publishing every mutation feeds the resulting app
+			// event back into run invalidation and creates a render/report loop.
+			// The timestamp is deliberately excluded: only semantic observation
+			// changes deserve another durable receipt.
+			const observationKey = JSON.stringify({
+				bindingsDigest,
+				transportState: observation.transportState,
+				rolloutCount: observation.rolloutCount,
+				renderedFrameCount: observation.renderedFrameCount,
+				semanticEventCount: observation.semanticEventCount,
+				terminal: observation.terminal,
+				error: observation.error
 			});
+			if (lastPublishedObservation.current === observationKey) return;
+			lastPublishedObservation.current = observationKey;
+			void visualBridge.reportObservation(observation);
 		};
 		const schedule = () => {
 			if (frame == null) frame = window.requestAnimationFrame(publish);

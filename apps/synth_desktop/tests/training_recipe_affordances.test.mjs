@@ -19,7 +19,12 @@ test("training placements are projected from the Optimizers recipe catalog", () 
 
 test("start rechecks recipe admission instead of trusting a selected label", () => {
   assert.match(source, /selectedRecipe\?\.availability !== "available"/);
-  assert.match(source, /disabled=\{!selectedPlacementAvailable \|\| !targets\.length/);
+  assert.match(source, /disabled=\{!selectedPlacementAvailable \|\| \(placement === "mlx" && !targets\.length\)/);
+  assert.match(source, /if \(placement === "mlx" && !targetId\)/);
+  assert.match(source, /algorithm === "cispo" && placement === "mlx" && !parentArtifact/);
+  assert.match(source, /\.\.\.\(placement === "mlx" \? \{ containerId: targetId \} : \{\}\)/);
+  assert.match(source, /cispo\.banking77\.tinker\.v1/);
+  assert.match(source, /cispo\.hosted\.tinker\.v1/);
 });
 
 test("the training workspace reads the shared run read model and never polls an event prefix", () => {

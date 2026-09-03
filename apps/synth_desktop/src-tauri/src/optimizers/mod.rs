@@ -5,6 +5,7 @@ pub(crate) mod annotation_stage;
 pub(crate) mod live_annotation;
 mod artifacts;
 mod cispo;
+mod cispo_client;
 pub(crate) mod cloud;
 mod container_eval;
 pub(crate) mod container_lifecycle;

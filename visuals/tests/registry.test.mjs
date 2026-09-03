@@ -50,6 +50,7 @@ const EXPECTED_IDS = [
   "live.harbor_eval.v1",
   "live.intern_acceptance.v1",
   "model.compare.v1",
+  "optimizer.cispo.live.v1",
   "optimizer.eval.live.v1",
   "optimizer.gepa.candidate.v1",
   "optimizer.gepa.evaluations.v1",

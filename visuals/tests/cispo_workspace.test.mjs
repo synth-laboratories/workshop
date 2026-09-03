@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { algorithmLabel } from "../families/optimizers/_shared/optimizer.run.v1/components/algorithmLabel.ts";
 import { projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
+import { projectedScalar } from "../families/optimizers/cispo/optimizer.cispo.live.v1/collectionHydration.ts";
 
 const RUN = {
   id: "cispo_mlx_workspace",
@@ -114,4 +115,54 @@ test("uniform CISPO groups surface a truthful no-learning-signal stop", () => {
     }
   ]);
   assert.equal(projected.cispo.noLearningSignal, true);
+});
+
+test("CISPO derives group size from streamed rewards and retains selection evidence", () => {
+  const projected = projectAtCursor({ ...RUN, status: "completed" }, [
+    {
+      ...base,
+      sequenceNumber: 1,
+      type: "cispo.rollout_group.completed",
+      delta: { rewards: [0, 0], reward_variance: 0 }
+    },
+    {
+      ...base,
+      sequenceNumber: 2,
+      type: "training.metrics",
+      delta: { step: 1, group_size: 1, optimizer_step: 1 }
+    },
+    {
+      ...base,
+      sequenceNumber: 3,
+      type: "sft.checkpoint.ready",
+      item: { id: "ckpt_1_inference", status: "ready", raw: {} }
+    },
+    {
+      ...base,
+      sequenceNumber: 4,
+      type: "sft.checkpoint.promoted",
+      delta: { checkpointId: "ckpt_1_inference", calibration_accuracy: 0 }
+    },
+    {
+      ...base,
+      sequenceNumber: 5,
+      type: "sft.heldout_evaluation.completed",
+      delta: {
+        kind: "cispo.checkpoint_eval.completed",
+        evaluation: { checkpoint_id: "ckpt_1_inference", calibration_accuracy: 0, step: 1 }
+      }
+    }
+  ]);
+  assert.equal(projected.cispo.groupSize, 2);
+  assert.equal(projected.sft.checkpoints[0].selected, true);
+  assert.equal(projected.sft.checkpoints[0].promoted, false);
+  assert.equal(projected.sft.evaluations.length, 1);
+  assert.equal(projected.sft.evaluations[0].role, "checkpoint");
+  assert.equal(projected.sft.evaluations[0].calibration_accuracy, 0);
+});
+
+test("CISPO collection telemetry cannot overwrite authoritative group size", () => {
+  assert.equal(projectedScalar(2, 1), 2);
+  assert.equal(projectedScalar(null, 1), 1);
+  assert.equal(projectedScalar(undefined, "1"), undefined);
 });

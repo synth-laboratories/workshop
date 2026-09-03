@@ -1,0 +1,29 @@
+id = "eval.banking77.gold.v1"
+algorithm = "eval"
+title = "Banking77 · gold baseline · annotated"
+container = "banking77"
+provider = "none"
+model = "dataset_gold"
+locality = "container"
+credential_mode = "proxy"
+family = "banking77"
+harness = "dataset_gold"
+policy_config = "dataset_gold"
+requires_credential_advertisement = false
+concurrency = 2
+train_seeds = [0, 1, 2, 3, 4]
+
+[bounds]
+max_cost_usd = 0.01
+max_total_rollouts = 5
+
+[event_stream]
+poll_interval_ms = 100
+page_limit = 200
+max_events_per_rollout = 2000
+
+[media]
+frame_retention = "none"
+max_frame_bytes = 1048576
+max_frames_per_rollout = 1
+max_total_frame_bytes = 5242880

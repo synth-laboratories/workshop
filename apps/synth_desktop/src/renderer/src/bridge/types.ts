@@ -910,7 +910,7 @@ export type OptimizerInferDelta = {
 
 export type OptimizersBridge = {
 	listAlgorithms(): Promise<OptimizerAlgorithmInfo[]>;
-	listRecipes(): Promise<OptimizerRecipeInfo[]>;
+	listRecipes(sessionRef?: string): Promise<OptimizerRecipeInfo[]>;
 	startRecipe(request: {
 		recipeId: string;
 		sessionRef?: string;

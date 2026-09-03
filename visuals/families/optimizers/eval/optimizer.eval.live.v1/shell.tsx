@@ -30,7 +30,6 @@ import type {
   OptimizerRun,
   ProjectedState
 } from "../../_shared/optimizer.run.v1/components/projectEvents.ts";
-
 export type AnalysisCampaign = {
   campaignId?: string;
   status?: string;

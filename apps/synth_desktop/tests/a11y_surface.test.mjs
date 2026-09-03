@@ -71,15 +71,14 @@ test("plugin navigation announces the active page and hides impossible pre-insta
   assert.match(optimizers, /Install and start Optimizers/);
 });
 
-test("hosted CISPO requires an explicit compatible retained SFT training state", () => {
+test("hosted CISPO launches the admitted Tinker recipe without an SFT warm-start form", () => {
   const optimizers = read("components/OptimizersPage.tsx");
-  assert.match(optimizers, /data-testid="hosted-cispo-warm-start"/);
-  assert.match(optimizers, /optimizerAlgorithm: "sft"/);
-  assert.match(optimizers, /checkpointKind: "training"/);
-  assert.match(optimizers, /provider: "tinker"/);
-  assert.match(optimizers, /selectedWarmStart\.baseModel !== trainingModel/);
-  assert.match(optimizers, /algorithm_config\.initial_state_path/);
-  assert.match(optimizers, /never defaults to latest/);
+  assert.doesNotMatch(optimizers, /data-testid="hosted-cispo-warm-start"/);
+  assert.match(optimizers, /data-testid="start-cispo-hosted"/);
+  assert.match(optimizers, /cispo\.banking77\.tinker\.v1/);
+  assert.match(optimizers, /Never draft HostedOptimizerClient\.launch_training/);
+  assert.doesNotMatch(optimizers, /algorithm_config\.initial_state_path/);
+  assert.doesNotMatch(optimizers, /never defaults to latest/);
 });
 
 test("execution targets include Laguna local + OpenRouter Luna/Laguna + Synth Cloud + Intern", () => {

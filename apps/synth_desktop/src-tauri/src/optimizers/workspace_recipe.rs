@@ -940,10 +940,11 @@ pub fn session_search_roots(
 }
 
 pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
-    let credential_input = match recipe.provider.to_ascii_lowercase().as_str() {
-        "openrouter" => "OPENROUTER_API_KEY",
-        "anthropic" => "ANTHROPIC_API_KEY",
-        _ => "OPENAI_API_KEY",
+    let credential_inputs: Vec<&str> = match recipe.provider.to_ascii_lowercase().as_str() {
+        "none" => Vec::new(),
+        "openrouter" => vec!["OPENROUTER_API_KEY"],
+        "anthropic" => vec!["ANTHROPIC_API_KEY"],
+        _ => vec!["OPENAI_API_KEY"],
     };
     json!({
         "id": recipe.id,
@@ -980,7 +981,7 @@ pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
             "harness": recipe.harness,
             "config": recipe.policy_config,
         },
-        "credentialInputs": [credential_input],
+        "credentialInputs": credential_inputs,
         "expectedVisual": match recipe.algorithm {
             AlgorithmKind::Gepa => "optimizer.gepa.v1",
             AlgorithmKind::Eval => "experiment.overview.v1",
@@ -2271,6 +2272,28 @@ max_total_rollouts = 1
             catalog_entry(&recipe)["credentialInputs"],
             json!(["OPENROUTER_API_KEY"])
         );
+    }
+
+    #[test]
+    fn catalog_does_not_invent_a_credential_for_provider_none() {
+        let (_dir, workspace) = write_workspace();
+        fs::write(
+            workspace.join(RECIPE_FILE),
+            r#"
+id = "eval.banking77.gold.v1"
+algorithm = "eval"
+container = "banking77"
+provider = "none"
+model = "dataset_gold"
+locality = "container"
+[bounds]
+max_cost_usd = 0.01
+max_total_rollouts = 5
+"#,
+        )
+        .unwrap();
+        let recipe = find_recipe(&workspace, "eval.banking77.gold.v1").unwrap();
+        assert_eq!(catalog_entry(&recipe)["credentialInputs"], json!([]));
     }
 
     #[test]

@@ -6,6 +6,13 @@ type EvaluationPoint = {
 	score?: number | null;
 	loss?: number | null;
 	delta?: number | null;
+	macro_f1?: number | null;
+	ci_low?: number | null;
+	ci_high?: number | null;
+	confidence?: number | null;
+	paired_n?: number | null;
+	verdict?: string | null;
+	claim_ready?: boolean | null;
 	checkpointId?: string | null;
 	checkpoint_id?: string | null;
 	digest?: string | null;
@@ -42,7 +49,8 @@ function EvaluationReviewDialog({ evaluation, onClose }: { evaluation: Evaluatio
 		<div className="ws-dialog training-evaluation-dialog" role="dialog" aria-modal="true" aria-labelledby="training-evaluation-dialog-title" data-testid="training-evaluation-dialog">
 			<div className="ws-dialog-head"><div><span className="ws-eyebrow">{evaluation.phase ?? "checkpoint"} evaluation</span><h2 className="ws-dialog-title" id="training-evaluation-dialog-title">{identity}</h2></div><button ref={closeRef} type="button" className="ws-btn ws-btn-ghost ws-btn-small" onClick={onClose} aria-label="Close evaluation review">Close</button></div>
 			<section className="run-progress-section" aria-label="Evaluation identity"><dl className="ws-kv"><dt>Step</dt><dd>{evaluation.step ?? "—"}</dd><dt>Status</dt><dd>{evaluation.status ?? "completed"}</dd><dt>Digest</dt><dd className="ws-mono">{evaluation.digest ?? evaluation.artifact_digest ?? "—"}</dd><dt>Evaluator</dt><dd>{evaluation.evaluator ?? "—"}</dd></dl></section>
-			<section className="optimizer-eval-scorecard" aria-label="Evaluation scorecard"><span className="optimizer-eyebrow">Scorecard</span><table><thead><tr><th>Candidate</th><th>Stage</th><th>Valid</th><th>Primary</th><th>Loss</th><th>Lift</th></tr></thead><tbody><tr><td>{identity}</td><td>{evaluation.phase ?? "checkpoint"}</td><td>{evaluation.sample_count ?? "—"}</td><td>{typeof evaluation.score === "number" ? evaluation.score.toFixed(3) : "—"}</td><td>{typeof evaluation.loss === "number" ? evaluation.loss.toFixed(3) : "—"}</td><td>{typeof evaluation.delta === "number" ? `${evaluation.delta >= 0 ? "+" : ""}${evaluation.delta.toFixed(3)}` : "—"}</td></tr></tbody></table></section>
+			<section className="optimizer-eval-scorecard" aria-label="Evaluation scorecard"><span className="optimizer-eyebrow">Scorecard</span><table><thead><tr><th>Candidate</th><th>Stage</th><th>Valid</th><th>Accuracy</th><th>Macro-F1</th><th>Paired lift</th></tr></thead><tbody><tr><td>{identity}</td><td>{evaluation.phase ?? "checkpoint"}</td><td>{evaluation.paired_n ?? evaluation.sample_count ?? "—"}</td><td>{typeof evaluation.score === "number" ? evaluation.score.toFixed(3) : "—"}</td><td>{typeof evaluation.macro_f1 === "number" ? evaluation.macro_f1.toFixed(3) : "—"}</td><td>{typeof evaluation.delta === "number" ? `${evaluation.delta >= 0 ? "+" : ""}${evaluation.delta.toFixed(3)}` : "—"}</td></tr></tbody></table></section>
+			{typeof evaluation.delta === "number" ? <section className="run-progress-section" aria-label="Paired uplift decision"><dl className="ws-kv"><dt>Verdict</dt><dd>{evaluation.verdict?.replaceAll("_", " ") ?? "inconclusive"}</dd><dt>{Math.round((evaluation.confidence ?? 0.95) * 100)}% interval</dt><dd>{typeof evaluation.ci_low === "number" && typeof evaluation.ci_high === "number" ? `${evaluation.ci_low >= 0 ? "+" : ""}${evaluation.ci_low.toFixed(3)} to ${evaluation.ci_high >= 0 ? "+" : ""}${evaluation.ci_high.toFixed(3)}` : "—"}</dd><dt>Claim</dt><dd>{evaluation.claim_ready === true ? "Uplift supported" : "Not established"}</dd></dl></section> : null}
 			{evaluation.detail != null ? <details className="training-evaluation-evidence"><summary>Evidence receipt</summary><pre>{JSON.stringify(evaluation.detail, null, 2)}</pre></details> : null}
 		</div>
 	</div>;

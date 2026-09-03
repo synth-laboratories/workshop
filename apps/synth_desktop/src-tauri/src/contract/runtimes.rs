@@ -161,12 +161,14 @@ pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
     templates: &[
         "optimizer.gepa.live.v1",
         "optimizer.sft.live.v1",
+        "optimizer.cispo.live.v1",
         "optimizer.run.v1",
     ],
     bounded_recipes: &[
         "sft.qwen35-2b.mlx.v1",
         "cispo.banking77.mlx.v1",
-        "cispo.slime.hosted.v1",
+        "cispo.hosted.tinker.v1",
+        "cispo.banking77.tinker.v1",
     ],
     recipe_schema: "gepa.recipe.v1",
     provisioned_by_desktop: true,

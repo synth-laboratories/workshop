@@ -25,6 +25,14 @@ function isTrainSelectable(candidate: CandidateRecord): boolean {
 
 function fullTrainScores(gepa: GepaState, candidateId: string): Map<string, number> {
   const scores = new Map<string, number>();
+  const candidate = gepa.candidates.find((row) => String(row.id ?? "") === candidateId);
+  const durable = candidate?.rewardVector;
+  if (durable && typeof durable === "object" && !Array.isArray(durable)) {
+    for (const [exampleId, reward] of Object.entries(durable as Record<string, unknown>)) {
+      if (typeof reward === "number" && Number.isFinite(reward)) scores.set(exampleId, reward);
+    }
+  }
+  if (scores.size > 0) return scores;
   for (const evaluation of gepa.evaluations) {
     if (evaluation.candidateId !== candidateId || evaluation.reward == null || !evaluation.exampleId) continue;
     if (!["seed_full_train", "candidate_full_train"].includes(evaluation.stage ?? "")) continue;
@@ -33,10 +41,60 @@ function fullTrainScores(gepa: GepaState, candidateId: string): Map<string, numb
   return scores;
 }
 
-function cellColor(reward: number, winner: boolean): string {
-  if (winner) return "var(--sv-accent)";
-  if (reward > 0) return "var(--sv-border-strong)";
-  return "var(--sv-surface-muted)";
+function dominates(left: Map<string, number>, right: Map<string, number>, dimensions: string[]): boolean {
+  if (left.size === 0 || right.size === 0) return false;
+  let strictlyBetter = false;
+  for (const dimension of dimensions) {
+    const a = left.get(dimension);
+    const b = right.get(dimension);
+    if (a == null || b == null || a < b) return false;
+    if (a > b) strictlyBetter = true;
+  }
+  return strictlyBetter;
+}
+
+function rewardVectorGradient(
+  examples: string[],
+  scores: Map<string, number>,
+  bestByExample: Map<string, number>
+): string {
+  if (examples.length === 0) return "none";
+  const stops = examples.flatMap((exampleId, index) => {
+    const reward = scores.get(exampleId);
+    const winner = reward != null && Math.abs(reward - (bestByExample.get(exampleId) ?? Number.POSITIVE_INFINITY)) <= Number.EPSILON;
+    const color = reward == null || reward <= 0
+      ? "var(--sv-surface-muted)"
+      : winner
+        ? "var(--sv-accent)"
+        : "var(--sv-border-strong)";
+    const start = index * 7;
+    return [`${color} ${start}px ${start + 5}px`, `transparent ${start + 5}px ${start + 7}px`];
+  });
+  return `linear-gradient(to right, ${stops.join(", ")})`;
+}
+
+export function frontierFacts(gepa: GepaState): {
+  members: number;
+  dimensions: number;
+  coverage: number;
+} {
+  const frontierIds = new Set(gepa.frontier.map((member) => String(member.candidateId)));
+  const selectable = gepa.candidates.filter(isTrainSelectable);
+  const dimensions = [...new Set(selectable.flatMap((candidate) =>
+    [...fullTrainScores(gepa, String(candidate.id ?? "")).keys()]
+  ))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const scoreRows = selectable.map((candidate) => ({
+    id: String(candidate.id ?? ""),
+    scores: fullTrainScores(gepa, String(candidate.id ?? ""))
+  }));
+  const hasDurableVectors = scoreRows.some((row) => row.scores.size > 0);
+  const frontierRows = scoreRows.filter(({ id, scores }) => hasDurableVectors
+    ? scores.size > 0 && !scoreRows.some((other) => other.id !== id && dominates(other.scores, scores, dimensions))
+    : frontierIds.has(id));
+  const coverage = new Set(frontierRows.flatMap((row) =>
+    [...row.scores].filter(([, reward]) => reward > 0).map(([exampleId]) => exampleId)
+  )).size;
+  return { members: frontierRows.length, dimensions: dimensions.length, coverage };
 }
 
 export function FrontierPanel({
@@ -60,9 +118,13 @@ export function FrontierPanel({
       .filter((value): value is number => value != null);
     if (values.length) bestByExample.set(exampleId, Math.max(...values));
   }
-  const rows: CandidateRow[] = selectable.map((candidate) => {
-    const id = String(candidate.id ?? "");
-    const scores = fullTrainScores(gepa, id);
+  const scoreRows = selectable.map((candidate) => ({
+    candidate,
+    id: String(candidate.id ?? ""),
+    scores: fullTrainScores(gepa, String(candidate.id ?? ""))
+  }));
+  const hasDurableVectors = scoreRows.some((row) => row.scores.size > 0);
+  const rows: CandidateRow[] = scoreRows.map(({ candidate, id, scores }) => {
     const values = [...scores.values()];
     const wins = [...scores].filter(([exampleId, reward]) =>
       Math.abs(reward - (bestByExample.get(exampleId) ?? Number.POSITIVE_INFINITY)) <= Number.EPSILON
@@ -73,7 +135,9 @@ export function FrontierPanel({
       scores,
       mean: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined,
       wins,
-      onFrontier: frontierIds.has(id)
+      onFrontier: hasDurableVectors
+        ? scores.size > 0 && !scoreRows.some((other) => other.id !== id && dominates(other.scores, scores, allExamples))
+        : frontierIds.has(id)
     };
   }).sort((a, b) => Number(b.onFrontier) - Number(a.onFrontier) || b.wins - a.wins);
   const pending = gepa.candidates.filter((candidate) => !isTrainSelectable(candidate));
@@ -148,13 +212,19 @@ export function FrontierPanel({
                 {row.wins} best cells · mean {row.mean?.toFixed(3) ?? "—"}
               </span>
             </span>
-            <span style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(1, allExamples.length)}, minmax(5px, 1fr))`, gap: 2, alignSelf: "center" }}>
-              {allExamples.map((exampleId) => {
-                const reward = row.scores.get(exampleId);
-                const winner = reward != null && Math.abs(reward - (bestByExample.get(exampleId) ?? Number.POSITIVE_INFINITY)) <= Number.EPSILON;
-                return <span key={exampleId} title={`${exampleId}: ${reward == null ? "missing" : reward.toFixed(3)}${winner ? " · best" : ""}`} style={{ height: 16, minWidth: 5, borderRadius: 2, border: "1px solid var(--sv-border)", background: reward == null ? "transparent" : cellColor(reward, winner), opacity: row.onFrontier ? 1 : .55 }} />;
-              })}
-            </span>
+            <span
+              aria-hidden="true"
+              style={{
+                display: "block",
+                width: "100%",
+                height: 16,
+                alignSelf: "center",
+                backgroundImage: rewardVectorGradient(allExamples, row.scores, bestByExample),
+                backgroundRepeat: "no-repeat",
+                backgroundSize: `${Math.max(7, allExamples.length * 7)}px 16px`,
+                opacity: row.onFrontier ? 1 : 0.55
+              }}
+            />
           </button>
           );
         })}
