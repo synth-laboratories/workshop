@@ -9843,6 +9843,14 @@ html.visual-expanded .sidebar {
 	stroke-linejoin: round;
 }
 
+.mitten-frame-svg > .mitten-frame-fill {
+	stroke: none;
+}
+
+.mitten-frame-svg > .mitten-frame-stroke {
+	fill: none;
+}
+
 .chat-pane-frame > .titlebar,
 .terminal-head,
 .workbench-side-panel-header {
