@@ -7,8 +7,9 @@ use super::{
     eval_relay::{self, RelayContext, RelaySettings},
     events::OptimizerEventDraft,
     models::{
-        OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding,
-        OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
+        OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope,
+        OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef,
+        OptimizerRunRecord,
     },
     service::ChatVisualPublication,
     workspace_recipe::{self, WorkspaceRecipe},
@@ -16,9 +17,9 @@ use super::{
 };
 use crate::container_stream::{
     authoritative_poll_telemetry, declared_annotation_poll_url, declared_annotation_sse_url,
-    declared_poll_url, declared_reward_poll_url, declared_sse_url,
-    declared_stream_descriptor, refuse_auto_transport, resolve_declared_url,
-    wait_for_stream_subscribed, StreamDiagnostics, SUBSCRIBE_READY_TIMEOUT,
+    declared_poll_url, declared_reward_poll_url, declared_sse_url, declared_stream_descriptor,
+    refuse_auto_transport, resolve_declared_url, wait_for_stream_subscribed, StreamDiagnostics,
+    SUBSCRIBE_READY_TIMEOUT,
 };
 use crate::visuals::{VisualStatus, VisualUpdateRequest, VISUAL_BINDINGS_SCHEMA_VERSION};
 use anyhow::{bail, Context, Result};
@@ -172,6 +173,9 @@ impl EvalSpec {
                 .get(),
             maximum_steps_per_rollout: recipe.resource_limits.maximum_steps_per_rollout.0.get(),
             admitted_use_policy: Some(admitted_use_policy),
+            // Inline provider credentials are owned by Workshop's scoped proxy,
+            // not by the container, so container-local credential readiness is
+            // neither required nor an honest signal for this execution path.
             requires_credential_advertisement: false,
             relay: RelaySettings::default(),
             annotation: None,
@@ -181,6 +185,10 @@ impl EvalSpec {
 
     fn requires_credential_advertisement(&self) -> bool {
         self.requires_credential_advertisement
+    }
+
+    fn requires_scoped_proxy_registration(&self) -> bool {
+        self.admitted_use_policy.is_some() && provider_needs_credentials(&self.provider)
     }
 
     fn blocking_http_timeout(&self) -> Duration {
@@ -689,7 +697,9 @@ async fn start_eval(
         )
         .await
         {
-            let _ = settle_live_annotation_visual(&worker, worker_live_visual_id.as_deref(), "failed").await;
+            let _ =
+                settle_live_annotation_visual(&worker, worker_live_visual_id.as_deref(), "failed")
+                    .await;
             // A worker can fail before its first progress projection (for
             // example when Workshop refuses to mint a secrets proxy).  Its
             // durable run is terminal in that case, so its chat-owned visual
@@ -1184,7 +1194,11 @@ async fn current_annotation_pin(
             .summary
             .get("liveAnnotationPin")
             .cloned()
-            .filter(|pin| pin.get("protocolRevisionId").and_then(Value::as_str).is_some())
+            .filter(|pin| {
+                pin.get("protocolRevisionId")
+                    .and_then(Value::as_str)
+                    .is_some()
+            })
             .or_else(|| fallback.cloned()),
         Err(_) => fallback.cloned(),
     }
@@ -1844,7 +1858,8 @@ async fn run_eval_worker(
             let pin = policy_pin.clone();
             // Re-read per dispatch: a mid-run `annotation_protocol_update`
             // advances the run's pin, and the next rollout should use it.
-            let annotation_pin = current_annotation_pin(&service, &run_id, annotation_pin.as_ref()).await;
+            let annotation_pin =
+                current_annotation_pin(&service, &run_id, annotation_pin.as_ref()).await;
             let live_visual_id = live_visual_id.clone();
             let binding_lock = binding_lock.clone();
             let spec = spec.clone();
@@ -2067,9 +2082,18 @@ async fn run_eval_worker(
     // their citations against the verified journal. Recorded as an evidence
     // amendment; never a worker failure and never a sealed finding.
     if spec.live_annotation.is_some() {
-        match crate::session::live_annotation_projection::reconcile_run(&service, service.database(), &run_id, &records).await {
+        match crate::session::live_annotation_projection::reconcile_run(
+            &service,
+            service.database(),
+            &run_id,
+            &records,
+        )
+        .await
+        {
             Ok(summary) => {
-                if let Err(error) = record_live_annotation_reconciliation(&service, &run_id, &summary).await {
+                if let Err(error) =
+                    record_live_annotation_reconciliation(&service, &run_id, &summary).await
+                {
                     crate::platform::logging::report(
                         "container_eval",
                         "live_annotation",
@@ -2100,17 +2124,23 @@ async fn record_live_annotation_reconciliation(
         .run_read(move |conn| {
             let state = super::kernel::persist::load_state(conn, &owned)?
                 .context("evaluation run has no saved kernel projection")?;
-            Ok(state.terminal.as_ref().map(|terminal| terminal.final_sequence))
+            Ok(state
+                .terminal
+                .as_ref()
+                .map(|terminal| terminal.final_sequence))
         })
         .await?
         .context("live annotation reconciliation may record only after a sealed terminal state")?;
-    let draft = super::events::OptimizerEventDraft::new("optimizer.evidence.amended", EVAL_ALGORITHM_ID)
-        .idempotency_key(format!("eval:live-annotation-reconciliation:{terminal_sequence}"))
-        .delta(Map::from_iter([
-            ("terminalSequence".into(), json!(terminal_sequence)),
-            ("liveAnnotationReconciliation".into(), summary.clone()),
-        ]))
-        .raw(json!({ "source": "live_annotation_projection" }));
+    let draft =
+        super::events::OptimizerEventDraft::new("optimizer.evidence.amended", EVAL_ALGORITHM_ID)
+            .idempotency_key(format!(
+                "eval:live-annotation-reconciliation:{terminal_sequence}"
+            ))
+            .delta(Map::from_iter([
+                ("terminalSequence".into(), json!(terminal_sequence)),
+                ("liveAnnotationReconciliation".into(), summary.clone()),
+            ]))
+            .raw(json!({ "source": "live_annotation_projection" }));
     service
         .append_event_payloads(run_id.to_string(), vec![draft])
         .await?;
@@ -2173,10 +2203,11 @@ async fn append_provider_usage_receipt(
             receipt.run_id,
         );
     }
-    if let Some(existing) = service
+    let events = service
         .events_after(run_id.to_string(), 0, Some(5_000))
-        .await?
-        .into_iter()
+        .await?;
+    if let Some(existing) = events
+        .iter()
         .find(|event| event.event_type == "optimizer.usage.reconciled")
     {
         let existing_digest = existing
@@ -2193,21 +2224,38 @@ async fn append_provider_usage_receipt(
         );
     }
     let current = service.get(run_id.to_string()).await?.usage;
-    if current.calls > receipt.calls
-        || current.prompt_tokens > receipt.input_tokens
-        || current.completion_tokens > receipt.output_tokens
+    // Container evaluators may own a grader credential while Workshop's
+    // scoped proxy owns only the policy credential. In that mixed-authority
+    // case the proxy receipt must reconcile against the policy lane, not the
+    // policy+grader aggregate reported by the container.
+    let proxy_lane = proxy_policy_usage(&events).filter(|lane| lane.saw_tokens);
+    let expected_prompt = proxy_lane
+        .as_ref()
+        .map(|lane| lane.prompt_tokens)
+        .unwrap_or(current.prompt_tokens);
+    let expected_completion = proxy_lane
+        .as_ref()
+        .map(|lane| lane.completion_tokens)
+        .unwrap_or(current.completion_tokens);
+    // A split container's policy cost is explicitly an estimate. The proxy
+    // receipt is the billing authority and may legitimately be lower; only a
+    // non-split, already-committed proxy total is a lower bound.
+    let expected_cost = proxy_lane.is_none().then_some(current.cost_usd).flatten();
+    if (proxy_lane.is_none() && current.calls > receipt.calls)
+        || expected_prompt > receipt.input_tokens
+        || expected_completion > receipt.output_tokens
     {
         bail!(
-            "provider_usage_reconciliation_conflict: receipt totals for {run_id} are below committed provider usage (calls {} < {}, prompt {} < {}, completion {} < {})",
+            "provider_usage_reconciliation_conflict: receipt totals for {run_id} are below committed proxy-attributable usage (calls {} < {}, prompt {} < {}, completion {} < {})",
             receipt.calls,
-            current.calls,
+            if proxy_lane.is_some() { 0 } else { current.calls },
             receipt.input_tokens,
-            current.prompt_tokens,
+            expected_prompt,
             receipt.output_tokens,
-            current.completion_tokens,
+            expected_completion,
         );
     }
-    if let (Some(receipt_cost), Some(committed_cost)) = (receipt.cost_usd, current.cost_usd) {
+    if let (Some(receipt_cost), Some(committed_cost)) = (receipt.cost_usd, expected_cost) {
         // Per-request costs and the aggregate proxy receipt can differ by a
         // final decimal-rounding micro-dollar. The proxy remains authoritative;
         // reject only a material deficit.
@@ -2219,10 +2267,11 @@ async fn append_provider_usage_receipt(
         }
     }
 
-    let cost_delta = match (receipt.cost_usd, current.cost_usd) {
-        (Some(receipt_cost), Some(committed_cost)) => json!(receipt_cost - committed_cost),
-        (Some(receipt_cost), None) => json!(receipt_cost),
-        (None, _) => Value::Null,
+    let cost_delta = match (receipt.cost_usd, expected_cost, proxy_lane.is_some()) {
+        (_, _, true) => Value::Null,
+        (Some(receipt_cost), Some(committed_cost), false) => json!(receipt_cost - committed_cost),
+        (Some(receipt_cost), None, false) => json!(receipt_cost),
+        (None, _, false) => Value::Null,
     };
     let item = json!({
         "schemaVersion": receipt.schema_version,
@@ -2241,11 +2290,11 @@ async fn append_provider_usage_receipt(
         ),
         (
             "prompt_tokens".into(),
-            json!(receipt.input_tokens - current.prompt_tokens),
+            json!(receipt.input_tokens - expected_prompt),
         ),
         (
             "completion_tokens".into(),
-            json!(receipt.output_tokens - current.completion_tokens),
+            json!(receipt.output_tokens - expected_completion),
         ),
         ("cost_usd".into(), cost_delta),
         ("usage_completeness".into(), json!("reconciled")),
@@ -2266,6 +2315,22 @@ async fn append_provider_usage_receipt(
         )
         .await?;
     Ok(())
+}
+
+fn proxy_policy_usage(events: &[OptimizerEventEnvelope]) -> Option<LaneUsage> {
+    let mut policy = LaneUsage::default();
+    let mut found = false;
+    for event in events {
+        let lane = event
+            .item
+            .as_ref()
+            .and_then(|item| item.pointer("/raw/usage/policy"));
+        if lane.is_some_and(Value::is_object) {
+            add_lane(&mut policy, lane);
+            found = true;
+        }
+    }
+    found.then_some(policy)
 }
 
 /// The campaign plan and one queued event per planned trial, appended as one
@@ -2640,7 +2705,11 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
     if !spec.model.is_empty() {
         models.push(spec.model.clone());
     }
-    if let Some(model) = spec.live_annotation.as_ref().and_then(|source| source.model_name()) {
+    if let Some(model) = spec
+        .live_annotation
+        .as_ref()
+        .and_then(|source| source.model_name())
+    {
         if !models.iter().any(|candidate| candidate == model) {
             models.push(model.to_string());
         }
@@ -2657,7 +2726,10 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
         .as_ref()
         .and_then(|source| source.reasoning_effort())
     {
-        if !reasoning_efforts.iter().any(|candidate| candidate == effort) {
+        if !reasoning_efforts
+            .iter()
+            .any(|candidate| candidate == effort)
+        {
             reasoning_efforts.push(effort.to_string());
         }
     }
@@ -2670,9 +2742,8 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
         crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
         input_tokens,
         (policy_output_per_trial > 0 || annotation_output_per_trial > 0).then(|| {
-            trials.saturating_mul(
-                policy_output_per_trial.saturating_add(annotation_output_per_trial),
-            )
+            trials
+                .saturating_mul(policy_output_per_trial.saturating_add(annotation_output_per_trial))
         }),
     )
 }
@@ -2749,7 +2820,11 @@ async fn register_policy_pin(
             entry.get("harness").and_then(Value::as_str) == Some(spec.harness.as_str())
                 && entry.get("config").and_then(Value::as_str) == Some(spec.policy_config.as_str())
         });
-    if spec.policy_code.is_none() && !spec.requires_credential_advertisement() && advertised {
+    if spec.policy_code.is_none()
+        && !spec.requires_credential_advertisement()
+        && !spec.requires_scoped_proxy_registration()
+        && advertised
+    {
         return Ok(json!({
             "harness": spec.harness,
             "config": spec.policy_config,
@@ -2779,7 +2854,7 @@ async fn register_policy_pin(
         }
     }
     let Some(body) = spec.policy_config_body(openai_base.as_deref()) else {
-        if spec.requires_credential_advertisement() {
+        if spec.requires_credential_advertisement() || spec.requires_scoped_proxy_registration() {
             return Err(secrets_proxy_error(
                 "secrets_proxy_route_unbound",
                 "this recipe requires a Workshop proxy base_url; refusing a public provider origin",
@@ -3333,7 +3408,24 @@ pub(super) async fn reconcile_evidence(
             } else {
                 FrameTraceMode::SealedComplete
             };
-        verify_complete_native_frame_trace(record, &imported, &rollout_id, frame_mode)?;
+        // Contiguous frame coverage is only checkable against an independently
+        // reported terminal step count. The retained frames cannot attest to
+        // their own completeness -- the highest frame is covered by definition
+        // -- so without that count the claim is unverifiable rather than false.
+        //
+        // Craftax retains native frames and reports no step count, which put
+        // `requires_native_frame_coverage` and the verifier in disagreement:
+        // the guard switched the check on because frames existed, and the
+        // verifier then aborted because the count did not. One unreported
+        // counter voided the evidence for every rollout in the run, including
+        // four that had sealed cleanly. Degrade that rollout to partial and
+        // keep going; `attach_reported_facts` already records the reason as
+        // `steps_not_reported`.
+        let coverage_unverifiable = matches!(frame_mode, FrameTraceMode::SealedComplete)
+            && record.get("steps").and_then(Value::as_u64).is_none();
+        if requires_native_frame_coverage(record, &imported) && !coverage_unverifiable {
+            verify_complete_native_frame_trace(record, &imported, &rollout_id, frame_mode)?;
+        }
         let imported_trace = imported
             .get("traces")
             .and_then(Value::as_array)
@@ -3346,7 +3438,12 @@ pub(super) async fn reconcile_evidence(
             .with_context(|| format!("terminal record for seed {seed} is not an object"))?
             .insert("sealedTrace".into(), imported);
         attach_reported_facts(record);
-        let trace_kind = if matches!(frame_mode, FrameTraceMode::SealedPartial { .. }) {
+        // A rollout whose coverage could not be checked is partial evidence, not
+        // complete evidence. Reporting it as `trace_v5` would claim a guarantee
+        // nothing verified.
+        let trace_kind = if coverage_unverifiable
+            || matches!(frame_mode, FrameTraceMode::SealedPartial { .. })
+        {
             "trace_v5_partial"
         } else {
             "trace_v5"
@@ -3603,6 +3700,21 @@ fn verify_complete_native_frame_trace(
     Ok(())
 }
 
+/// Text-only and rubric-only evaluators legitimately emit no native frames or
+/// environment-step counter. Enforce contiguous frame coverage only when the
+/// terminal record or imported bundle says this rollout is frame-bearing.
+fn requires_native_frame_coverage(terminal_record: &Value, imported: &Value) -> bool {
+    terminal_record.get("steps").and_then(Value::as_u64).is_some()
+        || imported
+            .get("importedFrameCount")
+            .and_then(Value::as_u64)
+            .is_some_and(|count| count > 0)
+        || imported
+            .get("importedFrameSteps")
+            .and_then(Value::as_array)
+            .is_some_and(|steps| !steps.is_empty())
+}
+
 fn verify_required_sealed_trace(
     terminal_record: &Value,
     imported: &Value,
@@ -3670,12 +3782,15 @@ fn verify_required_sealed_trace(
         .with_context(|| {
             format!("required_trace_provenance_missing: rollout `{rollout_id}` has no producer revision binding")
         })?;
-    verify_complete_native_frame_trace(
-        terminal_record,
-        imported,
-        rollout_id,
-        FrameTraceMode::SealedComplete,
-    )
+    if requires_native_frame_coverage(terminal_record, imported) {
+        verify_complete_native_frame_trace(
+            terminal_record,
+            imported,
+            rollout_id,
+            FrameTraceMode::SealedComplete,
+        )?;
+    }
+    Ok(())
 }
 
 fn is_successful_eval_record(row: &Value) -> bool {
@@ -4066,6 +4181,7 @@ fn usage_from_records(
     }
     usage.prompt_tokens = policy.prompt_tokens + grader.prompt_tokens;
     usage.completion_tokens = policy.completion_tokens + grader.completion_tokens;
+    usage.calls = policy.calls + grader.calls;
     for lane in [&policy, &grader] {
         match lane.cost_usd {
             Some(cost) => {
@@ -4121,32 +4237,40 @@ fn usage_with_authoritative_provider_receipt(
     {
         return measured;
     }
-    if let Some(calls) = receipt
-        .and_then(|receipt| receipt.get("calls"))
+    let mut policy = LaneUsage::default();
+    policy.calls = receipt
+        .and_then(|value| value.get("calls"))
         .and_then(Value::as_u64)
-    {
-        measured.calls = calls;
-    }
-    if let Some(tokens) = receipt
-        .and_then(|receipt| receipt.get("promptTokens"))
+        .unwrap_or(0);
+    policy.prompt_tokens = receipt
+        .and_then(|value| value.get("promptTokens"))
         .and_then(Value::as_u64)
-    {
-        measured.prompt_tokens = tokens;
-    }
-    if let Some(tokens) = receipt
-        .and_then(|receipt| receipt.get("completionTokens"))
+        .unwrap_or(0);
+    policy.completion_tokens = receipt
+        .and_then(|value| value.get("completionTokens"))
         .and_then(Value::as_u64)
-    {
-        measured.completion_tokens = tokens;
-    }
-    measured.cost_usd = receipt
-        .and_then(|receipt| receipt.get("costUsd"))
+        .unwrap_or(0);
+    policy.cost_usd = receipt
+        .and_then(|value| value.get("costUsd"))
         .and_then(Value::as_f64);
+    policy.saw_tokens = policy.prompt_tokens > 0 || policy.completion_tokens > 0;
+    let mut grader = LaneUsage::default();
+    add_lane(&mut grader, measured.extra.get("graderUsage"));
+    measured.calls = policy.calls + grader.calls;
+    measured.prompt_tokens = policy.prompt_tokens + grader.prompt_tokens;
+    measured.completion_tokens = policy.completion_tokens + grader.completion_tokens;
+    measured.cost_usd = match (policy.cost_usd, grader.cost_usd, grader.saw_tokens) {
+        (Some(policy), Some(grader), _) => Some(policy + grader),
+        (Some(policy), None, false) => Some(policy),
+        _ => None,
+    };
+    measured.extra.insert("policyUsage".into(), policy.to_json());
     measured
 }
 
 #[derive(Default)]
 struct LaneUsage {
+    calls: u64,
     prompt_tokens: u64,
     completion_tokens: u64,
     cost_usd: Option<f64>,
@@ -4156,6 +4280,7 @@ struct LaneUsage {
 impl LaneUsage {
     fn to_json(&self) -> Value {
         json!({
+            "calls": self.calls,
             "promptTokens": self.prompt_tokens,
             "completionTokens": self.completion_tokens,
             "costUsd": self.cost_usd,
@@ -4170,6 +4295,9 @@ fn add_lane(lane: &mut LaneUsage, blob: Option<&Value>) {
     if let Some(tokens) = u64_field(blob, &["prompt_tokens", "promptTokens"]) {
         lane.prompt_tokens += tokens;
         lane.saw_tokens = true;
+    }
+    if let Some(calls) = u64_field(blob, &["calls"]) {
+        lane.calls += calls;
     }
     if let Some(tokens) = u64_field(blob, &["completion_tokens", "completionTokens"]) {
         lane.completion_tokens += tokens;
@@ -5886,14 +6014,16 @@ mod tests {
             .unwrap();
         svc.append_event_payloads(
             run.id.clone(),
-            vec![OptimizerEventDraft::new("optimizer.usage", EVAL_ALGORITHM_ID).usage_delta(
-                Map::from_iter([
-                    ("calls".into(), json!(1)),
-                    ("prompt_tokens".into(), json!(10)),
-                    ("completion_tokens".into(), json!(2)),
-                    ("cost_usd".into(), json!(0.001_047_8)),
-                ]),
-            )],
+            vec![
+                OptimizerEventDraft::new("optimizer.usage", EVAL_ALGORITHM_ID).usage_delta(
+                    Map::from_iter([
+                        ("calls".into(), json!(1)),
+                        ("prompt_tokens".into(), json!(10)),
+                        ("completion_tokens".into(), json!(2)),
+                        ("cost_usd".into(), json!(0.001_047_8)),
+                    ]),
+                ),
+            ],
         )
         .await
         .unwrap();
@@ -5906,7 +6036,64 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(svc.get(run.id).await.unwrap().usage.cost_usd, Some(0.001_047_4));
+        assert_eq!(
+            svc.get(run.id).await.unwrap().usage.cost_usd,
+            Some(0.001_047_4)
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_receipt_reconciles_only_proxy_policy_lane_when_grader_is_container_owned() {
+        let (svc, _dir, _) = service().await;
+        let run = empty_eval_run(&svc, "opt_eval_mixed_usage_authority").await;
+        append_status(&svc, &run.id, "optimizer.run.started", "running")
+            .await
+            .unwrap();
+        let raw = json!({
+            "usage": {
+                "policy": {
+                    "prompt_tokens": 154,
+                    "completion_tokens": 488,
+                    "cost_usd": 0.0001
+                },
+                "grader": {
+                    "calls": 17,
+                    "prompt_tokens": 7481,
+                    "completion_tokens": 1127,
+                    "cost_usd": 0.024
+                }
+            }
+        });
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![OptimizerEventDraft::new("optimizer.usage", EVAL_ALGORITHM_ID)
+                .item(json!({"raw": raw}))
+                .usage_delta(Map::from_iter([
+                    ("prompt_tokens".into(), json!(7635)),
+                    ("completion_tokens".into(), json!(1615)),
+                    ("cost_usd".into(), json!(0.0241)),
+                ]))],
+        )
+        .await
+        .unwrap();
+
+        append_provider_usage_receipt(
+            &svc,
+            &run.id,
+            provider_usage_receipt(&run.id, 2, 154, 488, Some(0.00005), 'd'),
+        )
+        .await
+        .expect("container-owned grader usage must not invalidate the policy receipt");
+
+        let current = svc.get(run.id).await.unwrap().usage;
+        let measured = usage_from_records(&[raw], 1.0);
+        let merged = usage_with_authoritative_provider_receipt(measured, &current);
+        assert_eq!(merged.calls, 19);
+        assert_eq!(merged.prompt_tokens, 7635);
+        assert_eq!(merged.completion_tokens, 1615);
+        assert!((merged.cost_usd.unwrap() - 0.02405).abs() < 1e-12);
+        assert_eq!(merged.extra["policyUsage"]["calls"], json!(2));
+        assert_eq!(merged.extra["graderUsage"]["calls"], json!(17));
     }
 
     #[test]
@@ -8106,6 +8293,20 @@ max_total_rollouts = 4
     }
 
     #[test]
+    fn provider_backed_inline_eval_requires_scoped_proxy_registration() {
+        let approved = super::super::admission::tests::nanohorizon_approved_specification();
+        let spec = EvalSpec::from_execution_spec(
+            approved.spec(),
+            "craftax".into(),
+            "world:craftax@eval".into(),
+        )
+        .unwrap();
+
+        assert!(spec.requires_scoped_proxy_registration());
+        assert!(!spec.requires_credential_advertisement());
+    }
+
+    #[test]
     fn rollout_wait_without_declared_call_timeout_uses_long_running_default() {
         let mut spec = EvalSpec::classify_fixture();
         spec.policy.remove("timeout_seconds");
@@ -9408,6 +9609,18 @@ max_total_rollouts = 1
     }
 
     #[test]
+    fn text_only_trace_does_not_invent_a_frame_requirement() {
+        assert!(!requires_native_frame_coverage(
+            &json!({"status": "completed", "reward": 1.0}),
+            &json!({"importedFrameCount": 0, "importedFrameSteps": []}),
+        ));
+        assert!(requires_native_frame_coverage(
+            &json!({"status": "completed", "steps": 0}),
+            &json!({"importedFrameCount": 1, "importedFrameSteps": [0]}),
+        ));
+    }
+
+    #[test]
     fn terminal_trace_deduplicates_identical_frame_steps_not_observations() {
         let terminal = json!({"steps": 2});
         let imported = json!({"importedFrameSteps": [0, 1, 1, 2]});
@@ -9573,7 +9786,6 @@ max_total_rollouts = 1
     }
 }
 
-
 #[cfg(test)]
 mod live_annotation_binding_tests {
     use super::*;
@@ -9582,7 +9794,10 @@ mod live_annotation_binding_tests {
     fn merge_replaces_the_placeholder_keeps_streams_and_dedupes_by_source() {
         let placeholder = crate::visuals::pending_stream_bindings();
         let first = vec![
-            live_stream_descriptor("http://127.0.0.1:1/rollouts/a/stream", "http://127.0.0.1:1/rollouts/a/events"),
+            live_stream_descriptor(
+                "http://127.0.0.1:1/rollouts/a/stream",
+                "http://127.0.0.1:1/rollouts/a/events",
+            ),
             live_stream_descriptor(
                 "http://127.0.0.1:1/rollouts/a/annotations/stream",
                 "http://127.0.0.1:1/rollouts/a/annotations/events",
@@ -9591,8 +9806,14 @@ mod live_annotation_binding_tests {
         let merged = merge_live_stream_bindings(&placeholder, &first).unwrap();
         assert_eq!(merged["schemaVersion"], VISUAL_BINDINGS_SCHEMA_VERSION);
         let inputs = merged["inputs"].as_array().unwrap();
-        assert_eq!(inputs.len(), 2, "the honest-empty inline placeholder is dropped");
-        assert!(inputs.iter().all(|row| row["kind"] == "live_sse" && row["input"] == "stream"));
+        assert_eq!(
+            inputs.len(),
+            2,
+            "the honest-empty inline placeholder is dropped"
+        );
+        assert!(inputs
+            .iter()
+            .all(|row| row["kind"] == "live_sse" && row["input"] == "stream"));
         // The renderer's poll allowlist needs poll_url on every descriptor.
         assert_eq!(
             crate::visuals::declared_poll_urls(&merged),
@@ -9602,11 +9823,21 @@ mod live_annotation_binding_tests {
             ]
         );
         let second = vec![
-            live_stream_descriptor("http://127.0.0.1:1/rollouts/a/stream", "http://127.0.0.1:1/rollouts/a/events"),
-            live_stream_descriptor("http://127.0.0.1:1/rollouts/b/stream", "http://127.0.0.1:1/rollouts/b/events"),
+            live_stream_descriptor(
+                "http://127.0.0.1:1/rollouts/a/stream",
+                "http://127.0.0.1:1/rollouts/a/events",
+            ),
+            live_stream_descriptor(
+                "http://127.0.0.1:1/rollouts/b/stream",
+                "http://127.0.0.1:1/rollouts/b/events",
+            ),
         ];
         let merged = merge_live_stream_bindings(&merged, &second).unwrap();
-        assert_eq!(merged["inputs"].as_array().unwrap().len(), 3, "a re-offered source is not duplicated");
+        assert_eq!(
+            merged["inputs"].as_array().unwrap().len(),
+            3,
+            "a re-offered source is not duplicated"
+        );
     }
 
     #[test]
@@ -9619,10 +9850,16 @@ mod live_annotation_binding_tests {
         });
         let merged = merge_live_stream_bindings(
             &initial,
-            &[live_stream_descriptor("http://127.0.0.1:1/rollouts/a/stream", "http://127.0.0.1:1/rollouts/a/events")],
-        ).unwrap();
+            &[live_stream_descriptor(
+                "http://127.0.0.1:1/rollouts/a/stream",
+                "http://127.0.0.1:1/rollouts/a/events",
+            )],
+        )
+        .unwrap();
         let inputs = merged["inputs"].as_array().unwrap();
-        assert!(inputs.iter().any(|row| row["kind"] == "optimizer_run" && row["source"] == "opt_eval_runebench_1"));
+        assert!(inputs
+            .iter()
+            .any(|row| row["kind"] == "optimizer_run" && row["source"] == "opt_eval_runebench_1"));
         assert!(inputs.iter().any(|row| row["kind"] == "live_sse"));
         assert!(!inputs.iter().any(|row| row["kind"] == "inline"));
     }

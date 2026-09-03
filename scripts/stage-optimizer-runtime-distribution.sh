@@ -4,9 +4,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="$ROOT/runtime-distributions/optimizers"
-VERSION="0.2.19"
-EXPECTED_SOURCE_REVISION="686f41c413b9368e0dee5bcefa91bc89a2631084"
-EXPECTED_LOCK_SHA256="b2c0d9b7c9920ea2cc3d51619709f247b00e3f5919bf15538a6f9d41022e43dd"
+VERSION="0.2.20"
+EXPECTED_SOURCE_REVISION="96d7bbabf7c23f80732c57ca08e69f66ffcdf873"
+EXPECTED_LOCK_SHA256="b3dd2c3171fbf37aa78ff14ce6fb9edb43d546ae9fbadd9c5809aeb5c2edb160"
 PROJECT="${SYNTH_OPTIMIZER_DISTRIBUTION_SOURCE:-}"
 
 verify_existing_distribution() {

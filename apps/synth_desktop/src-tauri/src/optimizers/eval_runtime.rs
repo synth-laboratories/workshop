@@ -186,9 +186,9 @@ mod tests {
     #[test]
     fn pinned_eval_runtime_is_managed_at_0_2_19() {
         assert!(EVAL.provisioned_by_desktop);
-        assert_eq!(EVAL.official, "0.2.19");
-        assert_eq!(EVAL.min_supported, "0.2.19");
-        assert!(EVAL.meets_floor("0.2.19"));
+        assert_eq!(EVAL.official, "0.2.20");
+        assert_eq!(EVAL.min_supported, "0.2.20");
+        assert!(EVAL.meets_floor("0.2.20"));
         assert!(!EVAL.meets_floor("0.2.14"));
     }
 
@@ -200,7 +200,7 @@ mod tests {
         let python = runtime.join("python3");
         fs::write(&python, b"#!/bin/sh\nexit 0\n").unwrap();
         let sidecar = OptimizerSidecarVersion {
-            version: "0.2.19".into(),
+            version: "0.2.20".into(),
             digest: "abc123".into(),
             signature: "sig".into(),
             algorithm_id: "gepa".into(),
@@ -214,7 +214,7 @@ mod tests {
         let python = runtime.join("python3");
         fs::write(&python, b"#!/bin/sh\nexit 0\n").unwrap();
         let manifest = sidecar_to_manifest(&sidecar).unwrap();
-        assert_eq!(manifest.version, "0.2.19");
+        assert_eq!(manifest.version, "0.2.20");
         assert_eq!(manifest.digest, "abc123");
         assert_eq!(manifest.python.as_deref(), Some(python.to_str().unwrap()));
         manifest.validate().unwrap();
