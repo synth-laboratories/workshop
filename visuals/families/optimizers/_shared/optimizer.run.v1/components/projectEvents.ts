@@ -2529,10 +2529,10 @@ export function projectAtCursor(
       if (rewardVariance != null && rewardVariance > 0) cispoLearningSignalGroups += 1;
       cispoRolloutGroups.push({
         id: String(event.delta?.group_id ?? event.delta?.groupId ?? `group-${event.sequenceNumber}`),
-        iteration: missingNumber(event.delta?.iteration),
+        iteration: missingNumber(event.delta?.iteration) ?? null,
         label: typeof event.delta?.label === "string" ? event.delta.label : null,
-        rewardMean: missingNumber(event.delta?.reward_mean ?? event.delta?.rewardMean),
-        rewardVariance,
+        rewardMean: missingNumber(event.delta?.reward_mean ?? event.delta?.rewardMean) ?? null,
+        rewardVariance: rewardVariance ?? null,
         size: observedGroupSize,
         sequence: event.sequenceNumber
       });

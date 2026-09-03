@@ -538,6 +538,9 @@ function cispoProjection(base: ProjectedState, view: OptimizerRunViewV2Like, run
     optimizerSteps: numberOrNull(projection.optimizerSteps) ?? (typeof view.header.usage.steps === "number" ? view.header.usage.steps : 0),
     warmStartArtifactId: typeof projection.warmStartId === "string" ? projection.warmStartId : null,
     checkpointIds: strings(projection.checkpoints),
+    rolloutGroups: [],
+    zeroAdvantageGroups: 0,
+    learningSignalGroups: 0,
     noLearningSignal: projection.noLearningSignal === true
   };
 }

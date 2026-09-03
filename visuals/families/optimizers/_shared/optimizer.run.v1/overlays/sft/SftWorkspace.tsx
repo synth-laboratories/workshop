@@ -924,6 +924,7 @@ export function SftWorkspace({
     : undefined;
   const chip = statusChip(status, improvementVerdict, heldoutSummary?.claimReady === true);
   const terminal = TERMINAL_STATUSES.includes(status);
+  const failureDetail = status === "failed" ? optimizerFailureDetail(run.error) : undefined;
   const latest = sft.points.at(-1);
   const aggregateBaseline = sftAggregateBaseline(sft);
   const readyCount = sft.checkpoints.filter((ckpt) => ckpt.ready === true || ckpt.promoted === true).length;
@@ -1051,6 +1052,20 @@ export function SftWorkspace({
           <CispoIdentityPanel cispo={cispo} />
           <CispoLearningSignalPanel cispo={cispo} />
         </div>
+      ) : isCispo ? (
+        // A CISPO run that ends before emitting a single CISPO event still has
+        // to say it was CISPO. Falling through to the shared SFT grammar
+        // rendered a surface indistinguishable from an SFT run -- same stages,
+        // same panels, no clip bounds, no group size, nothing naming the
+        // algorithm whose behaviour the reader came to check.
+        <Panel title="CISPO identity" aside="not reported" testId="cispo-identity-unreported">
+          <p className="sv-empty">
+            This run is CISPO, but it ended before reporting clip bounds, group
+            size, reward variance, or advantage. The sections below are the
+            training stages CISPO shares with SFT; nothing here describes the
+            clipped-importance behaviour itself.
+          </p>
+        </Panel>
       ) : null}
 
       <PrerequisitesPanel missing={missingPrerequisites} isCispo={isCispo} failure={failureDetail} />
