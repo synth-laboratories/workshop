@@ -71,6 +71,13 @@ const TITLE_SEPARATOR = " · ";
 export function visualCardIdentity(title: string): VisualCardIdentity {
 	const parts = title.split(TITLE_SEPARATOR).map((part) => part.trim()).filter(Boolean);
 	if (parts.length < 2) return { name: title };
+	// The annotated-rollout suite creates sibling overview, trace, and live
+	// surfaces. Repeating the suite name on every narrow card hides the only
+	// word that distinguishes those siblings, so use their surface role as the
+	// card name while retaining the task family as the badge.
+	if (parts.length > 2 && parts[1].toLowerCase() === "annotated rollouts") {
+		return { name: parts.slice(2).join(TITLE_SEPARATOR), badge: parts[0] };
+	}
 	// Everything after the first segment stays together: only the leading
 	// family qualifier moves into the badge.
 	return { name: parts.slice(1).join(TITLE_SEPARATOR), badge: parts[0] };

@@ -35,6 +35,14 @@ test("suite titles lead with the distinct name and carry the family as a badge",
 		name: "GEPA search",
 		badge: "Banking77"
 	});
+	assert.deepEqual(visualCardIdentity("Banking77 · Annotated Rollouts · live annotations"), {
+		name: "live annotations",
+		badge: "Banking77"
+	});
+	assert.deepEqual(visualCardIdentity("Banking77 · Annotated Rollouts · trace workstation"), {
+		name: "trace workstation",
+		badge: "Banking77"
+	});
 	// Only the leading qualifier moves; deeper separators stay in the name.
 	assert.deepEqual(visualCardIdentity("Banking77 · SFT training · run 3"), {
 		name: "SFT training · run 3",

@@ -12,21 +12,58 @@
 // Usage:
 //   workshop-visual-loop.mjs --instance qa-abc --task banking77 --job eval \
 //     [--frames 40] [--interval-ms 3000] [--out DIR] [--timeout-ms 1800000]
-//     [--prompt TEXT | --prompt-file PATH] [--no-run]
+//     [--workspace PATH] [--prompt TEXT | --prompt-file PATH] [--no-run]
 
 import { createHash } from "node:crypto";
 import { createConnection } from "node:net";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 
 /** Task services, by the port each canonical container listens on. */
+/**
+ * Task services, by the port each canonical container listens on.
+ *
+ * `container` is the registration name, and it is not cosmetic: the workspace
+ * recipes name their container, so a registration under any other name leaves
+ * the recipe undeclared and the run refused.
+ */
 const TASKS = {
-	banking77: { port: 8099, family: "banking77", label: "Banking77" },
-	craftax: { port: 8097, family: "craftax", label: "Craftax" },
-	healthbench: { port: 8114, family: "healthbench", label: "HealthBench" },
-	runebench: { port: 8104, family: "runebench", label: "RuneBench" }
+	banking77: {
+		port: 8099,
+		family: "banking77",
+		container: "banking77",
+		label: "Banking77",
+		recipes: {
+			eval: "eval.banking77.qa.v1",
+			annotated_eval: "eval.banking77.live_annotated.v1",
+			gepa: "gepa.banking77.v1"
+		}
+	},
+	craftax: {
+		port: 8097,
+		family: "craftax",
+		container: "craftax-gamebench-rust",
+		label: "Craftax",
+		recipes: {
+			eval: "eval.craftax.qa.v1",
+			annotated_eval: "eval.craftax.gold.live_annotated.v1",
+			gepa: "gepa.craftax.v1"
+		}
+	},
+	healthbench: {
+		port: 8114,
+		family: "healthbench",
+		container: "healthbench2",
+		label: "HealthBench",
+		recipes: {
+			eval: "eval.healthbench.qa.v1",
+			annotated_eval: "eval.healthbench.live_annotated.v1",
+			gepa: "gepa.healthbench.v1"
+		}
+	},
+	runebench: { port: 8104, family: "runebench", container: "runebench", label: "RuneBench", recipes: {} }
 };
 
 /** Plugin surfaces worth a still on every run, in reading order. */
@@ -44,6 +81,7 @@ function parseArgs(argv) {
 		if (flag === "--instance") args.instance = next();
 		else if (flag === "--task") args.task = next();
 		else if (flag === "--job") args.job = next();
+		else if (flag === "--workspace") args.workspace = next();
 		else if (flag === "--frames") args.frames = Number(next());
 		else if (flag === "--interval-ms") args.intervalMs = Number(next());
 		else if (flag === "--timeout-ms") args.timeoutMs = Number(next());
@@ -155,10 +193,16 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * needs to see which frames are missing.
  */
 async function capture(conn, dir, name, request) {
-	const path = join(dir, `${name}.png`);
+	const requestedPath = join(dir, `${name}.png`);
+	const allowedRoot = dataRoot(conn.instance);
+	const nativePath = requestedPath.startsWith(`${allowedRoot}/`)
+		? requestedPath
+		: join(allowedRoot, "visual-qa-staging", conn.runSlug, `${name}.png`);
+	mkdirSync(join(allowedRoot, "visual-qa-staging", conn.runSlug), { recursive: true });
 	try {
-		const receipt = await ipc(conn, "POST", "/v1/capture", { ...request, outputPath: path });
-		return { name, ok: true, ...receipt };
+		const receipt = await ipc(conn, "POST", "/v1/capture", { ...request, outputPath: nativePath });
+		if (nativePath !== requestedPath) copyFileSync(nativePath, requestedPath);
+		return { name, ok: true, portablePath: requestedPath, ...receipt };
 	} catch (error) {
 		return { name, ok: false, error: error.message, request };
 	}
@@ -302,7 +346,11 @@ function markdown(manifest) {
 /** The agent prompt for one task/job pair. Explicit about not substituting. */
 function prompt(task, job) {
 	const spec = TASKS[task];
+	const recipe = spec.recipes?.[job];
 	const shared = [
+		recipe
+			? `Use the exact workspace recipe \`${recipe}\`. Do not substitute another recipe id.`
+			: "",
 		`The QA-owned ${spec.label} service is at http://127.0.0.1:${spec.port}.`,
 		`Register that URL as task family ${spec.family} if it is not already registered, then probe it.`,
 		"Create and subscribe the product-owned visual before starting any paid work.",
@@ -311,14 +359,15 @@ function prompt(task, job) {
 		"Do not ask for confirmation; this session runs under the unattended QA profile.",
 		"If admission is blocked, copy the structured blocker code, owner, and retryable value,",
 		"and state explicitly that no run id or rollout records were created."
-	].join(" ");
+	].filter(Boolean).join(" ");
 	const lead = {
 		eval: `Run an ordinary evaluation campaign on ${spec.label} using your available product tools.`,
+		annotated_eval: `Run a live annotated evaluation campaign on ${spec.label}. Keep provisional live findings distinct from sealed post-rollout evidence and prove logical-time replay.`,
 		gepa: `Run a GEPA prompt search on ${spec.label} using your available product tools. Report seed score, winning train score, heldout score, and numeric lift. Do not claim uplift unless the heldout evidence proves it.`,
 		sft: `Run an SFT training job on ${spec.label} using your available product tools. Report the baseline, the selected checkpoint, and the paired heldout comparison. Selection is not uplift.`,
 		cispo: `Run a CISPO training job on ${spec.label} using your available product tools. Report clip bounds, group size, reward variance, advantage distribution, and whether a learning signal existed at all.`
 	}[job];
-	if (!lead) throw new Error(`unknown job ${job}; expected eval, gepa, sft, or cispo`);
+	if (!lead) throw new Error(`unknown job ${job}; expected eval, annotated_eval, gepa, sft, or cispo`);
 	return `${lead} ${shared}`;
 }
 
@@ -347,6 +396,8 @@ async function main() {
 	const slug = [args.task, args.job].filter(Boolean).join("-") || "adhoc";
 	const dir = args.out ?? join(dataRoot(args.instance), "visual-qa", `${slug}-${Date.now().toString(36)}`);
 	mkdirSync(dir, { recursive: true });
+	visuals.instance = args.instance;
+	visuals.runSlug = `${slug}-${Date.now().toString(36)}`;
 
 	const health = await driver(evalDriver, "GET", "/v1/health");
 	if (health.ok !== true) throw new Error("eval driver health check failed");
@@ -399,7 +450,7 @@ async function main() {
 			.update(canonicalJson(declaration))
 			.digest("hex")}`;
 		await ipc(visuals, "POST", "/v1/containers", {
-			name: `${spec.family}-qa`,
+			name: spec.container,
 			baseUrl: `http://127.0.0.1:${spec.port}`,
 			location: "local",
 			taskFamily: spec.family,
@@ -416,7 +467,10 @@ async function main() {
 	if (args.run) {
 		const body = args.prompt ?? prompt(args.task, args.job);
 		sessionId = `vq_${Date.now().toString(36)}`;
-		await driver(evalDriver, "POST", "/v1/sessions", { sessionId });
+		await driver(evalDriver, "POST", "/v1/sessions", {
+			sessionId,
+			...(args.workspace ? { workspace: args.workspace } : {})
+		});
 		await driver(evalDriver, "POST", `/v1/sessions/${sessionId}/messages`, { body });
 		writeFileSync(join(dir, "prompt.txt"), `${body}\n`);
 
@@ -439,6 +493,7 @@ async function main() {
 			captures.push(...(await recording));
 		}
 		writeFileSync(join(dir, "terminal.json"), `${JSON.stringify(terminal, null, 2)}\n`);
+		captures.push(await capture(visuals, dir, "state-terminal", { scope: "app" }));
 
 		const exported = await driver(evalDriver, "GET", `/v1/sessions/${sessionId}/export`);
 		writeFileSync(join(dir, "session-export.json"), `${JSON.stringify(exported, null, 2)}\n`);
@@ -469,6 +524,7 @@ async function main() {
 		instance: args.instance,
 		task: args.task,
 		job: args.job,
+		workspace: args.workspace ?? null,
 		sessionId,
 		sourceRevision,
 		startedAt,
