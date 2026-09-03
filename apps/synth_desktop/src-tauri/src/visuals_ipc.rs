@@ -31,8 +31,20 @@ const EVIDENCE_AUTHORING_CHECKS: [&str; 3] = ["temporalControls", "traceInspecto
 fn required_authoring_checks(template: &TemplateMeta) -> Vec<&'static str> {
     let mut checks = BASE_AUTHORING_CHECKS.to_vec();
     checks.push("screenshotInspected");
-    if template.observation_contract.is_some() {
-        checks.extend(EVIDENCE_AUTHORING_CHECKS);
+    if let Some(contract) = template.observation_contract.as_ref() {
+        match contract.readiness.authoring_affordances.as_ref() {
+            // Declared affordances narrow the evidence checks to the ones the
+            // surface can actually satisfy. An undeclared affordance is not
+            // silently dropped: only names the template listed are required,
+            // and an unknown name is ignored rather than inventing a check.
+            Some(declared) => checks.extend(
+                EVIDENCE_AUTHORING_CHECKS
+                    .iter()
+                    .filter(|check| declared.iter().any(|name| name == *check))
+                    .copied(),
+            ),
+            None => checks.extend(EVIDENCE_AUTHORING_CHECKS),
+        }
     }
     if template.id.starts_with("diagram.") {
         checks.push("noTextCollisions");
@@ -6499,6 +6511,7 @@ mod tests {
                 minimum_rendered_frame_count: 1,
                 minimum_semantic_event_count: 1,
                 require_terminal: true,
+                authoring_affordances: None,
             },
         }
     }
@@ -6541,6 +6554,76 @@ mod tests {
     /// Seeds 202/204: honest pre-start reviews (no frames yet) kept vetoing
     /// readiness after terminal evidence arrived on the same revision, and the
     /// only workaround was a cosmetic revision bump.
+    #[test]
+    fn a_template_requires_only_the_evidence_affordances_it_declares() {
+        // A static analysis projection of immutable sealed evidence has no
+        // temporal control. Demanding one made it uncertifiable no matter how
+        // truthful the review was.
+        let mut template = TemplateMeta {
+            schema_version: "synth.visual-template.v1".into(),
+            id: "analysis.annotation_workbench.v1".into(),
+            title: String::new(),
+            genre: None,
+            family: None,
+            version: None,
+            description: None,
+            tags: Vec::new(),
+            path: None,
+            shell_path: None,
+            renderer_path: None,
+            source_kind: None,
+            example_binding: None,
+            inputs: Vec::new(),
+            slots: Vec::new(),
+            components: Vec::new(),
+            binding_schema: Vec::new(),
+            observation_contract: Some(crate::visuals::TemplateObservationContract {
+                schema_version: "synth.visual-observation-contract.v1".into(),
+                readiness: crate::visuals::TemplateReadinessContract {
+                    reject_transport_states: vec!["idle".into()],
+                    minimum_rollout_count: 0,
+                    minimum_rendered_frame_count: 0,
+                    minimum_semantic_event_count: 1,
+                    require_terminal: true,
+                    authoring_affordances: None,
+                },
+            }),
+        };
+
+        // Undeclared keeps every evidence check: nothing is relaxed by default.
+        let strict = required_authoring_checks(&template);
+        for check in EVIDENCE_AUTHORING_CHECKS {
+            assert!(strict.contains(&check), "{check} must stay required");
+        }
+
+        if let Some(contract) = template.observation_contract.as_mut() {
+            contract.readiness.authoring_affordances =
+                Some(vec!["traceInspector".into(), "realEvidence".into()]);
+        }
+        let declared = required_authoring_checks(&template);
+        assert!(declared.contains(&"traceInspector"));
+        assert!(declared.contains(&"realEvidence"));
+        assert!(
+            !declared.contains(&"temporalControls"),
+            "a surface with no temporal control must not be asked for one"
+        );
+        // The base checks are never negotiable.
+        for check in BASE_AUTHORING_CHECKS {
+            assert!(declared.contains(&check), "{check} must stay required");
+        }
+        assert!(declared.contains(&"screenshotInspected"));
+
+        // An unknown name neither adds a check nor removes the known ones.
+        if let Some(contract) = template.observation_contract.as_mut() {
+            contract.readiness.authoring_affordances = Some(vec!["notAKnownCheck".into()]);
+        }
+        let unknown = required_authoring_checks(&template);
+        for check in EVIDENCE_AUTHORING_CHECKS {
+            assert!(!unknown.contains(&check), "{check} was not declared");
+        }
+        assert!(!unknown.contains(&"notAKnownCheck"));
+    }
+
     #[test]
     fn certification_uses_the_latest_review_at_each_width_not_all_history() {
         let contract = live_contract();

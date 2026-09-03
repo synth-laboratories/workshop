@@ -170,7 +170,7 @@ test("no failure at all yields no card rather than an empty one", () => {
 
 test("the workstation labels rollouts by task and leads with the dominant cause", () => {
   const source = read("families/first_class_example_containers/_shared/traceWorkbench.tsx");
-  assert.match(source, /<span>\{trialLabel\(row\)\}<\/span>/);
+  assert.match(source, /\{trialLabel\(row\) \? <span>\{trialLabel\(row\)\}<\/span> : null\}/);
   assert.doesNotMatch(source, /<span style=\{mono\}>seed \{row\.seed \?\? MISSING\}<\/span>/);
   assert.match(source, /<CommandFailureCard summary=\{commandFailures\} testId=\{branding\.testId\} \/>/);
   assert.match(source, /projectCommandFailures\(optimizerEvents\)/);
@@ -334,4 +334,24 @@ test("an unbound container-rollouts surface says so instead of waiting forever",
   const source = read("families/first_class_example_containers/live.container_rollouts.v1/shell.tsx");
   assert.match(source, /!hasSource && bindingFor\(props\.bindings, "stream"\) === null/);
   assert.match(source, /no rollout stream is bound to this visual/);
+});
+
+test("a task instance that only restates the seed is not treated as a task name", async () => {
+  const { craftaxTrialsFromRun } = await import("../runtime/craftaxTraceView.ts");
+  // Craftax declares `taskInstanceId: "seed:0"`, which rendered as
+  // `seed:0 · seed 0` on every rollout chip.
+  const trials = craftaxTrialsFromRun({ id: "opt_1", summary: { task: "craftax" } }, [
+    {
+      type: "eval.trial.started",
+      delta: { workItemId: "eval:trial:0", trial_id: "trial:craftax:0", rollout_id: "r0", seed: 0, scenario: "craftax" }
+    },
+    {
+      type: "eval.trial.terminal",
+      delta: { trial_id: "trial:craftax:0" },
+      item: { raw: { rolloutId: "r0", taskInstanceId: "seed:0", reward: 1 } }
+    }
+  ]);
+  assert.equal(trials[0].taskInstanceId, "seed:0", "the producer's identity is retained as data");
+  const source = read("families/first_class_example_containers/_shared/traceWorkbench.tsx");
+  assert.match(source, /\(\^\|:\)seed:\$\{row\.seed\}\$/, "and the label rejects it as a name");
 });

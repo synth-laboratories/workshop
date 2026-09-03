@@ -5,7 +5,7 @@
   "genre": "analysis",
   "family": "analysis",
   "version": "1.0.0",
-  "description": "Machine-generated Trace V5 analysis: campaign coverage, findings, milestones, rubric judgments, and audit. A projection bound to immutable trace, evidence-head, and optional verifier-result digests — never annotation authority, never human visual_annotations.",
+  "description": "Machine-generated Trace V5 analysis: campaign coverage, findings, milestones, rubric judgments, and audit. A projection bound to immutable trace, evidence-head, and optional verifier-result digests \u2014 never annotation authority, never human visual_annotations.",
   "accent": "#F05F22",
   "shell": "shell.tsx",
   "tags": [
@@ -29,7 +29,11 @@
       "minimumRolloutCount": 0,
       "minimumRenderedFrameCount": 0,
       "minimumSemanticEventCount": 1,
-      "requireTerminal": true
+      "requireTerminal": true,
+      "authoringAffordances": [
+        "traceInspector",
+        "realEvidence"
+      ]
     }
   },
   "inputs": [

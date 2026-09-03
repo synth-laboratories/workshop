@@ -25,6 +25,16 @@ pub struct TemplateReadinessContract {
     pub minimum_semantic_event_count: u64,
     #[serde(default)]
     pub require_terminal: bool,
+    /// Which evidence affordances this surface actually offers, out of
+    /// `temporalControls`, `traceInspector`, `realEvidence`.
+    ///
+    /// Absent means all three, so no existing template is relaxed by this
+    /// field. A template opts out only by declaring the shorter list in its
+    /// manifest, which is reviewable — unlike a reviewer ticking a box that is
+    /// false. A static analysis projection of immutable sealed evidence has no
+    /// temporal control to offer, and demanding one made it uncertifiable.
+    #[serde(default)]
+    pub authoring_affordances: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]

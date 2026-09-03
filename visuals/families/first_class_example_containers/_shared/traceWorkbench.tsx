@@ -1059,11 +1059,22 @@ function CallDetail({
   );
 }
 
-/** The task a trial ran, falling back to its seed only when nothing names it. */
-function trialLabel(row: TrialView): string {
+/**
+ * The task a trial ran, or `null` when nothing names it beyond its seed.
+ *
+ * A family whose trials differ only by seed has no task name to show. Craftax
+ * still declares a task instance for every trial, but its identity is
+ * literally `seed:0` — the seed restated, which rendered as `seed:0 · seed 0`.
+ * An identity that only repeats the seed is not a name.
+ */
+function trialLabel(row: TrialView): string | null {
   const instance = row.taskInstanceId;
-  if (instance) return instance.includes("/") ? instance.split("/").slice(1).join("/") : instance;
-  return row.seed == null ? row.trialId : `seed ${row.seed}`;
+  if (instance) {
+    const tail = instance.includes("/") ? instance.split("/").slice(1).join("/") : instance;
+    if (row.seed != null && new RegExp(`(^|:)seed:${row.seed}$`).test(instance)) return null;
+    return tail;
+  }
+  return row.seed == null ? row.trialId : null;
 }
 
 /**
@@ -1456,9 +1467,9 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
           >
             {/* The task, then the seed. A five-task sweep labelled `seed 0`
                 through `seed 4` names none of the work it did. */}
-            <span>{trialLabel(row)}</span>
+            {trialLabel(row) ? <span>{trialLabel(row)}</span> : null}
             <span style={{ ...mono, color: "var(--sv-text-faint)" }}>
-              {row.seed == null ? "" : ` · seed ${row.seed}`}
+              {row.seed == null ? "" : `${trialLabel(row) ? " · " : ""}seed ${row.seed}`}
               {row.state === "done" ? ` · ${reward(row.reward)}` : ` · ${row.state}`}
             </span>
           </button>
