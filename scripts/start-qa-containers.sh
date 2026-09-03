@@ -84,13 +84,19 @@ start() {
 }
 
 start banking77 banking77 banking77_classify 8099
+# The hosted SFT recipe binds checkpoint evaluation to a fixed slot --
+# `LOCAL_BANKING77_SLOT` in hosted_sft.rs is `http://127.0.0.1:8110` -- and
+# cancels the run when nothing serves it, naming a port the operator never
+# chose. Serving that slot is cheaper than overriding
+# SYNTH_CONTAINERS_BANKING77_URL, which would need an app restart to take.
+start banking77-sft banking77 banking77_classify 8110
 start craftax craftax-gamebench-rust craftax_gold 8097 \
   SYNTH_CRAFTAX_GOLD_BIN="$HOME/GitHub/gamebench/tasks/craftax-singleplayer/gold_rust/target/release/craftax_gold"
 start healthbench healthbench2 healthbench_chat 8114 \
   HEALTHBENCH_GRADER_PROVIDER=openrouter \
   OPENROUTER_API_KEY="$(grep -m1 '^OPENROUTER_API_KEY=' "$HOME/.synth-desktop/.env" | cut -d= -f2-)"
 
-for port in 8099 8097 8114; do
+for port in 8099 8110 8097 8114; do
   for _ in $(seq 1 40); do
     code="$(curl -s -m 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/health" || true)"
     [ "$code" = "200" ] && break
