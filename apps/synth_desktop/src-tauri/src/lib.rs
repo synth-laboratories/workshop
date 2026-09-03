@@ -534,23 +534,25 @@ async fn hydrate_container(
     let task_family = info
         .as_ref()
         .and_then(|value| {
-            crate::visuals::classify_live_eval_family(value, None)
-                .map(|family| family.as_str().to_string())
-        })
-        .or_else(|| {
-            info.as_ref()
-                .and_then(|value| {
-                    value
-                        .get("env_family")
-                        .or_else(|| value.get("task_family"))
-                        // HealthBench publishes its explicit service family as
-                        // `runtime_family`; preserve that observed contract so
-                        // the selector can find the registered GEPA-v2 pool.
-                        // Do not infer from a caller name, port, or URL.
-                        .or_else(|| value.get("runtime_family"))
-                })
+            value
+                .pointer("/liveEval/benchmarkFamily")
+                .or_else(|| value.pointer("/metadata/liveEval/benchmarkFamily"))
+                .or_else(|| value.get("env_family"))
+                .or_else(|| value.get("task_family"))
+                // HealthBench publishes its explicit service family as
+                // `runtime_family`; preserve that observed contract so the
+                // selector can find the registered GEPA-v2 pool. A declared
+                // benchmarkFamily wins because Harbor is the visual/transport
+                // family, not the benchmark being evaluated.
+                .or_else(|| value.get("runtime_family"))
                 .and_then(|value| value.as_str())
                 .map(str::to_string)
+        })
+        .or_else(|| {
+            info.as_ref().and_then(|value| {
+                crate::visuals::classify_live_eval_family(value, None)
+                    .map(|family| family.as_str().to_string())
+            })
         })
         .or_else(|| {
             // Packaged GEPA services identify their task through the immutable
