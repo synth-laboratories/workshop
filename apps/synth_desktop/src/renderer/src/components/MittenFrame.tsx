@@ -3,6 +3,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 type Props = {
 	thumbSelector: string;
 	bodySelector: string;
+	omitRightStroke?: boolean;
 };
 
 const half = (value: number) => Math.round(value * 2) / 2;
@@ -12,9 +13,9 @@ const half = (value: number) => Math.round(value * 2) / 2;
  * concave shoulder(s), body, and rounded outer corners. Keeping the stroke in
  * one path prevents the doubled seams produced by overlapping CSS borders.
  */
-export function MittenFrame({ thumbSelector, bodySelector }: Props) {
+export function MittenFrame({ thumbSelector, bodySelector, omitRightStroke = false }: Props) {
 	const svgRef = useRef<SVGSVGElement>(null);
-	const [geometry, setGeometry] = useState({ width: 1, height: 1, path: "" });
+	const [geometry, setGeometry] = useState({ width: 1, height: 1, path: "", openRightPath: "" });
 
 	useLayoutEffect(() => {
 		const svg = svgRef.current;
@@ -46,40 +47,61 @@ export function MittenFrame({ thumbSelector, bodySelector }: Props) {
 			const lk = leftJoin * 0.5522848;
 			const rk = rightJoin * 0.5522848;
 			const commands: string[] = [];
+			const upperStroke: string[] = [];
+			const lowerStroke: string[] = [];
 
 			if (first) {
 				commands.push(`M ${left} ${baseline}`, `V ${top + radius}`);
+				upperStroke.push(`M ${left} ${baseline}`, `V ${top + radius}`);
 			} else {
-				commands.push(
+				const leftShoulder = [
 					`M ${left + radius} ${baseline}`,
 					`H ${start - leftJoin}`,
 					`C ${start - leftJoin + lk} ${baseline} ${start} ${baseline - leftJoin + lk} ${start} ${baseline - leftJoin}`,
 					`V ${top + radius}`
-				);
+				];
+				commands.push(...leftShoulder);
+				upperStroke.push(...leftShoulder);
 			}
 
-			commands.push(
+			const topAndRightCorner = [
 				`Q ${start} ${top} ${start + radius} ${top}`,
 				`H ${Math.max(start + radius, end - radius)}`,
 				`Q ${end} ${top} ${end} ${top + radius}`,
 				`V ${baseline - rightJoin}`,
 				`C ${end} ${baseline - rightJoin + rk} ${end + rightJoin - rk} ${baseline} ${end + rightJoin} ${baseline}`,
 				`H ${right - radius}`,
-				`Q ${right} ${baseline} ${right} ${baseline + radius}`,
+				`Q ${right} ${baseline} ${right} ${baseline + radius}`
+			];
+			commands.push(...topAndRightCorner,
 				`V ${bottom - radius}`,
 				`Q ${right} ${bottom} ${right - radius} ${bottom}`,
 				`H ${left + radius}`,
 				`Q ${left} ${bottom} ${left} ${bottom - radius}`,
 				`V ${baseline + radius}`
 			);
+			upperStroke.push(...topAndRightCorner);
+			lowerStroke.push(
+				`M ${right} ${bottom - radius}`,
+				`Q ${right} ${bottom} ${right - radius} ${bottom}`,
+				`H ${left + radius}`,
+				`Q ${left} ${bottom} ${left} ${bottom - radius}`,
+				`V ${baseline + radius}`
+			);
 
-			if (first) commands.push(`V ${baseline}`, "Z");
-			else commands.push(`Q ${left} ${baseline} ${left + radius} ${baseline}`, "Z");
+			if (first) {
+				commands.push(`V ${baseline}`, "Z");
+				lowerStroke.push(`V ${baseline}`);
+			} else {
+				commands.push(`Q ${left} ${baseline} ${left + radius} ${baseline}`, "Z");
+				lowerStroke.push(`Q ${left} ${baseline} ${left + radius} ${baseline}`);
+			}
 
 			const path = commands.join(" ");
-			setGeometry((current) => current.width === width && current.height === height && current.path === path
+			const openRightPath = [...upperStroke, ...lowerStroke].join(" ");
+			setGeometry((current) => current.width === width && current.height === height && current.path === path && current.openRightPath === openRightPath
 				? current
-				: { width, height, path });
+				: { width, height, path, openRightPath });
 		};
 
 		const resize = new ResizeObserver(measure);
@@ -101,6 +123,11 @@ export function MittenFrame({ thumbSelector, bodySelector }: Props) {
 		aria-hidden="true"
 		focusable="false"
 	>
-		<path d={geometry.path} vectorEffect="non-scaling-stroke" />
+		{omitRightStroke ? (
+			<>
+				<path className="mitten-frame-fill" d={geometry.path} vectorEffect="non-scaling-stroke" />
+				<path className="mitten-frame-stroke" d={geometry.openRightPath} vectorEffect="non-scaling-stroke" />
+			</>
+		) : <path d={geometry.path} vectorEffect="non-scaling-stroke" />}
 	</svg>;
 }

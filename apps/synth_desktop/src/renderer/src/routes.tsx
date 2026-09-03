@@ -600,7 +600,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					{chatRoute && activeChat ? (
 						<div className="workbench-primary-stack">
 						<section className="chat-pane-frame" aria-label="Chat pane">
-							<MittenFrame thumbSelector=".titlebar .tab-active" bodySelector=".chat-transcript" />
+							<MittenFrame thumbSelector=".titlebar .tab-active" bodySelector=".chat-transcript" omitRightStroke={showSidePanel} />
 							{chatTitlebar}
 							<ChatTranscript
 								chat={activeChat}
