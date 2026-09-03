@@ -88,6 +88,44 @@ An approval route already exists at
 plausible if pending approvals can be enumerated; there is currently no route
 that lists them.
 
+## The full chain, walked
+
+Granting the approvals out of band (`POST /v1/sessions/{id}/approvals/{id}`
+with `{"decision":"once"}` -- `approve` is rejected; the accepted values are
+`once`, `always`, `reject`) turns the hang into a sequence of real, specific
+errors. Each one is a genuine declaration Workshop requires, and the sequence
+is worth recording because every step looks like a dead end until the next
+error arrives:
+
+1. `container spec X is not declared in any approved workshop.containers.toml`
+2. `launch_declaration_missing: container X must declare [container.launch]`
+   -- and validation walks *every* entry, so one undeclared container in the
+   file blocks all of them.
+3. `parse workshop.containers.toml` -- the launch block is
+   `deny_unknown_fields` and needs `schema_version`, `health_target`, and a
+   `[container.launch.source]` with `revision_policy` and `tracked_revision`.
+4. `<path> is outside <workspace>` -- `working_directory` and every `include`
+   resolve under the workspace, and the check follows symlinks, so the image
+   directory must genuinely live inside it.
+5. `container_identity_mismatch: expected health target evals-banking77, got
+   banking77_classify` -- `health_target` is the target the service reports on
+   `/health`, not the image name.
+6. `no credentials.providers.local-laguna variable mapping in config.toml`
+7. `OPENAI_API_KEY is absent` -- the GEPA proposer's `api_key_env` falls
+   through to `OPENAI_API_KEY` for any provider that is not `openrouter` or
+   `anthropic`, so a local provider is asked for an OpenAI key.
+
+Step 7 is the one worth fixing in code: `local-laguna` is a provider class
+Workshop already knows, and the proposer mapping should recognise it rather
+than demanding a key for an account that has nothing to do with the run.
+
+**A workaround is currently in place on this instance and should be undone.**
+`data/.env` holds `OPENAI_API_KEY` set to the *Laguna* loopback key purely to
+satisfy step 7, and `data/config.toml` maps
+`credentials.providers.local-laguna` to `SYNTH_LAGUNA_API_KEY`. The mapping is
+legitimate and worth keeping; the `OPENAI_API_KEY` line is a lie about what
+that key is and will confuse the next failure that touches it.
+
 ## Note on ownership
 
 At the time of writing, `lib.rs`, `credential_broker.rs`,
