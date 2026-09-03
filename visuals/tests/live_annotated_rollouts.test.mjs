@@ -252,6 +252,15 @@ test("annotated shell chooses retained optimizer events over dead live transport
   assert.match(shell, /const error = durableEvents \? null : liveStream\.error/);
 });
 
+test("rollout cards foreground a human label while retaining the immutable id", () => {
+	const shellSource = readFileSync(join(root, "families/first_class_example_containers/live.annotated_rollouts.v1/shell.tsx"), "utf8");
+	assert.match(shellSource, /export function rolloutDisplayName/);
+	assert.match(shellSource, /familyLabel\(lane\).*seed/);
+	assert.match(shellSource, />Technical identity<\/summary><code[^>]*>\{lane\.name\}<\/code>/);
+	assert.doesNotMatch(shellSource, /title=\{lane\.name\}/);
+	assert.doesNotMatch(shellSource, />\{lane\.name\}<\/strong>/);
+});
+
 test("rollout and annotation streams receive one deterministic logical clock", () => {
   const groupedByTransport = [
     rollout("roll_a", 1, "observation", { step: 0, readout: { inventory: { health: 9 } } }),

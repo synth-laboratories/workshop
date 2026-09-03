@@ -22,7 +22,7 @@ writeFileSync(
 	compiled,
 	transformSync(readFileSync(source, "utf8"), { loader: "ts", format: "esm", target: "es2022" }).code
 );
-const { visualCardIdentity, visualEvidenceMode } = await import(pathToFileURL(compiled).href);
+const { visualCardIdentity, visualEvidenceMode, runProgressEvidenceMode } = await import(pathToFileURL(compiled).href);
 
 const read = (relative) => readFileSync(join(appRoot, "src/renderer/src", relative), "utf8");
 
@@ -56,6 +56,14 @@ test("evidence mode separates a bound run from a template's bundled examples", (
 	assert.equal(visualEvidenceMode({ bindings: { inputs: [{ input: "stream", kind: "fixture", source: "examples/events.json" }] } }), "bundled");
 	assert.equal(visualEvidenceMode({}), "unbound");
 	assert.equal(visualEvidenceMode({ sessionId: "", runId: null, traceId: undefined }), "unbound");
+});
+
+test("evidence workbenches hydrate the durable journal on cold reopen", () => {
+	assert.equal(runProgressEvidenceMode("live.annotated_rollouts.v1"), "full");
+	assert.equal(runProgressEvidenceMode("trace.workbench.v1"), "full");
+	assert.equal(runProgressEvidenceMode("craftax.trace_workbench.v1"), "full");
+	assert.equal(runProgressEvidenceMode("optimizer.run.v1"), "auto");
+	assert.equal(runProgressEvidenceMode(undefined), "auto");
 });
 
 test("the library card shows a bundled-preview badge instead of three dashes", () => {

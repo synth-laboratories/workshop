@@ -38,6 +38,24 @@ export const SEALED_TRACE_WORKBENCH_TEMPLATES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Templates that cannot be reconstructed from the aggregate run projection.
+ *
+ * Most optimizer surfaces should stay projection-only: loading an entire run
+ * journal just to draw progress is wasteful. Evidence workbenches are the
+ * exception. Their actual product is the retained per-rollout event history,
+ * so a cold reopen must explicitly hydrate the durable journal rather than
+ * falling back to container URLs that disappeared with the original run.
+ */
+export const FULL_EVIDENCE_TEMPLATES: ReadonlySet<string> = new Set([
+	...SEALED_TRACE_WORKBENCH_TEMPLATES,
+	"live.annotated_rollouts.v1"
+]);
+
+export function runProgressEvidenceMode(templateId: string | null | undefined): "auto" | "full" {
+	return templateId && FULL_EVIDENCE_TEMPLATES.has(templateId) ? "full" : "auto";
+}
+
+/**
  * Library-card identity.
  *
  * Suite titles are written family-first ("Banking77 · CISPO training") so they

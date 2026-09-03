@@ -32,6 +32,15 @@ function record(value: unknown): Record<string, unknown> { return value && typeo
 function text(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
 function abbreviated(value: string | undefined): string | undefined { return value && value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }
 
+/** Human label first; the immutable rollout id stays in the title and test id. */
+export function rolloutDisplayName(lane: Lane): string {
+  const seed = typeof lane.task.seed === "number" || typeof lane.task.seed === "string"
+    ? String(lane.task.seed)
+    : undefined;
+  if (seed) return `${familyLabel(lane)} · seed ${seed}`;
+  return `${familyLabel(lane)} · ${lane.name.slice(-8)}`;
+}
+
 export function runConfiguration(events: LiveEvalEvent[], rawOptimizer: unknown): RunConfiguration {
   const slot = record(rawOptimizer);
   const run = Object.keys(record(slot.run)).length ? record(slot.run) : slot;
@@ -138,7 +147,7 @@ function RolloutBar({ lane, selected, onClick }: { lane: Lane; selected: boolean
   const pct = lane.status === "finished" ? 100 : lane.total ? Math.min(100, lane.done / lane.total * 100) : lane.rolloutEvents ? 12 : 0;
   const findings = activeFindings(lane).length;
   return <button type="button" onClick={onClick} aria-pressed={selected} data-testid={`rollout-bar-${lane.name}`} style={{ width: "100%", display: "grid", gridTemplateColumns: "minmax(120px, 1.4fr) minmax(110px, 2fr) auto", gap: 10, alignItems: "center", padding: "8px 10px", border: selected ? "1px solid var(--sv-accent)" : "1px solid var(--sv-border)", borderRadius: 8, background: selected ? "#fff8f3" : "var(--sv-surface)", color: "var(--sv-text)", cursor: "pointer", textAlign: "left" }}>
-    <span style={{ minWidth: 0 }}><strong style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>{lane.name}</strong><span className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 9 }}>{familyLabel(lane)} · {progressLabel(lane)}</span></span>
+    <span style={{ minWidth: 0 }}><strong style={{ display: "block", whiteSpace: "nowrap", fontSize: 11 }}>{rolloutDisplayName(lane)}</strong><span className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 9 }}>{progressLabel(lane)}</span></span>
     <span style={{ display: "grid", gap: 4 }}><span style={{ display: "block", height: 7, borderRadius: 9, overflow: "hidden", background: "var(--sv-border)" }}><span style={{ display: "block", width: `${pct}%`, height: "100%", background: lane.status === "failed" ? "#d84b3f" : "var(--sv-accent)", transition: "width 180ms ease" }} /></span><span className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lane.lastAnnotation}</span></span>
     <span className="sv-mono" style={{ fontSize: 9, textAlign: "right", whiteSpace: "nowrap" }}>{outcomeLabel(lane)}<br />{findings} finding{findings === 1 ? "" : "s"}</span>
   </button>;
@@ -254,7 +263,7 @@ function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: 
   const verifierCalls = inspectableCalls.filter((call) => call.role === "verifier");
   return <article data-testid={`lane-${lane.name}`} style={{ border: "1px solid var(--sv-border)", borderRadius: 10, padding: 14, background: lane.status === "running" ? "#fffaf7" : "var(--sv-surface)", display: "grid", gap: 10 }}>
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
-      <strong style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis" }}>{lane.name}</strong>
+      <strong style={{ fontSize: 13 }}>{rolloutDisplayName(lane)}</strong>
       <span className="sv-mono" style={{ color: lane.status === "failed" ? "#c2553f" : "var(--sv-accent)", fontSize: 11 }}>{lane.status}{lane.annotationClosed ? " · annotations sealed" : lane.protocol ? " · annotating" : ""}</span>
     </div>
     <div style={{ height: 7, background: "var(--sv-border)", borderRadius: 8, overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", background: "var(--sv-accent)", transition: "width 180ms ease" }} /></div>
@@ -275,6 +284,7 @@ function LaneCard({ lane, showHistory, streamBase }: { lane: Lane; showHistory: 
     </section> : null}
     {tab === "trace" ? <section aria-label="Rollout evidence" style={{ display: "grid", gap: 12 }}><LlmCallCards lane={lane} showHistory={showHistory} /><details><summary style={{ cursor: "pointer", fontSize: 10, fontWeight: 700 }}>Trace V5 policy detail</summary><div style={{ marginTop: 10 }}><StandardTraceV5Viewer lane={lane} /></div></details><details><summary style={{ cursor: "pointer", fontSize: 10, fontWeight: 700 }}>Raw rollout events · {rolloutTrace.length}</summary><div style={{ marginTop: 8 }}><TraceList rows={rolloutTrace} empty="No rollout trace events have arrived." /></div></details></section> : null}
     {tab === "verifier" ? <section aria-label="Verifier and rubric information" style={{ display: "grid", gap: 12 }}><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 8, padding: 9, border: "1px solid var(--sv-border)", borderRadius: 7 }}><span><strong style={{ display: "block", fontSize: 9, color: "var(--sv-text-faint)" }}>OUTCOME</strong><span className="sv-mono" style={{ fontSize: 10 }}>{outcomeLabel(lane)}</span></span><span><strong style={{ display: "block", fontSize: 9, color: "var(--sv-text-faint)" }}>VERIFIER</strong><span className="sv-mono" style={{ fontSize: 10 }}>{verifierCalls[0]?.model ?? "deterministic / unspecified"}</span></span><span><strong style={{ display: "block", fontSize: 9, color: "var(--sv-text-faint)" }}>CALLS</strong><span className="sv-mono" style={{ fontSize: 10 }}>{verifierCalls.filter((call) => call.status === "completed").length}/{verifierCalls.length} complete</span></span></div><RubricEvidence lane={lane} /><details><summary style={{ cursor: "pointer", fontSize: 10, fontWeight: 700 }}>Verifier event trace · {verifierTrace.length}</summary><div style={{ marginTop: 8 }}><TraceList rows={verifierTrace} empty="No separate verifier or grader trace was emitted for this rollout." /></div></details></section> : null}
+    <details><summary style={{ cursor: "pointer", color: "var(--sv-text-faint)", fontSize: 9, fontWeight: 700 }}>Technical identity</summary><code style={{ display: "block", marginTop: 6, overflowWrap: "anywhere", fontSize: 9 }}>{lane.name}</code></details>
   </article>;
 }
 

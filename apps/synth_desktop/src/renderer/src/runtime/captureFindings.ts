@@ -152,6 +152,16 @@ export function auditElements(
 	return { viewport, elementCount: elements.length, findings, counts };
 }
 
+export function rectIntersectsViewport(
+	rect: SurfaceRect,
+	viewport: { width: number; height: number }
+): boolean {
+	return rect.x + rect.width > 0
+		&& rect.y + rect.height > 0
+		&& rect.x < viewport.width
+		&& rect.y < viewport.height;
+}
+
 /** Own text only: a container's text is its children's, and reporting it again
  * would multiply every leaf defect by its depth. Capped so one prose block
  * cannot dominate the record. */
@@ -174,6 +184,15 @@ export function collectSurface(root: Document, limit = 4000): SurfaceElement[] {
 		const rect = element.getBoundingClientRect();
 		// Nothing is decidable about a box with no area.
 		if (rect.width <= 0 || rect.height <= 0) continue;
+		// The PNG is a viewport, not the entire scrollable DOM. Off-screen rows
+		// and descendants of a closed disclosure are not visible evidence and
+		// must not generate findings for pixels that were never photographed.
+		if (!rectIntersectsViewport(rect, { width: window.innerWidth, height: window.innerHeight })) continue;
+		const closedDetails = element.closest("details:not([open])");
+		if (closedDetails && element !== closedDetails) {
+			const summary = closedDetails.querySelector(":scope > summary");
+			if (element !== summary && !summary?.contains(element)) continue;
+		}
 		const style = window.getComputedStyle(element);
 		if (style.visibility === "hidden" || style.display === "none") continue;
 		out.push({

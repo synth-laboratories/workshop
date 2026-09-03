@@ -41,7 +41,11 @@ import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
 import type { SubagentState } from "../runtime/sessionView";
 import { bindingAuthorityKey } from "../runtime/visualRevisionState";
 import { openTraceReference, VISUAL_REFERENCE_ERROR_EVENT, VISUAL_REFERENCE_OPENED_EVENT } from "../runtime/visualReferences";
-import { previewVariantForTemplate, SEALED_TRACE_WORKBENCH_TEMPLATES } from "../runtime/templatePresentation";
+import {
+	previewVariantForTemplate,
+	SEALED_TRACE_WORKBENCH_TEMPLATES,
+	runProgressEvidenceMode
+} from "../runtime/templatePresentation";
 import { optimizerRunIdFromBindings } from "../runtime/visualBindings";
 import { projectVisualRunLifecycle } from "../runtime/visualRunLifecycle";
 import { isTerminalRunStatus } from "../runtime/runProgress/types";
@@ -1208,7 +1212,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					dataDigest: visualDataDigest(snapshot.viewV2)
 				}).catch(() => undefined);
 			}
-		}, { evidence: "auto" });
+		}, { evidence: runProgressEvidenceMode(artifact.templateId) });
 	}, [artifact.id, artifact.templateId, optimizerRunId, templateDigest, visualIdentity]);
 
 	// A container eval imports one sealed Trace V5 bundle per terminal trial.

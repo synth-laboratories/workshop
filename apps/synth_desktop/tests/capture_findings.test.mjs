@@ -27,7 +27,8 @@ const {
 	findClippedText,
 	findHorizontalOverflow,
 	findIllegibleText,
-	findPlaceholderSaturation
+	findPlaceholderSaturation,
+	rectIntersectsViewport
 } = await import(pathToFileURL(compiled).href);
 
 const element = (overrides = {}) => ({
@@ -55,6 +56,14 @@ test("overflow is measured against the viewport, with a tolerance", () => {
 	assert.equal(offenders[0].severity, "egregious");
 	assert.match(offenders[0].target, /wide-table/);
 	assert.match(offenders[0].detail, /1200px exceeds the 1000px viewport/);
+});
+
+test("capture audits only geometry that intersects the photographed viewport", () => {
+	const viewport = { width: 1280, height: 900 };
+	assert.equal(rectIntersectsViewport({ x: 0, y: 0, width: 20, height: 20 }, viewport), true);
+	assert.equal(rectIntersectsViewport({ x: 0, y: 901, width: 20, height: 20 }, viewport), false);
+	assert.equal(rectIntersectsViewport({ x: -30, y: 10, width: 20, height: 20 }, viewport), false);
+	assert.equal(rectIntersectsViewport({ x: 1270, y: 890, width: 20, height: 20 }, viewport), true);
 });
 
 test("only clipped text counts as truncation, never wrapping", () => {
