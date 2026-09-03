@@ -2415,19 +2415,25 @@ fn observed_task_family(
     classified: Option<crate::visuals::LiveEvalFamily>,
     requested: Option<&str>,
 ) -> Option<String> {
-    classified
-        .map(|family| family.as_str().to_string())
-        .or_else(|| {
-            info.and_then(|value| {
-                value
-                    .get("env_family")
-                    .or_else(|| value.get("task_family"))
-                    .or_else(|| value.get("runtime_family"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
+    info.and_then(|value| {
+        value
+            .pointer("/liveEval/benchmarkFamily")
+            .or_else(|| value.pointer("/metadata/liveEval/benchmarkFamily"))
+            .or_else(|| value.get("env_family"))
+            .or_else(|| value.get("task_family"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+    .or_else(|| requested.map(str::to_string))
+    .or_else(|| {
+        info.and_then(|value| {
+            value
+                .get("runtime_family")
+                .and_then(Value::as_str)
+                .map(str::to_string)
         })
-        .or_else(|| requested.map(str::to_string))
+    })
+    .or_else(|| classified.map(|family| family.as_str().to_string()))
 }
 
 pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
@@ -6695,6 +6701,25 @@ mod tests {
         assert_eq!(
             observed_task_family(Some(&info), None, None).as_deref(),
             Some("healthbench")
+        );
+    }
+
+    #[test]
+    fn keeps_benchmark_family_separate_from_live_visual_family() {
+        let info = json!({
+            "liveEval": {
+                "family": "harbor",
+                "benchmarkFamily": "runebench"
+            }
+        });
+        assert_eq!(
+            observed_task_family(
+                Some(&info),
+                Some(crate::visuals::LiveEvalFamily::Harbor),
+                Some("runebench")
+            )
+            .as_deref(),
+            Some("runebench")
         );
     }
 
