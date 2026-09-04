@@ -22,7 +22,8 @@ success unless the producer separately reports a task-success contract.
 
 Cross-row ranking is permitted only when the payload declares a comparison
 contract and every row carries that exact contract digest. The contract names
-at least the benchmark and primary metric, and may also name evaluator, dataset,
+at least the benchmark and primary metric, and the renderer may rank only that
+named metric. It may also name evaluator, dataset,
 and split. A run catalog is descriptive even if two values happen to share a
 scale. The renderer never infers a winner across unverified contracts.
 
@@ -50,7 +51,12 @@ VisualsBench export. Certification requires a clean committed renderer build.
 ## Capture lifecycle
 
 Review captures are content-addressed and append-only. The adjacent observation
-receipt carries the screenshot digest and the complete certification identity.
-The review endpoint re-hashes the image and compares the identity. Readiness
+receipt carries the screenshot digest, actual captured viewport, and the complete
+certification identity. For rendered evidence, the same observation must bracket
+the native snapshot; a state transition during capture refuses the image. The
+review endpoint re-hashes the image and compares its identity and viewport. Readiness
 selects the latest passing review at each required width and copies their
 immutable receipts into the quality gate.
+
+Comparability and evidence completeness are orthogonal. A shared comparison
+contract may authorize ranking, but it cannot by itself label evidence terminal.

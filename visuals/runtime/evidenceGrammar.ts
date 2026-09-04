@@ -9,7 +9,7 @@ export type ComparisonContract = {
 
 export type ComparisonContractVerdict =
   | { comparable: true; reason: null }
-  | { comparable: false; reason: "missing_contract" | "row_contract_mismatch" };
+  | { comparable: false; reason: "missing_contract" | "row_contract_mismatch" | "metric_mismatch" };
 
 /**
  * Ranking is an evidence claim, so comparability is derived from shared
@@ -18,7 +18,8 @@ export type ComparisonContractVerdict =
 export function comparisonContractVerdict(
   kind: "like_for_like" | "run_catalog" | undefined,
   contract: ComparisonContract | undefined,
-  rows: Array<{ comparison_contract_digest?: string }>
+  rows: Array<{ comparison_contract_digest?: string }>,
+  rankingMetric?: string
 ): ComparisonContractVerdict {
   if (kind === "run_catalog") return { comparable: false, reason: "missing_contract" };
   if (
@@ -32,6 +33,9 @@ export function comparisonContractVerdict(
   ) return { comparable: false, reason: "missing_contract" };
   if (!rows.every((row) => row.comparison_contract_digest === contract.digest)) {
     return { comparable: false, reason: "row_contract_mismatch" };
+  }
+  if (!rankingMetric || rankingMetric !== contract.metric) {
+    return { comparable: false, reason: "metric_mismatch" };
   }
   return { comparable: true, reason: null };
 }

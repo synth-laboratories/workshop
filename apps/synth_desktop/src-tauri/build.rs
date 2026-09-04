@@ -1,20 +1,29 @@
 fn main() {
     println!("cargo:rerun-if-env-changed=SYNTH_DESKTOP_SOURCE_REVISION");
     track_git_revision_inputs();
-    let revision = std::env::var("SYNTH_DESKTOP_SOURCE_REVISION")
+    let mut revision = std::process::Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
         .ok()
-        .filter(|value| !value.trim().is_empty())
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
         .or_else(|| {
-            std::process::Command::new("git")
-                .args(["rev-parse", "--short=12", "HEAD"])
-                .output()
+            std::env::var("SYNTH_DESKTOP_SOURCE_REVISION")
                 .ok()
-                .filter(|output| output.status.success())
-                .and_then(|output| String::from_utf8(output.stdout).ok())
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty())
+                .filter(|value| !value.trim().is_empty())
         })
         .unwrap_or_else(|| "unknown".into());
+    let dirty = std::process::Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=normal"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| !output.stdout.is_empty());
+    if dirty && !revision.contains("-dirty") {
+        revision.push_str("-dirty");
+    }
     let built_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_secs().to_string())

@@ -82,7 +82,7 @@ function asCompare(raw: unknown): ComparePayload | null {
     return null;
   }
   if (candidate.comparison_kind !== "run_catalog") {
-    if (!comparisonContractVerdict(candidate.comparison_kind, candidate.comparison_contract, candidate.rows).comparable) return null;
+    if (!comparisonContractVerdict(candidate.comparison_kind, candidate.comparison_contract, candidate.rows, candidate.metric).comparable) return null;
   }
   return candidate;
 }

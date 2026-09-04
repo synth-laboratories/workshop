@@ -210,6 +210,24 @@
   vertical-align: middle;
 }
 
+[data-readiness="draft"] {
+  color: var(--sv-text-muted);
+  background: var(--sv-surface-muted);
+  border: 1px solid var(--sv-border-strong);
+}
+
+[data-readiness="ready"] {
+  color: var(--sv-ok-fg);
+  background: var(--sv-ok-bg);
+  border: 1px solid var(--sv-ok-edge);
+}
+
+[data-readiness="stale"] {
+  color: var(--sv-bad-fg);
+  background: var(--sv-bad-bg);
+  border: 1px solid var(--sv-bad-edge);
+}
+
 .sv-table {
   width: 100%;
   border-collapse: collapse;

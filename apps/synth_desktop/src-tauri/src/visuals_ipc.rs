@@ -74,9 +74,17 @@ struct VisualCaptureObservationReceipt {
     revision: i64,
     screenshot_path: String,
     screenshot_sha256: String,
+    viewport: VisualCaptureViewport,
     capture_time: String,
     certification_identity: Value,
     observation: Option<RenderedVisualObservation>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct VisualCaptureViewport {
+    width: u64,
+    height: u64,
 }
 
 fn capture_observation_receipt(screenshot: &str) -> Result<VisualCaptureObservationReceipt> {
@@ -100,6 +108,57 @@ fn capture_observation_receipt(screenshot: &str) -> Result<VisualCaptureObservat
         anyhow::bail!("visual review screenshot bytes do not match their capture receipt");
     }
     Ok(receipt)
+}
+
+fn validate_review_viewport(
+    receipt: &VisualCaptureObservationReceipt,
+    width: u64,
+    height: u64,
+) -> Result<()> {
+    if receipt.viewport.width != width || receipt.viewport.height != height {
+        anyhow::bail!(
+            "review viewport {width}x{height} does not match the authoritative capture viewport {}x{}",
+            receipt.viewport.width,
+            receipt.viewport.height
+        );
+    }
+    Ok(())
+}
+
+fn validate_certification_build_identity(identity: &Value) -> Result<()> {
+    let source = identity
+        .get("sourceRevision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "unknown")
+        .context("visual readiness requires a known source revision")?;
+    let build = identity
+        .get("buildRevision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "unknown")
+        .context("visual readiness requires a known build revision")?;
+    if source != build {
+        anyhow::bail!(
+            "visual readiness requires source and build revisions to match; source is {source}, build is {build}"
+        );
+    }
+    if source.contains("-dirty") || build.contains("-dirty") {
+        anyhow::bail!(
+            "visual readiness requires a clean committed renderer build; current revision is {build}"
+        );
+    }
+    let executable = identity
+        .get("executableDigest")
+        .and_then(Value::as_str)
+        .context("visual readiness requires the running executable digest")?;
+    if executable.len() != 71
+        || !executable.starts_with("sha256:")
+        || !executable[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        anyhow::bail!("visual readiness requires a valid running executable digest");
+    }
+    Ok(())
 }
 
 /// Rendered transport states that can carry evidence.
@@ -3363,8 +3422,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .get("height")
                 .and_then(Value::as_u64)
                 .context("review viewport requires height")?;
-            if width < 320 || height < 400 {
-                anyhow::bail!("review viewport is below the supported 320x400 floor");
+            if !(320..=2400).contains(&width) || !(400..=1800).contains(&height) {
+                anyhow::bail!("review viewport must be within 320x400 and 2400x1800");
             }
             let checks = body
                 .get("checks")
@@ -3404,6 +3463,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                         "visual capture observations do not match the reviewed visual revision"
                     );
                 }
+                validate_review_viewport(&receipt, width, height)?;
                 receipt
             };
             let certification_identity = registry.certification_identity(id.to_string()).await?;
@@ -3490,15 +3550,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }
             let template = registry.get_template(&current.template_id)?;
             let certification_identity = registry.certification_identity(id.to_string()).await?;
-            let source_revision = certification_identity
-                .get("sourceRevision")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if source_revision.ends_with("-dirty") || source_revision.contains("-dirty-") {
-                anyhow::bail!(
-                    "visual readiness requires a clean committed renderer build; current source revision is {source_revision}"
-                );
-            }
+            validate_certification_build_identity(&certification_identity)?;
             let required = required_authoring_checks(&template);
             let bindings_digest = if template.observation_contract.is_some() {
                 let durable = registry
@@ -6598,10 +6650,7 @@ mod tests {
         let screenshot = temp.path().join("capture.png");
         fs::write(&screenshot, b"original pixels").unwrap();
         let screenshot_text = screenshot.to_string_lossy().to_string();
-        let digest = format!(
-            "sha256:{:x}",
-            sha2::Sha256::digest(b"original pixels")
-        );
+        let digest = format!("sha256:{:x}", sha2::Sha256::digest(b"original pixels"));
         fs::write(
             screenshot.with_extension("observations.json"),
             serde_json::to_vec(&json!({
@@ -6610,6 +6659,7 @@ mod tests {
                 "revision": 14,
                 "screenshotPath": screenshot_text,
                 "screenshotSha256": digest,
+                "viewport": {"width": 1280, "height": 900},
                 "captureTime": "2026-09-03T00:00:00Z",
                 "certificationIdentity": certification_identity(),
                 "observation": null
@@ -6623,6 +6673,55 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("bytes do not match"));
+    }
+
+    #[test]
+    fn review_viewport_must_come_from_the_capture_receipt() {
+        let receipt = VisualCaptureObservationReceipt {
+            schema_version: "synth.visual-capture-observation.v2".into(),
+            visual_id: "vis_1".into(),
+            revision: 14,
+            screenshot_path: "/tmp/capture.png".into(),
+            screenshot_sha256: "sha256:pixels".into(),
+            viewport: VisualCaptureViewport {
+                width: 1280,
+                height: 900,
+            },
+            capture_time: "2026-09-03T00:00:00Z".into(),
+            certification_identity: certification_identity(),
+            observation: None,
+        };
+        validate_review_viewport(&receipt, 1280, 900).unwrap();
+        let error = validate_review_viewport(&receipt, 390, 844)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("authoritative capture viewport 1280x900"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn certification_requires_a_clean_matching_build_and_executable() {
+        let identity = json!({
+            "sourceRevision": "abc123",
+            "buildRevision": "abc123",
+            "executableDigest": format!("sha256:{}", "a".repeat(64)),
+        });
+        validate_certification_build_identity(&identity).unwrap();
+
+        let mut dirty = identity.clone();
+        dirty["sourceRevision"] = json!("abc123-dirty");
+        dirty["buildRevision"] = json!("abc123-dirty");
+        assert!(validate_certification_build_identity(&dirty).is_err());
+
+        let mut mismatched = identity.clone();
+        mismatched["sourceRevision"] = json!("other");
+        assert!(validate_certification_build_identity(&mismatched).is_err());
+
+        let mut digestless = identity;
+        digestless["executableDigest"] = Value::Null;
+        assert!(validate_certification_build_identity(&digestless).is_err());
     }
 
     fn review(width: u64, passing: bool, observation: Option<&RenderedVisualObservation>) -> Value {

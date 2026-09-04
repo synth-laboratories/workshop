@@ -19,6 +19,7 @@ type RewardPayload = {
     rollout_id: string;
     aggregation: "none";
     not_equivalent_to?: string;
+    terminal?: boolean;
   };
 };
 
@@ -50,6 +51,16 @@ function asReward(raw: unknown): RewardPayload | null {
   if (!Array.isArray(candidate.components)) return null;
   if (typeof candidate.total !== "number" || !Number.isFinite(candidate.total)) return null;
   if (!candidate.components.every((component) => typeof component?.value === "number")) return null;
+  if (candidate.evidence_basis !== undefined) {
+    const basis = candidate.evidence_basis;
+    if (
+      basis?.kind !== "single_rollout_environment_event_decomposition"
+      || typeof basis.rollout_id !== "string"
+      || !basis.rollout_id.trim()
+      || basis.aggregation !== "none"
+      || (basis.terminal !== undefined && typeof basis.terminal !== "boolean")
+    ) return null;
+  }
   return candidate;
 }
 
@@ -89,8 +100,8 @@ export function Shell(props: ShellProps) {
     >
       {reward.evidence_basis ? (
         <>
-          <EvidenceStateBanner state="terminal">
-            Environment-event decomposition for one retained rollout; this is not the run&apos;s mean reward.
+          <EvidenceStateBanner state={reward.evidence_basis.terminal === true ? "terminal" : "partial"}>
+            Environment-event decomposition for one retained rollout; this is not the run&apos;s mean reward{reward.evidence_basis.terminal === true ? "." : ", and source closure was not asserted."}
           </EvidenceStateBanner>
           <ProvenanceHeader items={[
             { label: "Evidence basis", value: reward.evidence_basis.kind },

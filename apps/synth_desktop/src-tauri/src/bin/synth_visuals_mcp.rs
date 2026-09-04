@@ -140,8 +140,9 @@ fn parse_http_response(response: &str) -> Result<Value, String> {
 mod tests {
     use super::{
         assert_review_viewport, create_bindings_from_args, managed_tool_name, parse_http_response,
-        socket_addr, tools, REVIEW_VIEWPORT_HEIGHT_MAX, REVIEW_VIEWPORT_HEIGHT_MIN,
-        REVIEW_VIEWPORT_WIDTH_MAX, REVIEW_VIEWPORT_WIDTH_MIN, VISUAL_OPERATIONS,
+        socket_addr, stable_review_observation, tools, REVIEW_VIEWPORT_HEIGHT_MAX,
+        REVIEW_VIEWPORT_HEIGHT_MIN, REVIEW_VIEWPORT_WIDTH_MAX, REVIEW_VIEWPORT_WIDTH_MIN,
+        VISUAL_OPERATIONS,
     };
     use serde_json::{json, Value};
 
@@ -177,6 +178,20 @@ mod tests {
         assert_eq!(viewport["width"]["maximum"], REVIEW_VIEWPORT_WIDTH_MAX);
         assert_eq!(viewport["height"]["minimum"], REVIEW_VIEWPORT_HEIGHT_MIN);
         assert_eq!(viewport["height"]["maximum"], REVIEW_VIEWPORT_HEIGHT_MAX);
+    }
+
+    #[test]
+    fn certified_capture_requires_one_stable_rendered_observation() {
+        let before = json!({"observation":{"renderedRevision":7,"transportState":"terminal"}});
+        let same = before.clone();
+        assert_eq!(
+            stable_review_observation(&before, &same).unwrap()["renderedRevision"],
+            7
+        );
+        let after = json!({"observation":{"renderedRevision":7,"transportState":"live"}});
+        assert!(stable_review_observation(&before, &after)
+            .unwrap_err()
+            .contains("changed while the screenshot was taken"));
     }
 
     /// A slot marked `multiple` in a template contract has to be expressible,
@@ -1597,13 +1612,12 @@ fn capture_review(args: &Value) -> Result<Value, String> {
     let temp_stem = format!(".capture-{}", uuid::Uuid::new_v4().simple());
     let temp_png_path = root.join(format!("{temp_stem}.png"));
     let mut window_receipt = Value::Null;
-    let mut captured = (width, height);
-    let capture_mode = if matches!(
+    let (capture_mode, captured) = if matches!(
         renderer_kind,
         "mermaid" | "systems" | "systems-dynamic" | "chart"
     ) {
         request("POST", &format!("/v1/visuals/{id}/render"), None)?;
-        captured = capture_svg_review(
+        let captured = capture_svg_review(
             id,
             renderer_kind,
             width,
@@ -1612,10 +1626,20 @@ fn capture_review(args: &Value) -> Result<Value, String> {
             &temp_stem,
             &temp_png_path,
         )?;
-        "deterministic-svg"
+        ("deterministic-svg", captured)
     } else {
-        window_receipt = capture_desktop_review(id, width, height, &temp_png_path)?;
-        "host-webview-snapshot"
+        window_receipt = capture_desktop_review(id, revision, width, height, &temp_png_path)?;
+        let captured = (
+            window_receipt
+                .pointer("/resizedViewport/width")
+                .and_then(Value::as_u64)
+                .ok_or("host capture receipt missing actual viewport width")?,
+            window_receipt
+                .pointer("/resizedViewport/height")
+                .and_then(Value::as_u64)
+                .ok_or("host capture receipt missing actual viewport height")?,
+        );
+        ("host-webview-snapshot", captured)
     };
     // A rendered observation is evidence about the pane, and only templates
     // that declare an observation contract are certified against it. Requiring
@@ -1623,12 +1647,11 @@ fn capture_review(args: &Value) -> Result<Value, String> {
     // impossible for contract-free templates such as the Trace inspector, with
     // no path that could ever succeed.
     let observation = if capture_mode == "host-webview-snapshot" {
-        let response = wait_for_review_observation(id, revision)?;
-        let observed = response
+        let observed = window_receipt
             .get("observation")
             .cloned()
             .filter(|value| !value.is_null());
-        let required = response
+        let required = window_receipt
             .get("required")
             .and_then(Value::as_bool)
             .unwrap_or(true);
@@ -1708,6 +1731,7 @@ fn capture_review(args: &Value) -> Result<Value, String> {
             "revision": revision,
             "screenshotPath": png_path.to_string_lossy(),
             "screenshotSha256": screenshot_sha256,
+            "viewport": {"width": captured.0, "height": captured.1},
             "certificationIdentity": certification_identity,
             "captureTime": captured_at,
             "observation": observation,
@@ -1754,6 +1778,13 @@ fn wait_for_review_observation(id: &str, revision: i64) -> Result<Value, String>
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+}
+
+fn stable_review_observation(before: &Value, after: &Value) -> Result<Value, String> {
+    if before.get("observation") != after.get("observation") {
+        return Err("rendered evidence changed while the screenshot was taken".into());
+    }
+    Ok(before.get("observation").cloned().unwrap_or(Value::Null))
 }
 
 fn capture_svg_review(
@@ -1960,6 +1991,7 @@ fn render_svg_with_webkit(
 /// back should not require reading an agent transcript.
 fn capture_desktop_review(
     id: &str,
+    revision: i64,
     width: u64,
     height: u64,
     png_path: &std::path::Path,
@@ -1967,11 +1999,11 @@ fn capture_desktop_review(
     CapturePlatform::current().require_macos("Desktop template review capture")?;
     #[cfg(target_os = "macos")]
     {
-        capture_macos_desktop_review(id, width, height, png_path)
+        capture_macos_desktop_review(id, revision, width, height, png_path)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (id, width, height, png_path);
+        let _ = (id, revision, width, height, png_path);
         unreachable!("platform gate returned success outside macOS")
     }
 }
@@ -1979,6 +2011,7 @@ fn capture_desktop_review(
 #[cfg(target_os = "macos")]
 fn capture_macos_desktop_review(
     id: &str,
+    revision: i64,
     width: u64,
     height: u64,
     png_path: &std::path::Path,
@@ -1995,6 +2028,9 @@ fn capture_macos_desktop_review(
         &format!("/v1/visuals/{id}/show"),
         Some(json!({"presentation":"pane"})),
     )?;
+    // Bracket the PNG with the same rendered observation. A later terminal
+    // state must never certify pixels captured while the pane was connecting.
+    let before = wait_for_review_observation(id, revision)?;
     let receipt = request(
         "POST",
         "/v1/review-window/capture",
@@ -2005,6 +2041,19 @@ fn capture_macos_desktop_review(
             "outputPath": png_path.to_string_lossy(),
         })),
     )?;
+    let after = request("GET", &format!("/v1/review-observations/{id}"), None)?;
+    let stable_observation = match stable_review_observation(&before, &after) {
+        Ok(observation) => observation,
+        Err(_) => {
+        return Err(json!({
+            "code": "visual_observation_changed_during_capture",
+            "visual_id": id,
+            "revision": revision,
+            "retryable": true,
+            "remediation": "The rendered evidence changed while the screenshot was taken. Capture again after the surface settles."
+        }).to_string())
+        }
+    };
     if !png_path.is_file() {
         return Err(
             "WebViewSnapshotFailed: host capture reported success but wrote no image".into(),
@@ -2022,6 +2071,8 @@ fn capture_macos_desktop_review(
         "processId": receipt.get("processId").cloned(),
         "windowLabel": receipt.get("windowLabel").cloned(),
         "restored": receipt.get("restored").cloned(),
+        "required": before.get("required").cloned().unwrap_or(Value::Bool(true)),
+        "observation": stable_observation,
     }))
 }
 

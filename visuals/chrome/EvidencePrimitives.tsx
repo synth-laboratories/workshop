@@ -10,6 +10,14 @@ const STATE_COPY: Record<EvidenceState, string> = {
   unavailable: "Evidence unavailable"
 };
 
+const STATE_TONE: Record<EvidenceState, { edge: string; background: string }> = {
+  live: { edge: "#3d78bb", background: "#eef5fc" },
+  terminal: { edge: "var(--sv-ok-fg, #1e7a43)", background: "var(--sv-ok-bg, #ecf7f0)" },
+  partial: { edge: "var(--sv-warn-fg, #92660c)", background: "var(--sv-warn-bg, #fbf5e7)" },
+  stale: { edge: "#c2553f", background: "#fff3ed" },
+  unavailable: { edge: "var(--sv-bad-fg, #b23830)", background: "var(--sv-bad-bg, #fbefee)" }
+};
+
 export function EvidenceStateBanner({
   state,
   children
@@ -17,17 +25,18 @@ export function EvidenceStateBanner({
   state: EvidenceState;
   children?: ReactNode;
 }) {
+  const tone = STATE_TONE[state];
   return (
     <aside
       data-evidence-state={state}
       role={state === "stale" || state === "unavailable" ? "alert" : "status"}
       style={{
         border: "1px solid var(--sv-border)",
-        borderLeft: `4px solid ${state === "stale" || state === "unavailable" ? "#c2553f" : "var(--sv-accent)"}`,
+        borderLeft: `4px solid ${tone.edge}`,
         borderRadius: 8,
         padding: "9px 12px",
         marginBottom: 14,
-        background: "var(--sv-surface-muted, #f7f7f5)",
+        background: tone.background,
         fontSize: 12
       }}
     >
@@ -63,11 +72,24 @@ export function ComparisonScopeNotice({
   contract?: string;
 }) {
   return (
-    <EvidenceStateBanner state={comparable ? "terminal" : "partial"}>
-      {comparable
+    <aside
+      data-comparison-scope={comparable ? "comparable" : "descriptive"}
+      role="note"
+      style={{
+        border: "1px solid var(--sv-border)",
+        borderLeft: `4px solid ${comparable ? "var(--sv-accent)" : "var(--sv-warn-edge, #ecd9b0)"}`,
+        borderRadius: 8,
+        padding: "9px 12px",
+        marginBottom: 14,
+        background: "var(--sv-surface-muted, #f7f7f5)",
+        fontSize: 12
+      }}
+    >
+      <strong>{comparable ? "Comparable rows" : "Descriptive rows"}</strong>
+      <span> · {comparable
         ? `Rows share evaluation contract ${contract ?? "(unnamed)"}; ranking is valid.`
-        : "Rows use different or unverified evaluation contracts; values are descriptive and are not ranked."}
-    </EvidenceStateBanner>
+        : "Rows use different or unverified evaluation contracts; values are descriptive and are not ranked."}</span>
+    </aside>
   );
 }
 
@@ -87,5 +109,5 @@ export function ProvenanceHeader({ items }: { items: Array<{ label: string; valu
 }
 
 export function ReadinessBadge({ state }: { state: "ready" | "draft" | "stale" }) {
-  return <span data-readiness={state} className="sv-label">{state}</span>;
+  return <span data-readiness={state} className="sv-label" style={{ padding: "5px 9px", borderRadius: 999 }}>{state}</span>;
 }
