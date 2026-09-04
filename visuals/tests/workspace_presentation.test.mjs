@@ -29,6 +29,15 @@ test("only the identity line pins; the metric block scrolls with the canvas", ()
   assert.match(css, /\.sv-workspace-identity \{[\s\S]*?position: sticky/);
 });
 
+test("shared evidence documents expose compact table overflow from their own container", () => {
+  const css = read("chrome/tokens.css");
+  const comparison = read("families/analysis/model.compare.v1/shell.tsx");
+  assert.match(css, /\.synth-visual-root \{[\s\S]*?container-name: visual-evidence;/);
+  assert.match(css, /@container visual-evidence \(max-width: 760px\)/);
+  assert.match(comparison, /scroll horizontally to inspect every metric/);
+  assert.match(comparison, /Scroll horizontally for every metric/);
+});
+
 test("workspace metrics are tiered, and untiered metrics stay visible", () => {
   const chrome = read(`${SHARED}/components/workspace/WorkspaceChrome.tsx`);
   assert.match(chrome, /metric\.tier \?\? "primary"/);

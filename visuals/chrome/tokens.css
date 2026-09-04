@@ -63,6 +63,8 @@
 
 .synth-visual-root {
   box-sizing: border-box;
+  container-name: visual-evidence;
+  container-type: inline-size;
   width: 100%;
   min-width: 0;
   max-width: 100%;
@@ -261,8 +263,6 @@
 /* ── Optimizer workspace ── */
 
 .sv-workspace {
-  container-name: visual-evidence;
-  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: 14px;
