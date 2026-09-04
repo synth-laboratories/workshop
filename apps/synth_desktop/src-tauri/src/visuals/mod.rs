@@ -57,6 +57,6 @@ pub use models::{
 pub use registry::VisualRegistry;
 pub use renditions::{VisualAsset, VisualRendition};
 pub use templates::{
-    import_managed_template, list_templates, resolve_template, TemplateMeta,
+    import_managed_template, list_templates, resolve_template, AuthoringAffordance, TemplateMeta,
     TemplateObservationContract, TemplateReadinessContract,
 };

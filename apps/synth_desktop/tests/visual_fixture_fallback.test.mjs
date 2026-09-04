@@ -148,3 +148,87 @@ for (const testCase of CASES) {
     );
   });
 }
+
+const { Shell: ModelCompareShell } = await load(
+  "families/analysis/model.compare.v1/shell.tsx",
+  "ModelCompareCatalog"
+);
+
+test("cross-benchmark runs render as independent cards without a winner", () => {
+  const markup = renderToStaticMarkup(
+    createElement(ModelCompareShell, {
+      comparison: {
+        comparison_kind: "run_catalog",
+        rows: [
+          { benchmark: "craftax", model: "policy-a", mean_reward: 0.25 },
+          { benchmark: "banking77", model: "policy-b", mean_reward: 0.625 }
+        ]
+      }
+    })
+  );
+  assert.match(markup, /Evaluation run catalog/);
+  assert.match(markup, /not comparable or ranked across cards/);
+  assert.match(markup, /Benchmark-local evaluation runs/);
+  assert.doesNotMatch(markup, /<table/);
+  assert.doesNotMatch(markup, /var\(--sv-accent\)/);
+});
+
+test("a catalog row without a benchmark fails closed", () => {
+  const markup = renderToStaticMarkup(
+    createElement(ModelCompareShell, {
+      comparison: {
+        comparison_kind: "run_catalog",
+        rows: [{ model: "policy-a", mean_reward: 0.25 }]
+      },
+      bindings: [{ input: "comparison", kind: "inline", data: {} }]
+    })
+  );
+  assert.match(markup, /cannot render/);
+});
+
+test("an unknown comparison kind fails closed", () => {
+  const markup = renderToStaticMarkup(
+    createElement(ModelCompareShell, {
+      comparison: {
+        comparison_kind: "rank_everything",
+        rows: [{ model: "policy-a", mean_reward: 0.25 }]
+      },
+      bindings: [{ input: "comparison", kind: "inline", data: {} }]
+    })
+  );
+  assert.match(markup, /cannot render/);
+});
+
+test("like-for-like ranking follows the declared achievement metric", () => {
+  const markup = renderToStaticMarkup(
+    createElement(ModelCompareShell, {
+      comparison: {
+        comparison_kind: "like_for_like",
+        metric: "mean_achievements",
+        rows: [
+          { model: "reward-winner", mean_reward: 0.9, mean_achievements: 1 },
+          { model: "achievement-winner", mean_reward: 0.2, mean_achievements: 4 }
+        ]
+      }
+    })
+  );
+  assert.match(markup, /<strong style="color:var\(--sv-accent\)">achievement-winner<\/strong>/);
+  assert.doesNotMatch(markup, /<strong style="color:var\(--sv-accent\)">reward-winner<\/strong>/);
+});
+
+test("like-for-like cost ranking treats lower cost as better", () => {
+  const markup = renderToStaticMarkup(
+    createElement(ModelCompareShell, {
+      comparison: {
+        comparison_kind: "like_for_like",
+        metric: "cost_usd",
+        rows: [
+          { model: "expensive", cost_usd: 0.8 },
+          { model: "efficient", cost_usd: 0.2 }
+        ]
+      }
+    })
+  );
+  assert.match(markup, /<strong style="color:var\(--sv-accent\)">efficient<\/strong>/);
+  assert.doesNotMatch(markup, /<strong style="color:var\(--sv-accent\)">expensive<\/strong>/);
+});

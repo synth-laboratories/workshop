@@ -34,16 +34,22 @@ fn required_authoring_checks(template: &TemplateMeta) -> Vec<&'static str> {
     if let Some(contract) = template.observation_contract.as_ref() {
         match contract.readiness.authoring_affordances.as_ref() {
             // Declared affordances narrow the evidence checks to the ones the
-            // surface can actually satisfy. An undeclared affordance is not
-            // silently dropped: only names the template listed are required,
-            // and an unknown name is ignored rather than inventing a check.
-            Some(declared) => checks.extend(
+            // surface can actually satisfy. Template loading parses them into
+            // a closed enum, so an unknown name cannot silently weaken this gate.
+            Some(declared) if !declared.is_empty() => checks.extend(
                 EVIDENCE_AUTHORING_CHECKS
                     .iter()
-                    .filter(|check| declared.iter().any(|name| name == *check))
+                    .filter(|check| {
+                        declared
+                            .iter()
+                            .any(|affordance| affordance.check_name() == **check)
+                    })
                     .copied(),
             ),
-            None => checks.extend(EVIDENCE_AUTHORING_CHECKS),
+            // Empty declarations are rejected while loading a manifest. Keep
+            // programmatically constructed values strict as a second line of
+            // defence rather than allowing an empty list to disable evidence.
+            Some(_) | None => checks.extend(EVIDENCE_AUTHORING_CHECKS),
         }
     }
     if template.id.starts_with("diagram.") {
@@ -6597,8 +6603,10 @@ mod tests {
         }
 
         if let Some(contract) = template.observation_contract.as_mut() {
-            contract.readiness.authoring_affordances =
-                Some(vec!["traceInspector".into(), "realEvidence".into()]);
+            contract.readiness.authoring_affordances = Some(vec![
+                crate::visuals::AuthoringAffordance::TraceInspector,
+                crate::visuals::AuthoringAffordance::RealEvidence,
+            ]);
         }
         let declared = required_authoring_checks(&template);
         assert!(declared.contains(&"traceInspector"));
@@ -6613,15 +6621,15 @@ mod tests {
         }
         assert!(declared.contains(&"screenshotInspected"));
 
-        // An unknown name neither adds a check nor removes the known ones.
+        // An empty declaration cannot disable the strict defaults, even when
+        // a TemplateMeta is constructed directly instead of loaded.
         if let Some(contract) = template.observation_contract.as_mut() {
-            contract.readiness.authoring_affordances = Some(vec!["notAKnownCheck".into()]);
+            contract.readiness.authoring_affordances = Some(Vec::new());
         }
-        let unknown = required_authoring_checks(&template);
+        let empty = required_authoring_checks(&template);
         for check in EVIDENCE_AUTHORING_CHECKS {
-            assert!(!unknown.contains(&check), "{check} was not declared");
+            assert!(empty.contains(&check), "{check} must fail closed");
         }
-        assert!(!unknown.contains(&"notAKnownCheck"));
     }
 
     #[test]

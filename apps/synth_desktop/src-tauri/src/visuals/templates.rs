@@ -2,12 +2,32 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
 
 const MANAGED_TEMPLATE_MAX_BYTES: u64 = 1_500_000;
+
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, specta::Type,
+)]
+#[serde(rename_all = "camelCase")]
+pub enum AuthoringAffordance {
+    TemporalControls,
+    TraceInspector,
+    RealEvidence,
+}
+
+impl AuthoringAffordance {
+    pub const fn check_name(self) -> &'static str {
+        match self {
+            Self::TemporalControls => "temporalControls",
+            Self::TraceInspector => "traceInspector",
+            Self::RealEvidence => "realEvidence",
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -34,7 +54,7 @@ pub struct TemplateReadinessContract {
     /// false. A static analysis projection of immutable sealed evidence has no
     /// temporal control to offer, and demanding one made it uncertifiable.
     #[serde(default)]
-    pub authoring_affordances: Option<Vec<String>>,
+    pub authoring_affordances: Option<Vec<AuthoringAffordance>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
@@ -530,6 +550,24 @@ fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
         (_, Some(b)) => b.as_array().cloned().unwrap_or_default(),
         _ => Vec::new(),
     };
+    let observation_contract: Option<TemplateObservationContract> = value
+        .get("observationContract")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .with_context(|| format!("template {id} has an invalid observationContract"))?;
+    if let Some(declared) = observation_contract
+        .as_ref()
+        .and_then(|contract| contract.readiness.authoring_affordances.as_ref())
+    {
+        if declared.is_empty() {
+            anyhow::bail!("template {id} authoringAffordances must not be empty");
+        }
+        let unique = declared.iter().copied().collect::<BTreeSet<_>>();
+        if unique.len() != declared.len() {
+            anyhow::bail!("template {id} authoringAffordances contains duplicates");
+        }
+    }
     let mut meta = TemplateMeta {
         schema_version,
         id,
@@ -568,11 +606,7 @@ fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default(),
-        observation_contract: value
-            .get("observationContract")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()?,
+        observation_contract,
     };
     let shell = path.join("shell.tsx");
     if shell.exists() {
@@ -667,6 +701,48 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    fn write_template_with_affordances(path: &Path, id: &str, affordances: &str) {
+        fs::create_dir_all(path).unwrap();
+        fs::write(
+            path.join("template.json"),
+            format!(
+                r#"{{"schemaVersion":"synth.visual-template.v1","id":"{id}","version":"1.0.0","observationContract":{{"schemaVersion":"synth.visual-observation-contract.v1","readiness":{{"authoringAffordances":{affordances}}}}}}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn unknown_authoring_affordance_refuses_the_template() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("typo.v1");
+        write_template_with_affordances(&path, "typo.v1", r#"["notAKnownCheck"]"#);
+        let error = load_template_meta(&path).unwrap_err().to_string();
+        assert!(error.contains("invalid observationContract"));
+    }
+
+    #[test]
+    fn empty_authoring_affordances_cannot_disable_all_evidence_checks() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("empty.v1");
+        write_template_with_affordances(&path, "empty.v1", "[]");
+        let error = load_template_meta(&path).unwrap_err().to_string();
+        assert!(error.contains("must not be empty"));
+    }
+
+    #[test]
+    fn duplicate_authoring_affordances_are_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("duplicate-affordance.v1");
+        write_template_with_affordances(
+            &path,
+            "duplicate-affordance.v1",
+            r#"["realEvidence","realEvidence"]"#,
+        );
+        let error = load_template_meta(&path).unwrap_err().to_string();
+        assert!(error.contains("contains duplicates"));
     }
 
     #[test]
