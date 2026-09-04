@@ -233,6 +233,31 @@
   background: var(--sv-surface-muted);
 }
 
+.sv-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-gutter: stable;
+}
+
+.sv-table-scroll > .sv-table {
+  min-width: 720px;
+}
+
+.sv-table-scroll-cue {
+  display: none;
+  margin: 6px 0 0;
+  color: var(--sv-text-faint);
+  font-size: 11px;
+  text-align: right;
+}
+
+@media (max-width: 520px) {
+  .sv-table-scroll-cue {
+    display: block;
+  }
+}
+
 /* ── Optimizer workspace ── */
 
 .sv-workspace {

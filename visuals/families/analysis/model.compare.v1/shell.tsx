@@ -213,7 +213,12 @@ export function Shell(props: ShellProps) {
         { label: "Dataset", value: data.comparison_contract?.dataset },
         { label: "Split", value: data.comparison_contract?.split }
       ]} />
-      <div style={{ overflowX: "auto" }}>
+      <div
+        className="sv-table-scroll"
+        role="region"
+        aria-label="Model comparison table; scroll horizontally to inspect every metric"
+        tabIndex={0}
+      >
         <table className="sv-table" aria-label="Model comparison">
           <thead>
             <tr>
@@ -262,6 +267,9 @@ export function Shell(props: ShellProps) {
           </tbody>
         </table>
       </div>
+      <p className="sv-table-scroll-cue" aria-hidden="true">
+        Scroll horizontally for every metric →
+      </p>
     </VisualChrome>
   );
 }
