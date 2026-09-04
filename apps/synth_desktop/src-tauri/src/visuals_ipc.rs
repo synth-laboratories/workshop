@@ -1014,6 +1014,25 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
     }))
 }
 
+const DESKTOP_WINDOW_MIN_WIDTH: f64 = 960.0;
+const DESKTOP_WINDOW_MIN_HEIGHT: f64 = 640.0;
+const REVIEW_WINDOW_MIN_WIDTH: f64 = 320.0;
+const REVIEW_WINDOW_MIN_HEIGHT: f64 = 400.0;
+
+fn review_capture_requires_relaxed_minimum(width: f64, height: f64) -> bool {
+    width < DESKTOP_WINDOW_MIN_WIDTH || height < DESKTOP_WINDOW_MIN_HEIGHT
+}
+
+#[cfg(target_os = "macos")]
+fn set_review_window_minimum(app: &AppHandle, width: f64, height: f64) -> Result<()> {
+    let window = app
+        .get_webview_window("main")
+        .context("review capture requires the main Desktop window")?;
+    window
+        .set_min_size(Some(Size::Logical(LogicalSize::new(width, height))))
+        .context("set review window minimum")
+}
+
 /// How long the renderer gets to relayout at the review viewport before the
 /// snapshot. Carried over from the previous capture pipeline, where the helper
 /// slept between resize and `screencapture` for the same reason.
@@ -1647,15 +1666,7 @@ pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Val
         Err(_) => (Value::Null, Value::Null),
     };
 
-    let restore = match viewport {
-        Some(_) => resize_review_window(
-            app,
-            &json!({"width": geometry.previous.0, "height": geometry.previous.1}),
-        )
-        .map(|_| ()),
-        // Nothing was resized, so there is nothing to put back.
-        None => Ok(()),
-    };
+    let restore = restore_capture_geometry(app, &geometry, viewport.is_some());
     let capture_mode_restore = leave_capture_mode(app);
     let written = match &snapshot {
         Ok(bytes) => fs::write(&output, bytes).context("write capture PNG"),
@@ -1741,6 +1752,37 @@ struct CaptureGeometry {
     current: (u64, u64),
     scale: f64,
     label: String,
+    minimum_relaxed: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn restore_capture_geometry(
+    app: &AppHandle,
+    geometry: &CaptureGeometry,
+    resized: bool,
+) -> Result<()> {
+    let size_restore = if resized {
+        resize_review_window(
+            app,
+            &json!({"width": geometry.previous.0, "height": geometry.previous.1}),
+        )
+        .map(|_| ())
+    } else {
+        Ok(())
+    };
+    let minimum_restore = if geometry.minimum_relaxed {
+        set_review_window_minimum(app, DESKTOP_WINDOW_MIN_WIDTH, DESKTOP_WINDOW_MIN_HEIGHT)
+    } else {
+        Ok(())
+    };
+    match (size_restore, minimum_restore) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(size), Ok(())) => Err(size),
+        (Ok(()), Err(minimum)) => Err(minimum),
+        (Err(size), Err(minimum)) => Err(anyhow::anyhow!(
+            "{size:#}; additionally failed to restore the Desktop window minimum: {minimum:#}"
+        )),
+    }
 }
 
 /// Resize to the requested viewport, or just report the window as it stands.
@@ -1765,9 +1807,26 @@ fn capture_window_geometry(
             current: logical,
             scale,
             label,
+            minimum_relaxed: false,
         });
     };
-    let resize = resize_review_window(app, &json!({"width": width, "height": height}))?;
+    let minimum_relaxed = review_capture_requires_relaxed_minimum(width, height);
+    if minimum_relaxed {
+        set_review_window_minimum(app, REVIEW_WINDOW_MIN_WIDTH, REVIEW_WINDOW_MIN_HEIGHT)?;
+    }
+    let resize = match resize_review_window(app, &json!({"width": width, "height": height})) {
+        Ok(resize) => resize,
+        Err(error) => {
+            if minimum_relaxed {
+                let _ = set_review_window_minimum(
+                    app,
+                    DESKTOP_WINDOW_MIN_WIDTH,
+                    DESKTOP_WINDOW_MIN_HEIGHT,
+                );
+            }
+            return Err(error);
+        }
+    };
     let read = |key: &str, field: &str| -> u64 {
         resize
             .get(key)
@@ -1780,6 +1839,7 @@ fn capture_window_geometry(
         current: (read("current", "width"), read("current", "height")),
         scale,
         label,
+        minimum_relaxed,
     })
 }
 
@@ -6699,6 +6759,13 @@ mod tests {
             error.contains("authoritative capture viewport 1280x900"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn compact_review_temporarily_relaxes_the_desktop_window_minimum() {
+        assert!(!review_capture_requires_relaxed_minimum(1280.0, 900.0));
+        assert!(review_capture_requires_relaxed_minimum(390.0, 844.0));
+        assert!(review_capture_requires_relaxed_minimum(1280.0, 500.0));
     }
 
     #[test]
