@@ -139,10 +139,10 @@ fn parse_http_response(response: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        assert_review_viewport, create_bindings_from_args, managed_tool_name, parse_http_response,
-        socket_addr, stable_review_observation, tools, REVIEW_VIEWPORT_HEIGHT_MAX,
-        REVIEW_VIEWPORT_HEIGHT_MIN, REVIEW_VIEWPORT_WIDTH_MAX, REVIEW_VIEWPORT_WIDTH_MIN,
-        VISUAL_OPERATIONS,
+        assert_review_viewport, create_bindings_from_args, logical_capture_viewport,
+        managed_tool_name, parse_http_response, socket_addr, stable_review_observation, tools,
+        REVIEW_VIEWPORT_HEIGHT_MAX, REVIEW_VIEWPORT_HEIGHT_MIN, REVIEW_VIEWPORT_WIDTH_MAX,
+        REVIEW_VIEWPORT_WIDTH_MIN, VISUAL_OPERATIONS,
     };
     use serde_json::{json, Value};
 
@@ -192,6 +192,16 @@ mod tests {
         assert!(stable_review_observation(&before, &after)
             .unwrap_err()
             .contains("changed while the screenshot was taken"));
+    }
+
+    #[test]
+    fn certified_viewport_is_derived_from_the_pixels_actually_captured() {
+        let receipt = json!({"width":780,"height":1688,"scaleFactor":2.0});
+        assert_eq!(logical_capture_viewport(&receipt).unwrap(), (390, 844));
+        assert!(
+            logical_capture_viewport(&json!({"width":780,"height":1688,"scaleFactor":0.0}))
+                .is_err()
+        );
     }
 
     /// A slot marked `multiple` in a template contract has to be expressible,
@@ -1787,6 +1797,26 @@ fn stable_review_observation(before: &Value, after: &Value) -> Result<Value, Str
     Ok(before.get("observation").cloned().unwrap_or(Value::Null))
 }
 
+fn logical_capture_viewport(receipt: &Value) -> Result<(u64, u64), String> {
+    let width = receipt
+        .get("width")
+        .and_then(Value::as_u64)
+        .ok_or("host capture receipt missing PNG width")?;
+    let height = receipt
+        .get("height")
+        .and_then(Value::as_u64)
+        .ok_or("host capture receipt missing PNG height")?;
+    let scale = receipt
+        .get("scaleFactor")
+        .and_then(Value::as_f64)
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .ok_or("host capture receipt missing valid scale factor")?;
+    Ok((
+        (width as f64 / scale).round() as u64,
+        (height as f64 / scale).round() as u64,
+    ))
+}
+
 fn capture_svg_review(
     id: &str,
     renderer_kind: &str,
@@ -2060,11 +2090,15 @@ fn capture_macos_desktop_review(
         );
     }
     assert_non_blank_png(png_path)?;
+    let captured_viewport = logical_capture_viewport(&receipt)?;
     Ok(json!({
         "schemaVersion": "synth.visual-capture-window.v1",
         "captureMode": "host-webview-snapshot",
         "requestedViewport": {"width": width, "height": height},
-        "resizedViewport": receipt.get("current").cloned(),
+        // PNG dimensions are sampled from the exact frame. The immediate
+        // post-set_size read can still describe the previous size on macOS
+        // because the resize is applied asynchronously.
+        "resizedViewport": {"width": captured_viewport.0, "height": captured_viewport.1},
         "previousViewport": receipt.get("previous").cloned(),
         "imageSize": {"width": receipt.get("width").cloned(), "height": receipt.get("height").cloned()},
         "scaleFactor": receipt.get("scaleFactor").cloned(),
