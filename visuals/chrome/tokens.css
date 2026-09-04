@@ -252,7 +252,7 @@
   text-align: right;
 }
 
-@media (max-width: 520px) {
+@media (max-width: 760px) {
   .sv-table-scroll-cue {
     display: block;
   }
