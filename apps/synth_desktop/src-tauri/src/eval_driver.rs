@@ -682,6 +682,18 @@ async fn laguna_status(laguna: &LagunaManager) -> Result<Value> {
 
 async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -> Result<Value> {
     let visual = core.visuals().get(visual_id.to_string()).await?;
+    let quality_gate = visual
+        .metadata
+        .get("qualityGate")
+        .filter(|gate| gate.get("ready").and_then(Value::as_bool) == Some(true))
+        .context("VisualsBench export requires a fresh ready certification")?;
+    let certification_identity = quality_gate
+        .get("certificationIdentity")
+        .context("VisualsBench export requires a content-bound certification identity")?;
+    let certified = quality_gate
+        .get("certifiedBy")
+        .and_then(Value::as_array)
+        .context("VisualsBench export requires immutable certification receipts")?;
     let mut revisions = core.visuals().revisions(visual_id.to_string()).await?;
     revisions.sort_by_key(|row| row.revision);
     let current_revision = revisions
@@ -732,30 +744,28 @@ async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let captures = reviews
+    let captures = certified
         .iter()
-        .filter(|review| {
-            review.get("revision").and_then(Value::as_i64) == Some(visual.current_revision)
-        })
-        .filter_map(|review| {
-            let viewport = review.get("viewport")?;
-            let width = viewport.get("width")?.as_u64()?;
-            let height = viewport.get("height")?.as_u64()?;
+        .map(|receipt| -> Result<Option<Value>> {
+            let width = receipt.get("viewportWidth").and_then(Value::as_u64).context("certification receipt missing viewport width")?;
+            let height = receipt.get("viewportHeight").and_then(Value::as_u64).context("certification receipt missing viewport height")?;
             let requested = requested_viewports.iter().find(|candidate| {
                 candidate.get("width").and_then(Value::as_u64) == Some(width)
                     && candidate.get("height").and_then(Value::as_u64) == Some(height)
             });
             if !requested_viewports.is_empty() && requested.is_none() {
-                return None;
+                return Ok(None);
             }
-            let screenshot_path = review.get("screenshotPath")?.as_str()?;
-            let bytes = fs::read(screenshot_path).ok();
-            let screenshot_sha256 = bytes
-                .as_deref()
-                .map(hex_sha256)
-                .unwrap_or_default();
-            let checks = review.get("checks").cloned().unwrap_or_else(|| json!({}));
-            Some(json!({
+            let screenshot_path = receipt.get("screenshotPath").and_then(Value::as_str).context("certification receipt missing screenshot path")?;
+            let expected_sha256 = receipt.get("screenshotSha256").and_then(Value::as_str).context("certification receipt missing screenshot digest")?;
+            let bytes = fs::read(screenshot_path).with_context(|| format!("read certified screenshot {screenshot_path}"))?;
+            let screenshot_sha256 = format!("sha256:{}", hex_sha256(&bytes));
+            if screenshot_sha256 != expected_sha256 {
+                anyhow::bail!("certified screenshot bytes changed after review: {screenshot_path}");
+            }
+            let review = reviews.iter().find(|review| review.get("screenshotPath").and_then(Value::as_str) == Some(screenshot_path));
+            let checks = review.and_then(|row| row.get("checks")).cloned().unwrap_or_else(|| json!({}));
+            Ok(Some(json!({
                 "viewport": {
                     "width": width,
                     "height": height,
@@ -768,9 +778,13 @@ async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -
                     "noHorizontalOverflow": checks.get("noOverflow").cloned().unwrap_or(Value::Null),
                     "falsifiedMissing": checks.get("falsifiedMissing").cloned().unwrap_or(Value::Bool(false)),
                 },
-                "inspected": bytes.is_some() && checks.get("screenshotInspected").and_then(Value::as_bool) == Some(true),
-            }))
+                "certificationIdentity": certification_identity,
+                "inspected": checks.get("screenshotInspected").and_then(Value::as_bool) == Some(true),
+            })))
         })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
         .collect::<Vec<_>>();
     let annotation_ids = active_annotations
         .iter()
@@ -783,6 +797,7 @@ async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -
     Ok(json!({
         "schemaVersion": "synth.visualsbench-export.v1",
         "sourceRevision": crate::instance::diagnostics().source_revision,
+        "certificationIdentity": certification_identity,
         "visual": {
             "id": visual.id,
             "revision": visual.current_revision,

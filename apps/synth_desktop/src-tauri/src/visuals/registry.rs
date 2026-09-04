@@ -9,7 +9,7 @@ use super::models::{
 use super::renditions::{self, VisualAsset, VisualRendition};
 use super::sourced;
 use super::systems::{self, SystemsKind};
-use super::templates::{resolve_template, TemplateMeta};
+use super::templates::{certification_renderer_digest, resolve_template, TemplateMeta};
 use crate::storage::{ContentStore, Database, EventAppend, EventJournal, EventSource};
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine as _;
@@ -156,12 +156,66 @@ impl VisualRegistry {
 
     pub async fn list(&self, query: VisualQuery) -> Result<Vec<VisualRecord>> {
         let db = self.db.clone();
-        db.run(move |conn| list_visuals(conn, &query)).await
+        let records = db.run(move |conn| list_visuals(conn, &query)).await?;
+        let mut refreshed = Vec::with_capacity(records.len());
+        for record in records {
+            refreshed.push(self.refresh_certification(record).await?);
+        }
+        Ok(refreshed)
     }
 
     pub async fn get(&self, id: String) -> Result<VisualRecord> {
         let db = self.db.clone();
-        db.run(move |conn| load_visual(conn, &id)).await
+        let record = db.run(move |conn| load_visual(conn, &id)).await?;
+        self.refresh_certification(record).await
+    }
+
+    /// Return the complete identity of the pixels that may be certified for
+    /// the current revision. Reviews and readiness receipts both carry this
+    /// value; any later content, binding, template, source, build, or binary
+    /// change therefore makes the old certification stale.
+    pub async fn certification_identity(&self, id: String) -> Result<Value> {
+        let db = self.db.clone();
+        let (record, revision) = db
+            .run(move |conn| {
+                let record = load_visual(conn, &id)?;
+                let revision = load_revision(conn, &id, record.current_revision)?;
+                Ok((record, revision))
+            })
+            .await?;
+        let template = resolve_template(&record.template_id)?;
+        Ok(certification_identity_value(&record, &revision, &template))
+    }
+
+    async fn refresh_certification(&self, mut record: VisualRecord) -> Result<VisualRecord> {
+        let gate_is_ready = record
+            .metadata
+            .pointer("/qualityGate/ready")
+            .and_then(Value::as_bool)
+            == Some(true);
+        if !gate_is_ready {
+            return Ok(record);
+        }
+        let current = self.certification_identity(record.id.clone()).await?;
+        let certified = record
+            .metadata
+            .pointer("/qualityGate/certificationIdentity")
+            .cloned();
+        if certified.as_ref() == Some(&current) {
+            return Ok(record);
+        }
+        let reasons = certification_stale_reasons(certified.as_ref(), &current);
+        if let Some(gate) = record
+            .metadata
+            .get_mut("qualityGate")
+            .and_then(Value::as_object_mut)
+        {
+            gate.insert("ready".into(), json!(false));
+            gate.insert("state".into(), json!("stale"));
+            gate.insert("staleReasons".into(), json!(reasons));
+            gate.insert("currentCertificationIdentity".into(), current);
+        }
+        Ok(record)
     }
 
     pub async fn revisions(&self, id: String) -> Result<Vec<VisualRevision>> {
@@ -1970,6 +2024,80 @@ fn insert_revision(conn: &Connection, revision: &VisualRevision) -> Result<()> {
     Ok(())
 }
 
+fn load_revision(conn: &Connection, visual_id: &str, revision: i64) -> Result<VisualRevision> {
+    conn.query_row(
+        "SELECT visual_id, revision, template_id, renderer_kind, content_digest, bindings_digest,
+                bindings_json, preview_digest, author_agent_id, parent_revision, created_at
+         FROM visual_revisions WHERE visual_id = ?1 AND revision = ?2",
+        params![visual_id, revision],
+        |row| {
+            Ok(VisualRevision {
+                visual_id: row.get(0)?,
+                revision: row.get(1)?,
+                template_id: row.get(2)?,
+                renderer_kind: RendererKind::parse(&row.get::<_, String>(3)?),
+                content_digest: row.get(4)?,
+                bindings_digest: row.get(5)?,
+                bindings: row
+                    .get::<_, Option<String>>(6)?
+                    .and_then(|raw| serde_json::from_str(&raw).ok()),
+                preview_digest: row.get(7)?,
+                author_agent_id: row.get(8)?,
+                parent_revision: row.get(9)?,
+                created_at: row.get(10)?,
+            })
+        },
+    )
+    .optional()?
+    .ok_or_else(|| anyhow!("visual revision not found: {visual_id}@{revision}"))
+}
+
+pub(super) fn certification_identity_value(
+    visual: &VisualRecord,
+    revision: &VisualRevision,
+    template: &TemplateMeta,
+) -> Value {
+    let diagnostics = crate::instance::diagnostics();
+    json!({
+        "schemaVersion": "synth.visual-certification-identity.v1",
+        "visualId": visual.id,
+        "revision": revision.revision,
+        "templateId": template.id,
+        "templateDigest": template.template_digest,
+        "rendererKind": revision.renderer_kind.as_str(),
+        "rendererDigest": certification_renderer_digest(template, &diagnostics.source_revision),
+        "sourceRevision": diagnostics.source_revision,
+        "buildRevision": diagnostics.build_revision,
+        "executableDigest": diagnostics.executable_digest,
+        "bindingsDigest": revision.bindings_digest,
+        "contentDigest": revision.content_digest,
+    })
+}
+
+fn certification_stale_reasons(certified: Option<&Value>, current: &Value) -> Vec<String> {
+    let Some(certified) = certified else {
+        return vec!["legacy_certification_missing_identity".into()];
+    };
+    const FIELDS: &[(&str, &str)] = &[
+        ("revision", "visual_revision_changed"),
+        ("templateDigest", "template_changed"),
+        ("rendererDigest", "renderer_changed"),
+        ("bindingsDigest", "bindings_changed"),
+        ("contentDigest", "content_changed"),
+        ("executableDigest", "executable_changed"),
+    ];
+    let mut reasons = Vec::new();
+    for (field, reason) in FIELDS {
+        if certified.get(*field) != current.get(*field) {
+            reasons.push((*reason).to_string());
+        }
+    }
+    if reasons.is_empty() {
+        reasons.push("certification_identity_changed".into());
+    }
+    reasons
+}
+
 fn load_visual(conn: &Connection, id: &str) -> Result<VisualRecord> {
     conn.query_row(
         "SELECT id, current_revision, title, template_id, status, renderer_kind, bindings_json,
@@ -2119,6 +2247,28 @@ mod tests {
     use super::*;
     use crate::storage::Storage;
     use tempfile::tempdir;
+
+    #[test]
+    fn certification_identity_reports_the_specific_stale_layer() {
+        let current = json!({
+            "revision": 4,
+            "templateDigest": "sha256:new-template",
+            "rendererDigest": "sha256:renderer",
+            "bindingsDigest": "sha256:bindings",
+            "contentDigest": "sha256:content",
+            "executableDigest": "sha256:binary"
+        });
+        let mut certified = current.clone();
+        certified["templateDigest"] = json!("sha256:old-template");
+        assert_eq!(
+            certification_stale_reasons(Some(&certified), &current),
+            vec!["template_changed"]
+        );
+        assert_eq!(
+            certification_stale_reasons(None, &current),
+            vec!["legacy_certification_missing_identity"]
+        );
+    }
 
     #[test]
     fn display_name_prefers_agent_label_and_falls_back_to_title() {

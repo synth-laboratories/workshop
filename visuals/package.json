@@ -12,6 +12,7 @@
     "./runtime/bind": "./runtime/bind.ts",
     "./runtime/save_tsx": "./runtime/save_tsx.ts",
     "./chrome": "./chrome/VisualChrome.tsx",
+    "./chrome/evidence": "./chrome/EvidencePrimitives.tsx",
     "./chrome/useLiveEvalStream": "./chrome/useLiveEvalStream.ts",
     "./chrome/tokens.css": "./chrome/tokens.css",
     "./components/event_stream.v1": "./components/event_stream.v1/EventStream.tsx",

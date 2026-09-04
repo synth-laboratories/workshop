@@ -73,7 +73,9 @@ struct VisualCaptureObservationReceipt {
     visual_id: String,
     revision: i64,
     screenshot_path: String,
+    screenshot_sha256: String,
     capture_time: String,
+    certification_identity: Value,
     observation: Option<RenderedVisualObservation>,
 }
 
@@ -87,10 +89,15 @@ fn capture_observation_receipt(screenshot: &str) -> Result<VisualCaptureObservat
             )
         })?)
         .context("visual capture observation receipt is invalid")?;
-    if receipt.schema_version != "synth.visual-capture-observation.v1"
+    if receipt.schema_version != "synth.visual-capture-observation.v2"
         || receipt.screenshot_path != screenshot
     {
         anyhow::bail!("visual capture observation receipt does not match screenshot");
+    }
+    let bytes = fs::read(screenshot).context("read visual review screenshot")?;
+    let actual = format!("sha256:{:x}", sha2::Sha256::digest(bytes));
+    if receipt.screenshot_sha256 != actual {
+        anyhow::bail!("visual review screenshot bytes do not match their capture receipt");
     }
     Ok(receipt)
 }
@@ -187,6 +194,7 @@ fn certification_receipts(
     required_checks: &[&'static str],
     contract: Option<&TemplateObservationContract>,
     bindings_digest: Option<&str>,
+    certification_identity: &Value,
 ) -> Result<Vec<Value>> {
     let mut latest_by_width: BTreeMap<u64, &Value> = BTreeMap::new();
     for review in current_reviews {
@@ -200,6 +208,15 @@ fn certification_receipts(
     }
     let mut receipts = Vec::new();
     for (width, review) in &latest_by_width {
+        if review.get("certificationIdentity") != Some(certification_identity) {
+            anyhow::bail!(
+                "the latest review at width {width} certifies different visual bytes; recapture this width"
+            );
+        }
+        let screenshot_sha256 = review
+            .get("screenshotSha256")
+            .and_then(Value::as_str)
+            .context("visual review is missing its immutable screenshot digest")?;
         for check in required_checks {
             if review
                 .pointer(&format!("/checks/{check}"))
@@ -217,6 +234,8 @@ fn certification_receipts(
             "viewportWidth": width,
             "viewportHeight": review.pointer("/viewport/height").cloned().unwrap_or(Value::Null),
             "screenshotPath": review.get("screenshotPath").cloned().unwrap_or(Value::Null),
+            "screenshotSha256": screenshot_sha256,
+            "certificationIdentity": certification_identity,
             "captureTime": review.get("captureTime").cloned().unwrap_or(Value::Null),
             "reviewedAt": review.get("reviewedAt").cloned().unwrap_or(Value::Null),
         });
@@ -3236,9 +3255,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let overlay_digest = registry
                 .overlay_digest(id.to_string(), visual.current_revision)
                 .await?;
+            let certification_identity = registry.certification_identity(id.to_string()).await?;
             Ok(json!({
                 "visual": visual,
                 "template": template,
+                "certificationIdentity": certification_identity,
                 "annotations": annotations,
                 "overlayDigest": overlay_digest,
                 "authoring": {
@@ -3385,6 +3406,12 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 }
                 receipt
             };
+            let certification_identity = registry.certification_identity(id.to_string()).await?;
+            if capture_receipt.certification_identity != certification_identity {
+                anyhow::bail!(
+                    "visual capture was produced by different content, bindings, template, renderer, or build; capture again"
+                );
+            }
             let template = registry.get_template(&current.template_id)?;
             if template.observation_contract.is_some() && capture_receipt.observation.is_none() {
                 anyhow::bail!(
@@ -3403,6 +3430,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "checks": checks,
                 "findings": findings,
                 "screenshotPath": body.get("screenshot_path").cloned().unwrap_or(Value::Null),
+                "screenshotSha256": capture_receipt.screenshot_sha256,
+                "certificationIdentity": capture_receipt.certification_identity,
                 "captureTime": capture_receipt.capture_time,
                 "observations": capture_receipt.observation,
                 "reviewedAt": chrono::Utc::now().to_rfc3339(),
@@ -3460,6 +3489,16 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 );
             }
             let template = registry.get_template(&current.template_id)?;
+            let certification_identity = registry.certification_identity(id.to_string()).await?;
+            let source_revision = certification_identity
+                .get("sourceRevision")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if source_revision.ends_with("-dirty") || source_revision.contains("-dirty-") {
+                anyhow::bail!(
+                    "visual readiness requires a clean committed renderer build; current source revision is {source_revision}"
+                );
+            }
             let required = required_authoring_checks(&template);
             let bindings_digest = if template.observation_contract.is_some() {
                 let durable = registry
@@ -3483,6 +3522,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 &required,
                 template.observation_contract.as_ref(),
                 bindings_digest.as_deref(),
+                &certification_identity,
             )?;
             if let Some(kind) = crate::visuals::systems::template_kind(&current.template_id) {
                 let asset = registry.visual_source(id.to_string()).await?;
@@ -3522,7 +3562,9 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "qualityGate".into(),
                 json!({
                     "ready": true,
+                    "state": "ready",
                     "revision": revision,
+                    "certificationIdentity": certification_identity,
                     "reviewCount": current_reviews.len(),
                     "certifiedBy": receipts,
                     "supersededReviewCount": current_reviews.len() - receipts.len(),
@@ -6538,6 +6580,51 @@ mod tests {
         }
     }
 
+    fn certification_identity() -> Value {
+        json!({
+            "schemaVersion": "synth.visual-certification-identity.v1",
+            "visualId": "vis_1",
+            "revision": 14,
+            "templateDigest": "sha256:template",
+            "rendererDigest": "sha256:renderer",
+            "bindingsDigest": "bindings-14",
+            "contentDigest": null
+        })
+    }
+
+    #[test]
+    fn capture_receipt_rejects_screenshot_bytes_changed_after_capture() {
+        let temp = tempfile::tempdir().unwrap();
+        let screenshot = temp.path().join("capture.png");
+        fs::write(&screenshot, b"original pixels").unwrap();
+        let screenshot_text = screenshot.to_string_lossy().to_string();
+        let digest = format!(
+            "sha256:{:x}",
+            sha2::Sha256::digest(b"original pixels")
+        );
+        fs::write(
+            screenshot.with_extension("observations.json"),
+            serde_json::to_vec(&json!({
+                "schemaVersion": "synth.visual-capture-observation.v2",
+                "visualId": "vis_1",
+                "revision": 14,
+                "screenshotPath": screenshot_text,
+                "screenshotSha256": digest,
+                "captureTime": "2026-09-03T00:00:00Z",
+                "certificationIdentity": certification_identity(),
+                "observation": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        capture_observation_receipt(&screenshot_text).unwrap();
+        fs::write(&screenshot, b"changed pixels").unwrap();
+        assert!(capture_observation_receipt(&screenshot_text)
+            .unwrap_err()
+            .to_string()
+            .contains("bytes do not match"));
+    }
+
     fn review(width: u64, passing: bool, observation: Option<&RenderedVisualObservation>) -> Value {
         let checks: serde_json::Map<String, Value> = BASE_AUTHORING_CHECKS
             .iter()
@@ -6551,6 +6638,8 @@ mod tests {
             "checks": Value::Object(checks),
             "findings": [],
             "screenshotPath": format!("/tmp/vis_1-r14-{width}x900.png"),
+            "screenshotSha256": format!("sha256:screenshot-{width}"),
+            "certificationIdentity": certification_identity(),
             "captureTime": "2026-08-17T01:00:00Z",
             "observations": observation.map(|value| serde_json::to_value(value).unwrap()),
             "reviewedAt": "2026-08-17T01:00:01Z",
@@ -6568,6 +6657,7 @@ mod tests {
         let mut template = TemplateMeta {
             schema_version: "synth.visual-template.v1".into(),
             id: "analysis.annotation_workbench.v1".into(),
+            template_digest: "sha256:test-template".into(),
             title: String::new(),
             genre: None,
             family: None,
@@ -6657,6 +6747,7 @@ mod tests {
             &required,
             Some(&contract),
             Some("bindings-14"),
+            &certification_identity(),
         )
         .expect("terminal evidence must certify over a superseded pre-start failure");
         assert_eq!(receipts.len(), 2);
@@ -6688,10 +6779,33 @@ mod tests {
             &required,
             Some(&contract),
             Some("bindings-14"),
+            &certification_identity(),
         )
         .unwrap_err()
         .to_string();
         assert!(error.contains("width 640"), "{error}");
+    }
+
+    #[test]
+    fn certification_rejects_reviews_from_an_old_renderer_identity() {
+        let required = required_authoring_checks(
+            &crate::visuals::resolve_template("trace.rollout_inspector.v1").unwrap(),
+        );
+        let first = review(1280, true, None);
+        let mut second = review(640, true, None);
+        second["certificationIdentity"]["rendererDigest"] = json!("sha256:old-renderer");
+        let error = certification_receipts(
+            "vis_1",
+            14,
+            &[&first, &second],
+            &required,
+            None,
+            None,
+            &certification_identity(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("different visual bytes"), "{error}");
     }
 
     /// The Trace inspector renders no image frames. Its contract must still be
@@ -6718,6 +6832,7 @@ mod tests {
             &required,
             Some(&contract),
             Some("bindings-14"),
+            &certification_identity(),
         )
         .expect("a sealed trace projection is terminal evidence");
         assert_eq!(receipts.len(), 2);
@@ -6730,12 +6845,18 @@ mod tests {
         );
         let first = review(1280, true, None);
         let second = review(1280, true, None);
-        assert!(
-            certification_receipts("vis_1", 14, &[&first, &second], &required, None, None)
-                .unwrap_err()
-                .to_string()
-                .contains("two distinct viewport widths")
-        );
+        assert!(certification_receipts(
+            "vis_1",
+            14,
+            &[&first, &second],
+            &required,
+            None,
+            None,
+            &certification_identity(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("two distinct viewport widths"));
     }
 
     #[test]

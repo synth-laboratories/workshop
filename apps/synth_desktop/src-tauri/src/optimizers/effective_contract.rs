@@ -377,6 +377,7 @@ mod tests {
         TemplateMeta {
             schema_version: "synth.visual-template.v1".into(),
             id: id.into(),
+            template_digest: "sha256:test-template".into(),
             title: id.into(),
             genre: Some(genre.into()),
             version: None,

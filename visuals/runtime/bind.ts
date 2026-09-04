@@ -452,6 +452,10 @@ export function anonymousDataProp(
 ): unknown {
   if (optimizerPayload !== undefined && optimizerPayload !== null) return optimizerPayload;
   if (resolvedProps.optimizer_run !== undefined) return resolvedProps.optimizer_run;
+  // `data` can itself be a declared named input. Preserve that exact value
+  // even when companion inputs are present; wrapping it in the whole map makes
+  // `props.data ?? props.<named>` select the wrong shape.
+  if (Object.prototype.hasOwnProperty.call(resolvedProps, "data")) return resolvedProps.data;
   const names = Object.keys(resolvedProps);
   if (names.length === 1) return resolvedProps[names[0]];
   return resolvedProps;

@@ -1,7 +1,9 @@
 import { VisualChrome } from "../../../chrome/VisualChrome.tsx";
+import { ComparisonScopeNotice, MetricValue, ProvenanceHeader } from "../../../chrome/EvidencePrimitives.tsx";
 import { UnresolvedInputNotice } from "../../../chrome/UnresolvedInputNotice.tsx";
 import { formatMissingNumber, formatMissingUsd } from "../../../runtime/liveStream.ts";
 import { resolveTemplateInput } from "../../../runtime/resolvedInput.ts";
+import { comparisonContractVerdict, type ComparisonContract } from "../../../runtime/evidenceGrammar.ts";
 import type { VisualBinding } from "../../../runtime/types.ts";
 import compareFixture from "../../../fixtures/model_compare.json";
 
@@ -18,7 +20,11 @@ type CompareRow = {
   mean_achievements?: number | null;
   mean_reward?: number | null;
   cost_usd?: number | null;
+  /** Fraction of trials whose numeric reward was greater than zero. */
+  positive_reward_rate?: number | null;
+  /** Producer-defined task success; never inferred from reward sign. */
   success_rate?: number | null;
+  comparison_contract_digest?: string;
   sparkline?: number[];
 };
 
@@ -30,6 +36,7 @@ type ComparePayload = {
    * benchmark card and no cross-row winner is inferred.
    */
   comparison_kind?: "like_for_like" | "run_catalog";
+  comparison_contract?: ComparisonContract;
   rows: CompareRow[];
 };
 
@@ -63,7 +70,7 @@ function asCompare(raw: unknown): ComparePayload | null {
       (row) =>
         typeof row?.model === "string"
         && row.model.trim().length > 0
-        && [row.mean_achievements, row.mean_reward, row.cost_usd, row.success_rate].some(numeric)
+        && [row.mean_achievements, row.mean_reward, row.cost_usd, row.positive_reward_rate, row.success_rate].some(numeric)
     )
   ) {
     return null;
@@ -74,24 +81,18 @@ function asCompare(raw: unknown): ComparePayload | null {
   ) {
     return null;
   }
+  if (candidate.comparison_kind !== "run_catalog") {
+    if (!comparisonContractVerdict(candidate.comparison_kind, candidate.comparison_contract, candidate.rows).comparable) return null;
+  }
   return candidate;
 }
 
-type RankMetric = "mean_achievements" | "mean_reward" | "cost_usd" | "success_rate";
+type RankMetric = "mean_achievements" | "mean_reward" | "cost_usd" | "positive_reward_rate" | "success_rate";
 
 function rankMetric(metric: string | undefined): RankMetric | null {
-  return ["mean_achievements", "mean_reward", "cost_usd", "success_rate"].includes(metric ?? "")
+  return ["mean_achievements", "mean_reward", "cost_usd", "positive_reward_rate", "success_rate"].includes(metric ?? "")
     ? metric as RankMetric
     : null;
-}
-
-function CatalogMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div style={{ minWidth: 112 }}>
-      <div className="sv-label">{label}</div>
-      <div className="sv-mono" style={{ marginTop: 4, fontSize: 15 }}>{value}</div>
-    </div>
-  );
 }
 
 function Spark({ values, label }: { values: number[]; label: string }) {
@@ -155,6 +156,7 @@ export function Shell(props: ShellProps) {
         testId="visual-model-compare"
         footer="model.compare.v1 · descriptive catalog"
       >
+        <ComparisonScopeNotice comparable={false} />
         <div role="list" aria-label="Benchmark-local evaluation runs" style={{ display: "grid", gap: 12 }}>
           {data.rows.map((row) => (
             <section
@@ -165,16 +167,17 @@ export function Shell(props: ShellProps) {
               <div className="sv-label">{row.benchmark}</div>
               <h3 style={{ margin: "5px 0 12px", fontSize: 16 }}>{row.model}</h3>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "12px 26px", alignItems: "end" }}>
-                <CatalogMetric label="Effort" value={row.effort ?? "—"} />
-                <CatalogMetric
+                <MetricValue label="Effort" value={row.effort} />
+                <MetricValue
                   label="Mean achievements"
-                  value={typeof row.mean_achievements === "number" ? row.mean_achievements.toFixed(1) : "—"}
+                  value={typeof row.mean_achievements === "number" ? row.mean_achievements.toFixed(1) : null}
                 />
-                <CatalogMetric label="Mean reward" value={formatMissingNumber(row.mean_reward)} />
-                <CatalogMetric label="Reported cost" value={formatMissingUsd(row.cost_usd)} />
-                <CatalogMetric
+                <MetricValue label="Mean reward" value={typeof row.mean_reward === "number" ? formatMissingNumber(row.mean_reward) : null} />
+                <MetricValue label="Reported cost" value={typeof row.cost_usd === "number" ? formatMissingUsd(row.cost_usd) : null} />
+                <MetricValue
                   label="Positive-reward rate"
-                  value={typeof row.success_rate === "number" ? `${Math.round(row.success_rate * 100)}%` : "—"}
+                  value={typeof row.positive_reward_rate === "number" ? `${Math.round(row.positive_reward_rate * 100)}%` : null}
+                  qualifier="reward > 0"
                 />
                 {row.sparkline ? <Spark values={row.sparkline} label={`${row.model} within-benchmark trend`} /> : null}
               </div>
@@ -203,6 +206,13 @@ export function Shell(props: ShellProps) {
       testId="visual-model-compare"
       footer="model.compare.v1"
     >
+      <ComparisonScopeNotice comparable contract={data.comparison_contract?.digest} />
+      <ProvenanceHeader items={[
+        { label: "Benchmark", value: data.comparison_contract?.benchmark },
+        { label: "Evaluator", value: data.comparison_contract?.evaluator },
+        { label: "Dataset", value: data.comparison_contract?.dataset },
+        { label: "Split", value: data.comparison_contract?.split }
+      ]} />
       <div style={{ overflowX: "auto" }}>
         <table className="sv-table" aria-label="Model comparison">
           <thead>
@@ -212,7 +222,8 @@ export function Shell(props: ShellProps) {
               <th scope="col">Achievements</th>
               <th scope="col">Reward</th>
               <th scope="col">Cost</th>
-              <th scope="col">Success</th>
+              <th scope="col">Positive reward</th>
+              <th scope="col">Task success</th>
               <th scope="col">Trend</th>
             </tr>
           </thead>
@@ -232,6 +243,9 @@ export function Shell(props: ShellProps) {
                   </td>
                   <td className="sv-mono">{formatMissingNumber(row.mean_reward)}</td>
                   <td className="sv-mono">{formatMissingUsd(row.cost_usd)}</td>
+                  <td className="sv-mono">
+                    {typeof row.positive_reward_rate === "number" ? `${Math.round(row.positive_reward_rate * 100)}%` : "—"}
+                  </td>
                   <td className="sv-mono">
                     {typeof row.success_rate === "number" ? `${Math.round(row.success_rate * 100)}%` : "—"}
                   </td>

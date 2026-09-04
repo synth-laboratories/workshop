@@ -1,4 +1,5 @@
 import { VisualChrome, MetricStrip } from "../../../chrome/VisualChrome.tsx";
+import { EvidenceStateBanner, ProvenanceHeader } from "../../../chrome/EvidencePrimitives.tsx";
 import { UnresolvedInputNotice } from "../../../chrome/UnresolvedInputNotice.tsx";
 import { resolveTemplateInput } from "../../../runtime/resolvedInput.ts";
 import type { VisualBinding } from "../../../runtime/types.ts";
@@ -13,6 +14,12 @@ type RewardComponent = {
 type RewardPayload = {
   total: number;
   components: RewardComponent[];
+  evidence_basis?: {
+    kind: "single_rollout_environment_event_decomposition";
+    rollout_id: string;
+    aggregation: "none";
+    not_equivalent_to?: string;
+  };
 };
 
 export type ShellProps = {
@@ -80,6 +87,22 @@ export function Shell(props: ShellProps) {
       testId="visual-reward-breakdown"
       footer="reward.breakdown.v1"
     >
+      {reward.evidence_basis ? (
+        <>
+          <EvidenceStateBanner state="terminal">
+            Environment-event decomposition for one retained rollout; this is not the run&apos;s mean reward.
+          </EvidenceStateBanner>
+          <ProvenanceHeader items={[
+            { label: "Evidence basis", value: reward.evidence_basis.kind },
+            { label: "Rollout", value: reward.evidence_basis.rollout_id },
+            { label: "Aggregation", value: reward.evidence_basis.aggregation }
+          ]} />
+        </>
+      ) : (
+        <EvidenceStateBanner state="partial">
+          The producer did not declare whether these components describe one rollout or an aggregate.
+        </EvidenceStateBanner>
+      )}
       <MetricStrip
         metrics={[
           { label: "Total", value: reward.total.toFixed(2) },

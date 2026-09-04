@@ -118,6 +118,8 @@ export type { VisualTemplate, VisualTemplateMeta, VisualInstance, VisualBinding 
 export { bindingInputName, bindingList, resolveInputName, stampBindingInput, templateInputs } from "../runtime/types.ts";
 export { selectObservationSurface } from "../runtime/observationSurface.ts";
 export { anonymousDataProp, bindTemplateSlots, subscribeLiveSlot, isVisualBindings, bindingSlots, propsFromBindings, resolveVisualBindings } from "../runtime/bind.ts";
+export { comparisonContractVerdict } from "../runtime/evidenceGrammar.ts";
+export type { ComparisonContract, ComparisonContractVerdict } from "../runtime/evidenceGrammar.ts";
 export { selectRenderedProjection, rememberLastKnownGood } from "../runtime/lastKnownGood.ts";
 export type { ProjectionSource, SelectedProjection } from "../runtime/lastKnownGood.ts";
 export {

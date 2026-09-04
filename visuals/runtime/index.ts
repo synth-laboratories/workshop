@@ -65,6 +65,8 @@ export {
   resolveVisualBindings
 } from "./bind.ts";
 export type { ResolvedVisualBindings, VisualBindingsStatus } from "./bind.ts";
+export { comparisonContractVerdict } from "./evidenceGrammar.ts";
+export type { ComparisonContract, ComparisonContractVerdict } from "./evidenceGrammar.ts";
 export {
   selectRenderedProjection,
   rememberLastKnownGood

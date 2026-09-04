@@ -1877,8 +1877,17 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	}, [expanded]);
 	const visualId = artifact.visualId;
 	const revision = artifact.revision;
-	const qualityGate = artifact.metadata?.qualityGate as { ready?: boolean; revision?: number } | undefined;
-	const authoringGateReady = Boolean(qualityGate?.ready && qualityGate.revision === revision);
+	const qualityGate = artifact.metadata?.qualityGate as {
+		ready?: boolean;
+		revision?: number;
+		state?: "ready" | "stale";
+		staleReasons?: string[];
+	} | undefined;
+	const authoringGateReady = Boolean(
+		qualityGate?.ready
+		&& qualityGate.state !== "stale"
+		&& qualityGate.revision === revision
+	);
 	const sealEligible = Boolean(visualId && revision && (
 		primaryOptimizerRunId ? optimizerSealGate.ready : authoringGateReady
 	));
@@ -1886,7 +1895,9 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 		? optimizerSealGate.reason
 		: authoringGateReady
 			? null
-			: "Seal requires the E1 visual quality gate for this exact revision.";
+			: qualityGate?.state === "stale"
+				? `Seal requires fresh visual review; certification is stale${qualityGate.staleReasons?.length ? ` (${qualityGate.staleReasons.join(", ")})` : ""}.`
+				: "Seal requires the E1 visual quality gate for this exact revision.";
 
 	useEffect(() => {
 		if (!primaryOptimizerRunId) {

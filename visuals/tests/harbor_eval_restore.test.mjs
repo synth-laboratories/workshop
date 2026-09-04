@@ -292,6 +292,11 @@ test("the anonymous data prop does not shadow a single declared input", async ()
   // Several inputs have no unambiguous anonymous payload; the map is kept.
   const many = { trace: { steps: [] }, annotations: { markers: [] } };
   assert.deepEqual(anonymousDataProp(many), many);
+  // `data` may be an explicitly declared input alongside supporting inputs.
+  // In that case it remains the anonymous payload instead of being shadowed
+  // by the resolved-props map.
+  const explicit = { data: { rows: [1, 2] }, provenance: { run: "opt_1" } };
+  assert.deepEqual(anonymousDataProp(explicit), explicit.data);
   // An optimizer payload still wins, as does a bound optimizer_run.
   assert.equal(anonymousDataProp({ acceptance }, "payload"), "payload");
   assert.equal(anonymousDataProp({ optimizer_run: "run", other: 1 }), "run");

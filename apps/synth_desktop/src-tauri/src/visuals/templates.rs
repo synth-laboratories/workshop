@@ -1,6 +1,7 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -69,6 +70,11 @@ pub struct TemplateObservationContract {
 pub struct TemplateMeta {
     pub schema_version: String,
     pub id: String,
+    /// Digest of every file in this template package. Certification binds to
+    /// this value so template changes stale earlier reviews without requiring
+    /// a cosmetic visual revision bump.
+    #[serde(default)]
+    pub template_digest: String,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
@@ -112,6 +118,61 @@ pub struct TemplateMeta {
     pub binding_schema: Vec<Value>,
     #[serde(default)]
     pub observation_contract: Option<TemplateObservationContract>,
+}
+
+pub fn certification_renderer_digest(template: &TemplateMeta, source_revision: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"synth.visual-renderer-contract.v1\0");
+    hasher.update(source_revision.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(template.id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(template.template_digest.as_bytes());
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn template_package_digest(path: &Path) -> anyhow::Result<String> {
+    let canonical_root = fs::canonicalize(path)?;
+    let mut pending = vec![path.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let mut entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                anyhow::bail!(
+                    "visual template package refuses symlink: {}",
+                    entry.path().display()
+                );
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file() {
+                let canonical = fs::canonicalize(entry.path())?;
+                if !canonical.starts_with(&canonical_root) {
+                    anyhow::bail!(
+                        "visual template package escapes its root: {}",
+                        entry.path().display()
+                    );
+                }
+                files.push(entry.path());
+            }
+        }
+    }
+    files.sort();
+    let mut hasher = Sha256::new();
+    hasher.update(b"synth.visual-template-package.v1\0");
+    for file in files {
+        let relative = file.strip_prefix(path)?;
+        let name = relative.to_string_lossy();
+        let bytes = fs::read(&file)?;
+        hasher.update((name.len() as u64).to_be_bytes());
+        hasher.update(name.as_bytes());
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
+    }
+    Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
 pub fn visuals_root() -> PathBuf {
@@ -571,6 +632,7 @@ fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
     let mut meta = TemplateMeta {
         schema_version,
         id,
+        template_digest: template_package_digest(path)?,
         title,
         genre: value
             .get("genre")
@@ -743,6 +805,18 @@ mod tests {
         );
         let error = load_template_meta(&path).unwrap_err().to_string();
         assert!(error.contains("contains duplicates"));
+    }
+
+    #[test]
+    fn template_digest_changes_when_renderer_source_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("digest.v1");
+        write_template(&path, "digest.v1");
+        fs::write(path.join("shell.tsx"), "export default () => <p>one</p>").unwrap();
+        let first = load_template_meta(&path).unwrap().template_digest;
+        fs::write(path.join("shell.tsx"), "export default () => <p>two</p>").unwrap();
+        let second = load_template_meta(&path).unwrap().template_digest;
+        assert_ne!(first, second);
     }
 
     #[test]

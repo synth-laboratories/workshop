@@ -15,6 +15,7 @@ mod instance_paths;
 use base64::Engine;
 use mcp_stdio::{run_stdio_server, McpServerInfo};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{env, fs, io, path::PathBuf, process::Command};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1574,7 +1575,7 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         .and_then(Value::as_u64)
         .ok_or("viewport.height required")?;
     assert_review_viewport(width, height)?;
-    let visual_response = request("GET", &format!("/v1/visuals/{id}"), None)?;
+    let visual_response = request("GET", &format!("/v1/visuals/{id}/authoring"), None)?;
     let revision = visual_response
         .pointer("/visual/currentRevision")
         .and_then(Value::as_i64)
@@ -1583,14 +1584,18 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         .pointer("/visual/rendererKind")
         .and_then(Value::as_str)
         .ok_or("visual response missing renderer kind")?;
+    let certification_identity = visual_response
+        .get("certificationIdentity")
+        .cloned()
+        .ok_or("visual authoring response missing certification identity")?;
     let root = connection_file()
         .parent()
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
         .join("visual-review-captures");
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
-    let stem = format!("{id}-r{revision}-{width}x{height}");
-    let png_path = root.join(format!("{stem}.png"));
+    let temp_stem = format!(".capture-{}", uuid::Uuid::new_v4().simple());
+    let temp_png_path = root.join(format!("{temp_stem}.png"));
     let mut window_receipt = Value::Null;
     let mut captured = (width, height);
     let capture_mode = if matches!(
@@ -1598,10 +1603,18 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         "mermaid" | "systems" | "systems-dynamic" | "chart"
     ) {
         request("POST", &format!("/v1/visuals/{id}/render"), None)?;
-        captured = capture_svg_review(id, renderer_kind, width, height, &root, &stem, &png_path)?;
+        captured = capture_svg_review(
+            id,
+            renderer_kind,
+            width,
+            height,
+            &root,
+            &temp_stem,
+            &temp_png_path,
+        )?;
         "deterministic-svg"
     } else {
-        window_receipt = capture_desktop_review(id, width, height, &png_path)?;
+        window_receipt = capture_desktop_review(id, width, height, &temp_png_path)?;
         "host-webview-snapshot"
     };
     // A rendered observation is evidence about the pane, and only templates
@@ -1648,15 +1661,54 @@ fn capture_review(args: &Value) -> Result<Value, String> {
     } else {
         None
     };
+    let png = fs::read(&temp_png_path).map_err(|error| error.to_string())?;
+    let screenshot_sha256 = format!("sha256:{:x}", Sha256::digest(&png));
+    let digest_name = screenshot_sha256
+        .strip_prefix("sha256:")
+        .unwrap_or(&screenshot_sha256);
+    let identity_bytes =
+        serde_json::to_vec(&certification_identity).map_err(|error| error.to_string())?;
+    let identity_digest = format!("{:x}", Sha256::digest(identity_bytes));
     let captured_at = chrono::Utc::now().to_rfc3339();
+    let receipt_digest = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&json!({
+                "captureTime": captured_at,
+                "viewport": {"width": captured.0, "height": captured.1},
+                "observation": observation,
+                "window": window_receipt,
+            }))
+            .map_err(|error| error.to_string())?
+        )
+    );
+    let capture_root = root
+        .join(id)
+        .join(format!("r{revision}"))
+        .join(format!("{}x{}", captured.0, captured.1));
+    fs::create_dir_all(&capture_root).map_err(|error| error.to_string())?;
+    let png_path = capture_root.join(format!(
+        "sha256-{digest_name}-identity-{identity_digest}-receipt-{receipt_digest}.png"
+    ));
+    if png_path.exists() {
+        fs::remove_file(&temp_png_path).map_err(|error| error.to_string())?;
+    } else {
+        fs::rename(&temp_png_path, &png_path).map_err(|error| error.to_string())?;
+    }
+    let temp_svg = root.join(format!("{temp_stem}.svg"));
+    if temp_svg.exists() {
+        fs::remove_file(temp_svg).map_err(|error| error.to_string())?;
+    }
     let observation_path = png_path.with_extension("observations.json");
     fs::write(
         &observation_path,
         serde_json::to_vec_pretty(&json!({
-            "schemaVersion": "synth.visual-capture-observation.v1",
+            "schemaVersion": "synth.visual-capture-observation.v2",
             "visualId": id,
             "revision": revision,
             "screenshotPath": png_path.to_string_lossy(),
+            "screenshotSha256": screenshot_sha256,
+            "certificationIdentity": certification_identity,
             "captureTime": captured_at,
             "observation": observation,
             "window": window_receipt,
@@ -1664,7 +1716,6 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         .map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    let png = fs::read(&png_path).map_err(|error| error.to_string())?;
     Ok(json!({
         "visual_id": id,
         "revision": revision,
@@ -1673,6 +1724,8 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         "viewport": {"width":captured.0,"height":captured.1},
         "requested_viewport": {"width":width,"height":height},
         "screenshot_path": png_path.to_string_lossy(),
+        "screenshot_sha256": screenshot_sha256,
+        "certification_identity": certification_identity,
         "capture_time": captured_at,
         "observations": observation,
         "instruction": "Inspect the attached PNG image before submitting visual_review. If any collision, truncation, crossing, weak hierarchy, or excessive density is visible, update and capture again.",
