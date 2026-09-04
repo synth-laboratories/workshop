@@ -17,7 +17,19 @@ use serde_json::{json, Value};
 use std::num::NonZeroU32;
 use std::process::Command;
 
-const INLINE_PROVIDER_OPERATION: &str = "chat.completions.create";
+const INLINE_CHAT_PROVIDER_OPERATION: &str = "chat.completions.create";
+const INLINE_CODEX_PROVIDER_OPERATION: &str = "responses.create";
+
+fn inline_provider_operation(policy_namespace: &str) -> &'static str {
+    if policy_namespace
+        .trim()
+        .eq_ignore_ascii_case("codex_agentic")
+    {
+        INLINE_CODEX_PROVIDER_OPERATION
+    } else {
+        INLINE_CHAT_PROVIDER_OPERATION
+    }
+}
 
 /// Stable run identity for one caller-declared logical start. A retry reuses
 /// the same row; an intentional rerun must use a new key.
@@ -242,8 +254,10 @@ async fn discovery_context(
     // Capabilities name concrete proxy wire operations. `provider.request`
     // was never routed, so valid inline runs reached the container and then
     // failed every first model call with operation_denied.
-    let scope =
-        admission::CredentialCapabilityScope::new([INLINE_PROVIDER_OPERATION.to_string()], 3_600);
+    let scope = admission::CredentialCapabilityScope::new(
+        [inline_provider_operation(&namespace).to_string()],
+        3_600,
+    );
     Ok((
         DiscoveryContext {
             containers: candidates,
@@ -524,13 +538,19 @@ mod tests {
     }
 
     #[test]
-    fn inline_provider_scope_uses_the_routed_chat_operation() {
+    fn inline_provider_scope_matches_the_policy_wire_protocol() {
         let scope = admission::CredentialCapabilityScope::new(
-            [INLINE_PROVIDER_OPERATION.to_string()],
+            [inline_provider_operation("chat_completion").to_string()],
             3_600,
         );
         assert_eq!(scope.operations, ["chat.completions.create"]);
         assert_ne!(scope.operations, ["provider.request"]);
+
+        let codex = admission::CredentialCapabilityScope::new(
+            [inline_provider_operation("codex_agentic").to_string()],
+            3_600,
+        );
+        assert_eq!(codex.operations, ["responses.create"]);
     }
 
     #[test]

@@ -462,29 +462,26 @@ async fn drain_to_quiet(
     let started = Instant::now();
     let mut idle = 0u32;
     loop {
-        match drain(
-            ctx,
-            cursor,
-            acked,
-            chain_head,
-            journal_v2,
-            relayed,
-            outcome,
-        )
-        .await
-        {
+        match drain(ctx, cursor, acked, chain_head, journal_v2, relayed, outcome).await {
             Ok(summary) => {
                 outcome.journal_closed |= summary.closed;
                 let _ = drain_reward(ctx, reward_after, reward_ok, relayed, outcome).await;
-                let _ =
-                    drain_annotation(ctx, annotation_after, annotation_ok, annotation_relayed, outcome)
-                        .await;
+                let _ = drain_annotation(
+                    ctx,
+                    annotation_after,
+                    annotation_ok,
+                    annotation_relayed,
+                    outcome,
+                )
+                .await;
                 idle = if summary.relayed == 0 {
                     idle.saturating_add(1)
                 } else {
                     0
                 };
-                if summary.closed || idle >= SETTLED_IDLE_DRAINS || started.elapsed() >= JOURNAL_DRAIN_GRACE
+                if summary.closed
+                    || idle >= SETTLED_IDLE_DRAINS
+                    || started.elapsed() >= JOURNAL_DRAIN_GRACE
                 {
                     break;
                 }

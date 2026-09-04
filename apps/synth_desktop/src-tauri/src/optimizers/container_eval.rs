@@ -4023,8 +4023,7 @@ async fn persist_progress(
     let cost_ceiling_usd = spec.cost_ceiling_usd;
     let provider = spec.provider.clone();
     let model = spec.model.clone();
-    let provider_receipt_authoritative =
-        !provider.trim().is_empty() && !model.trim().is_empty();
+    let provider_receipt_authoritative = !provider.trim().is_empty() && !model.trim().is_empty();
     let run_before_patch = service.get(run_id.to_string()).await?;
     let started_at = run_before_patch
         .started_at
@@ -4072,11 +4071,8 @@ async fn persist_progress(
                 }),
             );
             run.summary = Value::Object(summary);
-            run.usage = progress_usage_projection(
-                usage,
-                &run.usage,
-                provider_receipt_authoritative,
-            );
+            run.usage =
+                progress_usage_projection(usage, &run.usage, provider_receipt_authoritative);
             Ok(())
         })
         .await?;
@@ -5920,8 +5916,16 @@ mod tests {
             }
         });
 
-        assert!(container_matches_family(Some("harbor"), &metadata, "deepswe"));
-        assert!(!container_matches_family(Some("harbor"), &metadata, "healthbench"));
+        assert!(container_matches_family(
+            Some("harbor"),
+            &metadata,
+            "deepswe"
+        ));
+        assert!(!container_matches_family(
+            Some("harbor"),
+            &metadata,
+            "healthbench"
+        ));
     }
 
     #[test]
@@ -8621,7 +8625,8 @@ max_total_rollouts = 4
             );
         }
 
-        let admitted = json!({"config_id": "agentic_codex", "config": {"sandbox": "danger-full-access"}});
+        let admitted =
+            json!({"config_id": "agentic_codex", "config": {"sandbox": "danger-full-access"}});
         assert!(assert_nested_sandbox_policy(&spec, &admitted).is_ok());
     }
 

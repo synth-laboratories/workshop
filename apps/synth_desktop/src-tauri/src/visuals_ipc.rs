@@ -1054,6 +1054,17 @@ const REVIEW_CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// as long before saying so.
 const REVIEW_CAPTURE_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 
+/// Resizing, routing, snapshotting, and restoring all mutate the one main
+/// WebView. Concurrent requests otherwise photograph whichever request wrote
+/// the viewport and route last, then race to restore two different geometries.
+/// Keep the lock in the long-lived Desktop process (not the short-lived MCP
+/// adapter) so every capture caller shares it.
+#[cfg(target_os = "macos")]
+fn capture_pipeline_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 /// Tell the React shell to make one selected visual the only visible surface
 /// while a review image is taken. This is deliberately an ephemeral renderer
 /// state: a review must not mutate the user's saved layout, nor should a
@@ -1558,6 +1569,10 @@ fn resolve_capture_output(body: &Value) -> Result<PathBuf> {
 /// "what does the app look like right now" must not begin by changing it.
 #[cfg(target_os = "macos")]
 pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Value> {
+    // This guard must span the full enter-mode -> resize -> snapshot -> restore
+    // transaction. Parsing first would be safe, but acquiring here also makes
+    // the serialization boundary obvious and difficult to regress.
+    let _capture_guard = capture_pipeline_lock().lock().await;
     let scope = CaptureScope::parse(
         body.get("scope").and_then(Value::as_str).unwrap_or("app"),
         body.get("target")

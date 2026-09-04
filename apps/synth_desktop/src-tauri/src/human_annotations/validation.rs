@@ -212,8 +212,12 @@ fn validate_question_contract(
     }
     let normalized = prompt.to_ascii_lowercase();
     const MECHANICAL_QUESTIONS: &[&str] = &[
-        "does the header", "does the visual say", "does the visual show",
-        "does the visual state", "how many", "is the field present",
+        "does the header",
+        "does the visual say",
+        "does the visual show",
+        "does the visual state",
+        "how many",
+        "is the field present",
     ];
     if let Some(term) = MECHANICAL_QUESTIONS
         .iter()
@@ -222,32 +226,61 @@ fn validate_question_contract(
         bail!("question `{id}` asks a mechanical check (`{term}`); compute it in software and ask for human judgment instead");
     }
     const SUBJECTIVE_SHORTCUTS: &[&str] = &[
-        "is this good", "is this clear", "is this useful", "is this helpful",
-        "is this visual good", "is this visual clear", "what do you think", "give feedback",
+        "is this good",
+        "is this clear",
+        "is this useful",
+        "is this helpful",
+        "is this visual good",
+        "is this visual clear",
+        "what do you think",
+        "give feedback",
     ];
     if let Some(term) = SUBJECTIVE_SHORTCUTS
         .iter()
         .find(|term| normalized.contains(**term))
     {
-        bail!("question `{id}` uses ambiguous term `{}`; ask about a directly observable condition", term.trim());
+        bail!(
+            "question `{id}` uses ambiguous term `{}`; ask about a directly observable condition",
+            term.trim()
+        );
     }
     let criteria = question
         .get("decisionCriteria")
         .and_then(Value::as_object)
         .with_context(|| format!("question `{id}` requires decisionCriteria"))?;
-    if criteria.get("requiresHumanJudgment").and_then(Value::as_bool) != Some(true) {
+    if criteria
+        .get("requiresHumanJudgment")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
         bail!("question `{id}` must set decisionCriteria.requiresHumanJudgment=true");
     }
-    concrete_text(criteria.get("evidence"), &format!("question `{id}` decisionCriteria.evidence"), 100)?;
-    concrete_text(criteria.get("answerRule"), &format!("question `{id}` decisionCriteria.answerRule"), 120)?;
+    concrete_text(
+        criteria.get("evidence"),
+        &format!("question `{id}` decisionCriteria.evidence"),
+        100,
+    )?;
+    concrete_text(
+        criteria.get("answerRule"),
+        &format!("question `{id}` decisionCriteria.answerRule"),
+        120,
+    )?;
 
     if kind == "yes_no" {
         let guidance = question
             .get("answerGuidance")
             .and_then(Value::as_object)
             .with_context(|| format!("question `{id}` requires answerGuidance"))?;
-        concrete_text(guidance.get("yes"), &format!("question `{id}` answerGuidance.yes"), 100)?;
-        concrete_text(guidance.get("no"), &format!("question `{id}` answerGuidance.no"), 100)?;
+        concrete_text(
+            guidance.get("yes"),
+            &format!("question `{id}` answerGuidance.yes"),
+            100,
+        )?;
+        concrete_text(
+            guidance.get("no"),
+            &format!("question `{id}` answerGuidance.no"),
+            100,
+        )?;
         if question.get("allowAbstain").and_then(Value::as_bool) == Some(true) {
             concrete_text(
                 guidance.get("not_enough_evidence"),
@@ -636,9 +669,11 @@ mod tests {
 
     #[test]
     fn accepts_structured_questions_and_rejects_inline_quiz_keys() {
-        validate_task(&task(
-            json!([concrete("truth", "yes_no", "Does the subject display the required value?")]),
-        ))
+        validate_task(&task(json!([concrete(
+            "truth",
+            "yes_no",
+            "Does the subject display the required value?"
+        )])))
         .unwrap();
         let error = validate_task(&task(
             json!([{

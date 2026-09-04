@@ -207,7 +207,7 @@ fn declared_media_types(metadata: &Value, declaration: &Value) -> BTreeSet<Strin
     .filter_map(Value::as_str)
     .map(|value| value.trim().to_ascii_lowercase())
     .filter(|value| !value.is_empty())
-        .collect()
+    .collect()
 }
 
 fn runtime_family_declaration_matches_benchmark(
@@ -221,8 +221,7 @@ fn runtime_family_declaration_matches_benchmark(
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    if !trusted_runtime_family
-        .is_some_and(|runtime| runtime.eq_ignore_ascii_case(declared_family))
+    if !trusted_runtime_family.is_some_and(|runtime| runtime.eq_ignore_ascii_case(declared_family))
     {
         return false;
     }
