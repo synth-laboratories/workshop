@@ -25,6 +25,6 @@ for index, task in enumerate(tasks):
             elif entry.is_file():
                 shutil.copyfile(entry, snapshot / name)
     store.create(export_bundle(snapshot, store.root, [root]), mode="hitl",
-                 request_key=f"ui-test-{index}",
+                 request_key=f"ui-test-{index}", surface="test",
                  overlay="UI integration fixture on a real TBench snapshot. Rules-only, no Codex. Automated test decisions are not human adjudication.")
 serve(store.root, tasks, 17340)

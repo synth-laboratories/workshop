@@ -17,7 +17,7 @@ class CacheTests(unittest.TestCase):
             store=Store(root/'store');bundle=export_bundle(task,store.root,[task])
             artifact=store.root/'oracle.txt';artifact.write_text('ERROR: observed failure')
             policy=full_policy();policy['nodes']=[dict(id='oracle-1',executor='trial',depends_on=[],required=True,mode='oracle')]
-            run=store.create(bundle,reviewer='ai',pipeline=validate(policy))
+            run=store.create(bundle,reviewer='ai',pipeline=validate(policy),surface='test')
             prior=run_until_idle(store,run['id'],lambda *args:{'findings':[],
                 'private_opinion':'must not leak','artifacts':[{'path':'oracle.txt','sha256':hashlib.sha256(artifact.read_bytes()).hexdigest()}]})
             cached=oracle_evidence(store,prior,bundle)

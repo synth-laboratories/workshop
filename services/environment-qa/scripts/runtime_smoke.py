@@ -39,7 +39,8 @@ def main():
         {"id":"runtime-smoke", "executor":"review", "role":"specification", "required":True,"depends_on":[]}])
     policy.pop("sha256", None)
     run = store.create(export_bundle(task, store.root, [task]), reviewer="ai", budget_usd=args.budget_usd,
-                       pipeline=validate(policy), request_key=args.request_key, allowance_id=args.allowance_id)
+                       pipeline=validate(policy), request_key=args.request_key, allowance_id=args.allowance_id,
+                       surface="cli")
     claimed = claim(store, run["id"])
     if not claimed: raise SystemExit("Smoke already attempted; inspect its evidence, do not silently retry")
     gate, attempt = claimed

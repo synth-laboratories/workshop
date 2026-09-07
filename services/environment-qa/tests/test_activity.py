@@ -41,7 +41,7 @@ class ActivityTests(unittest.TestCase):
         self.store = Store(root / "store")
         _, policy = resolve("tbench-non-hitl")
         self.run = self.store.create(export_bundle(task, self.store.root, [task]),
-                                     reviewer="ai", budget_usd=1, pipeline=policy)
+                                     reviewer="ai", budget_usd=1, pipeline=policy, surface="test")
         self.gate, self.token = claim(self.store, self.run["id"])
         self.env = patch.dict(os.environ, {"QA_INPUT_USD_PER_MILLION": "", "QA_OUTPUT_USD_PER_MILLION": "",
                                            "QA_TOKEN_BUDGET": "100000"})

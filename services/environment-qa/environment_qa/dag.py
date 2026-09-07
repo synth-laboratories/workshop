@@ -3,7 +3,7 @@ import time
 import uuid
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from .core import Conflict, digest, seal
+from .core import ASSURANCES, Conflict, assurance_of, digest, seal
 from .bundles import verified_path
 
 TERMINAL = {"succeeded", "failed", "inconclusive", "skipped", "cancelled"}
@@ -109,12 +109,17 @@ def execute(store, run_id, gate, token, executor=None):
     complete(store, run_id, gate, token, result)
 
 
-def decide(store, run_id, interaction_id, decision, reason, context_digest, expected, key, actor="local-human"):
+def decide(store, run_id, interaction_id, decision, reason, context_digest, expected, key,
+           actor=None, assurance="unverified-client-claim"):
     if actor not in {"local-human", "agent-cua"}:
-        raise ValueError("Invalid review actor")
+        raise ValueError("An explicit review actor is required")
+    if assurance not in ASSURANCES:
+        raise ValueError("Invalid actor assurance")
+    assurance = assurance_of(actor, assurance == "operator-token")
     if decision not in {"confirm", "dismiss", "request_evidence"} or not isinstance(reason, str) or not reason.strip():
         raise ValueError("Valid decision and reason required")
-    command = dict(interaction_id=interaction_id, decision=decision, reason=reason, context_digest=context_digest, revision=expected, actor=actor)
+    command = dict(interaction_id=interaction_id, decision=decision, reason=reason, context_digest=context_digest,
+                   revision=expected, actor=actor, assurance=assurance)
     def apply(run):
         if run["mode"] != "hitl" or run["status"] in {"cancelled", "cancelling"}: raise Conflict("Human decisions not allowed")
         i = next((i for i in run["interactions"] if i["id"] == interaction_id), None)
@@ -122,7 +127,8 @@ def decide(store, run_id, interaction_id, decision, reason, context_digest, expe
             raise Conflict("Use the typed runtime response endpoint")
         if not i or i["status"] != "open" or i["context_digest"] != context_digest or time.time() > i["expires_at"]:
             raise Conflict("Interaction expired or superseded")
-        i.update(status="resolved", decision=decision, reason=reason, actor=actor, resolved_at=time.time())
+        i.update(status="resolved", decision=decision, reason=reason, actor=actor,
+                 actor_assurance=assurance, resolved_at=time.time())
         gate = next(g for g in run["gates"] if g["id"] == i["gate_id"])
         gate["status"] = {"confirm": "succeeded", "dismiss": "failed", "request_evidence": "inconclusive"}[decision]
         if decision != "confirm": run["limitations"].append(gate["id"] + ": " + reason)

@@ -117,6 +117,32 @@ and does not replenish on restart. Each run commits its full maximum upfront.
 Independent CLI runs must be bounded together by their caller. These flags do not
 bypass product-enforced paid-compute approvals.
 
+## Run provenance
+
+Every profile run must declare which client launched it — `workshop-embed`,
+`standalone-web`, `cli` or `test`. A profile run that does not is refused rather
+than recorded as unknown, because the acceptance plan requires each profile
+exercised through both interfaces and a report that only asserts that in prose
+cannot be checked afterwards. The service cross-checks the claim against the
+`Referer` the browser set, which page script cannot author, and records claimed,
+attested and whether they agree. It does not decide which side is right when they
+disagree; it records the disagreement. The surface is inside the seal, so
+relabelling which interface produced a run breaks verification.
+
+Review decisions carry an explicit actor. There is no default: a caller that says
+nothing used to be recorded as `local-human`. Start the service with
+`--operator-token` to give the reviewing person a secret an automated harness is
+not given; a `local-human` decision that presents it as `X-QA-Operator` is
+recorded with assurance `operator-token`, and one that does not is recorded as
+`unverified-client-claim`. The token cannot promote an `agent-cua` decision. The
+certificate reports `human_decision_count` and `verified_human_decision_count`
+separately.
+
+This is not proof that a person pressed a button. The service is loopback-only
+and unauthenticated, and `identity_assurance` stays `local-operator-only`. The
+difference it buys is that a verified human decision requires something beyond
+the request body to be true.
+
 ## Evidence and safety
 
 - Content-addressed bundles exclude Git metadata, credentials, reference reviews

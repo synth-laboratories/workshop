@@ -22,7 +22,7 @@ class DagTests(unittest.TestCase):
     def tearDown(self): self.tmp.cleanup()
 
     def create(self, mode="automated"):
-        return self.store.create(self.bundle,mode=mode,reviewer="ai",pipeline=full_policy())
+        return self.store.create(self.bundle,mode=mode,reviewer="ai",pipeline=full_policy(),surface="test")
 
     @staticmethod
     def fake(store, run, gate, path):
@@ -40,7 +40,7 @@ class DagTests(unittest.TestCase):
         from environment_qa.policy import targeted_policy
         for failed_gate in ('environment-review-second-pass','admission'):
             with self.subTest(gate=failed_gate):
-                run=self.store.create(self.bundle,reviewer='ai',pipeline=targeted_policy())
+                run=self.store.create(self.bundle,reviewer='ai',pipeline=targeted_policy(),surface='test')
                 seen=[]
                 def execute(store,current,gate,path):
                     seen.append(gate['id'])
@@ -52,7 +52,7 @@ class DagTests(unittest.TestCase):
 
     def test_targeted_human_probe_refusal_still_blocks_execution(self):
         from environment_qa.policy import targeted_policy
-        run=self.store.create(self.bundle,reviewer='ai',pipeline=targeted_policy())
+        run=self.store.create(self.bundle,reviewer='ai',pipeline=targeted_policy(),surface='test')
         seen=[]
         def execute(store,current,gate,path):
             seen.append(gate['id'])
@@ -115,12 +115,12 @@ class DagTests(unittest.TestCase):
         self.assertFalse(result["seal"])
         i = next(i for i in result["interactions"] if i["status"] == "open")
         args = (self.store,run["id"],i["id"],"confirm","Evidence checked",i["context_digest"],result["revision"],"once")
-        decided = decide(*args)
-        self.assertEqual(decide(*args),decided)
+        decided = decide(*args,actor="local-human")
+        self.assertEqual(decide(*args,actor="local-human"),decided)
         result = run_until_idle(self.store,run["id"],self.fake)
         self.assertEqual(sum(i["status"]=="open" for i in result["interactions"]),1)
         i = next(i for i in result["interactions"] if i["status"] == "open")
-        decide(self.store,run["id"],i["id"],"confirm","Targeted evidence permitted",i["context_digest"],result["revision"],"targeted")
+        decide(self.store,run["id"],i["id"],"confirm","Targeted evidence permitted",i["context_digest"],result["revision"],"targeted",actor="local-human")
         result = run_until_idle(self.store,run["id"],self.fake)
         self.assertEqual(sum(i["status"]=="open" for i in result["interactions"]),2)
 

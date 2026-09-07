@@ -77,7 +77,8 @@ def main():
         from .policy import full_policy, targeted_policy, validate
         pipeline = validate(json.loads(args.policy.read_text())) if args.policy else targeted_policy() if args.targeted else full_policy()
     record = store.create(bundle, args.mode or "automated", args.charter, args.reviewer, args.harbor,
-                          args.budget_usd, args.request_key, args.parent, args.task_goals, pipeline=pipeline)
+                          args.budget_usd, args.request_key, args.parent, args.task_goals, pipeline=pipeline,
+                          surface="cli")
     if not args.enqueue:
         if pipeline:
             from .dag import run_until_idle

@@ -14,7 +14,9 @@
 <label>Decision mode<select name="mode"><option value="automated">AI-only</option><option value="hitl">Human-assisted</option></select></label>
 <label class="check"><input name="probes" type="checkbox"> Run Harbor oracle, no-op and repeat-verifier probes</label>
 <small>Rules-only source review makes no provider calls. Optional Docker probes execute task code and can be slow. AI launch requires an advertised Codex runtime and authorized allowance.</small>
-<button type="submit">Run QA</button></form><h2>Runs</h2><label>Review queue<select id="run-filter"><option value="all">All runs</option><option value="pending">Needs my review</option><option value="hitl">Human-assisted runs</option></select></label><p id="queue-summary" role="status"></p><div id="runs" aria-label="QA runs"></div></aside>
+<button type="submit">Run QA</button></form>
+<label id="operator" hidden>Operator secret<input type="password" autocomplete="off" placeholder="Decisions are recorded as verified only with this"></label>
+<h2>Runs</h2><label>Review queue<select id="run-filter"><option value="all">All runs</option><option value="pending">Needs my review</option><option value="hitl">Human-assisted runs</option></select></label><p id="queue-summary" role="status"></p><div id="runs" aria-label="QA runs"></div></aside>
 <section id="detail" aria-label="Selected QA run"><p>Select a run or submit a task.</p></section></main>
 <dialog id="source-dialog"><div class="row"><h2 id="source-title">Source evidence</h2><button id="close-source">Close</button></div><pre id="source-text"></pre></dialog>
 </body></html>

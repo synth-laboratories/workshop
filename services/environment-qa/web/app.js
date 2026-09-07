@@ -4,6 +4,15 @@ const byId = id => document.getElementById(id);
 let selected = location.hash.slice(1), lastRevision = -1, busy = false;
 let selectedInteraction = "";
 const query = new URLSearchParams(location.search);
+// Which client this is. Workshop loads the same page with embed=workshop, so the
+// surface is knowable here and nowhere else; the service cross-checks it against
+// the Referer the browser sets, which this script cannot author.
+const SURFACE = query.get("embed") === "workshop" ? "workshop-embed" : "standalone-web";
+// The operator secret, when the service was started with one. Held per tab so a
+// CUA harness driving a different session does not inherit it.
+function operatorToken() {
+  try { return sessionStorage.getItem("qa-operator-token") || ""; } catch { return ""; }
+}
 const draftKey = (run, interaction) => `qa-review:${run.id}:${interaction.id}:${interaction.context_digest}`;
 function savedDraft(run, interaction) {
   try { return localStorage.getItem(draftKey(run, interaction)) || ""; } catch { return ""; }
@@ -22,7 +31,9 @@ function notifyWorkshop(runs) {
 }
 const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 async function api(path, data, reconnected = false) {
-  const response = await fetch(path, {method: data ? "POST" : "GET", headers: {"X-QA-Token": token, "Content-Type": "application/json"}, ...(data ? {body: JSON.stringify(data)} : {})});
+  const operator = operatorToken();
+  const response = await fetch(path, {method: data ? "POST" : "GET", headers: {"X-QA-Token": token, "Content-Type": "application/json",
+    ...(operator ? {"X-QA-Operator": operator} : {})}, ...(data ? {body: JSON.stringify(data)} : {})});
   const body = await response.json();
   if (response.status === 401 && !reconnected) {
     const shell = await (await fetch("/", {cache:"no-store"})).text();
@@ -135,6 +146,7 @@ byId("create").onsubmit = event => {
   guarded(async () => {
     const form = new FormData(event.target);
     const data = Object.fromEntries(form); data.probes = form.has("probes"); data.request_key = crypto.randomUUID();
+    data.surface = SURFACE;
     // "legacy" is not a profile: it is the rules-only baseline, and sending it as
     // profile_id would be refused as unknown. Everything else launches by profile,
     // whose version and mode the server pins.
@@ -215,6 +227,10 @@ function render(run) {
     const actorLabel = document.createElement("label");
     actorLabel.className = "check";
     actorLabel.textContent = "Agent operating CUA (not human adjudication)";
+    const assurance = document.createElement("small");
+    assurance.textContent = operatorToken()
+      ? "Human decisions from this tab are recorded as operator-verified."
+      : "Without the operator secret, a human decision is recorded as an unverified client claim.";
     const actorSelect = document.createElement("input");
     actorSelect.type = "checkbox";
     actorSelect.id = "review-actor";
@@ -222,6 +238,7 @@ function render(run) {
     actorSelect.onchange = () => { try { localStorage.setItem("qa-review-actor", actorSelect.checked ? "agent-cua" : "local-human"); } catch {} };
     actorLabel.append(actorSelect);
     byId("reason").parentElement.before(actorLabel);
+    byId("reason").parentElement.before(assurance);
     if (byId("interaction-select")) byId("interaction-select").onchange = event => {
       selectedInteraction = event.target.value; render(run);
     };
@@ -384,5 +401,12 @@ guarded(async () => { const config = await api("/api/config"); byId("roots").tex
       : "Codex AI dispatch is not available. Only the rules-only baseline can launch here; no direct-provider fallback.";
   }
   profileSelect.onchange();
+  const operatorField = byId("operator");
+  operatorField.hidden = !config.operator_token_required;
+  if (config.operator_token_required) {
+    const input = operatorField.querySelector("input");
+    input.value = operatorToken();
+    input.oninput = () => { try { sessionStorage.setItem("qa-operator-token", input.value.trim()); } catch {} };
+  }
   await refresh(); });
 setInterval(() => guarded(refresh), 1500);

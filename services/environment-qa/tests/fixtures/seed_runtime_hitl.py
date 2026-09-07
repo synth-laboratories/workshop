@@ -23,7 +23,8 @@ policy["interaction_timeout_seconds"] = 600
 policy.pop("sha256", None)
 policy = validate(policy)
 run = store.create(export_bundle(source, store.root, [source]), mode="hitl", reviewer="ai", budget_usd=1,
-    pipeline=policy, overlay="CUA TEST FIXTURE — fake app-server, zero provider calls. Not task quality evidence.", request_key="cua-"+kind+"-fixture")
+    pipeline=policy, surface="test",
+    overlay="CUA TEST FIXTURE — fake app-server, zero provider calls. Not task quality evidence.", request_key="cua-"+kind+"-fixture")
 os.environ.update(QA_INPUT_USD_PER_MILLION="0.2", QA_OUTPUT_USD_PER_MILLION="1.2", QA_TOKEN_BUDGET="")
 answer = {"findings":[], "limitations":["Fake protocol fixture only; no task quality conclusion"]}
 request = ({"__approval__":{"method":"item/commandExecution/requestApproval", "params":{"command":"fixture-only-no-command-is-executed", "availableDecisions":["accept","decline"]}}}

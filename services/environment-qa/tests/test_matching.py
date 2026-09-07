@@ -15,7 +15,7 @@ class MatchingTests(unittest.TestCase):
             root=Path(temp);task=root/'task';task.mkdir()
             (task/'instruction.md').write_text('Fixture');(task/'task.toml').write_text('version="1"')
             store=Store(root/'detector')
-            run=store.create(export_bundle(task,store.root,[task]),reviewer='ai',pipeline=full_policy())
+            run=store.create(export_bundle(task,store.root,[task]),reviewer='ai',pipeline=full_policy(),surface='test')
             def execute(s,r,g,p):
                 return {'findings':[dict(id=str(i),title='concrete '+str(i),mechanism='mechanism_'+str(i),path='instruction.md',evidence='Fixture',severity='warning',disposition='proposed') for i in range(2)] if g['id']=='structure' else [],'limitations':[]}
             run=run_until_idle(store,run['id'],execute);ids=[f['id'] for f in run['findings']]
@@ -34,7 +34,7 @@ class MatchingTests(unittest.TestCase):
             (task/'instruction.md').write_text('Fixture')
             (task/'task.toml').write_text('version="1.0"')
             store = Store(root/'detector')
-            run = store.create(export_bundle(task,store.root,[task]),reviewer='ai',pipeline=full_policy())
+            run = store.create(export_bundle(task,store.root,[task]),reviewer='ai',pipeline=full_policy(),surface='test')
             gold = {'case_id':'fixture','defects':[{'id':'reference','status':'provisional'}]}
             with self.assertRaises(ValueError): compare(run,gold,root/'unsealed',1)
             run = run_until_idle(store,run['id'],lambda *args: {'findings':[],'limitations':[]})

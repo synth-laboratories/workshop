@@ -30,7 +30,7 @@ class FollowTests(unittest.TestCase):
         return {"findings": [], "limitations": []}
 
     def completed_run(self):
-        run = self.store.create(self.bundle, reviewer="ai", pipeline=full_policy())
+        run = self.store.create(self.bundle, reviewer="ai", pipeline=full_policy(), surface="test")
         result = run_until_idle(self.store, run["id"], self.fake)
         self.assertTrue(verify_seal(result))
         return run["id"]

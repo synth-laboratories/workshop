@@ -43,7 +43,7 @@ for case_id in args.cases:
     if bundle["files"] != case["files"]:
         raise ValueError("Staged snapshot differs from source manifest")
     run = store.create(bundle, mode="hitl", reviewer="rules", probes=False,
-                       request_key=f"hitl-workshop-pilot:{case_id}",
+                       request_key=f"hitl-workshop-pilot:{case_id}", surface="standalone-web",
                        overlay=f"{case_id} / {case['family']}: real TBench source-only HITL pilot. No Codex or runtime execution; not full QA validation. Leave approval to the user.")
     receipts.append({"case_id":case_id, "family":case["family"], "run_id":run["id"],
                      "snapshot_sha256":bundle["sha256"], "source_commit":case["commit"]})

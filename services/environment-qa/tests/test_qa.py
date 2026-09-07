@@ -70,9 +70,10 @@ class QaTests(unittest.TestCase):
         recover(reopened)
         interaction = run["interactions"][0]
         args = (run["id"], interaction["id"], "confirm", "Source evidence checked", interaction["context_digest"], run["revision"], "decision-key")
-        decided = reopened.decide(*args)
+        kwargs = {"actor": "local-human"}
+        decided = reopened.decide(*args, **kwargs)
         self.assertTrue(verify_seal(decided))
-        self.assertEqual(decided, reopened.decide(*args))
+        self.assertEqual(decided, reopened.decide(*args, **kwargs))
         self.assertEqual(decided["findings"][0]["disposition"], "confirmed")
 
     def test_cua_decision_preserves_actor_and_idempotency(self):
@@ -93,10 +94,10 @@ class QaTests(unittest.TestCase):
         i = run["interactions"][0]
         paused = self.store.control(run["id"], "pause", run["revision"], "pause")
         with self.assertRaises(Conflict):
-            self.store.decide(run["id"], i["id"], "confirm", "checked", i["context_digest"], run["revision"], "stale")
+            self.store.decide(run["id"], i["id"], "confirm", "checked", i["context_digest"], run["revision"], "stale", actor="local-human")
         with self.assertRaises(Conflict):
-            self.store.decide(run["id"], i["id"], "confirm", "checked", "wrong", paused["revision"], "wrong")
-        decided = self.store.decide(run["id"], i["id"], "dismiss", "Allowed restriction", i["context_digest"], paused["revision"], "decision")
+            self.store.decide(run["id"], i["id"], "confirm", "checked", "wrong", paused["revision"], "wrong", actor="local-human")
+        decided = self.store.decide(run["id"], i["id"], "dismiss", "Allowed restriction", i["context_digest"], paused["revision"], "decision", actor="local-human")
         self.assertEqual(decided["status"], "paused")
         self.assertIsNone(decided["seal"])
         resumed = self.store.control(run["id"], "resume", decided["revision"], "resume")

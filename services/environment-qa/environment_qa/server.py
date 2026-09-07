@@ -16,7 +16,8 @@ from .core import CHARTERS, Conflict, Store, digest
 from .worker import recover, step
 
 
-def serve(root, task_roots, port=7338, provider_budget=None, allowance_id=None):
+def serve(root, task_roots, port=7338, provider_budget=None, allowance_id=None, operator_token=None,
+          on_start=None):
     from . import __version__
     import hashlib
     engine_digest=digest({p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(Path(__file__).parent.glob('*.py'))})
@@ -98,6 +99,36 @@ def serve(root, task_roots, port=7338, provider_budget=None, allowance_id=None):
                 return False
             return True
 
+        def attested_surface(self):
+            """Which document the browser says made this request.
+
+            Page script cannot set Referer; it can only suppress it. So an absent
+            value means "no attestation available", never "standalone". The
+            embedded client is the one Workshop loads with `embed=workshop`.
+            """
+            referer = self.headers.get("Referer")
+            if not referer:
+                return None
+            try:
+                parsed = urlparse(referer)
+            except ValueError:
+                return None
+            if f"{parsed.hostname}:{parsed.port}" not in hosts:
+                return None
+            return "workshop-embed" if "embed=workshop" in (parsed.query or "") else "standalone-web"
+
+        def operator_verified(self):
+            """True only when the caller presented the secret the service was started with.
+
+            The service is loopback-only and unauthenticated, so this does not
+            prove a person acted. It proves the caller holds something the CUA
+            harness was not given, which is the whole difference between a
+            recorded human decision and a recorded string.
+            """
+            if operator_token is None:
+                return False
+            return secrets.compare_digest(self.headers.get("X-QA-Operator", ""), operator_token)
+
         def do_GET(self):
             path = urlparse(self.path).path
             if not self.valid_host():
@@ -122,7 +153,8 @@ def serve(root, task_roots, port=7338, provider_budget=None, allowance_id=None):
                     self.send({"charters": CHARTERS, "task_roots": [str(p) for p in task_roots], "provider_calls_enabled": provider_budget is not None,
                                "allowance":store.service_allowance(allowance_id) if allowance_id else None,"full_policy":full_policy(),
                                "ai_runtime": ai_runtime, "ai_runtime_disabled_reason": runtime_disabled_reason,
-                               "profiles": advertise() if ai_runtime else []})
+                               "profiles": advertise() if ai_runtime else [],
+                               "operator_token_required": operator_token is not None})
                 elif path == "/api/runs":
                     self.send(store.list())
                 elif len(parts) == 3 and parts[:2] == ["api", "runs"]:
@@ -240,7 +272,8 @@ def serve(root, task_roots, port=7338, provider_budget=None, allowance_id=None):
                                        probes=body.get("probes", False), request_key=key,
                                        parent_id=body.get("parent_id"), overlay=body.get("task_goals"),
                                        reviewer="ai" if full else "rules",budget_usd=body.get("budget_usd",0) if full else 0,
-                                       pipeline=pipeline,allowance_id=allowance_id if full else None)
+                                       pipeline=pipeline,allowance_id=allowance_id if full else None,
+                                       surface=body.get("surface"), surface_attested=self.attested_surface())
                 elif len(parts) == 4 and parts[:2] == ["api", "runs"]:
                     revision = body["revision"]
                     if not isinstance(revision, int):
@@ -256,7 +289,9 @@ def serve(root, task_roots, port=7338, provider_budget=None, allowance_id=None):
                         run = retry(store, parts[2], body)
                     elif parts[3] == "decision":
                         run = store.decide(parts[2], body["interaction_id"], body["decision"], body["reason"],
-                                           body["context_digest"], revision, key, actor=body.get("actor", "local-human"))
+                                           body["context_digest"], revision, key, actor=body.get("actor"),
+                                           assurance="operator-token" if self.operator_verified()
+                                           else "unverified-client-claim")
                     else:
                         run = store.control(parts[2], parts[3], revision, key)
                 else:
@@ -299,6 +334,10 @@ def serve(root, task_roots, port=7338, provider_budget=None, allowance_id=None):
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     worker.start()
     print(f"Environment QA: http://127.0.0.1:{port} — store {store.root}", flush=True)
+    # Handed to the caller so a test can shut the service down instead of leaving
+    # a worker polling a store directory that has already been deleted.
+    if on_start is not None:
+        on_start(server)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

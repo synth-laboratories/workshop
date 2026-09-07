@@ -51,8 +51,15 @@ def report(store, run_id):
         'failed_turns': errors, 'retained_contracts': len(contracts.get('contracts', [])),
         'assumption_coverage': contracts.get('assumption_coverage', {}),
         'cleanup_receipts': cleanup, 'trials': trials,
-        'decisions': [{'gate': i['gate_id'], 'actor': i.get('actor'), 'decision': i.get('decision')}
+        # The surface and the assurance are the two things a later report cannot
+        # reconstruct if they are not carried out of the run here.
+        'launch_surface': run['policy'].get('surface'),
+        'decisions': [{'gate': i['gate_id'], 'actor': i.get('actor'), 'decision': i.get('decision'),
+                       'assurance': i.get('actor_assurance')}
                       for i in run['interactions']],
+        'verified_human_decisions': sum(i.get('actor') == 'local-human'
+                                        and i.get('actor_assurance') == 'operator-token'
+                                        for i in run['interactions']),
         'cap_usd': run['budget']['limit_usd'],
         'transport_bound_usd_not_invoice': run['budget'].get('transport', {}).get('reserved_usd'),
     }

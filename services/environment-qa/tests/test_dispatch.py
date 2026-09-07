@@ -42,7 +42,7 @@ class DispatchTests(unittest.TestCase):
         (task / "task.toml").write_text('version="1.0"')
         self.store = Store(root / "store")
         self.run = self.store.create(export_bundle(task, self.store.root, [task]),
-                                     reviewer="ai", budget_usd=1, pipeline=full_policy())
+                                     reviewer="ai", budget_usd=1, pipeline=full_policy(), surface="test")
         self.gate, self.token = claim(self.store, self.run["id"])
         self.schema = object_schema({"answer": {"type": "string"}})
         self.env = patch.dict(os.environ, RATES)
@@ -210,7 +210,7 @@ class TokenAccountingTests(unittest.TestCase):
         (task / "task.toml").write_text('version="1.0"')
         self.store = Store(root / "store")
         self.run = self.store.create(export_bundle(task, self.store.root, [task]),
-                                     reviewer="ai", budget_usd=1, pipeline=full_policy())
+                                     reviewer="ai", budget_usd=1, pipeline=full_policy(), surface="test")
         self.gate, self.token = claim(self.store, self.run["id"])
         self.schema = object_schema({"answer": {"type": "string"}})
         # No USD rates: this is the subscription case.

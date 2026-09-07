@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "workshop-environment-qa"
-version = "0.2.0"
+version = "0.3.0"
 description = "Durable Harbor environment-QA DAG with automated and human review"
 requires-python = ">=3.11"
 dependencies = ["PyYAML>=6.0.2,<7", "python-dotenv>=1,<2"]

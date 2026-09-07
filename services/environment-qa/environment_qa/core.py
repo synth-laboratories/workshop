@@ -42,6 +42,37 @@ CHARTERS = {
     },
 }
 
+# Which client launched a run. Recorded because the acceptance plan requires each
+# profile exercised through both interfaces, and a report that only asserts that
+# in prose cannot be checked against the receipts afterwards. The same web client
+# is served standalone and embedded, so the surface is not inferable from the
+# code; it has to be written down at creation time.
+SURFACES = {"workshop-embed", "standalone-web", "cli", "test"}
+
+# How much a recorded review actor is actually worth. "operator-token" means the
+# caller presented a secret the service was started with, which the CUA harness
+# was not given. "unverified-client-claim" means a loopback client sent a string.
+# Neither proves a person pressed a button; the difference is whether anything
+# beyond the request body had to be true.
+ASSURANCES = {"operator-token", "unverified-client-claim", "agent"}
+
+
+def surface_record(claimed, attested=None):
+    """What the client said, what the browser attested, and whether they agree.
+
+    `attested` comes from the Referer the browser set on the request, which page
+    script cannot forge. It is absent for non-browser callers, and absence is
+    recorded as absence rather than as agreement.
+    """
+    return {"claimed": claimed, "attested": attested,
+            "agrees": None if attested is None else attested == claimed}
+
+
+def assurance_of(actor, operator_verified):
+    if actor == "agent-cua":
+        return "agent"
+    return "operator-token" if operator_verified else "unverified-client-claim"
+
 
 def gate_states(run):
     return {g["id"]: g.get("status") for g in run.get("gates", [])}
@@ -128,9 +159,14 @@ class Store:
                 "SELECT * FROM events WHERE run_id=? AND seq>? ORDER BY seq LIMIT 1000", (run_id, after))]
 
     def create(self, bundle: dict, mode="automated", charter="terminal-bench", reviewer="rules", probes=False,
-               budget_usd=0.0, request_key=None, parent_id=None, overlay=None, pipeline=None, allowance_id=None):
+               budget_usd=0.0, request_key=None, parent_id=None, overlay=None, pipeline=None, allowance_id=None,
+               surface=None, surface_attested=None):
         if mode not in {"automated", "hitl"} or charter not in CHARTERS or reviewer not in {"rules", "ai"}:
             raise ValueError("Unknown mode, charter, or reviewer")
+        if surface is not None and surface not in SURFACES:
+            raise ValueError(f"Unknown launch surface {surface!r}")
+        if surface_attested is not None and surface_attested not in SURFACES:
+            raise ValueError(f"Unknown attested launch surface {surface_attested!r}")
         if not isinstance(budget_usd, (int, float)) or not math.isfinite(budget_usd) or not 0 <= budget_usd <= 50:
             raise ValueError("Prototype budget must be finite and between $0 and $50")
         if reviewer == "rules" and budget_usd:
@@ -142,11 +178,16 @@ class Store:
             pipeline = validate(pipeline)
             if reviewer != "ai":
                 raise ValueError("Full QA policies require AI reviewers")
+            # A paid profile run that does not say where it was launched from
+            # cannot contribute to the both-interfaces evidence the acceptance
+            # plan asks for, so it is refused rather than recorded as unknown.
+            if surface is None:
+                raise ValueError("Profile runs must declare a launch surface: " + ", ".join(sorted(SURFACES)))
         overlay = overlay or ""
         if not isinstance(overlay, str) or len(overlay) > 8000:
             raise ValueError("Task goals must be text of at most 8000 characters")
         request = dict(bundle=bundle, mode=mode, charter=charter, reviewer=reviewer, probes=probes,
-                       budget_usd=budget_usd, parent_id=parent_id, overlay=overlay)
+                       budget_usd=budget_usd, parent_id=parent_id, overlay=overlay, surface=surface)
         if pipeline is not None:
             request["pipeline"] = pipeline
         request_key = request_key or uuid.uuid4().hex
@@ -155,7 +196,8 @@ class Store:
                "created_at": time.time(), "status": "queued", "verdict": None,
                "qualified": False, "mode": mode, "parent_id": parent_id, "bundle": bundle,
                "policy": {"version": "prototype-v1", "charter": CHARTERS[charter], "charter_id": charter,
-                          "task_goals": overlay, "reviewer": reviewer, "harbor_probes": bool(probes)},
+                          "task_goals": overlay, "reviewer": reviewer, "harbor_probes": bool(probes),
+                          "surface": surface_record(surface, surface_attested)},
                "budget": {"limit_usd": budget_usd, "reserved_usd": 0.0, "actual_usd": 0.0},
                "gates": [{"id": g, "status": "pending", "attempt": None} for g in ["structure", "review", "harbor", "decision"]],
                "findings": [], "evidence": [], "interactions": [], "limitations": [], "seal": None}
@@ -181,7 +223,8 @@ class Store:
                 con.execute('UPDATE provider_allowances SET committed=? WHERE id=?',(committed/1_000_000,allowance_id))
             con.execute("INSERT INTO runs VALUES(?,?,?,?,?)", (run_id, request_key, digest(request), 0, canonical(run)))
             con.execute("INSERT INTO events(run_id,kind,at,revision,payload) VALUES(?,?,?,?,?)",
-                        (run_id, "run.created", time.time(), 0, canonical({"mode": mode})))
+                        (run_id, "run.created", time.time(), 0,
+                         canonical({"mode": mode, "surface": run["policy"]["surface"]})))
         return run
 
     def authorize_service(self, allowance_id, maximum):
@@ -243,16 +286,23 @@ class Store:
                 raise Conflict("Action is not valid in the current state")
         return self.mutate(run_id, "run." + action, apply, expected, key, {"action": action, "revision": expected})
 
-    def decide(self, run_id, interaction_id, decision, reason, context_digest, expected, key, actor="local-human"):
+    def decide(self, run_id, interaction_id, decision, reason, context_digest, expected, key,
+               actor=None, assurance="unverified-client-claim"):
         if actor not in {"local-human", "agent-cua"}:
-            raise ValueError("Invalid review actor")
+            # No default. A missing actor used to become "local-human", so a
+            # caller that said nothing was recorded as a person.
+            raise ValueError("An explicit review actor is required")
+        if assurance not in ASSURANCES:
+            raise ValueError("Invalid actor assurance")
+        assurance = assurance_of(actor, assurance == "operator-token")
         if self.get(run_id)["policy"].get("pipeline"):
             from .dag import decide
-            return decide(self, run_id, interaction_id, decision, reason, context_digest, expected, key, actor=actor)
+            return decide(self, run_id, interaction_id, decision, reason, context_digest, expected, key,
+                          actor=actor, assurance=assurance)
         if decision not in {"confirm", "dismiss", "request_evidence"} or not isinstance(reason, str) or not reason.strip():
             raise ValueError("A valid decision and non-empty reason are required")
         command = dict(interaction_id=interaction_id, decision=decision, reason=reason,
-                       context_digest=context_digest, expected=expected, actor=actor)
+                       context_digest=context_digest, expected=expected, actor=actor, assurance=assurance)
         def apply(run):
             if run["mode"] != "hitl" or run["status"] not in {"waiting_interaction", "paused"}:
                 raise Conflict("This run is not accepting human decisions")
@@ -260,7 +310,7 @@ class Store:
             if not interaction or interaction["status"] != "open" or interaction["context_digest"] != context_digest:
                 raise Conflict("Interaction is stale or no longer open")
             interaction.update(status="resolved", decision=decision, reason=reason,
-                               actor=actor, resolved_at=time.time())
+                               actor=actor, actor_assurance=assurance, resolved_at=time.time())
             if decision == "request_evidence":
                 run["limitations"].append(("Agent requested more evidence: " if actor == "agent-cua" else "Human requested more evidence: ") + reason)
             for finding in run["findings"]:
@@ -295,6 +345,13 @@ def seal(run):
             "task_sha256":run["bundle"]["sha256"],"evidence_digest":digest(run["evidence"]),
             "review_mode":run["mode"],"verdict":run["verdict"],"qualified":run["qualified"],
             "human_decision_count":sum(i.get("actor")=="local-human" for i in run["interactions"]),
+            # Claimed and verified are separate numbers. A run whose reviews were
+            # driven by CUA now reads as zero verified human decisions instead of
+            # borrowing the word "human" from a client-supplied string.
+            "verified_human_decision_count":sum(i.get("actor")=="local-human" and
+                                                i.get("actor_assurance")=="operator-token"
+                                                for i in run["interactions"]),
+            "launch_surface":run["policy"].get("surface"),
             "identity_assurance":"local-operator-only","production_human_certification":False}
     run["status"] = "completed"
     # Prototype checks never issue production qualification certificates.

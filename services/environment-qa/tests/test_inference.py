@@ -33,7 +33,7 @@ class InferenceTests(unittest.TestCase):
         (task/'instruction.md').write_text('Fixture')
         (task/'task.toml').write_text('version="1.0"')
         self.store = Store(root/'store')
-        self.run = self.store.create(export_bundle(task,self.store.root,[task]),reviewer='ai',budget_usd=1,pipeline=full_policy())
+        self.run = self.store.create(export_bundle(task,self.store.root,[task]),reviewer='ai',budget_usd=1,pipeline=full_policy(),surface='test')
         self.gate,self.token = claim(self.store,self.run['id'])
         self.schema = object_schema({'answer':{'type':'string'}})
 
@@ -68,9 +68,9 @@ class InferenceTests(unittest.TestCase):
 
     def test_fractional_service_allocations_do_not_accumulate_float_error(self):
         self.store.authorize_service('fractional',16)
-        for _ in range(20):self.store.create(self.run['bundle'],reviewer='ai',budget_usd=.8,pipeline=full_policy(),allowance_id='fractional')
+        for _ in range(20):self.store.create(self.run['bundle'],reviewer='ai',budget_usd=.8,pipeline=full_policy(),allowance_id='fractional',surface='test')
         with self.assertRaisesRegex(ValueError,'budget exhausted'):
-            self.store.create(self.run['bundle'],reviewer='ai',budget_usd=.000001,pipeline=full_policy(),allowance_id='fractional')
+            self.store.create(self.run['bundle'],reviewer='ai',budget_usd=.000001,pipeline=full_policy(),allowance_id='fractional',surface='test')
 
     def test_only_settled_reported_charge_releases_reservation(self):
         self.store.mutate(self.run['id'],'test.budget',lambda r:r['budget'].update(limit_usd=.01))

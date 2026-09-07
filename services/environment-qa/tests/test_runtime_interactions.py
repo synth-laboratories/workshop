@@ -70,7 +70,7 @@ class PermissionIntegrationTests(unittest.TestCase):
                 with self.assertRaises(Conflict):
                     respond(self.store, run["id"], body | {"context_digest": "stale"})
                 with self.assertRaises(Conflict):
-                    self.store.decide(run["id"], interaction["id"], "confirm", "wrong API", interaction["context_digest"], run["revision"], "wrong")
+                    self.store.decide(run["id"], interaction["id"], "confirm", "wrong API", interaction["context_digest"], run["revision"], "wrong", actor="local-human")
                 result = respond(self.store, run["id"], body)
                 self.assertEqual(respond(self.store, run["id"], body), result)
                 with self.assertRaises(Conflict):
