@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workshop.local/contracts/environment-qa/run.v1",
+  "title": "Environment QA run (legacy and full DAG)",
+  "type": "object",
+  "required": ["schema", "id", "revision", "status", "mode", "bundle", "policy", "gates", "findings", "evidence", "interactions", "budget", "verdict", "qualified", "seal"],
+  "properties": {
+    "schema": {"const": "environment-qa.run.v1"},
+    "id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+    "revision": {"type": "integer", "minimum": 0},
+    "status": {"enum": ["queued", "running", "paused", "waiting_interaction", "cancelling", "cancelled", "completed", "failed"]},
+    "mode": {"enum": ["automated", "hitl"]},
+    "verdict": {"enum": [null, "pass", "fail", "inconclusive"]},
+    "qualified": {"type": "boolean"},
+    "bundle": {"type": "object", "required": ["sha256", "files", "format"], "properties": {
+      "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+      "format": {"const": "harbor"}, "files": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+    }},
+    "policy": {"type": "object", "required": ["version", "charter", "reviewer"], "properties": {"reviewer": {"enum": ["rules", "ai"]}}},
+    "gates": {"type": "array", "items": {"type": "object", "required": ["id", "status", "attempt"], "properties": {
+      "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+      "depends_on": {"type": "array", "items": {"type": "string"}},
+      "status": {"enum": ["pending", "running", "succeeded", "failed", "inconclusive", "skipped", "waiting_interaction", "cancelled"]}
+    }}},
+    "findings": {"type": "array", "items": {"type": "object", "required": ["id", "category", "severity", "title", "path", "line", "evidence", "mechanism", "disposition"], "properties": {
+      "severity": {"enum": ["info", "warning", "blocking"]}, "line": {"type": "integer", "minimum": 1},
+      "disposition": {"enum": ["proposed", "confirmed", "dismissed", "unresolved"]}
+    }}},
+    "evidence": {"type": "array"},
+    "interactions": {"type": "array", "items": {"type": "object", "required": ["id", "context_digest", "status"], "properties": {
+      "status": {"enum": ["open", "resolved", "expired", "superseded", "cancelled"]}, "decision": {"enum": ["confirm", "dismiss", "request_evidence"]}
+    }}},
+    "budget": {"type": "object", "required": ["limit_usd", "reserved_usd", "actual_usd"], "properties": {
+      "limit_usd": {"type": "number", "minimum": 0, "maximum": 50},
+      "reserved_usd": {"type": "number", "minimum": 0}, "actual_usd": {"type": ["number", "null"], "minimum": 0}
+    }},
+    "seal": {"oneOf": [{"type": "null"}, {"type": "object", "required": ["sha256", "at"], "properties": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "at": {"type": "number"}}}]}
+  }
+}

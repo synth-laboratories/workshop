@@ -30,6 +30,7 @@ import { DataPage } from "./components/DataPage";
 import { LandingPage } from "./components/LandingPage";
 import { ComputerUsePage } from "./components/ComputerUsePage";
 import { OptimizersPage } from "./components/OptimizersPage";
+import { EnvironmentQaPage } from "./components/EnvironmentQaPage";
 import { PaneResizeHandle } from "./components/PaneResizeHandle";
 import { SettingsPage } from "./components/SettingsPage";
 import { VisualPane } from "./components/VisualHost";
@@ -67,12 +68,14 @@ export type MainView =
 	| { kind: "reports"; reportId?: string }
 	| { kind: "experiments"; experimentId?: string }
 	| { kind: "optimizers" }
+	| { kind: "environment-qa" }
 	| { kind: "computer-use" };
 
 const INVENTORY_ORIGIN_KINDS = new Set<MainView["kind"]>([
 	"visuals",
 	"experiments",
 	"optimizers",
+	"environment-qa",
 	"inventory",
 	"inference",
 	"plugins",
@@ -413,6 +416,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		view.kind === "visuals" ||
 		view.kind === "experiments" ||
 		view.kind === "optimizers" ||
+		view.kind === "environment-qa" ||
 		view.kind === "inventory" ||
 		view.kind === "inference" ||
 		view.kind === "plugins" ||
@@ -683,6 +687,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							onBack={leavePluginToRecentChat}
 						/>
 					) : null}
+					{view.kind === "environment-qa" ? <EnvironmentQaPage onBack={leavePluginToRecentChat} /> : null}
 					{view.kind === "inventory" ? (
 						<DataPage
 							onOpenVisual={openVisualRecord}

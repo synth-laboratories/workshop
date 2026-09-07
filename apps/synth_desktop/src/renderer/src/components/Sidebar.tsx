@@ -42,6 +42,7 @@ type Props = {
 	reportsActive?: boolean;
 	experimentsActive?: boolean;
 	optimizersActive?: boolean;
+	environmentQaActive?: boolean;
 	computerUseActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
 	/**
@@ -62,6 +63,7 @@ type Props = {
 	onOpenReports: () => void;
 	onOpenExperiments: () => void;
 	onOpenOptimizers: () => void;
+	onOpenEnvironmentQa?: () => void;
 	onOpenComputerUse: () => void;
 	onOpenPlugins: () => void;
 	visiblePluginIds?: readonly string[];
@@ -229,6 +231,7 @@ const PLUGIN_NAV_ICONS: Record<PluginNavEntry["id"], () => ReactElement> = {
 	reports: IconReports,
 	experiments: IconOptimizers,
 	optimizers: IconOptimizers,
+	"environment-qa": IconReports,
 	inventory: IconInventory,
 	inference: IconInference,
 	"computer-use": IconComputerUse
@@ -246,6 +249,7 @@ export function Sidebar({
 	reportsActive = false,
 	experimentsActive = false,
 	optimizersActive = false,
+	environmentQaActive = false,
 	computerUseActive = false,
 	workingChatIds = new Set<string>(),
 	chatPresence = {},
@@ -261,6 +265,7 @@ export function Sidebar({
 	onOpenReports,
 	onOpenExperiments,
 	onOpenOptimizers,
+	onOpenEnvironmentQa = () => {},
 	onOpenComputerUse,
 	onOpenPlugins,
 	visiblePluginIds = [],
@@ -371,6 +376,7 @@ export function Sidebar({
 		reports: reportsActive,
 		experiments: experimentsActive,
 		optimizers: optimizersActive,
+		"environment-qa": environmentQaActive,
 		inventory: inventoryActive,
 		inference: inferenceActive,
 		"computer-use": computerUseActive
@@ -380,6 +386,7 @@ export function Sidebar({
 		reports: onOpenReports,
 		experiments: onOpenExperiments,
 		optimizers: onOpenOptimizers,
+		"environment-qa": onOpenEnvironmentQa,
 		inventory: onOpenInventory,
 		inference: onOpenInference,
 		"computer-use": onOpenComputerUse
@@ -615,7 +622,7 @@ export function Sidebar({
 					</div>
 					{pluginsOpen ? (
 						<div id="sidebar-plugins" className="section-list" data-testid="plugins-nav">
-							{PLUGIN_NAV.filter((entry) => visiblePlugins.has(entry.id)).map((entry) => {
+							{PLUGIN_NAV.filter((entry) => entry.id === "environment-qa" || visiblePlugins.has(entry.id)).map((entry) => {
 								const Icon = PLUGIN_NAV_ICONS[entry.id];
 								const active = pluginRowActive[entry.id];
 								const presentation = entry.kind === "managed" && entry.pluginId

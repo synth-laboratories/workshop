@@ -10,7 +10,7 @@
 export type PluginNavKind = "builtin" | "managed";
 
 export type PluginNavEntry = {
-	id: "visuals" | "reports" | "experiments" | "optimizers" | "inventory" | "inference" | "computer-use";
+	id: "visuals" | "reports" | "experiments" | "optimizers" | "environment-qa" | "inventory" | "inference" | "computer-use";
 	/** Sidebar destination name. Short: a place, not a description of contents. */
 	label: string;
 	description: string;
@@ -24,6 +24,7 @@ export const PLUGIN_NAV: readonly PluginNavEntry[] = [
 	{ id: "visuals", label: "Visuals", description: "Explore agent- and user-created visual workspaces.", testId: "open-visuals", kind: "builtin" },
 	{ id: "reports", label: "Reports", description: "Collect durable narrative and evidence reports.", testId: "open-reports", kind: "builtin" },
 	{ id: "experiments", label: "Experiments", description: "Review evaluation and training experiments.", testId: "open-experiments", kind: "builtin" },
+	{ id: "environment-qa", label: "Environment QA", description: "Review task validity, findings, evidence, and human decisions.", testId: "open-environment-qa", kind: "builtin" },
 	{ id: "optimizers", label: "Optimizers", description: "Configure and inspect managed optimization runs.", testId: "open-optimizers", kind: "managed", pluginId: "optimizers" },
 	{ id: "inventory", label: "Data", description: "Inspect local containers available to Workshop.", testId: "open-inventory", kind: "builtin" },
 	{ id: "inference", label: "Inference", description: "Inspect model runtime, Codex traces, usage, and requests.", testId: "open-inference", kind: "builtin" },

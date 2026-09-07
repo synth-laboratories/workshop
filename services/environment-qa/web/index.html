@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="qa-token" content="QA_SESSION_TOKEN"><title>Environment QA</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body><header><div><h1>Environment QA</h1><p>Review task quality · inspect evidence · resolve decisions</p></div><span class="badge">Prototype · no production certification</span></header>
+<div id="error" role="alert" hidden></div>
+<main><aside><h2>New QA run</h2><form id="create">
+<label>Task directory<input name="task_path" required placeholder="Absolute path to a Harbor task"></label>
+<input name="parent_id" type="hidden" value=""><small id="parent-label" hidden></small>
+<small id="roots"></small>
+<label>Quality charter<select name="charter"><option value="terminal-bench">Terminal-Bench validity</option><option value="reb-systems">Systems REB</option><option value="reb-visuals">VisualsBench</option></select></label>
+<label>Task goals<textarea name="task_goals" rows="3" maxlength="8000" placeholder="Additional goals and validity requirements"></textarea></label>
+<label>Profile<select name="profile_id"><option value="legacy">Legacy source/probe baseline</option></select></label>
+<label>Maximum provider charge ($)<input name="budget_usd" type="number" min="0" max="50" step="0.1" value="1"></label>
+<small id="allowance"></small>
+<label>Decision mode<select name="mode"><option value="automated">AI-only</option><option value="hitl">Human-assisted</option></select></label>
+<label class="check"><input name="probes" type="checkbox"> Run Harbor oracle, no-op and repeat-verifier probes</label>
+<small>Rules-only source review makes no provider calls. Optional Docker probes execute task code and can be slow. AI launch requires an advertised Codex runtime and authorized allowance.</small>
+<button type="submit">Run QA</button></form><h2>Runs</h2><label>Review queue<select id="run-filter"><option value="all">All runs</option><option value="pending">Needs my review</option><option value="hitl">Human-assisted runs</option></select></label><p id="queue-summary" role="status"></p><div id="runs" aria-label="QA runs"></div></aside>
+<section id="detail" aria-label="Selected QA run"><p>Select a run or submit a task.</p></section></main>
+<dialog id="source-dialog"><div class="row"><h2 id="source-title">Source evidence</h2><button id="close-source">Close</button></div><pre id="source-text"></pre></dialog>
+</body></html>

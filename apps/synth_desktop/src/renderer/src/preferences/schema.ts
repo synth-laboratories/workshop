@@ -7,7 +7,7 @@
 
 export const PREFERENCES_STORAGE_KEY = "synth.preferences.v1";
 export const PREFERENCES_SCHEMA_VERSION = 6 as const;
-export const DEFAULT_VISIBLE_PLUGIN_IDS = ["visuals", "experiments", "inventory", "inference"] as const;
+export const DEFAULT_VISIBLE_PLUGIN_IDS = ["visuals", "experiments", "environment-qa", "inventory", "inference"] as const;
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ToolActivityMode = "detailed" | "grouped" | "compact";

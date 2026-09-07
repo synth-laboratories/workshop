@@ -179,6 +179,7 @@ export default function App() {
 						reportsActive={c.view.kind === "reports"}
 						experimentsActive={c.view.kind === "experiments"}
 						optimizersActive={c.view.kind === "optimizers"}
+						environmentQaActive={c.view.kind === "environment-qa"}
 						computerUseActive={c.view.kind === "computer-use"}
 						visiblePluginIds={c.preferences.navigation.visiblePluginIds}
 						workingChatIds={c.workingChatIds}
@@ -225,6 +226,7 @@ export default function App() {
 						onOpenReports={() => c.setView({ kind: "reports" })}
 						onOpenExperiments={() => c.setView({ kind: "experiments" })}
 						onOpenOptimizers={() => c.setView({ kind: "optimizers" })}
+						onOpenEnvironmentQa={() => c.setView({ kind: "environment-qa" })}
 						onOpenComputerUse={() => c.setView({ kind: "computer-use" })}
 						onOpenPlugins={() => c.setView({ kind: "plugins" })}
 						onSearch={c.openSearch}
