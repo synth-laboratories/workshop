@@ -57,7 +57,7 @@ function EvaluationReviewDialog({ evaluation, onClose }: { evaluation: Evaluatio
         catch (error) { setEvidenceError(error instanceof Error ? error.message : String(error)); }
     };
     const openTrace = async (digest: string) => {
-        try { const visual = await openTraceReference(digest); window.dispatchEvent(new CustomEvent(VISUAL_REFERENCE_OPENED_EVENT, {detail: visual})); }
+        try { const visual = await openTraceReference(digest); onClose(); window.dispatchEvent(new CustomEvent(VISUAL_REFERENCE_OPENED_EVENT, {detail: visual})); }
         catch (error) { setEvidenceError(error instanceof Error ? error.message : String(error)); }
     };
 
