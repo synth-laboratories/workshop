@@ -113,15 +113,15 @@ pub struct LagunaStatus {
     pub backend: Option<String>,
     pub loaded_model: Option<String>,
     pub detail: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub memory_bytes: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub idle_seconds: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub idle_unload_after_seconds: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub last_used_at: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub free_at: Option<u64>,
     #[specta(type = specta_typescript::Number)]
     pub updated_at: u64,
@@ -162,11 +162,11 @@ pub struct LagunaGeneration {
     pub started_at: Option<f64>,
     pub first_token_at: Option<f64>,
     pub last_token_at: Option<f64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub prompt_tokens: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub cached_tokens: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub output_tokens: Option<u64>,
     pub cache_hit_ratio: Option<f64>,
     pub prefill_tokens_per_second: Option<f64>,
@@ -179,18 +179,18 @@ pub struct LagunaGeneration {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LagunaRollingStats {
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub requests_completed: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub requests_failed: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub requests_cancelled: Option<u64>,
     pub last_failure_reason: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub input_tokens: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub output_tokens: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub cached_tokens: Option<u64>,
     pub ttft_p50_ms: Option<f64>,
     pub ttft_p95_ms: Option<f64>,
@@ -207,7 +207,7 @@ pub struct LagunaRollingStats {
 pub struct LagunaInference {
     pub model: Option<String>,
     pub resident: bool,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub resident_bytes: Option<u64>,
     pub queue_depth: Option<u32>,
     pub queue_capacity: Option<u32>,

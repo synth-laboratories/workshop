@@ -1,3 +1,4 @@
+import { runtimeStorage } from "../preferences/runtimeStorage";
 // @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 /**
  * Wave 3c — desktop app controller.
@@ -81,8 +82,7 @@ import {
 	canStartNewTurn,
 	installModelCatalog,
 	isOpenRouterCatalogTarget,
-	modelCatalog,
-	targetOptionForId
+	modelCatalog
 } from "../runtime/modelCatalog";
 import {
 	planComposerSend,
@@ -101,6 +101,7 @@ import {
 	applyPreferencesToDocument,
 	loadPreferences,
 	normalizeLayoutSnapshot,
+	normalizePreferences,
 	preferencesAdapter,
 	renameConversation,
 	saveLayout,
@@ -217,7 +218,7 @@ export function useAppController() {
 	const [, setApprovalMode] = useState<ApprovalMode>(() => loadPreferences().approvalMode);
 	const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>(() => loadPreferences().approvalPolicy);
 	const [sandboxMode, setSandboxMode] = useState<SandboxMode>(() => loadPreferences().sandboxMode);
-	const [modelKnobValues, setModelKnobValues] = useState(() => loadModelKnobValues(window.localStorage));
+	const [modelKnobValues, setModelKnobValues] = useState(() => loadModelKnobValues(runtimeStorage));
 	const selectModelKnob = useCallback((targetId: string, knobId: string, value: ModelKnobTransportValue) => {
 		const knob = modelKnobForTarget(targetId, knobId);
 		if (!knob || !knob.options.some((option) => option.transportValue === value)) return;
@@ -225,12 +226,19 @@ export function useAppController() {
 			...current,
 			[modelKnobKey(targetId, knobId)]: value
 		}));
-		window.localStorage.setItem(knob.storageKey, value);
+		runtimeStorage.setItem(knob.storageKey, value);
 	}, []);
 
 	useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
 	const [downloadPaused, setDownloadPaused] = useState(false);
 	const [toast, setToast] = useState<string | null>(null);
+    useEffect(() => {
+        const refresh = () => setModelKnobValues(loadModelKnobValues(runtimeStorage));
+        const failed = (event: Event) => setToast(String((event as CustomEvent).detail));
+        window.addEventListener("workshop:state-changed", refresh);
+        window.addEventListener("workshop:state-error", failed);
+        return () => { window.removeEventListener("workshop:state-changed", refresh); window.removeEventListener("workshop:state-error", failed); };
+    }, []);
 	const [view, setView] = useState<MainView>(() => {
 		const selected = loadPreferences().layout.last.selectedConversationId;
 		return selected ? { kind: "chat", chatId: selected } : { kind: "landing" };
@@ -444,7 +452,7 @@ export function useAppController() {
 			const effort = defaultPreference.effort as ModelKnobTransportValue;
 			if (knob?.options.some((option) => option.transportValue === effort)) {
 				setModelKnobValues((current) => ({ ...current, [modelKnobKey(targetId, "reasoning")]: effort }));
-				window.localStorage.setItem(knob.storageKey, effort);
+				runtimeStorage.setItem(knob.storageKey, effort);
 			}
 		}
 		defaultModelResolvedRef.current = true;
@@ -467,8 +475,9 @@ export function useAppController() {
 			return { approvalPolicy, sandboxMode };
 		}
 		const stored = await bridges.config.getDesktopPermissions();
-		setPreferences(setPermissionPreferences(stored.approvalPolicy, stored.sandboxMode));
-		return { approvalPolicy: stored.approvalPolicy, sandboxMode: stored.sandboxMode };
+		const normalized = normalizePreferences({ ...loadPreferences(), approvalPolicy: stored.approvalPolicy, sandboxMode: stored.sandboxMode });
+		setPreferences(setPermissionPreferences(normalized.approvalPolicy, normalized.sandboxMode));
+		return { approvalPolicy: normalized.approvalPolicy, sandboxMode: normalized.sandboxMode };
 	}, [approvalPolicy, isDesktop, sandboxMode]);
 
 	useEffect(() => {
@@ -709,6 +718,7 @@ export function useAppController() {
 			setCodexOauthConfigured(false);
 			setCodexOauthStatus({
 				state: "expired", action: "reauthenticate", canUseModels: false, configured: true,
+                accountHint: null, lastRefresh: null, expiresAt: null,
 				guidance: "Please sign in with ChatGPT to continue using this model."
 			});
 			setCodexUsage(null);
@@ -1556,6 +1566,7 @@ export function useAppController() {
 			if (visualId) reconcileOpenVisual(visualId);
 		};
 		const unlisten = bridges.visuals.onEvent((event) => {
+            const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload) ? event.payload as Record<string, unknown> : {};
 			// Visual events are durable CoreRuntime session events, but Codex's
 			// provider bridge intentionally projects only provider traffic. Fold the
 			// visual lane into the active session store as it arrives so a visual
@@ -1567,13 +1578,13 @@ export function useAppController() {
 				if (runtimeEvent) dispatchRuntimeEvent(runtimeEvent, { updateStatus: false });
 			}
 			const visualId =
-				typeof event.payload?.visualId === "string" ? event.payload.visualId : null;
+				typeof payload?.visualId === "string" ? payload.visualId : null;
 			if (!visualId) return;
-			const eventRevision = typeof event.payload?.revision === "number" ? event.payload.revision : -1;
+			const eventRevision = typeof payload?.revision === "number" ? payload.revision : -1;
 			if (event.kind === "visual.show") {
 				const owner =
-					typeof event.payload?.ownerSessionId === "string"
-						? event.payload.ownerSessionId
+					typeof payload?.ownerSessionId === "string"
+						? payload.ownerSessionId
 						: typeof event.sessionId === "string"
 							? event.sessionId
 							: null;
@@ -1581,7 +1592,7 @@ export function useAppController() {
 				openArtifactByViewRef.current[ownerViewKey] = visualId;
 				openArtifactByViewRef.current.window = visualId;
 				if (owner && owner !== activeSessionIdRef.current) {
-					if (event.payload?.foregroundOwner !== true) return;
+					if (payload?.foregroundOwner !== true) return;
 					if (!sessionsRef.current.some((session) => session.id === owner)) {
 						showToast(`Cannot foreground unknown conversation ${owner}`);
 						return;
@@ -1693,7 +1704,7 @@ export function useAppController() {
 					return session;
 				}
 				const session = target.kind === "intern" && nativeIntern
-					? await nativeIntern.createSession({ target, objective: internObjective!, title, projectId: null })
+					? await nativeIntern.createSession({ target, objective: internObjective!, title: title ?? null, projectId: null })
 					: await browserRuntimeClient.createSession(target, title, internObjective);
 				await refreshSessions();
 				if (sessionIsLocalChat(session)) {
@@ -1986,7 +1997,7 @@ export function useAppController() {
 								(event.eventKind === "approval.granted"
 									|| event.eventKind === "approval.rejected"
 									|| event.eventKind === "approval.expired")
-								&& event.payload?.approvalId === approvalId
+								&& payload?.approvalId === approvalId
 							);
 							if (alreadyProjected) return;
 							const sequence = allocateNativeSequence(activeSessionId);

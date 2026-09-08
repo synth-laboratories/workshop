@@ -164,6 +164,7 @@ async function scanPage(state, rootSelector = "body") {
         if (type === "radio") return "radio";
         return "textbox";
       }
+      if (tag === "output") return "status";
       if (tag === "li") return "listitem";
       if (tag === "p") return "paragraph";
       return "";
@@ -191,7 +192,7 @@ async function scanPage(state, rootSelector = "body") {
       return parts.join(" > ");
     };
     const rows = [];
-    for (const el of root.querySelectorAll("[role],h1,h2,h3,h4,h5,h6,a[href],button,input,textarea,select,p,li")) {
+    for (const el of root.querySelectorAll("[role],h1,h2,h3,h4,h5,h6,a[href],button,input,textarea,select,output,p,li")) {
       if (!visible(el)) continue;
       const role = el.getAttribute("role") || implicitRole(el);
       const name = nameOf(el, role).slice(0, 500);
@@ -395,3 +396,6 @@ async function shutdown() {
 }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
+
+// The runtime owns stdin. A crashed owner must not leave Chromium behind.
+input.on("close", shutdown);

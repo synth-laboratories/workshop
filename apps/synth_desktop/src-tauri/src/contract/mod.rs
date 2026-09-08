@@ -1,10 +1,12 @@
-//! Interlanguage boundary (Wave 2).
+//! Public contract projections and the generated desktop boundary.
 //!
-//! Hand-maintained name constants remain until full tauri-specta migration.
-//! Specta scaffolding lives in [`specta`] — one seed command is exported to
-//! `src/renderer/src/generated/protocol.ts` while `generate_handler!` still
-//! owns invoke registration for the full command set.
+//! [`specta`] owns live Tauri registration and TypeScript exports. Migrated
+//! domain operations project their MCP schemas through [`capabilities`].
+//! Hand-maintained names remain explicitly inventoried until migrated.
 
+pub mod capabilities;
+pub mod desktop_dispatch;
+pub mod desktop_policy;
 pub mod commands;
 pub mod events;
 pub mod runtimes;

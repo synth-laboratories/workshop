@@ -192,6 +192,10 @@ launch_installed() {
 
 verify_desktop() {
   cd "$ROOT"
+  python3 scripts/generate-workshop-dispatch.py --check
+  node scripts/generate-workshop-schemas.mjs --check
+  node scripts/generate-desktop-preferences.mjs --check
+  python3 scripts/capability-inventory.py --check
 	enable_rust_cache
 	run_renderer_typecheck
   cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml

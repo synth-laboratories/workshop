@@ -92,7 +92,7 @@ pub struct InternSessionWire {
     pub created_at: String,
     pub updated_at: String,
     pub status: String,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub state_generation: Option<i64>,
     #[specta(type = specta_typescript::Number)]
     pub latest_cursor: i64,

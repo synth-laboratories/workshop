@@ -23,7 +23,7 @@ pub struct GepaCandidate {
     #[serde(default)]
     pub parent_id: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub generation: Option<u64>,
     #[serde(default)]
     pub source: Option<String>,
@@ -36,7 +36,7 @@ pub struct GepaCandidate {
     #[specta(type = specta_typescript::Unknown)]
     pub values: Value,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub proposal_index: Option<u64>,
     #[serde(default)]
     pub heldout_reward: Option<f64>,
@@ -66,13 +66,13 @@ pub struct GepaProjection {
     pub rollouts_scored: u64,
     #[specta(type = specta_typescript::Number)]
     pub rollouts_failed: u64,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub proposals_requested: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub proposals_returned: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub max_active_workers: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub rollout_budget: Option<u64>,
     /// Durable, bounded summaries used by the live visual. These are not raw
     /// traces; the journal remains the authority for full inspection.

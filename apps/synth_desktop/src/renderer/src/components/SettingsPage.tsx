@@ -22,6 +22,7 @@ import { VoiceRecognitionSettings } from "./VoiceRecognitionSettings";
 import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
 import { AccountPage } from "./AccountPage";
 import { GeneralPreferencesSettings } from "./GeneralPreferencesSettings";
+import { AgentHostingPanel } from "./AgentHostingPanel";
 import { SettingsCard } from "./SettingsCard";
 import { RuntimeContractRows } from "./RuntimeContractRows";
 import type { DesktopPreferences } from "../preferences";
@@ -554,7 +555,7 @@ export function SettingsPage({
 							</SettingsCard>
 						</div>
 					) : null}
-					{section === "context" ? <ContextSettings subagents={<MultiAgentModelSettings />} /> : null}
+					{section === "context" ? <div className="settings-sections"><ContextSettings subagents={<MultiAgentModelSettings />} /><AgentHostingPanel /></div> : null}
 					{section === "inference" ? (
 						<div className="settings-sections" data-testid="settings-inference">
 							<InferenceSettings />
@@ -611,6 +612,8 @@ export function SettingsPage({
 										</button>
 									) : null}
 									<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? "Local-first research workbench"}</code>
+									<span className="finetune-meta">Data root</span>
+									<code className="finetune-file">{desktopIdentity?.dataRoot ?? "Unavailable"}</code>
 									<RuntimeContractRows />
 								</div>
 								<p className="settings-runtime-copy">

@@ -235,7 +235,7 @@ pub struct SavedLoraStorage {
     pub version: Option<String>,
     pub etag: Option<String>,
     pub sha256: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub size_bytes: Option<u64>,
     pub content_type: String,
 }
@@ -273,7 +273,7 @@ pub struct SavedLoraCheckpoint {
     pub optimizer_algorithm: Option<String>,
     pub base_model: String,
     pub lora_rank: Option<i32>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub step: Option<u64>,
     pub status: String,
     pub storage: SavedLoraStorage,
@@ -405,9 +405,9 @@ pub struct SavedLoraCheckpointQuery {
     pub optimizer_algorithm: Option<String>,
     pub status: Option<String>,
     pub tags: Option<Vec<String>>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub limit: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub offset: Option<u64>,
 }
 
@@ -436,7 +436,7 @@ pub struct SavedLoraDownload {
     #[specta(type = specta_typescript::Number)]
     pub expires_in: u64,
     pub content_type: String,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub size_bytes: Option<u64>,
     pub sha256: Option<String>,
 }
@@ -661,7 +661,7 @@ pub struct OptimizerRunArtifact {
     #[serde(default)]
     pub media_type: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub byte_size: Option<u64>,
     #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
@@ -863,9 +863,9 @@ pub struct OptimizerQuery {
     pub source: Option<String>,
     pub search: Option<String>,
     pub session_ref: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub limit: Option<i64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub offset: Option<i64>,
 }
 
@@ -922,7 +922,7 @@ pub struct OptimizerImportLocalRequest {
 pub struct OptimizerReconcileRequest {
     pub optimizer_run_id: String,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub after_seq: Option<u64>,
     #[serde(default)]
     pub open_visual: Option<bool>,
@@ -979,16 +979,16 @@ pub struct OptimizerRecipeRunRequest {
 #[serde(rename_all = "camelCase")]
 pub struct OptimizerSearchOverrides {
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub proposals_per_generation: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub max_in_flight_candidates: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub policy_concurrency: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub rollout_concurrency: Option<i64>,
 }
 

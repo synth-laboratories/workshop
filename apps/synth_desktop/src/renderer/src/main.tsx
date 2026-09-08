@@ -1,3 +1,4 @@
+import { initializeRuntimeStorage } from "./preferences/runtimeStorage";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
@@ -94,8 +95,9 @@ void bridges.desktop.getInstanceDiagnostics().then((identity) => {
 	document.documentElement.dataset.desktopInstance = identity.name ?? "canonical";
 }).catch(() => undefined);
 
-createRoot(document.getElementById("root")!).render(
-	<StrictMode>
-		<App />
-	</StrictMode>
-);
+void initializeRuntimeStorage().then(() => {
+    createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
+}).catch((error) => {
+    const root = document.getElementById("root");
+    if (root) root.textContent = `Workshop could not load desktop state: ${String(error)}. Restart the desktop to retry.`;
+});

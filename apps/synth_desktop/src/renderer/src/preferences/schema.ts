@@ -1,7 +1,7 @@
 /**
  * Canonical desktop UI preferences (Poolside polish pass).
  *
- * One durable source: `synth.preferences.v1` in localStorage, normalized on every
+ * One durable source: `synth.preferences.v1` in runtime storage (localStorage in browser preview), normalized on every
  * read. Legacy keys migrate in once and are left in place for older readers.
  */
 

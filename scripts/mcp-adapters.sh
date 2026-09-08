@@ -4,6 +4,7 @@
 # build, bundle-copy, and signing loops cannot drift apart.
 # shellcheck shell=bash
 SYNTH_MCP_ADAPTERS=(
+  workshop
   synth-containers-mcp
   synth-visuals-mcp
   synth-optimizers-mcp
@@ -14,5 +15,7 @@ SYNTH_MCP_ADAPTERS=(
   synth-session-mcp
   synth-traces-mcp
   synth-annotations-mcp
+  synth-human-annotations-mcp
+  synth-secrets-mcp
   synth-diagnostics-mcp
 )

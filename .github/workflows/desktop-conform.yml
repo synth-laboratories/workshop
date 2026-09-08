@@ -27,3 +27,8 @@ jobs:
       - name: Reject new app.css style literals
         working-directory: apps/synth_desktop
         run: npm run lint:app-css
+
+      - name: Check authoritative Workshop registrations
+        run: |
+          python3 scripts/generate-workshop-dispatch.py --check
+          python3 scripts/capability-inventory.py --check

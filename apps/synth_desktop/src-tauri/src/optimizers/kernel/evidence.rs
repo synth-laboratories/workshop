@@ -103,16 +103,16 @@ pub struct UsageCompleteness {
     #[serde(default)]
     pub cost_usd: Option<f64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub calls: Option<u64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub prompt_tokens: Option<u64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub completion_tokens: Option<u64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub steps: Option<u64>,
 }
 

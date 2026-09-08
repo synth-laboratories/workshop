@@ -99,13 +99,13 @@ pub struct CloudAllowance {
     /// `None` means the backend does not meter this account in dollars. The UI
     /// must then show no dollar figure at all.
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub limit_cents: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub used_cents: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub remaining_cents: Option<i64>,
     #[serde(default)]
     pub resets_at: Option<String>,

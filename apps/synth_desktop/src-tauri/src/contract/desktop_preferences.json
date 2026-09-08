@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 6,
+  "appearance": {
+    "theme": "system",
+    "chatFontSize": 14,
+    "codeFontFamily": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    "codeFontSize": 12,
+    "terminalFontFamily": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    "terminalFontSize": 12,
+    "showMascot": false
+  },
+  "submission": {
+    "activeEnterAction": "enqueue"
+  },
+  "toolActivity": {
+    "mode": "grouped"
+  },
+  "agentContext": {
+    "autoCompactTokenLimits": {
+      "lagunaXs": 150000,
+      "lagunaS": 250000,
+      "luna": 250000
+    }
+  },
+  "navigation": {
+    "visiblePluginIds": [
+      "visuals",
+      "experiments",
+      "environment-qa",
+      "inventory",
+      "inference"
+    ]
+  },
+  "layout": {
+    "last": {
+      "sidebarVisible": true,
+      "sidebarWidth": 260,
+      "outputPaneVisible": false,
+      "outputPaneWidth": 720,
+      "visualsListWidth": 320,
+      "bottomPanelVisible": false,
+      "bottomPanelHeight": 220,
+      "selectedConversationId": null,
+      "selectedOutputTab": null,
+      "optimizers": {
+        "selectedRunId": null
+      }
+    },
+    "default": {
+      "sidebarVisible": true,
+      "sidebarWidth": 260,
+      "outputPaneVisible": false,
+      "outputPaneWidth": 720,
+      "visualsListWidth": 320,
+      "bottomPanelVisible": false,
+      "bottomPanelHeight": 220,
+      "selectedConversationId": null,
+      "selectedOutputTab": null,
+      "optimizers": {
+        "selectedRunId": null
+      }
+    }
+  },
+  "conversations": {},
+  "promptQueue": [],
+  "unreadCompletedChats": [],
+  "approvalMode": "ask",
+  "approvalPolicy": "untrusted",
+  "sandboxMode": "workspace-write"
+}

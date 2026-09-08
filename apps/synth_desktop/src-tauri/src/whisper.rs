@@ -274,13 +274,13 @@ impl crate::services::ManagedService for WhisperManager {
 pub struct WhisperRuntimeStatus {
     pub phase: String,
     pub loaded_model: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub idle_seconds: Option<u64>,
     #[specta(type = specta_typescript::Number)]
     pub idle_unload_after_seconds: u64,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub last_used_at: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub free_at: Option<u64>,
     #[specta(type = specta_typescript::Number)]
     pub updated_at: u64,
@@ -364,7 +364,7 @@ pub struct WhisperModelHit {
     pub multilingual: bool,
     #[specta(type = specta_typescript::Number)]
     pub download_bytes: u64,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub installed_bytes: Option<u64>,
     pub path: Option<String>,
     pub selected: bool,

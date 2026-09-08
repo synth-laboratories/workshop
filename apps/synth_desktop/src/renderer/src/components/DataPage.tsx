@@ -1,3 +1,4 @@
+import { runtimeStorage } from "../preferences/runtimeStorage";
 // @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UsagePanel } from "./UsagePanel";
@@ -98,10 +99,21 @@ export function DataPage({
 	const goneSinceRef = useRef(new Map<string, number>());
 	const [archivedContainerIds, setArchivedContainerIds] = useState<Set<string>>(() => {
 		try {
-			const saved = JSON.parse(window.localStorage.getItem("synth.archivedContainerIds") ?? "[]");
+			const saved = JSON.parse(runtimeStorage.getItem("synth.archivedContainerIds") ?? "[]");
 			return new Set(Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : []);
 		} catch { return new Set(); }
 	});
+
+    useEffect(() => {
+        const refresh = () => {
+            try {
+                const saved: unknown = JSON.parse(runtimeStorage.getItem("synth.archivedContainerIds") ?? "[]");
+                setArchivedContainerIds(new Set(Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : []));
+            } catch { /* Leave the last valid projection visible. */ }
+        };
+        window.addEventListener("workshop:state-changed", refresh);
+        return () => window.removeEventListener("workshop:state-changed", refresh);
+    }, []);
 	const [traces, setTraces] = useState<TraceV5Record[]>([]);
 	const [usage, setUsage] = useState<UsageLedgerEntry[]>([]);
 	const codexSessionCount = useMemo(() => sessions.filter((session) => session.metadata?.runtime === "codex-app-server").length, [sessions]);
@@ -219,7 +231,7 @@ export function DataPage({
 				}
 				const changed = next.size !== current.size || [...next].some((id) => !current.has(id));
 				if (!changed) return current;
-				window.localStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
+				runtimeStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
 				return next;
 			});
 		};
@@ -239,7 +251,7 @@ export function DataPage({
 					goneSinceRef.current.delete(result.id);
 					setArchivedContainerIds((current) => {
 						const next = new Set(current); next.delete(result.id);
-						window.localStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
+						runtimeStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
 						return next;
 					});
 				}
@@ -258,10 +270,10 @@ export function DataPage({
 			const attached = await bridges.inventory?.registerContainer({ name: attachName, baseUrl: attachUrl, location: "local" });
 			if (attached) setArchivedContainerIds((current) => {
 				const next = new Set(current); next.delete(attached.id);
-				window.localStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
+				runtimeStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
 				return next;
 			});
-			const liveEval = attached?.metadata?.liveEval as { templateId?: string; family?: string } | undefined;
+			const liveEval = (attached?.metadata as Record<string, unknown> | undefined)?.liveEval as { templateId?: string; family?: string } | undefined;
 			if (attached && liveEval?.templateId && bridges.visuals) {
 				const visual = await bridges.visuals.create({
 					templateId: liveEval.templateId,
@@ -394,7 +406,7 @@ export function DataPage({
 						<ul className="ws-list">
 							{archivedContainers.map((container) => <li key={container.id} className="ws-item">
 								<div className="ws-item-main"><strong className="ws-item-title">{container.name}</strong><span className="ws-item-meta"><span className="ws-dot ws-dot-danger" aria-hidden="true" />known gone · {container.baseUrl}</span></div>
-								<button type="button" className="ws-btn ws-btn-secondary ws-btn-small" onClick={() => { setArchivedContainerIds((current) => { const next = new Set(current); next.delete(container.id); window.localStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next])); return next; }); void probe(container.id); }}>Retry</button>
+								<button type="button" className="ws-btn ws-btn-secondary ws-btn-small" onClick={() => { setArchivedContainerIds((current) => { const next = new Set(current); next.delete(container.id); runtimeStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next])); return next; }); void probe(container.id); }}>Retry</button>
 							</li>)}
 						</ul>
 					</details> : null}

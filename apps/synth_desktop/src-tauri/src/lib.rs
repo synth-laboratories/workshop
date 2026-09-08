@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 mod account;
 mod account_cloud;
 pub mod browser;
@@ -15,7 +16,7 @@ pub mod intern_protocol_test_support {
         SyncCreateRequest,
     };
 }
-mod adapters;
+pub mod adapters;
 mod annotations_ipc;
 mod codex;
 mod codex_oauth;
@@ -3080,10 +3081,12 @@ fn visuals_templates_list(
     state: State<'_, Arc<CoreRuntime>>,
     genre: Option<String>,
 ) -> Result<Vec<TemplateMeta>, AppError> {
-    state
-        .visuals()
-        .list_templates(genre.as_deref())
-        .map_err(AppError::from)
+    domains::visuals::operations::ListVisualTemplates::execute(
+        state.visuals(),
+        domains::visuals::operations::ListVisualTemplatesRequest { genre },
+    )
+    .map(|result| result.templates)
+    .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -5469,7 +5472,23 @@ pub fn run() {
     if crate::visuals::mermaid::hidden_mode_requested() {
         std::process::exit(crate::visuals::mermaid::run_hidden_mode());
     }
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(index) = args.iter().position(|arg| arg == "--workshop-data-root") {
+        let requested = args.get(index + 1).map(std::path::PathBuf::from);
+        let actual = crate::instance::data_root();
+        if !requested.as_ref().and_then(|path| path.canonicalize().ok())
+            .zip(actual.canonicalize().ok()).is_some_and(|(requested, actual)| requested == actual) {
+            eprintln!("Workshop runtime instance identity differs from the requested data root");
+            std::process::exit(crate::instance::EXIT_IDENTITY_REFUSED);
+        }
+    }
     crate::instance::install_boot_identity_and_lock();
+    let mut context = tauri::generate_context!();
+    if std::env::args().any(|arg| arg == "--workshop-runtime") {
+        for window in &mut context.config_mut().app.windows {
+            window.create = false;
+        }
+    }
     let specta = contract::specta::builder();
 
     tauri::Builder::default()
@@ -5494,10 +5513,12 @@ pub fn run() {
                     ),
                 }
             }
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = crate::platform::desktop_runtime::control(&handle, "attach").await {
+                    crate::platform::logging::report("lib", "desktop_attach", error.to_string());
+                }
+            });
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -5506,6 +5527,7 @@ pub fn run() {
         // behind through the transparent native titlebar. Wait until CSS and the
         // document have loaded so the custom titlebar is present on first reveal.
         .on_page_load(|webview, payload| {
+            if webview.label() == "main" { crate::platform::desktop_runtime::page_ready(matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)); }
             if webview.label() == "main"
                 && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
             {
@@ -5615,7 +5637,14 @@ pub fn run() {
                 broker.clone(),
                 approvals.clone(),
             ));
+            let acp = Arc::new(session::acp::Manager::new(core.clone(), app.handle().clone(), approvals.clone()));
+            acp.reconcile().map_err(|error| std::io::Error::other(format!("reconcile ACP agents: {error}")))?;
             let supervisor = Arc::new(services::ServiceSupervisor::new());
+            let browser = Arc::new(browser::operations::Manager::default());
+            supervisor.register(browser.clone());
+            app.manage(browser);
+            supervisor.register(acp.clone());
+            app.manage(acp);
             supervisor.register(laguna.clone());
             supervisor.register(optimizer_manager.clone());
             supervisor.register(Arc::new(optimizers::mlx_runtime::MlxRuntimeService::new()));
@@ -5738,9 +5767,15 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(specta.invoke_handler())
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building Synth Desktop")
         .run(|app, event| {
+            // A detached desktop is not a stopped runtime. Explicit exit(0)
+            // (Quit / runtime stop) still drains all managed services below.
+            if let RunEvent::ExitRequested { code: None, api, .. } = &event {
+                api.prevent_exit();
+                return;
+            }
             // macOS may advance from Command-Q to the terminal `Exit` event
             // without giving every plugin observer an `ExitRequested` callback.
             // Draining is idempotent, so cover both phases: a clean request

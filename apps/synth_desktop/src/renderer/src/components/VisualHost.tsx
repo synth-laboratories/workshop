@@ -1662,7 +1662,7 @@ class VisualErrorBoundary extends Component<
 				onRetry={() => this.setState((current) => ({ error: null, retry: current.retry + 1 }))}
 			/>;
 		}
-		return <div className="visual-host-boundary" key={this.state.retry}>{this.props.children}</div>;
+		return <div className="visual-host-boundary" data-visual-id={this.props.visualId ?? undefined} data-visual-revision={this.props.visualRevision ?? undefined} key={this.state.retry}>{this.props.children}</div>;
 	}
 }
 

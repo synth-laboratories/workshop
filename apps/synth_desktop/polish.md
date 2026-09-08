@@ -385,3 +385,17 @@ Pick from debt flags or CUA; log when done.
 - **Safety:** Reconciliation validates instance ID, PID start identity, and isolated process-group ownership before signaling. Sentinel, host, foreign-instance, and PID-reuse cases remain fail-closed.
 - **Tests:** Native Rust regressions model a second Workshop boot and prove Start leaves one replacement sidecar while Stop leaves zero processes and removes the lease. Existing process-group refusal and supervisor-drain tests remain the safety boundary. Packaged CUA restart verification is required before completion.
 - **Refs:** `src-tauri/src/optimizers/manager.rs`, `src-tauri/src/secrets/lease.rs`, `scripts/desktop-instance.sh`.
+### 2026-09-07 — External-agent visual presentation
+
+- **Implemented:** An external MCP client can create a shared visual without a hosted chat, request its focused library preview and native full screen, then capture real pixels. The shell and visual library consume one presentation intent; late responses cannot replace a newer requested visual. Missing targets surface an error. Focused previews fill the available canvas through the existing visual host boundary.
+- **Verification:** Typecheck and focused Playwright presentation/chart tests pass. A real named development instance passed MCP creation, revision-conflict, presentation and native capture checks. The full-screen PNG was inspected: the diagram is centered on the full-height canvas, with its toolbar visible and no clipped content. Its native receipt reports full screen and the requested visual revision. The test restores windowed mode.
+- **Limits:** The raw dev binary was unavailable to CUA; signed installed-app acceptance remains pending. Browser fixtures are UI tests only. No provider calls or Keychain operations were used.
+- **Refs:** `runtime/visualPresentation.ts`, `components/VisualsPage.tsx`, `styles/app.css`, `scripts/test-workshop-mcp.py`, and `docs/engineering/capability-migration-ledger.md`.
+
+
+## Hosted agents and attachable desktop (2026-09-07)
+
+- **Changed:** Settings → Context includes hosted ACP task creation, prompt sending, retained history, cancellation, explicit resume and one-time human permission controls. It uses existing Settings components and generated native commands.
+- **Runtime:** Closing/detaching a view leaves the instance owner available to MCP. Visual presentation and app capture can attach the view again. ACP tasks use real session/run records and the shared approval broker.
+- **Verification:** Native acceptance passed 339-tool discovery/schema checks, headless survival, ACP streaming, self-approval rejection, permission cancellation, replay and crash handling. Focused browser tests passed for the panel and visual routing. Provider-specific authenticated adapters and installed release packaging have not been certified.
+- **Refs:** `components/AgentHostingPanel.tsx`, `session/acp`, `platform/desktop_runtime.rs`, `scripts/test-workshop-runtime.py` and the capability migration ledger.

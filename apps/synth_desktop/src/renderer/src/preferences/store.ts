@@ -1,3 +1,4 @@
+import { runtimeStorage } from "./runtimeStorage";
 import {
 	DEFAULT_PREFERENCES,
 	migrateLegacyPreferences,
@@ -22,7 +23,7 @@ const listeners = new Set<Listener>();
 
 function storage(): Storage | null {
 	try {
-		return typeof window !== "undefined" ? window.localStorage : null;
+		return typeof window !== "undefined" ? runtimeStorage : null;
 	} catch {
 		return null;
 	}
@@ -316,4 +317,12 @@ export function preferencesAdapter() {
 		reset: resetPreferences,
 		storageKey: PREFERENCES_STORAGE_KEY
 	};
+}
+
+if (typeof window !== "undefined") {
+    window.addEventListener("workshop:state-changed", () => {
+        cached = null;
+        const next = loadPreferences();
+        for (const listener of listeners) listener(next);
+    });
 }

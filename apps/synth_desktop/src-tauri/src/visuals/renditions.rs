@@ -21,10 +21,10 @@ pub struct VisualRendition {
     pub media_type: String,
     pub renderer_version: String,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub width_px: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub height_px: Option<i64>,
     pub created_at: String,
 }
@@ -44,10 +44,10 @@ pub struct VisualAsset {
     pub digest: String,
     pub base64: String,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub width_px: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub height_px: Option<i64>,
 }
 

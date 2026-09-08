@@ -1,3 +1,4 @@
+import { runtimeStorage } from "../preferences/runtimeStorage";
 import { useCallback, useEffect, useState } from "react";
 import {
 	getPreferences,
@@ -40,19 +41,33 @@ export function useShellLayout(
 	setPreferences: (next: DesktopPreferences) => void
 ): ShellLayoutState {
 	const [sidePanelOpen, setSidePanelOpen] = useState(() => {
-		if (window.localStorage.getItem("synth.inferenceRailDefaultV2") !== "1") {
-			window.localStorage.setItem("synth.inferenceRailDefaultV2", "1");
-			window.localStorage.setItem("synth.inferenceRailOpen", "1");
+		if (runtimeStorage.getItem("synth.inferenceRailDefaultV2") !== "1") {
+			runtimeStorage.setItem("synth.inferenceRailDefaultV2", "1");
+			runtimeStorage.setItem("synth.inferenceRailOpen", "1");
 			return true;
 		}
-		return window.localStorage.getItem("synth.inferenceRailOpen") !== "0";
+		return runtimeStorage.getItem("synth.inferenceRailOpen") !== "0";
 	});
 	const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>("inference");
+    useEffect(() => {
+        const refresh = () => {
+            setSidePanelOpen(runtimeStorage.getItem("synth.inferenceRailOpen") !== "0");
+            const width = Number(runtimeStorage.getItem("synth.workbenchSidePanelWidth"));
+            if (width > 0) setSidePanelWidthState(width);
+            const layout = loadPreferences().layout.last;
+            setSidebarVisible(layout.sidebarVisible);
+            setSidebarWidth(layout.sidebarWidth);
+            setTerminalOpen(layout.bottomPanelVisible);
+            setInventoryContainerWidth(layout.outputPaneWidth);
+        };
+        window.addEventListener("workshop:state-changed", refresh);
+        return () => window.removeEventListener("workshop:state-changed", refresh);
+    }, []);
 	const [inventoryContainerWidth, setInventoryContainerWidth] = useState(
 		() => loadPreferences().layout.last.outputPaneWidth
 	);
 	const [sidePanelWidth, setSidePanelWidthState] = useState(() => {
-		const raw = window.localStorage.getItem("synth.workbenchSidePanelWidth");
+		const raw = runtimeStorage.getItem("synth.workbenchSidePanelWidth");
 		const stored = raw === null ? Number.NaN : Number(raw);
 		return Number.isFinite(stored) ? stored : 420;
 	});
@@ -89,7 +104,7 @@ export function useShellLayout(
 	const setSidePanelWidth = useCallback((width: number) => {
 		const next = fitSidePanelWidth(width);
 		setSidePanelWidthState(next);
-		window.localStorage.setItem("synth.workbenchSidePanelWidth", String(next));
+		runtimeStorage.setItem("synth.workbenchSidePanelWidth", String(next));
 	}, [fitSidePanelWidth]);
 
 	useEffect(() => {
