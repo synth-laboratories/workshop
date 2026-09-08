@@ -354,7 +354,7 @@ export default function App() {
 						setSandboxMode={c.setSandboxMode}
 						showToast={c.showToast}
                         ensureTrainingApprovalSession={async () => {
-                            const session = await c.createConversation("chatgpt-luna", "Training and evaluation", undefined, { deferNativeStart: true, preserveView: true });
+                            const session = await c.createConversation("local-laguna", "Training and evaluation", undefined, { preserveView: true });
                             return session.id;
                         }}
 						startOptimizerAgent={async (title, prompt) => {
