@@ -1421,12 +1421,9 @@ mod tests {
             assert!(prerequisites
                 .iter()
                 .any(|item| item.as_str() == Some("SYNTH_OPTIMIZERS_SFT_SERVICE_URL")));
-            assert!(prerequisites
-                .iter()
-                .any(|item| item.as_str() == Some("SYNTH_OPTIMIZERS_SFT_FIXTURE=1 for unpaid")));
         }
         let craftax = serde_json::to_string(&craftax_nemotron_recipe()).unwrap();
-        assert!(craftax.contains("127.0.0.1:8098"));
+        assert!(craftax.contains("Optional evaluation: registered digest-pinned checkpoint evaluator"));
         let banking = serde_json::to_string(&banking77_recipe()).unwrap();
         assert!(banking.contains("SYNTH_SFT_BANKING77_TRAIN_JSONL"));
         assert!(banking.contains("127.0.0.1:8110"));
