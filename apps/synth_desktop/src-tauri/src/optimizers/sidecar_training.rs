@@ -852,6 +852,12 @@ async fn watch_job(
             if sequence != cursor + 1 {
                 bail!("training event sequence gap after {cursor}: {sequence}");
             }
+            if event.get("kind").or_else(|| event.get("event_type")).and_then(Value::as_str) == Some("sft.child_eval.completed") {
+                if let Some(child) = event.pointer("/payload/eval_job_id").and_then(Value::as_str) {
+                    let public = SftOptimizerClient::from_env()?;
+                    service.import_checkpoint_evidence(&public, &run_id, child).await?;
+                }
+            }
             append_mapped_event(&service, &run_id, &algorithm, &event, sequence).await?;
             if event
                 .get("type")

@@ -153,3 +153,12 @@ fn descriptor_replacement_refreshes_retry_scope_without_exposing_credentials() {
     assert_ne!(running, client.breaker_arguments(&arguments));
     assert_eq!(arguments, serde_json::json!({"visual_id":"test"}));
 }
+
+#[test]
+fn operation_call_requires_explicit_instance_and_absolute_argument_file() {
+    assert!(parse(vec!["call".into(), "optimizers_list".into()]).is_err());
+    assert!(parse(vec!["call".into(), "optimizers_list".into(), "--data-root".into(), "/tmp/instance".into(), "--arguments-file".into(), "relative.json".into()]).is_err());
+    let args = parse(vec!["call".into(), "optimizers_list".into(), "--data-root".into(), "/tmp/instance".into(), "--arguments-file".into(), "/tmp/arguments.json".into()]).unwrap();
+    assert_eq!(args.operation.as_deref(), Some("optimizers_list"));
+    assert_eq!(args.arguments_file.as_deref(), Some(Path::new("/tmp/arguments.json")));
+}

@@ -892,6 +892,10 @@ async fn admit_hosted(
 
 
 pub(super) fn recoverable_observer_failure(run: &OptimizerRunRecord) -> bool {
+    if run.source == "hosted" && run.algorithm_id == "sft" && run.status == "failed_evidence"
+        && run.summary.get("trainingTransport").and_then(Value::as_str) == Some("public-sft.v1") {
+        return true;
+    }
     run.source == "hosted" && run.algorithm_id == "sft" && run.status == "failed"
         && run.error.as_ref().and_then(|error| error.get("source")).and_then(Value::as_str) == Some("sidecar-training")
         && run.error.as_ref().and_then(|error| error.get("message")).and_then(Value::as_str)
@@ -904,15 +908,16 @@ pub(super) async fn recover_observer(service: &OptimizerService, old: &Optimizer
     -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     anyhow::ensure!(recoverable_observer_failure(old), "run is not a recoverable observer failure");
     let client = SftOptimizerClient::from_env()?;
-    let remote = client.get_run(&old.id).await?;
-    anyhow::ensure!(remote.get("status").and_then(Value::as_str) == Some("paused"),
-                    "producer must acknowledge a safe paused checkpoint before observer recovery");
+    let producer_id = old.summary.get("producerRunId").and_then(Value::as_str).unwrap_or(&old.id).to_string();
+    let remote = client.get_run(&producer_id).await?;
+    anyhow::ensure!(matches!(remote.get("status").and_then(Value::as_str), Some("paused" | "completed")),
+                    "producer must acknowledge a safe paused checkpoint or completion before observer recovery");
     let id = format!("{}_recovered", old.id);
     if let Ok(existing) = service.get(id.clone()).await { return Ok((existing, None)); }
     let mut summary = old.summary.clone();
     if let Some(object) = summary.as_object_mut() {
         object.remove("trainingCursor"); object.remove("hostedMirror");
-        object.insert("producerRunId".into(), json!(old.id));
+        object.insert("producerRunId".into(), json!(producer_id));
         object.insert("recoveredFrom".into(), json!(old.id));
         object.insert("trainingTransport".into(), json!("public-sft.v1"));
     }
@@ -1122,6 +1127,7 @@ async fn run_hosted_worker(
             .await
         {
             Ok(page) => {
+                import_page_checkpoint_evidence(&service, &client, &producer_id, &page).await?;
                 let page = page_for_mirror(page, &run_id, &producer_id);
                 consecutive_page_errors = 0;
                 ingest::ingest_event_page(&service, &run_id, "sft", &page, &mut upstream_cursor)
@@ -1156,14 +1162,10 @@ async fn run_hosted_worker(
             _ = sleep(Duration::from_millis(750)) => {}
         }
         if OptimizerRunStatus::str_is_terminal(status) {
-            ingest::ingest_event_page(
-                &service,
-                &run_id,
-                "sft",
-                &page_for_mirror(client.optimizer_events_after(&producer_id, upstream_cursor, 2_000).await?, &run_id, &producer_id),
-                &mut upstream_cursor,
-            )
-            .await?;
+            let page = client.optimizer_events_after(&producer_id, upstream_cursor, 2_000).await?;
+            import_page_checkpoint_evidence(&service, &client, &producer_id, &page).await?;
+            ingest::ingest_event_page(&service, &run_id, "sft",
+                &page_for_mirror(page, &run_id, &producer_id), &mut upstream_cursor).await?;
             persist_remote_terminal(
                 &service,
                 &run_id,
@@ -1174,6 +1176,18 @@ async fn run_hosted_worker(
             return Ok(());
         }
     }
+}
+
+async fn import_page_checkpoint_evidence(service: &OptimizerService, client: &SftOptimizerClient,
+    producer: &str, page: &Value) -> Result<()> {
+    for event in page["events"].as_array().into_iter().flatten() {
+        if event.get("kind").and_then(Value::as_str) == Some("sft.child_eval.completed") {
+            if let Some(child) = event.pointer("/payload/eval_job_id").and_then(Value::as_str) {
+                service.import_checkpoint_evidence(client, producer, child).await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn craftax_nemotron_config_toml(

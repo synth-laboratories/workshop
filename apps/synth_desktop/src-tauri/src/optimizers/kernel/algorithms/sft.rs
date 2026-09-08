@@ -63,6 +63,7 @@ impl SftProjection {
                 self.dataset_digest = payload
                     .get("dataset_digest")
                     .or_else(|| payload.get("digest"))
+                    .or_else(|| payload.pointer("/manifest/digest"))
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
                 self.phase = Some(RunPhase::Validating);
@@ -332,6 +333,14 @@ fn arm_rows(arm: Option<&Value>) -> Vec<&Value> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn public_dataset_manifest_supplies_authoritative_digest() {
+        let mut projection = super::SftProjection::default();
+        projection.apply(&committed("sft.dataset.validated", serde_json::json!({
+            "manifest":{"digest":"sha256:exact", "fingerprint_version":"training.examples.v2"}
+        }), 1)).unwrap();
+        assert_eq!(projection.settle().unwrap().dataset_digest.as_deref(), Some("sha256:exact"));
+    }
     use super::*;
     use crate::optimizers::kernel::sequences::ProducerEvent;
     use crate::optimizers::kernel::types::{ExecutionPlacement, PRODUCER_EVENT_SCHEMA_VERSION};

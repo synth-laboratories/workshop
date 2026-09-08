@@ -374,17 +374,16 @@ export function OptimizersPage({
 			return;
 		}
 		setError(null);
-		const [nextRuns, nextAlgorithms, nextRecipes] = await Promise.all([
-			bridges.optimizers.list({
-				search: search.trim() || undefined,
-				status: status === "all" ? undefined : status,
-				algorithmId: algorithm === "all" ? undefined : algorithm,
-				source: source === "all" ? undefined : source
-			}),
+		const nextRuns = await bridges.optimizers.list({
+                search: search.trim() || undefined, status: status === "all" ? undefined : status,
+                algorithmId: algorithm === "all" ? undefined : algorithm, source: source === "all" ? undefined : source
+            });
+        setRuns(nextRuns);
+        if (!selectedId && nextRuns[0]) setSelectedId(nextRuns[0].id);
+        const [nextAlgorithms, nextRecipes] = await Promise.all([
 			bridges.optimizers.listAlgorithms().catch(() => [] as OptimizerAlgorithmInfo[]),
 			bridges.optimizers.listRecipes(sessionRef ?? undefined).catch(() => [] as OptimizerRecipeInfo[])
 		]);
-		setRuns(nextRuns);
 		setAlgorithms(nextAlgorithms);
 		setEvalRecipes(nextRecipes.filter((recipe) => recipe.algorithmId === "eval"));
 		setHostedCispoRecipe(findHostedCispoRecipe(nextRecipes));

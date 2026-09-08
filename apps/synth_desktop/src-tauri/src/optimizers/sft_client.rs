@@ -35,6 +35,10 @@ impl SftOptimizerClient {
         self.get_json("/health").await
     }
 
+    pub(super) async fn checkpoint_evidence(&self, parent: &str, child: &str) -> Result<Value> {
+        self.post_json(&format!("/v1/runs/{parent}/child-evaluations/{child}/evidence"), json!({})).await
+    }
+
     pub(super) async fn renderer_profile(&self, model: &str) -> Result<Value> {
         self.post_json("/v1/renderer-profile", json!({"model_id": model})).await
     }

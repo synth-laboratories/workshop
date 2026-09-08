@@ -705,6 +705,32 @@ impl OptimizerService {
     /// already existed in the visuals IPC lane; nothing on the eval path ever
     /// invoked it, which is why a finished seed had frames on disk inside a
     /// container and nothing durable in Workshop.
+    pub(super) async fn import_checkpoint_evidence(&self, client: &super::sft_client::SftOptimizerClient,
+        parent: &str, child: &str) -> Result<()> {
+        use sha2::{Digest, Sha256};
+        anyhow::ensure!(child.starts_with("eval_") && child.len() == 37 && child[5..].chars().all(|c| c.is_ascii_hexdigit()), "invalid child evaluation identity");
+        let evidence = client.checkpoint_evidence(parent, child).await?;
+        anyhow::ensure!(evidence["parent_run_id"] == parent && evidence["eval_job_id"] == child, "checkpoint evidence ownership mismatch");
+        let allowed = self.manager.home().join("eval/runs").join(child).canonicalize()
+            .context("checkpoint trace import currently requires retained local eval files")?;
+        let data = crate::data::DataStore::new(self.db.clone(), self.visuals.content().clone());
+        for reference in evidence["traces"].as_array().context("checkpoint evidence omitted traces")? {
+            let path = std::path::PathBuf::from(reference["path"].as_str().context("trace path missing")?).canonicalize()?;
+            anyhow::ensure!(path.starts_with(&allowed), "checkpoint trace is outside its retained child job");
+            anyhow::ensure!(path.metadata()?.len() <= 64 * 1024 * 1024, "checkpoint trace exceeds import byte limit");
+            let bytes = std::fs::read(&path)?;
+            let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+            anyhow::ensure!(reference["digest"] == digest, "checkpoint trace digest changed before import");
+            let (result, event) = data.ingest_trace_bundle(crate::trace_ingest::TraceBundleIngestRequest {
+                source_path: path.display().to_string(), source_kind: Some("checkpoint_evaluation".into()),
+                source_uri: Some(format!("eval:{child}")), title: Some(format!("{child} · {}", reference["trial_id"].as_str().unwrap_or("rollout"))), container_id: None,
+            }).await?;
+            anyhow::ensure!(result.trusted, "checkpoint trace failed the native trust boundary");
+            if let Some(event) = event { let _ = self.events_tx.send(event); }
+        }
+        Ok(())
+    }
+
     pub(super) async fn import_container_trace(
         &self,
         container_id: &str,
