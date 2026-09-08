@@ -1,5 +1,13 @@
 # Workshop
 
+Official downloads: [usesynth.ai/download](https://www.usesynth.ai/download).
+
+For an Apple Silicon source checkout, run `./scripts/install.sh`, then
+`./scripts/workshop.sh build-and-run`. This produces a separate ad-hoc signed
+Workshop Local app. Runtime staging validates the pinned dependencies; local
+builds are not official notarized distributions. `./scripts/install.sh --check`
+checks prerequisites without modifying local configuration.
+
 > **Visibility note:** This repository is currently **private**. It is intended to become **public**.
 
 Synth Desktop / Local Agent Workbench — a local-first agent research and development workbench where agents can run locally (Laguna XS 2.1) or in Synth Cloud (Intern sync/async), and where every run produces inspectable, replayable, quantitative, version-linked artifacts.

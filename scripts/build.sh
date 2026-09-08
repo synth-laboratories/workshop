@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-"$repo_root/scripts/doctor.sh"
+"$repo_root/scripts/install.sh" --check
 [[ -d node_modules ]] || npm ci
 npm run typecheck
 npm run build:graph

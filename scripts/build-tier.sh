@@ -44,6 +44,7 @@ if [[ -z "${SYNTH_MLX_RL_PROJECT_ROOT:-}" ]]; then
     fi
   done
 fi
+python3 "$ROOT/scripts/stage-trace-runtime.py" --containers "${SYNTH_CONTAINERS_PROJECT_ROOT:-$ROOT/../containers}"
 "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
 "$ROOT/scripts/stage-optimizer-runtime-distribution.sh"
 if [[ ! -x "$ROOT/services/victoria-logs/victoria-logs" ]]; then
