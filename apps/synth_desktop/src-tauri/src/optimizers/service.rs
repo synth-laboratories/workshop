@@ -868,6 +868,9 @@ impl OptimizerService {
             | super::sidecar_training::HOSTED_BANKING77_CISPO_RECIPE => {
                 super::cispo::start(self, request).await
             }
+            id if super::sidecar_training::is_hosted_cispo_recipe(id) => {
+                super::cispo::start(self, request).await
+            }
             id if super::eval_recipes::is_eval_recipe(id) => {
                 super::eval_recipes::start(self, request).await
             }

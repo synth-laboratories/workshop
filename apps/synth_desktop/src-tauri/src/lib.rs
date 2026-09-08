@@ -1244,12 +1244,13 @@ pub(crate) async fn authorize_optimizer_recipe_start(
             .find_map(|key| limits.get(key).and_then(Value::as_u64)),
         )
     };
-    if is_hosted_sft {
-        if let Some(value) = request.plan_override.as_ref().and_then(|value| value.pointer("/sft/maxCostUsd")) {
+    let requested_training_cap = if is_hosted_sft { "/sft/maxCostUsd" } else { "/cispo/maxCostUsd" };
+    if is_hosted_sft || algorithm_id == Some("cispo") {
+        if let Some(value) = request.plan_override.as_ref().and_then(|value| value.pointer(requested_training_cap)) {
             let cap = value.as_f64().filter(|cap| cap.is_finite() && *cap > 0.0)
-                .ok_or_else(|| AppError::from(anyhow::anyhow!("SFT maximum charge must be positive and finite")))?;
+                .ok_or_else(|| AppError::from(anyhow::anyhow!("Training maximum charge must be positive and finite")))?;
             if max_cost_usd.is_none_or(|ceiling| cap > ceiling) {
-                return Err(AppError::from(anyhow::anyhow!("SFT maximum charge exceeds the recipe ceiling")));
+                return Err(AppError::from(anyhow::anyhow!("Training maximum charge exceeds the recipe ceiling")));
             }
             max_cost_usd = Some(cap);
         }
