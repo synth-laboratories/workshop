@@ -249,8 +249,27 @@ pub(super) fn negotiate(
     templates: &[TemplateMeta],
 ) -> Result<EffectiveContract> {
     let declared = live_eval_declaration(metadata);
-    let declared_family = declaration_string(&declared, &["family", "taskFamily"]);
-    if let (Some(expected), Some(declared)) = (task_family, declared_family) {
+    let benchmark_family = declaration_string(
+        &declared,
+        &[
+            "benchmarkFamily",
+            "benchmark_family",
+            "taskFamily",
+            "task_family",
+        ],
+    );
+    let visual_family = declaration_string(&declared, &["family", "visualFamily", "visual_family"]);
+    if let (Some(expected), Some(declared)) = (task_family, benchmark_family) {
+        if !expected.eq_ignore_ascii_case(declared) {
+            return Err(refusal(
+                ContractRefusalCode::DeclarationContradiction,
+                "liveEval.benchmarkFamily",
+                format!("container row family {expected:?} contradicts declared benchmark family {declared:?}"),
+            ));
+        }
+    } else if let (Some(expected), Some(declared)) = (task_family, visual_family) {
+        // Legacy producers expose only their runtime family. Keep the existing
+        // producer-identity check until they declare a separate benchmark.
         if !expected.eq_ignore_ascii_case(declared)
             && !runtime_family_declaration_matches_benchmark(expected, declared, metadata)
         {
@@ -263,17 +282,18 @@ pub(super) fn negotiate(
             ));
         }
     }
-    // The benchmark identity is the useful family for experiment comparison.
-    // A Harbor producer may legitimately declare its generic visual/runtime
-    // family while its trusted producer identity binds the specific benchmark.
-    let family = task_family.or(declared_family).map(str::to_string);
+    // Comparison retains benchmark identity; template matching uses visual family.
+    let family = task_family
+        .or(benchmark_family)
+        .or(visual_family)
+        .map(str::to_string);
 
     let primary_visual = if let Some(id) = declaration_string(
         &declared,
         &["templateId", "template_id", "primaryTemplateId"],
     ) {
         declared_template("primary", id, templates)?
-    } else if let Some(family) = family.as_deref() {
+    } else if let Some(family) = visual_family.or(family.as_deref()) {
         family_template(family, templates)?.unwrap_or_else(|| {
             fallback(
                 "primary",
@@ -512,5 +532,36 @@ mod tests {
         .unwrap_err();
         let refusal = error.downcast_ref::<ContractRefusal>().unwrap();
         assert_eq!(refusal.code, ContractRefusalCode::DeclarationContradiction);
+    }
+    #[test]
+    fn explicit_benchmark_identity_is_separate_from_visual_family() {
+        let mut available = templates();
+        available.push(template("live.harbor_eval.v1", "live", &["harbor"]));
+        let metadata = json!({"liveEval": {"benchmarkFamily": "runebench", "family": "harbor"}});
+        let contract = negotiate(
+            "run-1",
+            "container-1",
+            Some("runebench"),
+            &metadata,
+            &available,
+        )
+        .unwrap();
+        assert_eq!(contract.family.as_deref(), Some("runebench"));
+        assert_eq!(
+            contract.primary_visual.template_id.as_deref(),
+            Some("live.harbor_eval.v1")
+        );
+        let error = negotiate(
+            "run-1",
+            "container-1",
+            Some("healthbench"),
+            &metadata,
+            &available,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<ContractRefusal>().unwrap().code,
+            ContractRefusalCode::DeclarationContradiction
+        );
     }
 }
