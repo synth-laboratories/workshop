@@ -61,8 +61,8 @@ WORKTREE="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' 
 WORKTREE_HASH="$(printf '%s' "$WORKTREE" | shasum -a 256 | awk '{print substr($1,1,8)}')"
 DEFAULT_NAME="codex-$WORKTREE_HASH"
 NAME="${NAME:-$DEFAULT_NAME}"
-RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.9}"
-APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.9.7}"
+RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.10}"
+APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.10.0}"
 BOOT_EPOCH="inst_$(uuidgen | tr -d '-' | tr '[:upper:]' '[:lower:]')"
 PROCESS_START_TIME="$(ps -p $$ -o lstart= | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 

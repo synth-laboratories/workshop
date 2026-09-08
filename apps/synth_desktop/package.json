@@ -1,6 +1,6 @@
 {
   "name": "@synth/synth-desktop",
-  "version": "0.9.7",
+  "version": "0.10.0",
   "private": true,
   "description": "Synth Workshop \u2014 local-first research engineering workbench",
   "type": "module",
