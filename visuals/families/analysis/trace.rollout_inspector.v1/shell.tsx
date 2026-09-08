@@ -150,7 +150,10 @@ function CraftaxComparison({ summary }: { summary: CraftaxSummary }) {
   </section>;
 }
 function duration(items: InspectorItem[]): string {
-  const stamps = items.map((item) => Date.parse(item.occurred_at ?? "")).filter(Number.isFinite);
+  // Imported observations use the epoch as an unknown-time sentinel. Mixing
+  // that sentinel with a later evidence attachment invents decades of runtime.
+  const stamps = items.map((item) => Date.parse(item.occurred_at ?? ""));
+  if (stamps.some((stamp) => !Number.isFinite(stamp) || stamp <= 0)) return "—";
   if (stamps.length < 2) return "—";
   const seconds = Math.max(0, Math.round((Math.max(...stamps) - Math.min(...stamps)) / 1000));
   return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;

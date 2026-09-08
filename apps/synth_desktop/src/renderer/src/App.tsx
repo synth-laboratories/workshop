@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { formatTps } from "./components/InferencePanel";
 import { AppTitlebar, type TabCopyItem } from "./components/AppTitlebar";
+import { OperatorTrainingApproval } from "./components/OperatorTrainingApproval";
 import { AppOverlays } from "./components/AppOverlays";
 import { ComposerDock } from "./components/ComposerDock";
 import { ComposerLayoutProvider } from "./components/ComposerLayout";
@@ -184,6 +185,7 @@ export default function App() {
 	return (
 		<div className="app-shell">
 			<ManderLabGate />
+            <OperatorTrainingApproval eventsBySession={c.eventsBySession} onError={c.showToast} />
 			<div className="body-row">
 				{c.view.kind !== "settings" ? (
 					<Sidebar
@@ -353,6 +355,9 @@ export default function App() {
 						setApprovalPolicy={c.setApprovalPolicy}
 						setSandboxMode={c.setSandboxMode}
 						showToast={c.showToast}
+                        ensureTrainingApprovalSession={async () => {
+                            return `operator-training-${crypto.randomUUID()}`;
+                        }}
 						startOptimizerAgent={async (title, prompt) => {
 							// An optimizer setup is an ordinary product turn on the
 							// operator-selected target. Do not silently route a local

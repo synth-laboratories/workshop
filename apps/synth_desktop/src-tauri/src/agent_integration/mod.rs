@@ -17,6 +17,7 @@ pub const SKILL: &str =
 const INSTRUCTIONS: &str = "Workshop exposes the explicitly connected local instance's product operations, hosted agents, and shared visual library. Use runtime_status for attachment state, core_events_after for durable event cursors, and agent_backends_list before starting an ACP session. Human decisions and renderer evidence cannot be supplied by agents. Inspect existing visuals and registered template contracts before creating. Use returned visual IDs. Presenting requests display; observe the rendered revision and inspect a capture before claiming visual quality. Creation is not idempotent. Shared visual operations need no hosted session or provider credentials. The connected runtime's tool catalogue is authoritative; use only advertised operations.";
 
 const HELP: &str = "Workshop local agent integration (experimental)\n\n\
+  workshop call OPERATION --data-root PATH [--arguments-file PATH]\n\n\
   workshop doctor --data-root PATH\n\
   workshop connect codex|claude --data-root PATH [--config-root PATH]\n\
   workshop disconnect codex|claude --data-root PATH [--config-root PATH]\n\
@@ -39,6 +40,8 @@ struct Args {
     root: PathBuf,
     config_root: Option<PathBuf>,
     output: Option<PathBuf>,
+    operation: Option<String>,
+    arguments_file: Option<PathBuf>,
 }
 
 fn parse(args: Vec<String>) -> Result<Args> {
@@ -47,9 +50,10 @@ fn parse(args: Vec<String>) -> Result<Args> {
         .next()
         .context("a command is required; run workshop --help")?;
     anyhow::ensure!(
-        ["doctor", "connect", "disconnect", "mcp", "plugin", "runtime", "backends"].contains(&command.as_str()),
+        ["doctor", "connect", "disconnect", "mcp", "plugin", "runtime", "backends", "call"].contains(&command.as_str()),
         "unknown command; run workshop --help"
     );
+    let operation = if command == "call" { Some(iter.next().context("call requires a registered operation name")?) } else { None };
     let action = if command == "runtime" {
         let value = iter.next().context("choose start, status, attach, detach, or stop")?;
         anyhow::ensure!(["start", "status", "attach", "detach", "stop"].contains(&value.as_str()), "unknown runtime action");
@@ -68,11 +72,13 @@ fn parse(args: Vec<String>) -> Result<Args> {
     let mut root = None;
     let mut config_root = None;
     let mut output = None;
+    let mut arguments_file = None;
     while let Some(flag) = iter.next() {
         let destination = match flag.as_str() {
             "--data-root" => &mut root,
             "--config-root" if client.is_some() => &mut config_root,
             "--output" if command == "plugin" => &mut output,
+            "--arguments-file" if command == "call" => &mut arguments_file,
             _ => anyhow::bail!("unknown option: {flag}"),
         };
         anyhow::ensure!(destination.is_none(), "duplicate option: {flag}");
@@ -94,6 +100,8 @@ fn parse(args: Vec<String>) -> Result<Args> {
         root,
         config_root,
         output,
+        operation,
+        arguments_file,
     })
 }
 
@@ -106,6 +114,16 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let executable = std::env::current_exe()?.canonicalize()?;
     let client = RuntimeClient::new(args.root.clone())?;
     match args.command.as_str() {
+        "call" => {
+            let arguments: Value = match args.arguments_file {
+                Some(path) => serde_json::from_slice(&std::fs::read(path).context("read operation arguments")?)?,
+                None => json!({}),
+            };
+            anyhow::ensure!(arguments.is_object(), "operation arguments must be a JSON object");
+            let result = client.call(args.operation.as_deref().unwrap(), &arguments)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+
         "backends" => {
             println!("{}", serde_json::to_string_pretty(&backend_config::read(&args.root)?)?);
         }

@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { traceResearchClient } from "../runtime/traceResearch";
+import { openTraceReference, VISUAL_REFERENCE_OPENED_EVENT } from "../runtime/visualReferences";
 
 type EvaluationPoint = {
 	phase?: string;
@@ -39,6 +41,26 @@ function checkpointIdentity(point: EvaluationPoint): string {
 function EvaluationReviewDialog({ evaluation, onClose }: { evaluation: EvaluationPoint; onClose: () => void }) {
 	const closeRef = useRef<HTMLButtonElement>(null);
 	const identity = checkpointIdentity(evaluation);
+    const childId = (evaluation.detail as {childRunId?: string} | undefined)?.childRunId;
+    const [tracePage, setTracePage] = useState<{snapshotId: string; rows: Array<{trialId?: string; traceDigest?: string}>; resultIds: string[]} | null>(null);
+    const [source, setSource] = useState<unknown>(null);
+    const [evidenceError, setEvidenceError] = useState<string | null>(null);
+    const [loading, setLoading] = useState(false);
+    const inspectRollouts = async () => {
+        setLoading(true); setEvidenceError(null);
+        try { setTracePage(await traceResearchClient.request("query", {query: {schemaVersion: "synth.trace-query.v2", evalJobIds: [childId], grain: "episodes", limit: 100}}) as typeof tracePage); }
+        catch (error) { setEvidenceError(error instanceof Error ? error.message : String(error)); }
+        finally { setLoading(false); }
+    };
+    const inspectSource = async (index: number) => {
+        try { setSource(await traceResearchClient.request("source", {snapshot_id: tracePage!.snapshotId, result_id: tracePage!.resultIds[index], source_limit: 16000})); }
+        catch (error) { setEvidenceError(error instanceof Error ? error.message : String(error)); }
+    };
+    const openTrace = async (digest: string) => {
+        try { const visual = await openTraceReference(digest); onClose(); window.dispatchEvent(new CustomEvent(VISUAL_REFERENCE_OPENED_EVENT, {detail: visual})); }
+        catch (error) { setEvidenceError(error instanceof Error ? error.message : String(error)); }
+    };
+
 	useEffect(() => {
 		const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
 		document.addEventListener("keydown", onKeyDown);
@@ -49,8 +71,12 @@ function EvaluationReviewDialog({ evaluation, onClose }: { evaluation: Evaluatio
 		<div className="ws-dialog training-evaluation-dialog" role="dialog" aria-modal="true" aria-labelledby="training-evaluation-dialog-title" data-testid="training-evaluation-dialog">
 			<div className="ws-dialog-head"><div><span className="ws-eyebrow">{evaluation.phase ?? "checkpoint"} evaluation</span><h2 className="ws-dialog-title" id="training-evaluation-dialog-title">{identity}</h2></div><button ref={closeRef} type="button" className="ws-btn ws-btn-ghost ws-btn-small" onClick={onClose} aria-label="Close evaluation review">Close</button></div>
 			<section className="run-progress-section" aria-label="Evaluation identity"><dl className="ws-kv"><dt>Step</dt><dd>{evaluation.step ?? "—"}</dd><dt>Status</dt><dd>{evaluation.status ?? "completed"}</dd><dt>Digest</dt><dd className="ws-mono">{evaluation.digest ?? evaluation.artifact_digest ?? "—"}</dd><dt>Evaluator</dt><dd>{evaluation.evaluator ?? "—"}</dd></dl></section>
-			<section className="optimizer-eval-scorecard" aria-label="Evaluation scorecard"><span className="optimizer-eyebrow">Scorecard</span><table><thead><tr><th>Candidate</th><th>Stage</th><th>Valid</th><th>Accuracy</th><th>Macro-F1</th><th>Paired lift</th></tr></thead><tbody><tr><td>{identity}</td><td>{evaluation.phase ?? "checkpoint"}</td><td>{evaluation.paired_n ?? evaluation.sample_count ?? "—"}</td><td>{typeof evaluation.score === "number" ? evaluation.score.toFixed(3) : "—"}</td><td>{typeof evaluation.macro_f1 === "number" ? evaluation.macro_f1.toFixed(3) : "—"}</td><td>{typeof evaluation.delta === "number" ? `${evaluation.delta >= 0 ? "+" : ""}${evaluation.delta.toFixed(3)}` : "—"}</td></tr></tbody></table></section>
+			<section className="optimizer-eval-scorecard" aria-label="Evaluation scorecard"><span className="optimizer-eyebrow">Scorecard</span><table><thead><tr><th>Candidate</th><th>Stage</th><th>Valid</th><th>{evaluation.metric ?? "Reward"}</th><th>Macro-F1</th><th>Paired lift</th></tr></thead><tbody><tr><td>{identity}</td><td>{evaluation.phase ?? "checkpoint"}</td><td>{evaluation.paired_n ?? evaluation.sample_count ?? "—"}</td><td>{typeof evaluation.score === "number" ? evaluation.score.toFixed(3) : "—"}</td><td>{typeof evaluation.macro_f1 === "number" ? evaluation.macro_f1.toFixed(3) : "—"}</td><td>{typeof evaluation.delta === "number" ? `${evaluation.delta >= 0 ? "+" : ""}${evaluation.delta.toFixed(3)}` : "—"}</td></tr></tbody></table></section>
 			{typeof evaluation.delta === "number" ? <section className="run-progress-section" aria-label="Paired uplift decision"><dl className="ws-kv"><dt>Verdict</dt><dd>{evaluation.verdict?.replaceAll("_", " ") ?? "inconclusive"}</dd><dt>{Math.round((evaluation.confidence ?? 0.95) * 100)}% interval</dt><dd>{typeof evaluation.ci_low === "number" && typeof evaluation.ci_high === "number" ? `${evaluation.ci_low >= 0 ? "+" : ""}${evaluation.ci_low.toFixed(3)} to ${evaluation.ci_high >= 0 ? "+" : ""}${evaluation.ci_high.toFixed(3)}` : "—"}</dd><dt>Claim</dt><dd>{evaluation.claim_ready === true ? "Uplift supported" : "Not established"}</dd></dl></section> : null}
+            {childId ? <section className="training-evaluation-rollouts" aria-label="Child evaluation rollouts"><p>Child evaluation <code>{childId}</code></p><button type="button" disabled={loading} onClick={() => void inspectRollouts()}>{loading ? "Loading retained rollouts…" : "Inspect child evaluation rollouts"}</button>
+                {tracePage ? <><p>Saved snapshot <code>{tracePage.snapshotId}</code></p>{tracePage.rows.map((row, index) => <div key={tracePage.resultIds[index]}><code>{row.trialId ?? `Rollout ${index + 1}`}</code><button type="button" onClick={() => void inspectSource(index)}>Exact source</button>{row.traceDigest ? <button type="button" onClick={() => void openTrace(row.traceDigest!)}>Open retained trace</button> : null}</div>)}</> : null}
+                {evidenceError ? <p role="alert">{evidenceError}</p> : null}{source != null ? <details className="training-evaluation-evidence" open><summary>Exact snapshot source</summary><pre>{JSON.stringify(source, null, 2)}</pre></details> : null}
+            </section> : null}
 			{evaluation.detail != null ? <details className="training-evaluation-evidence"><summary>Evidence receipt</summary><pre>{JSON.stringify(evaluation.detail, null, 2)}</pre></details> : null}
 		</div>
 	</div>;
@@ -87,7 +113,7 @@ export function TrainingEvaluationCurve({ evaluations, testId }: { evaluations: 
 	const ticks = [yMax, (yMin + yMax) / 2, yMin];
 
 	return <section className="training-evaluation-plot" data-testid={testId} aria-label="Reward and loss by training checkpoint">
-		<div className="training-evaluation-legend"><strong>Checkpoint evaluations</strong><span data-series="reward">Reward</span>{lossPoints.length > 0 ? <span data-series="loss">Loss</span> : null}<small>{points.filter((point) => point.phase === "checkpoint").length} checkpoints · {points.length} observations</small></div>
+		<div className="training-evaluation-legend"><strong>Checkpoint evaluations</strong><span data-series="reward">Reward</span>{lossPoints.length > 0 ? <span data-series="loss">Loss</span> : null}<small>{new Set(points.filter((point) => point.phase !== "baseline").map(checkpointIdentity)).size} checkpoints · {points.length} observations</small></div>
 		<svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label={`Reward across ${points.length} evaluation observations`}>
 			{ticks.map((tick) => <g key={tick}><line x1={PAD.left} x2={WIDTH - PAD.right} y1={y(tick)} y2={y(tick)} className="training-chart-grid" /><text x={PAD.left - 8} y={y(tick) + 4} textAnchor="end">{tick.toFixed(2)}</text></g>)}
 			<path d={rewardPath} className="training-chart-line training-chart-reward" />

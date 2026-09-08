@@ -273,6 +273,20 @@ fn apply_lifecycle(
             });
         }
     }
+    if event.producer.event_type == "optimizer.run.paused" {
+        state.condition = match event.producer.payload.get("state").and_then(serde_json::Value::as_str) {
+            Some("blocked_evaluation") => RunCondition::EvaluationBlocked,
+            Some("blocked_budget") => RunCondition::BudgetBlocked,
+            Some("blocked_uncertain") => RunCondition::OperationUncertain,
+            _ => RunCondition::Healthy,
+        };
+    }
+    if event.producer.event_type == "optimizer.run.resumed" {
+        state.condition = RunCondition::Healthy;
+    }
+    if event.producer.event_type == "optimizer.condition.waiting_for_producer" {
+        state.condition = RunCondition::WaitingForProducer;
+    }
     if event.producer.event_type == "optimizer.condition.environment_unreachable" {
         state.condition = RunCondition::EnvironmentUnreachable;
     }
@@ -397,6 +411,27 @@ mod tests {
         let mut event = event(seq, event_type, payload);
         event.algorithm_id = "eval".into();
         event.with_computed_digest()
+    }
+
+    #[test]
+    fn blocked_training_pauses_with_exact_condition_and_resume_clears_it() {
+        for (producer_state, condition) in [("blocked_evaluation", RunCondition::EvaluationBlocked),
+            ("blocked_budget", RunCondition::BudgetBlocked), ("blocked_uncertain", RunCondition::OperationUncertain)] {
+            let paused = commit(admit_gepa(), &DurableProducerLog::default(), &[
+                event(1, "optimizer.run.started", json!({})),
+                event(2, "optimizer.run.paused", json!({"state": producer_state})),
+            ], "now").unwrap();
+            assert_eq!(paused.state.lifecycle, RunLifecycle::Paused);
+            assert_eq!(paused.state.condition, condition);
+            assert!(paused.state.terminal.is_none());
+            let resumed = commit(admit_gepa(), &DurableProducerLog::default(), &[
+                event(1, "optimizer.run.started", json!({})),
+                event(2, "optimizer.run.paused", json!({"state": producer_state})),
+                event(3, "optimizer.run.resumed", json!({})),
+            ], "now").unwrap();
+            assert_eq!(resumed.state.lifecycle, RunLifecycle::Running);
+            assert_eq!(resumed.state.condition, RunCondition::Healthy);
+        }
     }
 
     #[test]

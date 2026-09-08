@@ -95,6 +95,7 @@ type Props = {
 	sessionRef?: string | null;
 	onOpenVisual: (visualId: string) => void;
 	onStartAgent: (guide: OptimizerGuide) => Promise<void>;
+    onEnsureApprovalSession?: () => Promise<string>;
 	onBack: () => void;
 	/** Data-selected registered container; binds workspace baseline evals. */
 	selectedContainerId?: string | null;
@@ -257,6 +258,7 @@ export function OptimizersPage({
 	sessionRef = null,
 	onOpenVisual,
 	onStartAgent,
+    onEnsureApprovalSession,
 	onBack,
 	selectedContainerId = null,
 	pluginStatuses = null,
@@ -372,17 +374,16 @@ export function OptimizersPage({
 			return;
 		}
 		setError(null);
-		const [nextRuns, nextAlgorithms, nextRecipes] = await Promise.all([
-			bridges.optimizers.list({
-				search: search.trim() || undefined,
-				status: status === "all" ? undefined : status,
-				algorithmId: algorithm === "all" ? undefined : algorithm,
-				source: source === "all" ? undefined : source
-			}),
-			bridges.optimizers.listAlgorithms(),
+		const nextRuns = await bridges.optimizers.list({
+                search: search.trim() || undefined, status: status === "all" ? undefined : status,
+                algorithmId: algorithm === "all" ? undefined : algorithm, source: source === "all" ? undefined : source
+            });
+        setRuns(nextRuns);
+        if (!selectedId && nextRuns[0]) setSelectedId(nextRuns[0].id);
+        const [nextAlgorithms, nextRecipes] = await Promise.all([
+			bridges.optimizers.listAlgorithms().catch(() => [] as OptimizerAlgorithmInfo[]),
 			bridges.optimizers.listRecipes(sessionRef ?? undefined).catch(() => [] as OptimizerRecipeInfo[])
 		]);
-		setRuns(nextRuns);
 		setAlgorithms(nextAlgorithms);
 		setEvalRecipes(nextRecipes.filter((recipe) => recipe.algorithmId === "eval"));
 		setHostedCispoRecipe(findHostedCispoRecipe(nextRecipes));
@@ -755,8 +756,9 @@ export function OptimizersPage({
 			const hostedTinker = recipeId === HOSTED_SFT_RECIPE_ID || isHostedCispoRecipeId(recipeId);
 			const run = await bridges.optimizers.startRecipe({
 				recipeId,
-				sessionRef: sessionRef ?? undefined,
+				sessionRef: hostedTinker && onEnsureApprovalSession ? await onEnsureApprovalSession() : sessionRef ?? undefined,
 				openVisual: true,
+				...(isHostedCispoRecipeId(recipeId) ? { planOverride: { cispo: { updates: 2, groupSize: 8, maxSampleTokens: 512, maxCostUsd: 5 } } } : {}),
 				containerId: hostedTinker ? undefined : (selectedContainerId ?? undefined)
 			});
 			setSelectedId(run.id);
@@ -1025,7 +1027,7 @@ export function OptimizersPage({
 			)) : null}
 
 			{tab === "launch" ? (<>
-			<TrainingWorkspace onStartAgent={() => { const guide = OPTIMIZER_GUIDES.find((item) => item.id === "sft"); if (guide) void startAgent(guide); }} />
+			<TrainingWorkspace onEnsureApprovalSession={onEnsureApprovalSession} sessionRef={sessionRef} onStartAgent={() => { const guide = OPTIMIZER_GUIDES.find((item) => item.id === "sft"); if (guide) void startAgent(guide); }} />
 
 			<section className="optimizer-recipes" aria-labelledby="optimizer-recipes-title">
 				<div className="optimizer-recipes-head">
@@ -1099,7 +1101,7 @@ export function OptimizersPage({
 					<div><span className="optimizer-eyebrow">Hosted CISPO</span><h2 id="optimizer-training-launch-title">{hostedCispoAdmitted ? "Hosted Tinker CISPO is admitted" : "Hosted CISPO is not available"}</h2></div>
 				</div>
 				{hostedCispoAdmitted ? (
-					<p data-testid="hosted-cispo-admitted">Public Tinker CISPO launches from the CISPO card. It does not bind a local container and does not require an SFT warm-start.</p>
+					<p data-testid="hosted-cispo-admitted">Public Tinker CISPO uses the configured saved training checkpoint and validation receipt. Use New run to configure the update count and cost cap.</p>
 				) : (
 					<div className="optimizer-empty" data-testid="hosted-cispo-not-admitted" role="status">
 						<strong>Hosted Tinker CISPO has not passed runtime admission.</strong>

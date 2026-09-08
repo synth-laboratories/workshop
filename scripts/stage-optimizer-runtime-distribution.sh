@@ -117,8 +117,8 @@ fi
 STAGING="$(mktemp -d "${TMPDIR:-/tmp}/synth-optimizers-runtime.XXXXXX")"
 trap 'rm -rf "$STAGING"' EXIT
 mkdir -p "$STAGING/wheels"
-# Unreceipted target wheels may belong to another source revision with the
-# same package version. Only the verified distribution above is reusable.
+# Only the manifest-verified distribution above can be reused. A wheel in
+# target/wheels has no source receipt and may predate the current commit.
 "$UV" build --wheel --out-dir "$STAGING/wheels" "$PROJECT"
 WHEEL="$(find "$STAGING/wheels" -maxdepth 1 -type f -name "synth_optimizers-${VERSION}-*.whl" -print -quit)"
 if [[ -z "$WHEEL" ]]; then

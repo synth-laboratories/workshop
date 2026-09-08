@@ -6912,6 +6912,15 @@
                   },
                   {
                     "const": "producer_sequence_blocked"
+                  },
+                  {
+                    "const": "evaluation_blocked"
+                  },
+                  {
+                    "const": "budget_blocked"
+                  },
+                  {
+                    "const": "operation_uncertain"
                   }
                 ]
               },
@@ -10653,6 +10662,15 @@
                   },
                   {
                     "const": "producer_sequence_blocked"
+                  },
+                  {
+                    "const": "evaluation_blocked"
+                  },
+                  {
+                    "const": "budget_blocked"
+                  },
+                  {
+                    "const": "operation_uncertain"
                   }
                 ]
               },
@@ -14176,6 +14194,15 @@
                   },
                   {
                     "const": "producer_sequence_blocked"
+                  },
+                  {
+                    "const": "evaluation_blocked"
+                  },
+                  {
+                    "const": "budget_blocked"
+                  },
+                  {
+                    "const": "operation_uncertain"
                   }
                 ]
               },
@@ -15748,6 +15775,15 @@
                   },
                   {
                     "const": "producer_sequence_blocked"
+                  },
+                  {
+                    "const": "evaluation_blocked"
+                  },
+                  {
+                    "const": "budget_blocked"
+                  },
+                  {
+                    "const": "operation_uncertain"
                   }
                 ]
               },

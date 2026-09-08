@@ -1192,7 +1192,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let requesting_agent = session_id
-        .map(|value| format!("Agent session {value}"))
+        .map(|value| if value.starts_with("operator-training-") { "Workshop operator".into() } else { format!("Agent session {value}") })
         .unwrap_or_else(|| "Workshop operator".into());
     let algorithm_id = recipe.get("algorithmId").and_then(Value::as_str);
     let is_local_eval = algorithm_id == Some("eval");
@@ -1208,7 +1208,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .get("limits")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let (max_cost_usd, max_rollouts) = if is_container_baseline_eval {
+    let (mut max_cost_usd, max_rollouts) = if is_container_baseline_eval {
         // These recipes evaluate the policy already pinned by a registered
         // container. They have no candidate set: requiring one here prevents
         // the public MCP route from ever reaching `container_eval::start`.
@@ -1244,6 +1244,17 @@ pub(crate) async fn authorize_optimizer_recipe_start(
             .find_map(|key| limits.get(key).and_then(Value::as_u64)),
         )
     };
+    let requested_training_cap = if is_hosted_sft { "/sft/maxCostUsd" } else { "/cispo/maxCostUsd" };
+    if is_hosted_sft || algorithm_id == Some("cispo") {
+        if let Some(value) = request.plan_override.as_ref().and_then(|value| value.pointer(requested_training_cap)) {
+            let cap = value.as_f64().filter(|cap| cap.is_finite() && *cap > 0.0)
+                .ok_or_else(|| AppError::from(anyhow::anyhow!("Training maximum charge must be positive and finite")))?;
+            if max_cost_usd.is_none_or(|ceiling| cap > ceiling) {
+                return Err(AppError::from(anyhow::anyhow!("Training maximum charge exceeds the recipe ceiling")));
+            }
+            max_cost_usd = Some(cap);
+        }
+    }
     let paid_cap = session::approval::PaidComputeCap {
         max_cost_usd_micros: max_cost_usd.map(|value| (value * 1_000_000.0).round() as u64),
         max_rollouts,
@@ -1328,7 +1339,8 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     let paid = session::approval::ApprovalKind::PaidCompute {
         operation: "optimizer.recipe.start".into(),
         parameters: optimizer_recipe_approval_parameters(&recipe, &request.recipe_id, &limits),
-        estimated_cost_usd_micros: paid_cap.max_cost_usd_micros,
+        // A cap is not an expected provider charge.
+        estimated_cost_usd_micros: None,
         requested_cap: paid_cap.clone(),
         requesting_agent,
         recipe_id: Some(request.recipe_id.clone()),

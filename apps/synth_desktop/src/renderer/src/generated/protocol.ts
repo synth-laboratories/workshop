@@ -3936,7 +3936,7 @@ export type RunConcurrencySummary = {
 };
 
 /**  Execution health, stored beside lifecycle rather than as a status. */
-export type RunCondition = "healthy" | "environment_unreachable" | "waiting_for_producer" | "producer_sequence_blocked";
+export type RunCondition = "healthy" | "environment_unreachable" | "waiting_for_producer" | "producer_sequence_blocked" | "evaluation_blocked" | "budget_blocked" | "operation_uncertain";
 
 export type RunEvidenceSummary = {
 	completeness: EvidenceCompleteness,

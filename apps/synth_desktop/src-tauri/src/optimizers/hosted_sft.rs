@@ -67,7 +67,14 @@ const BANKING77_SELECTION_SIZE: u32 = 400;
 const BANKING77_HELDOUT_SIZE: u32 = 400;
 
 pub fn recipe_catalog() -> Vec<Value> {
-    vec![craftax_nemotron_recipe(), banking77_recipe()]
+    let evaluators = super::eval_recipes::checkpoint_evaluators();
+    let mut recipes = vec![craftax_nemotron_recipe(), banking77_recipe()];
+    for recipe in &mut recipes {
+        recipe["limits"]["checkpointEvaluators"] = json!(evaluators);
+        recipe["limits"].as_object_mut().unwrap().remove("evaluationPlan");
+        recipe["limits"]["evaluationModes"] = json!(["none", "builtin", "container", "both"]);
+    }
+    recipes
 }
 
 fn craftax_nemotron_recipe() -> Value {
@@ -101,7 +108,7 @@ fn craftax_nemotron_recipe() -> Value {
             "campaignRolloutsPerCheckpoint": 2,
             "evalSeeds": [501, 502],
             "costCeilingUsd": HOSTED_SFT_COST_CEILING_USD,
-            "costNotice": "Hosted Tinker + local Craftax slot. Student id from docs/sft_tinker_base_models.toml (default 3.5 Lightning)."
+            "costNotice": "Hosted Tinker training with optional checkpoint evaluation."
         },
         "credentialInputs": [],
         "prerequisites": [
@@ -109,8 +116,7 @@ fn craftax_nemotron_recipe() -> Value {
             "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN",
             "SYNTH_OPTIMIZERS_SFT_SERVICE_URL",
             "SYNTH_SFT_TRAIN_JSONL (readable, non-empty real training corpus)",
-            "SYNTH_OPTIMIZERS_SFT_FIXTURE=1 for unpaid",
-            "Craftax gold / GameBench on 127.0.0.1:8098"
+            "Optional evaluation: registered digest-pinned checkpoint evaluator"
         ],
     })
 }
@@ -171,7 +177,7 @@ fn banking77_recipe() -> Value {
             "evalSeeds": [1, 2],
             "evaluationPlanRef": BANKING77_PLAN_REF,
             "costCeilingUsd": HOSTED_SFT_COST_CEILING_USD,
-            "costNotice": "Hosted Tinker training plus banking77_classify campaign rollouts. Provider charges apply."
+            "costNotice": "Hosted Tinker training with optional checkpoint evaluation. Provider charges apply."
         },
         "credentialInputs": [],
         "prerequisites": [
@@ -229,16 +235,102 @@ fn public_sft_service_reason() -> Option<String> {
 
 pub async fn start(
     service: &OptimizerService,
-    request: OptimizerRecipeRunRequest,
+    mut request: OptimizerRecipeRunRequest,
 ) -> Result<(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
+    let overrides = request.plan_override.get_or_insert_with(|| json!({}));
+    if overrides.get("sft").is_none() { overrides["sft"] = json!({"evaluationMode":"none"}); }
     match request.recipe_id.as_str() {
         HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE => start_craftax_nemotron(service, request).await,
         HOSTED_SFT_BANKING77_RECIPE => start_banking77(service, request).await,
         other => bail!("unknown hosted SFT recipe: {other}"),
     }
+}
+
+fn launch_uses_container(request: &OptimizerRecipeRunRequest) -> bool {
+    request.plan_override.as_ref().and_then(|value| value.get("sft"))
+        .map(|plan| matches!(plan.get("evaluationMode").and_then(Value::as_str), Some("container" | "both")))
+        .unwrap_or(true)
+}
+
+/// Explicit migration of the launch form's optional evaluator selection.
+/// Historical recipe text is retained for old receipts; new launches freeze v2.
+fn resolved_training_plan(text: String, request: &OptimizerRecipeRunRequest, model: &str) -> Result<String> {
+    let Some(plan) = request.plan_override.as_ref().and_then(|value| value.get("sft")) else {
+        return Ok(text);
+    };
+    let mode = plan.get("evaluationMode").and_then(Value::as_str).unwrap_or("none");
+    if !matches!(mode, "none" | "builtin" | "container" | "both") { bail!("unsupported SFT evaluation mode"); }
+    let mut config: toml::Value = toml::from_str(&text)?;
+    let table = config.as_table_mut().context("SFT config must be a table")?;
+    for key in ["training_file_id", "selection_file_id", "heldout_file_id", "container_url", "checkpoint_evaluation_policy", "checkpoint_evaluation_seeds", "checkpoint_evaluation_policy_harness", "checkpoint_evaluation_plan_ref", "checkpoint_evaluation_world_ref", "checkpoint_evaluation_timeout_s"] { table.remove(key); }
+    if let Some(metadata) = table.get_mut("metadata").and_then(toml::Value::as_table_mut) {
+        metadata.retain(|key, _| !key.starts_with("evaluation_"));
+    }
+    let mut evaluation = plan.get("checkpointEvaluation").cloned().unwrap_or_else(|| json!({}));
+    evaluation.as_object_mut().context("checkpointEvaluation must be an object")?.insert("mode".into(), json!(mode));
+    table.insert("checkpoint_evaluation".into(), toml::Value::try_from(evaluation)?);
+    if matches!(mode, "container" | "both") {
+        let profile = plan.get("rendererProfile").context("container evaluation requires its frozen renderer profile")?;
+        table.insert("evaluation_renderer_profile".into(), toml::Value::try_from(profile.clone())?);
+    }
+    if let Some(steps) = plan.get("trainingSteps").and_then(Value::as_u64) {
+        let training = table.get_mut("training").and_then(toml::Value::as_table_mut).context("training section missing")?;
+        let ceiling = training.get("steps").and_then(toml::Value::as_integer).unwrap_or(0);
+        if steps == 0 || steps > ceiling as u64 { bail!("trainingSteps must narrow the recipe length"); }
+        training.insert("steps".into(), toml::Value::Integer(steps as i64));
+        let middle = (steps / 2).max(1);
+        training.insert("checkpoint_every_steps".into(), toml::Value::Integer(middle as i64));
+        training.insert("eval_every_steps".into(), toml::Value::Integer(middle as i64));
+        let mut saves = vec![toml::Value::Integer(middle as i64)];
+        if middle != steps { saves.push(toml::Value::Integer(steps as i64)); }
+        table.insert("checkpoint_steps".into(), toml::Value::Array(saves.clone()));
+        if let Some(evaluation) = table.get_mut("checkpoint_evaluation").and_then(toml::Value::as_table_mut) {
+            let schedule = evaluation.entry("schedule").or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            schedule.as_table_mut().context("evaluation schedule must be a table")?.insert("steps".into(), toml::Value::Array(saves));
+        }
+        table.insert("training_steps".into(), toml::Value::Integer(steps as i64));
+    }
+    let cap = plan.get("maxCostUsd").and_then(Value::as_f64).unwrap_or(HOSTED_SFT_COST_CEILING_USD);
+    if !cap.is_finite() || cap <= 0.0 || cap > HOSTED_SFT_COST_CEILING_USD { bail!("maxCostUsd must be positive and within the recipe ceiling"); }
+    let rates = match model {
+        "openai/gpt-oss-20b" => (0.18, 0.45, 0.396),
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16" | "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16" => (0.195, 0.495, 0.44),
+        _ => bail!("SFT launch has no frozen pricing for this model"),
+    };
+    table.insert("budget".into(), toml::Value::try_from(json!({
+        "max_cost_usd": cap,
+        "pricing_version":"tinker.models.20260908.conservative-operation-reserves",
+        "pricing":{"input_usd_per_million":rates.0,"output_usd_per_million":rates.1,"training_usd_per_million":rates.2,
+                   "session_usd":0.25,"save_usd":0.25,"restore_usd":0.25}
+    }))?);
+    Ok(toml::to_string(&config)?)
+}
+
+async fn freeze_checkpoint_evaluator(mut request: OptimizerRecipeRunRequest, model: &str) -> Result<OptimizerRecipeRunRequest> {
+    let Some(plan) = request.plan_override.as_mut().and_then(|value| value.get_mut("sft")) else { return Ok(request); };
+    if !matches!(plan.get("evaluationMode").and_then(Value::as_str), Some("container" | "both")) { return Ok(request); }
+    let id = plan.get("evaluatorId").and_then(Value::as_str).context("Select a registered checkpoint evaluator")?;
+    if id != "eval.tinker.checkpoint.gsm8k.v1" { bail!("Checkpoint evaluator metric contract is not supported"); }
+    let recipe = super::eval_recipes::checkpoint_evaluators().into_iter()
+        .find(|recipe| recipe.get("id").and_then(Value::as_str) == Some(id))
+        .context("Checkpoint evaluator is no longer registered")?;
+    let digest = recipe.get("imageDigest").and_then(Value::as_str)
+        .filter(|digest| digest.starts_with("sha256:") && digest.len() == 71)
+        .context("Checkpoint evaluator requires a pinned image digest")?;
+    let selection = recipe.pointer("/limits/screeningSeeds").and_then(Value::as_array).context("Evaluator selection panel missing")?;
+    let final_seeds = recipe.pointer("/limits/confirmationSeeds").and_then(Value::as_array).context("Evaluator final panel missing")?;
+    // A bounded launch uses the first two members of each registered, disjoint panel.
+    let evaluator = json!({"id":id,"recipe_id":id,"image_digest":digest,
+        "metric_ref":"accuracy","reward_version":"gsm8k.frozen.exact.v1","units":"fraction",
+        "selection_seeds":selection.iter().take(2).collect::<Vec<_>>(),
+        "final_seeds":final_seeds.iter().take(2).collect::<Vec<_>>(),"failure_policy":"block"});
+    plan["checkpointEvaluation"] = json!({"evaluators":[evaluator],
+        "selection":{"evaluator_id":id,"direction":"maximize","tie_break":"earliest_step"}});
+    plan["rendererProfile"] = SftOptimizerClient::from_env()?.renderer_profile(model).await?;
+    Ok(request)
 }
 
 fn content_sha256(bytes: &[u8]) -> String {
@@ -421,6 +513,8 @@ async fn start_banking77(
         &dataset_digest,
         reference.as_ref(),
     );
+    let request = freeze_checkpoint_evaluator(request, &model_id).await?;
+    let config_toml = resolved_training_plan(config_toml, &request, &model_id)?;
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
         algorithm_version: Some(if reference_mode {
@@ -646,7 +740,7 @@ async fn start_craftax_nemotron(
 )> {
     let catalog = super::tinker_catalog::TinkerBaseModelCatalog::load()?;
     let model_id = catalog.resolve(request.base_model.as_deref())?;
-    let container_url = local_craftax_slot_url()?;
+    let container_url = if request.plan_override.as_ref().and_then(|value| value.get("sft")).is_none() { local_craftax_slot_url()? } else { String::new() };
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_craftax_nemo_{}", &suffix[..8]);
     let training_file = format!("file_train_{}", &suffix[..8]);
@@ -669,6 +763,8 @@ async fn start_craftax_nemotron(
         training_jsonl.as_deref(),
         &dataset_digest,
     );
+    let request = freeze_checkpoint_evaluator(request, &model_id).await?;
+    let config_toml = resolved_training_plan(config_toml, &request, &model_id)?;
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
         algorithm_version: Some("craftax-nemotron-nano-tinker-v1".into()),
@@ -762,12 +858,28 @@ fn local_craftax_slot_url() -> Result<String> {
 async fn admit_hosted(
     service: &OptimizerService,
     request: OptimizerRecipeRunRequest,
-    create: OptimizerCreateRequest,
+    mut create: OptimizerCreateRequest,
     config_toml: String,
 ) -> Result<(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
+    let resolved: toml::Value = toml::from_str(&config_toml)?;
+    if let Some(summary) = create.summary.as_mut().and_then(Value::as_object_mut) {
+        summary.insert("trainingSteps".into(), serde_json::to_value(resolved.get("training").and_then(|v| v.get("steps")))?);
+        summary.insert("checkpointSteps".into(), serde_json::to_value(resolved.get("checkpoint_steps"))?);
+        summary.insert("checkpointEvaluation".into(), serde_json::to_value(resolved.get("checkpoint_evaluation"))?);
+    }
+    if request.plan_override.as_ref().and_then(|value| value.get("sft")).is_some() {
+        if let Some(bindings) = create.execution_bindings.as_mut() {
+            bindings.retain(|binding| binding.kind != "local_slot");
+        }
+        if let Some(summary) = create.summary.as_mut().and_then(Value::as_object_mut) {
+            summary.remove("localSlot");
+            summary.remove("evaluationPlan");
+            summary.insert("checkpointEvaluationMode".into(), request.plan_override.as_ref().and_then(|value| value.pointer("/sft/evaluationMode")).cloned().unwrap_or(json!("none")));
+        }
+    }
     super::sidecar_training::create_and_watch(
         service,
         request,
@@ -778,6 +890,67 @@ async fn admit_hosted(
     .await
 }
 
+
+pub(super) fn recoverable_observer_failure(run: &OptimizerRunRecord) -> bool {
+    if run.source == "hosted" && run.algorithm_id == "sft" && run.status == "failed_evidence"
+        && run.summary.get("trainingTransport").and_then(Value::as_str) == Some("public-sft.v1") {
+        return true;
+    }
+    run.source == "hosted" && run.algorithm_id == "sft" && run.status == "failed"
+        && run.error.as_ref().and_then(|error| error.get("source")).and_then(Value::as_str) == Some("sidecar-training")
+        && run.error.as_ref().and_then(|error| error.get("message")).and_then(Value::as_str)
+            .is_some_and(|message| message.starts_with("training event sequence gap") || message.contains("event polling stayed unavailable"))
+}
+
+/// Preserve the failed observer's sealed receipt and attach a new local mirror
+/// to the same proven-paused producer job. No training job or paid call is created.
+pub(super) async fn recover_observer(service: &OptimizerService, old: &OptimizerRunRecord)
+    -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
+    anyhow::ensure!(recoverable_observer_failure(old), "run is not a recoverable observer failure");
+    let client = SftOptimizerClient::from_env()?;
+    let producer_id = old.summary.get("producerRunId").and_then(Value::as_str).unwrap_or(&old.id).to_string();
+    let remote = client.get_run(&producer_id).await?;
+    anyhow::ensure!(matches!(remote.get("status").and_then(Value::as_str), Some("paused" | "completed")),
+                    "producer must acknowledge a safe paused checkpoint or completion before observer recovery");
+    let id = format!("{}_recovered", old.id);
+    if let Ok(existing) = service.get(id.clone()).await { return Ok((existing, None)); }
+    let mut summary = old.summary.clone();
+    if let Some(object) = summary.as_object_mut() {
+        object.remove("trainingCursor"); object.remove("hostedMirror");
+        object.insert("producerRunId".into(), json!(producer_id));
+        object.insert("recoveredFrom".into(), json!(old.id));
+        object.insert("trainingTransport".into(), json!("public-sft.v1"));
+    }
+    let (run, event) = service.create(OptimizerCreateRequest {
+        algorithm_id: old.algorithm_id.clone(), algorithm_version: old.algorithm_version.clone(),
+        objective: old.objective.clone(), source: Some("hosted".into()), project_ref: old.project_ref.clone(),
+        session_ref: old.session_ref.clone(), id: Some(id.clone()), execution_bindings: Some(old.execution_bindings.clone()),
+        input_refs: Some(old.input_refs.clone()), capabilities: Some(old.capabilities.clone()), summary: Some(summary),
+        open_visual: Some(false), seed_fixture: None, cloud_config: None, local_path: None,
+    }).await?;
+    spawn_hosted_worker(service, client, id, None, 0).await;
+    Ok((run, event))
+}
+
+fn page_for_mirror(mut page: Value, mirror_id: &str, producer_id: &str) -> Value {
+    if mirror_id == producer_id { return page; }
+    page["run_id"] = json!(mirror_id);
+    if let Some(events) = page.get_mut("events").and_then(Value::as_array_mut) {
+        for event in events {
+            if let Some(source_id) = event.get("event_id").and_then(Value::as_str).map(str::to_string) {
+                event["source_event_id"] = json!(source_id);
+                event["event_id"] = json!(format!("{mirror_id}:producer:{source_id}"));
+            }
+            event["optimizer_run_id"] = json!(mirror_id);
+            event["job_id"] = json!(mirror_id);
+            event["run_id"] = json!(mirror_id);
+            if let Some(payload) = event.get_mut("payload").and_then(Value::as_object_mut) {
+                payload.insert("producer_run_id".into(), json!(producer_id));
+            }
+        }
+    }
+    page
+}
 #[allow(dead_code)]
 async fn spawn_hosted_worker(
     service: &OptimizerService,
@@ -787,9 +960,7 @@ async fn spawn_hosted_worker(
     start_cursor: u64,
 ) {
     let (cancel_tx, cancel_rx) = watch::channel(None);
-    service
-        .register_local_recipe(run_id.clone(), cancel_tx)
-        .await;
+    if !service.try_register_local_recipe(run_id.clone(), cancel_tx).await { return; }
     let _ = persist_hosted_cursor(service, &run_id, start_cursor, true).await;
     let worker = service.clone();
     tokio::spawn(async move {
@@ -828,6 +999,29 @@ pub async fn restore_hosted_mirrors(service: &OptimizerService) {
         return;
     };
     let registered = service.registered_local_recipes().await;
+    if let Ok(public) = SftOptimizerClient::from_env() {
+        for run in &runs {
+            if run.summary.get("trainingTransport").and_then(Value::as_str) == Some("public-sft.v1")
+                && !OptimizerRunStatus::str_is_terminal(&run.status) && !registered.contains(&run.id) {
+                spawn_hosted_worker(service, public.clone(), run.id.clone(), None, resume_cursor(run)).await;
+            }
+        }
+    }
+    let registered = service.registered_local_recipes().await;
+    // Read the public producer even when the optional local plugin is idle.
+    // This also repairs control facts normalized by an older desktop build.
+    if let Ok(public) = SftOptimizerClient::from_env() {
+        for (id, cursor) in hosted_runs_needing_restore(&runs, &registered) {
+            if let Ok(remote) = public.get_run(&id).await {
+                let state = remote.get("status").and_then(Value::as_str).unwrap_or("");
+                if matches!(state, "paused" | "blocked_evaluation" | "blocked_budget" | "blocked_uncertain") {
+                    let _ = service.append_event_payloads(id, vec![super::events::OptimizerEventDraft::new("optimizer.run.paused", "sft")
+                        .delta(serde_json::Map::from_iter([("state".into(), json!(state)), ("error".into(), remote.get("error").cloned().unwrap_or(Value::Null))]))
+                        .idempotency_key(format!("sft:recovered-control-v1:{cursor}:{state}"))]).await;
+                }
+            }
+        }
+    }
     let Ok(client) =
         super::sidecar_training::require_training_ready(service, PLACEMENT_TRAINING_SFT_HOSTED)
             .await
@@ -872,6 +1066,9 @@ pub(crate) fn hosted_runs_needing_restore(
 }
 
 fn resume_cursor(run: &OptimizerRunRecord) -> u64 {
+    if let Some(cursor) = run.summary.get("trainingCursor").and_then(Value::as_u64) {
+        return cursor;
+    }
     run.summary
         .get("hostedMirror")
         .and_then(|value| value.get("cursor"))
@@ -917,8 +1114,10 @@ async fn run_hosted_worker(
     start_cursor: u64,
     mut cancel: super::CancelObserver,
 ) -> Result<()> {
+    let record = service.get(run_id.clone()).await?;
+    let producer_id = record.summary.get("producerRunId").and_then(Value::as_str).unwrap_or(&run_id).to_string();
     if let Some(toml) = config_toml.as_deref() {
-        client.submit_toml(&run_id, toml).await?;
+        client.submit_toml(&producer_id, toml).await?;
     }
     let mut upstream_cursor = start_cursor;
     // The producer appends to its log while we page it. A read that lands on a
@@ -928,10 +1127,12 @@ async fn run_hosted_worker(
     let mut consecutive_page_errors = 0u32;
     loop {
         match client
-            .optimizer_events_after(&run_id, upstream_cursor, 500)
+            .optimizer_events_after(&producer_id, upstream_cursor, 500)
             .await
         {
             Ok(page) => {
+                import_page_checkpoint_evidence(&service, &client, &producer_id, &page).await?;
+                let page = page_for_mirror(page, &run_id, &producer_id);
                 consecutive_page_errors = 0;
                 ingest::ingest_event_page(&service, &run_id, "sft", &page, &mut upstream_cursor)
                     .await?;
@@ -949,7 +1150,7 @@ async fn run_hosted_worker(
                 continue;
             }
         }
-        let remote = client.get_run(&run_id).await?;
+        let remote = client.get_run(&producer_id).await?;
         let status = remote
             .get("status")
             .and_then(Value::as_str)
@@ -957,38 +1158,18 @@ async fn run_hosted_worker(
         tokio::select! {
             changed = cancel.changed() => {
                 if changed.is_ok() && cancel.borrow().is_some() {
-                    let _ = client.cancel(&run_id).await;
-                    service
-                        .settle_run(
-                            run_id.clone(),
-                            super::kernel::SettleCause::Cancelled {
-                                request: std::sync::Arc::new(
-                                    super::kernel::CancellationRequest::new(
-                                        super::kernel::CancellationCause::UserRequested,
-                                        "hosted-sft:watcher",
-                                        format!("run:{run_id}"),
-                                    ),
-                                ),
-                            },
-                            None,
-                        )
-                        .await?;
-                    return Ok(());
+                    client.cancel(&producer_id).await?;
+                    // Continue ingesting until the provider confirms drained cancellation.
+
                 }
             }
             _ = sleep(Duration::from_millis(750)) => {}
         }
         if OptimizerRunStatus::str_is_terminal(status) {
-            ingest::ingest_event_page(
-                &service,
-                &run_id,
-                "sft",
-                &client
-                    .optimizer_events_after(&run_id, upstream_cursor, 2_000)
-                    .await?,
-                &mut upstream_cursor,
-            )
-            .await?;
+            let page = client.optimizer_events_after(&producer_id, upstream_cursor, 2_000).await?;
+            import_page_checkpoint_evidence(&service, &client, &producer_id, &page).await?;
+            ingest::ingest_event_page(&service, &run_id, "sft",
+                &page_for_mirror(page, &run_id, &producer_id), &mut upstream_cursor).await?;
             persist_remote_terminal(
                 &service,
                 &run_id,
@@ -999,6 +1180,18 @@ async fn run_hosted_worker(
             return Ok(());
         }
     }
+}
+
+async fn import_page_checkpoint_evidence(service: &OptimizerService, client: &SftOptimizerClient,
+    producer: &str, page: &Value) -> Result<()> {
+    for event in page["events"].as_array().into_iter().flatten() {
+        if event.get("kind").and_then(Value::as_str) == Some("sft.child_eval.completed") {
+            if let Some(child) = event.pointer("/payload/eval_job_id").and_then(Value::as_str) {
+                service.import_checkpoint_evidence(client, producer, child).await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn craftax_nemotron_config_toml(
@@ -1083,15 +1276,13 @@ lr = 0.001
 /// Terminal failure with a readable reason. `optimizer.run.failed` carrying an
 /// empty delta tells a viewer nothing and hides producer-side success.
 async fn append_failure(service: &OptimizerService, run_id: &str, reason: &str) -> Result<()> {
-    service
-        .settle_run(
-            run_id.to_string(),
-            super::kernel::SettleCause::Failed {
-                detail: reason.to_string(),
-            },
-            Some(json!({ "message": reason, "source": "hosted_sft" })),
-        )
-        .await?;
+    // A stopped observer cannot certify that paid producer work has failed or drained.
+    // Leave the producer lifecycle intact and expose the transport condition.
+    let run = service.get(run_id.to_string()).await?;
+    if OptimizerRunStatus::str_is_terminal(&run.status) { return Ok(()); }
+    service.append_event_payloads(run_id.to_string(), vec![super::events::OptimizerEventDraft::new(
+        "optimizer.condition.waiting_for_producer", &run.algorithm_id)
+        .delta(serde_json::Map::from_iter([("message".into(), json!(reason))]))]).await?;
     Ok(())
 }
 
@@ -1137,6 +1328,45 @@ async fn persist_remote_terminal(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recovered_mirror_preserves_producer_checkpoint_identity() {
+        let page = serde_json::json!({"run_id":"producer", "events":[{
+            "schema_version":"optimizer_event.v1", "run_id":"producer",
+            "algorithm_id":"sft", "sequence_number":1,
+            "type":"sft.checkpoint.created", "event_id":"original-event",
+            "created_at":"2026-09-08T00:00:00Z",
+            "payload":{"checkpoint_id":"original-checkpoint", "sampler_ref":"tinker://exact"}
+        }]});
+        let remapped = super::page_for_mirror(page, "mirror", "producer");
+        assert_eq!(remapped["events"][0]["event_id"], "mirror:producer:original-event");
+        assert_eq!(remapped["events"][0]["source_event_id"], "original-event");
+        assert_eq!(remapped["events"][0]["payload"]["checkpoint_id"], "original-checkpoint");
+        assert_eq!(remapped["events"][0]["payload"]["sampler_ref"], "tinker://exact");
+        assert_eq!(remapped["events"][0]["payload"]["producer_run_id"], "producer");
+        let (events, cursor) = super::ingest::remap_page_events(
+            remapped["events"].as_array().unwrap(), "mirror", "sft", 7, 0).unwrap();
+        assert_eq!(cursor, 1);
+        assert_eq!(events[0].optimizer_run_id, "mirror");
+        assert_eq!(events[0].sequence_number, 8);
+    }
+
+    #[test]
+    fn explicit_no_eval_launch_removes_legacy_container_requirements() {
+        let request: super::OptimizerRecipeRunRequest = serde_json::from_value(serde_json::json!({
+            "recipeId": super::HOSTED_SFT_BANKING77_RECIPE,
+            "planOverride": {"sft":{"evaluationMode":"none"}}
+        })).unwrap();
+        let source = "training_file_id = \"obsolete\"\ntraining_jsonl = \"/data/train.jsonl\"\ncontainer_url = \"http://localhost:8110\"\n[metadata]\nevaluation_transport = \"tunnel\"\n";
+        let migrated = super::resolved_training_plan(source.into(), &request, "openai/gpt-oss-20b").unwrap();
+        let parsed: toml::Value = toml::from_str(&migrated).unwrap();
+        assert!(parsed.get("container_url").is_none());
+        assert!(parsed.get("training_file_id").is_none());
+        assert_eq!(parsed["training_jsonl"].as_str(), Some("/data/train.jsonl"));
+        assert!(parsed["metadata"].get("evaluation_transport").is_none());
+        assert_eq!(parsed["checkpoint_evaluation"]["mode"].as_str(), Some("none"));
+        assert_eq!(parsed["budget"]["max_cost_usd"].as_float(), Some(super::HOSTED_SFT_COST_CEILING_USD));
+        assert!(!super::launch_uses_container(&request));
+    }
     use super::*;
 
     #[test]
@@ -1307,12 +1537,9 @@ mod tests {
             assert!(prerequisites
                 .iter()
                 .any(|item| item.as_str() == Some("SYNTH_OPTIMIZERS_SFT_SERVICE_URL")));
-            assert!(prerequisites
-                .iter()
-                .any(|item| item.as_str() == Some("SYNTH_OPTIMIZERS_SFT_FIXTURE=1 for unpaid")));
         }
         let craftax = serde_json::to_string(&craftax_nemotron_recipe()).unwrap();
-        assert!(craftax.contains("127.0.0.1:8098"));
+        assert!(craftax.contains("Optional evaluation: registered digest-pinned checkpoint evaluator"));
         let banking = serde_json::to_string(&banking77_recipe()).unwrap();
         assert!(banking.contains("SYNTH_SFT_BANKING77_TRAIN_JSONL"));
         assert!(banking.contains("127.0.0.1:8110"));
@@ -1448,7 +1675,7 @@ mod tests {
     #[test]
     fn start_paths_do_not_dial_the_public_sft_loopback() {
         let production = include_str!("hosted_sft.rs")
-            .split("#[cfg(test)]")
+            .split("#[cfg(test)]\nmod tests")
             .next()
             .unwrap();
         assert!(!production.contains("client.base_url"));

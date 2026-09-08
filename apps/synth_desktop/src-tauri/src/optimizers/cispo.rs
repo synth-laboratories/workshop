@@ -13,6 +13,7 @@ use super::sidecar_training::{
 use super::OptimizerService;
 use anyhow::Result;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 pub(crate) const BANKING77_LABEL_TAXONOMY: &[&str] = &[
     "Refund_not_showing_up",
@@ -268,12 +269,20 @@ fn banking77_cispo_parent() -> Result<Value> {
         .get("state_checkpoint")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("CISPO parent receipt omitted state_checkpoint"))?;
+    if !state.starts_with("tinker://") || !state.contains("/weights/") {
+        anyhow::bail!("CISPO parent must reference saved training weights, not sampler weights");
+    }
+    let step = receipt.get("updates").and_then(Value::as_u64)
+        .ok_or_else(|| anyhow::anyhow!("CISPO parent receipt omitted exact updates"))?;
+    // The public Tinker adapter defines checkpoint digest as SHA256(path),
+    // because the remote weights are not available as local artifact bytes.
+    let digest = format!("sha256:{:x}", Sha256::digest(state.as_bytes()));
     Ok(json!({
-        "checkpoint_id": "nanoclassify-sft-parent",
+        "checkpoint_id": receipt.get("checkpoint_id").and_then(Value::as_str).unwrap_or(state),
         "provider_reference": state,
         "resume_token": state,
-        "step": receipt.get("updates").and_then(Value::as_u64).unwrap_or(100),
-        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "step": step,
+        "digest": digest,
         "kind": "training"
     }))
 }
@@ -299,6 +308,12 @@ fn hosted_cispo_config_json() -> Result<Value> {
         "repeat_index": 0,
         "mode": "canonical",
         "rank": 16,
+        "budget": {
+            "max_cost_usd": 35.0,
+            "pricing_version": "tinker.models.20260908.conservative-operation-reserves",
+            "pricing": {"input_usd_per_million":0.18,"output_usd_per_million":0.45,
+                "training_usd_per_million":0.396,"session_usd":0.25,"save_usd":0.25,"restore_usd":0.25}
+        },
         "parent_checkpoint": banking77_cispo_parent()?,
         "dataset": {
             "recipe_id": "banking77.cispo.nanoclassify.v1",
@@ -344,6 +359,24 @@ fn hosted_cispo_config_json() -> Result<Value> {
             "minimum_paired_examples": 400
         }
     }))
+}
+
+fn apply_hosted_cispo_bounds(config: &mut Value, plan: Option<&Value>) -> Result<()> {
+    let Some(plan) = plan.and_then(|value| value.get("cispo")) else { return Ok(()); };
+    let updates = plan.get("updates").and_then(Value::as_u64).unwrap_or(2);
+    let group = plan.get("groupSize").and_then(Value::as_u64).unwrap_or(8);
+    let tokens = plan.get("maxSampleTokens").and_then(Value::as_u64).unwrap_or(512);
+    let cap = plan.get("maxCostUsd").and_then(Value::as_f64).unwrap_or(5.0);
+    if !(1..=50).contains(&updates) || !(2..=64).contains(&group) || !(1..=2048).contains(&tokens)
+        || !cap.is_finite() || cap <= 0.0 || cap > 35.0 {
+        anyhow::bail!("CISPO requires 1–50 updates, 2–64 members per group, 1–2048 rollout tokens and a positive cap at most $35");
+    }
+    config["training"]["updates"] = json!(updates);
+    config["training"]["group_size"] = json!(group);
+    config["training"]["max_sample_tokens"] = json!(tokens);
+    config["training"]["checkpoint_every_updates"] = json!(updates.min(10));
+    config["budget"]["max_cost_usd"] = json!(cap);
+    Ok(())
 }
 
 pub async fn start(
@@ -537,7 +570,11 @@ async fn start_hosted(
             anyhow::bail!("service does not advertise container experiments");
         }
         spec
-    } else { hosted_cispo_config_json()? };
+    } else {
+        let mut config = hosted_cispo_config_json()?;
+        apply_hosted_cispo_bounds(&mut config, request.plan_override.as_ref())?;
+        config
+    };
     let run_id = if experiment_recipe {
         let id = config_json.get("experiment_id").and_then(Value::as_str).unwrap_or("");
         if id.is_empty() || id.len() > 128 || !id.bytes().all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c)) {
@@ -709,7 +746,7 @@ mod tests {
         let parent = dir.path().join("sft.json");
         std::fs::write(&train, "text,category\nhello,a\nworld,b\n").unwrap();
         std::fs::write(&heldout, "text,category\nheld,a\nout,b\n").unwrap();
-        std::fs::write(&parent, r#"{"state_checkpoint":"tinker://state","sampler_checkpoint":"tinker://sampler","updates":100}"#).unwrap();
+        std::fs::write(&parent, r#"{"state_checkpoint":"tinker://session/weights/state","sampler_checkpoint":"tinker://session/sampler_weights/sampler","updates":100}"#).unwrap();
         (dir, train, heldout, parent)
     }
 
@@ -795,6 +832,22 @@ mod tests {
     }
 
     #[test]
+    fn hosted_cispo_bounds_preserve_three_groups_and_reject_overspend() {
+        let mut config = json!({"training":{"prompts_per_update":3},"budget":{}});
+        apply_hosted_cispo_bounds(&mut config, Some(&json!({"cispo":{
+            "updates":2,"groupSize":8,"maxCostUsd":4.0
+        }}))).unwrap();
+        assert_eq!(config["training"]["prompts_per_update"], 3);
+        assert_eq!(config["training"]["updates"], 2);
+        assert_eq!(config["training"]["checkpoint_every_updates"], 2);
+        assert_eq!(config["budget"]["max_cost_usd"], 4.0);
+        assert_eq!(config["training"]["max_sample_tokens"], 512);
+        for plan in [json!({"maxCostUsd":36}), json!({"updates":0}), json!({"groupSize":1}), json!({"maxSampleTokens":2049})] {
+            assert!(apply_hosted_cispo_bounds(&mut config, Some(&json!({"cispo":plan}))).is_err());
+        }
+    }
+
+    #[test]
     fn hosted_cispo_config_json_is_cispo_request_v1() {
         let (_dir, train, heldout, parent) = reference_paths();
         std::env::set_var("SYNTH_BANKING77_TRAIN_CSV", train);
@@ -806,6 +859,9 @@ mod tests {
         assert_eq!(request["implementation"], "slime-reference");
         assert_eq!(request["implementation_version"], "cispo.slime.v1");
         assert_eq!(request["provider"], "tinker");
+        assert_eq!(request["budget"]["max_cost_usd"], 35.0);
+        assert_eq!(request["parent_checkpoint"]["digest"],
+            format!("sha256:{:x}", Sha256::digest(b"tinker://session/weights/state")));
         assert_eq!(request["model_id"], "openai/gpt-oss-20b");
         assert_eq!(request["mode"], "canonical");
         assert_eq!(request["renderer_version"], "renderers.gpt-oss.low.v1");

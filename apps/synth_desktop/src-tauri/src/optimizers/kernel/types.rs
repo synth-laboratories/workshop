@@ -465,6 +465,9 @@ pub enum RunCondition {
     EnvironmentUnreachable,
     WaitingForProducer,
     ProducerSequenceBlocked,
+    EvaluationBlocked,
+    BudgetBlocked,
+    OperationUncertain,
 }
 
 impl RunCondition {
@@ -474,6 +477,9 @@ impl RunCondition {
             Self::EnvironmentUnreachable => "environment_unreachable",
             Self::WaitingForProducer => "waiting_for_producer",
             Self::ProducerSequenceBlocked => "producer_sequence_blocked",
+            Self::EvaluationBlocked => "evaluation_blocked",
+            Self::BudgetBlocked => "budget_blocked",
+            Self::OperationUncertain => "operation_uncertain",
         }
     }
 
@@ -483,6 +489,9 @@ impl RunCondition {
             "environment_unreachable" => Ok(Self::EnvironmentUnreachable),
             "waiting_for_producer" => Ok(Self::WaitingForProducer),
             "producer_sequence_blocked" => Ok(Self::ProducerSequenceBlocked),
+            "evaluation_blocked" => Ok(Self::EvaluationBlocked),
+            "budget_blocked" => Ok(Self::BudgetBlocked),
+            "operation_uncertain" => Ok(Self::OperationUncertain),
             other => Err(KernelError::new(
                 KernelErrorCode::EventSchemaMismatch,
                 format!("{other:?} is not a run condition"),

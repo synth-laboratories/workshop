@@ -192,6 +192,12 @@ pub enum TrainingJobStatus {
     Failed,
     Cancelled,
     Interrupted,
+    StopRequested,
+    PauseRequested,
+    Paused,
+    BlockedBudget,
+    BlockedEvaluation,
+    BlockedUncertain,
 }
 
 impl TrainingJobStatus {
@@ -203,6 +209,12 @@ impl TrainingJobStatus {
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
             Self::Interrupted => "interrupted",
+            Self::StopRequested => "stop_requested",
+            Self::PauseRequested => "pause_requested",
+            Self::Paused => "paused",
+            Self::BlockedBudget => "blocked_budget",
+            Self::BlockedEvaluation => "blocked_evaluation",
+            Self::BlockedUncertain => "blocked_uncertain",
         }
     }
 
@@ -214,6 +226,12 @@ impl TrainingJobStatus {
             "failed" => Self::Failed,
             "cancelled" | "canceled" => Self::Cancelled,
             "interrupted" => Self::Interrupted,
+            "stop_requested" => Self::StopRequested,
+            "pause_requested" => Self::PauseRequested,
+            "paused" => Self::Paused,
+            "blocked_budget" => Self::BlockedBudget,
+            "blocked_evaluation" => Self::BlockedEvaluation,
+            "blocked_uncertain" => Self::BlockedUncertain,
             _ => return None,
         })
     }
