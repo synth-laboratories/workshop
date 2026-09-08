@@ -937,6 +937,10 @@ fn page_for_mirror(mut page: Value, mirror_id: &str, producer_id: &str) -> Value
     page["run_id"] = json!(mirror_id);
     if let Some(events) = page.get_mut("events").and_then(Value::as_array_mut) {
         for event in events {
+            if let Some(source_id) = event.get("event_id").and_then(Value::as_str).map(str::to_string) {
+                event["source_event_id"] = json!(source_id);
+                event["event_id"] = json!(format!("{mirror_id}:producer:{source_id}"));
+            }
             event["optimizer_run_id"] = json!(mirror_id);
             event["job_id"] = json!(mirror_id);
             event["run_id"] = json!(mirror_id);
@@ -1334,7 +1338,8 @@ mod tests {
             "payload":{"checkpoint_id":"original-checkpoint", "sampler_ref":"tinker://exact"}
         }]});
         let remapped = super::page_for_mirror(page, "mirror", "producer");
-        assert_eq!(remapped["events"][0]["event_id"], "original-event");
+        assert_eq!(remapped["events"][0]["event_id"], "mirror:producer:original-event");
+        assert_eq!(remapped["events"][0]["source_event_id"], "original-event");
         assert_eq!(remapped["events"][0]["payload"]["checkpoint_id"], "original-checkpoint");
         assert_eq!(remapped["events"][0]["payload"]["sampler_ref"], "tinker://exact");
         assert_eq!(remapped["events"][0]["payload"]["producer_run_id"], "producer");
