@@ -66,11 +66,11 @@ APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.10.0}"
 BOOT_EPOCH="inst_$(uuidgen | tr -d '-' | tr '[:upper:]' '[:lower:]')"
 PROCESS_START_TIME="$(ps -p $$ -o lstart= | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 
-if [[ "$RELEASE_LINE" != "v0.9" ]]; then
-	  echo "[desktop:$NAME] invalid release line; this branch only builds v0.9 instances" >&2
-	  exit 2
-fi
-RELEASE_SLUG="v09"
+case "$RELEASE_LINE" in
+  v0.10) RELEASE_SLUG="v010" ;;
+  v0.9) RELEASE_SLUG="v09" ;; # Explicit compatibility lane; never selected by default.
+  *) echo "[desktop:$NAME] invalid release line; expected v0.10 or explicit v0.9 compatibility" >&2; exit 2 ;;
+esac
 
 usage() {
   cat <<EOF
