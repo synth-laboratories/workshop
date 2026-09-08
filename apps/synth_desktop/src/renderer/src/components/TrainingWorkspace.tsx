@@ -145,7 +145,7 @@ export function TrainingWorkspace({ onStartAgent, sessionRef, onEnsureApprovalSe
 	const durableRunId = run && !["starting", "failed-to-start"].includes(run.id) ? run.id : null;
 	const summaryState = useOptimizerRun(durableRunId);
 	const producerCondition = summaryState.summary?.condition;
-    const durableStatus = producerCondition && ["evaluation_blocked", "budget_blocked", "operation_uncertain", "waiting_for_producer"].includes(producerCondition)
+    const durableStatus = producerCondition && ["evaluation_blocked", "budget_blocked", "operation_uncertain", "waiting_for_producer", "pause_requested"].includes(producerCondition)
         ? producerCondition : summaryState.summary?.status ?? run?.status ?? "unstarted";
 	const durableTerminal = summaryState.summary?.lifecycle === "terminal";
 	const connection: "live" | "reconnecting" = summaryState.status === "stale" || summaryState.status === "error" ? "reconnecting" : "live";

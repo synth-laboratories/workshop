@@ -326,6 +326,8 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
         return OptimizerEventDraft::new(event_type, algorithm).delta(delta).item(payload.clone());
     }
     match kind {
+        "training.lifecycle" if payload.get("state").and_then(Value::as_str) == Some("pause_requested") =>
+            OptimizerEventDraft::new("training.lifecycle", algorithm).delta(payload.as_object().cloned().unwrap_or_default()),
         "training.lifecycle" if matches!(payload.get("state").and_then(Value::as_str), Some("paused" | "blocked_evaluation" | "blocked_budget" | "blocked_uncertain")) =>
             OptimizerEventDraft::new("optimizer.run.paused", algorithm).delta(payload.as_object().cloned().unwrap_or_default()),
         "training.lifecycle" if matches!(payload.get("state").and_then(Value::as_str), Some("stop_requested" | "cancel_requested")) =>
@@ -978,6 +980,16 @@ mod tests {
         assert_eq!(adapted.draft.event_type, "sft.training.metrics");
         assert_eq!(adapted.draft.delta["train_loss"], 0.31);
         assert_eq!(adapted.draft.delta["step"], 2);
+    }
+
+    #[test]
+    fn public_pause_request_preserves_drain_state() {
+        let adapted = adapt_source_fact("cispo", &native_event(
+            2, "training.lifecycle", json!({"state": "pause_requested", "error": null}),
+        )).unwrap();
+        assert_eq!(adapted.draft.event_type, "training.lifecycle");
+        assert_eq!(adapted.draft.delta["state"], "pause_requested");
+        assert_ne!(adapted.draft.event_type, "optimizer.run.paused");
     }
 
     #[test]

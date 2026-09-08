@@ -273,6 +273,13 @@ fn apply_lifecycle(
             });
         }
     }
+    if event.producer.event_type == "training.lifecycle"
+        && event.producer.payload.get("state").and_then(serde_json::Value::as_str) == Some("pause_requested")
+    {
+        // A request is not a completed pause: keep execution running while
+        // exposing the durable drain request to all read-model consumers.
+        state.condition = RunCondition::PauseRequested;
+    }
     if event.producer.event_type == "optimizer.run.paused" {
         state.condition = match event.producer.payload.get("state").and_then(serde_json::Value::as_str) {
             Some("blocked_evaluation") => RunCondition::EvaluationBlocked,
@@ -411,6 +418,24 @@ mod tests {
         let mut event = event(seq, event_type, payload);
         event.algorithm_id = "eval".into();
         event.with_computed_digest()
+    }
+
+    #[test]
+    fn training_pause_request_remains_running_until_checkpoint_acknowledgement() {
+        let requested = commit(admit_gepa(), &DurableProducerLog::default(), &[
+            event(1, "optimizer.run.started", json!({})),
+            event(2, "training.lifecycle", json!({"state": "pause_requested"})),
+        ], "now").unwrap();
+        assert_eq!(requested.state.lifecycle, RunLifecycle::Running);
+        assert_eq!(requested.state.condition, RunCondition::PauseRequested);
+        assert!(requested.state.terminal.is_none());
+        let paused = commit(admit_gepa(), &DurableProducerLog::default(), &[
+            event(1, "optimizer.run.started", json!({})),
+            event(2, "training.lifecycle", json!({"state": "pause_requested"})),
+            event(3, "optimizer.run.paused", json!({"state": "paused"})),
+        ], "now").unwrap();
+        assert_eq!(paused.state.lifecycle, RunLifecycle::Paused);
+        assert_eq!(paused.state.condition, RunCondition::Healthy);
     }
 
     #[test]
@@ -650,6 +675,8 @@ mod tests {
                 "candidate.registered",
                 json!({"candidate_id": "child", "parent_id": "seed", "source": "proposer"}),
             ),
+            event(4, "training.lifecycle", json!({"state": "pause_requested"})),
+            event(5, "optimizer.run.paused", json!({"state": "paused"})),
         ];
         let uninterrupted =
             commit(admit_gepa(), &DurableProducerLog::default(), &events, "now").unwrap();
@@ -679,6 +706,7 @@ mod tests {
             uninterrupted.state.projection.work_summary()
         );
         assert_eq!(restarted.lifecycle, uninterrupted.state.lifecycle);
+        assert_eq!(restarted.condition, uninterrupted.state.condition);
         assert_eq!(
             restarted.aggregate_sequence,
             uninterrupted.state.aggregate_sequence

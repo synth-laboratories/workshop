@@ -468,6 +468,7 @@ pub enum RunCondition {
     EvaluationBlocked,
     BudgetBlocked,
     OperationUncertain,
+    PauseRequested,
 }
 
 impl RunCondition {
@@ -480,6 +481,7 @@ impl RunCondition {
             Self::EvaluationBlocked => "evaluation_blocked",
             Self::BudgetBlocked => "budget_blocked",
             Self::OperationUncertain => "operation_uncertain",
+            Self::PauseRequested => "pause_requested",
         }
     }
 
@@ -492,6 +494,7 @@ impl RunCondition {
             "evaluation_blocked" => Ok(Self::EvaluationBlocked),
             "budget_blocked" => Ok(Self::BudgetBlocked),
             "operation_uncertain" => Ok(Self::OperationUncertain),
+            "pause_requested" => Ok(Self::PauseRequested),
             other => Err(KernelError::new(
                 KernelErrorCode::EventSchemaMismatch,
                 format!("{other:?} is not a run condition"),

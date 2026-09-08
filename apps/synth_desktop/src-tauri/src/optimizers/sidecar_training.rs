@@ -843,6 +843,7 @@ async fn watch_job(
             }
             gap_errors = 0;
         }
+        let mut drafts = Vec::new();
         for event in events {
             let sequence = event
                 .get("sequence")
@@ -853,21 +854,29 @@ async fn watch_job(
                 bail!("training event sequence gap after {cursor}: {sequence}");
             }
             if event.get("kind").or_else(|| event.get("event_type")).and_then(Value::as_str) == Some("sft.child_eval.completed") {
+                if !drafts.is_empty() {
+                    service.append_event_payloads(run_id.clone(), std::mem::take(&mut drafts)).await?;
+                }
                 if let Some(child) = event.pointer("/payload/eval_job_id").and_then(Value::as_str) {
                     let public = SftOptimizerClient::from_env()?;
                     service.import_checkpoint_evidence(&public, &run_id, child).await?;
                 }
             }
-            append_mapped_event(&service, &run_id, &algorithm, &event, sequence).await?;
-            if event
+            drafts.push(mapped_training_draft_with_identity(&algorithm, &event, sequence));
+            let checkpoint_created = event
                 .get("type")
                 .or_else(|| event.get("event_type"))
                 .or_else(|| event.get("kind"))
                 .and_then(Value::as_str)
                 .is_some_and(|kind| {
                     kind == "checkpoint.created" || kind.ends_with("checkpoint.created")
-                })
-            {
+                });
+            // Commit bounded pages rather than replaying the run projection
+            // once per token/usage receipt. Flush before domain side effects.
+            if drafts.len() >= 64 || checkpoint_created {
+                service.append_event_payloads(run_id.clone(), std::mem::take(&mut drafts)).await?;
+            }
+            if checkpoint_created {
                 let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
                 let _ = service
                     .upsert_local_lora_from_event(run_id.clone(), payload)
@@ -875,11 +884,15 @@ async fn watch_job(
             }
             cursor = sequence;
         }
+        if !drafts.is_empty() {
+            service.append_event_payloads(run_id.clone(), drafts).await?;
+        }
         persist_cursor(&service, &run_id, cursor).await?;
         let job = client.job(&run_id).await?;
         let observed_state = job.get("status").and_then(Value::as_str).unwrap_or("running");
         if observed_state != last_observed_control_state {
             let event_type = match observed_state {
+                "pause_requested" => Some("training.lifecycle"),
                 "paused" | "blocked_evaluation" | "blocked_budget" | "blocked_uncertain" => Some("optimizer.run.paused"),
                 "stop_requested" => Some("optimizer.run.cancelling"),
                 "running" if !last_observed_control_state.is_empty() => Some("optimizer.run.resumed"),
@@ -1066,15 +1079,20 @@ pub async fn append_mapped_event(
     event: &Value,
     sequence: u64,
 ) -> Result<()> {
+    let draft = mapped_training_draft_with_identity(algorithm, event, sequence);
+    service
+        .append_event_payloads(run_id.into(), vec![draft])
+        .await?;
+    Ok(())
+}
+
+fn mapped_training_draft_with_identity(algorithm: &str, event: &Value, sequence: u64) -> OptimizerEventDraft {
     let mut draft = mapped_training_draft(algorithm, event)
         .idempotency_key(format!("sidecar-training:{sequence}"));
     if draft.raw.is_null() {
         draft = draft.raw(event.clone());
     }
-    service
-        .append_event_payloads(run_id.into(), vec![draft])
-        .await?;
-    Ok(())
+    draft
 }
 
 fn mapped_training_draft(algorithm: &str, event: &Value) -> OptimizerEventDraft {

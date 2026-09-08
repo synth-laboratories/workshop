@@ -6921,6 +6921,9 @@
                   },
                   {
                     "const": "operation_uncertain"
+                  },
+                  {
+                    "const": "pause_requested"
                   }
                 ]
               },
@@ -10671,6 +10674,9 @@
                   },
                   {
                     "const": "operation_uncertain"
+                  },
+                  {
+                    "const": "pause_requested"
                   }
                 ]
               },
@@ -14203,6 +14209,9 @@
                   },
                   {
                     "const": "operation_uncertain"
+                  },
+                  {
+                    "const": "pause_requested"
                   }
                 ]
               },
@@ -15784,6 +15793,9 @@
                   },
                   {
                     "const": "operation_uncertain"
+                  },
+                  {
+                    "const": "pause_requested"
                   }
                 ]
               },
