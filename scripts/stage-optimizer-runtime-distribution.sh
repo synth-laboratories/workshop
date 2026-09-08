@@ -117,11 +117,10 @@ fi
 STAGING="$(mktemp -d "${TMPDIR:-/tmp}/synth-optimizers-runtime.XXXXXX")"
 trap 'rm -rf "$STAGING"' EXIT
 mkdir -p "$STAGING/wheels"
-WHEEL="$(find "$PROJECT/target/wheels" -maxdepth 1 -type f -name "synth_optimizers-${VERSION}-*.whl" -print -quit 2>/dev/null || true)"
-if [[ -z "$WHEEL" ]]; then
-  "$UV" build --wheel --out-dir "$STAGING/wheels" "$PROJECT"
-  WHEEL="$(find "$STAGING/wheels" -maxdepth 1 -type f -name "synth_optimizers-${VERSION}-*.whl" -print -quit)"
-fi
+# Only the manifest-verified distribution above can be reused. A wheel in
+# target/wheels has no source receipt and may predate the current commit.
+"$UV" build --wheel --out-dir "$STAGING/wheels" "$PROJECT"
+WHEEL="$(find "$STAGING/wheels" -maxdepth 1 -type f -name "synth_optimizers-${VERSION}-*.whl" -print -quit)"
 if [[ -z "$WHEEL" ]]; then
   echo "[optimizers-runtime] build omitted synth-optimizers==$VERSION" >&2
   exit 1
