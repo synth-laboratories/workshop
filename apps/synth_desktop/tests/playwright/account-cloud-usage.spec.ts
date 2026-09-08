@@ -628,3 +628,34 @@ test("late credential reads cannot restore the signed-out fingerprint", async ({
 	await expect(page.getByTestId("settings-account")).not.toContainText("old-key-fingerprint");
 	await expect(page.getByTestId("account-sign-in").getByRole("button", { name: /Sign in/ })).toBeVisible();
 });
+
+test("account switch clears the previous sign-out confirmation", async ({ page }) => {
+    await stubCloudAccount(page, { state: "active", tier: "free", remainingUsd: 10, usedUsd: 0 });
+    await page.getByTestId("account-menu-trigger").click();
+    await page.getByTestId("open-account-settings").click();
+    await page.evaluate(async () => {
+        const settings = await window.synthConfig!.get();
+        window.synthAccount!.signOut = async () => ({ ...settings, apiKeyConfigured: false });
+    });
+    await page.getByTestId("account-sign-out").click();
+    await expect(page.getByTestId("account-sign-in-note")).toContainText("Signed out");
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent("synth:account-changed", { detail: { apiKeyConfigured: true } })));
+    await expect(page.getByTestId("account-sign-in-note")).toHaveCount(0);
+});
+
+test("late browser-pairing start is ignored after backend change", async ({ page }) => {
+    await stubCloudAccount(page, { state: "active", tier: "free", remainingUsd: 10, usedUsd: 0 });
+    await page.getByTestId("account-menu-trigger").click();
+    await page.getByTestId("open-account-settings").click();
+    await page.evaluate(() => {
+        window.synthAccount!.beginSignIn = () => new Promise(resolve => {
+            (window as any).__finishOldPairing = () => resolve({ verificationUri: "https://example.test/old", deviceCode: "old" } as any);
+        });
+    });
+    await page.getByTestId("sign-in-begin").click();
+    await page.evaluate(() => {
+        window.dispatchEvent(new CustomEvent("synth:account-changed", { detail: { apiKeyConfigured: true } }));
+        (window as any).__finishOldPairing();
+    });
+    await expect(page.getByTestId("sign-in-cancel")).toHaveCount(0);
+});

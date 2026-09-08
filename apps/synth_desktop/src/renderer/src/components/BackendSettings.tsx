@@ -26,6 +26,7 @@ export function AccountSignIn() {
 	const [saving, setSaving] = useState(false);
 	const [pair, setPair] = useState<PairState>({ kind: "idle" });
 	const pollTimer = useRef<number | null>(null);
+	const identityGeneration = useRef(0);
 
 	const load = () => {
 		const generation = ++settingsGeneration.current;
@@ -33,7 +34,13 @@ export function AccountSignIn() {
 	};
 	useEffect(() => {
 		load();
-		const onChanged = () => load();
+		const onChanged = () => {
+            ++identityGeneration.current;
+            stopPolling();
+            setPair({ kind: "idle" });
+            setStatus(null);
+            load();
+        };
 		window.addEventListener("synth:account-changed", onChanged);
 		return () => window.removeEventListener("synth:account-changed", onChanged);
 	}, []);
@@ -44,38 +51,46 @@ export function AccountSignIn() {
 			pollTimer.current = null;
 		}
 	};
-	useEffect(() => stopPolling, []);
+	useEffect(() => () => { ++identityGeneration.current; stopPolling(); }, []);
 
 	const beginSignIn = async () => {
 		if (!bridges.account) return;
+		const generation = ++identityGeneration.current;
+        setStatus(null);
 		try {
 			const begin = await bridges.account.beginSignIn();
+            if (generation !== identityGeneration.current) return;
 			setPair({ kind: "pairing", verificationUri: begin.verificationUri });
 			stopPolling();
 			pollTimer.current = window.setInterval(() => {
 				void bridges.account?.pollSignIn().then((result) => {
+                    if (generation !== identityGeneration.current) return;
 					if (result.status === "active") {
 						stopPolling();
 						setPair({ kind: "idle" });
-						setStatus("Signed in · runtime reconnected");
 						void bridges.config?.get().then((next) => {
+                            if (generation !== identityGeneration.current) return;
 							setSettings(next);
 							announceAccountChange(next);
+                            setStatus("Signed in · runtime reconnected");
 						});
 					} else if (result.status === "expired") {
 						stopPolling();
 						setPair({ kind: "error", message: result.reason });
 					}
 				}).catch((error) => {
+                    if (generation !== identityGeneration.current) return;
 					stopPolling();
 					setPair({ kind: "error", message: publicError(error) });
 				});
 			}, 4000);
 		} catch (error) {
+            if (generation !== identityGeneration.current) return;
 			setPair({ kind: "error", message: publicError(error) });
 		}
 	};
 	const cancelSignIn = () => {
+        ++identityGeneration.current;
 		stopPolling();
 		setPair({ kind: "idle" });
 		void bridges.account?.cancelSignIn();
@@ -83,9 +98,12 @@ export function AccountSignIn() {
 	const signOut = async () => {
 		if (!bridges.account) return;
 		setSaving(true);
+        const generation = ++identityGeneration.current;
+        stopPolling();
 		try {
 			++settingsGeneration.current;
 			const next = await bridges.account.signOut();
+            if (generation !== identityGeneration.current) return;
 			++settingsGeneration.current;
 			setSettings(next);
 			announceAccountChange(next);
