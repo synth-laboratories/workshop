@@ -15,7 +15,7 @@ def run(args, **kwargs):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--containers', type=pathlib.Path, default=ROOT.parent/'containers')
+    parser.add_argument('--containers', type=pathlib.Path, default=pathlib.Path(os.environ.get('CONTAINERS_ROOT', str(ROOT.parent/'containers'))))
     parser.add_argument('--output', type=pathlib.Path, default=ROOT/'runtime-distributions/trace')
     args = parser.parse_args()
     source = args.containers.resolve(); output = args.output.resolve()
