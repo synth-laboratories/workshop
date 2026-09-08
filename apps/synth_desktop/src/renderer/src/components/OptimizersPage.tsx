@@ -1025,7 +1025,7 @@ export function OptimizersPage({
 			)) : null}
 
 			{tab === "launch" ? (<>
-			<TrainingWorkspace onStartAgent={() => { const guide = OPTIMIZER_GUIDES.find((item) => item.id === "sft"); if (guide) void startAgent(guide); }} />
+			<TrainingWorkspace sessionRef={sessionRef} onStartAgent={() => { const guide = OPTIMIZER_GUIDES.find((item) => item.id === "sft"); if (guide) void startAgent(guide); }} />
 
 			<section className="optimizer-recipes" aria-labelledby="optimizer-recipes-title">
 				<div className="optimizer-recipes-head">
