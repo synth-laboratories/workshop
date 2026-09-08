@@ -110,11 +110,10 @@ fi
 STAGING="$(mktemp -d "${TMPDIR:-/tmp}/synth-optimizers-runtime.XXXXXX")"
 trap 'rm -rf "$STAGING"' EXIT
 mkdir -p "$STAGING/wheels"
-WHEEL="$(find "$PROJECT/target/wheels" -maxdepth 1 -type f -name "synth_optimizers-${VERSION}-*.whl" -print -quit 2>/dev/null || true)"
-if [[ -z "$WHEEL" ]]; then
-  "$UV" build --wheel --out-dir "$STAGING/wheels" "$PROJECT"
-  WHEEL="$(find "$STAGING/wheels" -maxdepth 1 -type f -name "synth_optimizers-${VERSION}-*.whl" -print -quit)"
-fi
+# Unreceipted target wheels may belong to another source revision with the
+# same package version. Only the verified distribution above is reusable.
+"$UV" build --wheel --out-dir "$STAGING/wheels" "$PROJECT"
+WHEEL="$(find "$STAGING/wheels" -maxdepth 1 -type f -name "synth_optimizers-${VERSION}-*.whl" -print -quit)"
 if [[ -z "$WHEEL" ]]; then
   echo "[optimizers-runtime] build omitted synth-optimizers==$VERSION" >&2
   exit 1

@@ -1568,6 +1568,7 @@ dev_instance() {
     export SYNTH_MLX_RL_PROJECT_ROOT
     python3 "$ROOT/scripts/stage-trace-runtime.py"
     "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
+    "$ROOT/scripts/stage-optimizer-runtime-distribution.sh"
     local tauri_configs=(--config "$PACKAGE_CONFIG" --config "$CONFIG")
     if [[ "$COMMAND" == "cua-live-build" ]]; then
       tauri_configs+=(--config "$LIVE_CONFIG")

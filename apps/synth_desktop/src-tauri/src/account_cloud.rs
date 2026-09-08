@@ -96,8 +96,8 @@ pub struct CloudPlan {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudAllowance {
-    /// `None` means the backend does not meter this account in dollars. The UI
-    /// must then show no dollar figure at all.
+    /// `None` means the backend has no known dollar allowance. It does not
+    /// authorize unmetered spending; the UI must show no dollar figure.
     #[serde(default)]
     #[specta(type = Option<specta_typescript::Number>)]
     pub limit_cents: Option<i64>,
@@ -226,11 +226,10 @@ pub fn validate_turn_admission(read: &SnapshotRead) -> Result<(), String> {
             snapshot.status
         ));
     }
-    if snapshot
-        .allowance
-        .remaining_cents
-        .is_some_and(|cents| cents <= 0)
-    {
+    let remaining = snapshot.allowance.remaining_cents.ok_or_else(|| {
+        "Synth Cloud balance is unknown. No metered turn was started.".to_string()
+    })?;
+    if remaining <= 0 {
         return Err("Synth Cloud balance is exhausted. No metered turn was started.".into());
     }
     Ok(())
@@ -874,6 +873,11 @@ mod tests {
             ..SnapshotRead::default()
         };
         assert!(validate_turn_admission(&read).is_ok());
+
+        read.snapshot.as_mut().unwrap().allowance.remaining_cents = None;
+        assert!(validate_turn_admission(&read)
+            .unwrap_err()
+            .contains("balance is unknown"));
 
         read.snapshot.as_mut().unwrap().allowance.remaining_cents = Some(0);
         assert!(validate_turn_admission(&read)
