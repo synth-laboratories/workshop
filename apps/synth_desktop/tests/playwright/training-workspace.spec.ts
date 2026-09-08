@@ -1,3 +1,4 @@
+import { openOptimizer } from "./v02-helpers";
 import { expect, test } from "./browser.fixture";
 
 test.beforeEach(async ({ page }) => {
@@ -38,16 +39,16 @@ test.beforeEach(async ({ page }) => {
 				title: "Banking77 Tinker SFT",
 				availability: "available",
 				limits: { trainingSteps: 30 }
-			}], listCloud: async () => [],
+			}, { id: "sft.qwen35-2b.mlx.v1", title: "Local SFT", availability: "available" }], listCloud: async () => [],
 			hostedTrainingModels: async () => ({ revision: "unavailable", models: [] }), searchSavedLoras: async () => ({ items: [], total: 0 }),
-			startRecipe: async () => { throw new Error("native optimizer runtime unavailable"); },
+			startRecipe: async (request: unknown) => { (window as any).__trainingLaunchRequest = request; throw new Error("native optimizer runtime unavailable"); },
 			refresh: async () => ({ status: "idle" }), eventsAfter: async () => [],
 			onEvent: () => () => undefined
 		};
 	});
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
-	await page.getByRole("button", { name: "Optimizers" }).click();
+	await openOptimizer(page);
 	await page.getByTestId("optimizer-tab-launch").click();
 	await expect(page.getByTestId("training-workspace")).toBeVisible();
 });
@@ -66,37 +67,35 @@ test("setup fails closed when no real MLX runtime is installed", async ({ page }
 	await expect(page.getByRole("alert")).toContainText("model download unavailable");
 });
 
-test("resolved config routes hosted launches through the native optimizer", async ({ page }) => {
+test("hosted SFT without evaluation routes through the native optimizer", async ({ page }) => {
 	await page.getByTestId("training-tab-train").click();
 	await page.getByLabel("Recipe").selectOption("sft");
-	await expect(page.getByTestId("training-resolved-config")).toContainText("Before · checkpoints · final");
-	await expect(page.getByTestId("training-resolved-config")).toContainText("Container tunnel · exact checkpoint");
 	await page.getByLabel("Compute").selectOption("tinker");
-	await page.getByLabel("Dataset / workload").selectOption("ctr-alfworld-cleanroom");
+	await expect(page.getByTestId("training-resolved-config")).toContainText("Disabled · checkpoints are unevaluated");
+	await expect(page.getByTestId("training-resolved-config")).toContainText("No container evaluation");
 	await expect(page.getByTestId("training-resolved-config")).toContainText("Hosted · Tinker");
-	await expect(page.getByTestId("training-resolved-config")).toContainText("alfworld.text.v1");
 	await page.getByRole("button", { name: "Start bounded run" }).click();
 	await expect(page.getByTestId("training-run-failure")).toContainText("native optimizer runtime unavailable");
+	const request = await page.evaluate(() => (window as any).__trainingLaunchRequest);
+	expect(request).toMatchObject({ recipeId: "sft.banking77.nemotron-lightning.tinker.v1", planOverride: { sft: { evaluationMode: "none" } } });
+	expect(request.containerId).toBeUndefined();
 });
 
-test("real unscored checkpoint evidence remains reviewable without inventing a plot", async ({ page }) => {
+test("unscored durable checkpoint evidence remains reviewable without inventing a plot", async ({ page }) => {
 	await page.evaluate(() => {
 		(window as any).synthOptimizers.startRecipe = async () => ({ id: "real-run", status: "running" });
-		(window as any).synthOptimizers.refresh = async () => ({ id: "real-run", status: "completed" });
-		(window as any).synthOptimizers.eventsAfter = async () => [{
-			type: "training.evaluation.completed",
-			delta: { evaluation: { phase: "checkpoint", step: 10, checkpoint_id: "ckpt-10", score: null, status: "completed", detail: { scored: 0, total: 2 } } }
-		}];
+		(window as any).synthOptimizers.runSummary = async () => ({ unchanged: false, projectionRevision: 1, tailCursor: 1, summary: { runId: "real-run", status: "completed", lifecycle: "terminal", condition: "none", usage: { steps: 10 }, collections: [] } });
+		(window as any).synthOptimizers.runCollection = async () => ({ runId: "real-run", collection: "evaluations", projectionRevision: 1, asOfSequence: 1, total: 1, limit: 100, truncatedByBytes: false, nextCursor: null, rows: [{ id: "evaluation-10", details: { phase: "checkpoint", step: 10, checkpointId: "ckpt-10", score: null, status: "completed", childRunId: "child-eval-10" } }] });
+		(window as any).synthOptimizers.eventsAfter = async () => { throw new Error("UI must read the durable collection, not raw events"); };
 	});
 	await page.getByTestId("training-tab-train").click();
 	await page.getByLabel("Compute").selectOption("tinker");
-	await page.getByLabel("Dataset / workload").selectOption("ctr-alfworld-cleanroom");
 	await page.getByRole("button", { name: "Start bounded run" }).click();
 	const evidence = page.getByTestId("training-evaluation-comparison");
 	await expect(evidence).toContainText("no scores returned");
 	await evidence.getByRole("button", { name: "Review checkpoint evaluation at step 10" }).click();
 	await expect(page.getByTestId("training-evaluation-dialog")).toContainText("ckpt-10");
-	await expect(page.getByTestId("training-evaluation-dialog")).toContainText('"scored": 0');
+	await expect(page.getByTestId("training-evaluation-dialog")).toContainText('child-eval-10');
 });
 
 test("a run cannot start until an exact training workload is advertised", async ({ page }) => {
@@ -106,9 +105,10 @@ test("a run cannot start until an exact training workload is advertised", async 
 	});
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
-	await page.getByRole("button", { name: "Optimizers" }).click();
+	await openOptimizer(page);
 	await page.getByTestId("optimizer-tab-launch").click();
 	await page.getByTestId("training-tab-train").click();
+	await page.getByLabel("Compute").selectOption("mlx");
 	await expect(
 		page.getByRole("alert").filter({ hasText: "No training workload" })
 	).toBeVisible();

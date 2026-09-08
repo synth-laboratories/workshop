@@ -10802,3 +10802,7 @@ html.compact-workbench .experiment-task-disclosure {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* Reserve navigation hit areas when optimizer setup content overflows. */
+.optimizers-page > .optimizer-tabs { flex: 0 0 auto; min-height: 34px; }
+.optimizers-page > .plugin-page-header { flex-shrink: 0; }

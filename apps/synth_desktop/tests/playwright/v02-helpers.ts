@@ -111,3 +111,11 @@ export async function metricValue(pane: ReturnType<Page["getByTestId"]>, label: 
 		throw new Error(`metric "${wanted}" not found; saw ${labels.join(", ") || "(none)"}`);
 	}, label);
 }
+
+/** Open the optional optimizer integration through its catalog entry. */
+export async function openOptimizer(page: Page) {
+	await page.getByRole("button", { name: "Integrations", exact: true }).click();
+	const entry = page.getByTestId("plugin-viewer-optimizers");
+	await entry.getByRole("checkbox", { name: "Show in sidebar" }).check();
+	await entry.getByRole("button", { name: "Open", exact: true }).click();
+}

@@ -359,6 +359,8 @@ export function OptimizersPage({
 			// the receipt says which, so surface it rather than assuming success.
 			if (next.error) setError(next.error);
 			await refreshPlugin();
+			// Installation and controls change recipe admission, not only the sidebar status.
+			await refresh();
 		} catch (reason) {
 			const failure = presentError(reason);
 			setError(failure.message);
