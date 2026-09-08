@@ -95,6 +95,7 @@ type Props = {
 	sessionRef?: string | null;
 	onOpenVisual: (visualId: string) => void;
 	onStartAgent: (guide: OptimizerGuide) => Promise<void>;
+    onEnsureApprovalSession?: () => Promise<string>;
 	onBack: () => void;
 	/** Data-selected registered container; binds workspace baseline evals. */
 	selectedContainerId?: string | null;
@@ -257,6 +258,7 @@ export function OptimizersPage({
 	sessionRef = null,
 	onOpenVisual,
 	onStartAgent,
+    onEnsureApprovalSession,
 	onBack,
 	selectedContainerId = null,
 	pluginStatuses = null,
@@ -1025,7 +1027,7 @@ export function OptimizersPage({
 			)) : null}
 
 			{tab === "launch" ? (<>
-			<TrainingWorkspace sessionRef={sessionRef} onStartAgent={() => { const guide = OPTIMIZER_GUIDES.find((item) => item.id === "sft"); if (guide) void startAgent(guide); }} />
+			<TrainingWorkspace onEnsureApprovalSession={onEnsureApprovalSession} sessionRef={sessionRef} onStartAgent={() => { const guide = OPTIMIZER_GUIDES.find((item) => item.id === "sft"); if (guide) void startAgent(guide); }} />
 
 			<section className="optimizer-recipes" aria-labelledby="optimizer-recipes-title">
 				<div className="optimizer-recipes-head">

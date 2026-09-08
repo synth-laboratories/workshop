@@ -353,6 +353,10 @@ export default function App() {
 						setApprovalPolicy={c.setApprovalPolicy}
 						setSandboxMode={c.setSandboxMode}
 						showToast={c.showToast}
+                        ensureTrainingApprovalSession={async () => {
+                            const session = await c.createConversation("chatgpt-luna", "Training and evaluation", undefined, { deferNativeStart: true, preserveView: true });
+                            return session.id;
+                        }}
 						startOptimizerAgent={async (title, prompt) => {
 							// An optimizer setup is an ordinary product turn on the
 							// operator-selected target. Do not silently route a local

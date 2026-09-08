@@ -82,7 +82,7 @@ function evaluationFromRow(details: unknown): Evaluation | null {
 	};
 }
 
-export function TrainingWorkspace({ onStartAgent, sessionRef }: { onStartAgent?: () => void; sessionRef?: string | null }) {
+export function TrainingWorkspace({ onStartAgent, sessionRef, onEnsureApprovalSession }: { onStartAgent?: () => void; sessionRef?: string | null; onEnsureApprovalSession?: () => Promise<string> }) {
 	const [view, setView] = useState<View>("artifacts");
 	const [algorithm, setAlgorithm] = useState<"sft" | "cispo">("sft");
 	const [placement, setPlacement] = useState<"mlx" | "tinker">("mlx");
@@ -137,9 +137,11 @@ export function TrainingWorkspace({ onStartAgent, sessionRef }: { onStartAgent?:
 			setError("Register and probe a ready training container before starting this run.");
 			return;
 		}
-		if (!sessionRef) { setError("Open a local conversation, then return to Training so the paid-compute approval has an owner."); return; }
+
 		setRun({ id: "starting", status: "starting", algorithm }); setView("run");
 		try {
+            const approvalSession = sessionRef ?? await onEnsureApprovalSession?.();
+            if (!approvalSession) throw new Error("Training requires a conversation for its paid-compute approval");
 			if (!bridges.optimizers) throw new Error("Local optimizer runtime is unavailable");
 			const recipeId = trainingRecipeId(algorithm, placement, recipes);
 			const selectedRecipe = recipes.find((recipe) => recipe.id === recipeId);
@@ -147,7 +149,7 @@ export function TrainingWorkspace({ onStartAgent, sessionRef }: { onStartAgent?:
 			if (algorithm === "cispo" && placement === "mlx" && !parentArtifact) throw new Error("CISPO requires an explicit SFT parent training artifact id");
 			const record = await bridges.optimizers.startRecipe({
 				recipeId,
-                sessionRef: sessionRef ?? undefined,
+                sessionRef: approvalSession,
 				openVisual: false,
                 ...(algorithm === "sft" && placement === "tinker" ? { baseModel: hostedModel, planOverride: { sft: { evaluationMode: sftEvaluationMode, evaluatorId: sftEvaluatorId, trainingSteps: sftSteps, maxCostUsd: sftCostCap } } } : {}),
 				...(placement === "mlx" ? { containerId: targetId } : {}),

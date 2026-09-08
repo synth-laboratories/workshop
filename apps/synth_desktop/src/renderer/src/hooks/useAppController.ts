@@ -1648,7 +1648,7 @@ export function useAppController() {
 			targetId: string = selectedTargetId,
 			title?: string,
 			objective?: string,
-			options?: { deferNativeStart?: boolean }
+			options?: { deferNativeStart?: boolean; preserveView?: boolean }
 		) => {
 			setBusy(true);
 			try {
@@ -1700,7 +1700,7 @@ export function useAppController() {
 						[id]: { state: "loaded", hasMore: false }
 					}));
 					responseTraceStore.markLoaded(id);
-					setView({ kind: "chat", chatId: session.id });
+					if (!options?.preserveView) setView({ kind: "chat", chatId: session.id });
 					return session;
 				}
 				const session = target.kind === "intern" && nativeIntern

@@ -191,6 +191,7 @@ export type MainRoutesProps = {
 	setSandboxMode: (mode: SandboxMode) => void;
 	showToast: (message: string) => void;
 	startOptimizerAgent: (title: string, prompt: string) => Promise<void>;
+    ensureTrainingApprovalSession: () => Promise<string>;
 	pluginStatuses: readonly PluginStatus[] | null;
 	refreshPluginStatuses: () => Promise<void>;
 	openChat: (chatId: string) => void;
@@ -267,6 +268,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		setSandboxMode,
 		showToast,
 		startOptimizerAgent,
+        ensureTrainingApprovalSession,
 		openChat,
 		openVisualRecord,
 		toggleArtifact,
@@ -660,6 +662,11 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					{view.kind === "jesterky" ? <JesterkyPage pluginStatuses={pluginStatuses} onRefreshPlugins={refreshPluginStatuses} onBack={leavePluginToRecentChat} onOpenVisuals={() => setView({kind: "visuals"})} /> : null}
 					{view.kind === "optimizers" ? (
 						<OptimizersPage
+                            onEnsureApprovalSession={async () => {
+                                const sessionId = await ensureTrainingApprovalSession();
+                                inventoryOriginRef.current = { kind: "chat", chatId: sessionId };
+                                return sessionId;
+                            }}
 							sessionRef={
 								inventoryOriginRef.current?.kind === "chat"
 									? inventoryOriginRef.current.chatId
