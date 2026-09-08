@@ -1242,10 +1242,12 @@ mod tests {
             "recipeId": super::HOSTED_SFT_BANKING77_RECIPE,
             "planOverride": {"sft":{"evaluationMode":"none"}}
         })).unwrap();
-        let source = "container_url = \"http://localhost:8110\"\n[metadata]\nevaluation_transport = \"tunnel\"\n";
+        let source = "training_file_id = \"obsolete\"\ntraining_jsonl = \"/data/train.jsonl\"\ncontainer_url = \"http://localhost:8110\"\n[metadata]\nevaluation_transport = \"tunnel\"\n";
         let migrated = super::resolved_training_plan(source.into(), &request, "openai/gpt-oss-20b").unwrap();
         let parsed: toml::Value = toml::from_str(&migrated).unwrap();
         assert!(parsed.get("container_url").is_none());
+        assert!(parsed.get("training_file_id").is_none());
+        assert_eq!(parsed["training_jsonl"].as_str(), Some("/data/train.jsonl"));
         assert!(parsed["metadata"].get("evaluation_transport").is_none());
         assert_eq!(parsed["checkpoint_evaluation"]["mode"].as_str(), Some("none"));
         assert_eq!(parsed["budget"]["max_cost_usd"].as_float(), Some(super::HOSTED_SFT_COST_CEILING_USD));
