@@ -141,7 +141,8 @@ pub struct VisualResult {
 pub struct CreateRequest {
     pub template_id: String,
     pub title: String,
-    /// Template binding envelope; consult visual_list_templates for its contract.
+    /// Object envelope {"schemaVersion":"synth.visual-bindings.v1","inputs":[{"input":"stream","kind":"live_sse","source":"...","poll_url":"..."}]}. Never pass a bare array. Consult visual_list_templates for input names.
+    #[schemars(with = "Option<serde_json::Map<String, Value>>")]
     pub bindings: Option<Value>,
     /// Source for source-authored templates, validated by the visual registry.
     pub content: Option<String>,

@@ -1620,7 +1620,11 @@ async fn run_policy_rollout(
         .and_then(Value::as_str)
         .map(str::to_owned)
         .unwrap_or_else(|| format!("roll_{}", Uuid::new_v4().simple()));
-    let prepare_body = json!({ "rollout_id": rollout_id, "telemetry": telemetry });
+    let mut preparation = body.clone();
+    preparation["task_instance_id"] = json!(task_instance_id);
+    let prepare_body = crate::container_stream::prepared_rollout_request(
+        &preparation, &rollout_id, telemetry.clone(),
+    )?;
     let mut prepare_response = client
         .post(format!("{base}/rollouts/prepare"))
         .json(&prepare_body)

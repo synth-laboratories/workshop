@@ -334,7 +334,9 @@ pub(super) async fn require_plugin_ready(manager: &super::OptimizerManager) -> R
     if manager.is_running().await {
         return Ok(());
     }
-    let status = manager.status().await;
+    // Bootstrap runs before the UI's first status refresh. The initial cached
+    // status has no version even when an installed distribution is selected.
+    let status = manager.refresh().await;
     if status.version.is_none() {
         return Err(crate::plugins::PluginNotReady::new("not_installed", "install").into());
     }

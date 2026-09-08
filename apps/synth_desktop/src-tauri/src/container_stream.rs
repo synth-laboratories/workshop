@@ -463,6 +463,28 @@ pub fn require_task_instance(body: &Value) -> Result<String> {
     bail!("start requires task_instance_id or seed; the host does not default seed 0")
 }
 
+/// Preserve execution identity at preparation, before the container seals it.
+pub fn prepared_rollout_request(body: &Value, rollout_id: &str, telemetry: Value) -> Result<Value> {
+    let mut request = json!({"rollout_id": rollout_id, "telemetry": telemetry});
+    if body.get("seed").is_some() || body.get("task_instance_id").is_some() {
+        request["task_instance_id"] = json!(require_task_instance(body)?);
+    }
+    if let Some(policy) = body.get("policy_ref").or_else(|| body.get("policyRef")) {
+        request["policy_ref"] = policy.clone();
+    }
+    for key in ["policy_revision_id", "annotation_protocol_revision_id"] {
+        if let Some(value) = body.get(key) {
+            request[key] = value.clone();
+        }
+    }
+    if let Some(value) = body.get("max_steps") {
+        let limit = value.as_u64().filter(|limit| *limit > 0)
+            .context("max_steps must be a positive integer")?;
+        request["max_steps"] = json!(limit);
+    }
+    Ok(request)
+}
+
 pub fn authoritative_poll_telemetry() -> Value {
     json!({
         "enabled": true,
@@ -634,6 +656,23 @@ mod tests {
             require_task_instance(&json!({"task_instance_id": "craftax:test:2001"})).unwrap(),
             "craftax:test:2001"
         );
+    }
+
+    #[test]
+    fn prepare_preserves_seed_policy_and_execution_ceiling() {
+        let request = prepared_rollout_request(&json!({
+            "seed": 1, "max_steps": 12,
+            "policy_ref": {"harness": "isolated_policy_process", "config": "heuristic"},
+            "annotation_protocol_revision_id": "anprev_test"
+        }), "seed-one", json!({"enabled": true})).unwrap();
+        assert_eq!(request["task_instance_id"], "seed:1");
+        assert_eq!(request["max_steps"], 12);
+        assert_eq!(request["policy_ref"]["config"], "heuristic");
+        assert_eq!(request["annotation_protocol_revision_id"], "anprev_test");
+        assert!(prepared_rollout_request(&json!({"seed": 1, "max_steps": 0}),
+            "invalid", json!({})).is_err());
+        assert_eq!(prepared_rollout_request(&json!({"seed": 0}),
+            "zero", json!({})).unwrap()["task_instance_id"], "seed:0");
     }
 
     #[tokio::test]

@@ -2175,7 +2175,8 @@ async fn run_one_scripted_rollout(
         requested_rollout_id.unwrap_or_else(|| format!("roll_{}", Uuid::new_v4().simple()));
     let prepare = client
         .post(format!("{base}/rollouts/prepare"))
-        .json(&json!({ "rollout_id": requested_rollout_id, "telemetry": telemetry }))
+        .json(&json!({ "rollout_id": requested_rollout_id, "telemetry": telemetry,
+            "task_instance_id": format!("seed:{seed}") }))
         .send()
         .await
         .context("POST /rollouts/prepare")?;
@@ -2211,6 +2212,7 @@ async fn run_one_scripted_rollout(
         .json(&json!({
             "rollout_id": rollout_id,
             "seed": seed,
+            "task_instance_id": format!("seed:{seed}"),
             "telemetry": telemetry,
             "slot": LIVE_EVAL_SLOT,
         }))
@@ -2872,16 +2874,9 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
                 .build()?;
-            let mut prepare_body = json!({"rollout_id": rollout_id, "telemetry": telemetry});
-            // A live annotation protocol pin is part of rollout identity; the
-            // caller names an installed anprev_ revision and the container
-            // declares the sibling channel in the descriptor.
-            if let Some(revision) = body
-                .get("annotation_protocol_revision_id")
-                .and_then(Value::as_str)
-            {
-                prepare_body["annotation_protocol_revision_id"] = json!(revision);
-            }
+            let prepare_body = crate::container_stream::prepared_rollout_request(
+                &body, &rollout_id, telemetry,
+            )?;
             let mut response = client
                 .post(format!("{base}/rollouts/prepare"))
                 .json(&prepare_body)
