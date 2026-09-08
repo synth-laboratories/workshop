@@ -91,6 +91,8 @@ pub struct CloudPlan {
     #[serde(default)]
     pub renews_at: Option<String>,
     #[serde(default)]
+    pub cancel_at_period_end: bool,
+    #[serde(default)]
     pub is_paid: bool,
 }
 

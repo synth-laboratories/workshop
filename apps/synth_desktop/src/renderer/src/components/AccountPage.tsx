@@ -154,7 +154,7 @@ export function AccountPage({
 							<p className="account-page-note">This account is not metered in monthly dollars.</p>
 						)}
 						{formatDate(plan.resetsAt) ? <Row label="Resets" value={formatDate(plan.resetsAt) as string} testId="account-page-resets" /> : null}
-						{formatDate(plan.renewsAt) ? <Row label="Renews" value={formatDate(plan.renewsAt) as string} /> : null}
+						{formatDate(plan.renewsAt) ? <Row label={plan.cancelAtPeriodEnd ? "Access until" : "Renews"} value={formatDate(plan.renewsAt) as string} testId="account-page-period-end" /> : null}
 					</>
 				) : view.signedIn ? (
 					<p className="account-page-note" data-testid="account-page-no-plan">

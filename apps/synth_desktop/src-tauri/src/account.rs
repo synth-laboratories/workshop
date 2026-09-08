@@ -87,6 +87,8 @@ pub struct AccountPlan {
     pub resets_at: Option<String>,
     #[serde(default)]
     pub renews_at: Option<String>,
+    #[serde(default)]
+    pub cancel_at_period_end: bool,
     /// `cloud` or `dev_seed`; the UI labels the stand-in explicitly.
     pub source: String,
 }
@@ -337,6 +339,7 @@ fn dev_seed_plan(
         remaining_usd: Some(usd(remaining_cents)),
         resets_at: Some(next_monthly_reset(now).to_rfc3339()),
         renews_at: None,
+        cancel_at_period_end: false,
         source: SOURCE_DEV_SEED.into(),
     }))
 }
@@ -354,6 +357,7 @@ fn plan_from_snapshot(snapshot: &CloudSnapshot) -> AccountPlan {
         remaining_usd: allowance.remaining_cents.map(usd),
         resets_at: allowance.resets_at.clone(),
         renews_at: snapshot.plan.renews_at.clone(),
+        cancel_at_period_end: snapshot.plan.cancel_at_period_end,
         source: SOURCE_CLOUD.into(),
     }
 }
@@ -616,6 +620,16 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn scheduled_cancellation_survives_native_account_projection() {
+        let mut read = cloud_snapshot("active", Some(2000), 0);
+        let snapshot = read.snapshot.as_mut().unwrap();
+        snapshot.plan.cancel_at_period_end = true;
+        let plan = plan_from_snapshot(snapshot);
+        assert!(plan.cancel_at_period_end);
+        assert_eq!(plan.renews_at, snapshot.plan.renews_at);
+    }
+
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 10, 12, 0, 0).unwrap()
     }
@@ -645,6 +659,7 @@ mod tests {
                 state: "active".into(),
                 price_cents: 20_000,
                 renews_at: Some("2026-09-01T00:00:00+00:00".into()),
+                cancel_at_period_end: false,
                 is_paid: true,
             },
             allowance: CloudAllowance {

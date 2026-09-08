@@ -1198,6 +1198,7 @@ export type SynthAccountPlan = {
 	remainingUsd?: number;
 	resetsAt?: string;
 	renewsAt?: string;
+	cancelAtPeriodEnd?: boolean;
 	source?: SynthAccountSource;
 };
 

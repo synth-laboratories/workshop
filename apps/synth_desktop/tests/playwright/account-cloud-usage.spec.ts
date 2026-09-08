@@ -555,3 +555,57 @@ test("checkout reconciliation survives reload and waits for delayed provider sta
 	});
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1")), { timeout: 12_000 }).toBeNull();
 });
+
+for (const change of ["organization", "backend", "signout"] as const) {
+	test(`pending checkout is invalidated on ${change} change`, async ({ page }) => {
+		await stubCloudAccount(page, { state: "active", tier: "free", remainingUsd: 0, usedUsd: 0 });
+		await page.getByTestId("account-menu-trigger").click();
+		await page.getByTestId("account-primary-action").click();
+		await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1"))).not.toBeNull();
+		await page.evaluate((kind) => {
+			const summary = (window as any).__cloudSummary;
+			if (kind === "organization") summary.organization = { id: "org_2", displayName: "Other org", role: "owner" };
+			if (kind === "backend") summary.environment = "dev";
+			if (kind === "signout") summary.signedIn = false;
+			window.dispatchEvent(new CustomEvent("synth:account-changed", { detail: { apiKeyConfigured: kind !== "signout" } }));
+		}, change);
+		await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1"))).toBeNull();
+	});
+}
+
+test("scheduled cancellation labels access boundary instead of renewal", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", tier: "starter", remainingUsd: 20, usedUsd: 0 });
+	await page.evaluate(() => {
+		const summary = (window as any).__cloudSummary;
+		summary.plan.renewsAt = "2026-10-08T12:00:00+00:00";
+		summary.plan.cancelAtPeriodEnd = true;
+		window.dispatchEvent(new Event("focus"));
+	});
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("open-account-settings").click();
+	await expect(page.getByTestId("account-page-period-end").locator("..")).toContainText("Access until");
+	await expect(page.getByTestId("account-page-period-end").locator("..")).not.toContainText("Renews");
+});
+
+test("late credential reads cannot restore the signed-out fingerprint", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", tier: "starter", remainingUsd: 20, usedUsd: 0 });
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("open-account-settings").click();
+	await page.evaluate(async () => {
+		const old = { ...await window.synthConfig!.get(), apiKeyFingerprint: "old-key-fingerprint" };
+		const releases: Array<() => void> = [];
+		(window as any).__releaseOldConfig = () => releases.forEach(release => release());
+		(window as any).__newConfig = { ...old, apiKeyConfigured: false, apiKeyFingerprint: null };
+		window.synthConfig!.get = () => new Promise(resolve => releases.push(() => resolve(old)));
+		window.dispatchEvent(new CustomEvent("synth:account-changed", { detail: { apiKeyConfigured: true } }));
+	});
+	await page.evaluate(() => {
+		window.synthConfig!.get = async () => (window as any).__newConfig;
+		(window as any).__cloudSummary.signedIn = false;
+		window.dispatchEvent(new CustomEvent("synth:account-changed", { detail: { apiKeyConfigured: false } }));
+	});
+	await expect(page.getByTestId("account-sign-in").getByRole("button", { name: /Sign in/ })).toBeVisible();
+	await page.evaluate(() => (window as any).__releaseOldConfig());
+	await expect(page.getByTestId("settings-account")).not.toContainText("old-key-fingerprint");
+	await expect(page.getByTestId("account-sign-in").getByRole("button", { name: /Sign in/ })).toBeVisible();
+});

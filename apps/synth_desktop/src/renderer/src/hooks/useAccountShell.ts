@@ -55,6 +55,13 @@ export function useAccountShell(showToast: (message: string) => void) {
 		refreshAccountSummary(true);
 		const onFocus = () => refreshAccountSummary(true);
 		const onVisibility = () => { if (document.visibilityState === "visible") onFocus(); };
+		const onIdentityChange = () => {
+			++refreshSequence.current;
+			setAccountSummary(null);
+			savePendingBilling(null);
+			refreshAccountSummary(true);
+		};
+		window.addEventListener("synth:account-changed", onIdentityChange);
 		window.addEventListener("focus", onFocus);
 		document.addEventListener("visibilitychange", onVisibility);
 		const timer = window.setInterval(() => {
@@ -69,6 +76,7 @@ export function useAccountShell(showToast: (message: string) => void) {
 		return () => {
 			++refreshSequence.current;
 			window.clearInterval(timer);
+			window.removeEventListener("synth:account-changed", onIdentityChange);
 			window.removeEventListener("focus", onFocus);
 			document.removeEventListener("visibilitychange", onVisibility);
 		};

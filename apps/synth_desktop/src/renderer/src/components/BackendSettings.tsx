@@ -21,13 +21,15 @@ function announceAccountChange(next: SynthBackendSettings) {
  */
 export function AccountSignIn() {
 	const [settings, setSettings] = useState<SynthBackendSettings | null>(null);
+	const settingsGeneration = useRef(0);
 	const [status, setStatus] = useState<string | null>(null);
 	const [saving, setSaving] = useState(false);
 	const [pair, setPair] = useState<PairState>({ kind: "idle" });
 	const pollTimer = useRef<number | null>(null);
 
 	const load = () => {
-		void bridges.config?.get().then(setSettings).catch(() => undefined);
+		const generation = ++settingsGeneration.current;
+		void bridges.config?.get().then((next) => { if (generation === settingsGeneration.current) setSettings(next); }).catch(() => undefined);
 	};
 	useEffect(() => {
 		load();
@@ -82,7 +84,9 @@ export function AccountSignIn() {
 		if (!bridges.account) return;
 		setSaving(true);
 		try {
+			++settingsGeneration.current;
 			const next = await bridges.account.signOut();
+			++settingsGeneration.current;
 			setSettings(next);
 			announceAccountChange(next);
 			setStatus("Signed out · cloud credentials removed");
@@ -140,6 +144,7 @@ export function BackendSettings() {
 		local: "http://127.0.0.1:8000"
 	};
 	const [settings, setSettings] = useState<SynthBackendSettings | null>(null);
+	const settingsGeneration = useRef(0);
 	const [profile, setProfile] = useState("prod");
 	const [backendUrl, setBackendUrl] = useState("");
 	const [envFile, setEnvFile] = useState("");
@@ -167,7 +172,8 @@ export function BackendSettings() {
 	};
 	useEffect(() => {
 		const load = () => {
-			void bridges.config?.get().then(apply).catch((error) => setStatus(publicError(error)));
+			const generation = ++settingsGeneration.current;
+			void bridges.config?.get().then((next) => { if (generation === settingsGeneration.current) apply(next); }).catch((error) => { if (generation === settingsGeneration.current) setStatus(publicError(error)); });
 		};
 		load();
 		// Sign-in and sign-out now happen in Devices & security; this panel must

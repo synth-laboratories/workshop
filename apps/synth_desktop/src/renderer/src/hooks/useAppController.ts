@@ -583,7 +583,9 @@ export function useAppController() {
 		return combined;
 	}, [nativeCodex, nativeIntern]);
 
+	const configGeneration = useRef(0);
 	const refreshHealth = useCallback(async () => {
+		const generation = ++configGeneration.current;
 		if (isDesktop && bridges.core && bridges.config && bridges.inventory) {
 			const [core, config, counts, currentLaguna, usage] = await Promise.all([
 				bridges.core.diagnostics(),
@@ -617,6 +619,7 @@ export function useAppController() {
 					usage: counts.usage
 				}
 			};
+			if (generation !== configGeneration.current) return next;
 			setApiKeyConfigured(config.apiKeyConfigured);
 			setBackendSettings(config);
 			setAccountUsage(usage);
@@ -628,6 +631,7 @@ export function useAppController() {
 			bridges.config?.get().catch(() => null) ?? Promise.resolve(null)
 		]);
 		if (config) {
+			if (generation !== configGeneration.current) return next;
 			setApiKeyConfigured(config.apiKeyConfigured);
 			setBackendSettings(config);
 		}
@@ -638,10 +642,12 @@ export function useAppController() {
 	useEffect(() => {
 		const onAccountChanged = (event: Event) => {
 			const configured = (event as CustomEvent<{ apiKeyConfigured?: boolean }>).detail?.apiKeyConfigured;
+			++configGeneration.current;
+			setBackendSettings(null);
 			if (typeof configured === "boolean") setApiKeyConfigured(configured);
 			// Connection details (including the credential fingerprint) must refresh too.
 			void refreshHealth().catch(() => undefined);
-			refreshAccountSummary();
+			refreshAccountSummary(true);
 		};
 		window.addEventListener("synth:account-changed", onAccountChanged);
 		return () => window.removeEventListener("synth:account-changed", onAccountChanged);
@@ -1619,10 +1625,11 @@ export function useAppController() {
 
 	const ensureOpenRouterReady = useCallback(async (targetId: string): Promise<boolean> => {
 		if (!isOpenRouterCatalogTarget(targetId)) return true;
+		const generation = configGeneration.current;
 		const config = await bridges.config?.get().catch(() => null);
 		const configured = config?.openrouterApiKeyConfigured ?? health?.openrouter.mode === "ready";
 		if (configured) {
-			if (config) setBackendSettings(config);
+			if (config && generation === configGeneration.current) setBackendSettings(config);
 			return true;
 		}
 		showToast("OpenRouter API key required — message was not sent");

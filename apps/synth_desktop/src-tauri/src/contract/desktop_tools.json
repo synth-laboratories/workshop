@@ -48667,6 +48667,16 @@
                   }
                 ]
               },
+              "cancelAtPeriodEnd": {
+                "anyOf": [
+                  {
+                    "const": false
+                  },
+                  {
+                    "const": true
+                  }
+                ]
+              },
               "source": {
                 "type": "string"
               }
@@ -49102,6 +49112,16 @@
                   },
                   {
                     "type": "string"
+                  }
+                ]
+              },
+              "cancelAtPeriodEnd": {
+                "anyOf": [
+                  {
+                    "const": false
+                  },
+                  {
+                    "const": true
                   }
                 ]
               },

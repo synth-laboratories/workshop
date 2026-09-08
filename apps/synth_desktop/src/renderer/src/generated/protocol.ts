@@ -707,6 +707,7 @@ export type AccountPlan = {
 	remainingUsd?: number | null,
 	resetsAt?: string | null,
 	renewsAt?: string | null,
+	cancelAtPeriodEnd?: boolean,
 	/**  `cloud` or `dev_seed`; the UI labels the stand-in explicitly. */
 	source: string,
 };
