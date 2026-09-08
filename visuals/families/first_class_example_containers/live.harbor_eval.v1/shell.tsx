@@ -10,6 +10,7 @@ import { Identifier } from "../../../chrome/Identifier.tsx";
 import { VisualChrome, MetricStrip } from "../../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber } from "../../../runtime/liveStream.ts";
+import { foldHarborTrials as foldTrials, harborSkillProgress } from "../../../runtime/harborTrials.ts";
 import { projectLiveEval } from "../../../runtime/liveEvalReducer.ts";
 import { harborEvalSnapshot, type HarborEvalSnapshot } from "../../../runtime/harborEvalSnapshot.ts";
 import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
@@ -43,57 +44,6 @@ const STREAM_WINDOW = 30;
 function asStream(raw: unknown): StreamPayload {
   if (raw && typeof raw === "object") return raw as StreamPayload;
   return {};
-}
-
-type TrialView = {
-  key: string;
-  instruction?: string;
-  sandbox?: string;
-  trialId?: string;
-  status: "planned" | "launched" | "verified" | "failed";
-  reward?: number | null;
-  verifierScript?: string;
-};
-
-/** Fold trial.planned / trial.launched / verifier / status into trial cards. */
-function foldTrials(events: LiveEvalEvent[]): TrialView[] {
-  const trials = new Map<string, TrialView>();
-  let anonymous = 0;
-  const keyOf = (payload: Record<string, unknown>) =>
-    String(payload.trial_id ?? payload.trialId ?? payload.attempt_id ?? `trial_${anonymous}`);
-  for (const event of events) {
-    const payload = (event.payload ?? {}) as Record<string, unknown>;
-    if (event.kind === "trial.planned") {
-      anonymous += 1;
-      const key = keyOf(payload);
-      trials.set(key, {
-        key,
-        instruction: typeof payload.instruction === "string" ? payload.instruction : undefined,
-        sandbox: typeof payload.sandbox === "string" ? payload.sandbox : undefined,
-        trialId: typeof payload.trial_id === "string" ? payload.trial_id : undefined,
-        status: "planned"
-      });
-    } else if (event.kind === "trial.launched") {
-      const key = keyOf(payload);
-      const existing = trials.get(key) ?? { key, status: "planned" as const };
-      trials.set(key, {
-        ...existing,
-        sandbox: typeof payload.sandbox === "string" ? payload.sandbox : existing.sandbox,
-        status: "launched"
-      });
-    } else if (event.kind === "verifier") {
-      const key = payload.trial_id != null ? String(payload.trial_id) : [...trials.keys()].at(-1) ?? keyOf(payload);
-      const existing = trials.get(key) ?? { key, status: "launched" as const };
-      const rewardTxt = payload["reward.txt"];
-      trials.set(key, {
-        ...existing,
-        status: "verified",
-        verifierScript: typeof payload.script === "string" ? payload.script : existing.verifierScript,
-        reward: typeof rewardTxt === "number" && Number.isFinite(rewardTxt) ? rewardTxt : null
-      });
-    }
-  }
-  return [...trials.values()];
 }
 
 /** A settled snapshot renders instead of the live fold, never beside it. */
@@ -203,6 +153,7 @@ export function Shell(props: ShellProps) {
       : visibleEvents.at(-1);
   const projection = projectLiveEval(visibleEvents);
   const trials = useMemo(() => foldTrials(visibleEvents), [visibleEvents]);
+  const skills = useMemo(() => harborSkillProgress(visibleEvents), [visibleEvents]);
   const status = [...visibleEvents].reverse().find((event) => event.kind === "status");
   const statusText = String(status?.payload.status ?? "");
   const snapshot = useMemo(
@@ -219,7 +170,7 @@ export function Shell(props: ShellProps) {
   const statusLabel = restored
     ? snapshot?.status ?? "terminal"
     : statusText || (ready ? (live ? "live" : "idle") : hasSource ? "connecting" : "awaiting source");
-  const tools = visibleEvents.filter((event) => event.kind === "tools" || event.kind === "stdout" || event.kind === "stderr");
+  const tools = visibleEvents.filter((event) => ["tools", "stdout", "stderr", "agent.action", "agent.message"].includes(event.kind));
   const visibleTools = showFullStream ? tools : tools.slice(-STREAM_WINDOW);
   const verifiedCount = trials.filter((trial) => trial.status === "verified").length;
 
@@ -255,6 +206,20 @@ export function Shell(props: ShellProps) {
               ]
         }
       />
+
+      {!restored && skills.length > 0 ? (
+        <section className="sv-section" aria-label="Skill progress">
+          <h3>Skill progress</h3>
+          <table style={{ width: "100%", textAlign: "left" }}>
+            <thead><tr><th>Rollout</th><th>Skill</th><th>XP</th><th>XP/min</th><th>Samples</th></tr></thead>
+            <tbody>{skills.map((row) => <tr key={JSON.stringify([row.lane, row.skill])}>
+              <td><Identifier value={row.lane} label="rollout" max={20} copy={false} /></td>
+              <td>{row.skill}</td><td>{formatMissingNumber(row.xp)}</td>
+              <td>{formatMissingNumber(row.xpPerMin)}</td><td>{row.samples}</td>
+            </tr>)}</tbody>
+          </table>
+        </section>
+      ) : null}
 
       {restored && snapshot ? (
         <section className="sv-section" aria-label="Settled run" data-testid="harbor-restored">
@@ -349,6 +314,8 @@ export function Shell(props: ShellProps) {
                   <p className="sv-mono" style={{ margin: "6px 0 0", fontSize: 11, color: "var(--sv-text-muted)" }}>
                     {trial.verifierScript ?? "verifier"} · reward.txt {trial.reward == null ? "missing (fails closed — never defaulted to 0)" : formatMissingNumber(trial.reward)}
                   </p>
+                ) : trial.status === "completed" || trial.status === "failed" ? (
+                  <p className="sv-mono">Reported reward: {formatMissingNumber(trial.reward)}</p>
                 ) : null}
               </article>
             ))}
@@ -376,7 +343,7 @@ export function Shell(props: ShellProps) {
           {visibleTools.map((event, index) => (
             <li key={`${event.ts}-${index}`} className="sv-mono" style={{ fontSize: 12, padding: "4px 10px", borderBottom: "1px solid var(--sv-border)", overflowWrap: "anywhere" }}>
               <span style={{ color: event.kind === "stderr" ? "#b23830" : "var(--sv-text-faint)", marginRight: 6 }}>{event.kind}</span>
-              {String(event.payload.name ?? event.payload.text ?? "")}
+              {String(event.payload.name ?? event.payload.text ?? event.payload.message ?? "")}
             </li>
           ))}
           {tools.length === 0 ? (
