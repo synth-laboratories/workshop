@@ -19,6 +19,7 @@ export function useAccountShell(showToast: (message: string) => void) {
 	const [usageSheetOpen, setUsageSheetOpen] = useState(false);
 
 	const refreshSequence = useRef(0);
+	const billingSequence = useRef(0);
 	const pendingBilling = useRef<BillingReturn | null>(null);
 	const savePendingBilling = useCallback((value: BillingReturn | null) => {
 		pendingBilling.current = value;
@@ -56,6 +57,7 @@ export function useAccountShell(showToast: (message: string) => void) {
 		const onFocus = () => refreshAccountSummary(true);
 		const onVisibility = () => { if (document.visibilityState === "visible") onFocus(); };
 		const onIdentityChange = () => {
+			++billingSequence.current;
 			++refreshSequence.current;
 			setAccountSummary(null);
 			savePendingBilling(null);
@@ -89,6 +91,7 @@ export function useAccountShell(showToast: (message: string) => void) {
 
 	const openBilling = useCallback(
 		async (action: "upgrade" | "manage") => {
+			const operation = ++billingSequence.current;
 			const bridge = bridges.account;
 			if (typeof bridge?.openBilling !== "function") {
 				showToast("Billing management requires Synth Desktop");
@@ -98,6 +101,7 @@ export function useAccountShell(showToast: (message: string) => void) {
 				const identity = billingIdentity(accountSummary);
 				if (identity) savePendingBilling({ identity, tier: action === "upgrade" ? accountSummary?.billing?.upgradeTier ?? null : null, startedAt: Date.now() });
 				await bridge.openBilling(action, accountSummary?.billing?.upgradeTier);
+				if (operation !== billingSequence.current) return;
 				showToast(
 					action === "upgrade"
 						? "Finish your upgrade in the browser"
@@ -105,6 +109,7 @@ export function useAccountShell(showToast: (message: string) => void) {
 				);
 				refreshAccountSummary(true);
 			} catch (reason) {
+				if (operation !== billingSequence.current) return;
 				savePendingBilling(null);
 				showToast(publicError(reason));
 			}

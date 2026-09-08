@@ -4475,6 +4475,12 @@ async fn account_open_billing(
         )
         .await
         .map_err(AppError::from)?;
+    let current = synth_config::resolve().map_err(AppError::from)?;
+    if current.backend_url != resolved.backend_url || current.api_key != resolved.api_key {
+        return Err(AppError::from(anyhow::anyhow!(
+            "Account changed while opening billing. Try again for the current account."
+        )));
+    }
     let url = account_cloud::validate_billing_url(
         &url,
         &resolved.backend_url,

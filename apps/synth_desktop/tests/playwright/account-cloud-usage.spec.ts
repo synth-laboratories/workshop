@@ -587,6 +587,25 @@ test("scheduled cancellation labels access boundary instead of renewal", async (
 	await expect(page.getByTestId("account-page-period-end").locator("..")).not.toContainText("Renews");
 });
 
+test("late billing completion cannot announce checkout for a signed-out identity", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", tier: "free", remainingUsd: 0, usedUsd: 0 });
+	await page.evaluate(() => {
+		window.synthAccount!.openBilling = () => new Promise(resolve => {
+			(window as any).__finishOldCheckout = () => resolve("https://checkout.stripe.com/old-account");
+		});
+	});
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-primary-action").click();
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1"))).not.toBeNull();
+	await page.evaluate(() => {
+		(window as any).__cloudSummary.signedIn = false;
+		window.dispatchEvent(new CustomEvent("synth:account-changed", { detail: { apiKeyConfigured: false } }));
+	});
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1"))).toBeNull();
+	await page.evaluate(() => (window as any).__finishOldCheckout());
+	await expect(page.getByText("Finish your upgrade in the browser", { exact: true })).toHaveCount(0);
+});
+
 test("late credential reads cannot restore the signed-out fingerprint", async ({ page }) => {
 	await stubCloudAccount(page, { state: "active", tier: "starter", remainingUsd: 20, usedUsd: 0 });
 	await page.getByTestId("account-menu-trigger").click();

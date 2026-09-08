@@ -1,7 +1,7 @@
 import type { SynthAccountSummary } from "../bridge";
 
 export const BILLING_RETURN_KEY = "synth.billing-return.v1";
-export const BILLING_RETURN_TTL_MS = 30 * 60 * 1000;
+export const BILLING_RETURN_TTL_MS = 60 * 60 * 1000;
 export type BillingReturn = { identity: string; tier: string | null; startedAt: number };
 
 export function billingIdentity(summary: SynthAccountSummary | null): string | null {
