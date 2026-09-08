@@ -191,6 +191,12 @@ launch_installed() {
 }
 
 verify_desktop() {
+  local release_root="${WORKSHOP_RELEASE_ROOT:-$ROOT/../workshop-release}"
+  local instance_test="$release_root/scripts/source-checkout/test-desktop-instance.sh"
+  [[ -f "$instance_test" ]] || {
+    echo "[desktop] Full verification requires workshop-release; set WORKSHOP_RELEASE_ROOT to its checkout." >&2
+    return 1
+  }
   cd "$ROOT"
   python3 scripts/generate-workshop-dispatch.py --check
   node scripts/generate-workshop-schemas.mjs --check
@@ -199,7 +205,7 @@ verify_desktop() {
 	enable_rust_cache
 	run_renderer_typecheck
   cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml
-  ./scripts/test-desktop-instance.sh
+  bash "$instance_test" "$ROOT"
   npm run test:playwright --workspace @synth/synth-desktop
 }
 
