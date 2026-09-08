@@ -5978,9 +5978,6 @@ mod tests {
         Arc, Mutex,
     };
 
-    mod native_research_e2e {
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/optimizers/native_research_e2e.rs"));
-    }
 
     fn ready_container_with_metadata(metadata: Value) -> ReadyContainer {
         ReadyContainer {

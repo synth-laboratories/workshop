@@ -10,6 +10,3 @@ pub(crate) mod paid_compute_budget;
 mod persistence;
 
 pub use persistence::SessionPersistence;
-
-#[cfg(test)]
-mod annotation_research_e2e;

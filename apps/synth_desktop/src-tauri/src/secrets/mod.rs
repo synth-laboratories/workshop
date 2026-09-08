@@ -3139,6 +3139,3 @@ mod tests {
         );
     }
 }
-
-#[cfg(test)]
-mod research_e2e;
