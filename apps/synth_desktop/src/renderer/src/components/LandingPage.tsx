@@ -1,3 +1,4 @@
+import { runtimeStorage } from "../preferences/runtimeStorage";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { apiProviderForTarget, EXECUTION_TARGETS, isOpenRouterTargetId, LAUNCH_PICKER_TARGETS, MODEL_ACCESS_LABEL, MODEL_ACCESS_ORDER, modelAccessForTarget, TARGET_GROUP_LABEL } from "../types/landing";
 import { targetOptionForId } from "../runtime/modelCatalog";
@@ -306,8 +307,13 @@ export function LandingPage({
 	onConfigureAccount,
 }: Props) {
 	const [accountChoiceMade, setAccountChoiceMade] = useState(
-		() => window.localStorage.getItem("synth.accountChoiceMade") === "1"
+		() => runtimeStorage.getItem("synth.accountChoiceMade") === "1"
 	);
+    useEffect(() => {
+        const refresh = () => setAccountChoiceMade(runtimeStorage.getItem("synth.accountChoiceMade") === "1");
+        window.addEventListener("workshop:state-changed", refresh);
+        return () => window.removeEventListener("workshop:state-changed", refresh);
+    }, []);
 	return (
 		<div className="landing" data-testid="landing-page">
 			<div className="landing-hero">
@@ -318,7 +324,7 @@ export function LandingPage({
 				{!state.apiKeyConfigured && !accountChoiceMade ? (
 					<div className="quick-actions" data-testid="first-run-account-choice">
 						<button type="button" className="quick-card" onClick={() => {
-							window.localStorage.setItem("synth.accountChoiceMade", "1");
+							runtimeStorage.setItem("synth.accountChoiceMade", "1");
 							setAccountChoiceMade(true);
 						}}>
 							<span><strong>Continue locally</strong><small>No account required</small></span>

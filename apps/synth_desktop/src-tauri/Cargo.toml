@@ -40,12 +40,14 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
+schemars = "0.8.22"
 sha2 = "0.10"
 # Wave 2 boundary codegen (tauri-specta). Pin RC versions together — specta
 # RCs are not semver-stable across minor bumps.
 specta = { version = "=2.0.0-rc.25", features = ["derive", "serde_json"] }
 specta-typescript = "0.0.12"
 toml = "0.8"
+toml_edit = "=0.20.2"
 tauri = { version = "2", features = ["specta"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
@@ -96,6 +98,10 @@ objc2-web-kit = { version = "0.3", default-features = false, features = [
 # QA control plane. Never a default: release artifacts must not contain the
 # eval-driver route table at all. Instance builds opt in (desktop-instance.sh).
 eval-driver = []
+
+[[bin]]
+name = "workshop"
+path = "src/bin/workshop.rs"
 
 [[bin]]
 name = "synth-visuals-mcp"

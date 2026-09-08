@@ -1671,8 +1671,8 @@ mod tests {
             adapters += 1;
             let source = fs::read_to_string(entry.path()).unwrap();
             assert!(
-                source.contains("#[path = \"../instance_paths.rs\"]"),
-                "{name} must include the shared instance_paths module"
+                source.contains("synth_desktop_lib::adapters::mcp::") && source.lines().count() <= 10,
+                "{name} must be a thin forwarder to the shared adapter/runtime resolver"
             );
             for forbidden in ["\"Synth Desktop\"", "data_dir()", "SYNTH_DESKTOP_DATA_ROOT"] {
                 assert!(

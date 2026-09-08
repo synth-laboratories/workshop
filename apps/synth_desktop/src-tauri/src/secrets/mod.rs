@@ -11,6 +11,7 @@ pub(crate) use backend::MemoryBackend;
 pub(crate) mod capability;
 mod fingerprint;
 mod importer;
+pub(crate) use importer::parse_dotenv;
 pub mod lease;
 mod locator;
 mod path_gate;

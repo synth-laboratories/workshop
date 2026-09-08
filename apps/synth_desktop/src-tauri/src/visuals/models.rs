@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 pub const VISUAL_SCHEMA_VERSION: &str = "synth.desktop-visual.v1";
 pub const VISUAL_BINDINGS_SCHEMA_VERSION: &str = "synth.visual-bindings.v1";
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum VisualStatus {
     Draft,
@@ -36,7 +36,7 @@ impl VisualStatus {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum RendererKind {
     Template,
@@ -74,7 +74,7 @@ impl RendererKind {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VisualRecord {
     pub schema_version: String,
@@ -93,6 +93,9 @@ pub struct VisualRecord {
     pub bindings: Value,
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Durable owner for visuals authored in the shared local workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     #[serde(default)]
     pub message_id: Option<String>,
     #[serde(default)]
@@ -135,7 +138,7 @@ pub struct VisualRevision {
     #[serde(default)]
     pub author_agent_id: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub parent_revision: Option<i64>,
     pub created_at: String,
 }
@@ -215,7 +218,7 @@ pub struct VisualUpload {
     pub receipt_digest: String,
     pub collection_id: Option<String>,
     pub publication_id: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub publication_revision: Option<i64>,
     pub state: String,
     pub committed_url: Option<String>,
@@ -270,9 +273,9 @@ pub struct VisualQuery {
     pub session_id: Option<String>,
     pub template_id: Option<String>,
     pub search: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub limit: Option<i64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub offset: Option<i64>,
 }
 

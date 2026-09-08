@@ -245,7 +245,7 @@ export function projectRunViewV2(
 			...(header.work.running != null ? { active: header.work.running } : {}),
 			...(header.work.queued != null ? { queued: header.work.queued } : {}),
 			...(header.work.failed != null ? { failed: header.work.failed } : {}),
-			...(determinate ? { total: header.work.planned } : {}),
+			...(determinate && header.work.planned != null ? { total: header.work.planned } : {}),
 			...(header.work.unit ? { unit: header.work.unit } : {})
 		},
 		evidence,

@@ -32,7 +32,7 @@ pub struct TrainingEvaluationSummary {
     #[serde(default)]
     pub phase: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub step: Option<u64>,
     #[serde(default)]
     pub score: Option<f64>,
@@ -51,7 +51,7 @@ pub struct TrainingEvaluationSummary {
     #[serde(default)]
     pub confidence: Option<f64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub paired_n: Option<u64>,
     #[serde(default)]
     pub verdict: Option<String>,
@@ -64,7 +64,7 @@ pub struct TrainingEvaluationSummary {
     #[serde(default)]
     pub evaluator: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub sample_count: Option<u64>,
     #[serde(default)]
     pub status: Option<String>,

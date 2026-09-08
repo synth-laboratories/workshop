@@ -1,3 +1,5 @@
+import type { MainView } from "./routes";
+import { runtimeStorage } from "./preferences/runtimeStorage";
 import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { formatTps } from "./components/InferencePanel";
@@ -30,12 +32,27 @@ import {
 } from "./runtime/captureSurface";
 import { installCaptureAudit } from "./runtime/captureFindings";
 import { MainRoutes } from "./routes";
+import { subscribeVisualPresentation } from "./runtime/visualPresentation";
 import { bridges } from "./runtime/desktopBridge";
 import type { WhisperRuntimeStatus } from "./bridge";
 
 /** Shell + wiring only — orchestration lives in useAppController / ComposerDock. */
 export default function App() {
 	const c = useAppController();
+    useEffect(() => {
+        type Request = { requestId: string; view: MainView };
+        const target = window as Window & { __workshopAppPresentation?: Request };
+        const apply = (request?: Request) => {
+            if (!request?.view) return;
+            c.setView(request.view);
+            delete target.__workshopAppPresentation;
+        };
+        const handle = (event: Event) => apply((event as CustomEvent<Request>).detail);
+        window.addEventListener("workshop:app-present", handle);
+        apply(target.__workshopAppPresentation);
+        return () => window.removeEventListener("workshop:app-present", handle);
+    }, [c.setView]);
+	useEffect(() => subscribeVisualPresentation(() => c.setView({ kind: "visuals" })), [c.setView]);
 	const activeChatOutputs = useChatOutputs(c.activeChat ?? { id: "", title: "", messages: [] });
 	const [whisperStatus, setWhisperStatus] = useState<WhisperRuntimeStatus | null>(null);
 	useEffect(() => {
@@ -117,12 +134,14 @@ export default function App() {
 	}, [captureRequest, c.view.kind]);
 
 	useEffect(() => {
+		if (!("__TAURI_INTERNALS__" in window)) return;
 		let unlisten: (() => void) | undefined;
+		let disposed = false;
 		void listen<{ visiblePluginIds?: string[] }>("workshop-display-plugin-visibility", (event) => {
 			if (!Array.isArray(event.payload.visiblePluginIds)) return;
 			c.setPreferences({ ...c.preferences, navigation: { visiblePluginIds: event.payload.visiblePluginIds } });
-		}).then((dispose) => { unlisten = dispose; });
-		return () => unlisten?.();
+		}).then((dispose) => { if (disposed) dispose(); else unlisten = dispose; });
+		return () => { disposed = true; unlisten?.(); };
 	}, [c.preferences, c.setPreferences]);
 
 	const appTitlebar = (
@@ -157,7 +176,7 @@ export default function App() {
 				const next = !c.showSidePanel;
 				if (next) c.setSidePanelTab(c.activeLocalModel ? "inference" : "outputs");
 				c.setSidePanelOpen(next);
-				window.localStorage.setItem("synth.inferenceRailOpen", next ? "1" : "0");
+				runtimeStorage.setItem("synth.inferenceRailOpen", next ? "1" : "0");
 			}}
 		/>
 	);

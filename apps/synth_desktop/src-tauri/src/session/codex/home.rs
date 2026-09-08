@@ -769,6 +769,40 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
                 toml_string(&bin.display().to_string()), mcp_enabled_tools(server), crate::session::approval_policy::MCP_TOOLS_APPROVAL_MODE, mcp_env_config(server, &ipc, &request.session_id, &app_name, &bundle_id),
             ));
         }
+        // Native and external agents receive one catalogue. Compatibility
+        // executables remain available for old installations, but a new private
+        // home removes the generated legacy registrations once Workshop exists.
+        if crate::context::mcp_group_enabled("bundled") && !existing.contains("[mcp_servers.workshop]") {
+            if let Some(binary) = exe.parent().map(|dir| dir.join("workshop")).filter(|path| path.is_file()) {
+                existing.push_str(&format!("\n[mcp_servers.workshop]\ncommand = \"{}\"\nargs = [\"mcp\", \"--data-root\", \"{}\"]\n",
+                    toml_string(&binary.display().to_string()), toml_string(&crate::instance::data_root().display().to_string())));
+                let skill = home.join("skills/workshop");
+                fs::create_dir_all(&skill)?;
+                fs::write(skill.join("SKILL.md"), include_str!("../../../../../../integrations/workshop/skills/workshop/SKILL.md"))?;
+            }
+        }
+        if existing.contains("[mcp_servers.workshop]") {
+            let mut config: toml_edit::Document = existing.parse().context("parse generated Codex configuration")?;
+            if let Some(servers) = config.get_mut("mcp_servers").and_then(toml_edit::Item::as_table_mut) {
+                for (server, binary) in [
+                    ("synth_plugins", "synth-plugins-mcp"), ("workshop_display", "synth-display-mcp"),
+                    ("synth_containers", "synth-containers-mcp"), ("synth_visuals", "synth-visuals-mcp"),
+                    ("synth_optimizers", "synth-optimizers-mcp"), ("synth_session", "synth-session-mcp"),
+                    ("synth_secrets", "synth-secrets-mcp"), ("synth_traces", "synth-traces-mcp"),
+                    ("synth_annotations", "synth-annotations-mcp"), ("synth_human_annotations", "synth-human-annotations-mcp"),
+                    ("synth_diagnostics", "synth-diagnostics-mcp"), ("synth_computer_use", "synth-computer-use-mcp"),
+                    ("synth_browser", "synth-browser-mcp")
+                ] {
+                    let owned = servers.get(server).and_then(|entry| entry.get("command")).and_then(toml_edit::Item::as_str)
+                        .and_then(|command| Path::new(command).file_name()).and_then(|name| name.to_str()) == Some(binary);
+                    if owned { servers.remove(server); }
+                }
+            }
+            existing = config.to_string();
+            let skill = home.join("skills/workshop");
+            fs::create_dir_all(&skill)?;
+            fs::write(skill.join("SKILL.md"), include_str!("../../../../../../integrations/workshop/skills/workshop/SKILL.md"))?;
+        }
         fs::write(home.join("config.toml"), existing)?;
     }
     Ok(())

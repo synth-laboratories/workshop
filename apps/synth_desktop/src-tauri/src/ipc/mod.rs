@@ -1,7 +1,7 @@
 //! Shared IPC substrate (loopback HTTP, MCP stdio).
 
 mod loopback_server;
-mod mcp_stdio;
+pub(crate) mod mcp_stdio;
 
 #[cfg(unix)]
 pub use loopback_server::serve_unix_connections;

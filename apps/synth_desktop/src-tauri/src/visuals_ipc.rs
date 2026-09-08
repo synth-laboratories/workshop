@@ -398,7 +398,7 @@ pub fn record_rendered_observation(observation: RenderedVisualObservation) -> Re
     Ok(())
 }
 
-fn rendered_observation(visual_id: &str) -> Result<RenderedVisualObservation> {
+pub(crate) fn rendered_observation(visual_id: &str) -> Result<RenderedVisualObservation> {
     RENDERED_OBSERVATIONS
         .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock()
@@ -718,6 +718,9 @@ async fn dispatch_request(
         request.body
     };
     let method = request.method.as_str();
+    if method == "POST" && path.starts_with("/v1/workshop/") {
+        return crate::adapters::workshop::dispatch(core, app, path, json_body).await;
+    }
     if method == "GET" && path.starts_with("/v1/review-observations/") {
         let visual_id = path.trim_start_matches("/v1/review-observations/");
         if visual_id.is_empty() || visual_id.contains('/') {
@@ -972,11 +975,14 @@ fn dispatch_display_plugins(
             visible.push(id.to_string());
         }
     }
-    app.emit(
-        "workshop-display-plugin-visibility",
-        json!({"visiblePluginIds": visible}),
-    )?;
-    Ok(json!({"visiblePluginIds": visible, "applied": true}))
+    let core = app.state::<Arc<CoreRuntime>>();
+    let current = crate::domains::desktop_state::read(&core)?.entries.remove("synth.preferences.v1").context("desktop preferences missing")?;
+    let mut preferences: Value = serde_json::from_str(current.value.as_deref().context("desktop preferences missing")?)?;
+    preferences["navigation"]["visiblePluginIds"] = json!(visible);
+    let committed = crate::domains::desktop_state::write(&core, crate::domains::desktop_state::Write {
+        key: "synth.preferences.v1".into(), value: Some(preferences.to_string()), expected_revision: current.revision,
+    }, true)?;
+    Ok(json!({"visiblePluginIds": visible, "revision": committed.revision, "committed": true}))
 }
 
 fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
@@ -1503,6 +1509,9 @@ async fn harvest_capture_evidence(app: &AppHandle) -> (Value, Value) {
         app,
         r#"JSON.stringify({
             ...JSON.parse(document.documentElement.dataset.synthAppState || '{}'),
+            mountedVisuals: Array.from(document.querySelectorAll('[data-visual-id][data-visual-revision]'))
+                .filter(node => node.getBoundingClientRect().width > 0 && node.getBoundingClientRect().height > 0)
+                .map(node => ({visualId: node.dataset.visualId, revision: Number(node.dataset.visualRevision)})),
             visualRenderError: document.querySelector('[data-testid="visual-invalid"]')?.textContent?.trim() || undefined
         })"#,
         std::time::Duration::from_millis(500),
@@ -1767,6 +1776,8 @@ pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Val
                 })),
                 "scaleFactor": geometry.scale,
                 "windowLabel": geometry.label,
+                "windowFullscreen": app.get_webview_window("main")
+                    .map(|window| window.is_fullscreen()).transpose()?,
                 "processId": std::process::id(),
                 "captureMode": "host-webview-snapshot",
                 "restored": true,
@@ -3299,8 +3310,15 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }))
         }
         ("GET", "/v1/visuals/templates") => {
-            let genre = body.get("genre").and_then(Value::as_str);
-            Ok(json!({"templates": registry.list_templates(genre)?}))
+            // The existing GET endpoint permits an absent HTTP body. Normalize
+            // that transport representation only; malformed queries still fail.
+            let body = if body.is_null() { json!({}) } else { body };
+            let request = serde_json::from_value::<
+                crate::domains::visuals::operations::ListVisualTemplatesRequest,
+            >(body)?;
+            Ok(serde_json::to_value(
+                crate::domains::visuals::operations::ListVisualTemplates::execute(registry, request)?,
+            )?)
         }
         ("POST", "/v1/visuals/templates/import") => {
             let source_path = body
@@ -3736,8 +3754,9 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             Ok(json!({"visual": visual, "event": event, "ready": true, "revision": revision}))
         }
         ("POST", "/v1/visuals") => {
+            let shared = body.get("workspaceOwned").and_then(Value::as_bool) == Some(true);
             let request: VisualCreateRequest = serde_json::from_value(body)?;
-            let (visual, event) = registry.create(request).await?;
+            let (visual, event) = if shared { registry.create_shared(request).await? } else { registry.create(request).await? };
             Ok(json!({"visual": visual, "event": event}))
         }
         ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/save") => {

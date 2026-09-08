@@ -11,7 +11,17 @@ use std::{
 const MANAGED_TEMPLATE_MAX_BYTES: u64 = 1_500_000;
 
 #[derive(
-    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, specta::Type,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    specta::Type,
+    schemars::JsonSchema,
 )]
 #[serde(rename_all = "camelCase")]
 pub enum AuthoringAffordance {
@@ -30,7 +40,7 @@ impl AuthoringAffordance {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateReadinessContract {
     #[serde(default)]
@@ -58,14 +68,14 @@ pub struct TemplateReadinessContract {
     pub authoring_affordances: Option<Vec<AuthoringAffordance>>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateObservationContract {
     pub schema_version: String,
     pub readiness: TemplateReadinessContract,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateMeta {
     pub schema_version: String,

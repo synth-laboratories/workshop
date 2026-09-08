@@ -5,6 +5,7 @@ apps/*/out/
 apps/*/dist/
 apps/*/test-results/
 test-results/
+/artifacts/capabilities/
 **/__pycache__/
 **/*.pyc
 **/*.egg-info/

@@ -224,6 +224,15 @@ impl VisualRegistry {
     }
 
     pub async fn create(&self, request: VisualCreateRequest) -> Result<(VisualRecord, Value)> {
+        self.create_with_owner(request, false).await
+    }
+
+    pub async fn create_shared(&self, request: VisualCreateRequest) -> Result<(VisualRecord, Value)> {
+        anyhow::ensure!(request.session_id.is_none(), "shared visuals cannot have a chat owner");
+        self.create_with_owner(request, true).await
+    }
+
+    async fn create_with_owner(&self, request: VisualCreateRequest, shared: bool) -> Result<(VisualRecord, Value)> {
         let template = resolve_template(&request.template_id)?;
         let title = request
             .title
@@ -411,6 +420,7 @@ impl VisualRegistry {
             renderer_kind,
             bindings: bindings.clone(),
             session_id: request.session_id.clone(),
+            workspace_id: None,
             message_id: request.message_id.clone(),
             run_id: request.run_id.clone(),
             trace_id: request.trace_id.clone(),
@@ -425,11 +435,16 @@ impl VisualRegistry {
         };
 
         let db = self.db.clone();
-        let inserted = record.clone();
+        let mut inserted = record.clone();
         let (record, event) = db
             .run_transaction(move |conn| {
                 if let Some(session_id) = inserted.session_id.as_ref() {
                     ensure_session(conn, session_id)?;
+                }
+                if shared {
+                    inserted.workspace_id = Some(conn.query_row(
+                        "SELECT id FROM workshop_workspaces WHERE local_instance = 1", [], |row| row.get(0)
+                    )?);
                 }
                 insert_visual(conn, &inserted)?;
                 insert_revision(
@@ -463,6 +478,7 @@ impl VisualRegistry {
                             "displayName": inserted.display_name,
                             "updatedAt": inserted.updated_at,
                             "templateId": inserted.template_id,
+                            "workspaceId": inserted.workspace_id,
                             "status": inserted.status.as_str(),
                         }),
                         remote_sequence: None,
@@ -500,6 +516,15 @@ impl VisualRegistry {
         &self,
         id: String,
         request: VisualUpdateRequest,
+    ) -> Result<(VisualRecord, Value)> {
+        self.update_at_revision(id, request, None).await
+    }
+
+    pub async fn update_at_revision(
+        &self,
+        id: String,
+        request: VisualUpdateRequest,
+        expected_revision: Option<i64>,
     ) -> Result<(VisualRecord, Value)> {
         validate_visual_id(&id)?;
         let existing = self.get(id.clone()).await?;
@@ -556,7 +581,11 @@ impl VisualRegistry {
         let (updated, event) = db
             .run_transaction(move |conn| {
                 let mut current = load_visual(conn, &id)?;
-                let mut bumped = false;
+                if let Some(expected) = expected_revision {
+                    anyhow::ensure!(current.current_revision == expected,
+                        "visual_revision_conflict: expected {expected}, current {}", current.current_revision);
+                }
+                let mut bumped = expected_revision.is_some();
                 let bump = request.bump_revision.unwrap_or(true);
                 if let Some(title) = request.title {
                     current.title = title;
@@ -707,7 +736,8 @@ impl VisualRegistry {
         session_id: Option<String>,
     ) -> Result<(VisualRecord, Value)> {
         let source = self.get(id.clone()).await?;
-        self.create(VisualCreateRequest {
+        let shared = source.workspace_id.is_some() && session_id.is_none();
+        self.create_with_owner(VisualCreateRequest {
             template_id: source.template_id,
             title: Some(title.unwrap_or_else(|| format!("{} (fork)", source.title))),
             bindings: Some(source.bindings),
@@ -730,7 +760,7 @@ impl VisualRegistry {
                 "forkedFrom": source.id,
                 "forkedRevision": source.current_revision,
             })),
-        })
+        }, shared)
         .await
     }
 
@@ -796,6 +826,7 @@ impl VisualRegistry {
                     // displayed another chat's visual could not be told apart
                     // from the chat that authored it.
                     "ownerSessionId": record.session_id,
+                    "ownerWorkspaceId": record.workspace_id,
                     "openVisualId": record.id,
                 }),
                 remote_sequence: None,
@@ -1924,8 +1955,8 @@ fn insert_visual(conn: &Connection, visual: &VisualRecord) -> Result<()> {
         "INSERT INTO visuals(
             id, current_revision, title, template_id, status, renderer_kind, bindings_json,
             session_id, message_id, run_id, trace_id, parent_visual_id, source_agent_id,
-            source_model, content_digest, preview_digest, metadata_json, created_at, updated_at
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+            source_model, content_digest, preview_digest, metadata_json, created_at, updated_at, workspace_id
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
         params![
             visual.id,
             visual.current_revision,
@@ -1946,6 +1977,7 @@ fn insert_visual(conn: &Connection, visual: &VisualRecord) -> Result<()> {
             visual.metadata.to_string(),
             visual.created_at,
             visual.updated_at,
+            visual.workspace_id,
         ],
     )
     .context("insert visual")?;
@@ -2102,7 +2134,7 @@ fn load_visual(conn: &Connection, id: &str) -> Result<VisualRecord> {
     conn.query_row(
         "SELECT id, current_revision, title, template_id, status, renderer_kind, bindings_json,
                 session_id, message_id, run_id, trace_id, parent_visual_id, source_agent_id,
-                source_model, content_digest, preview_digest, metadata_json, created_at, updated_at
+                source_model, content_digest, preview_digest, metadata_json, created_at, updated_at, workspace_id
          FROM visuals WHERE id = ?1",
         params![id],
         |row| {
@@ -2120,6 +2152,7 @@ fn load_visual(conn: &Connection, id: &str) -> Result<VisualRecord> {
                 renderer_kind: RendererKind::parse(&row.get::<_, String>(5)?),
                 bindings: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or(json!({})),
                 session_id: row.get(7)?,
+                workspace_id: row.get(19)?,
                 message_id: row.get(8)?,
                 run_id: row.get(9)?,
                 trace_id: row.get(10)?,
@@ -2149,7 +2182,7 @@ fn list_visuals(conn: &Connection, query: &VisualQuery) -> Result<Vec<VisualReco
     let mut sql = String::from(
         "SELECT id, current_revision, title, template_id, status, renderer_kind, bindings_json,
                 session_id, message_id, run_id, trace_id, parent_visual_id, source_agent_id,
-                source_model, content_digest, preview_digest, metadata_json, created_at, updated_at
+                source_model, content_digest, preview_digest, metadata_json, created_at, updated_at, workspace_id
          FROM visuals WHERE 1 = 1",
     );
     let mut binds: Vec<String> = Vec::new();
@@ -2193,6 +2226,7 @@ fn list_visuals(conn: &Connection, query: &VisualQuery) -> Result<Vec<VisualReco
             renderer_kind: RendererKind::parse(&row.get::<_, String>(5)?),
             bindings: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or(json!({})),
             session_id: row.get(7)?,
+            workspace_id: row.get(19)?,
             message_id: row.get(8)?,
             run_id: row.get(9)?,
             trace_id: row.get(10)?,

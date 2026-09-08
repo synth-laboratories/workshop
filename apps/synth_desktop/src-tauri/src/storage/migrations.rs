@@ -71,7 +71,46 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_66,
     MIGRATION_67,
     MIGRATION_68,
+    MIGRATION_69,
+    MIGRATION_70,
+    MIGRATION_71,
 ];
+
+const MIGRATION_70: &str = r#"
+CREATE TABLE agent_attachments (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    backend_id TEXT NOT NULL,
+    backend_session_id TEXT,
+    workspace TEXT NOT NULL,
+    generation TEXT NOT NULL,
+    parent_session_id TEXT REFERENCES sessions(id),
+    depth INTEGER NOT NULL CHECK(depth BETWEEN 0 AND 3),
+    process_id INTEGER,
+    process_start TEXT,
+    capabilities_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX agent_attachments_parent ON agent_attachments(parent_session_id);
+"#;
+
+// The first public connection grants one local instance workspace. Its identity
+// survives runtime restarts and is independent of all hosted conversations.
+const MIGRATION_69: &str = r#"
+CREATE TABLE workshop_workspaces (
+    id TEXT PRIMARY KEY NOT NULL,
+    local_instance INTEGER NOT NULL UNIQUE CHECK (local_instance = 1)
+);
+INSERT INTO workshop_workspaces(id, local_instance)
+VALUES ('workspace_' || lower(hex(randomblob(16))), 1);
+ALTER TABLE visuals ADD COLUMN workspace_id TEXT REFERENCES workshop_workspaces(id);
+CREATE INDEX visuals_workspace_id ON visuals(workspace_id);
+CREATE TRIGGER visuals_workspace_owner_insert BEFORE INSERT ON visuals
+WHEN NEW.workspace_id IS NOT NULL AND NEW.session_id IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'visual cannot have both workspace and chat owners'); END;
+CREATE TRIGGER visuals_workspace_owner_update BEFORE UPDATE OF workspace_id, session_id ON visuals
+WHEN (NEW.workspace_id IS NOT NULL AND NEW.session_id IS NOT NULL)
+  OR (OLD.workspace_id IS NOT NULL AND NEW.workspace_id IS NOT OLD.workspace_id)
+BEGIN SELECT RAISE(ABORT, 'workspace visual ownership is immutable'); END;
+"#;
 
 /// Apply every migration the database has not reached yet.
 pub fn apply_migrations(conn: &Connection) -> Result<i64> {
@@ -5611,4 +5650,8 @@ CREATE TABLE IF NOT EXISTS human_annotation_adjudications (
 
 CREATE INDEX IF NOT EXISTS human_annotation_adjudication_campaign
     ON human_annotation_adjudications(campaign_id, created_at);
+"#;
+
+const MIGRATION_71: &str = r#"
+CREATE TABLE desktop_state (key TEXT PRIMARY KEY, value TEXT, revision INTEGER NOT NULL CHECK(revision > 0));
 "#;

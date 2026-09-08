@@ -8,6 +8,7 @@ import { PaneResizeHandle } from "./PaneResizeHandle";
 import type { ReportBlock, ReportRecord, VisualSeal, VisualSealBundle } from "../bridge";
 import { VISUAL_REFERENCE_OPENED_EVENT } from "../runtime/visualReferences";
 import { publicError } from "../runtime/publicError";
+import { completeVisualPresentation, subscribeVisualPresentation } from "../runtime/visualPresentation";
 import { formatVisualAdmissionIdentity } from "../types/landing";
 import { VisualOpsLine } from "./VisualOpsLine";
 import { optimizerRunIdFromBindings, traceIdFromBindings, traceSetCountFromBindings } from "../runtime/visualBindings";
@@ -90,6 +91,30 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 	const [reportNotice, setReportNotice] = useState<string | null>(null);
 	const [targetBlocks, setTargetBlocks] = useState<ReportBlock[]>([]);
 	const [targetBlocksReady, setTargetBlocksReady] = useState(true);
+
+	useEffect(() => {
+		let currentRequest = "";
+		const unsubscribe = subscribeVisualPresentation((intent) => {
+			currentRequest = intent.requestId;
+			setTab("all");
+			setSearch("");
+			void bridges.visuals?.get(intent.visualId).then((visual) => {
+				if (currentRequest !== intent.requestId) return;
+				setVisuals((current) => [visual, ...current.filter((row) => row.id !== visual.id)]);
+				setSelectedId(visual.id);
+				setFocusVisualId(visual.id);
+				setListEpoch((epoch) => epoch + 1);
+				setError(null);
+				completeVisualPresentation(intent.requestId);
+			}).catch((reason) => {
+				if (currentRequest === intent.requestId) {
+					setError(publicError(reason));
+					completeVisualPresentation(intent.requestId);
+				}
+			});
+		});
+		return () => { currentRequest = ""; unsubscribe(); };
+	}, []);
 
 	useEffect(() => {
 		const dismissActions = (event: PointerEvent) => {
@@ -190,7 +215,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 		});
 	}, [tab, visuals, seals]);
 
-	const selected = filtered.find((visual) => visual.id === selectedId) ?? filtered[0] ?? null;
+	const selected = filtered.find((visual) => visual.id === selectedId) ?? (focusVisualId ? null : filtered[0] ?? null);
 	const alreadyAdded = Boolean(
 		selected
 		&& reportTarget !== "new"

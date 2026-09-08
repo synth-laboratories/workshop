@@ -1,4 +1,5 @@
 use anyhow::Result;
+pub mod operations;
 use rusqlite::{params, Connection};
 
 use crate::platform::failure::{FailureKind, OperationalFailure, VisualFailure};

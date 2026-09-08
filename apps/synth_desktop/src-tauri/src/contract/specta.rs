@@ -94,6 +94,16 @@ pub fn builder() -> Builder<tauri::Wry> {
         .typ::<crate::optimizers::kernel::OptimizerRunViewV2>()
         .typ::<crate::platform::failure::FailureView>()
         .commands(collect_commands![
+            crate::adapters::desktop_state::desktop_state_get,
+            crate::adapters::desktop_state::desktop_state_commit,
+            crate::session::acp::commands::agent_backends_list,
+            crate::session::acp::commands::agent_sessions_list,
+            crate::session::acp::commands::agent_session_start,
+            crate::session::acp::commands::agent_session_send,
+            crate::session::acp::commands::agent_session_cancel,
+            crate::session::acp::commands::agent_session_close,
+            crate::session::acp::commands::agent_session_resume,
+
             desktop_instance_diagnostics,
             desktop_instances_list,
             crate::desktop_image_preview,
@@ -577,10 +587,13 @@ mod tests {
         // list and append commands.
         // 300 → 306: side-effect-free Synth Cloud inference lifecycle plus
         // intervening release read-model commands.
-        // 306 → 323: first-class human annotation task/session/draft/audio,
-        // transcription, status, cancellation, export, and submission.
+        // 306 → 329: the 23 human annotation registrations introduced in
+        // d27b80da include task/session/draft/audio, transcription, status,
+        // cancellation, submission, export, campaign lifecycle/adjudication
+        // and supersession. The previous 323 expectation undercounted six.
+        // 329 → 338: seven ACP commands and two runtime-owned desktop state commands.
         assert_eq!(
-            exported, 332,
+            exported, 341,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(
