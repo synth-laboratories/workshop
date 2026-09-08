@@ -71,7 +71,7 @@ export function useRunProgress(runId: string, sessionRef?: string): RunProgressS
 			recordSubscribed(runId, run.algorithmId, Date.now());
 			unsubscribe = subscribeToRun(runId, (next) => {
 				if (!cancelled) setSnapshot(next);
-			});
+			}, { evidence: "projection" });
 		});
 		return () => {
 			cancelled = true;
