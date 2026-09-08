@@ -9,7 +9,7 @@ let queue: Promise<void> = Promise.resolve();
 let generation = 0;
 let initialized = false;
 let changes = 0;
-const supported = (key: string) => ["synth.preferences.v1", "synth.archivedContainerIds", "synth.inferenceRailDefaultV2", "synth.inferenceRailOpen", "synth.workbenchSidePanelWidth", "synth.workbenchZoomPercent", "synth.accountChoiceMade"].includes(key) || /^synth\.models\.[a-zA-Z0-9._-]+$/.test(key);
+const supported = (key: string) => ["synth.preferences.v1", "synth.archivedContainerIds", "synth.inferenceRailDefaultV2", "synth.inferenceRailOpen", "synth.workbenchSidePanelWidth", "synth.workbenchZoomPercent", "synth.accountChoiceMade", "synth.training.lastRunId", "synth.training.lastPlacement"].includes(key) || /^synth\.models\.[a-zA-Z0-9._-]+$/.test(key);
 
 function publish() { window.dispatchEvent(new Event("workshop:state-changed")); }
 async function refresh() {

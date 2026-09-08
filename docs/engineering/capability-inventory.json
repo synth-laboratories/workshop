@@ -1,7 +1,7 @@
 {
   "schemaVersion": "workshop.capability-inventory.v1",
   "evidenceKind": "static_source_declarations",
-  "sourceDigest": "afc8c1c797fa4f727c8a18cabd248c6ea79bef2b8d6da282c5137cafd1ead86f",
+  "sourceDigest": "af2fd726ed4815c2ce0ce822d26ace720768cc748aa6ec996f8eb8a2be0cb9d3",
   "sourceFiles": {
     "apps/synth_desktop/src-tauri/src/adapters/mcp/operations/annotations.rs": "35f1ff52db5e088c368cad022c9eab92e1c6a095b826d67ea9473b4a948d0319",
     "apps/synth_desktop/src-tauri/src/adapters/mcp/operations/computer_use.rs": "4d6f83d7c636b40e2246f2f4af68a7fbc6b89d697203cdc91b613994d75240e7",
@@ -48,7 +48,7 @@
     "apps/synth_desktop/src-tauri/src/domains/containers/authority.rs": "8b622a4553559ee381a1b33ad603f47f31f9ba2f47592822cbdbaad9576e8518",
     "apps/synth_desktop/src-tauri/src/domains/containers/failure.rs": "168a00da9d4ec4495f78a42ba5d9889ba671d4607c762be2cca68fcda14799ad",
     "apps/synth_desktop/src-tauri/src/domains/containers/mod.rs": "7fc71eb575ddb786bcc79231debae67335d7dd366cdcf6f7aaf84d4c685eabd8",
-    "apps/synth_desktop/src-tauri/src/domains/desktop_state.rs": "4d5fc942a8bc8eb2a707f2c71d0e43815040312566aa410db99ced8394bc4c02",
+    "apps/synth_desktop/src-tauri/src/domains/desktop_state.rs": "762ed5c46cc1e9995b131e64c17cb2e7bbcbef4fd563bc8b3a8911866c4b7496",
     "apps/synth_desktop/src-tauri/src/domains/evaluations/authority.rs": "d5ce6f8fcee145d28a378c02cf7b748eb3da900c3623cf0eefe89a6ecff42bd0",
     "apps/synth_desktop/src-tauri/src/domains/evaluations/mod.rs": "0d0e08fd1aab67038ff809986c0e0b3a2dc6333601d4045a3879d49601bb1f61",
     "apps/synth_desktop/src-tauri/src/domains/mod.rs": "95930caecbba6d26247c2fc8616fa02844a46da6d25a24d52edad724d491ec0c",
@@ -72,7 +72,7 @@
     "apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx": "2c572a61f1092d863186756ec7a0eaa7038da0d268b0cd36001832645d132f5c",
     "apps/synth_desktop/src/renderer/src/experiments/ExperimentsPage.tsx": "b5849b48acfd1ae05f86eb15ee917b071ea2198218dd86c0e997449e49a76e74",
     "apps/synth_desktop/src/renderer/src/experiments/NodeInspector.tsx": "d5afed4c95a386e1c7e2ff8feaa8c0c2a7ac7045b106cfbd4989762141abf895",
-    "apps/synth_desktop/src/renderer/src/preferences/runtimeStorage.ts": "b4d827791a6d6984c01d2ff8b89e5f908f0de8eb80137376578437f7b528bb2e",
+    "apps/synth_desktop/src/renderer/src/preferences/runtimeStorage.ts": "a751f35612d6e5d39979edb98ed9fe1badeec4c730529ba2c1a88e360274e3d8",
     "apps/synth_desktop/src/renderer/src/runtime/traceResearch.ts": "6a1f16986a3abb160d47f83bffc7d698c730a6cc453dc3a1a6bcccd52c2c1aef",
     "package.json": "4019cb07b23018f6614878c86744cd493329b1d89a167ee7bed1d745f07ac984"
   },
@@ -19386,12 +19386,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "typed_mcp_declaration:apps/synth_desktop/src-tauri/src/domains/desktop_state.rs:desktop_state_update:106",
+      "entryId": "typed_mcp_declaration:apps/synth_desktop/src-tauri/src/domains/desktop_state.rs:desktop_state_update:108",
       "surface": "typed_mcp_declaration",
       "name": "desktop_state_update",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/domains/desktop_state.rs",
-        "line": 106
+        "line": 108
       },
       "classification": "unreviewed",
       "operationId": "desktop.state.update.v1",

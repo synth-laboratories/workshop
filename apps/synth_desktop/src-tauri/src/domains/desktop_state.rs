@@ -34,6 +34,8 @@ pub fn allowed(key: &str) -> bool {
             | "synth.workbenchSidePanelWidth"
             | "synth.workbenchZoomPercent"
             | "synth.accountChoiceMade"
+            | "synth.training.lastRunId"
+            | "synth.training.lastPlacement"
     ) || (key.starts_with("synth.models.")
         && key.len() < 160
         && key
