@@ -105,6 +105,8 @@ impl TrainingRuntime {
                 let rest = &path["/v1/training/jobs/".len()..];
                 if let Some(id) = rest.strip_suffix("/cancel") {
                     self.cancel_job(id).await
+                } else if let Some(id) = rest.strip_suffix("/pause") {
+                    self.hosted_control(id, "pause").await
                 } else if let Some(id) = rest.strip_suffix("/resume") {
                     self.resume_job(id).await
                 } else if let Some(id) = rest.strip_suffix("/chat") {
@@ -297,8 +299,8 @@ impl TrainingRuntime {
         };
         job.cancelled = true;
         if !job.status.is_terminal() {
-            job.status = TrainingJobStatus::Cancelled;
-            append_job_event(job, "job.cancelled", json!({}));
+            job.status = TrainingJobStatus::StopRequested;
+            append_job_event(job, "job.stop_requested", json!({}));
         }
         let status = job.status.clone();
         let local = matches!(
@@ -316,6 +318,35 @@ impl TrainingRuntime {
         JsonHttpResponse::ok(json!({"job_id": job_id, "status": status}))
     }
 
+    async fn hosted_control(&self, job_id: &str, action: &str) -> JsonHttpResponse {
+        let placement = {
+            let jobs = self.jobs.lock().await;
+            let Some(job) = jobs.get(job_id) else {
+                return JsonHttpResponse::error(StatusCode::NOT_FOUND, "training job not found");
+            };
+            job.placement.clone()
+        };
+        let result = async {
+            match placement.as_str() {
+                PLACEMENT_TRAINING_SFT_HOSTED => SftOptimizerClient::from_env()?.control(job_id, action).await,
+                PLACEMENT_TRAINING_CISPO_HOSTED => CispoOptimizerClient::from_env()?.experiment_control(job_id, action).await,
+                _ => bail!("hosted training control unavailable for this placement"),
+            }
+        }.await;
+        match result {
+            Ok(remote) => {
+                let mut jobs = self.jobs.lock().await;
+                if let Some(job) = jobs.get_mut(job_id) {
+                    if let Some(status) = remote.get("status").and_then(Value::as_str).and_then(TrainingJobStatus::parse) {
+                        job.status = status;
+                    }
+                }
+                JsonHttpResponse::ok(remote)
+            }
+            Err(error) => JsonHttpResponse::error(StatusCode::BAD_GATEWAY, error.to_string()),
+        }
+    }
+
     async fn resume_job(&self, job_id: &str) -> JsonHttpResponse {
         let local = {
             let jobs = self.jobs.lock().await;
@@ -327,10 +358,7 @@ impl TrainingRuntime {
             })
         };
         if !local {
-            return JsonHttpResponse::error(
-                StatusCode::CONFLICT,
-                "resume is available only for real local MLX training jobs",
-            );
+            return self.hosted_control(job_id, "resume").await;
         }
         if let Err(error) = resume_mlx_job(job_id).await {
             return JsonHttpResponse::error(StatusCode::BAD_GATEWAY, error.to_string());
@@ -1905,6 +1933,15 @@ async fn drive_hosted_sft_job(
                 }
                 return Ok(());
             }
+            status @ ("stop_requested" | "pause_requested" | "paused" | "blocked_budget" | "blocked_evaluation" | "blocked_uncertain") => {
+                let mut jobs = runtime.jobs.lock().await;
+                if let Some(job) = jobs.get_mut(job_id) {
+                    job.status = TrainingJobStatus::parse(status).expect("known training state");
+                    job.error = remote.get("error").and_then(Value::as_str).map(str::to_owned);
+                }
+                drop(jobs);
+                sleep(Duration::from_millis(400)).await;
+            }
             _ => sleep(Duration::from_millis(400)).await,
         }
     }
@@ -2015,6 +2052,15 @@ async fn drive_hosted_cispo_job(
                     job.status = TrainingJobStatus::Cancelled;
                 }
                 return Ok(());
+            }
+            status @ ("stop_requested" | "pause_requested" | "paused" | "blocked_budget" | "blocked_evaluation" | "blocked_uncertain") => {
+                let mut jobs = runtime.jobs.lock().await;
+                if let Some(job) = jobs.get_mut(job_id) {
+                    job.status = TrainingJobStatus::parse(status).expect("known training state");
+                    job.error = remote.get("error").and_then(Value::as_str).map(str::to_owned);
+                }
+                drop(jobs);
+                sleep(Duration::from_millis(400)).await;
             }
             _ => sleep(Duration::from_millis(400)).await,
         }
@@ -2477,6 +2523,16 @@ pub fn optional_jsonl(var: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requested_controls_and_blocked_states_are_not_terminal() {
+        for state in ["stop_requested", "pause_requested", "paused", "blocked_budget", "blocked_evaluation", "blocked_uncertain"] {
+            let parsed = TrainingJobStatus::parse(state).unwrap();
+            assert_eq!(parsed.as_str(), state);
+            assert!(!parsed.is_terminal());
+        }
+    }
+
 
     #[tokio::test]
     async fn public_sequence_number_events_survive_the_sidecar_page() {

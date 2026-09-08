@@ -64,6 +64,13 @@ impl SftOptimizerClient {
         self.get_json(&format!("/v1/runs/{run_id}")).await
     }
 
+    pub(super) async fn control(&self, run_id: &str, action: &str) -> Result<Value> {
+        if !matches!(action, "pause" | "resume") {
+            bail!("unsupported training action");
+        }
+        self.post_json(&format!("/v1/runs/{run_id}/{action}"), json!({})).await
+    }
+
     pub(super) async fn cancel(&self, run_id: &str) -> Result<Value> {
         self.post_json(&format!("/v1/runs/{run_id}/cancel"), json!({}))
             .await
