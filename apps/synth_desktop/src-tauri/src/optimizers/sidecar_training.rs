@@ -1936,8 +1936,13 @@ async fn drive_hosted_sft_job(
             status @ ("stop_requested" | "pause_requested" | "paused" | "blocked_budget" | "blocked_evaluation" | "blocked_uncertain") => {
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
-                    job.status = TrainingJobStatus::parse(status).expect("known training state");
+                    let next = TrainingJobStatus::parse(status).expect("known training state");
+                    let changed = job.status != next;
+                    job.status = next;
                     job.error = remote.get("error").and_then(Value::as_str).map(str::to_owned);
+                    if changed {
+                        append_job_event(job, "training.lifecycle", json!({"state":status, "error":remote.get("error")}));
+                    }
                 }
                 drop(jobs);
                 sleep(Duration::from_millis(400)).await;
@@ -2056,8 +2061,13 @@ async fn drive_hosted_cispo_job(
             status @ ("stop_requested" | "pause_requested" | "paused" | "blocked_budget" | "blocked_evaluation" | "blocked_uncertain") => {
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
-                    job.status = TrainingJobStatus::parse(status).expect("known training state");
+                    let next = TrainingJobStatus::parse(status).expect("known training state");
+                    let changed = job.status != next;
+                    job.status = next;
                     job.error = remote.get("error").and_then(Value::as_str).map(str::to_owned);
+                    if changed {
+                        append_job_event(job, "training.lifecycle", json!({"state":status, "error":remote.get("error")}));
+                    }
                 }
                 drop(jobs);
                 sleep(Duration::from_millis(400)).await;

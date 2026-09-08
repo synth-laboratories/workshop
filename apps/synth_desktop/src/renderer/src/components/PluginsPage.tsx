@@ -1,3 +1,4 @@
+import { setVisiblePluginIds } from "../preferences";
 import type { DesktopPreferences } from "../preferences";
 import type { PluginStatus } from "../bridge/types";
 import { PLUGIN_NAV, type PluginNavEntry } from "../runtime/pluginNav";
@@ -35,7 +36,7 @@ export function PluginsPage({ preferences, pluginStatuses, onPreferencesChange, 
 										<input type="checkbox" checked={visible.has(entry.id)} onChange={(event) => {
 											const next = new Set(visible);
 											if (event.target.checked) next.add(entry.id); else next.delete(entry.id);
-											onPreferencesChange({ ...preferences, navigation: { visiblePluginIds: [...next] } });
+											onPreferencesChange(setVisiblePluginIds(next));
 										}} />
 									</label>
 									<button type="button" className="ws-btn ws-btn-secondary" onClick={() => onOpenPlugin(entry.id)}>Open</button>

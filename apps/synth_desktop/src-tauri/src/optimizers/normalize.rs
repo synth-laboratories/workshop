@@ -134,7 +134,8 @@ fn normalize_canonical(
         .unwrap_or_default();
     if event_type == "training.lifecycle" {
         match delta.get("state").and_then(Value::as_str) {
-            Some("paused") => event_type = "optimizer.run.paused".into(),
+            Some("paused" | "blocked_evaluation" | "blocked_budget" | "blocked_uncertain") => event_type = "optimizer.run.paused".into(),
+            Some("cancel_requested") => event_type = "optimizer.run.cancelling".into(),
             Some("running") => event_type = "optimizer.run.resumed".into(),
             _ => {}
         }
@@ -588,7 +589,7 @@ mod tests {
 
     #[test]
     fn training_payload_and_acknowledged_controls_survive_normalization() {
-        for (state, expected) in [("pause_requested", "training.lifecycle"), ("paused", "optimizer.run.paused"), ("running", "optimizer.run.resumed")] {
+        for (state, expected) in [("pause_requested", "training.lifecycle"), ("paused", "optimizer.run.paused"), ("running", "optimizer.run.resumed"), ("blocked_evaluation", "optimizer.run.paused"), ("blocked_budget", "optimizer.run.paused"), ("blocked_uncertain", "optimizer.run.paused"), ("cancel_requested", "optimizer.run.cancelling")] {
             let raw = serde_json::json!({"schema_version":"training.event.v1", "optimizer_run_id":"run", "algorithm_id":"sft", "sequence_number":1,
                 "type":"training.lifecycle", "payload":{"state":state,"checkpoint_id":"checkpoint-1"}});
             let event = super::normalize_event(&raw, "run", "sft").unwrap();

@@ -1,3 +1,4 @@
+import { setVisiblePluginIds } from "../preferences";
 import type { DesktopPreferences } from "../preferences";
 import { PLUGIN_NAV } from "../runtime/pluginNav";
 import { findPluginStatus, pluginPresentation } from "../runtime/pluginPresentation";
@@ -33,7 +34,7 @@ export function PluginVisibilitySettings({
 								onChange={(event) => {
 									const next = new Set(visible);
 									if (event.target.checked) next.add(entry.id); else next.delete(entry.id);
-									onPreferencesChange({ ...preferences, navigation: { visiblePluginIds: [...next] } });
+									onPreferencesChange(setVisiblePluginIds(next));
 								}}
 							/>
 						</label>

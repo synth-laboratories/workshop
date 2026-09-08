@@ -326,8 +326,10 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
         return OptimizerEventDraft::new(event_type, algorithm).delta(delta).item(payload.clone());
     }
     match kind {
-        "training.lifecycle" if payload.get("state").and_then(Value::as_str) == Some("paused") =>
-            OptimizerEventDraft::new("optimizer.run.paused", algorithm).delta(Map::from_iter([("status".into(), json!("paused"))])),
+        "training.lifecycle" if matches!(payload.get("state").and_then(Value::as_str), Some("paused" | "blocked_evaluation" | "blocked_budget" | "blocked_uncertain")) =>
+            OptimizerEventDraft::new("optimizer.run.paused", algorithm).delta(payload.as_object().cloned().unwrap_or_default()),
+        "training.lifecycle" if matches!(payload.get("state").and_then(Value::as_str), Some("stop_requested" | "cancel_requested")) =>
+            OptimizerEventDraft::new("optimizer.run.cancelling", algorithm).delta(payload.as_object().cloned().unwrap_or_default()),
         "training.lifecycle" if payload.get("state").and_then(Value::as_str) == Some("running") =>
             OptimizerEventDraft::new("optimizer.run.resumed", algorithm).delta(Map::from_iter([("status".into(), json!("running"))])),
         "job.queued" => OptimizerEventDraft::new("optimizer.run.queued", algorithm)
