@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { OptimizerRecipeInfo, TrainingArtifact } from "../bridge";
 import type { ContainerDeployment } from "../generated/protocol";
 import { useOptimizerRun, useRunCollection } from "../hooks/useRunRead";
+import { runtimeStorage } from "../preferences/runtimeStorage";
 import { bridges } from "../runtime/desktopBridge";
 import { publicError } from "../runtime/publicError";
 import { inspectMlxReadiness, planModelInstall, trainingArtifacts } from "../runtime/trainingExperience";
@@ -24,6 +25,7 @@ type Run = {
 	status: string;
 	algorithm: "sft" | "cispo";
 	error?: string;
+    capabilities?: { pause?: boolean; resume?: boolean; cancel?: boolean };
 };
 
 const MODEL_ID = "Qwen/Qwen3.5-2B";
@@ -103,6 +105,19 @@ export function TrainingWorkspace({ onStartAgent, sessionRef, onEnsureApprovalSe
 	const [checkingRuntime, setCheckingRuntime] = useState(false);
 	const [installingRuntime, setInstallingRuntime] = useState(false);
 	const [run, setRun] = useState<Run | null>(null);
+    const [controlling, setControlling] = useState(false);
+    useEffect(() => {
+        const id = runtimeStorage.getItem("synth.training.lastRunId");
+        if (!id || !bridges.optimizers) return;
+        let live = true;
+        void bridges.optimizers.get(id).then(record => {
+            if (!live || !["sft", "cispo"].includes(record.algorithmId)) return;
+            setRun({ id: record.id, status: record.status, algorithm: record.algorithmId as "sft" | "cispo", capabilities: record.capabilities });
+            setPlacement(runtimeStorage.getItem("synth.training.lastPlacement") === "mlx" ? "mlx" : "tinker");
+            setView("run");
+        }).catch(() => undefined);
+        return () => { live = false; };
+    }, []);
 	const [error, setError] = useState<string | null>(null);
     const checkpointEvaluators = (recipes.find((recipe) => recipe.id === trainingRecipeId("sft", "tinker", recipes))?.limits?.checkpointEvaluators ?? []) as Array<{id: string; title: string; imageDigest?: string}>;
 	const artifact = useMemo(() => artifacts.find((item) => item.id === selectedId) ?? null, [artifacts, selectedId]);
@@ -155,9 +170,20 @@ export function TrainingWorkspace({ onStartAgent, sessionRef, onEnsureApprovalSe
 				...(placement === "mlx" ? { containerId: targetId } : {}),
 				...(algorithm === "cispo" && placement === "mlx" ? { trainingArtifactId: parentArtifact!.id } : {})
 			});
-			setRun({ id: record.id, status: record.status, algorithm });
+			setRun({ id: record.id, status: record.status, algorithm, capabilities: record.capabilities });
+            runtimeStorage.setItem("synth.training.lastRunId", record.id);
+            runtimeStorage.setItem("synth.training.lastPlacement", placement);
 		} catch (reason) { setRun({ id: "failed-to-start", status: "unstarted", algorithm, error: message(reason) }); }
 	};
+    const control = async (action: "pause" | "resume" | "cancel") => {
+        if (!durableRunId || !bridges.optimizers || controlling) return;
+        setControlling(true);
+        try {
+            const record = await bridges.optimizers[action](durableRunId);
+            setRun(current => current ? { ...current, status: record.status, capabilities: record.capabilities } : current);
+        } catch (reason) { setError(message(reason)); }
+        finally { setControlling(false); }
+    };
 	const target = targets.find((item) => item.id === targetId) ?? null;
 	const recipeAvailable = (id: string) => recipes.some((recipe) => recipe.id === id && recipe.availability === "available");
 	const localAvailable = recipeAvailable(trainingRecipeId(algorithm, "mlx", recipes));
@@ -177,7 +203,11 @@ export function TrainingWorkspace({ onStartAgent, sessionRef, onEnsureApprovalSe
 
 		{view === "artifacts" ? <div className="training-panel" data-testid="training-artifact-library"><div className="training-section-head"><h3>Local artifacts</h3><span>{artifacts.length}</span></div><div className="training-artifact-grid">{artifacts.map((item) => <article className="training-artifact" key={item.id} data-testid={`training-artifact-${item.id}`}><div className="training-section-head"><span className="training-algorithm">{item.algorithm}</span><span className="training-status" data-state={item.integrity === "Verified" ? "ready" : "failed"}>{item.integrity}</span></div><button type="button" className="training-artifact-title" onClick={() => setSelectedId(item.id)}>{item.id}</button><Kv values={[["Base model", item.baseModel], ["Kind", item.kind], ["Producing run", item.runId], ["Dataset", item.datasetDigest], ["Config", item.configDigest], ["Size", item.size]]} /></article>)}</div>{artifact ? <div className="training-detail" data-testid="training-artifact-detail"><h3>{artifact.id}</h3><Kv values={[["Base model", artifact.baseModel], ["Adapter", `${artifact.kind} · ${artifact.sha256}`], ["Producing run", artifact.runId], ["Compatible", artifact.backends.join(" · ")]]} /><div className="training-actions"><button type="button" className="primary-button" onClick={() => setView("inference")}>Run inference</button><button type="button" className="secondary-button" onClick={() => setView("eval")}>Evaluate</button><button type="button" className="secondary-button" onClick={() => { const destination = window.prompt("Export destination directory"); if (!destination) return; void trainingArtifacts.export(artifact.id, destination).catch((reason) => setError(message(reason))); }}>Export</button><button type="button" className="secondary-button training-danger" onClick={() => { if (!window.confirm(`Delete ${artifact.id}? This cannot be undone.`)) return; void trainingArtifacts.delete(artifact.id).then(loadArtifacts).catch((reason) => setError(message(reason))); }}>Delete</button></div></div> : null}</div> : null}
 
-		{view === "run" ? <div className="training-panel" data-testid="training-run-view" data-read-model={summaryState.status} data-projection-revision={summaryState.revision}>{run ? <><div className="training-section-head"><div><span className="training-algorithm">{run.algorithm.toUpperCase()}</span><h3>{run.id}</h3></div><span className="training-status" data-state={durableStatus === "failed" || durableStatus === "unstarted" ? "failed" : durableStatus === "completed" ? "ready" : "installing"} data-connection={connection}>{durableStatus}</span></div>{runError ? <div className="training-terminal" role="alert" data-testid="training-run-failure"><strong>Training failed</strong><span>{runError}</span></div> : <Kv values={[["Recipe", run.algorithm.toUpperCase()], ["Status", durableStatus], ["Execution", placement === "mlx" ? "Local MLX" : "Hosted Tinker"], ["Step", summaryState.summary?.usage.steps != null ? String(summaryState.summary.usage.steps) : "—"], ["Evaluations", evaluationPage.page ? String(evaluationPage.page.total) : "—"]]} />}{evaluationPage.stale ? <p className="training-stale" role="status" data-testid="training-evaluations-stale">Showing the last durable evaluations while the projection refreshes.</p> : null}{runEvaluations.length ? <TrainingEvaluationCurve evaluations={runEvaluations} testId="training-evaluation-comparison" /> : null}</> : <div className="training-terminal"><strong>No run</strong></div>}</div> : null}
+		{view === "run" ? <div className="training-panel" data-testid="training-run-view" data-read-model={summaryState.status} data-projection-revision={summaryState.revision}>{run ? <><div className="training-section-head"><div><span className="training-algorithm">{run.algorithm.toUpperCase()}</span><h3>{run.id}</h3></div><span className="training-status" data-state={durableStatus === "failed" || durableStatus === "unstarted" ? "failed" : durableStatus === "completed" ? "ready" : "installing"} data-connection={connection}>{durableStatus}</span></div>{runError ? <div className="training-terminal" role="alert" data-testid="training-run-failure"><strong>Training failed</strong><span>{runError}</span></div> : <Kv values={[["Recipe", run.algorithm.toUpperCase()], ["Status", durableStatus], ["Execution", placement === "mlx" ? "Local MLX" : "Hosted Tinker"], ["Step", summaryState.summary?.usage.steps != null ? String(summaryState.summary.usage.steps) : "—"], ["Evaluations", evaluationPage.page ? String(evaluationPage.page.total) : "—"]]} />}{!durableTerminal ? <div className="training-actions">
+                {run.capabilities?.pause && durableStatus === "running" ? <button type="button" className="secondary-button" disabled={controlling} onClick={() => void control("pause")}>Pause at checkpoint</button> : null}
+                {run.capabilities?.resume && durableStatus === "paused" ? <button type="button" className="secondary-button" disabled={controlling} onClick={() => void control("resume")}>Resume</button> : null}
+                {run.capabilities?.cancel && !["starting", "unstarted"].includes(durableStatus) ? <button type="button" className="secondary-button" disabled={controlling} onClick={() => void control("cancel")}>Cancel and drain</button> : null}
+            </div> : null}{evaluationPage.stale ? <p className="training-stale" role="status" data-testid="training-evaluations-stale">Showing the last durable evaluations while the projection refreshes.</p> : null}{runEvaluations.length ? <TrainingEvaluationCurve evaluations={runEvaluations} testId="training-evaluation-comparison" /> : null}</> : <div className="training-terminal"><strong>No run</strong></div>}</div> : null}
 
 		{view === "inference" || view === "eval" ? <div className="training-panel" data-testid={`artifact-${view}`}><button type="button" className="training-back" onClick={() => setView("artifacts")}>← Artifacts</button>{artifact ? <><h3>{view === "eval" ? "Evaluate artifact" : "Run inference"}</h3><Kv values={[["Artifact", artifact.id], ["Base model", artifact.baseModel], ["Adapter", `${artifact.kind} · ${artifact.sha256}`]]} /><button type="button" className="primary-button" onClick={() => { const action = view === "eval" ? trainingArtifacts.launchEval(artifact.id, "eval.mlx.local-policy.smoke.v1") : trainingArtifacts.launchInference(artifact.id); void action.catch((reason) => setError(message(reason))); }}>{view === "eval" ? "Start Eval" : "Start inference"}</button></> : null}</div> : null}
 	</section>;

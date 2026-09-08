@@ -64,7 +64,7 @@ const MANIFEST_FILE: &str = "manifest.json";
 const WHEELHOUSE_MANIFEST_FILE: &str = "wheelhouse-manifest.json";
 const EMBEDDED_DISTRIBUTION_MANIFEST_FILE: &str = "manifest.json";
 const EMBEDDED_DISTRIBUTION_SCHEMA: &str = "synth.optimizer-runtime-distribution.v1";
-const OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "0046d4b383fe8dd6a06c19f0d59c72e71c073bc0";
+const OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "e3aa5ec0d6ac51230eecdebf773ec622035750ec";
 const OPTIMIZER_DISTRIBUTION_LOCK_SHA256: &str =
     "f45c301a88cf1ebaba48815bb87b678849bd01450069a57d30b9975218c25a81";
 const RUNTIME_LEASE_FILE: &str = "runtime-lease.json";
