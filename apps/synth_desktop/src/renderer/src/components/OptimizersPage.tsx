@@ -756,8 +756,9 @@ export function OptimizersPage({
 			const hostedTinker = recipeId === HOSTED_SFT_RECIPE_ID || isHostedCispoRecipeId(recipeId);
 			const run = await bridges.optimizers.startRecipe({
 				recipeId,
-				sessionRef: sessionRef ?? undefined,
+				sessionRef: hostedTinker && onEnsureApprovalSession ? await onEnsureApprovalSession() : sessionRef ?? undefined,
 				openVisual: true,
+				...(isHostedCispoRecipeId(recipeId) ? { planOverride: { cispo: { updates: 2, groupSize: 8, maxSampleTokens: 512, maxCostUsd: 5 } } } : {}),
 				containerId: hostedTinker ? undefined : (selectedContainerId ?? undefined)
 			});
 			setSelectedId(run.id);
@@ -1100,7 +1101,7 @@ export function OptimizersPage({
 					<div><span className="optimizer-eyebrow">Hosted CISPO</span><h2 id="optimizer-training-launch-title">{hostedCispoAdmitted ? "Hosted Tinker CISPO is admitted" : "Hosted CISPO is not available"}</h2></div>
 				</div>
 				{hostedCispoAdmitted ? (
-					<p data-testid="hosted-cispo-admitted">Public Tinker CISPO launches from the CISPO card. It does not bind a local container and does not require an SFT warm-start.</p>
+					<p data-testid="hosted-cispo-admitted">Public Tinker CISPO uses the configured saved training checkpoint and validation receipt. Use New run to configure the update count and cost cap.</p>
 				) : (
 					<div className="optimizer-empty" data-testid="hosted-cispo-not-admitted" role="status">
 						<strong>Hosted Tinker CISPO has not passed runtime admission.</strong>

@@ -1,7 +1,7 @@
 {
   "schemaVersion": "workshop.capability-inventory.v1",
   "evidenceKind": "static_source_declarations",
-  "sourceDigest": "39ae96cf217df62c9e59765ae52740b95edaa40757ac9dedcba63561fc74bc40",
+  "sourceDigest": "55024ac7ad81ed512fdbde8fa0fdd7e2133eb35e6b77e5a12641ae8203dbed2f",
   "sourceFiles": {
     "apps/synth_desktop/src-tauri/src/adapters/mcp/operations/annotations.rs": "35f1ff52db5e088c368cad022c9eab92e1c6a095b826d67ea9473b4a948d0319",
     "apps/synth_desktop/src-tauri/src/adapters/mcp/operations/computer_use.rs": "4d6f83d7c636b40e2246f2f4af68a7fbc6b89d697203cdc91b613994d75240e7",
@@ -58,7 +58,7 @@
     "apps/synth_desktop/src-tauri/src/domains/visuals/operations.rs": "5add5b51f8d550050ddd4eb45fd2b7c89df0eecfd9d90413e848466b2eba6cb9",
     "apps/synth_desktop/src-tauri/src/eval_driver.rs": "582266e1350cdc2aee1b717defda36c418d3b0ebc6b97a88bc6c75eb7044be62",
     "apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs": "eb45734397281b5abe1952eac8ff437c7f202926c2dd7b10835d057d40684bee",
-    "apps/synth_desktop/src-tauri/src/optimizers/manager.rs": "ae15fafc1b505c279d085a43e8ae9a02bc659c405943b35e5b676a6dc676ed6e",
+    "apps/synth_desktop/src-tauri/src/optimizers/manager.rs": "683ccacf65d36775cbfbe5c10c158afe74aa539a34b45f7f6917429dc275499b",
     "apps/synth_desktop/src-tauri/src/optimizers/sidecar_training.rs": "161ea486b2ebd5875f0ae9d90874c43ce371cea74a0f1654ad32d8a202dd8e4b",
     "apps/synth_desktop/src-tauri/src/platform/desktop_runtime.rs": "f97ef173c67a3f11b9c1fce94ccb9740555939a2f25fc2ca32cbde6bf345dfc3",
     "apps/synth_desktop/src-tauri/src/secrets/providers.rs": "a8d9154bcc62be7261682dbd9f54adca83e7485098c06e47b36017026712447a",
