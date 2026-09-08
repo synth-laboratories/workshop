@@ -2904,7 +2904,7 @@ impl OptimizerService {
         if run.source == "hosted" && matches!(run.algorithm_id.as_str(), "sft" | "cispo")
             && run.summary.get("containerExperiment").and_then(Value::as_bool) != Some(true) {
             if run.algorithm_id == "sft" {
-                super::sft_client::SftOptimizerClient::from_env()?.control(&id, "pause").await?;
+                super::sft_client::SftOptimizerClient::from_env()?.control(run.summary.get("producerRunId").and_then(Value::as_str).unwrap_or(&id), "pause").await?;
             } else {
                 super::cispo_client::CispoOptimizerClient::from_env()?.experiment_control(&id, "pause").await?;
             }
@@ -2931,11 +2931,14 @@ impl OptimizerService {
 
     pub async fn resume(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let run = self.get(id.clone()).await?;
+        if super::hosted_sft::recoverable_observer_failure(&run) {
+            return super::hosted_sft::recover_observer(self, &run).await;
+        }
         validate_control(&run, "resume", OptimizerRunStatus::Running)?;
         if run.source == "hosted" && matches!(run.algorithm_id.as_str(), "sft" | "cispo")
             && run.summary.get("containerExperiment").and_then(Value::as_bool) != Some(true) {
             if run.algorithm_id == "sft" {
-                super::sft_client::SftOptimizerClient::from_env()?.control(&id, "resume").await?;
+                super::sft_client::SftOptimizerClient::from_env()?.control(run.summary.get("producerRunId").and_then(Value::as_str).unwrap_or(&id), "resume").await?;
             } else {
                 super::cispo_client::CispoOptimizerClient::from_env()?.experiment_control(&id, "resume").await?;
             }

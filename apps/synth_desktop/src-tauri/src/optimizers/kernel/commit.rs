@@ -284,6 +284,9 @@ fn apply_lifecycle(
     if event.producer.event_type == "optimizer.run.resumed" {
         state.condition = RunCondition::Healthy;
     }
+    if event.producer.event_type == "optimizer.condition.waiting_for_producer" {
+        state.condition = RunCondition::WaitingForProducer;
+    }
     if event.producer.event_type == "optimizer.condition.environment_unreachable" {
         state.condition = RunCondition::EnvironmentUnreachable;
     }

@@ -890,6 +890,58 @@ async fn admit_hosted(
     .await
 }
 
+
+pub(super) fn recoverable_observer_failure(run: &OptimizerRunRecord) -> bool {
+    run.source == "hosted" && run.algorithm_id == "sft" && run.status == "failed"
+        && run.error.as_ref().and_then(|error| error.get("source")).and_then(Value::as_str) == Some("sidecar-training")
+        && run.error.as_ref().and_then(|error| error.get("message")).and_then(Value::as_str)
+            .is_some_and(|message| message.starts_with("training event sequence gap") || message.contains("event polling stayed unavailable"))
+}
+
+/// Preserve the failed observer's sealed receipt and attach a new local mirror
+/// to the same proven-paused producer job. No training job or paid call is created.
+pub(super) async fn recover_observer(service: &OptimizerService, old: &OptimizerRunRecord)
+    -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
+    anyhow::ensure!(recoverable_observer_failure(old), "run is not a recoverable observer failure");
+    let client = SftOptimizerClient::from_env()?;
+    let remote = client.get_run(&old.id).await?;
+    anyhow::ensure!(remote.get("status").and_then(Value::as_str) == Some("paused"),
+                    "producer must acknowledge a safe paused checkpoint before observer recovery");
+    let id = format!("{}_recovered", old.id);
+    if let Ok(existing) = service.get(id.clone()).await { return Ok((existing, None)); }
+    let mut summary = old.summary.clone();
+    if let Some(object) = summary.as_object_mut() {
+        object.remove("trainingCursor"); object.remove("hostedMirror");
+        object.insert("producerRunId".into(), json!(old.id));
+        object.insert("recoveredFrom".into(), json!(old.id));
+        object.insert("trainingTransport".into(), json!("public-sft.v1"));
+    }
+    let (run, event) = service.create(OptimizerCreateRequest {
+        algorithm_id: old.algorithm_id.clone(), algorithm_version: old.algorithm_version.clone(),
+        objective: old.objective.clone(), source: Some("hosted".into()), project_ref: old.project_ref.clone(),
+        session_ref: old.session_ref.clone(), id: Some(id.clone()), execution_bindings: Some(old.execution_bindings.clone()),
+        input_refs: Some(old.input_refs.clone()), capabilities: Some(old.capabilities.clone()), summary: Some(summary),
+        open_visual: Some(false), seed_fixture: None, cloud_config: None, local_path: None,
+    }).await?;
+    spawn_hosted_worker(service, client, id, None, 0).await;
+    Ok((run, event))
+}
+
+fn page_for_mirror(mut page: Value, mirror_id: &str, producer_id: &str) -> Value {
+    if mirror_id == producer_id { return page; }
+    page["run_id"] = json!(mirror_id);
+    if let Some(events) = page.get_mut("events").and_then(Value::as_array_mut) {
+        for event in events {
+            event["optimizer_run_id"] = json!(mirror_id);
+            event["job_id"] = json!(mirror_id);
+            event["run_id"] = json!(mirror_id);
+            if let Some(payload) = event.get_mut("payload").and_then(Value::as_object_mut) {
+                payload.insert("producer_run_id".into(), json!(producer_id));
+            }
+        }
+    }
+    page
+}
 #[allow(dead_code)]
 async fn spawn_hosted_worker(
     service: &OptimizerService,
@@ -899,9 +951,7 @@ async fn spawn_hosted_worker(
     start_cursor: u64,
 ) {
     let (cancel_tx, cancel_rx) = watch::channel(None);
-    service
-        .register_local_recipe(run_id.clone(), cancel_tx)
-        .await;
+    if !service.try_register_local_recipe(run_id.clone(), cancel_tx).await { return; }
     let _ = persist_hosted_cursor(service, &run_id, start_cursor, true).await;
     let worker = service.clone();
     tokio::spawn(async move {
@@ -940,6 +990,29 @@ pub async fn restore_hosted_mirrors(service: &OptimizerService) {
         return;
     };
     let registered = service.registered_local_recipes().await;
+    if let Ok(public) = SftOptimizerClient::from_env() {
+        for run in &runs {
+            if run.summary.get("trainingTransport").and_then(Value::as_str) == Some("public-sft.v1")
+                && !OptimizerRunStatus::str_is_terminal(&run.status) && !registered.contains(&run.id) {
+                spawn_hosted_worker(service, public.clone(), run.id.clone(), None, resume_cursor(run)).await;
+            }
+        }
+    }
+    let registered = service.registered_local_recipes().await;
+    // Read the public producer even when the optional local plugin is idle.
+    // This also repairs control facts normalized by an older desktop build.
+    if let Ok(public) = SftOptimizerClient::from_env() {
+        for (id, cursor) in hosted_runs_needing_restore(&runs, &registered) {
+            if let Ok(remote) = public.get_run(&id).await {
+                let state = remote.get("status").and_then(Value::as_str).unwrap_or("");
+                if matches!(state, "paused" | "blocked_evaluation" | "blocked_budget" | "blocked_uncertain") {
+                    let _ = service.append_event_payloads(id, vec![super::events::OptimizerEventDraft::new("optimizer.run.paused", "sft")
+                        .delta(serde_json::Map::from_iter([("state".into(), json!(state)), ("error".into(), remote.get("error").cloned().unwrap_or(Value::Null))]))
+                        .idempotency_key(format!("sft:recovered-control-v1:{cursor}:{state}"))]).await;
+                }
+            }
+        }
+    }
     let Ok(client) =
         super::sidecar_training::require_training_ready(service, PLACEMENT_TRAINING_SFT_HOSTED)
             .await
@@ -984,6 +1057,9 @@ pub(crate) fn hosted_runs_needing_restore(
 }
 
 fn resume_cursor(run: &OptimizerRunRecord) -> u64 {
+    if let Some(cursor) = run.summary.get("trainingCursor").and_then(Value::as_u64) {
+        return cursor;
+    }
     run.summary
         .get("hostedMirror")
         .and_then(|value| value.get("cursor"))
@@ -1029,8 +1105,10 @@ async fn run_hosted_worker(
     start_cursor: u64,
     mut cancel: super::CancelObserver,
 ) -> Result<()> {
+    let record = service.get(run_id.clone()).await?;
+    let producer_id = record.summary.get("producerRunId").and_then(Value::as_str).unwrap_or(&run_id).to_string();
     if let Some(toml) = config_toml.as_deref() {
-        client.submit_toml(&run_id, toml).await?;
+        client.submit_toml(&producer_id, toml).await?;
     }
     let mut upstream_cursor = start_cursor;
     // The producer appends to its log while we page it. A read that lands on a
@@ -1040,10 +1118,11 @@ async fn run_hosted_worker(
     let mut consecutive_page_errors = 0u32;
     loop {
         match client
-            .optimizer_events_after(&run_id, upstream_cursor, 500)
+            .optimizer_events_after(&producer_id, upstream_cursor, 500)
             .await
         {
             Ok(page) => {
+                let page = page_for_mirror(page, &run_id, &producer_id);
                 consecutive_page_errors = 0;
                 ingest::ingest_event_page(&service, &run_id, "sft", &page, &mut upstream_cursor)
                     .await?;
@@ -1061,7 +1140,7 @@ async fn run_hosted_worker(
                 continue;
             }
         }
-        let remote = client.get_run(&run_id).await?;
+        let remote = client.get_run(&producer_id).await?;
         let status = remote
             .get("status")
             .and_then(Value::as_str)
@@ -1069,7 +1148,7 @@ async fn run_hosted_worker(
         tokio::select! {
             changed = cancel.changed() => {
                 if changed.is_ok() && cancel.borrow().is_some() {
-                    client.cancel(&run_id).await?;
+                    client.cancel(&producer_id).await?;
                     // Continue ingesting until the provider confirms drained cancellation.
 
                 }
@@ -1081,9 +1160,7 @@ async fn run_hosted_worker(
                 &service,
                 &run_id,
                 "sft",
-                &client
-                    .optimizer_events_after(&run_id, upstream_cursor, 2_000)
-                    .await?,
+                &page_for_mirror(client.optimizer_events_after(&producer_id, upstream_cursor, 2_000).await?, &run_id, &producer_id),
                 &mut upstream_cursor,
             )
             .await?;
@@ -1181,15 +1258,13 @@ lr = 0.001
 /// Terminal failure with a readable reason. `optimizer.run.failed` carrying an
 /// empty delta tells a viewer nothing and hides producer-side success.
 async fn append_failure(service: &OptimizerService, run_id: &str, reason: &str) -> Result<()> {
-    service
-        .settle_run(
-            run_id.to_string(),
-            super::kernel::SettleCause::Failed {
-                detail: reason.to_string(),
-            },
-            Some(json!({ "message": reason, "source": "hosted_sft" })),
-        )
-        .await?;
+    // A stopped observer cannot certify that paid producer work has failed or drained.
+    // Leave the producer lifecycle intact and expose the transport condition.
+    let run = service.get(run_id.to_string()).await?;
+    if OptimizerRunStatus::str_is_terminal(&run.status) { return Ok(()); }
+    service.append_event_payloads(run_id.to_string(), vec![super::events::OptimizerEventDraft::new(
+        "optimizer.condition.waiting_for_producer", &run.algorithm_id)
+        .delta(serde_json::Map::from_iter([("message".into(), json!(reason))]))]).await?;
     Ok(())
 }
 
@@ -1235,6 +1310,26 @@ async fn persist_remote_terminal(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recovered_mirror_preserves_producer_checkpoint_identity() {
+        let page = serde_json::json!({"run_id":"producer", "events":[{
+            "schema_version":"optimizer_event.v1", "run_id":"producer",
+            "algorithm_id":"sft", "sequence_number":1,
+            "type":"sft.checkpoint.created", "event_id":"original-event",
+            "created_at":"2026-09-08T00:00:00Z",
+            "payload":{"checkpoint_id":"original-checkpoint", "sampler_ref":"tinker://exact"}
+        }]});
+        let remapped = super::page_for_mirror(page, "mirror", "producer");
+        assert_eq!(remapped["events"][0]["event_id"], "original-event");
+        assert_eq!(remapped["events"][0]["payload"]["checkpoint_id"], "original-checkpoint");
+        assert_eq!(remapped["events"][0]["payload"]["sampler_ref"], "tinker://exact");
+        assert_eq!(remapped["events"][0]["payload"]["producer_run_id"], "producer");
+        let (events, cursor) = super::ingest::remap_page_events(
+            remapped["events"].as_array().unwrap(), "mirror", "sft", 7, 0).unwrap();
+        assert_eq!(cursor, 1);
+        assert_eq!(events[0].optimizer_run_id, "mirror");
+        assert_eq!(events[0].sequence_number, 8);
+    }
 
     #[test]
     fn explicit_no_eval_launch_removes_legacy_container_requirements() {

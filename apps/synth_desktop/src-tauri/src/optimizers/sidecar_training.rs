@@ -789,6 +789,7 @@ async fn watch_job(
     let mut errors = 0;
     let mut gap_errors = 0;
     let mut cancel_sent = false;
+    let mut last_observed_control_state = String::new();
     loop {
         if cancel.borrow().is_some() && !cancel_sent {
             client
@@ -870,6 +871,21 @@ async fn watch_job(
         }
         persist_cursor(&service, &run_id, cursor).await?;
         let job = client.job(&run_id).await?;
+        let observed_state = job.get("status").and_then(Value::as_str).unwrap_or("running");
+        if observed_state != last_observed_control_state {
+            let event_type = match observed_state {
+                "paused" | "blocked_evaluation" | "blocked_budget" | "blocked_uncertain" => Some("optimizer.run.paused"),
+                "stop_requested" => Some("optimizer.run.cancelling"),
+                "running" if !last_observed_control_state.is_empty() => Some("optimizer.run.resumed"),
+                _ => None,
+            };
+            if let Some(event_type) = event_type {
+                service.append_event_payloads(run_id.clone(), vec![OptimizerEventDraft::new(event_type, &algorithm)
+                    .delta(Map::from_iter([("state".into(), json!(observed_state)), ("error".into(), job.get("error").cloned().unwrap_or(Value::Null))]))
+                    .idempotency_key(format!("training:observed-control-v1:{cursor}:{observed_state}"))]).await?;
+            }
+            last_observed_control_state = observed_state.to_string();
+        }
         match job
             .get("status")
             .and_then(Value::as_str)
@@ -1412,15 +1428,13 @@ async fn persist_cursor(service: &OptimizerService, run_id: &str, cursor: u64) -
 }
 
 async fn append_failure(service: &OptimizerService, run_id: &str, reason: &str) -> Result<()> {
-    service
-        .settle_run(
-            run_id.to_string(),
-            super::kernel::SettleCause::Failed {
-                detail: reason.to_string(),
-            },
-            Some(json!({"message": reason, "source": "sidecar-training"})),
-        )
-        .await?;
+    // A stopped observer cannot certify that paid producer work has failed or drained.
+    // Leave the producer lifecycle intact and expose the transport condition.
+    let run = service.get(run_id.to_string()).await?;
+    if super::models::OptimizerRunStatus::str_is_terminal(&run.status) { return Ok(()); }
+    service.append_event_payloads(run_id.to_string(), vec![super::events::OptimizerEventDraft::new(
+        "optimizer.condition.waiting_for_producer", &run.algorithm_id)
+        .delta(serde_json::Map::from_iter([("message".into(), json!(reason))]))]).await?;
     Ok(())
 }
 
@@ -1936,13 +1950,8 @@ async fn drive_hosted_sft_job(
             status @ ("stop_requested" | "pause_requested" | "paused" | "blocked_budget" | "blocked_evaluation" | "blocked_uncertain") => {
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
-                    let next = TrainingJobStatus::parse(status).expect("known training state");
-                    let changed = job.status != next;
-                    job.status = next;
+                    job.status = TrainingJobStatus::parse(status).expect("known training state");
                     job.error = remote.get("error").and_then(Value::as_str).map(str::to_owned);
-                    if changed {
-                        append_job_event(job, "training.lifecycle", json!({"state":status, "error":remote.get("error")}));
-                    }
                 }
                 drop(jobs);
                 sleep(Duration::from_millis(400)).await;
@@ -2061,13 +2070,8 @@ async fn drive_hosted_cispo_job(
             status @ ("stop_requested" | "pause_requested" | "paused" | "blocked_budget" | "blocked_evaluation" | "blocked_uncertain") => {
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
-                    let next = TrainingJobStatus::parse(status).expect("known training state");
-                    let changed = job.status != next;
-                    job.status = next;
+                    job.status = TrainingJobStatus::parse(status).expect("known training state");
                     job.error = remote.get("error").and_then(Value::as_str).map(str::to_owned);
-                    if changed {
-                        append_job_event(job, "training.lifecycle", json!({"state":status, "error":remote.get("error")}));
-                    }
                 }
                 drop(jobs);
                 sleep(Duration::from_millis(400)).await;

@@ -381,7 +381,7 @@ export function OptimizersPage({
 				algorithmId: algorithm === "all" ? undefined : algorithm,
 				source: source === "all" ? undefined : source
 			}),
-			bridges.optimizers.listAlgorithms(),
+			bridges.optimizers.listAlgorithms().catch(() => [] as OptimizerAlgorithmInfo[]),
 			bridges.optimizers.listRecipes(sessionRef ?? undefined).catch(() => [] as OptimizerRecipeInfo[])
 		]);
 		setRuns(nextRuns);
