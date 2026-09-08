@@ -159,6 +159,7 @@ async function stubCloudAccount(page: import("@playwright/test").Page, options: 
 				};
 			}
 		};
+		(window as unknown as { __cloudSummary: typeof summary }).__cloudSummary = summary;
 		window.synthAccount = {
 			beginSignIn: async () => ({ verificationUri: "https://example.test", expiresAtEpochS: 0 }),
 			pollSignIn: async () => ({ status: "active" as const }),
@@ -537,4 +538,20 @@ test("a failed hosted reconciliation does not invent a total", async ({ page }) 
 	await page.getByTestId("account-menu-trigger").click();
 	await page.getByTestId("account-open-usage").click();
 	await expect(page.getByTestId("usage-sheet-reconciliation-failed")).toContainText("could not be reconciled");
+});
+
+
+test("checkout reconciliation survives reload and waits for delayed provider state", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", tier: "free", remainingUsd: 0, usedUsd: 0 });
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-primary-action").click();
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1"))).not.toBeNull();
+	await page.reload();
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1"))).not.toBeNull();
+	await page.evaluate(() => {
+		const summary = (window as unknown as { __cloudSummary: { plan: { tier: string; name: string } } }).__cloudSummary;
+		summary.plan.tier = "starter";
+		summary.plan.name = "Starter";
+	});
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1")), { timeout: 12_000 }).toBeNull();
 });
