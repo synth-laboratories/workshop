@@ -1206,7 +1206,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .get("limits")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let (max_cost_usd, max_rollouts) = if is_container_baseline_eval {
+    let (mut max_cost_usd, max_rollouts) = if is_container_baseline_eval {
         // These recipes evaluate the policy already pinned by a registered
         // container. They have no candidate set: requiring one here prevents
         // the public MCP route from ever reaching `container_eval::start`.
@@ -1242,6 +1242,16 @@ pub(crate) async fn authorize_optimizer_recipe_start(
             .find_map(|key| limits.get(key).and_then(Value::as_u64)),
         )
     };
+    if is_hosted_sft {
+        if let Some(value) = request.plan_override.as_ref().and_then(|value| value.pointer("/sft/maxCostUsd")) {
+            let cap = value.as_f64().filter(|cap| cap.is_finite() && *cap > 0.0)
+                .ok_or_else(|| AppError::from(anyhow::anyhow!("SFT maximum charge must be positive and finite")))?;
+            if max_cost_usd.is_none_or(|ceiling| cap > ceiling) {
+                return Err(AppError::from(anyhow::anyhow!("SFT maximum charge exceeds the recipe ceiling")));
+            }
+            max_cost_usd = Some(cap);
+        }
+    }
     let paid_cap = session::approval::PaidComputeCap {
         max_cost_usd_micros: max_cost_usd.map(|value| (value * 1_000_000.0).round() as u64),
         max_rollouts,

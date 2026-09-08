@@ -352,6 +352,16 @@ pub(crate) fn execution_capability_projection() -> Value {
     })
 }
 
+pub(super) fn checkpoint_evaluators() -> Vec<Value> {
+    let Ok(python) = resolve_python() else { return Vec::new(); };
+    let home = eval_home().to_string_lossy().into_owned();
+    run_cli(&python, &["recipes", "--home", &home, "--json"]).ok()
+        .and_then(|payload| payload.get("recipes").and_then(Value::as_array).cloned())
+        .unwrap_or_default().into_iter()
+        .filter(|recipe| recipe.get("policyKind").and_then(Value::as_str) == Some("tinker-sampler.v1"))
+        .collect()
+}
+
 pub fn recipe_catalog() -> Vec<Value> {
     let Ok(python) = resolve_python() else {
         return offline_catalog("the local Optimizers runtime is not installed");

@@ -35,6 +35,10 @@ impl SftOptimizerClient {
         self.get_json("/health").await
     }
 
+    pub(super) async fn renderer_profile(&self, model: &str) -> Result<Value> {
+        self.post_json("/v1/renderer-profile", json!({"model_id": model})).await
+    }
+
     pub(super) async fn submit_toml(&self, run_id: &str, config_toml: &str) -> Result<Value> {
         self.post_json(
             "/v1/runs",

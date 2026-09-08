@@ -67,7 +67,14 @@ const BANKING77_SELECTION_SIZE: u32 = 400;
 const BANKING77_HELDOUT_SIZE: u32 = 400;
 
 pub fn recipe_catalog() -> Vec<Value> {
-    vec![craftax_nemotron_recipe(), banking77_recipe()]
+    let evaluators = super::eval_recipes::checkpoint_evaluators();
+    let mut recipes = vec![craftax_nemotron_recipe(), banking77_recipe()];
+    for recipe in &mut recipes {
+        recipe["limits"]["checkpointEvaluators"] = json!(evaluators);
+        recipe["limits"].as_object_mut().unwrap().remove("evaluationPlan");
+        recipe["limits"]["evaluationModes"] = json!(["none", "builtin", "container", "both"]);
+    }
+    recipes
 }
 
 fn craftax_nemotron_recipe() -> Value {
@@ -101,7 +108,7 @@ fn craftax_nemotron_recipe() -> Value {
             "campaignRolloutsPerCheckpoint": 2,
             "evalSeeds": [501, 502],
             "costCeilingUsd": HOSTED_SFT_COST_CEILING_USD,
-            "costNotice": "Hosted Tinker + local Craftax slot. Student id from docs/sft_tinker_base_models.toml (default 3.5 Lightning)."
+            "costNotice": "Hosted Tinker training with optional checkpoint evaluation."
         },
         "credentialInputs": [],
         "prerequisites": [
@@ -109,8 +116,7 @@ fn craftax_nemotron_recipe() -> Value {
             "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN",
             "SYNTH_OPTIMIZERS_SFT_SERVICE_URL",
             "SYNTH_SFT_TRAIN_JSONL (readable, non-empty real training corpus)",
-            "SYNTH_OPTIMIZERS_SFT_FIXTURE=1 for unpaid",
-            "Craftax gold / GameBench on 127.0.0.1:8098"
+            "Optional evaluation: registered digest-pinned checkpoint evaluator"
         ],
     })
 }
@@ -171,7 +177,7 @@ fn banking77_recipe() -> Value {
             "evalSeeds": [1, 2],
             "evaluationPlanRef": BANKING77_PLAN_REF,
             "costCeilingUsd": HOSTED_SFT_COST_CEILING_USD,
-            "costNotice": "Hosted Tinker training plus banking77_classify campaign rollouts. Provider charges apply."
+            "costNotice": "Hosted Tinker training with optional checkpoint evaluation. Provider charges apply."
         },
         "credentialInputs": [],
         "prerequisites": [
@@ -229,16 +235,102 @@ fn public_sft_service_reason() -> Option<String> {
 
 pub async fn start(
     service: &OptimizerService,
-    request: OptimizerRecipeRunRequest,
+    mut request: OptimizerRecipeRunRequest,
 ) -> Result<(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
+    let overrides = request.plan_override.get_or_insert_with(|| json!({}));
+    if overrides.get("sft").is_none() { overrides["sft"] = json!({"evaluationMode":"none"}); }
     match request.recipe_id.as_str() {
         HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE => start_craftax_nemotron(service, request).await,
         HOSTED_SFT_BANKING77_RECIPE => start_banking77(service, request).await,
         other => bail!("unknown hosted SFT recipe: {other}"),
     }
+}
+
+fn launch_uses_container(request: &OptimizerRecipeRunRequest) -> bool {
+    request.plan_override.as_ref().and_then(|value| value.get("sft"))
+        .map(|plan| matches!(plan.get("evaluationMode").and_then(Value::as_str), Some("container" | "both")))
+        .unwrap_or(true)
+}
+
+/// Explicit migration of the launch form's optional evaluator selection.
+/// Historical recipe text is retained for old receipts; new launches freeze v2.
+fn resolved_training_plan(text: String, request: &OptimizerRecipeRunRequest, model: &str) -> Result<String> {
+    let Some(plan) = request.plan_override.as_ref().and_then(|value| value.get("sft")) else {
+        return Ok(text);
+    };
+    let mode = plan.get("evaluationMode").and_then(Value::as_str).unwrap_or("none");
+    if !matches!(mode, "none" | "builtin" | "container" | "both") { bail!("unsupported SFT evaluation mode"); }
+    let mut config: toml::Value = toml::from_str(&text)?;
+    let table = config.as_table_mut().context("SFT config must be a table")?;
+    for key in ["container_url", "checkpoint_evaluation_policy", "checkpoint_evaluation_seeds", "checkpoint_evaluation_policy_harness", "checkpoint_evaluation_plan_ref", "checkpoint_evaluation_world_ref", "checkpoint_evaluation_timeout_s"] { table.remove(key); }
+    if let Some(metadata) = table.get_mut("metadata").and_then(toml::Value::as_table_mut) {
+        metadata.retain(|key, _| !key.starts_with("evaluation_"));
+    }
+    let mut evaluation = plan.get("checkpointEvaluation").cloned().unwrap_or_else(|| json!({}));
+    evaluation.as_object_mut().context("checkpointEvaluation must be an object")?.insert("mode".into(), json!(mode));
+    table.insert("checkpoint_evaluation".into(), toml::Value::try_from(evaluation)?);
+    if matches!(mode, "container" | "both") {
+        let profile = plan.get("rendererProfile").context("container evaluation requires its frozen renderer profile")?;
+        table.insert("evaluation_renderer_profile".into(), toml::Value::try_from(profile.clone())?);
+    }
+    if let Some(steps) = plan.get("trainingSteps").and_then(Value::as_u64) {
+        let training = table.get_mut("training").and_then(toml::Value::as_table_mut).context("training section missing")?;
+        let ceiling = training.get("steps").and_then(toml::Value::as_integer).unwrap_or(0);
+        if steps == 0 || steps > ceiling as u64 { bail!("trainingSteps must narrow the recipe length"); }
+        training.insert("steps".into(), toml::Value::Integer(steps as i64));
+        let middle = (steps / 2).max(1);
+        training.insert("checkpoint_every_steps".into(), toml::Value::Integer(middle as i64));
+        training.insert("eval_every_steps".into(), toml::Value::Integer(middle as i64));
+        let mut saves = vec![toml::Value::Integer(middle as i64)];
+        if middle != steps { saves.push(toml::Value::Integer(steps as i64)); }
+        table.insert("checkpoint_steps".into(), toml::Value::Array(saves.clone()));
+        if let Some(evaluation) = table.get_mut("checkpoint_evaluation").and_then(toml::Value::as_table_mut) {
+            let schedule = evaluation.entry("schedule").or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            schedule.as_table_mut().context("evaluation schedule must be a table")?.insert("steps".into(), toml::Value::Array(saves));
+        }
+        table.insert("training_steps".into(), toml::Value::Integer(steps as i64));
+    }
+    let cap = plan.get("maxCostUsd").and_then(Value::as_f64).unwrap_or(HOSTED_SFT_COST_CEILING_USD);
+    if !cap.is_finite() || cap <= 0.0 || cap > HOSTED_SFT_COST_CEILING_USD { bail!("maxCostUsd must be positive and within the recipe ceiling"); }
+    let rates = match model {
+        "openai/gpt-oss-20b" => (0.18, 0.45, 0.396),
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16" | "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16" => (0.195, 0.495, 0.44),
+        _ => bail!("SFT launch has no frozen pricing for this model"),
+    };
+    table.insert("budget".into(), toml::Value::try_from(json!({
+        "max_cost_usd": cap,
+        "pricing_version":"tinker.models.20260908.conservative-operation-reserves",
+        "pricing":{"input_usd_per_million":rates.0,"output_usd_per_million":rates.1,"training_usd_per_million":rates.2,
+                   "session_usd":0.25,"save_usd":0.25,"restore_usd":0.25}
+    }))?);
+    Ok(toml::to_string(&config)?)
+}
+
+async fn freeze_checkpoint_evaluator(mut request: OptimizerRecipeRunRequest, model: &str) -> Result<OptimizerRecipeRunRequest> {
+    let Some(plan) = request.plan_override.as_mut().and_then(|value| value.get_mut("sft")) else { return Ok(request); };
+    if !matches!(plan.get("evaluationMode").and_then(Value::as_str), Some("container" | "both")) { return Ok(request); }
+    let id = plan.get("evaluatorId").and_then(Value::as_str).context("Select a registered checkpoint evaluator")?;
+    if id != "eval.tinker.checkpoint.gsm8k.v1" { bail!("Checkpoint evaluator metric contract is not supported"); }
+    let recipe = super::eval_recipes::checkpoint_evaluators().into_iter()
+        .find(|recipe| recipe.get("id").and_then(Value::as_str) == Some(id))
+        .context("Checkpoint evaluator is no longer registered")?;
+    let digest = recipe.get("imageDigest").and_then(Value::as_str)
+        .filter(|digest| digest.starts_with("sha256:") && digest.len() == 71)
+        .context("Checkpoint evaluator requires a pinned image digest")?;
+    let selection = recipe.pointer("/limits/screeningSeeds").and_then(Value::as_array).context("Evaluator selection panel missing")?;
+    let final_seeds = recipe.pointer("/limits/confirmationSeeds").and_then(Value::as_array).context("Evaluator final panel missing")?;
+    // A bounded launch uses the first two members of each registered, disjoint panel.
+    let evaluator = json!({"id":id,"recipe_id":id,"image_digest":digest,
+        "metric_ref":"accuracy","reward_version":"gsm8k.frozen.exact.v1","units":"fraction",
+        "selection_seeds":selection.iter().take(2).collect::<Vec<_>>(),
+        "final_seeds":final_seeds.iter().take(2).collect::<Vec<_>>(),"failure_policy":"block"});
+    plan["checkpointEvaluation"] = json!({"evaluators":[evaluator],
+        "selection":{"evaluator_id":id,"direction":"maximize","tie_break":"earliest_step"}});
+    plan["rendererProfile"] = SftOptimizerClient::from_env()?.renderer_profile(model).await?;
+    Ok(request)
 }
 
 fn content_sha256(bytes: &[u8]) -> String {
@@ -421,6 +513,8 @@ async fn start_banking77(
         &dataset_digest,
         reference.as_ref(),
     );
+    let request = freeze_checkpoint_evaluator(request, &model_id).await?;
+    let config_toml = resolved_training_plan(config_toml, &request, &model_id)?;
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
         algorithm_version: Some(if reference_mode {
@@ -646,7 +740,7 @@ async fn start_craftax_nemotron(
 )> {
     let catalog = super::tinker_catalog::TinkerBaseModelCatalog::load()?;
     let model_id = catalog.resolve(request.base_model.as_deref())?;
-    let container_url = local_craftax_slot_url()?;
+    let container_url = if request.plan_override.as_ref().and_then(|value| value.get("sft")).is_none() { local_craftax_slot_url()? } else { String::new() };
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_craftax_nemo_{}", &suffix[..8]);
     let training_file = format!("file_train_{}", &suffix[..8]);
@@ -669,6 +763,8 @@ async fn start_craftax_nemotron(
         training_jsonl.as_deref(),
         &dataset_digest,
     );
+    let request = freeze_checkpoint_evaluator(request, &model_id).await?;
+    let config_toml = resolved_training_plan(config_toml, &request, &model_id)?;
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
         algorithm_version: Some("craftax-nemotron-nano-tinker-v1".into()),
@@ -762,12 +858,28 @@ fn local_craftax_slot_url() -> Result<String> {
 async fn admit_hosted(
     service: &OptimizerService,
     request: OptimizerRecipeRunRequest,
-    create: OptimizerCreateRequest,
+    mut create: OptimizerCreateRequest,
     config_toml: String,
 ) -> Result<(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
+    let resolved: toml::Value = toml::from_str(&config_toml)?;
+    if let Some(summary) = create.summary.as_mut().and_then(Value::as_object_mut) {
+        summary.insert("trainingSteps".into(), serde_json::to_value(resolved.get("training").and_then(|v| v.get("steps")))?);
+        summary.insert("checkpointSteps".into(), serde_json::to_value(resolved.get("checkpoint_steps"))?);
+        summary.insert("checkpointEvaluation".into(), serde_json::to_value(resolved.get("checkpoint_evaluation"))?);
+    }
+    if request.plan_override.as_ref().and_then(|value| value.get("sft")).is_some() {
+        if let Some(bindings) = create.execution_bindings.as_mut() {
+            bindings.retain(|binding| binding.kind != "local_slot");
+        }
+        if let Some(summary) = create.summary.as_mut().and_then(Value::as_object_mut) {
+            summary.remove("localSlot");
+            summary.remove("evaluationPlan");
+            summary.insert("checkpointEvaluationMode".into(), request.plan_override.as_ref().and_then(|value| value.pointer("/sft/evaluationMode")).cloned().unwrap_or(json!("none")));
+        }
+    }
     super::sidecar_training::create_and_watch(
         service,
         request,
@@ -957,23 +1069,9 @@ async fn run_hosted_worker(
         tokio::select! {
             changed = cancel.changed() => {
                 if changed.is_ok() && cancel.borrow().is_some() {
-                    let _ = client.cancel(&run_id).await;
-                    service
-                        .settle_run(
-                            run_id.clone(),
-                            super::kernel::SettleCause::Cancelled {
-                                request: std::sync::Arc::new(
-                                    super::kernel::CancellationRequest::new(
-                                        super::kernel::CancellationCause::UserRequested,
-                                        "hosted-sft:watcher",
-                                        format!("run:{run_id}"),
-                                    ),
-                                ),
-                            },
-                            None,
-                        )
-                        .await?;
-                    return Ok(());
+                    client.cancel(&run_id).await?;
+                    // Continue ingesting until the provider confirms drained cancellation.
+
                 }
             }
             _ = sleep(Duration::from_millis(750)) => {}
@@ -1137,6 +1235,22 @@ async fn persist_remote_terminal(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn explicit_no_eval_launch_removes_legacy_container_requirements() {
+        let request: super::OptimizerRecipeRunRequest = serde_json::from_value(serde_json::json!({
+            "recipeId": super::HOSTED_SFT_BANKING77_RECIPE,
+            "planOverride": {"sft":{"evaluationMode":"none"}}
+        })).unwrap();
+        let source = "container_url = \"http://localhost:8110\"\n[metadata]\nevaluation_transport = \"tunnel\"\n";
+        let migrated = super::resolved_training_plan(source.into(), &request, "openai/gpt-oss-20b").unwrap();
+        let parsed: toml::Value = toml::from_str(&migrated).unwrap();
+        assert!(parsed.get("container_url").is_none());
+        assert!(parsed["metadata"].get("evaluation_transport").is_none());
+        assert_eq!(parsed["checkpoint_evaluation"]["mode"].as_str(), Some("none"));
+        assert_eq!(parsed["budget"]["max_cost_usd"].as_float(), Some(super::HOSTED_SFT_COST_CEILING_USD));
+        assert!(!super::launch_uses_container(&request));
+    }
     use super::*;
 
     #[test]
@@ -1448,7 +1562,7 @@ mod tests {
     #[test]
     fn start_paths_do_not_dial_the_public_sft_loopback() {
         let production = include_str!("hosted_sft.rs")
-            .split("#[cfg(test)]")
+            .split("#[cfg(test)]\nmod tests")
             .next()
             .unwrap();
         assert!(!production.contains("client.base_url"));
