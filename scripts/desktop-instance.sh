@@ -1092,6 +1092,10 @@ env = {
     "SYNTH_BANKING77_CISPO_PARENT_JSON": cispo_parent_json,
     "TINKER_CISPO_VALIDATION_RECEIPT": cispo_receipt,
 }
+for key in ("SYNTH_CONTAINER_IMAGE_CATALOG", "SYNTH_WORKSHOP_URL"):
+    value = __import__("os").environ.get(key, "").strip()
+    if value:
+        env[key] = value
 # launchd rejects empty EnvironmentVariables values. Credentials never
 # belong here; skip any leftover empty optional path.
 env = {key: value for key, value in env.items() if value}
