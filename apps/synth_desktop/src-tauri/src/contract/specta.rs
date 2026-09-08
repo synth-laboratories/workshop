@@ -114,6 +114,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::data_containers_probe,
             crate::data_containers_reconcile,
             crate::data_containers_restart,
+            crate::data_trace_research_request,
             crate::data_traces_list,
             crate::data_traces_get,
             crate::data_trace_materialize,
@@ -174,10 +175,12 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::optimizers_saved_lora_patch,
             crate::optimizers_saved_lora_publish,
             crate::optimizers_training_reconcile,
+            crate::optimizers_container_experiment_action,
             crate::plugins_status,
             crate::plugins_list,
             crate::plugins_manage,
             crate::plugins_set_release_channel,
+            crate::jesterky_analysis_settings,
             crate::computer_use_status,
             crate::computer_use_install,
             crate::computer_use_remove,
@@ -577,7 +580,7 @@ mod tests {
         // 306 → 323: first-class human annotation task/session/draft/audio,
         // transcription, status, cancellation, export, and submission.
         assert_eq!(
-            exported, 323,
+            exported, 332,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

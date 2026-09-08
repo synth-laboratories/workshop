@@ -1147,6 +1147,7 @@ fn finding_from_annotation(annotation: &Value) -> Option<Value> {
         },
         "summary": summary,
         "payload": annotation.get("payload").cloned().unwrap_or(json!({})),
+        "sourceAnnotation": annotation,
     }))
 }
 
@@ -1178,12 +1179,17 @@ pub fn replace_findings(
         let status = finding_status(finding.get("status").and_then(Value::as_str));
         let target = finding.get("target").cloned().unwrap_or(json!({}));
         let selector = target.get("selector").and_then(Value::as_str).unwrap_or("");
+        let source = finding.get("sourceAnnotation").filter(|v|v.is_object());
+        let stored_target=source.and_then(|v|v.get("target")).unwrap_or(&target);
+        let evidence=source.and_then(|v|v.get("evidence")).cloned().unwrap_or(json!([]));
+        let mut stored_payload=finding.get("payload").cloned().unwrap_or(json!({}));
+        if let Some(source)=source { stored_payload["sourceAnnotation"]=source.clone(); }
         conn.execute(
             "INSERT INTO annotation_findings(
                 finding_id, evidence_head_digest, job_id, annotator_id, annotation_type,
                 taxonomy_label, severity, status, target_selector, target_selector_json,
                 evidence_selectors_json, payload_json, created_at
-             ) VALUES(?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '[]', ?10, ?11)
+             ) VALUES(?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?12, ?10, ?11)
              ON CONFLICT(finding_id) DO UPDATE SET
                 evidence_head_digest=excluded.evidence_head_digest,
                 annotator_id=excluded.annotator_id,
@@ -1193,6 +1199,7 @@ pub fn replace_findings(
                 status=excluded.status,
                 target_selector=excluded.target_selector,
                 target_selector_json=excluded.target_selector_json,
+                evidence_selectors_json=excluded.evidence_selectors_json,
                 payload_json=excluded.payload_json",
             params![
                 finding_id,
@@ -1203,9 +1210,10 @@ pub fn replace_findings(
                 finding.get("severity").and_then(Value::as_str),
                 status,
                 selector,
-                serde_json::to_string(&target)?,
-                serde_json::to_string(finding.get("payload").unwrap_or(&json!({})))?,
+                serde_json::to_string(stored_target)?,
+                serde_json::to_string(&stored_payload)?,
                 now,
+                serde_json::to_string(&evidence)?,
             ],
         )?;
         written += 1;

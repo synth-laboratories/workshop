@@ -48,6 +48,7 @@ pub fn is_hosted_cispo_recipe(recipe_id: &str) -> bool {
     recipe_id == HOSTED_CISPO_RECIPE
         || recipe_id == HOSTED_BANKING77_CISPO_RECIPE
         || HOSTED_CISPO_LEGACY_IDS.contains(&recipe_id)
+        || matches!(recipe_id, "cispo.healthbench.container.v1" | "cispo.craftax.container.v1")
 }
 
 const BASE_MODEL: &str = "Qwen/Qwen3.5-2B";
@@ -461,7 +462,7 @@ pub fn admitted_placements() -> Vec<&'static str> {
     placements
 }
 
-fn hosted_cispo_receipt_admits() -> bool {
+pub(super) fn hosted_cispo_receipt_admits() -> bool {
     let Ok(path) = std::env::var("TINKER_CISPO_VALIDATION_RECEIPT") else {
         return false;
     };
@@ -1566,6 +1567,13 @@ fn public_tinker_cispo_request(value: &Value) -> bool {
 }
 
 fn hosted_cispo_submit_payload(config: &Value) -> Result<Value> {
+    let experiment = config.get("config_json").unwrap_or(config);
+    if experiment.get("schema_version").and_then(Value::as_str) == Some("rl.experiment.v1") {
+        if std::env::var("SYNTH_OPTIMIZERS_RL_EXPERIMENT_PREVIEW").as_deref() != Ok("1") {
+            bail!("container experiments are not enabled in this Workshop build");
+        }
+        return Ok(experiment.clone());
+    }
     if let Some(config_json) = config.get("config_json") {
         if public_tinker_cispo_request(config_json) {
             return Ok(config_json.clone());
@@ -1915,6 +1923,11 @@ async fn drive_hosted_cispo_job(
     let client = CispoOptimizerClient::from_env()?;
     if !attach_existing_requested(config) {
         let payload = hosted_cispo_submit_payload(config)?;
+        if payload.get("schema_version").and_then(Value::as_str) == Some("rl.experiment.v1")
+            && client.capabilities().await?.get("container_experiments").and_then(Value::as_bool) != Some(true)
+        {
+            bail!("CISPO service does not advertise container experiments");
+        }
         client.submit(job_id, &payload).await?;
     }
     let mut cursor = 0u64;
@@ -1996,7 +2009,7 @@ async fn drive_hosted_cispo_job(
                     .and_then(Value::as_str)
                     .unwrap_or("hosted CISPO failed")
             ),
-            "cancelled" => {
+            "cancelled" | "stopped" => {
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
                     job.status = TrainingJobStatus::Cancelled;

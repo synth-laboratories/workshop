@@ -33,6 +33,9 @@ use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
 
+#[path = "retry_gate.rs"]
+mod retry_gate;
+
 /// A computer-use approval must not sit forever, but it also must not expire
 /// while the screen is locked — the lock guard suspends expiry, so this is the
 /// live-screen ceiling only.
@@ -45,6 +48,7 @@ pub struct ComputerUseService {
 
 #[derive(Default)]
 struct Inner {
+    launch_retry: retry_gate::RetryGate,
     sessions: HashMap<String, ComputerUseSession>,
     recorders: HashMap<String, TrajectoryRecorder>,
     client: Option<HelperClient>,
@@ -165,7 +169,28 @@ impl ComputerUseService {
         if inner.client.is_some() {
             return Ok(());
         }
+        if !inner.launch_retry.admit(std::time::Instant::now()) {
+            bail!(
+                "computer-use helper launch is cooling down; retry after 30 seconds: {}",
+                inner.detail.as_deref().unwrap_or("previous launch attempt")
+            );
+        }
+        let result = self.launch_verified_client(inner).await;
+        if let Err(error) = &result {
+            inner.identity = None;
+            inner.grants.clear();
+            inner.detail = Some(format!("{error:#}"));
+        }
+        result
+    }
+
+    async fn launch_verified_client(&self, inner: &mut Inner) -> Result<()> {
         let bundle = helper::helper_bundle_path();
+        // Status polling must not invoke codesign on Workshop when there is
+        // nothing to launch. Full signature verification still runs below.
+        if !bundle.exists() {
+            bail!("no helper is installed at {}", bundle.display());
+        }
         let team = helper::expected_team_id();
         // A development build without a team id configured is allowed to run
         // unnotarized; a build with one is not. That keeps the loose path

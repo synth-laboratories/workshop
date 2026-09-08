@@ -33,6 +33,7 @@ export const commands = {
 	dataContainersProbe: (containerId: string) => typedError<ContainerDeployment, AppError_Serialize>(__TAURI_INVOKE("data_containers_probe", { containerId })),
 	dataContainersReconcile: (containerId: string, sessionId: string) => typedError<ContainerDeployment, AppError_Serialize>(__TAURI_INVOKE("data_containers_reconcile", { containerId, sessionId })),
 	dataContainersRestart: (containerId: string, sessionId: string) => typedError<ContainerDeployment, AppError_Serialize>(__TAURI_INVOKE("data_containers_restart", { containerId, sessionId })),
+	dataTraceResearchRequest: (operation: string, argumentsJson: string) => typedError<string, AppError_Serialize>(__TAURI_INVOKE("data_trace_research_request", { operation, argumentsJson })),
 	dataTracesList: () => typedError<TraceRecord[], AppError_Serialize>(__TAURI_INVOKE("data_traces_list")),
 	dataTracesGet: (traceId: string) => typedError<TraceRecord, AppError_Serialize>(__TAURI_INVOKE("data_traces_get", { traceId })),
 	dataTraceMaterialize: (containerId: string, rolloutId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("data_trace_materialize", { containerId, rolloutId })),
@@ -238,6 +239,7 @@ export const commands = {
 	optimizersSavedLoraPatch: (checkpointId: string, patch: SavedLoraPatchRequest) => typedError<SavedLoraCheckpoint, AppError_Serialize>(__TAURI_INVOKE("optimizers_saved_lora_patch", { checkpointId, patch })),
 	optimizersSavedLoraPublish: (checkpointId: string) => typedError<SavedLoraCheckpoint, AppError_Serialize>(__TAURI_INVOKE("optimizers_saved_lora_publish", { checkpointId })),
 	optimizersTrainingReconcile: (optimizerRunId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("optimizers_training_reconcile", { optimizerRunId })),
+	optimizersContainerExperimentAction: (optimizerRunId: string, action: string, checkpointId: string | null) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("optimizers_container_experiment_action", { optimizerRunId, action, checkpointId })),
 	pluginsStatus: (pluginId: string | null) => typedError<PluginStatus, AppError_Serialize>(__TAURI_INVOKE("plugins_status", { pluginId })),
 	pluginsList: () => typedError<PluginStatus[], AppError_Serialize>(__TAURI_INVOKE("plugins_list")),
 	/**
@@ -251,6 +253,10 @@ export const commands = {
 	 */
 	pluginsManage: (operation: string, pluginId: string, version: string | null, sessionId: string | null) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("plugins_manage", { operation, pluginId, version, sessionId })),
 	pluginsSetReleaseChannel: (pluginId: string, channel: string) => typedError<PluginStatus, AppError_Serialize>(__TAURI_INVOKE("plugins_set_release_channel", { pluginId, channel })),
+	/**  Persist the optional analysis scope. This never launches paid work. */
+	jesterkyAnalysisSettings: (settings: {
+	annotationScope: AnnotationScope,
+} | null) => typedError<AnalysisSettings, AppError_Serialize>(__TAURI_INVOKE("jesterky_analysis_settings", { settings })),
 	computerUseStatus: (sessionId: string | null) => typedError<ComputerUseSnapshot, AppError_Serialize>(__TAURI_INVOKE("computer_use_status", { sessionId })),
 	/**
 	 *  Install the helper that ships inside this app bundle.
@@ -755,6 +761,13 @@ export type AlgorithmKind = "eval" | "gepa" |
  */
 "go-ex" | "sft" | "cispo";
 
+export type AnalysisSettings = {
+	annotationScope: AnnotationScope,
+};
+
+/**  Saved independently of the removable runtime; changing scope never starts work. */
+export type AnnotationScope = "selected_rollouts" | "selected_evidence";
+
 /**  Informative error payload serialized across the Tauri boundary. */
 export type AppError = AppError_Serialize | AppError_Deserialize;
 
@@ -805,6 +818,8 @@ export type AttachmentSource = "user_picker" | "recent_folder" | "agent_request"
 export type AuthAction = "connect" | "wait" | "none" | "reauthenticate" | "retry";
 
 export type AuthState = "disconnected" | "authenticating" | "ready" | "expiring" | "expired" | "refresh_failed";
+
+export type AuthoringAffordance = "temporalControls" | "traceInspector" | "realEvidence";
 
 export type BackendSettings = {
 	configPath: string,
@@ -904,6 +919,8 @@ export type CheckpointInferRequest = {
 };
 
 export type CispoProjection = {
+	experiment?: unknown,
+	checkpointDetails?: unknown,
 	workItems: WorkItem[],
 	phase: RunPhase | null,
 	usage: UsageCompleteness,
@@ -1487,6 +1504,8 @@ export type EvalTrialSummary = {
 	valid?: boolean | null,
 	reward?: number | null,
 	metrics?: unknown,
+	/**  Immutable experiment axes supplied by the evaluator; never inferred from labels. */
+	researchContext?: unknown,
 	missingGates?: string[],
 	missingArtifacts?: string[],
 	evidenceDir?: string | null,
@@ -4244,6 +4263,12 @@ export type TelemetryPolicy = {
 export type TemplateMeta = {
 	schemaVersion: string,
 	id: string,
+	/**
+	 *  Digest of every file in this template package. Certification binds to
+	 *  this value so template changes stale earlier reviews without requiring
+	 *  a cosmetic visual revision bump.
+	 */
+	templateDigest?: string,
 	title?: string,
 	genre?: string | null,
 	/**
@@ -4283,6 +4308,17 @@ export type TemplateReadinessContract = {
 	minimumRenderedFrameCount?: number,
 	minimumSemanticEventCount?: number,
 	requireTerminal?: boolean,
+	/**
+	 *  Which evidence affordances this surface actually offers, out of
+	 *  `temporalControls`, `traceInspector`, `realEvidence`.
+	 *
+	 *  Absent means all three, so no existing template is relaxed by this
+	 *  field. A template opts out only by declaring the shorter list in its
+	 *  manifest, which is reviewable — unlike a reviewer ticking a box that is
+	 *  false. A static analysis projection of immutable sealed evidence has no
+	 *  temporal control to offer, and demanding one made it uncertifiable.
+	 */
+	authoringAffordances?: AuthoringAffordance[] | null,
 };
 
 export type TerminalCreateRequest = {

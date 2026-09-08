@@ -10,7 +10,7 @@
 export type PluginNavKind = "builtin" | "managed";
 
 export type PluginNavEntry = {
-	id: "visuals" | "reports" | "experiments" | "optimizers" | "environment-qa" | "inventory" | "inference" | "computer-use";
+	id: "jesterky" | "visuals" | "reports" | "experiments" | "optimizers" | "environment-qa" | "inventory" | "inference" | "computer-use";
 	/** Sidebar destination name. Short: a place, not a description of contents. */
 	label: string;
 	description: string;
@@ -21,6 +21,7 @@ export type PluginNavEntry = {
 };
 
 export const PLUGIN_NAV: readonly PluginNavEntry[] = [
+	{ id: "jesterky", label: "Jesterky", description: "Optional trace analysis with skills, MCP tools, and visuals.", testId: "open-jesterky", kind: "managed", pluginId: "jesterky" },
 	{ id: "visuals", label: "Visuals", description: "Explore agent- and user-created visual workspaces.", testId: "open-visuals", kind: "builtin" },
 	{ id: "reports", label: "Reports", description: "Collect durable narrative and evidence reports.", testId: "open-reports", kind: "builtin" },
 	{ id: "experiments", label: "Experiments", description: "Review evaluation and training experiments.", testId: "open-experiments", kind: "builtin" },

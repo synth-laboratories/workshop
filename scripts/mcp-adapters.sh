@@ -7,6 +7,7 @@ SYNTH_MCP_ADAPTERS=(
   synth-containers-mcp
   synth-visuals-mcp
   synth-optimizers-mcp
+  synth-jesterky-mcp
   synth-plugins-mcp
   synth-display-mcp
   synth-computer-use-mcp

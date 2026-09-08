@@ -560,6 +560,7 @@ function cispoProjection(base: ProjectedState, view: OptimizerRunViewV2Like, run
   sftProjection(base, view);
   const clip = record(projection.clipConfig);
   base.cispo = {
+    experiment: record(projection.experiment),
     objective: run.objective ?? "CISPO clipped-importance policy optimization",
     clipLow: numberOrNull(clip.clipLow ?? clip.clip_low ?? clip.low),
     clipHigh: numberOrNull(clip.clipHigh ?? clip.clip_high ?? clip.high),

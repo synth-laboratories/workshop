@@ -140,6 +140,9 @@ impl PluginService {
             .get("plugin_id")
             .and_then(Value::as_str)
             .unwrap_or(OPTIMIZERS_PLUGIN_ID);
+        if plugin_id == super::jesterky::ID {
+            return self.manage_jesterky(broker, app, session_id, operation, arguments).await;
+        }
         if plugin_id != OPTIMIZERS_PLUGIN_ID {
             bail!("unknown plugin_id `{plugin_id}`");
         }
@@ -150,7 +153,7 @@ impl PluginService {
         match operation {
             "list" => {
                 let status = self.status(core).await;
-                Ok(json!({ "plugins": [status] }))
+                Ok(json!({ "plugins": [status, super::jesterky::status()] }))
             }
             "status" => Ok(serde_json::to_value(self.status(core).await)?),
             "capabilities" => self.capabilities(core).await,
@@ -161,6 +164,28 @@ impl PluginService {
             }
             other => bail!("unknown plugin operation `{other}`"),
         }
+    }
+
+    async fn manage_jesterky<R: tauri::Runtime>(&self, broker: &ApprovalBroker, app: &AppHandle<R>, session: Option<&str>, action: &str, arguments: &Value) -> Result<Value> {
+        use super::jesterky;
+        match action {
+            "list" => return Ok(json!({"plugins":[jesterky::status()]})),
+            "status" => return Ok(serde_json::to_value(jesterky::status())?),
+            "capabilities" => return jesterky::capabilities(),
+            "enable"|"disable"|"install"|"update"|"start"|"restart"|"stop"|"remove" => {},
+            _ => bail!("unknown plugin operation {action}"),
+        }
+        let registry=PluginRegistry::for_plugin(jesterky::ID);
+        let catalog=registry.selected_catalog_entry(arguments.get("version").and_then(Value::as_str))?;
+        let before=jesterky::status();
+        let retention="Retains source traces, annotations, query snapshots, analysis receipts, and visuals. Runtime changes apply to future invocations.";
+        let approval=self.authorize(broker,app,session,plugin_kind(action,&catalog,0,before.digest,retention),0).await?;
+        if approval.rejected{return Ok(json!({"result":"approval_rejected","pluginId":jesterky::ID,"approvalReceiptId":approval.approval_id}));}
+        let started_at=Utc::now().to_rfc3339();
+        let outcome=jesterky::execute(action).await;
+        let status=jesterky::status();
+        let receipt=registry.record_receipt(PluginActionReceipt{schema_version:PLUGIN_ACTION_RECEIPT_SCHEMA.into(),receipt_id:format!("plugin_action_{}",Uuid::new_v4().simple()),plugin_id:jesterky::ID.into(),action:action.into(),version:Some(catalog.version),digest:status.digest.clone(),approval_receipt_id:Some(approval.approval_id),started_at,finished_at:Utc::now().to_rfc3339(),result:if outcome.is_ok(){"ok"}else{"error"}.into(),retained_data:retention.into(),status:Some(status),error:outcome.as_ref().err().map(|e|redact_secrets(&e.to_string()))})?;
+        outcome?;Ok(serde_json::to_value(receipt)?)
     }
 
     async fn mutate<R: tauri::Runtime>(

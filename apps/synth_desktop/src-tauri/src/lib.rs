@@ -64,6 +64,7 @@ mod telemetry;
 mod terminal;
 pub mod trace_ingest;
 pub mod trace_query;
+pub mod trace_research;
 pub mod training_artifacts;
 pub mod training_models;
 mod update_check;
@@ -753,6 +754,29 @@ async fn data_containers_restart(
         .get_container(container_id)
         .await
         .map_err(AppError::from)
+}
+
+// Consumer bridge only: query semantics and storage remain in the existing trace API.
+#[tauri::command]
+#[specta::specta]
+async fn data_trace_research_request(
+    state: State<'_, Arc<CoreRuntime>>,
+    operation: String,
+    arguments_json: String,
+) -> Result<String, AppError> {
+    let path = match operation.as_str() {
+        "window" => "/v1/traces/window",
+        "query" => "/v1/traces/query",
+        "page" => "/v1/traces/page",
+        "snapshot" => "/v1/traces/snapshot",
+        "source" => "/v1/traces/source",
+        "prepare_annotations" => "/v1/traces/prepare_annotations",
+        _ => return Err(AppError::from(anyhow::anyhow!("Unsupported trace research operation"))),
+    };
+    let arguments = serde_json::from_str(&arguments_json).map_err(|e| AppError::from(anyhow::anyhow!(e)))?;
+    let result = crate::visuals_ipc::dispatch("POST", path, arguments, state.inner().as_ref())
+        .await.map_err(AppError::from)?;
+    serde_json::to_string(&result).map_err(|e| AppError::from(anyhow::anyhow!(e)))
 }
 
 #[tauri::command]
@@ -2347,6 +2371,18 @@ async fn optimizers_training_reconcile(
 
 #[tauri::command]
 #[specta::specta]
+async fn optimizers_container_experiment_action(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    action: String,
+    checkpoint_id: Option<String>,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state.optimizers().container_experiment_action(optimizer_run_id, action, checkpoint_id)
+        .await.map(contract::specta::OpaqueJson).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn plugins_status(
     state: State<'_, Arc<CoreRuntime>>,
     plugin_id: Option<String>,
@@ -2354,6 +2390,7 @@ async fn plugins_status(
     // Validate rather than discard: returning the optimizers status for any id
     // asked about let the caller believe a plugin existed that does not.
     if let Some(plugin_id) = plugin_id.as_deref() {
+        if plugin_id == plugins::jesterky::ID { return Ok(plugins::jesterky::status()); }
         if plugin_id == plugins::types::COMPUTER_USE_PLUGIN_ID {
             let _ = state.computer_use().refresh_grants().await;
             return Ok(state.computer_use().status().await);
@@ -2365,6 +2402,13 @@ async fn plugins_status(
         }
     }
     Ok(state.plugins().status(&state).await)
+}
+
+/// Persist the optional analysis scope. This never launches paid work.
+#[tauri::command]
+#[specta::specta]
+async fn jesterky_analysis_settings(settings: Option<plugins::jesterky::AnalysisSettings>) -> Result<plugins::jesterky::AnalysisSettings, AppError> {
+    plugins::jesterky::analysis_settings(settings).map_err(AppError::from)
 }
 
 /// Human-triggered plugin lifecycle.
@@ -2413,6 +2457,7 @@ async fn plugins_list(state: State<'_, Arc<CoreRuntime>>) -> Result<Vec<PluginSt
     let _ = state.computer_use().refresh_grants().await;
     Ok(vec![
         state.plugins().status(&state).await,
+        plugins::jesterky::status(),
         state.computer_use().status().await,
     ])
 }
@@ -2588,6 +2633,10 @@ async fn plugins_set_release_channel(
     plugin_id: String,
     channel: String,
 ) -> Result<PluginStatus, AppError> {
+    if plugin_id == plugins::jesterky::ID {
+        plugins::PluginRegistry::for_plugin(&plugin_id).set_release_channel(&channel).map_err(AppError::from)?;
+        return Ok(plugins::jesterky::status());
+    }
     if plugin_id != plugins::OPTIMIZERS_PLUGIN_ID {
         return Err(AppError::from(anyhow::anyhow!(
             "unknown plugin_id `{plugin_id}`"

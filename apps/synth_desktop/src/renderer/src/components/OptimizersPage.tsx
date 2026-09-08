@@ -10,6 +10,8 @@ import { isTerminalRunStatus } from "../runtime/runProgress/types";
 import { TrainingWorkspace } from "./TrainingWorkspace";
 import { TrainingEvaluationCurve } from "./TrainingEvaluationCurve";
 import { RunInspector } from "./optimizers/RunInspector";
+import { ContainerExperimentLaunch } from "./optimizers/ContainerExperimentLaunch";
+import { ContainerExperimentControls } from "./optimizers/ContainerExperimentControls";
 import { algorithmLabel, formatWhen, runFacets, runTitle, runWhenMs, sealedWorkCounts, statusChipClass, statusText, truncateMiddle, workFractionLabel } from "./optimizers/runPresentation";
 
 type OptimizerGuide = {
@@ -287,6 +289,7 @@ export function OptimizersPage({
 	const [startingLocalCispo, setStartingLocalCispo] = useState(false);
 	const [startingHostedSft, setStartingHostedSft] = useState(false);
 	const [startingHostedCispo, setStartingHostedCispo] = useState(false);
+    const [experimentRecipes, setExperimentRecipes] = useState<OptimizerRecipeInfo[]>([]);
 	const [evalRecipes, setEvalRecipes] = useState<OptimizerRecipeInfo[]>([]);
 	const [hostedCispoRecipe, setHostedCispoRecipe] = useState<OptimizerRecipeInfo | null>(null);
 	const [localCispoRecipe, setLocalCispoRecipe] = useState<OptimizerRecipeInfo | null>(null);
@@ -383,6 +386,7 @@ export function OptimizersPage({
 		setAlgorithms(nextAlgorithms);
 		setEvalRecipes(nextRecipes.filter((recipe) => recipe.algorithmId === "eval"));
 		setHostedCispoRecipe(findHostedCispoRecipe(nextRecipes));
+        setExperimentRecipes(nextRecipes.filter(recipe => ["cispo.healthbench.container.v1", "cispo.craftax.container.v1"].includes(recipe.id)));
 		setLocalCispoRecipe(nextRecipes.find((recipe) => recipe.id === LOCAL_CISPO_RECIPE_ID) ?? null);
 		setHostedSftRecipe(nextRecipes.find((recipe) => recipe.id === HOSTED_SFT_RECIPE_ID) ?? null);
 		if (!selectedId && nextRuns[0]) setSelectedId(nextRuns[0].id);
@@ -1082,6 +1086,14 @@ export function OptimizersPage({
 				</div>
 			</section>
 
+            <ContainerExperimentLaunch recipes={experimentRecipes} disabled={pluginBlocked} onLaunch={async (recipeId, spec) => {
+                if (!bridges.optimizers) throw new Error("Optimizers bridge is unavailable");
+                const run = await bridges.optimizers.startRecipe({ recipeId, planOverride: spec, sessionRef: sessionRef ?? undefined, openVisual: true });
+                setSelectedId(run.id);
+                await refresh();
+                const visualId = run.visualRefs?.find(ref => ref.kind === "visual")?.id;
+                if (visualId) onOpenVisual(visualId);
+            }} />
 			<section className="optimizer-training-launch" aria-labelledby="optimizer-training-launch-title" data-testid="optimizer-training-launch">
 				<div className="optimizer-recipes-head">
 					<div><span className="optimizer-eyebrow">Hosted CISPO</span><h2 id="optimizer-training-launch-title">{hostedCispoAdmitted ? "Hosted Tinker CISPO is admitted" : "Hosted CISPO is not available"}</h2></div>
@@ -1351,6 +1363,7 @@ export function OptimizersPage({
 				<section id="optimizer-run-inspector" className="optimizer-inspector" aria-label="Optimizer inspector" tabIndex={-1}>
 					{selected ? (
 						<RunInspector run={selected} executionLabel={selectedExecution}>
+							{objectValue(selected.summary).containerExperiment === true && <ContainerExperimentControls runId={selected.id} />}
 							{trainingProjection ? (
 								<section className="optimizer-training-progress" data-testid="optimizer-training-progress">
 									<div className="optimizer-training-title">

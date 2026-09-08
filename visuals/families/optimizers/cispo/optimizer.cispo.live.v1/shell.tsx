@@ -27,6 +27,7 @@ import type {
   ProjectedState
 } from "../../_shared/optimizer.run.v1/components/projectEvents.ts";
 import { projectedScalar } from "./collectionHydration.ts";
+import { ExperimentPanel } from "./ExperimentPanel.tsx";
 
 export type ShellProps = {
   title?: string;
@@ -137,7 +138,7 @@ function CispoWorkspaceFromCollections({
       }
     };
   }, [metricPage.page, projected]);
-  return <SftWorkspace projected={hydrated} run={run} debug={debug} />;
+  return <><ExperimentPanel experiment={projected.cispo?.experiment} collections={collections} /><SftWorkspace projected={hydrated} run={run} debug={debug} /></>;
 }
 
 export function Shell(props: ShellProps) {

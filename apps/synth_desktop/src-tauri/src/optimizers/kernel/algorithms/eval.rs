@@ -71,6 +71,10 @@ pub struct EvalTrialSummary {
     #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub metrics: Value,
+    /// Immutable experiment axes supplied by the evaluator; never inferred from labels.
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub research_context: Value,
     #[serde(default)]
     pub missing_gates: Vec<String>,
     #[serde(default)]
@@ -624,6 +628,10 @@ impl EvalProjection {
         if let Some(metrics) = payload.get("metrics").filter(|value| value.is_object()) {
             trial.metrics = metrics.clone();
         }
+        if let Some(context)=payload.get("researchContext").or_else(||payload.get("research_context")).filter(|v|v.is_object()) {
+            if !trial.research_context.is_object(){trial.research_context=json!({});}
+            for(key,value)in context.as_object().unwrap(){if key == "seed" || !value.is_null(){trial.research_context[key]=value.clone();}}
+        }
         let missing_gates = value_strings(payload, &["missingGates", "missing_gates"]);
         if !missing_gates.is_empty() {
             trial.missing_gates = missing_gates;
@@ -1059,6 +1067,16 @@ mod tests {
             committed_at: "2026-08-27T18:00:01Z".into(),
             producer,
         }
+    }
+
+    #[test]
+    fn explicit_null_seed_preserves_fixed_world_repeat() {
+        let mut projection = EvalProjection::default();
+        projection.update_trial(&json!({"trialId":"rune","seed":780039,"researchContext":{"seed":780039,"model":"luna"}}),"running",1);
+        projection.update_trial(&json!({"trialId":"rune","researchContext":{"seed":null,"repeat":780040,"model":null}}),"completed",2);
+        assert!(projection.trials[0].research_context["seed"].is_null());
+        assert_eq!(projection.trials[0].research_context["repeat"],780040);
+        assert_eq!(projection.trials[0].research_context["model"],"luna");
     }
 
     #[test]

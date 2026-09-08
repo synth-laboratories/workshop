@@ -14,7 +14,9 @@
       "../../../helpers/synth-computer-use/target/bundle/Synth Computer Use.app": "Synth Computer Use.app",
       "../browser/playwright_backend.mjs": "browser/playwright_backend.mjs",
       "../../../runtime-distributions/mlx-rl": "runtimes/mlx-rl",
-      "../../../runtime-distributions/optimizers": "runtimes/optimizers"
+      "../../../runtime-distributions/optimizers": "runtimes/optimizers",
+      "../../../runtime-distributions/trace/bin": "bin",
+      "../../../runtime-distributions/trace/trace-runtime": "trace-runtime"
     }
   }
 }

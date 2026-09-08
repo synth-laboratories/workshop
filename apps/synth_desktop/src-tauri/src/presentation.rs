@@ -231,11 +231,8 @@ pub async fn ensure_query_catalog(core: &CoreRuntime, snapshot_id: &str) -> Resu
         return Ok(existing);
     }
 
-    let title = if snapshot.result_count == 1 {
-        "1 trace matched".to_string()
-    } else {
-        format!("{} traces matched", snapshot.result_count)
-    };
+    let noun=if snapshot.query_schema_version==crate::trace_research::SCHEMA {"results"}else{"traces"};
+    let title=format!("{} {noun} matched",snapshot.result_count);
     let request = VisualCreateRequest {
         template_id: TRACE_CATALOG_TEMPLATE.into(),
         title: Some(title),
@@ -245,7 +242,7 @@ pub async fn ensure_query_catalog(core: &CoreRuntime, snapshot_id: &str) -> Resu
                 "input": "result",
                 "kind": "query_snapshot",
                 "source": snapshot.snapshot_id,
-                "schema": crate::trace_query::TRACE_QUERY_RESULT_SCHEMA,
+                "schema": snapshot.schema_version,
             }]
         })),
         id: Some(visual_id.clone()),

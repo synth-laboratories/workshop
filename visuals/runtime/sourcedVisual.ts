@@ -16,6 +16,7 @@ import { useLiveEvalStream } from "../chrome/useLiveEvalStream.ts";
 import { CandidateInspector } from "../components/candidate_inspector.v1/CandidateInspector.tsx";
 import { DetailModal } from "../components/detail_modal.v1/DetailModal.tsx";
 import { EventStream } from "../components/event_stream.v1/EventStream.tsx";
+import { AgentTraceInspector, useTraceArchive, GeneralTraceView, ReActTraceView, CodexAppServerTraceView, ContainerTraceView, RuneBenchTraceView, runeBenchTraceExtension, craftaxTraceExtension, useTraceEvidence, AnnotationEditor, TraceResearchPanel, useTraceViewState } from "../components/agent_trace.v1/AgentTraceInspector.tsx";
 import { Metrics } from "../components/metrics.v1/Metrics.tsx";
 import { Scrubber } from "../components/scrubber.v1/Scrubber.tsx";
 import {
@@ -58,6 +59,7 @@ const ALLOWED_MODULES: Record<string, Record<string, unknown>> = {
   "react-dom": asCjs(ReactDOM),
   "@synth/visuals/chrome": asCjs({ VisualChrome }),
   "@synth/visuals/chrome/useLiveEvalStream": asCjs({ useLiveEvalStream }),
+  "@synth/visuals/components/agent_trace.v1": asCjs({ AgentTraceInspector, useTraceArchive, GeneralTraceView, ReActTraceView, CodexAppServerTraceView, ContainerTraceView, RuneBenchTraceView, runeBenchTraceExtension, craftaxTraceExtension, useTraceEvidence, AnnotationEditor, TraceResearchPanel, useTraceViewState }),
   "@synth/visuals/components/event_stream.v1": asCjs({ EventStream }),
   "@synth/visuals/components/detail_modal.v1": asCjs({ DetailModal }),
   "@synth/visuals/components/metrics.v1": asCjs({ Metrics }),

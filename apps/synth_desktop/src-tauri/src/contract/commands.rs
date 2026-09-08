@@ -9,6 +9,7 @@
 pub struct Commands;
 
 impl Commands {
+    pub const DATA_TRACE_RESEARCH_REQUEST: &'static str = "data_trace_research_request";
     pub const CORE_DIAGNOSTICS: &'static str = "core_diagnostics";
     pub const CORE_EVENTS_AFTER: &'static str = "core_events_after";
     pub const CORE_SESSION_EVENTS_AFTER: &'static str = "core_session_events_after";
@@ -231,6 +232,7 @@ impl Commands {
     pub const BROWSER_RUNTIME_STATUS: &'static str = "browser_runtime_status";
     pub const BROWSER_POLICY_ALLOW_ORIGIN: &'static str = "browser_policy_allow_origin";
     pub const BROWSER_POLICY_REVOKE_ORIGIN: &'static str = "browser_policy_revoke_origin";
+    pub const JESTERKY_ANALYSIS_SETTINGS: &'static str = "jesterky_analysis_settings";
     pub const PLUGINS_MANAGE: &'static str = "plugins_manage";
     pub const PLUGINS_SET_RELEASE_CHANNEL: &'static str = "plugins_set_release_channel";
     pub const VISUAL_SUBSCRIPTION_READY: &'static str = "visual_subscription_ready";

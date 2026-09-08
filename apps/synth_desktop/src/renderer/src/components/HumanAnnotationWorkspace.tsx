@@ -10,6 +10,8 @@ import { VisualPane } from "./VisualHost";
 import { MicIcon } from "./MicIcon";
 import "./HumanAnnotationWorkspace.css";
 
+const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+
 type Question = {
 	id: string;
 	type: string;
@@ -61,11 +63,12 @@ export function HumanAnnotationWorkspace({
 	const dictationChunks = useRef<Blob[]>([]);
 	const dictationStream = useRef<MediaStream | null>(null);
 
-	const task = (view?.task ?? {}) as Record<string, unknown>;
+	const task = object(view?.task);
+	const answers = object(view?.answers);
 	const questions = useMemo(() => (Array.isArray(task.questions) ? task.questions : []) as Question[], [task.questions]);
-	const presentedQuestions = useMemo(() => questions.filter((candidate) => isPresented(candidate, view?.answers ?? {})), [questions, view?.answers]);
+	const presentedQuestions = useMemo(() => questions.filter((candidate) => isPresented(candidate, answers)), [questions, view?.answers]);
 	const question = presentedQuestions[active];
-	const canSubmit = presentedQuestions.every((candidate) => !candidate.required || Boolean(view?.answers?.[candidate.id]));
+	const canSubmit = presentedQuestions.every((candidate) => !candidate.required || Boolean(answers[candidate.id]));
 	const subject = (task.subject ?? {}) as Record<string, unknown>;
 	const evidenceItems=useMemo(()=>[subject,...(Array.isArray(task.evidence)?task.evidence as Array<Record<string,unknown>>:[])].filter((item,index,all)=>index===all.findIndex((candidate)=>evidenceKey(candidate)===evidenceKey(item))),[task.evidence,task.subject]);
 	const activeEvidence=evidenceItems[activeEvidenceIndex]??subject;
@@ -98,7 +101,7 @@ export function HumanAnnotationWorkspace({
 	}, [sessionId]);
 	useEffect(() => { void refresh().catch((reason) => setError(publicError(reason))); }, [sessionId]);
 	useEffect(() => {
-		const firstUnanswered = presentedQuestions.findIndex((candidate) => !view?.answers?.[candidate.id]);
+		const firstUnanswered = presentedQuestions.findIndex((candidate) => !answers[candidate.id]);
 		if (firstUnanswered >= 0) setActive(firstUnanswered);
 	}, [view?.taskId, view?.draftRevision, presentedQuestions]);
 	useEffect(() => {
@@ -260,7 +263,7 @@ export function HumanAnnotationWorkspace({
 	}
 
 	if (!view) return <div className="human-annotation-loading" role="status">Loading review…</div>;
-	const presentedAnswered = presentedQuestions.filter((item) => view.answers[item.id] != null).length;
+	const presentedAnswered = presentedQuestions.filter((item) => answers[item.id] != null).length;
 	const sealed = view.state === "submitted";
 	const resultId=sealed?String((view.result as Record<string,unknown>|null)?.resultId??""):"";
 	return <section className="human-annotation-workspace-shell" aria-label="Human annotation review"><div className="human-annotation-workspace">
@@ -277,9 +280,9 @@ export function HumanAnnotationWorkspace({
 			<details className="human-annotation-instructions"><summary>Review instructions</summary><p>{String(task.instructions??"Review only the evidence shown.")}</p></details>
 			{sealed ? <><div className="human-annotation-success"><strong>Review submitted</strong><p>This result is sealed and immutable.</p>{resultId?<div className="human-annotation-result-reference"><span>Result ID</span><code>{resultId}</code></div>:null}<div className="human-annotation-completion-actions">{resultId?<button type="button" onClick={()=>void copyResultReference()}>{resultCopyState==="copied"?"Copied":"Copy for chat"}</button>:null}<button type="button" className="primary" onClick={onClose}>Exit & resume chat</button></div><button type="button" className="human-annotation-correction" disabled={saving} onClick={()=>void startCorrection()}>Create correction</button></div>{campaign?<CampaignPanel campaign={campaign} note={campaignNote} onNote={setCampaignNote} onAdjudicate={()=>void adjudicateCampaign()} onClose={()=>void closeCampaign()} saving={saving}/>:null}</> : question ? <>
 				<div className="human-annotation-progress"><span>{presentedAnswered} of {presentedQuestions.length} answered</span><progress value={presentedAnswered} max={presentedQuestions.length} /></div>
-				<fieldset className="human-annotation-question"><legend>{question.prompt}{question.required ? <span aria-label="required"> *</span> : null}</legend>{question.decisionCriteria ? <div className="human-question-criteria"><p><strong>Focus</strong><span>{question.decisionCriteria.evidence}</span></p><p><strong>Choose</strong><span>{question.decisionCriteria.answerRule}</span></p></div> : question.helpText ? <p>{question.helpText}</p> : null}<QuestionControl question={question} value={(view.answers[question.id] as { value?: unknown } | undefined)?.value} optionOrder={optionOrder(view.presentation,question)} onChange={(value) => void saveAnswer(value)} /></fieldset>
+				<fieldset className="human-annotation-question"><legend>{question.prompt}{question.required ? <span aria-label="required"> *</span> : null}</legend>{question.decisionCriteria ? <div className="human-question-criteria"><p><strong>Focus</strong><span>{question.decisionCriteria.evidence}</span></p><p><strong>Choose</strong><span>{question.decisionCriteria.answerRule}</span></p></div> : question.helpText ? <p>{question.helpText}</p> : null}<QuestionControl question={question} value={(answers[question.id] as { value?: unknown } | undefined)?.value} optionOrder={optionOrder(object(view.presentation),question)} onChange={(value) => void saveAnswer(value)} /></fieldset>
 				<SelectorEditor evidence={activeEvidence} value={selector} onChange={setSelector}/><div className="human-annotation-comment"><label htmlFor="annotation-comment">Contextual comment</label><textarea id="annotation-comment" value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Explain what you noticed in this evidence…" /><div>{whisperAvailable ? <button type="button" className={`human-annotation-dictation${dictating ? " is-recording" : ""}`} disabled={dictationState==="Transcribing and saving audio…"} aria-label={dictating ? "Stop dictation" : dictationState==="Transcribing and saving audio…" ? "Transcribing comment" : "Dictate comment with Whisper"} title={dictating ? "Stop dictation" : "Dictate comment with Whisper"} aria-pressed={dictating} onClick={() => dictating ? stopDictation() : void startDictation()}><MicIcon /></button> : null}<button type="button" disabled={(!comment.trim() && !dictationAttachmentId) || saving || dictating} onClick={() => void saveComment()}>Save comment</button></div>{dictationState ? <span role="status">{dictationState}</span> : null}</div>
-				{view.attachments.filter((item)=>item.kind==="audio"&&item.state!=="recording").map((item)=><AudioReview key={String(item.attachmentId)} sessionId={sessionId} attachment={item} onCorrect={(text)=>void correctTranscript(String(item.attachmentId),text)} />)}
+				{view.attachments.map(object).filter((item)=>item.kind==="audio"&&item.state!=="recording").map((item)=><AudioReview key={String(item.attachmentId)} sessionId={sessionId} attachment={item} onCorrect={(text)=>void correctTranscript(String(item.attachmentId),text)} />)}
 			</> : <p>No questions were provided.</p>}
 			{error ? <div className="human-annotation-error" role="alert">{error}</div> : null}
 			{!sealed ? <footer className="human-annotation-nav"><button type="button" disabled={active === 0} onClick={() => setActive((i) => Math.max(0, i - 1))}>Previous</button>{active < presentedQuestions.length - 1 ? <button type="button" onClick={() => setActive((i) => Math.min(presentedQuestions.length - 1, i + 1))}>Next</button> : <button type="button" className="primary" disabled={!canSubmit || saving} onClick={() => void submit()}>Submit</button>}</footer> : null}

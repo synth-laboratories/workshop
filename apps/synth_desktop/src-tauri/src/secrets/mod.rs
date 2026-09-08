@@ -6,6 +6,8 @@
 
 mod audit;
 mod backend;
+#[cfg(test)]
+pub(crate) use backend::MemoryBackend;
 pub(crate) mod capability;
 mod fingerprint;
 mod importer;
@@ -3136,3 +3138,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod research_e2e;

@@ -47,7 +47,7 @@ test("the Visuals inventory is a compact list and its pane can consume nearly th
 test("the unified workbench side panel preserves a draggable boundary", () => {
   const routes = readFileSync(join(rendererRoot, "routes.tsx"), "utf8");
   const css = readFileSync(join(rendererRoot, "styles/app.css"), "utf8");
-  assert.match(routes, /"--side-panel-width": `\$\{inventoryContainerWidth\}px`/);
+  assert.match(routes, /"--side-panel-width": `\$\{sidePanelWidth\}px`/);
   assert.match(routes, /ariaLabel="Resize workbench side panel"/);
   assert.match(routes, /<PaneResizeHandle[\s\S]*ariaLabel="Resize workbench side panel"[\s\S]*<WorkbenchSidePanel/);
   assert.match(css, /\.workbench\.with-side-panel\s*\{[^}]*7px[^}]*var\(--side-panel-width, 420px\)/s);
@@ -99,7 +99,7 @@ test("narrow windows cap the visual pane at min(40vw, persisted) then overlay vi
   );
   assert.match(
     css,
-    /\.workbench\.with-side-panel:has\(\.visual-pane-expanded\) > \.chat-transcript,[\s\S]*> \.pane-resize-handle\s*\{[^}]*display:\s*none/s
+    /\.workbench\.with-side-panel:has\(\.visual-pane-expanded\) > \.workbench-primary-stack,[\s\S]*> \.pane-resize-handle\s*\{[^}]*display:\s*none/s
   );
   assert.doesNotMatch(css, /html\.compact-workbench\.sidebar-hidden/);
   assert.match(shell, /classList\.toggle\("compact-workbench"/);
@@ -140,14 +140,14 @@ test("routes.tsx keeps the window host and tabbed dock visual hosts distinct", (
 	assert.match(source, /\.\.\.openVisualTabs\.map/);
   assert.match(source, /view\.kind === "reports"/);
   assert.match(source, /const paneHost = inventoryHost \|\| chatRoute \|\| settingsWithPane/);
-  assert.match(source, /<ReportsPage initialReportId=\{view\.reportId\} onBack=\{leaveReports\} \/>/);
+  assert.match(source, /<ReportsPage initialReportId=\{view\.reportId\} onBack=\{leavePluginToRecentChat\} \/>/);
   assert.doesNotMatch(source, /Chat still remounts/);
   assert.doesNotMatch(source, /onBack=\{\(\) => openChat/);
   assert.doesNotMatch(source, /crypto\.randomUUID\(\)/);
 	// The standalone pane renders for a chat without the dock and for the
 	// inventory surfaces that own visuals; independent destinations never
 	// inherit a previously opened artifact.
-	assert.match(source, /const inventoryOwnsVisualPane = view\.kind === "visuals"/);
+	assert.match(source, /const inventoryOwnsVisualPane = \(view\.kind === "experiments"/);
 	assert.match(source, /const visualPaneVisible = Boolean\(openArtifact && \(\s*\(chatRoute && !showSidePanel\)\s*\|\| inventoryOwnsVisualPane\s*\)\)/);
 	assert.match(source, /id: `visual:\$\{artifact\.id\}`/);
 	assert.match(source, /activeTabId=\{sidePanelTab === "visual"/);
@@ -197,7 +197,7 @@ test("Escape hierarchy intercepts labeling, inspector, and expanded before pane 
   assert.match(routes, /tabId === "diagnostics"/);
   assert.match(routes, /const leaveInventory = \(fallbackOrigin: MainView \| null\)/);
   assert.match(routes, /key="window-visual-host"/);
-  assert.match(routes, /<ReportsPage initialReportId=\{view\.reportId\} onBack=\{leaveReports\} \/>/);
+  assert.match(routes, /<ReportsPage initialReportId=\{view\.reportId\} onBack=\{leavePluginToRecentChat\} \/>/);
   assert.match(routes, /originStackRef/);
   assert.match(routes, /sidePanelOpen: showSidePanel/);
   assert.match(routes, /setSidePanelTab\(frame\.layout\.sidePanelTab\)/);
@@ -205,13 +205,13 @@ test("Escape hierarchy intercepts labeling, inspector, and expanded before pane 
   assert.match(routes, /openChat\(origin\.chatId\)/);
   assert.match(routes, /"research-log"/);
   assert.match(routes, /history\.replaceState/);
-  const leaveBacks = routes.match(/onBack=\{\(\) => leaveInventory\(inventoryOriginRef\.current\)\}/g) ?? [];
+  const leaveBacks = routes.match(/onBack=\{leavePluginToRecentChat\}/g) ?? [];
   assert.ok(
     leaveBacks.length >= 5,
-    `Settings/Visuals/Experiments/Optimizers/Data Back must use leaveInventory; found ${leaveBacks.length}`
+    `Plugin Back must return to the recent chat; found ${leaveBacks.length}`
   );
   assert.match(routes, /<SettingsPage[\s\S]{0,900}onBack=\{\(\) => leaveInventory\(inventoryOriginRef\.current\)\}/);
-  assert.match(routes, /<VisualsPage[\s\S]{0,900}onBack=\{\(\) => leaveInventory\(inventoryOriginRef\.current\)\}/);
+  assert.match(routes, /<VisualsPage[\s\S]{0,900}onBack=\{leavePluginToRecentChat\}/);
   assert.doesNotMatch(routes, /onBack=\{\(\) => openChat/);
   assert.doesNotMatch(routes, /<CloudDesk\b/);
   const chatRestore = routes.indexOf('origin?.kind === "chat"');

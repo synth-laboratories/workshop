@@ -588,6 +588,7 @@ export type SftComparisonPair = {
 };
 
 export type CispoState = {
+  experiment?: Record<string, unknown>;
   objective: string;
   clipLow: number | null;
   clipHigh: number | null;

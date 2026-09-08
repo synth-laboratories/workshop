@@ -179,6 +179,8 @@ export default function App() {
 						reportsActive={c.view.kind === "reports"}
 						experimentsActive={c.view.kind === "experiments"}
 						optimizersActive={c.view.kind === "optimizers"}
+						jesterkyActive={c.view.kind === "jesterky"}
+						onOpenJesterky={() => c.setView({kind:"jesterky"})}
 						environmentQaActive={c.view.kind === "environment-qa"}
 						computerUseActive={c.view.kind === "computer-use"}
 						visiblePluginIds={c.preferences.navigation.visiblePluginIds}

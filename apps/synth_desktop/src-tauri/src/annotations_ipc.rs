@@ -1529,6 +1529,9 @@ pub(crate) async fn dispatch_annotations(
                 Some(&json!({"request": request})),
             )
             .await?;
+            if estimate.get("runner_kind").and_then(Value::as_str)==Some("jesterky") {
+                crate::plugins::jesterky::executable()?;
+            }
             let paid = estimate
                 .get("paid")
                 .and_then(Value::as_bool)
@@ -1652,6 +1655,7 @@ pub(crate) async fn dispatch_annotations(
                 let mut specs = Vec::with_capacity(paid_jobs.len());
                 let mut declared_total = 0_u64;
                 for job in &paid_jobs {
+                    if job.get("runner_kind").and_then(Value::as_str)==Some("jesterky"){crate::plugins::jesterky::executable()?;}
                     let cap = micros_of(job.get("max_cost_usd")).ok_or_else(|| {
                         failure(
                             "annotation_cap_unbounded",
@@ -1808,6 +1812,28 @@ pub(crate) async fn dispatch_annotations(
                             Ok(())
                         })
                         .await?;
+                    // Retain ordinary and paid campaigns alike. Reservation
+                    // bookkeeping alone leaves free campaigns invisible to the
+                    // native reconciliation worker and research queries.
+                    let campaign_id = payload.get("campaign_id").and_then(Value::as_str)
+                        .context("submitted annotation campaign has no identity")?.to_owned();
+                    let campaign_plan = json!({"containerId":container_id,"sessionId":session_id,
+                        "label":plan["label"],"traces":plan["traces"],"annotators":plan["annotators"]});
+                    let stored_id = campaign_id.clone();
+                    core.storage().database().run_transaction(move |conn| {
+                        crate::session::annotation_projection::upsert_campaign(conn,&stored_id,"submitted",&campaign_plan)?;
+                        Ok(())
+                    }).await?;
+                    for job_id in payload.get("jobs").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                        let job = forward("GET", &format!("{base}/annotation-jobs/{job_id}"), None).await?;
+                        let campaign_id = campaign_id.clone();
+                        let container_id = container_id.clone();
+                        core.storage().database().run_transaction(move |conn| {
+                            crate::session::annotation_projection::apply_job_snapshot(conn,Some(&campaign_id),&container_id,&job)?;
+                            crate::session::annotation_projection::refresh_campaign_coverage(conn,&campaign_id)?;
+                            Ok(())
+                        }).await?;
+                    }
                     Ok(payload)
                 }
                 Err(error) => {

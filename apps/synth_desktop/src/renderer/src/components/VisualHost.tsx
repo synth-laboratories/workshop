@@ -55,6 +55,8 @@ import { isTerminalRunStatus } from "../runtime/runProgress/types";
 import { runFacets } from "./optimizers/runPresentation";
 import { VisualPaneChrome, type VisualPaneDebugState } from "./VisualPaneChrome";
 
+import { traceResearchClient } from "../runtime/traceResearch";
+
 type ShellProps = {
 	title?: string;
 	lede?: string;
@@ -974,6 +976,17 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		setTraceResolution({ status: "loading", props: {} });
 		const projectionByDigest = new Map<string, Promise<unknown>>();
 		const loadTraceV5 = (source: string) => {
+            if (artifact.templateId === "trace.rollout_inspector.v1") {
+                let pending = projectionByDigest.get(source);
+                if (!pending) {
+                    pending = traceResearchClient.request("window", { trace_digest: source, offset: 0, limit: 200 }).then(payload => {
+                        if (payload.trace_digest !== source || payload.schema_version !== "synth.trace-projection.rollout-inspector-window.v1") throw new Error("Trace window identity mismatch");
+                        return payload;
+                    });
+                    projectionByDigest.set(source, pending);
+                }
+                return pending;
+            }
 			let pending = projectionByDigest.get(source);
 			if (!pending) {
 				pending = bridges.inventory!.resolveTraceProjection(source, "rollout-inspector").then((projection) => {
@@ -996,10 +1009,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			if (!bridges.runtime) throw new Error(`No local CAS loader for ${source}`);
 			return bridges.runtime.request(`/v1/cas/${encodeURIComponent(source)}`);
 		};
-		const loadQuerySnapshot = (source: string) => {
-			if (!bridges.runtime) throw new Error(`No query snapshot loader for ${source}`);
-			return bridges.runtime.request("/v1/traces/snapshot", { method: "POST", body: { snapshot_id: source } });
-		};
+		const loadQuerySnapshot = (source: string) =>
+			traceResearchClient.request("snapshot", { snapshot_id: source });
 		const loadRun = (source: string) => {
 			if (!bridges.optimizers) throw new Error(`No run loader for ${source}`);
 			return bridges.optimizers.get(source);
@@ -1447,6 +1458,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				comparison={comparisonPayload ?? undefined}
 				replay={replayClient}
 				media={mediaClient}
+				traceResearch={traceResearchClient}
 				sealedTraceProjections={sealedTraceProjections}
 				analysisFindings={analysisFindings}
 				analysisCampaigns={analysisCampaigns}

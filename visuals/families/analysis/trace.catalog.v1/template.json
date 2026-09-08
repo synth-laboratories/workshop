@@ -16,14 +16,13 @@
   "inputs": [
     {
       "name": "result",
-      "description": "Immutable synth.trace-query-result.v1 snapshot",
+      "description": "Immutable v1 trace catalog or v2 eval research query snapshot",
       "accepts": [
         "inline",
         "query_snapshot",
         "fixture"
       ],
-      "required": true,
-      "schema": "synth.trace-query-result.v1"
+      "required": true
     }
   ]
 }

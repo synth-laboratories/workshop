@@ -434,6 +434,14 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
     ] {
         fs::write(dynamic_explainers_skill.join("references").join(name), body)?;
     }
+    let trace_skill=home.join("skills/use-synth-traces");
+    fs::create_dir_all(&trace_skill)?;
+    fs::write(trace_skill.join("SKILL.md"),include_str!("../../../../skills/use-synth-traces/SKILL.md"))?;
+    let jesterky_skill = home.join("skills/use-synth-jesterky");
+    if crate::plugins::jesterky::available() {
+        fs::create_dir_all(&jesterky_skill)?;
+        fs::write(jesterky_skill.join("SKILL.md"), include_str!("../../../../skills/use-synth-jesterky/SKILL.md"))?;
+    } else if jesterky_skill.exists() { fs::remove_dir_all(&jesterky_skill)?; }
     let optimizers_skill = home.join("skills/use-synth-optimizers");
     fs::create_dir_all(&optimizers_skill)?;
     fs::write(
@@ -541,6 +549,8 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         "use-synth-visuals",
         "author-synth-diagrams",
         "use-synth-optimizers",
+        "use-synth-traces",
+        "use-synth-jesterky",
         "use-computer-use",
         "use-workshop-browser",
         "use-synth-session",
@@ -553,7 +563,11 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         "use-human-annotations",
     ] {
         let directory = home.join("skills").join(id);
-        if !crate::context::skill_enabled(id) {
+        if !crate::context::skill_enabled(id) || (id=="use-synth-jesterky" && !crate::plugins::jesterky::available()) {
+            if ["use-synth-traces","use-synth-jesterky"].contains(&id) {
+                let system=home.join("skills/.system").join(id);
+                if system.exists(){fs::remove_dir_all(system)?;}
+            }
             if directory.exists() {
                 fs::remove_dir_all(&directory)?;
             }
@@ -700,6 +714,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         // `docs/COMPUTER_USE.md` §4.
         for (server, binary, group) in [
             ("synth_plugins", "synth-plugins-mcp", "bundled"),
+            ("synth_jesterky", "synth-jesterky-mcp", "bundled"),
             ("workshop_display", "synth-display-mcp", "bundled"),
             ("synth_containers", "synth-containers-mcp", "bundled"),
             ("synth_visuals", "synth-visuals-mcp", "bundled"),
@@ -725,6 +740,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
                 crate::context::BROWSER_MCP_GROUP,
             ),
         ] {
+            if server == "synth_jesterky" && !crate::plugins::jesterky::available() { continue; }
             if !crate::context::mcp_group_enabled(group) {
                 continue;
             }
@@ -1071,6 +1087,7 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         // Some models reliably select a dedicated schema while others follow
         // the facade; both route through the same production adapter.
         "synth_optimizers" => "enabled_tools = [\"optimizer_manage\", \"optimizer_stage_eval_candidates\", \"optimizer_start_recipe\"]\n",
+        "synth_jesterky" => "enabled_tools = [\"jesterky_prepare\", \"jesterky_settings\"]\n",
         "synth_plugins" => "enabled_tools = [\"plugin_manage\"]\n",
         "synth_session" => "enabled_tools = [\"session_present\"]\n",
         "synth_secrets" => "enabled_tools = [\"secrets_manage\"]\n",

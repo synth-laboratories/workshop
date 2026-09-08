@@ -74,9 +74,11 @@ export function v09CapabilityRows(input: CapabilityManifestInput = {}): Capabili
 	const statuses = input.pluginStatuses;
 	const optimizers = sidecarPhase(statuses, OPTIMIZERS_PLUGIN_ID);
 	const computerUse = sidecarPhase(statuses, COMPUTER_USE_PLUGIN_ID);
+    const jesterky = sidecarPhase(statuses, "jesterky");
 	const recipeLine = optimizers.recipeReady ? RECIPE_AVAILABLE : RECIPE_NOT_READY;
 
 	return [
+        {id:"jesterky",kind:"optional analysis runtime",thisBuild:`${jesterky.label} · Luna low analysis; trace visuals remain available separately.`},
 		{
 			id: OPTIMIZERS_PLUGIN_ID,
 			kind: "plugin sidecar",

@@ -7760,7 +7760,11 @@ html.visual-expanded .composer-dock {
 }
 
 .visuals-layout.focus {
-	display: block;
+	display: flex;
+}
+
+.visuals-layout > .visuals-grid[hidden] {
+	display: none !important;
 }
 
 .visuals-page-focus {
@@ -8056,7 +8060,8 @@ html.visual-expanded .composer-dock {
 
 .visuals-layout.focus .visuals-preview {
 	width: 100%;
-	min-height: calc(100vh - 82px);
+	height: 100%;
+	min-height: 0;
 	padding: 0;
 	border: 0;
 	border-radius: 0;

@@ -30,6 +30,7 @@ import type {
 } from "@synth/runtime-protocol";
 export type { OptimizerAlgorithmInfo, OptimizerRunRecord };
 import type {
+	AnalysisSettings as JesterkyAnalysisSettings,
 	ArtifactMutationReceipt,
 	BeginResult,
 	BrowserRuntimeStatus,
@@ -48,6 +49,7 @@ import type {
 	ExperimentRecord,
 	ExperimentStatus,
 	InstanceDiagnostics,
+	HumanAnnotationSessionView,
 	HostedTrainingModel,
 	HostedTrainingModelCatalog,
 	LagunaAdapterStatus,
@@ -588,21 +590,7 @@ export type UpdatesBridge = {
 	openDownload(): Promise<void>;
 };
 
-export type HumanAnnotationSessionView = {
-	schemaVersion: string;
-	taskId: string;
-	sessionId: string;
-	taskDigest: string;
-	task: Record<string, unknown>;
-	state: string;
-	draftRevision: number;
-	answers: Record<string, unknown>;
-	presentation: Record<string, unknown>;
-	comments: Array<Record<string, unknown>>;
-	attachments: Array<Record<string, unknown>>;
-	result?: Record<string, unknown> | null;
-	updatedAt: string;
-};
+
 
 export type HumanAnnotationsBridge = {
 	preview(request: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -797,10 +785,13 @@ export type BrowserAdminBridge = {
 	revokeOrigin(origin: string): Promise<BrowserRuntimeStatus>;
 };
 
+export type { JesterkyAnalysisSettings };
+
 export type PluginsBridge = {
+	jesterkyAnalysisSettings?(settings?: JesterkyAnalysisSettings): Promise<JesterkyAnalysisSettings>;
 	status(pluginId?: string | null): Promise<PluginStatus>;
 	list(): Promise<PluginStatus[]>;
-	setReleaseChannel(pluginId: "optimizers", channel: "official" | "dev"): Promise<PluginStatus>;
+	setReleaseChannel(pluginId: "optimizers" | "jesterky", channel: "official" | "dev"): Promise<PluginStatus>;
 	/**
 	 * Human-triggered lifecycle. Approval policy, active-run guards, retention
 	 * classes, and receipts are enforced natively — the renderer never decides
@@ -956,6 +947,8 @@ export type OptimizersBridge = {
 	listRecipes(sessionRef?: string): Promise<OptimizerRecipeInfo[]>;
 	startRecipe(request: {
 		recipeId: string;
+        /** Frozen container experiment specification for feature-gated CISPO recipes. */
+        planOverride?: Record<string, unknown>;
 		sessionRef?: string;
 		openVisual?: boolean;
 		baseModel?: string;
@@ -1069,6 +1062,7 @@ export type OptimizersBridge = {
 	publishSavedLora?(checkpointId: string): Promise<SavedLoraCheckpoint>;
 	inferCheckpoint(request: { checkpointId: string; family: "chat_completions" | "responses"; body: Record<string, unknown> }): Promise<unknown>;
 	onInferDelta?(listener: (event: OptimizerInferDelta) => void): () => void;
+	containerExperimentAction(optimizerRunId: string, action: "recover" | "start" | "verify_checkpoint", checkpointId?: string): Promise<unknown>;
 	reconcileTraining(optimizerRunId: string): Promise<{
 		schemaVersion: "workshop.training_snapshot.v1";
 		runId: string;
@@ -1338,3 +1332,5 @@ export type SecretsBridge = {
 	grantUse(secretId: string, runId: string, recipeId: string, rememberRecipe: boolean, requestId?: string): Promise<unknown>;
 	denyUse(secretId: string): Promise<unknown>;
 };
+
+export type { HumanAnnotationSessionView };

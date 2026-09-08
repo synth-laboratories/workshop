@@ -73,7 +73,7 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
 
 fn tools() -> Value {
     json!({"tools":[
-        {"name":"trace_manage","description":"Inspect sealed Trace V5 archives, run typed read-only queries over the trace index, import a container's sealed trace by identity, and open a trace in the Desktop right panel. Archives are never mutated and no SQL is accepted. Load the use-synth-traces skill.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list","get","open","query","snapshot","open_query","import"]},"arguments":{"type":"object","properties":{"trace_id":{"type":"string"},"snapshot_id":{"type":"string"},"container_id":{"type":"string","description":"import only: the registered container that sealed the trace. Workshop resolves its URL itself."},"rollout_id":{"type":"string","description":"import only: the rollout whose sealed trace to import."},"query":{"type":"object","description":"Typed trace query. Fields are allow-listed and compile to a parameterized statement; a hard row cap applies."}},"additionalProperties":false}},"required":["operation"],"additionalProperties":false}}
+        {"name":"trace_manage","description":"Inspect sealed Trace V5 archives, run typed read-only queries over the trace index, import a container's sealed trace by identity, and open a trace in the Desktop right panel. Archives are never mutated and no SQL is accepted. Load the use-synth-traces skill.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list","get","open","query","snapshot","open_query","import","page","source","prepare_annotations"]},"arguments":{"type":"object","properties":{"trace_id":{"type":"string"},"snapshot_id":{"type":"string"},"container_id":{"type":"string","description":"import only: the registered container that sealed the trace. Workshop resolves its URL itself."},"rollout_id":{"type":"string","description":"import only: the rollout whose sealed trace to import."},"query":{"type":"object","description":"For job-scoped V5 queries use schemaVersion synth.trace-query.v2, evalJobIds, grain episodes/entities/annotations/rewards, where/entityWhere/annotationWhere/rewardWhere predicates {field,op,value}, optional aggregate count/reward and groupBy. No annotations or visuals required. Page pinned results with snapshot_id and nextOffset."},"result_ids":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":200},"result_id":{"type":"string"},"selector":{"type":"object","description":"One exact citation from this snapshot result; omitted selects its target."},"source_limit":{"type":"integer","minimum":1,"maximum":64000},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":200}},"additionalProperties":false}},"required":["operation"],"additionalProperties":false}}
     ]})
 }
 
@@ -94,6 +94,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 key.as_str(),
                 "trace_id"
                     | "snapshot_id"
+                    | "result_ids" | "result_id" | "selector" | "source_limit"
+                    | "offset"
+                    | "limit"
                     | "query"
                     | "sessionRef"
                     | "session_id"
@@ -112,6 +115,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         "get" => request("POST", "/v1/traces/get", Some(nested)),
         "open" => request("POST", "/v1/traces/open", Some(nested)),
         "query" => request("POST", "/v1/traces/query", Some(nested)),
+        "prepare_annotations" => request("POST", "/v1/traces/prepare_annotations", Some(nested)),
+        "source" => request("POST", "/v1/traces/source", Some(nested)),
+        "page" => request("POST", "/v1/traces/page", Some(nested)),
         "snapshot" => request("POST", "/v1/traces/snapshot", Some(nested)),
         "open_query" => request("POST", "/v1/traces/open_query", Some(nested)),
         "import" => request("POST", "/v1/traces/import", Some(nested)),

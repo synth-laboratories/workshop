@@ -186,7 +186,7 @@ export function normalizeLayoutSnapshot(
 	// preserves a narrow primary rail, but persisted widths must not re-clamp a
 	// wide visual to the historical 720px ceiling.
 	const maxOutput = Math.max(minOutput, Math.min(2400, viewportWidth - 160));
-	const minVisualsList = 280;
+	const minVisualsList = 240;
 	// Preserve the desktop preference while compact layouts are stacked; the
 	// live separator clamps against its actual parent content box.
 	const maxVisualsList = 420;
@@ -416,7 +416,7 @@ export function migrateLegacyPreferences(storage: Storage): DesktopPreferences {
 	const hasCanonicalVisualsWidth = parsedLast && typeof parsedLast === "object"
 		&& "visualsListWidth" in (parsedLast as Record<string, unknown>);
 	if (!hasCanonicalVisualsWidth && Number.isFinite(legacyVisualsListWidth) && legacyVisualsListWidth > 0) {
-		base.layout.last.visualsListWidth = clampNumber(legacyVisualsListWidth, 280, 420, base.layout.last.visualsListWidth);
+		base.layout.last.visualsListWidth = clampNumber(legacyVisualsListWidth, 240, 420, base.layout.last.visualsListWidth);
 		base.layout.default.visualsListWidth = base.layout.last.visualsListWidth;
 	}
 

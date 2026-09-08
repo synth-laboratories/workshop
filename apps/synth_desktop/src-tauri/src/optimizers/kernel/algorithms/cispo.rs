@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 use crate::optimizers::kernel::error::{KernelError, KernelErrorCode, KernelResult};
 use crate::optimizers::kernel::evidence::{EvidenceState, UsageCompleteness};
@@ -19,6 +20,12 @@ use super::training::{MetricSeries, TrainingEvaluationSummary, TrainingMetricPoi
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CispoProjection {
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub experiment: Value,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub checkpoint_details: BTreeMap<String, Value>,
     pub work_items: Vec<WorkItem>,
     pub phase: Option<RunPhase>,
     pub usage: UsageCompleteness,
@@ -79,6 +86,64 @@ impl CispoProjection {
     pub fn apply(&mut self, event: &CommittedEvent) -> KernelResult<()> {
         let payload = &event.producer.payload;
         match event.producer.event_type.as_str() {
+            "cispo.checkpoint.registered" | "cispo.checkpoint.publication_changed"
+            | "cispo.checkpoint.availability_checked" | "cispo.checkpoint.save_recorded" => {
+                if let (Some(id), Some(snapshot)) = (payload.get("checkpoint_id").and_then(Value::as_str), payload.get("checkpoint_snapshot")) {
+                    if !self.checkpoints.iter().any(|known| known == id) {
+                        self.checkpoints.push(id.to_string());
+                    }
+                    self.checkpoint_details.insert(id.to_string(), snapshot.clone());
+                }
+            }
+            kind if kind.starts_with("cispo.experiment.") || kind.starts_with("cispo.phase.") || kind.starts_with("cispo.budget.") => {
+                if !self.experiment.is_object() { self.experiment = serde_json::json!({}); }
+                if kind.starts_with("cispo.budget.") {
+                    self.experiment["budget"] = payload.clone();
+                    if let (Some(lane), Some(seconds)) = (payload.get("lane").and_then(Value::as_str), payload.get("duration_seconds").and_then(Value::as_f64)) {
+                        if seconds.is_finite() && seconds >= 0.0 {
+                            if !self.experiment["operation_latency"].is_object() { self.experiment["operation_latency"] = serde_json::json!({}); }
+                            let prior = &self.experiment["operation_latency"][lane];
+                            let count = prior["count"].as_u64().unwrap_or(0) + 1;
+                            let total = prior["total_seconds"].as_f64().unwrap_or(0.0) + seconds;
+                            self.experiment["operation_latency"][lane] = serde_json::json!({"count":count,"total_seconds":total,"mean_seconds":total/count as f64});
+                        }
+                    }
+                    if !self.experiment["cost_points"].is_array() { self.experiment["cost_points"] = serde_json::json!([]); }
+                    let points = self.experiment["cost_points"].as_array_mut().unwrap();
+                    if points.len() >= 128 {
+                        *points = points.iter().step_by(2).cloned().collect();
+                    }
+                    points.push(serde_json::json!({"sequence": event.aggregate_sequence, "usd": payload["counted_or_reserved_usd"]}));
+                } else if kind == "cispo.phase.started" {
+                    self.experiment["phase"] = payload["phase"].clone();
+                    self.experiment["status"] = Value::String("running".to_string());
+                    self.experiment["blocked_reason"] = Value::Null;
+                } else if kind == "cispo.phase.completed" || kind == "cispo.phase.reconciled" {
+                    if let Some(result) = payload.get("result") {
+                        if result.get("admitted_examples_per_second").is_some() {
+                            self.experiment["throughput"] = result.clone();
+                        }
+                        if let Some(rule) = result.get("rule") {
+                            self.selected_checkpoint_id = result.get("checkpoint_id").and_then(Value::as_str).map(str::to_string);
+                            self.experiment["selection"] = serde_json::json!({"rule": rule, "checkpoint_id": self.selected_checkpoint_id});
+                        }
+                        if let Some(update) = result.get("target_update").and_then(Value::as_u64) {
+                            self.optimizer_steps = self.optimizer_steps.max(update);
+                        }
+                        if result.get("evaluation_id").is_some() && result.get("trained_mean").is_some() {
+                            if !self.experiment["evaluations"].is_array() { self.experiment["evaluations"] = serde_json::json!([]); }
+                            let mut summary = result.clone();
+                            if let Some(object) = summary.as_object_mut() { object.remove("rows"); }
+                            let rows = self.experiment["evaluations"].as_array_mut().unwrap();
+                            rows.retain(|row| row["evaluation_id"] != summary["evaluation_id"]);
+                            rows.push(summary);
+                        }
+                    }
+                } else {
+                    self.experiment["status"] = Value::String(kind.trim_start_matches("cispo.experiment.").to_string());
+                    self.experiment["blocked_reason"] = payload.get("reason").cloned().unwrap_or(Value::Null);
+                }
+            }
             "cispo.warm_start.bound" => {
                 self.warm_start_id = payload
                     .get("checkpointId")
@@ -387,6 +452,24 @@ mod tests {
         let result = projection.settle().unwrap();
         assert!(!result.no_learning_signal);
         assert_eq!(result.mean_advantage, Some(0.0));
+    }
+
+    #[test]
+    fn experiment_projection_preserves_selection_uncertainty_and_cost() {
+        let mut projection = CispoProjection::default();
+        projection.apply(&committed("cispo.phase.started", json!({"phase":{"id":"train_1"}}), 1)).unwrap();
+        projection.apply(&committed("cispo.budget.reserved", json!({"counted_or_reserved_usd":2.0,"cap_usd":35}), 2)).unwrap();
+        projection.apply(&committed("cispo.checkpoint.publication_changed", json!({"checkpoint_id":"c1","checkpoint_snapshot":{
+            "checkpoint":{"checkpoint_id":"c1","publication_status":"published"},"artifact_health":{"status":"unverified"}}}), 3)).unwrap();
+        assert_eq!(projection.experiment["status"], "running");
+        assert_eq!(projection.experiment["budget"]["counted_or_reserved_usd"], 2.0);
+        assert!(projection.selected_checkpoint_id.is_none());
+        assert_eq!(projection.checkpoint_details["c1"]["artifact_health"]["status"], "unverified");
+        projection.apply(&committed("cispo.phase.completed", json!({"result":{
+            "checkpoint_id":"c1","rule":"highest_validation_mean_then_earliest_update"}}), 4)).unwrap();
+        assert_eq!(projection.selected_checkpoint_id.as_deref(), Some("c1"));
+        projection.apply(&committed("cispo.experiment.blocked", json!({"reason":"provider_credit_exhausted"}), 5)).unwrap();
+        assert_eq!(projection.experiment["blocked_reason"], "provider_credit_exhausted");
     }
 
     #[test]

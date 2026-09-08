@@ -515,7 +515,14 @@ pub fn collection_rows(
             .collect(),
         (AlgorithmProjection::Cispo(p), RunCollection::Candidates) => range
             .filter_map(|index| {
-                checkpoint_row(p.checkpoints.get(index)?, p.policy_checkpoint_id.as_deref())
+                let id = p.checkpoints.get(index)?;
+                if let Some(details) = p.checkpoint_details.get(id) {
+                    let mut row = RowSeed::new(id, "rl_checkpoint", "rl_checkpoint_details.v1", details.clone());
+                    row.status = details.pointer("/checkpoint/publication_status").and_then(Value::as_str).map(str::to_string);
+                    row.parent_id = details.pointer("/checkpoint/parent_checkpoint_id").and_then(Value::as_str).map(str::to_string);
+                    return Some(row);
+                }
+                checkpoint_row(id, p.selected_checkpoint_id.as_deref())
             })
             .collect(),
         (AlgorithmProjection::Cispo(p), RunCollection::Rollouts) => range

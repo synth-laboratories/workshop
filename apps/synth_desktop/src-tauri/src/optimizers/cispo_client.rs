@@ -70,6 +70,25 @@ impl CispoOptimizerClient {
             .await
     }
 
+    pub(super) async fn capabilities(&self) -> Result<Value> {
+        self.get_json("/v1/capabilities").await
+    }
+
+    pub(super) async fn experiment_control(&self, run_id: &str, action: &str) -> Result<Value> {
+        if !matches!(action, "start" | "pause" | "resume" | "stop" | "recover") {
+            bail!("unsupported experiment action");
+        }
+        self.post_json(&format!("/v1/runs/{run_id}/{action}"), json!({})).await
+    }
+
+    pub(super) async fn verify_checkpoint(&self, run_id: &str, checkpoint_id: &str) -> Result<Value> {
+        let mut url = reqwest::Url::parse(&self.base_url)?;
+        url.path_segments_mut().map_err(|_| anyhow!("invalid service URL"))?
+            .pop_if_empty().extend(["v1", "runs", run_id, "checkpoints", checkpoint_id, "verify"]);
+        let response = self.client.post(url).bearer_auth(&self.token).json(&json!({})).send().await?;
+        decode_response(response, "verify checkpoint metadata").await
+    }
+
     async fn get_json(&self, path: &str) -> Result<Value> {
         let url = format!("{}{path}", self.base_url);
         let response = self

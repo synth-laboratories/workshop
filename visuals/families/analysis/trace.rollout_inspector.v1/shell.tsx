@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { AgentTraceInspector, traceAnnotations, type TraceAnnotation } from "../../../components/agent_trace.v1/AgentTraceInspector.tsx";
+import { useEffect, useRef, useState } from "react";
+import type { TraceResearchClient } from "../../../components/agent_trace.v1/TraceResearch.tsx";
 import { MetricStrip, surfaceObservationAttributes, VisualChrome } from "../../../chrome/VisualChrome.tsx";
 
 type InspectorItem = {
@@ -12,6 +14,8 @@ type Lane = {
 };
 type InspectorPayload = {
   schema_version: string; trace_id: string; trace_digest: string; evidence_digest?: string;
+  annotation_view?: { records: TraceAnnotation[]; truncated: boolean; scope: string };
+  view_window?: { snapshotDigest: string; sourceProjectionDigest: string; offset: number; limit: number; total: number; nextOffset: number | null };
   visual?: {
     items?: InspectorItem[]; lanes?: Lane[]; run_id?: string; task_id?: string;
     state?: string; visibility_ceiling?: string; losses?: unknown[];
@@ -34,6 +38,7 @@ export type ShellProps = {
   projection?: InspectorPayload;
   data?: InspectorPayload;
   analysisFindings?: AnalysisFinding[];
+  traceResearch?: TraceResearchClient;
 };
 
 type CraftaxAction = { step?: number; action?: string; transition?: string; reason?: string };
@@ -61,15 +66,6 @@ function family(item: InspectorItem): Family {
   if (kind.startsWith("model_call.") || kind.includes("turn_")) return "model";
   return "system";
 }
-const FAMILY_META: Record<Family, { label: string; glyph: string; tint: string }> = {
-  message: { label: "Message", glyph: "◆", tint: "#eaf3ff" },
-  tool: { label: "Tool", glyph: ">_", tint: "#eef8f1" },
-  thought: { label: "Thought", glyph: "✦", tint: "#f6f0ff" },
-  model: { label: "Model", glyph: "◌", tint: "#f2f4f7" },
-  span: { label: "Span", glyph: "↔", tint: "#f2f4f7" },
-  evidence: { label: "Evidence", glyph: "✓", tint: "#fff4e9" },
-  system: { label: "Event", glyph: "·", tint: "#f7f7f8" }
-};
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -153,15 +149,6 @@ function CraftaxComparison({ summary }: { summary: CraftaxSummary }) {
     </div> : null}
   </section>;
 }
-function output(item: InspectorItem): string {
-  const n = native(item); const detail = item.detail ?? {};
-  const value = n.aggregated_output ?? detail.output ?? detail.result;
-  return typeof value === "string" ? value : value == null ? "" : JSON.stringify(value, null, 2);
-}
-function time(value?: string): string {
-  if (!value) return "—";
-  const date = new Date(value); return Number.isNaN(date.valueOf()) ? value : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
 function duration(items: InspectorItem[]): string {
   const stamps = items.map((item) => Date.parse(item.occurred_at ?? "")).filter(Number.isFinite);
   if (stamps.length < 2) return "—";
@@ -206,81 +193,39 @@ function EvidenceReviewSummary({ evidence, digestBound }: { evidence: InspectorI
   </section>;
 }
 
-function EventCard({ item, expanded, onToggle, findings = [] }: { item: InspectorItem; expanded: boolean; onToggle: () => void; findings?: AnalysisFinding[] }) {
-  const meta = FAMILY_META[family(item)]; const body = primary(item); const toolOutput = output(item);
-  const command = family(item) === "tool"; const isLong = body.length > 360 || toolOutput.length > 260;
-  const cited = findings.filter((finding) => {
-    const targetId = finding.target?.id ?? "";
-    const selector = finding.targetSelector ?? finding.target?.selector ?? "";
-    return targetId === item.item_id || selector.includes(item.item_id) || String(item.source_selector?.entity_id ?? "") === targetId;
-  });
-  return <article id={`trace-${item.item_id}`} data-testid={`trace-item-${item.item_id}`} style={{ display: "grid", gridTemplateColumns: "48px minmax(0,1fr)", gap: 10, scrollMarginTop: 12 }}>
-    <aside style={{ textAlign: "right", paddingTop: 12, color: "var(--sv-text-faint)" }}>
-      <div className="sv-mono" style={{ fontSize: 10 }}>#{item.sequence ?? "·"}</div>
-      <time style={{ fontSize: 9 }}>{time(item.occurred_at)}</time>
-    </aside>
-    <div style={{ border: `1px solid ${item.status && /error|fail/i.test(item.status) ? "#efb7af" : "var(--sv-border)"}`, borderRadius: 11, background: "var(--sv-surface)", overflow: "hidden" }}>
-      <header style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: meta.tint, borderBottom: "1px solid var(--sv-border)" }}>
-        <span className="sv-mono" aria-hidden style={{ fontWeight: 800, color: "var(--sv-text)" }}>{meta.glyph}</span>
-        <strong style={{ fontSize: 11 }}>{meta.label}</strong>
-        <span className="sv-mono" style={{ fontSize: 9, color: "var(--sv-text-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.kind}</span>
-        {item.status ? <span style={{ marginLeft: "auto", fontSize: 9, color: statusColor(item.status), fontWeight: 700 }}>{item.status}</span> : null}
-        {cited.length ? <span data-testid={`trace-item-findings-${item.item_id}`} style={{ fontSize: 9, fontWeight: 700, color: "var(--sv-accent)" }}>{cited.length} finding{cited.length === 1 ? "" : "s"}</span> : null}
-      </header>
-      <div style={{ padding: 11 }}>
-        <div className={command ? "sv-mono" : undefined} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: command ? 11 : 12, lineHeight: 1.5, maxHeight: expanded ? "none" : 150, overflow: "hidden" }}>{body || <span style={{ color: "var(--sv-text-faint)", fontSize: 11 }}>This event recorded no payload beyond its name and status.</span>}</div>
-        {toolOutput ? <div style={{ marginTop: 9 }}>
-          <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--sv-text-faint)", marginBottom: 4 }}>Output</div>
-          <pre style={{ margin: 0, padding: 9, borderRadius: 7, background: "#171a20", color: "#d9e1ea", fontSize: 10, lineHeight: 1.45, whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: expanded ? 420 : 100, overflow: "auto" }}>{toolOutput || "No output"}</pre>
-        </div> : null}
-        {isLong ? <button className="sv-btn" type="button" onClick={onToggle} style={{ marginTop: 8, fontSize: 10 }}>{expanded ? "Show less" : "Show all"}</button> : null}
-      </div>
-    </div>
-  </article>;
-}
-
-export function Shell({ title, lede, projection, data, analysisFindings = [] }: ShellProps) {
-  const payload = projection ?? data; const visual = payload?.visual; const items = visual?.items ?? [];
+export function Shell({ title, lede, projection, data, analysisFindings = [], traceResearch }: ShellProps) {
+  const initial = projection ?? data;
+  const [loaded, setLoaded] = useState<InspectorPayload | undefined>();
+  const [windowError, setWindowError] = useState<string | null>(null);
+  const [windowBusy, setWindowBusy] = useState(false);
+  const requestEpoch = useRef(0);
+  useEffect(() => { requestEpoch.current++; setLoaded(undefined); setWindowError(null); setWindowBusy(false); }, [initial]);
+  const payload = loaded ?? initial; const visual = payload?.visual; const items = visual?.items ?? [];
+  const window = payload?.view_window;
+  async function loadWindow(offset: number) {
+    if (!traceResearch || !payload || !window || windowBusy) return;
+    const epoch = ++requestEpoch.current;
+    setWindowBusy(true); setWindowError(null);
+    try {
+      const next = await traceResearch.request("window", { trace_digest: payload.trace_digest, snapshot_digest: window.snapshotDigest, offset, limit: window.limit }) as InspectorPayload;
+      if (next.trace_digest !== payload.trace_digest || next.view_window?.snapshotDigest !== window.snapshotDigest || next.view_window?.offset !== offset) throw new Error("Trace window changed its pinned source or offset");
+      if (requestEpoch.current === epoch) setLoaded(next);
+    } catch (error) { if (requestEpoch.current === epoch) setWindowError(error instanceof Error ? error.message : "Trace window unavailable"); }
+    finally { if (requestEpoch.current === epoch) setWindowBusy(false); }
+  }
   const [tab, setTab] = useState<"trace" | "evidence" | "metadata">("trace");
-  const [density, setDensity] = useState<"focus" | "full">("focus");
-  const [lane, setLane] = useState("all"); const [query, setQuery] = useState("");
-  const [expandOutputs, setExpandOutputs] = useState(false); const [jump, setJump] = useState("");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set()); const listRef = useRef<HTMLDivElement>(null);
-  const [playing, setPlaying] = useState(false); const [playbackIndex, setPlaybackIndex] = useState(0);
   const lanes = visual?.lanes ?? [];
-  const focusedFamilies = new Set<Family>(["message", "tool", "thought", "model", "evidence"]);
-  const filtered = useMemo(() => items.filter((item) => {
-    const needle = query.trim().toLowerCase();
-    return (lane === "all" || item.lane_id === lane) &&
-      (density === "full" || focusedFamilies.has(family(item)) || /error|fail/i.test(item.status ?? "")) &&
-      (!needle || `${item.kind} ${item.title ?? ""} ${primary(item)} ${output(item)}`.toLowerCase().includes(needle));
-  }), [density, items, lane, query]);
   const evidence = items.filter((item) => family(item) === "evidence");
   const tools = items.filter((item) => family(item) === "tool");
   const failures = items.filter((item) => /error|fail/i.test(item.status ?? ""));
   const usage = visual?.usage ?? {}; const summary = visual?.summary ?? {};
   const craftax = object(summary.craftax) as CraftaxSummary;
 
-  useEffect(() => { if (expandOutputs) setExpanded(new Set(filtered.map((item) => item.item_id))); else setExpanded(new Set()); }, [expandOutputs]);
-  useEffect(() => {
-    if (!playing || !filtered.length) return;
-    const current = filtered[Math.min(playbackIndex, filtered.length - 1)];
-    document.getElementById(`trace-${current.item_id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-    const timer = window.setTimeout(() => {
-      if (playbackIndex + 1 >= filtered.length) {
-        setPlaying(false);
-        setPlaybackIndex(0);
-      } else {
-        setPlaybackIndex((index) => index + 1);
-      }
-    }, 800);
-    return () => window.clearTimeout(timer);
-  }, [filtered, playbackIndex, playing]);
   // Both branches publish a surface observation. A projection this shell cannot
   // read is still a rendered fact about the pane, and review has to be able to
   // capture it — a template that only publishes on success is a template whose
   // failures can never be reviewed.
-  if (!payload || payload.schema_version !== "synth.trace-projection.rollout-inspector.v1") {
+  if (!payload || !["synth.trace-projection.rollout-inspector.v1", "synth.trace-projection.rollout-inspector-window.v1"].includes(payload.schema_version)) {
     const detail = payload
       ? `unsupported projection schema ${payload.schema_version}`
       : "no projection payload resolved";
@@ -288,13 +233,6 @@ export function Shell({ title, lede, projection, data, analysisFindings = [] }: 
       This visual requires a rollout-inspector Trace V5 projection ({detail}).
     </div>;
   }
-  const jumpTo = () => {
-    const target = items.find((item) => item.sequence === Number(jump));
-    if (!target) return;
-    setTab("trace"); setDensity("full"); setQuery("");
-    window.setTimeout(() => document.getElementById(`trace-${target.item_id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
-  };
-
   return <VisualChrome kicker="Trace V5 · sealed" title={title ?? payload.trace_id}
     lede={lede ?? `${visual?.task_id ?? visual?.run_id ?? "Agent trajectory"} · ${payload.trace_digest.slice(0, 23)}…`}
     testId="visual-trace-rollout-inspector" footer="trace.rollout_inspector.v1 · projection is read-only"
@@ -310,43 +248,27 @@ export function Shell({ title, lede, projection, data, analysisFindings = [] }: 
       error: null
     }}>
     <MetricStrip metrics={[
-      { label: "Events", value: String(summary.visual_item_count ?? items.length) },
-      { label: "Duration", value: duration(items) },
-      { label: "Tool calls", value: String(tools.length) },
-      { label: "Evidence", value: String(evidence.length) },
-      { label: "Findings", value: String(analysisFindings.length) }
+      { label: window ? "Total events" : "Events", value: String(window?.total ?? summary.visual_item_count ?? items.length) },
+      { label: window ? "Window duration" : "Duration", value: duration(items) },
+      { label: window ? "Window tool calls" : "Tool calls", value: String(tools.length) },
+      { label: window ? "Window evidence" : "Evidence", value: String(evidence.length) },
+      { label: "Retained findings", value: String(analysisFindings.length) },
+      ...(payload.annotation_view ? [{label: "Independent annotations", value: `${payload.annotation_view.records.length}${payload.annotation_view.truncated ? "+" : ""}`}] : [])
     ]} />
+    {window && <section aria-label="Retained trace window">
+      <p>Showing events {window.total ? window.offset + 1 : 0}–{window.offset + items.length} of {window.total}. Filters and event evidence apply to this window; the source projection stays pinned.</p>
+      <nav aria-label="Trace event windows"><button disabled={!traceResearch || windowBusy || window.offset === 0} onClick={() => void loadWindow(Math.max(0, window.offset - window.limit))}>Previous window</button><button disabled={!traceResearch || windowBusy || window.nextOffset == null} onClick={() => void loadWindow(window.nextOffset!)}>Next window</button></nav>
+      {windowBusy && <p role="status">Loading retained events…</p>}
+      {windowError && <p role="alert">{windowError}</p>}
+    </section>}
     <CraftaxComparison summary={craftax} />
+    {payload.annotation_view && <p role="status">Independent annotations are pinned to this view. Reopen the trace to refresh. Target resolution is limited to this event window.{payload.annotation_view.truncated ? " Annotation coverage is partial; query annotations for the complete result." : ""}</p>}
     <EvidenceReviewSummary evidence={evidence} digestBound={Boolean(payload.evidence_digest)} />
     <nav aria-label="Trace views" style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--sv-border)", marginTop: 14 }}>
       {(["trace", "evidence", "metadata"] as const).map((value) => <button key={value} type="button" className="sv-btn" aria-current={tab === value ? "page" : undefined} onClick={() => setTab(value)} style={{ border: 0, borderRadius: "7px 7px 0 0", borderBottom: tab === value ? "2px solid var(--sv-accent)" : "2px solid transparent", background: tab === value ? "var(--sv-accent-soft)" : "transparent", textTransform: "capitalize" }}>{value}</button>)}
     </nav>
 
-    {tab === "trace" ? <>
-      <section className="sv-section" aria-label="Trace controls" style={{ position: "sticky", top: 0, zIndex: 2, background: "var(--sv-surface)", paddingBottom: 8 }}>
-		<div style={{ display: "grid", gridTemplateColumns: "auto minmax(110px,1fr)", gap: 7 }}>
-          <div role="group" aria-label="Trace density" style={{ display: "flex" }}>
-            {(["focus", "full"] as const).map((value) => <button key={value} type="button" className="sv-btn" aria-pressed={density === value} onClick={() => setDensity(value)} style={{ fontSize: 10, background: density === value ? "var(--sv-text)" : "transparent", color: density === value ? "white" : "inherit" }}>{value}</button>)}
-          </div>
-          <select aria-label="Trace lane" value={lane} onChange={(event) => setLane(event.target.value)}><option value="all">all lanes</option>{lanes.map((value) => <option key={value.lane_id} value={value.lane_id}>{value.display_name ?? value.role ?? value.lane_id}</option>)}</select>
-			<input aria-label="Search trace" placeholder="Search commands, output, messages…" value={query} onChange={(event) => setQuery(event.target.value)} style={{ gridColumn: "1 / -1", minWidth: 0 }} />
-		</div>
-		<div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 7, marginTop: 7 }}>
-          <button type="button" className="sv-btn" aria-label={playing ? "Pause playback" : "Play playback"} onClick={() => {
-            if (!playing && playbackIndex >= filtered.length) setPlaybackIndex(0);
-            setPlaying((value) => !value);
-          }}>{playing ? "Pause" : "Play"}</button>
-          <input aria-label="Jump to sequence" inputMode="numeric" placeholder="Sequence #" value={jump} onChange={(event) => setJump(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") jumpTo(); }} style={{ width: 92 }} />
-          <button type="button" className="sv-btn" onClick={jumpTo}>Jump</button>
-			<label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10 }}><input type="checkbox" checked={expandOutputs} onChange={(event) => setExpandOutputs(event.target.checked)} /> expand outputs</label>
-        </div>
-      </section>
-      <div className="sv-mono" style={{ fontSize: 10, color: "var(--sv-text-faint)", margin: "4px 0 10px" }}>{filtered.length} of {items.length} projected items · {density === "focus" ? "operational signal" : "complete projection"}</div>
-      <div ref={listRef} aria-live="polite" style={{ display: "grid", gap: 9, maxHeight: "min(62vh, 640px)", overflow: "auto", padding: 10, border: "1px solid var(--sv-border)", borderRadius: 12, background: "var(--sv-wash, #fafaf9)" }}>
-        {filtered.map((item) => <EventCard key={item.item_id} item={item} findings={analysisFindings} expanded={expanded.has(item.item_id)} onToggle={() => setExpanded((current) => { const next = new Set(current); next.has(item.item_id) ? next.delete(item.item_id) : next.add(item.item_id); return next; })} />)}
-        {!filtered.length ? <p style={{ color: "var(--sv-text-faint)" }}>No projected items match these filters.</p> : null}
-      </div>
-    </> : null}
+    {tab === "trace" ? <AgentTraceInspector key={`${payload.trace_digest}:${window?.offset ?? 0}`} projection={{...visual!, trace_id: payload.trace_id, losses: visual?.losses?.map(String)}} annotations={payload.annotation_view ? [...new Map([...traceAnnotations(items as any), ...payload.annotation_view.records].map(note => [note.id, note])).values()] : undefined} /> : null}
 
     {tab === "evidence" ? <section className="sv-section" aria-label="Trace evidence">
       <div className="sv-section-head"><h3>Evaluation evidence</h3><span className="sv-mono">{payload.evidence_digest ? "digest bound" : evidence.length ? "trace-bound events" : "none retained"}</span></div>

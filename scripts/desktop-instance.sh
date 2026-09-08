@@ -1566,6 +1566,7 @@ dev_instance() {
       SYNTH_MLX_RL_PROJECT_ROOT="${SYNTH_MLX_RL_PROJECT_ROOT:-$REPO_SIBLING_ROOT/synth-mlx-rl}"
     fi
     export SYNTH_MLX_RL_PROJECT_ROOT
+    python3 "$ROOT/scripts/stage-trace-runtime.py"
     "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
     local tauri_configs=(--config "$PACKAGE_CONFIG" --config "$CONFIG")
     if [[ "$COMMAND" == "cua-live-build" ]]; then

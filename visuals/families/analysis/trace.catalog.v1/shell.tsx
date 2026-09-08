@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { VisualChrome, MetricStrip } from "../../../chrome/VisualChrome.tsx";
 import type { VisualBinding } from "../../../runtime/types.ts";
 
@@ -21,6 +22,7 @@ type TraceRow = {
 };
 
 type QuerySnapshot = {
+  querySchemaVersion?: string;
   snapshotId?: string;
   queryAst?: Record<string, unknown>;
   resultIds?: string[];
@@ -89,6 +91,7 @@ function describeFilters(ast: Record<string, unknown> | undefined): string[] {
 
 export function Shell(props: ShellProps) {
   const snapshot = asSnapshot(props.data ?? props.result);
+  if (snapshot.querySchemaVersion === "synth.trace-query.v2") return <ResearchTable key={snapshot.snapshotId} snapshot={snapshot} />;
   const rows = snapshot.facets?.rows ?? [];
   const filters = describeFilters(snapshot.queryAst);
   const count = snapshot.resultCount ?? rows.length;
@@ -186,7 +189,7 @@ export function Shell(props: ShellProps) {
                       <button
                         type="button"
                         className="sv-mono"
-                        data-synth-open-trace={row.traceDigest}
+                        data-reference-kind="trace" data-reference-value={row.traceDigest}
                         style={{
                           border: 0,
                           background: "none",
@@ -222,3 +225,32 @@ export function Shell(props: ShellProps) {
 }
 
 export default Shell;
+
+
+function ResearchTable({ snapshot }: { snapshot: QuerySnapshot }) {
+  const storageKey = `workshop.research.catalog:${snapshot.snapshotId}:${snapshot.resultDigest}`;
+  const restore = () => {
+    try { return JSON.parse(sessionStorage.getItem(storageKey) ?? "{}"); } catch { return {}; }
+  };
+  const [page, setPage] = useState(() => { const saved = restore().page; return Number.isInteger(saved) && saved >= 0 && saved * 50 < (snapshot.facets?.rows?.length ?? 0) ? saved : 0; });
+  const [selected, setSelected] = useState<number | null>(() => { const saved = restore().selected; return Number.isInteger(saved) && saved >= 0 && saved < (snapshot.facets?.rows?.length ?? 0) ? saved : null; });
+  useEffect(() => { try { sessionStorage.setItem(storageKey, JSON.stringify({ page, selected })); } catch { /* Storage may be unavailable in embedded previews. */ } }, [storageKey, page, selected]);
+  const rows = (snapshot.facets?.rows ?? []) as Array<Record<string, unknown>>;
+  const size = 50;
+  const columns = ["jobId", "trialId", "model", "effort", "environment", "taskId", "seed", "reward", "rewardMean", "rewardDelta", "matchStatus", "measuredCount", "missingCount", "actorId", "eventType", "label", "score", "reviewState", "analysisState", "traceAvailability"]
+    .filter(key => rows.some(row => row[key] != null));
+  const show = (value: unknown) => value == null ? "—" : typeof value === "object" ? JSON.stringify(value) : String(value);
+  return <VisualChrome kicker="Evaluation research" title="Saved query results" testId="visual-trace-research" footer="trace.catalog.v1">
+    <MetricStrip metrics={[{label:"Results",value:String(snapshot.resultCount ?? rows.length)},{label:"Page",value:`${page+1} / ${Math.max(1,Math.ceil(rows.length/size))}`}]} />
+    <details><summary>Query and provenance</summary><pre style={{whiteSpace:"pre-wrap"}}>{JSON.stringify({snapshotId:snapshot.snapshotId,resultDigest:snapshot.resultDigest,query:snapshot.queryAst},null,2)}</pre></details>
+    <div style={{overflowX:"auto"}}><table className="sv-table"><thead><tr>{columns.map(key=><th key={key}>{key}</th>)}<th>Evidence</th></tr></thead>
+      <tbody>{rows.slice(page*size,(page+1)*size).map((row,i)=><tr key={snapshot.resultIds?.[page*size+i] ?? page*size+i}>
+        {columns.map(key=><td key={key}>{show(row[key])}</td>)}<td>
+          <button onClick={()=>setSelected(page*size+i)}>Inspect result</button>
+          {typeof row.traceDigest === "string" && row.traceAvailability === "available" && <button data-reference-kind="trace" data-reference-value={row.traceDigest}>Open trace</button>}
+        </td></tr>)}</tbody></table></div>
+    {!rows.length && <p>No matching results.</p>}
+    <nav aria-label="Query result pages"><button disabled={page===0} onClick={()=>setPage(p=>p-1)}>Previous</button><button disabled={(page+1)*size>=rows.length} onClick={()=>setPage(p=>p+1)}>Next</button></nav>
+    {selected != null && <section aria-label="Selected evidence"><h3>Result evidence</h3><p className="sv-mono">{snapshot.resultIds?.[selected]}</p><pre style={{whiteSpace:"pre-wrap",maxHeight:400,overflow:"auto"}}>{JSON.stringify(rows[selected],null,2)}</pre><p>Source selectors resolve through the trace tool’s source operation. Annotations and comparison visuals are optional.</p></section>}
+  </VisualChrome>;
+}

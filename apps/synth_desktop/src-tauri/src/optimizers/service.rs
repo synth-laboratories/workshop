@@ -2847,7 +2847,8 @@ impl OptimizerService {
             // The sender is registered but its worker is gone; fall through
             // and settle directly.
         }
-        if matches!(run.algorithm_id.as_str(), "sft" | "cispo") {
+        if matches!(run.algorithm_id.as_str(), "sft" | "cispo")
+            && run.summary.get("containerExperiment").and_then(Value::as_bool) != Some(true) {
             if let Ok(client) =
                 super::sidecar_training::SidecarTrainingClient::from_manager(self.manager()).await
             {
@@ -2900,6 +2901,9 @@ impl OptimizerService {
     pub async fn pause(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let run = self.get(id.clone()).await?;
         validate_control(&run, "pause", OptimizerRunStatus::Paused)?;
+        if run.algorithm_id == "cispo" && run.summary.get("containerExperiment").and_then(Value::as_bool) == Some(true) {
+            super::cispo_client::CispoOptimizerClient::from_env()?.experiment_control(&id, "pause").await?;
+        }
         let is_eval = run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
         if is_eval {
             super::eval_recipes::set_paused(&id, true)?;
@@ -2918,6 +2922,9 @@ impl OptimizerService {
     pub async fn resume(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let run = self.get(id.clone()).await?;
         validate_control(&run, "resume", OptimizerRunStatus::Running)?;
+        if run.algorithm_id == "cispo" && run.summary.get("containerExperiment").and_then(Value::as_bool) == Some(true) {
+            super::cispo_client::CispoOptimizerClient::from_env()?.experiment_control(&id, "resume").await?;
+        }
         let is_eval = run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
         if is_eval {
             super::eval_recipes::set_paused(&id, false)?;
@@ -3719,6 +3726,20 @@ impl OptimizerService {
     /// authority for CISPO/PPO progress, checkpoint readiness and terminal
     /// truth; keeping its sequence in the durable run summary makes Workshop
     /// reconnect from the same cursor after an app restart.
+    pub async fn container_experiment_action(&self, id: String, action: String, checkpoint_id: Option<String>) -> Result<Value> {
+        let run = self.get(id.clone()).await?;
+        if run.algorithm_id != "cispo" || run.summary.get("containerExperiment").and_then(Value::as_bool) != Some(true) {
+            bail!("this run is not a container experiment");
+        }
+        let client = super::cispo_client::CispoOptimizerClient::from_env()?;
+        match action.as_str() {
+            "recover" | "start" => client.experiment_control(&id, &action).await,
+            "verify_checkpoint" => client.verify_checkpoint(&id, checkpoint_id.as_deref().filter(|id| !id.is_empty())
+                .ok_or_else(|| anyhow!("checkpoint identity is required"))?).await,
+            _ => bail!("unsupported container experiment operation"),
+        }
+    }
+
     pub async fn reconcile_training(&self, optimizer_run_id: String) -> Result<Value> {
         let run = self.get(optimizer_run_id.clone()).await?;
         if !matches!(run.algorithm_id.as_str(), "sft" | "cispo" | "ppo") {

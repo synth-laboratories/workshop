@@ -29,6 +29,7 @@ import { PluginsPage } from "./components/PluginsPage";
 import { DataPage } from "./components/DataPage";
 import { LandingPage } from "./components/LandingPage";
 import { ComputerUsePage } from "./components/ComputerUsePage";
+import { JesterkyPage } from "./components/JesterkyPage";
 import { OptimizersPage } from "./components/OptimizersPage";
 import { EnvironmentQaPage } from "./components/EnvironmentQaPage";
 import { PaneResizeHandle } from "./components/PaneResizeHandle";
@@ -68,6 +69,7 @@ export type MainView =
 	| { kind: "reports"; reportId?: string }
 	| { kind: "experiments"; experimentId?: string }
 	| { kind: "optimizers" }
+	| { kind: "jesterky" }
 	| { kind: "environment-qa" }
 	| { kind: "computer-use" };
 
@@ -75,6 +77,7 @@ const INVENTORY_ORIGIN_KINDS = new Set<MainView["kind"]>([
 	"visuals",
 	"experiments",
 	"optimizers",
+	"jesterky",
 	"environment-qa",
 	"inventory",
 	"inference",
@@ -415,7 +418,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 	const inventoryHost =
 		view.kind === "visuals" ||
 		view.kind === "experiments" ||
-		view.kind === "optimizers" ||
+		view.kind === "optimizers" || view.kind === "jesterky" ||
 		view.kind === "environment-qa" ||
 		view.kind === "inventory" ||
 		view.kind === "inference" ||
@@ -487,9 +490,9 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 	// surfaces that actually own or inspect visuals. Independent destinations
 	// (Plugins, Reports, Data, Inference, and Settings) must not inherit an
 	// unrelated right-hand pane merely because a visual was previously open.
-	const inventoryOwnsVisualPane = view.kind === "visuals"
-		|| (view.kind === "experiments" && experimentSectionOwnsVisualPane)
-		|| view.kind === "optimizers";
+	// Visuals owns its list/preview split; mounting the dock duplicates the visual.
+	const inventoryOwnsVisualPane = (view.kind === "experiments" && experimentSectionOwnsVisualPane)
+		|| view.kind === "optimizers" || view.kind === "jesterky";
 	const visualPaneVisible = Boolean(openArtifact && (
 		(chatRoute && !showSidePanel)
 		|| inventoryOwnsVisualPane
@@ -654,6 +657,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							onSectionChange={(section) => setExperimentSectionOwnsVisualPane(section === "experiments")}
 						/>
 					) : null}
+					{view.kind === "jesterky" ? <JesterkyPage pluginStatuses={pluginStatuses} onRefreshPlugins={refreshPluginStatuses} onBack={leavePluginToRecentChat} onOpenVisuals={() => setView({kind: "visuals"})} /> : null}
 					{view.kind === "optimizers" ? (
 						<OptimizersPage
 							sessionRef={

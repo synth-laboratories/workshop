@@ -6,6 +6,7 @@ import { bridges } from "../runtime/desktopBridge";
 import { getPreferences, updatePreferences } from "../preferences";
 import { PaneResizeHandle } from "./PaneResizeHandle";
 import type { ReportBlock, ReportRecord, VisualSeal, VisualSealBundle } from "../bridge";
+import { VISUAL_REFERENCE_OPENED_EVENT } from "../runtime/visualReferences";
 import { publicError } from "../runtime/publicError";
 import { formatVisualAdmissionIdentity } from "../types/landing";
 import { VisualOpsLine } from "./VisualOpsLine";
@@ -46,6 +47,15 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 	const [search, setSearch] = useState("");
 	const [visuals, setVisuals] = useState<VisualRecord[]>([]);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
+	useEffect(() => {
+		const opened = (event: Event) => {
+			const visual = (event as CustomEvent<VisualRecord>).detail;
+			setVisuals(rows => rows.some(row => row.id === visual.id) ? rows : [visual, ...rows]);
+			setSelectedId(visual.id);
+		};
+		window.addEventListener(VISUAL_REFERENCE_OPENED_EVENT, opened);
+		return () => window.removeEventListener(VISUAL_REFERENCE_OPENED_EVENT, opened);
+	}, []);
 	const [openActionsId, setOpenActionsId] = useState<string | null>(null);
 	const [previewDetailsOpen, setPreviewDetailsOpen] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -193,10 +203,9 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 	const showRegistryEmpty = !loading && filtered.length === 0 && !showFilteredEmpty;
 
 	useEffect(() => {
-		if (selected?.metadata?.presentation === "canvas") setFocusVisualId(selected.id);
 		setSealedBundle(null);
 		setCompareBundle(null);
-	}, [selected?.id, selected?.metadata?.presentation]);
+	}, [selected?.id]);
 
 	useEffect(() => {
 		type ReviewRequest = { active?: boolean; visualId?: string };
@@ -461,7 +470,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 									<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="3" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="8" cy="13" r="1.25"/></svg>
 								</summary>
 								<div role="menu" aria-label={`${visual.title} actions`}>
-								<button type="button" role="menuitem" onClick={() => { setOpenActionsId(null); onOpenVisual(visual); }}>Open canvas</button>
+								<button type="button" role="menuitem" onClick={() => { setOpenActionsId(null); setSelectedId(visual.id); setFocusVisualId(visual.id); onOpenVisual(visual); }}>Open canvas</button>
 								{visual.sessionId && onGoToChat ? (
 									<button type="button" role="menuitem" onClick={() => { setOpenActionsId(null); onGoToChat(visual.sessionId!); }}>Go to chat</button>
 								) : null}

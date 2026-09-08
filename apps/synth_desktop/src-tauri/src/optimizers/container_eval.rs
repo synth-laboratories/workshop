@@ -120,6 +120,15 @@ struct EvalSpec {
 }
 
 impl EvalSpec {
+    fn research_context(&self, task:Value, seed:Value)->Value {
+        let mut context=json!({"schemaVersion":"synth.eval-research-context.v1","environment":self.family,"taskId":task,"seed":seed,"model":self.model,"candidateId":self.policy_config,
+            "policySourceRevision":self.policy_source_revision,"policyConfigurationDigest":self.policy_configuration_digest,"harness":self.harness});
+        for key in ["effort","environmentVersion","promptRevision","protocolRevision","harnessRevision","rewardId","rewardVersion","definitionDigest","units","repeat","checkpointId"] {
+            if let Some(value)=self.policy.get(key){context[key]=value.clone();}
+        }
+        if context["effort"].is_null(){context["effort"]=self.policy.get("reasoning_effort").cloned().unwrap_or(Value::Null);}
+        context
+    }
     fn from_execution_spec(
         execution: &super::admission::ExecutionSpec,
         family: String,
@@ -2301,11 +2310,12 @@ async fn append_provider_usage_receipt(
         );
     }
     if let (Some(receipt_cost), Some(committed_cost)) = (receipt.cost_usd, expected_cost) {
-        // Per-request costs and the aggregate proxy receipt can differ by a
-        // final decimal-rounding micro-dollar. The proxy remains authoritative;
-        // reject only a material deficit.
-        const COST_TOLERANCE_USD: f64 = 0.000_001;
-        if receipt_cost + COST_TOLERANCE_USD < committed_cost {
+        // The proxy rounds each response to integer micro-dollars, while a
+        // producer may sum full-precision costs before reporting its total.
+        // Allow at most half a micro-dollar per request plus aggregate rounding;
+        // a larger deficit still means conflicting accounting authorities.
+        let rounding_bound = ((receipt.calls as f64 + 1.0) * 0.000_000_5).max(0.000_001);
+        if receipt_cost + rounding_bound < committed_cost {
             bail!(
                 "provider_usage_reconciliation_conflict: receipt cost ${receipt_cost:.6} is below committed cost ${committed_cost:.6}"
             );
@@ -2439,6 +2449,7 @@ async fn append_eval_plan(
                         json!(spec.task_instance_id(example)),
                     ),
                     ("stage".into(), json!("screen")),
+                    ("researchContext".into(),spec.research_context(json!(spec.task_instance_id(example)),json!(example.seed))),
                 ]))
                 .raw(json!({ "source": "container_eval" })),
         );
@@ -2515,6 +2526,13 @@ async fn append_eval_terminal(
             "scenario": spec.family,
             "reward": record.get("reward").cloned().unwrap_or(Value::Null),
             "metrics": metrics,
+            "researchContext": ({
+                let mut context=spec.research_context(record.get("taskInstanceId").or_else(||record.get("task_instance_id")).cloned().unwrap_or(Value::Null),seed.clone());
+                if let Some(recorded)=record.get("researchContext").or_else(||record.get("research_context")).and_then(Value::as_object){
+                    for key in ["environmentVersion","taskId","seed","repeat","rewardId","rewardVersion","definitionDigest","units","checkpointId"]{if let Some(value)=recorded.get(key){context[key]=value.clone();}}
+                }
+                context
+            }),
             "raw": record,
         }))
         .artifact_refs(evidence_refs)
@@ -2818,7 +2836,7 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
 /// rollout fails before its first model call.
 fn container_proxy_operations(spec: &EvalSpec) -> Vec<String> {
     match spec.harness.trim().to_ascii_lowercase().as_str() {
-        "codex_agentic" => vec!["responses.create".into()],
+        "codex_agentic" | "harbor_fused" => vec!["responses.create".into()],
         _ => vec!["chat.completions.create".into()],
     }
 }
@@ -4455,8 +4473,8 @@ impl LaneUsage {
     fn to_json(&self) -> Value {
         json!({
             "calls": self.calls,
-            "promptTokens": self.prompt_tokens,
-            "completionTokens": self.completion_tokens,
+            "promptTokens": self.saw_tokens.then_some(self.prompt_tokens),
+            "completionTokens": self.saw_tokens.then_some(self.completion_tokens),
             "costUsd": self.cost_usd,
         })
     }
@@ -4822,8 +4840,14 @@ async fn run_one_example(
     let mut prepare_body = json!({
         "rollout_id": rollout_id,
         "task_instance_id": task_instance_id,
+        "model": spec.model,
+        "reasoning_effort": spec.policy.get("reasoning_effort").or_else(|| spec.policy.get("effort")),
+        "limits": {"maximumStepsPerRollout": spec.maximum_steps_per_rollout},
         "telemetry": telemetry
     });
+    if prepare_body["reasoning_effort"].is_null() {
+        prepare_body.as_object_mut().unwrap().remove("reasoning_effort");
+    }
     if let Some(revision) = annotation_protocol_revision_id {
         prepare_body
             .as_object_mut()
@@ -5141,6 +5165,7 @@ async fn run_one_example(
         "pool": example.pool,
         "seed": example.seed,
         "taskInstanceId": task_instance_id,
+        "researchContext": state.get("researchContext").or_else(||state.get("research_context")).cloned().unwrap_or(Value::Null),
         "status": record_status,
         "reportedStatus": reported_status.as_str(),
         "error": terminal_error,
@@ -5953,6 +5978,10 @@ mod tests {
         Arc, Mutex,
     };
 
+    mod native_research_e2e {
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/optimizers/native_research_e2e.rs"));
+    }
+
     fn ready_container_with_metadata(metadata: Value) -> ReadyContainer {
         ReadyContainer {
             id: "ctr_craftax_test".into(),
@@ -6267,6 +6296,22 @@ mod tests {
             svc.get(run.id).await.unwrap().usage.cost_usd,
             Some(0.001_047_4)
         );
+    }
+
+    #[tokio::test]
+    async fn provider_receipt_accepts_accumulated_rounding_but_rejects_material_deficit() {
+        for (committed, should_pass) in [(0.01639475,true),(0.0165,false)] {
+            let (svc, _dir, _) = service().await;
+            let run = empty_eval_run(&svc, "opt_eval_request_rounding").await;
+            append_status(&svc, &run.id, "optimizer.run.started", "running").await.unwrap();
+            svc.append_event_payloads(run.id.clone(),vec![
+                OptimizerEventDraft::new("optimizer.usage",EVAL_ALGORITHM_ID)
+                    .usage_delta(Map::from_iter([("calls".into(),json!(19)),("cost_usd".into(),json!(committed))]))
+            ]).await.unwrap();
+            let result=append_provider_usage_receipt(&svc,&run.id,provider_usage_receipt(&run.id,19,0,0,Some(0.016392),'c')).await;
+            assert_eq!(result.is_ok(),should_pass);
+            if should_pass {assert_eq!(svc.get(run.id).await.unwrap().usage.cost_usd,Some(0.016392));}
+        }
     }
 
     #[tokio::test]
@@ -8596,6 +8641,8 @@ max_total_rollouts = 4
         let mut spec = EvalSpec::classify_fixture();
         spec.harness = "codex_agentic".into();
 
+        assert_eq!(container_proxy_operations(&spec), ["responses.create"]);
+        spec.harness = "harbor_fused".into();
         assert_eq!(container_proxy_operations(&spec), ["responses.create"]);
     }
 

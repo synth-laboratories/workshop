@@ -948,6 +948,7 @@ window.synthWorkspaceScope ??= isTauri
 			}
 		};
 		window.synthPlugins ??= {
+			jesterkyAnalysisSettings: (settings) => fromGenerated(spectaCommands.jesterkyAnalysisSettings(settings ?? null)),
 			status: (pluginId) => fromGenerated(spectaCommands.pluginsStatus(pluginId ?? null)),
 			list: () => fromGenerated(spectaCommands.pluginsList()),
 			setReleaseChannel: (pluginId, channel) =>
@@ -1152,6 +1153,8 @@ window.synthWorkspaceScope ??= isTauri
 				});
 				return () => { disposed = true; unlisten?.(); };
 			},
+			containerExperimentAction: (optimizerRunId, action, checkpointId) =>
+				fromGenerated(spectaCommands.optimizersContainerExperimentAction(optimizerRunId, action, checkpointId ?? null)),
 			reconcileTraining: (optimizerRunId) =>
 				fromGenerated(spectaCommands.optimizersTrainingReconcile(optimizerRunId)) as Promise<{ schemaVersion: "workshop.training_snapshot.v1"; runId: string; projection: import("../bridge").TrainingProjection }>,
 			recordVisualReady: (request) => fromGenerated(spectaCommands.visualSubscriptionReady(wire(request))),

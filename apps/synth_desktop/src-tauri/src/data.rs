@@ -145,6 +145,14 @@ pub struct InspectedTrace {
     #[serde(alias = "digest", alias = "content_digest")]
     pub trace_digest: String,
     #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub trial_id: Option<String>,
+    #[serde(default)]
+    pub episode_id: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
     pub schema_version: Option<String>,
     #[serde(default, alias = "kind")]
     pub trace_kind: Option<String>,
@@ -662,6 +670,26 @@ impl DataStore {
         Ok(snapshot)
     }
 
+    pub async fn research_query(&self, query: Value) -> Result<crate::trace_query::QuerySnapshot> {
+        let input = self.db.clone().run_transaction(move |conn| crate::trace_research::resolve_inputs(conn, &query)).await?;
+        let snapshot = crate::trace_research::execute(input, &self.content.root().join("trace-research")).await?;
+        let stored = snapshot.clone();
+        self.db.clone().run(move |conn| insert_query_snapshot(conn, &stored)).await?;
+        Ok(snapshot)
+    }
+
+    pub async fn research_source(&self, snapshot_id:String, result_id:String, selector:Option<Value>, offset:usize, limit:usize)->Result<Value>{
+        let snapshot=self.query_snapshot(snapshot_id).await?;
+        let i=snapshot.result_ids.iter().position(|id|id==&result_id).context("result ID is not in snapshot")?;
+        let row=snapshot.facets["rows"].get(i).context("snapshot row missing")?;
+        let selected=selector.unwrap_or_else(||row["selector"].clone());
+        let allowed=selected==row["selector"]||selected==row["relatedSelector"]||row["evidence"].as_array().is_some_and(|items|items.contains(&selected));
+        anyhow::ensure!(!selected.is_null()&&allowed,"selector must be one of this result's citations");
+        let td=row["traceDigest"].as_str().context("select a trace result, not an aggregate")?.to_string();
+        let path=self.db.clone().run(move|conn|Ok(conn.query_row("SELECT path FROM traces WHERE digest=?1",[td],|r|r.get::<_,String>(0))?)).await?;
+        crate::trace_research::execute_value(json!({"operation":"source","archivePath":path,"selector":selected,"offset":offset,"limit":limit}),&self.content.root().join("trace-research")).await
+    }
+
     pub async fn query_snapshot(
         &self,
         snapshot_id: String,
@@ -734,6 +762,33 @@ impl DataStore {
             && inspected.inspection.bundle_digest.is_some()
             && inspected.inspection.archive_digest.is_some()
             && inspected.archive_bytes.is_some();
+
+        // A validated standalone V5 is already a sealed authority. Retain its
+        // bytes directly; do not mint a replacement capture just to obtain a ZIP.
+        if inspected.inspection.input_kind == "standalone_trace"
+            && inspected.inspection.trusted && validation_ok && accepted_compatibility
+        {
+            let trace = inspected.inspection.traces.first().context("standalone trace missing")?.clone();
+            let path = stored_import_path.clone().context("standalone bytes missing")?;
+            let digest = qualified_sha256(&trace.trace_digest)?;
+            let row_id = format!("tracev5_{}", &digest[7..31]);
+            let title = request.title.clone().unwrap_or_else(|| trace.trace_id.clone());
+            let metadata = json!({"schemaVersion":"synth.trace.v5","producerTraceId":trace.trace_id,
+                "storageKind":"standalone_trace","runId":trace.run_id,"trialId":trace.trial_id,
+                "episodeId":trace.episode_id,"effort":trace.effort,"model":trace.model,
+                "benchmark":trace.benchmark,"taskId":trace.task_id,"seed":trace.seed,
+                "captureStatus":trace.capture_status,"lifecycleStatus":trace.lifecycle_status});
+            let input = input_digest.clone();
+            let validation = inspected.inspection.validation.clone();
+            let compatibility = inspected.inspection.compatibility.clone();
+            let container = request.container_id.clone();
+            return self.db.clone().run_transaction(move |conn| {
+                let duplicate: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM traces WHERE digest=?1)", [&digest], |r| r.get(0))?;
+                conn.execute("INSERT INTO traces(id,digest,title,source,container_id,reward,metrics_json,path,metadata_json,created_at) VALUES(?1,?2,?3,'import',?4,?5,'[]',?6,?7,?8) ON CONFLICT(digest) DO UPDATE SET path=excluded.path,metadata_json=excluded.metadata_json,container_id=COALESCE(excluded.container_id,traces.container_id)", params![row_id,digest,title,container,trace.reward,path,metadata.to_string(),Utc::now().to_rfc3339()])?;
+                let record = load_trace(conn, &digest)?.context("imported standalone trace missing")?;
+                Ok((TraceBundleIngestResult { compatibility_level: compatibility, trusted:true, duplicate, input_digest:input, bundle_digest:None, archive_digest:None, traces:vec![record], validation }, None))
+            }).await;
+        }
 
         let mut archive_digest = None;
         let mut archive_path = None;
@@ -901,6 +956,10 @@ impl DataStore {
                         // reconciliation can validate the sealed bundle without
                         // comparing a rollout-owned id to `tracev5_...`.
                         "producerTraceId": trace.trace_id,
+                        "runId": trace.run_id,
+                        "trialId": trace.trial_id,
+                        "episodeId": trace.episode_id,
+                        "effort": trace.effort,
                         "bundleDigest": bundle_digest,
                         "archiveDigest": archive_digest,
                         "compatibilityLevel": compatibility,
@@ -1010,6 +1069,18 @@ impl DataStore {
             Ok((records,event,duplicate))
         }).await?;
 
+        if trusted {
+            for trace in &result.0 {
+                let digest=trace.digest.clone();
+                let count=self.db.clone().run(move |c| Ok(c.query_row("SELECT event_count FROM trace_index WHERE trace_digest=?1",params![digest],|r|r.get::<_,i64>(0)).optional()?.unwrap_or(0))).await?;
+                if count >= 1000 {
+                    if let Err(error)=self.prepare_trace_windows(trace.digest.clone()).await {
+                        crate::platform::logging::report("trace", "replay_index", format!("Replay index unavailable for {}: {error}",trace.digest));
+                    }
+                }
+            }
+        }
+
         Ok((
             TraceBundleIngestResult {
                 compatibility_level: return_compatibility,
@@ -1109,6 +1180,87 @@ impl DataStore {
         })
     }
 
+    /// Build a rebuildable replay index once; only bounded pages reach consumers.
+    pub async fn prepare_trace_windows(&self, trace_digest: String) -> Result<String> {
+        let trace_digest = qualified_sha256(&trace_digest)?;
+        let lookup = trace_digest.clone();
+        let cached = self.db.clone().run(move |c| {
+            c.query_row("SELECT payload_digest FROM trace_projection_cache WHERE trace_digest=?1 AND projection_kind='rollout-inspector-windows' AND projector_version='workshop.windows.v2'",params![lookup],|r|r.get::<_,String>(0)).optional().map_err(Into::into)
+        }).await?;
+        if let Some(digest) = cached { return Ok(digest); }
+        let projection = self.resolve_trace_projection(trace_digest.clone(), "rollout-inspector".into()).await?;
+        let content = self.content.clone();
+        let digest = tokio::task::spawn_blocking(move || build_trace_windows(&content, projection)).await??;
+        let stored = digest.clone();
+        self.db.clone().run(move |c| {
+            c.execute("INSERT INTO trace_projection_cache(trace_digest,projection_kind,projection_schema,projector_version,source_digest,payload_digest,created_at) VALUES(?1,'rollout-inspector-windows','synth.trace-window-index.v2','workshop.windows.v2',?1,?2,?3) ON CONFLICT(trace_digest,projection_kind,projector_version) DO UPDATE SET payload_digest=excluded.payload_digest",params![trace_digest,stored,Utc::now().to_rfc3339()])?;Ok(())
+        }).await?;
+        Ok(digest)
+    }
+
+    pub async fn trace_view_window(&self, trace_digest: String, snapshot_digest: Option<String>, offset: usize, limit: usize) -> Result<Value> {
+        let trace_digest=qualified_sha256(&trace_digest)?;
+        if !(1..=200).contains(&limit) { bail!("trace window limit must be 1..200"); }
+        let refresh_annotations = snapshot_digest.is_none();
+        let mut snapshot=match snapshot_digest {Some(value)=>qualified_sha256(&value)?,None=>self.prepare_trace_windows(trace_digest.clone()).await?};
+        let content=self.content.clone();
+        let mut parsed:Value=serde_json::from_slice(&content.get_bytes_bounded("trace_views",snapshot.trim_start_matches("sha256:"),64*1024*1024)?)?;
+        if parsed["schemaVersion"] != "synth.trace-window-index.v2" {
+            return self.legacy_trace_view_window(trace_digest,Some(snapshot),offset,limit).await;
+        }
+        if refresh_annotations {
+            let overlay = self.db.with_conn(|c| trace_annotation_overlay(c, &trace_digest))?;
+            parsed["header"]["annotation_view"] = overlay;
+            snapshot = format!("sha256:{}", content.put_bytes("trace_views", &serde_json::to_vec(&parsed)?)?);
+        }
+        tokio::task::spawn_blocking(move || read_trace_window(&content,parsed,&trace_digest,&snapshot,offset,limit)).await?
+    }
+
+    /// A bounded consumer view pinned to the verified full projection in CAS.
+    /// The window is explicitly a view, never a newly sealed trace/projection.
+    async fn legacy_trace_view_window(&self, trace_digest: String, snapshot_digest: Option<String>, offset: usize, limit: usize) -> Result<Value> {
+        let trace_digest = qualified_sha256(&trace_digest)?;
+        if !(1..=200).contains(&limit) { bail!("trace window limit must be 1..200"); }
+        let (projection, snapshot) = if let Some(snapshot) = snapshot_digest {
+            let snapshot = qualified_sha256(&snapshot)?;
+            let bytes = self.content.get_bytes_bounded("trace_views", snapshot.trim_start_matches("sha256:"),64*1024*1024)?;
+            (serde_json::from_slice::<ResolvedTraceProjection>(&bytes)?, snapshot)
+        } else {
+            let projection = self.resolve_trace_projection(trace_digest.clone(), "rollout-inspector".into()).await?;
+            static CACHE_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let snapshot = {
+                let _guard = CACHE_WRITE.lock().map_err(|_| anyhow!("trace view cache lock unavailable"))?;
+                self.content.put_bytes("trace_views", &serde_json::to_vec(&projection)?)?
+            };
+            (projection, format!("sha256:{snapshot}"))
+        };
+        if projection.trace_digest != trace_digest || projection.projection_kind != "rollout-inspector" {
+            bail!("trace window snapshot belongs to a different trace or projection");
+        }
+        let mut payload = projection.payload;
+        let items = payload.pointer_mut("/visual/items").context("projection has no visual items")?;
+        let all = items.as_array_mut().context("projection items must be an array")?;
+        let total = all.len();
+        if offset > total { bail!("trace window offset exceeds retained items"); }
+        let end = offset.saturating_add(limit).min(total);
+        let mut window = all[offset..end].to_vec();
+        for item in &mut window {
+            if let Some(detail) = item.get_mut("detail") {
+                let text = serde_json::to_string(detail)?;
+                if text.len() > 16_000 {
+                    *detail = json!({"preview":text.chars().take(4000).collect::<String>(),"payloadTruncated":true,"sourceSelectorRetained":true});
+                }
+            }
+        }
+        *items = Value::Array(window);
+        payload["schema_version"] = json!("synth.trace-projection.rollout-inspector-window.v1");
+        if let Some(object) = payload.as_object_mut() { object.remove("content_digest"); }
+        if let Some(object) = payload.get_mut("visual").and_then(Value::as_object_mut) { object.remove("content_digest"); }
+        payload["view_window"] = json!({"schemaVersion":"synth.trace-view-window.v1","snapshotDigest":snapshot,"sourceProjectionDigest":projection.payload_digest,"offset":offset,"limit":limit,"total":total,"nextOffset":if end<total {Some(end)} else {None}});
+        if serde_json::to_vec(&payload)?.len() > 4*1024*1024 { bail!("trace window exceeds 4 MiB; reduce its limit"); }
+        Ok(payload)
+    }
+
     pub async fn list_usage(&self, limit: i64) -> Result<Vec<UsageEntry>> {
         self.db
             .clone()
@@ -1130,6 +1282,76 @@ impl DataStore {
             })
             .await
     }
+}
+
+/// Independent findings are a view overlay, never mutations of sealed trace bytes.
+fn trace_annotation_overlay(c: &Connection, trace: &str) -> Result<Value> {
+    let mut stmt=c.prepare("SELECT f.finding_id,f.annotator_id,f.taxonomy_label,f.target_selector_json,f.evidence_selectors_json,f.payload_json,f.status,(SELECT decision FROM annotation_reviews r WHERE r.finding_id=f.finding_id AND r.evidence_head_digest=f.evidence_head_digest ORDER BY r.created_at DESC,r.review_id DESC LIMIT 1) FROM annotation_findings f JOIN annotation_evidence_heads h ON h.digest=f.evidence_head_digest WHERE h.trace_digest=?1 ORDER BY f.finding_id LIMIT 201")?;
+    let rows=stmt.query_map([trace],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,Option<String>>(7)?)))?;
+    let mut records=vec![];let mut bytes=0;let mut truncated=false;
+    for row in rows {
+        let (id,author,label,target,evidence,payload,status,review)=row?;
+        let payload:Value=serde_json::from_str(&payload)?;
+        let canonical=payload.get("sourceAnnotation").unwrap_or(&payload);
+        let body=canonical.get("rationale").or_else(||canonical.get("summary")).and_then(Value::as_str).unwrap_or("");
+        let record=json!({"id":id,"target":serde_json::from_str::<Value>(&target)?,"evidence":serde_json::from_str::<Value>(&evidence)?,"body":body,"labels":canonical.get("labels").cloned().unwrap_or(json!(label.into_iter().collect::<Vec<_>>())) ,"author":author,"reviewState":review.map(Value::String).unwrap_or_else(||canonical.get("review_state").cloned().unwrap_or(json!(status))),"supersedesId":canonical.get("supersedes_id"),"grounding":canonical.get("grounding")});
+        let size=serde_json::to_vec(&record)?.len();
+        if records.len()>=200 || bytes+size>256*1024 {truncated=true;break;}
+        bytes+=size;records.push(record);
+    }
+    Ok(json!({"schemaVersion":"synth.trace-annotation-view.v1","records":records,"truncated":truncated,"scope":"independent annotations pinned when this view opened"}))
+}
+
+fn build_trace_windows(content: &ContentStore, projection: ResolvedTraceProjection) -> Result<String> {
+    static WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard=WRITE.lock().map_err(|_|anyhow!("trace page cache lock unavailable"))?;
+    let mut header=projection.payload;
+    let items=header.pointer_mut("/visual/items").context("projection has no visual items")?;
+    let Value::Array(mut all)=std::mem::take(items) else {bail!("projection items must be an array");};
+    let total=all.len();
+    for item in &mut all {
+        if let Some(detail)=item.get_mut("detail") {
+            let raw=serde_json::to_string(detail)?;
+            if raw.len()>16_000 {*detail=json!({"preview":raw.chars().take(4000).collect::<String>(),"payloadTruncated":true,"sourceSelectorRetained":true});}
+        }
+    }
+    let mut chunks=Vec::new();
+    for page in all.chunks(200) {
+        let bytes=serde_json::to_vec(page)?;
+        if bytes.len()>4*1024*1024 {bail!("trace page exceeds 4 MiB");}
+        chunks.push(content.put_bytes("trace_views",&bytes)?);
+    }
+    if let Some(object)=header.as_object_mut() {object.remove("content_digest");}
+    if let Some(object)=header.get_mut("visual").and_then(Value::as_object_mut) {object.remove("content_digest");}
+    header["schema_version"]=json!("synth.trace-projection.rollout-inspector-window.v1");
+    let index=json!({"schemaVersion":"synth.trace-window-index.v2","traceDigest":projection.trace_digest,"sourceProjectionDigest":projection.payload_digest,"header":header,"total":total,"chunks":chunks});
+    let bytes=serde_json::to_vec(&index)?;
+    if bytes.len()>4*1024*1024 {bail!("trace window index exceeds 4 MiB");}
+    Ok(format!("sha256:{}",content.put_bytes("trace_views",&bytes)?))
+}
+
+fn read_trace_window(content: &ContentStore,index: Value,trace: &str,snapshot: &str,offset: usize,limit: usize) -> Result<Value> {
+    if index["traceDigest"] != trace {bail!("trace window snapshot belongs to a different trace");}
+    let total=index["total"].as_u64().context("invalid trace window total")? as usize;
+    if offset>total {bail!("trace window offset exceeds retained items");}
+    let end=offset.saturating_add(limit).min(total);
+    let mut items=Vec::new();
+    if end>offset {
+        for page in offset/200..=(end-1)/200 {
+            let digest=index["chunks"][page].as_str().context("trace page missing")?;
+            let rows:Vec<Value>=serde_json::from_slice(&content.get_bytes_bounded("trace_views",digest,4*1024*1024)?)?;
+            let start=offset.saturating_sub(page*200);
+            let finish=(end-page*200).min(rows.len());
+            if start>finish || rows.len()>200 {bail!("invalid trace page range");}
+            items.extend_from_slice(&rows[start..finish]);
+        }
+    }
+    if items.len()!=end-offset {bail!("trace window is incomplete");}
+    let mut payload=index["header"].clone();
+    payload["visual"]["items"]=json!(items);
+    payload["view_window"]=json!({"schemaVersion":"synth.trace-view-window.v1","snapshotDigest":snapshot,"sourceProjectionDigest":index["sourceProjectionDigest"],"offset":offset,"limit":limit,"total":total,"nextOffset":if end<total {Some(end)} else {None}});
+    if serde_json::to_vec(&payload)?.len()>4*1024*1024 {bail!("trace window exceeds 4 MiB");}
+    Ok(payload)
 }
 
 fn sha256_qualified(bytes: &[u8]) -> String {
@@ -1312,7 +1534,7 @@ fn load_query_snapshot(
         [snapshot_id],
         |row| {
             Ok(crate::trace_query::QuerySnapshot {
-                schema_version: crate::trace_query::TRACE_QUERY_RESULT_SCHEMA.into(),
+                schema_version: if row.get::<_, String>(2)? == crate::trace_research::SCHEMA { "synth.trace-query-result.v2".into() } else { crate::trace_query::TRACE_QUERY_RESULT_SCHEMA.into() },
                 snapshot_id: row.get(0)?,
                 domain: row.get(1)?,
                 query_schema_version: row.get(2)?,
@@ -1387,6 +1609,58 @@ mod tests {
     use super::*;
     use crate::storage::Storage;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn trace_window_annotation_overlay_pins_reviews_across_pages() {
+        let dir=tempdir().unwrap();let storage=Storage::open(dir.path()).unwrap();
+        let data=DataStore::new(storage.database().clone(),ContentStore::new(storage.content_root()));
+        let trace=format!("sha256:{}","c".repeat(64));
+        let base=build_trace_windows(&data.content,ResolvedTraceProjection{trace_digest:trace.clone(),projection_kind:"rollout-inspector".into(),projection_schema:"synth.trace-projection.rollout-inspector.v1".into(),payload_digest:format!("sha256:{}","d".repeat(64)),relative_path:String::new(),payload:json!({"trace_id":"t","trace_digest":trace,"visual":{"items":[{"item_id":"event"},{"item_id":"next"}]}})}).unwrap();
+        storage.database().with_conn(|c|{
+            c.execute("INSERT INTO trace_projection_cache(trace_digest,projection_kind,projection_schema,projector_version,source_digest,payload_digest,created_at) VALUES(?1,'rollout-inspector-windows','synth.trace-window-index.v2','workshop.windows.v2',?1,?2,'now')",params![trace,base])?;
+            c.execute("INSERT INTO annotation_evidence_heads(digest,trace_digest,summary_json,created_at,updated_at) VALUES('head',?1,'{}','now','now')",[&trace])?;
+            c.execute(r#"INSERT INTO annotation_findings(finding_id,evidence_head_digest,annotator_id,status,target_selector_json,payload_json,created_at) VALUES('finding','head','ordinary','applied',?1,'{"sourceAnnotation":{"rationale":"Independent finding"}}','now')"#,[json!({"trace_id":"t","trace_digest":trace,"kind":"event","entity_id":"event"}).to_string()])?;Ok(())
+        }).unwrap();
+        let first=data.trace_view_window(trace.clone(),None,0,1).await.unwrap();
+        assert_eq!(first["annotation_view"]["records"][0]["body"],"Independent finding");
+        let pinned=first["view_window"]["snapshotDigest"].as_str().unwrap().to_string();
+        storage.database().with_conn(|c|{c.execute("INSERT INTO annotation_reviews(review_id,finding_id,evidence_head_digest,decision,created_at) VALUES('review','finding','head','accepted','later')",[])?;Ok(())}).unwrap();
+        let next=data.trace_view_window(trace.clone(),Some(pinned),1,1).await.unwrap();
+        assert_eq!(next["annotation_view"],first["annotation_view"]);
+        let refreshed=data.trace_view_window(trace,None,0,1).await.unwrap();
+        assert_eq!(refreshed["annotation_view"]["records"][0]["reviewState"],"accepted");
+        assert_ne!(refreshed["view_window"]["snapshotDigest"],first["view_window"]["snapshotDigest"]);
+    }
+
+    #[test]
+    fn trace_window_chunks_pin_identity_and_reject_damaged_pages() {
+        let dir = tempdir().unwrap();
+        let content = ContentStore::new(dir.path());
+        let trace = format!("sha256:{}", "a".repeat(64));
+        let snapshot = build_trace_windows(&content, ResolvedTraceProjection {
+            trace_digest: trace.clone(), projection_kind: "rollout-inspector".into(),
+            projection_schema: "synth.trace-projection.rollout-inspector.v1".into(),
+            payload_digest: format!("sha256:{}", "b".repeat(64)), relative_path: String::new(),
+            payload: json!({"trace_digest":trace,"content_digest":"sealed", "visual":{"items":(0..401).map(|i| json!({"id":i,"selector":{"eventId":i},"detail":"x".repeat(17000)})).collect::<Vec<_>>()}}),
+        }).unwrap();
+        let index: Value = serde_json::from_slice(&content.get_bytes("trace_views", snapshot.trim_start_matches("sha256:")).unwrap()).unwrap();
+        let across = read_trace_window(&content, index.clone(), &trace, &snapshot, 199, 2).unwrap();
+        assert_eq!(across["visual"]["items"][0]["id"], 199);
+        assert_eq!(across["visual"]["items"][1]["selector"]["eventId"], 200);
+        assert_eq!(across["visual"]["items"][1]["detail"]["payloadTruncated"], true);
+        assert!(across.get("content_digest").is_none());
+        assert!(read_trace_window(&content, index.clone(), "another-trace", &snapshot, 0, 1).is_err());
+        assert!(read_trace_window(&content, index.clone(), &trace, &snapshot, 402, 1).is_err());
+        let chunk = index["chunks"][1].as_str().unwrap();
+        std::fs::write(content.path_for("trace_views", chunk), b"[]").unwrap();
+        assert!(read_trace_window(&content, index.clone(), &trace, &snapshot, 199, 2).is_err());
+        // Damage to an unrelated page cannot force full-trace reads or hide a valid page.
+        assert_eq!(read_trace_window(&content, index.clone(), &trace, &snapshot, 400, 1).unwrap()["visual"]["items"][0]["id"], 400);
+        std::fs::remove_file(content.path_for("trace_views", index["chunks"][2].as_str().unwrap())).unwrap();
+        assert!(read_trace_window(&content, index, &trace, &snapshot, 400, 1).is_err());
+        let digest = content.put_bytes("trace_views", b"12345").unwrap();
+        assert!(content.get_bytes_bounded("trace_views", &digest, 4).is_err());
+    }
 
     async fn seeded_index_store() -> (tempfile::TempDir, DataStore) {
         let dir = tempdir().unwrap();

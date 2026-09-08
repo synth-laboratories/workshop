@@ -220,6 +220,7 @@ impl OptimizerRunViewV2 {
             Self::Cispo(view) => {
                 view.projection.work_items.clear();
                 view.projection.metrics.points.clear();
+                view.projection.checkpoint_details.clear();
             }
         }
         self

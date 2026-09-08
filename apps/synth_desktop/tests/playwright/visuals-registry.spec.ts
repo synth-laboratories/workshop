@@ -105,13 +105,13 @@ test("Visuals preview keeps primary chrome concise and omits report controls", a
 	await expect(header.getByRole("menuitem", { name: "Rename" })).toBeHidden();
 });
 
-test("chat visual card, registry, and right pane resolve one visual_id", async ({ page }) => {
+test("Open canvas expands the registry preview without a duplicate dock", async ({ page }) => {
 	await installVisualsFixture(page);
 	await page.getByTestId("open-visuals").click();
 	await page.getByTestId("visuals-actions-vis_test_reward").locator("summary").click();
 	await page.getByTestId("visuals-actions-vis_test_reward").getByRole("menuitem", { name: "Open canvas" }).click();
-	await expect(page.getByTestId("visual-pane")).toBeVisible();
-	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
+	await expect(page.getByTestId("visual-pane")).toBeHidden();
+	await expect(page.getByTestId("visuals-preview")).toContainText("Reward breakdown");
 	await expect(page.getByTestId("visuals-preview")).toBeVisible();
 });
 
@@ -166,16 +166,16 @@ test("an open visual pane keeps its title when switching chat and Visuals", asyn
 	await page.getByTestId("open-visuals").click();
 	await page.getByTestId("visuals-actions-vis_test_reward").locator("summary").click();
 	await page.getByTestId("visuals-actions-vis_test_reward").getByRole("menuitem", { name: "Open canvas" }).click();
-	await expect(page.getByTestId("visual-pane")).toBeVisible();
-	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
+	await expect(page.getByTestId("visual-pane")).toBeHidden();
+	await expect(page.getByTestId("visuals-preview")).toContainText("Reward breakdown");
 	await page.getByTestId("local-chat-pane-host-chat").click();
 	await expect(page.getByTestId("chat-transcript")).toBeVisible();
 	await expect(page.getByTestId("visual-pane")).toBeVisible();
 	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
 	await page.getByTestId("open-visuals").click();
 	await expect(page.getByTestId("visuals-page")).toBeVisible();
-	await expect(page.getByTestId("visual-pane")).toBeVisible();
-	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
+	await expect(page.getByTestId("visual-pane")).toBeHidden();
+	await expect(page.getByTestId("visuals-preview")).toContainText("Reward breakdown");
 });
 
 test("Visuals page directs visual creation through the agent", async ({ page }) => {
@@ -695,14 +695,14 @@ test("Visuals master-detail panes preserve the compact list and useful preview a
 
 		expect(geometry.noHorizontalOverflow, `${viewport.width}px should not overflow horizontally`).toBe(true);
 		if (geometry.split) {
-			expect(geometry.listWidth).toBeGreaterThanOrEqual(279);
+			expect(geometry.listWidth).toBeGreaterThanOrEqual(239);
 			expect(geometry.listWidth).toBeLessThanOrEqual(421);
-			expect(geometry.previewWidth).toBeGreaterThanOrEqual(519);
+			expect(geometry.previewWidth).toBeGreaterThanOrEqual(419);
 			expect(geometry.listOverflowY).toBe("auto");
 			expect(geometry.previewOverflowY).toBe("auto");
 			expect(geometry.boundariesOrdered).toBe(true);
 		} else {
-			expect(geometry.previewWidth).toBeGreaterThanOrEqual(519);
+			expect(geometry.previewWidth).toBeGreaterThanOrEqual(419);
 		}
 	}
 });
@@ -740,7 +740,7 @@ test("Trace V5 inspector provides focus, full, evidence, and expandable output v
 	await page.getByTestId("open-visuals").click();
 	await page.getByTestId("visuals-actions-tracevis_test").locator("summary").click();
 	await page.getByTestId("visuals-actions-tracevis_test").getByRole("menuitem", { name: "Open canvas" }).click();
-	const pane = page.getByTestId("visual-pane");
+	const pane = page.getByTestId("visuals-preview");
 	await expect(pane.getByTestId("visual-trace-rollout-inspector")).toBeVisible();
 	await expect(pane).toContainText("I’ll update the configuration.");
 	await expect(pane).not.toContainText("Model call 1");
@@ -804,7 +804,7 @@ test("Trace V5 inspector renders canonical Craftax rewards, usage, achievements,
 	await page.getByTestId("open-visuals").click();
 	await page.getByTestId("visuals-actions-tracevis_craftax").locator("summary").click();
 	await page.getByTestId("visuals-actions-tracevis_craftax").getByRole("menuitem", { name: "Open canvas" }).click();
-	const comparison = page.getByTestId("visual-pane").getByTestId("craftax-policy-comparison");
+	const comparison = page.getByTestId("visuals-preview").getByTestId("craftax-policy-comparison");
 	await expect(comparison).toBeVisible();
 	await expect(comparison).toContainText("4");
 	await expect(comparison).toContainText("23,227");
@@ -816,3 +816,27 @@ test("Trace V5 inspector renders canonical Craftax rewards, usage, achievements,
 		await page.screenshot({ path: process.env.SYNTH_CRAFTAX_SCREENSHOT, fullPage: true });
 	}
 });
+
+for (const width of [1092, 1440]) {
+	test(`Visuals keeps the list left and one scrollable preview right at ${width}px`, async ({ page }) => {
+		await page.setViewportSize({ width, height: 800 });
+		await installVisualsFixture(page, [{ ...sampleVisual, metadata: { presentation: "canvas" } }]);
+		await page.getByTestId("open-visuals").click();
+		const list = page.getByTestId("visuals-grid");
+		const preview = page.getByTestId("visuals-preview");
+		await expect(list).toBeVisible();
+		await expect(preview).toBeVisible();
+		const left = await list.boundingBox();
+		const right = await preview.boundingBox();
+		expect(left!.x + left!.width).toBeLessThan(right!.x);
+		expect(Math.abs(left!.y - right!.y)).toBeLessThan(2);
+		await preview.getByRole("button", { name: "Expand", exact: true }).click();
+		await expect(list).toBeHidden();
+		await expect(page.getByTestId("visual-pane")).toBeHidden();
+		const bounds = await preview.boundingBox();
+		expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(800);
+		expect(await preview.evaluate(el => getComputedStyle(el).overflowY)).toBe("auto");
+		await preview.getByRole("button", { name: "Show library", exact: true }).click();
+		await expect(list).toBeVisible();
+	});
+}

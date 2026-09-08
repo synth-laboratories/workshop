@@ -748,6 +748,18 @@ async fn dispatch_request(
     if method == "POST" && path == "/v1/capture" {
         return capture_surface(app, &json_body).await;
     }
+    if method == "POST" && path == "/v1/jesterky/settings" {
+        return Ok(serde_json::to_value(crate::plugins::jesterky::analysis_settings(None)?)?);
+    }
+    if method == "POST" && path == "/v1/jesterky/prepare" {
+        let object = json_body.as_object().context("Jesterky preparation must be an object")?;
+        for key in object.keys() { if !["snapshot_id","result_ids","annotation_scope","sessionRef","session_id"].contains(&key.as_str()) {anyhow::bail!("unknown Jesterky preparation argument {key}");} }
+        let id=json_body["snapshot_id"].as_str().context("snapshot_id required")?;
+        let ids:Vec<String>=serde_json::from_value(json_body["result_ids"].clone()).context("result_ids required")?;
+        let snapshot=core.data().query_snapshot(id.to_string()).await?;
+        let scope = json_body.get("annotation_scope").map(|value| serde_json::from_value(value.clone())).transpose()?;
+        return crate::plugins::jesterky::prepare(&snapshot,&ids,scope);
+    }
     if path.starts_with("/v1/plugins") {
         return dispatch_plugins(method, path, json_body, core, app).await;
     }
@@ -927,7 +939,9 @@ fn dispatch_display_plugins(
     body: Value,
     app: &AppHandle,
 ) -> Result<Value> {
-    const ALLOWED: [&str; 7] = [
+    const ALLOWED: [&str; 9] = [
+        "jesterky",
+        "environment-qa",
         "visuals",
         "reports",
         "experiments",
@@ -2406,6 +2420,10 @@ fn observed_task_family(
 }
 
 pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
+    // Native commands and loopback consumers share the same trace routes.
+    if path == "/v1/traces" || path.starts_with("/v1/traces/") {
+        return dispatch_traces(method, path, body, core).await;
+    }
     let registry = core.visuals();
     let reports = core.reports();
     match (method, path) {
@@ -5920,13 +5938,45 @@ async fn dispatch_traces(
                 "inspectability": inspectability.label(),
             }))
         }
+        ("POST", "/v1/traces/window") => {
+            core.data().trace_view_window(
+                body["trace_digest"].as_str().context("trace_digest required")?.to_owned(),
+                body.get("snapshot_digest").and_then(Value::as_str).map(str::to_owned),
+                body["offset"].as_u64().unwrap_or(0) as usize,
+                body["limit"].as_u64().unwrap_or(200) as usize,
+            ).await
+        }
         ("POST", "/v1/traces/query") => {
+            if body.pointer("/query/schemaVersion").and_then(Value::as_str) == Some(crate::trace_research::SCHEMA) {
+                let query = body.get("query").cloned().context("query required")?;
+                let limit = query.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize;
+                let snapshot = core.data().research_query(query).await?;
+                return crate::trace_research::page(&snapshot, 0, limit);
+            }
             let query = crate::trace_query::parse_query(body.get("query").unwrap_or(&Value::Null))?;
             let snapshot = core
                 .data()
                 .query_traces(query, chrono::Utc::now().to_rfc3339())
                 .await?;
             Ok(serde_json::to_value(snapshot)?)
+        }
+        ("POST", "/v1/traces/prepare_annotations") => {
+            let id=body["snapshot_id"].as_str().context("snapshot_id required")?;
+            let ids:Vec<String>=serde_json::from_value(body["result_ids"].clone()).context("result_ids required")?;
+            let snapshot=core.data().query_snapshot(id.to_string()).await?;
+            crate::trace_research::annotation_selection(&snapshot,&ids)
+        }
+        ("POST", "/v1/traces/source") => {
+            let snapshot=body["snapshot_id"].as_str().context("snapshot_id required")?.to_string();
+            let result=body["result_id"].as_str().context("result_id required")?.to_string();
+            core.data().research_source(snapshot,result,body.get("selector").cloned(),body["offset"].as_u64().unwrap_or(0) as usize,body["source_limit"].as_u64().unwrap_or(16000) as usize).await
+        }
+        ("POST", "/v1/traces/page") => {
+            let id = body.get("snapshot_id").and_then(Value::as_str).context("snapshot_id required")?;
+            let snapshot = core.data().query_snapshot(id.to_string()).await?;
+            let offset = body.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let limit = body.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize;
+            crate::trace_research::page(&snapshot, offset, limit)
         }
         ("POST", "/v1/traces/snapshot") => {
             let snapshot_id = body

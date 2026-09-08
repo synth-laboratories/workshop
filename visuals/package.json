@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Synth Desktop deep visuals — genre templates, registry, bindings, and MCP schemas",
+  "description": "Synth Desktop deep visuals \u2014 genre templates, registry, bindings, and MCP schemas",
   "exports": {
     ".": "./registry/index.ts",
     "./registry": "./registry/index.ts",
@@ -22,7 +22,8 @@
     "./components/candidate_inspector.v1": "./components/candidate_inspector.v1/CandidateInspector.tsx",
     "./families/*": "./families/*",
     "./mcp/tools.json": "./mcp/tools.json",
-    "./fixtures/*": "./fixtures/*"
+    "./fixtures/*": "./fixtures/*",
+    "./components/agent_trace.v1": "./components/agent_trace.v1/AgentTraceInspector.tsx"
   },
   "peerDependencies": {
     "react": "^18.0.0 || ^19.0.0",

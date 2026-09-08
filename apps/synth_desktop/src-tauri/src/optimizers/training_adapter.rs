@@ -315,6 +315,11 @@ fn training_vocabulary(kind: &str) -> &'static str {
 
 fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraft {
     let kind = fact.kind.as_str();
+    if algorithm == "cispo" && ["experiment.", "phase.", "checkpoint.", "budget.", "runtime.", "evaluation.observed", "evaluation.attempt_completed"].iter().any(|prefix| kind.starts_with(prefix)) {
+        return OptimizerEventDraft::new(format!("cispo.{kind}"), algorithm)
+            .delta(fact.payload.as_object().cloned().unwrap_or_default())
+            .item(fact.payload.clone());
+    }
     let payload = &fact.payload;
     match kind {
         "job.queued" => OptimizerEventDraft::new("optimizer.run.queued", algorithm)

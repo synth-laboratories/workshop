@@ -230,6 +230,7 @@ export const COMMANDS = {
 		OPTIMIZERS_SAVED_LORA_PATCH: "optimizers_saved_lora_patch",
 		OPTIMIZERS_SAVED_LORA_PUBLISH: "optimizers_saved_lora_publish",
 		OPTIMIZERS_TRAINING_RECONCILE: "optimizers_training_reconcile",
+		OPTIMIZERS_CONTAINER_EXPERIMENT_ACTION: "optimizers_container_experiment_action",
 	PLUGINS_STATUS: "plugins_status",
 	PLUGINS_LIST: "plugins_list",
 	COMPUTER_USE_STATUS: "computer_use_status",

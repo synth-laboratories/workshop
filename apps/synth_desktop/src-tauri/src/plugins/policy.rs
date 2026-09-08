@@ -129,7 +129,7 @@ pub fn plugin_kind(
         download_size_bytes: matches!(action, "install" | "update")
             .then_some(catalog.download_size_bytes),
         network_host: matches!(action, "install" | "update").then(|| catalog.network_host.clone()),
-        service_effect: service_effect.into(),
+        service_effect: if catalog.plugin_id == super::jesterky::ID { format!("{action} the optional Jesterky runtime; analysis runs on demand") } else { service_effect.into() },
         active_runs,
         retention: retention.into(),
         always_supported,

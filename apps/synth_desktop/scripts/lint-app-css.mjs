@@ -28,8 +28,8 @@ if (!diff.trim()) {
 
 const rules = [
 	{ key: "hexColors", name: "hex color", pattern: /#[0-9a-f]{3,8}\b/gi },
-	{ key: "bareFontSizes", name: "bare font-size", pattern: /\bfont-size\s*:\s*(?!var\()[^;}]+/gi },
-	{ key: "bareBorderRadii", name: "bare border-radius", pattern: /\bborder-radius\s*:\s*(?!var\()[^;}]+/gi }
+	{ key: "bareFontSizes", name: "bare font-size", pattern: /\bfont-size\s*:\s*(?!\s|var\()[^;}]+/gi },
+	{ key: "bareBorderRadii", name: "bare border-radius", pattern: /\bborder-radius\s*:\s*(?!\s|var\()[^;}]+/gi }
 ];
 const failures = [];
 

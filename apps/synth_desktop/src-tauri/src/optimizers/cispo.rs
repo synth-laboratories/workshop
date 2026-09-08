@@ -96,11 +96,30 @@ pub(crate) const BANKING77_LABEL_TAXONOMY: &[&str] = &[
 use std::collections::HashSet;
 
 pub fn recipe_catalog() -> Vec<Value> {
-    vec![
+    let mut recipes = vec![
         local_mlx_recipe(),
         hosted_cispo_recipe(HOSTED_BANKING77_CISPO_RECIPE, "Banking77 Tinker CISPO"),
         hosted_cispo_recipe(HOSTED_CISPO_RECIPE, "Hosted CISPO · Tinker"),
-    ]
+    ];
+    if std::env::var("SYNTH_OPTIMIZERS_RL_EXPERIMENT_PREVIEW").as_deref() == Ok("1") {
+        let available = super::sidecar_training::hosted_cispo_receipt_admits()
+            && super::cispo_client::CispoOptimizerClient::from_env().is_ok();
+        for benchmark in ["healthbench", "craftax"] {
+            recipes.push(json!({
+                "id": format!("cispo.{benchmark}.container.v1"),
+                "title": format!("{benchmark} · container CISPO preview"),
+                "algorithmId": "cispo", "provider": "tinker", "model": "openai/gpt-oss-20b",
+                "task": benchmark, "placement": PLACEMENT_TRAINING_CISPO_HOSTED,
+                "availability": if available { "available" } else { "unavailable" },
+                "availabilityReason": if available { Value::Null } else { json!("Requires the public CISPO service and paid CISPO validation receipt") },
+                "limits": {"costCeilingUsd": 35.0, "maxSteps": 50,
+                    "experimentSchema": "rl.experiment.v1", "releaseStage": "preview",
+                    "costNotice": "One cumulative $35 maximum across screening, training and grading. Requires a frozen experiment specification and configured budgeted containers."},
+                "credentialInputs": [], "prerequisites": ["budgeted benchmark endpoints", "frozen split digests", "environment or secrets-proxy credentials"]
+            }));
+        }
+    }
+    recipes
 }
 
 fn local_mlx_recipe() -> Value {
@@ -494,9 +513,39 @@ async fn start_hosted(
     super::cispo_client::CispoOptimizerClient::from_env()?;
     let recipe_id = request.recipe_id.clone();
     let suffix = uuid::Uuid::new_v4().simple().to_string();
-    let run_id = format!("cispo_hosted_{}", &suffix[..12]);
-    let config_json = hosted_cispo_config_json()?;
-    let create = training_create_request(
+    let experiment_recipe = matches!(recipe_id.as_str(), "cispo.healthbench.container.v1" | "cispo.craftax.container.v1");
+    let config_json = if experiment_recipe {
+        if std::env::var("SYNTH_OPTIMIZERS_RL_EXPERIMENT_PREVIEW").as_deref() != Ok("1") {
+            anyhow::bail!("container experiment preview is disabled");
+        }
+        let spec = request.plan_override.clone().ok_or_else(|| anyhow::anyhow!("frozen experiment specification is required"))?;
+        let benchmark = if recipe_id == "cispo.healthbench.container.v1" { "healthbench" } else { "craftax" };
+        if spec.get("benchmark").and_then(Value::as_str) != Some(benchmark) {
+            anyhow::bail!("experiment benchmark must match its recipe");
+        }
+        let cap = spec.pointer("/run/budget/cap_usd").and_then(Value::as_f64).unwrap_or(f64::NAN);
+        if spec.get("updates").and_then(Value::as_u64).unwrap_or(50) > 50
+            || spec.pointer("/run/model/id").and_then(Value::as_str) != Some("openai/gpt-oss-20b")
+            || spec.pointer("/run/model/provider").and_then(Value::as_str) != Some("tinker") {
+            anyhow::bail!("preview admission is limited to Tinker gpt-oss-20b and 50 updates");
+        }
+        if spec.get("schema_version").and_then(Value::as_str) != Some("rl.experiment.v1") || !cap.is_finite() || cap <= 0.0 || cap > 35.0 {
+            anyhow::bail!("preview requires rl.experiment.v1 and an aggregate cap at most $35");
+        }
+        let client = super::cispo_client::CispoOptimizerClient::from_env()?;
+        if client.capabilities().await?.get("container_experiments").and_then(Value::as_bool) != Some(true) {
+            anyhow::bail!("service does not advertise container experiments");
+        }
+        spec
+    } else { hosted_cispo_config_json()? };
+    let run_id = if experiment_recipe {
+        let id = config_json.get("experiment_id").and_then(Value::as_str).unwrap_or("");
+        if id.is_empty() || id.len() > 128 || !id.bytes().all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c)) {
+            anyhow::bail!("invalid experiment identity");
+        }
+        id.to_string()
+    } else { format!("cispo_hosted_{}", &suffix[..12]) };
+    let mut create = training_create_request(
         &run_id,
         "cispo",
         "cispo.tinker.v1",
@@ -506,6 +555,7 @@ async fn start_hosted(
         &request,
         json!({
             "recipeId": recipe_id,
+            "containerExperiment": experiment_recipe,
             "backend": "cispo.slime.v1",
             "implementation": "slime-reference",
             "implementationVersion": "cispo.slime.v1",
@@ -532,6 +582,12 @@ async fn start_hosted(
             }),
         }],
     );
+    if experiment_recipe {
+        if let Some(capabilities) = create.capabilities.as_mut() {
+            capabilities.pause = true;
+            capabilities.resume = true;
+        }
+    }
     super::sidecar_training::create_and_watch(
         service,
         request,
