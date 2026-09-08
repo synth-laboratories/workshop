@@ -265,7 +265,7 @@ fn resolved_training_plan(text: String, request: &OptimizerRecipeRunRequest, mod
     if !matches!(mode, "none" | "builtin" | "container" | "both") { bail!("unsupported SFT evaluation mode"); }
     let mut config: toml::Value = toml::from_str(&text)?;
     let table = config.as_table_mut().context("SFT config must be a table")?;
-    for key in ["container_url", "checkpoint_evaluation_policy", "checkpoint_evaluation_seeds", "checkpoint_evaluation_policy_harness", "checkpoint_evaluation_plan_ref", "checkpoint_evaluation_world_ref", "checkpoint_evaluation_timeout_s"] { table.remove(key); }
+    for key in ["training_file_id", "selection_file_id", "heldout_file_id", "container_url", "checkpoint_evaluation_policy", "checkpoint_evaluation_seeds", "checkpoint_evaluation_policy_harness", "checkpoint_evaluation_plan_ref", "checkpoint_evaluation_world_ref", "checkpoint_evaluation_timeout_s"] { table.remove(key); }
     if let Some(metadata) = table.get_mut("metadata").and_then(toml::Value::as_table_mut) {
         metadata.retain(|key, _| !key.starts_with("evaluation_"));
     }
