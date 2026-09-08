@@ -1,3 +1,4 @@
 # Staged runtime directories or local development symlinks.
 mlx-rl
 optimizers
+optimizers.invalid-*
