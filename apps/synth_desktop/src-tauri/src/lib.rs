@@ -1192,7 +1192,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let requesting_agent = session_id
-        .map(|value| format!("Agent session {value}"))
+        .map(|value| if value.starts_with("operator-training-") { "Workshop operator".into() } else { format!("Agent session {value}") })
         .unwrap_or_else(|| "Workshop operator".into());
     let algorithm_id = recipe.get("algorithmId").and_then(Value::as_str);
     let is_local_eval = algorithm_id == Some("eval");
@@ -1338,7 +1338,8 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     let paid = session::approval::ApprovalKind::PaidCompute {
         operation: "optimizer.recipe.start".into(),
         parameters: optimizer_recipe_approval_parameters(&recipe, &request.recipe_id, &limits),
-        estimated_cost_usd_micros: paid_cap.max_cost_usd_micros,
+        // A cap is not an expected provider charge.
+        estimated_cost_usd_micros: None,
         requested_cap: paid_cap.clone(),
         requesting_agent,
         recipe_id: Some(request.recipe_id.clone()),

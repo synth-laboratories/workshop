@@ -140,8 +140,8 @@ export function TrainingWorkspace({ onStartAgent, sessionRef, onEnsureApprovalSe
 
 		setRun({ id: "starting", status: "starting", algorithm }); setView("run");
 		try {
-            const approvalSession = sessionRef ?? await onEnsureApprovalSession?.();
-            if (!approvalSession) throw new Error("Training requires a conversation for its paid-compute approval");
+            const approvalSession = (await onEnsureApprovalSession?.()) ?? sessionRef;
+            if (!approvalSession) throw new Error("Training requires an approval context");
 			if (!bridges.optimizers) throw new Error("Local optimizer runtime is unavailable");
 			const recipeId = trainingRecipeId(algorithm, placement, recipes);
 			const selectedRecipe = recipes.find((recipe) => recipe.id === recipeId);

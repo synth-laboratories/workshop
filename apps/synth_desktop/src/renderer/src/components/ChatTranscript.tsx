@@ -471,7 +471,7 @@ function ActivityLine({
 	);
 }
 
-function PaidComputeApprovalModal({ line, onApprove, onReject }: {
+export function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 	line: LocalActivityLine;
 	onApprove?: (approvalId: string) => void;
 	onReject?: (approvalId: string) => void;

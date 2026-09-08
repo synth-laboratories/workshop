@@ -1,7 +1,7 @@
 {
   "schemaVersion": "workshop.capability-inventory.v1",
   "evidenceKind": "static_source_declarations",
-  "sourceDigest": "f1e3e570182f28666cfcaab5fc7bdbcc7df0a5bd656f4867d4e22cc29dde1a92",
+  "sourceDigest": "e10585f57f8bd29a0588294d22617bc3edd5981a8650f0939bf586f16cb77c34",
   "sourceFiles": {
     "apps/synth_desktop/src-tauri/src/adapters/mcp/operations/annotations.rs": "35f1ff52db5e088c368cad022c9eab92e1c6a095b826d67ea9473b4a948d0319",
     "apps/synth_desktop/src-tauri/src/adapters/mcp/operations/computer_use.rs": "4d6f83d7c636b40e2246f2f4af68a7fbc6b89d697203cdc91b613994d75240e7",
@@ -57,9 +57,9 @@
     "apps/synth_desktop/src-tauri/src/domains/visuals/mod.rs": "df23ca186f8caf293c5e4e6de1d74a9d7a4515b5a529c27d2afd2d6cd36dcbe9",
     "apps/synth_desktop/src-tauri/src/domains/visuals/operations.rs": "5add5b51f8d550050ddd4eb45fd2b7c89df0eecfd9d90413e848466b2eba6cb9",
     "apps/synth_desktop/src-tauri/src/eval_driver.rs": "582266e1350cdc2aee1b717defda36c418d3b0ebc6b97a88bc6c75eb7044be62",
-    "apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs": "684937bc3035d4cb6a7fbcc57abe4c6735f49915ffa11c641a18503eb6ea441c",
-    "apps/synth_desktop/src-tauri/src/optimizers/manager.rs": "92a2c41066602860e549c3dc772aeac6a7cd335b9b679def3a15d746c572f019",
-    "apps/synth_desktop/src-tauri/src/optimizers/sidecar_training.rs": "a53b62bdb57d7775b3fd6ef566a5876127dc492c094c6a87be6e06bb0560edd0",
+    "apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs": "eb45734397281b5abe1952eac8ff437c7f202926c2dd7b10835d057d40684bee",
+    "apps/synth_desktop/src-tauri/src/optimizers/manager.rs": "2af5baf6a6ab00a44d3ca17236d1fc4bfd5e344c3336820a64b3d1f830f731cc",
+    "apps/synth_desktop/src-tauri/src/optimizers/sidecar_training.rs": "a6b4085e1d82c0211d76c96592a2a194ade64d781d99490216ae18d7619a58a0",
     "apps/synth_desktop/src-tauri/src/platform/desktop_runtime.rs": "f97ef173c67a3f11b9c1fce94ccb9740555939a2f25fc2ca32cbde6bf345dfc3",
     "apps/synth_desktop/src-tauri/src/secrets/providers.rs": "a8d9154bcc62be7261682dbd9f54adca83e7485098c06e47b36017026712447a",
     "apps/synth_desktop/src-tauri/src/session/acp/commands.rs": "be4c63949d2b7da3890eef225f68395a0aac66b8ae60373a197cba1caa1e1efd",
@@ -67,14 +67,14 @@
     "apps/synth_desktop/src-tauri/src/session/acp/mod.rs": "bc98415acb15420a1777a1659253630bc4f4cba7d0f6ad61c9213bc6aa8c4080",
     "apps/synth_desktop/src-tauri/src/session/acp/transport.rs": "9f76abc24247445deb2cf71193918111c468fc9e62f1749f22353cb1fed921ed",
     "apps/synth_desktop/src-tauri/src/session/codex/home.rs": "c0344c6c0f52eac1be0ecf84ade8e6e945279a9432e9d9724f11e4b46bf1754a",
-    "apps/synth_desktop/src-tauri/src/visuals_ipc.rs": "87bcdedd424c3f2584e36b795a694b09112d43b8eba0ea84e4c3fcabe5173998",
+    "apps/synth_desktop/src-tauri/src/visuals_ipc.rs": "8fab4eec970e2fdeec30f694e87d4d7331dbd17016c0530aea1768c7b60de972",
     "apps/synth_desktop/src/renderer/src/components/AgentHostingPanel.tsx": "fb4bf89a12335db204865dcf8076eb2a5317668706581a5a42c71aea4679c6cd",
-    "apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx": "e01139edf443c8539480c07f0e7a29ed286c2f36163bf049dddfa3089d8be7c3",
+    "apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx": "2c572a61f1092d863186756ec7a0eaa7038da0d268b0cd36001832645d132f5c",
     "apps/synth_desktop/src/renderer/src/experiments/ExperimentsPage.tsx": "b5849b48acfd1ae05f86eb15ee917b071ea2198218dd86c0e997449e49a76e74",
     "apps/synth_desktop/src/renderer/src/experiments/NodeInspector.tsx": "d5afed4c95a386e1c7e2ff8feaa8c0c2a7ac7045b106cfbd4989762141abf895",
     "apps/synth_desktop/src/renderer/src/preferences/runtimeStorage.ts": "b4d827791a6d6984c01d2ff8b89e5f908f0de8eb80137376578437f7b528bb2e",
     "apps/synth_desktop/src/renderer/src/runtime/traceResearch.ts": "6a1f16986a3abb160d47f83bffc7d698c730a6cc453dc3a1a6bcccd52c2c1aef",
-    "package.json": "e5377339ccfbda4ceef9122f015eaf9702b9eda36d66cf1330f9aee0e84add81"
+    "package.json": "4019cb07b23018f6614878c86744cd493329b1d89a167ee7bed1d745f07ac984"
   },
   "counts": {
     "command_constant": 276,
@@ -82,7 +82,7 @@
     "hosted_tool_allowlist": 41,
     "literal_route_candidate": 173,
     "mcp_literal_candidate": 120,
-    "package_command": 23,
+    "package_command": 22,
     "renderer_call_candidate": 28,
     "tauri_registration": 341,
     "typed_mcp_declaration": 13
@@ -10088,12 +10088,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:GET /health:6636",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:GET /health:6721",
       "surface": "literal_route_candidate",
       "name": "GET /health",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs",
-        "line": 6636
+        "line": 6721
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10102,12 +10102,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:GET /info:6643",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:GET /info:6728",
       "surface": "literal_route_candidate",
       "name": "GET /info",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs",
-        "line": 6643
+        "line": 6728
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10116,12 +10116,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:POST /rollouts/prepare:6695",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:POST /rollouts/prepare:6780",
       "surface": "literal_route_candidate",
       "name": "POST /rollouts/prepare",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs",
-        "line": 6695
+        "line": 6780
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10130,12 +10130,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:POST /rollouts:6714",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:POST /rollouts:6799",
       "surface": "literal_route_candidate",
       "name": "POST /rollouts",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs",
-        "line": 6714
+        "line": 6799
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10144,12 +10144,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:POST /reward:6818",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:POST /reward:6903",
       "surface": "literal_route_candidate",
       "name": "POST /reward",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs",
-        "line": 6818
+        "line": 6903
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10158,12 +10158,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:GET /health:9055",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:GET /health:9140",
       "surface": "literal_route_candidate",
       "name": "GET /health",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs",
-        "line": 9055
+        "line": 9140
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10172,12 +10172,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:GET /info:9062",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:GET /info:9147",
       "surface": "literal_route_candidate",
       "name": "GET /info",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs",
-        "line": 9062
+        "line": 9147
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10186,12 +10186,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:POST /rollouts/prepare:9074",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:POST /rollouts/prepare:9159",
       "surface": "literal_route_candidate",
       "name": "POST /rollouts/prepare",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs",
-        "line": 9074
+        "line": 9159
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10200,12 +10200,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:POST /rollouts:9210",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:POST /rollouts:9295",
       "surface": "literal_route_candidate",
       "name": "POST /rollouts",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs",
-        "line": 9210
+        "line": 9295
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10214,12 +10214,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:POST /reward:9265",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs:POST /reward:9350",
       "surface": "literal_route_candidate",
       "name": "POST /reward",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/optimizers/container_eval.rs",
-        "line": 9265
+        "line": 9350
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10228,12 +10228,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/manager.rs:GET /health:3061",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/manager.rs:GET /health:3074",
       "surface": "literal_route_candidate",
       "name": "GET /health",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/optimizers/manager.rs",
-        "line": 3061
+        "line": 3074
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10242,12 +10242,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/manager.rs:GET /v1/optimizer/capabilities:3097",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/optimizers/manager.rs:GET /v1/optimizer/capabilities:3110",
       "surface": "literal_route_candidate",
       "name": "GET /v1/optimizer/capabilities",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/optimizers/manager.rs",
-        "line": 3097
+        "line": 3110
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10494,12 +10494,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /health:2441",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /health:2447",
       "surface": "literal_route_candidate",
       "name": "GET /health",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 2441
+        "line": 2447
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10508,12 +10508,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/reports:2442",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/reports:2448",
       "surface": "literal_route_candidate",
       "name": "GET /v1/reports",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 2442
+        "line": 2448
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10522,12 +10522,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/reports:2446",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/reports:2452",
       "surface": "literal_route_candidate",
       "name": "POST /v1/reports",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 2446
+        "line": 2452
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10536,12 +10536,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/report-seals:2455",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/report-seals:2461",
       "surface": "literal_route_candidate",
       "name": "GET /v1/report-seals",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 2455
+        "line": 2461
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10550,12 +10550,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/report-visibility-requests:2463",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/report-visibility-requests:2469",
       "surface": "literal_route_candidate",
       "name": "GET /v1/report-visibility-requests",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 2463
+        "line": 2469
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10564,12 +10564,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/containers:2574",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/containers:2580",
       "surface": "literal_route_candidate",
       "name": "GET /v1/containers",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 2574
+        "line": 2580
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10578,12 +10578,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/containers/ensure:2577",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/containers/ensure:2583",
       "surface": "literal_route_candidate",
       "name": "POST /v1/containers/ensure",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 2577
+        "line": 2583
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10592,12 +10592,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/containers:2632",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/containers:2638",
       "surface": "literal_route_candidate",
       "name": "POST /v1/containers",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 2632
+        "line": 2638
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10606,12 +10606,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/containers/resolve_declaration:2785",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/containers/resolve_declaration:2791",
       "surface": "literal_route_candidate",
       "name": "POST /v1/containers/resolve_declaration",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 2785
+        "line": 2791
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10620,12 +10620,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/visuals/templates:3312",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/visuals/templates:3318",
       "surface": "literal_route_candidate",
       "name": "GET /v1/visuals/templates",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3312
+        "line": 3318
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10634,12 +10634,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/visuals/templates/import:3323",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/visuals/templates/import:3329",
       "surface": "literal_route_candidate",
       "name": "POST /v1/visuals/templates/import",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3323
+        "line": 3329
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10648,12 +10648,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/visuals:3335",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/visuals:3341",
       "surface": "literal_route_candidate",
       "name": "GET /v1/visuals",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3335
+        "line": 3341
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10662,12 +10662,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/seals:3356",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/seals:3362",
       "surface": "literal_route_candidate",
       "name": "GET /v1/seals",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3356
+        "line": 3362
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10676,12 +10676,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/visuals:3756",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/visuals:3762",
       "surface": "literal_route_candidate",
       "name": "POST /v1/visuals",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3756
+        "line": 3762
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10690,12 +10690,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/optimizers/algorithms:3852",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/optimizers/algorithms:3858",
       "surface": "literal_route_candidate",
       "name": "GET /v1/optimizers/algorithms",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3852
+        "line": 3858
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10704,12 +10704,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/optimizers/recipes:3855",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/optimizers/recipes:3861",
       "surface": "literal_route_candidate",
       "name": "GET /v1/optimizers/recipes",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3855
+        "line": 3861
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10718,12 +10718,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/evaluations/spec/draft:3868",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/evaluations/spec/draft:3874",
       "surface": "literal_route_candidate",
       "name": "POST /v1/optimizers/evaluations/spec/draft",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3868
+        "line": 3874
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10732,12 +10732,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/evaluations/spec/validate:3869",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/evaluations/spec/validate:3875",
       "surface": "literal_route_candidate",
       "name": "POST /v1/optimizers/evaluations/spec/validate",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3869
+        "line": 3875
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10746,12 +10746,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/evaluations/spec/admit:3870",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/evaluations/spec/admit:3876",
       "surface": "literal_route_candidate",
       "name": "POST /v1/optimizers/evaluations/spec/admit",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3870
+        "line": 3876
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10760,12 +10760,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/evaluations/start:3884",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/evaluations/start:3890",
       "surface": "literal_route_candidate",
       "name": "POST /v1/optimizers/evaluations/start",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3884
+        "line": 3890
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10774,12 +10774,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/eval/candidates:3933",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/eval/candidates:3939",
       "surface": "literal_route_candidate",
       "name": "POST /v1/optimizers/eval/candidates",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3933
+        "line": 3939
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10788,37 +10788,9 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/mlx/inspect:3960",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/mlx/inspect:3966",
       "surface": "literal_route_candidate",
       "name": "GET /v1/mlx/inspect",
-      "source": {
-        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3960
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/training/mlx-runtime:3963",
-      "surface": "literal_route_candidate",
-      "name": "GET /v1/training/mlx-runtime",
-      "source": {
-        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3963
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/training/mlx-runtime/install:3966",
-      "surface": "literal_route_candidate",
-      "name": "POST /v1/training/mlx-runtime/install",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
         "line": 3966
@@ -10830,12 +10802,40 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/mlx/install-plan:3977",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/training/mlx-runtime:3969",
+      "surface": "literal_route_candidate",
+      "name": "GET /v1/training/mlx-runtime",
+      "source": {
+        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
+        "line": 3969
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/training/mlx-runtime/install:3972",
+      "surface": "literal_route_candidate",
+      "name": "POST /v1/training/mlx-runtime/install",
+      "source": {
+        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
+        "line": 3972
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/mlx/install-plan:3983",
       "surface": "literal_route_candidate",
       "name": "GET /v1/mlx/install-plan",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3977
+        "line": 3983
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10844,12 +10844,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/mlx/install:3981",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/mlx/install:3987",
       "surface": "literal_route_candidate",
       "name": "POST /v1/mlx/install",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3981
+        "line": 3987
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10858,12 +10858,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/training/plans:3989",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/training/plans:3995",
       "surface": "literal_route_candidate",
       "name": "POST /v1/training/plans",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3989
+        "line": 3995
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10872,12 +10872,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/training/artifacts:3996",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/training/artifacts:4002",
       "surface": "literal_route_candidate",
       "name": "GET /v1/training/artifacts",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 3996
+        "line": 4002
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10886,12 +10886,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/recipes/prepare:4061",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/recipes/prepare:4067",
       "surface": "literal_route_candidate",
       "name": "POST /v1/optimizers/recipes/prepare",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4061
+        "line": 4067
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10900,12 +10900,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/recipes/run:4069",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/recipes/run:4075",
       "surface": "literal_route_candidate",
       "name": "POST /v1/optimizers/recipes/run",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4069
+        "line": 4075
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10914,12 +10914,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/workflows/start:4078",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/workflows/start:4084",
       "surface": "literal_route_candidate",
       "name": "POST /v1/optimizers/workflows/start",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4078
+        "line": 4084
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10928,12 +10928,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/runs/start:4110",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/runs/start:4116",
       "surface": "literal_route_candidate",
       "name": "POST /v1/optimizers/runs/start",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4110
+        "line": 4116
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10942,23 +10942,9 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/optimizers/runs:4200",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/optimizers/runs:4206",
       "surface": "literal_route_candidate",
       "name": "GET /v1/optimizers/runs",
-      "source": {
-        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4200
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/runs:4206",
-      "surface": "literal_route_candidate",
-      "name": "POST /v1/optimizers/runs",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
         "line": 4206
@@ -10970,12 +10956,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/import_local:4385",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/runs:4212",
       "surface": "literal_route_candidate",
-      "name": "POST /v1/optimizers/import_local",
+      "name": "POST /v1/optimizers/runs",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4385
+        "line": 4212
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -10984,9 +10970,9 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/reconcile_cloud:4391",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/import_local:4391",
       "surface": "literal_route_candidate",
-      "name": "POST /v1/optimizers/reconcile_cloud",
+      "name": "POST /v1/optimizers/import_local",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
         "line": 4391
@@ -10998,9 +10984,9 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/optimizers/cloud/runs:4397",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/reconcile_cloud:4397",
       "surface": "literal_route_candidate",
-      "name": "GET /v1/optimizers/cloud/runs",
+      "name": "POST /v1/optimizers/reconcile_cloud",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
         "line": 4397
@@ -11012,12 +10998,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/optimizers/checkpoints:4410",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/optimizers/cloud/runs:4403",
       "surface": "literal_route_candidate",
-      "name": "GET /v1/optimizers/checkpoints",
+      "name": "GET /v1/optimizers/cloud/runs",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4410
+        "line": 4403
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11026,9 +11012,9 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/checkpoints/archive:4416",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/optimizers/checkpoints:4416",
       "surface": "literal_route_candidate",
-      "name": "POST /v1/optimizers/checkpoints/archive",
+      "name": "GET /v1/optimizers/checkpoints",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
         "line": 4416
@@ -11040,12 +11026,26 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/checkpoints/import:4427",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/checkpoints/archive:4422",
+      "surface": "literal_route_candidate",
+      "name": "POST /v1/optimizers/checkpoints/archive",
+      "source": {
+        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
+        "line": 4422
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/checkpoints/import:4433",
       "surface": "literal_route_candidate",
       "name": "POST /v1/optimizers/checkpoints/import",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4427
+        "line": 4433
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11054,12 +11054,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/checkpoints/infer:4435",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/checkpoints/infer:4441",
       "surface": "literal_route_candidate",
       "name": "POST /v1/optimizers/checkpoints/infer",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4435
+        "line": 4441
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11068,12 +11068,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/checkpoints/update:4439",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/checkpoints/update:4445",
       "surface": "literal_route_candidate",
       "name": "POST /v1/optimizers/checkpoints/update",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4439
+        "line": 4445
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11082,12 +11082,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/checkpoints/publish:4463",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/optimizers/checkpoints/publish:4469",
       "surface": "literal_route_candidate",
       "name": "POST /v1/optimizers/checkpoints/publish",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4463
+        "line": 4469
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11096,12 +11096,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/diagnostics/status:4500",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/diagnostics/status:4506",
       "surface": "literal_route_candidate",
       "name": "GET /v1/diagnostics/status",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4500
+        "line": 4506
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11110,12 +11110,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/diagnostics/status:4500",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/diagnostics/status:4506",
       "surface": "literal_route_candidate",
       "name": "POST /v1/diagnostics/status",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4500
+        "line": 4506
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11124,12 +11124,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/diagnostics/query:4503",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/diagnostics/query:4509",
       "surface": "literal_route_candidate",
       "name": "POST /v1/diagnostics/query",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4503
+        "line": 4509
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11138,12 +11138,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/diagnostics/tail:4508",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/diagnostics/tail:4514",
       "surface": "literal_route_candidate",
       "name": "POST /v1/diagnostics/tail",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4508
+        "line": 4514
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11152,12 +11152,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/diagnostics/explain:4513",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/diagnostics/explain:4519",
       "surface": "literal_route_candidate",
       "name": "POST /v1/diagnostics/explain",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4513
+        "line": 4519
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11166,12 +11166,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/diagnostics/bundle:4518",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/diagnostics/bundle:4524",
       "surface": "literal_route_candidate",
       "name": "POST /v1/diagnostics/bundle",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4518
+        "line": 4524
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11180,12 +11180,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/diagnostics/clear-index:4523",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/diagnostics/clear-index:4529",
       "surface": "literal_route_candidate",
       "name": "POST /v1/diagnostics/clear-index",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4523
+        "line": 4529
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11194,23 +11194,9 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/workspace_roots:4720",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/workspace_roots:4726",
       "surface": "literal_route_candidate",
       "name": "POST /v1/secrets/workspace_roots",
-      "source": {
-        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4720
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/bindings:4726",
-      "surface": "literal_route_candidate",
-      "name": "POST /v1/secrets/bindings",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
         "line": 4726
@@ -11222,12 +11208,26 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/secrets:4727",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/bindings:4732",
+      "surface": "literal_route_candidate",
+      "name": "POST /v1/secrets/bindings",
+      "source": {
+        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
+        "line": 4732
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/secrets:4733",
       "surface": "literal_route_candidate",
       "name": "GET /v1/secrets",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4727
+        "line": 4733
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11236,12 +11236,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets:4728",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets:4734",
       "surface": "literal_route_candidate",
       "name": "POST /v1/secrets",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4728
+        "line": 4734
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11250,12 +11250,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/list:4729",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/list:4735",
       "surface": "literal_route_candidate",
       "name": "POST /v1/secrets/list",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4729
+        "line": 4735
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11264,12 +11264,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/locators:4741",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/locators:4747",
       "surface": "literal_route_candidate",
       "name": "POST /v1/secrets/locators",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4741
+        "line": 4747
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11278,12 +11278,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/locator_request:4750",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/locator_request:4756",
       "surface": "literal_route_candidate",
       "name": "POST /v1/secrets/locator_request",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4750
+        "line": 4756
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11292,12 +11292,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/source_request:4827",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/source_request:4833",
       "surface": "literal_route_candidate",
       "name": "POST /v1/secrets/source_request",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4827
+        "line": 4833
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11306,12 +11306,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/locator_status:4953",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/locator_status:4959",
       "surface": "literal_route_candidate",
       "name": "POST /v1/secrets/locator_status",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4953
+        "line": 4959
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11320,12 +11320,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/source_status:4954",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/source_status:4960",
       "surface": "literal_route_candidate",
       "name": "POST /v1/secrets/source_status",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4954
+        "line": 4960
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11334,12 +11334,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/locator_remove:4964",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/locator_remove:4970",
       "surface": "literal_route_candidate",
       "name": "POST /v1/secrets/locator_remove",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4964
+        "line": 4970
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11348,12 +11348,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/source_remove:4976",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/source_remove:4982",
       "surface": "literal_route_candidate",
       "name": "POST /v1/secrets/source_remove",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4976
+        "line": 4982
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11362,12 +11362,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/use_revoke:4992",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/use_revoke:4998",
       "surface": "literal_route_candidate",
       "name": "POST /v1/secrets/use_revoke",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 4992
+        "line": 4998
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11376,12 +11376,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/import:5021",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/import:5027",
       "surface": "literal_route_candidate",
       "name": "POST /v1/secrets/import",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5021
+        "line": 5027
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11390,12 +11390,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/use:5028",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/secrets/use:5034",
       "surface": "literal_route_candidate",
       "name": "POST /v1/secrets/use",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5028
+        "line": 5034
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11404,12 +11404,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/experiments:5574",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/experiments:5580",
       "surface": "literal_route_candidate",
       "name": "POST /v1/experiments",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5574
+        "line": 5580
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11418,12 +11418,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/experiments/:5574",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/experiments/:5580",
       "surface": "literal_route_candidate",
       "name": "POST /v1/experiments/",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5574
+        "line": 5580
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11432,12 +11432,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/experiments:5641",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/experiments:5647",
       "surface": "literal_route_candidate",
       "name": "GET /v1/experiments",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5641
+        "line": 5647
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11446,12 +11446,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/experiments/:5641",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/experiments/:5647",
       "surface": "literal_route_candidate",
       "name": "GET /v1/experiments/",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5641
+        "line": 5647
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11460,12 +11460,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/research-log:5729",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/research-log:5735",
       "surface": "literal_route_candidate",
       "name": "GET /v1/research-log",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5729
+        "line": 5735
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11474,12 +11474,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/research-log/:5729",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/research-log/:5735",
       "surface": "literal_route_candidate",
       "name": "GET /v1/research-log/",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5729
+        "line": 5735
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11488,12 +11488,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/research-log:5738",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/research-log:5744",
       "surface": "literal_route_candidate",
       "name": "POST /v1/research-log",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5738
+        "line": 5744
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11502,12 +11502,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/research-log/:5738",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/research-log/:5744",
       "surface": "literal_route_candidate",
       "name": "POST /v1/research-log/",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5738
+        "line": 5744
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11516,12 +11516,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/analysis/projection:5754",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/analysis/projection:5760",
       "surface": "literal_route_candidate",
       "name": "POST /v1/analysis/projection",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5754
+        "line": 5760
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11530,12 +11530,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/analysis/open:5773",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/analysis/open:5779",
       "surface": "literal_route_candidate",
       "name": "POST /v1/analysis/open",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5773
+        "line": 5779
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11544,12 +11544,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/analysis/campaigns:5824",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/analysis/campaigns:5830",
       "surface": "literal_route_candidate",
       "name": "POST /v1/analysis/campaigns",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5824
+        "line": 5830
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11558,12 +11558,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/analysis/findings:5843",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/analysis/findings:5849",
       "surface": "literal_route_candidate",
       "name": "POST /v1/analysis/findings",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5843
+        "line": 5849
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11572,12 +11572,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/analysis/review:5860",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/analysis/review:5866",
       "surface": "literal_route_candidate",
       "name": "POST /v1/analysis/review",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5860
+        "line": 5866
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11586,12 +11586,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/traces:5929",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/traces:5935",
       "surface": "literal_route_candidate",
       "name": "GET /v1/traces",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5929
+        "line": 5935
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11600,12 +11600,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/traces/:5929",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/traces/:5935",
       "surface": "literal_route_candidate",
       "name": "GET /v1/traces/",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5929
+        "line": 5935
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11614,12 +11614,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/get:5951",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/get:5957",
       "surface": "literal_route_candidate",
       "name": "POST /v1/traces/get",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5951
+        "line": 5957
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11628,12 +11628,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/window:5960",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/window:5966",
       "surface": "literal_route_candidate",
       "name": "POST /v1/traces/window",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5960
+        "line": 5966
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11642,12 +11642,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/query:5968",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/query:5974",
       "surface": "literal_route_candidate",
       "name": "POST /v1/traces/query",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5968
+        "line": 5974
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11656,23 +11656,9 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/prepare_annotations:5982",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/prepare_annotations:5988",
       "surface": "literal_route_candidate",
       "name": "POST /v1/traces/prepare_annotations",
-      "source": {
-        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5982
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/source:5988",
-      "surface": "literal_route_candidate",
-      "name": "POST /v1/traces/source",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
         "line": 5988
@@ -11684,12 +11670,26 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/page:5993",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/source:5994",
+      "surface": "literal_route_candidate",
+      "name": "POST /v1/traces/source",
+      "source": {
+        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
+        "line": 5994
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/page:5999",
       "surface": "literal_route_candidate",
       "name": "POST /v1/traces/page",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 5993
+        "line": 5999
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11698,12 +11698,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/snapshot:6000",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/snapshot:6006",
       "surface": "literal_route_candidate",
       "name": "POST /v1/traces/snapshot",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 6000
+        "line": 6006
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11712,12 +11712,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/open_query:6009",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/open_query:6015",
       "surface": "literal_route_candidate",
       "name": "POST /v1/traces/open_query",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 6009
+        "line": 6015
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11726,12 +11726,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/import:6032",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/import:6038",
       "surface": "literal_route_candidate",
       "name": "POST /v1/traces/import",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 6032
+        "line": 6038
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11740,12 +11740,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/open:6049",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/traces/open:6055",
       "surface": "literal_route_candidate",
       "name": "POST /v1/traces/open",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 6049
+        "line": 6055
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11754,12 +11754,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/computer-use/status:6095",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/computer-use/status:6101",
       "surface": "literal_route_candidate",
       "name": "GET /v1/computer-use/status",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 6095
+        "line": 6101
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11768,12 +11768,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/computer-use/perform:6107",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/computer-use/perform:6113",
       "surface": "literal_route_candidate",
       "name": "POST /v1/computer-use/perform",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 6107
+        "line": 6113
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11782,12 +11782,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/computer-use/end:6129",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/computer-use/end:6135",
       "surface": "literal_route_candidate",
       "name": "POST /v1/computer-use/end",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 6129
+        "line": 6135
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11796,107 +11796,9 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/plugins:6322",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/plugins:6328",
       "surface": "literal_route_candidate",
       "name": "GET /v1/plugins",
-      "source": {
-        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 6322
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/plugins/:6322",
-      "surface": "literal_route_candidate",
-      "name": "GET /v1/plugins/",
-      "source": {
-        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 6322
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/plugins/optimizers:6323",
-      "surface": "literal_route_candidate",
-      "name": "GET /v1/plugins/optimizers",
-      "source": {
-        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 6323
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/plugins/optimizers/capabilities:6324",
-      "surface": "literal_route_candidate",
-      "name": "GET /v1/plugins/optimizers/capabilities",
-      "source": {
-        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 6324
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/optimizers/enable:6325",
-      "surface": "literal_route_candidate",
-      "name": "POST /v1/plugins/optimizers/enable",
-      "source": {
-        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 6325
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/optimizers/disable:6326",
-      "surface": "literal_route_candidate",
-      "name": "POST /v1/plugins/optimizers/disable",
-      "source": {
-        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 6326
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/optimizers/install:6327",
-      "surface": "literal_route_candidate",
-      "name": "POST /v1/plugins/optimizers/install",
-      "source": {
-        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 6327
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/optimizers/start:6328",
-      "surface": "literal_route_candidate",
-      "name": "POST /v1/plugins/optimizers/start",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
         "line": 6328
@@ -11908,9 +11810,23 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/optimizers/stop:6329",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/plugins/:6328",
       "surface": "literal_route_candidate",
-      "name": "POST /v1/plugins/optimizers/stop",
+      "name": "GET /v1/plugins/",
+      "source": {
+        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
+        "line": 6328
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/plugins/optimizers:6329",
+      "surface": "literal_route_candidate",
+      "name": "GET /v1/plugins/optimizers",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
         "line": 6329
@@ -11922,9 +11838,9 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/optimizers/update:6330",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /v1/plugins/optimizers/capabilities:6330",
       "surface": "literal_route_candidate",
-      "name": "POST /v1/plugins/optimizers/update",
+      "name": "GET /v1/plugins/optimizers/capabilities",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
         "line": 6330
@@ -11936,9 +11852,9 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/optimizers/remove:6331",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/optimizers/enable:6331",
       "surface": "literal_route_candidate",
-      "name": "POST /v1/plugins/optimizers/remove",
+      "name": "POST /v1/plugins/optimizers/enable",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
         "line": 6331
@@ -11950,9 +11866,9 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/manage:6332",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/optimizers/disable:6332",
       "surface": "literal_route_candidate",
-      "name": "POST /v1/plugins/manage",
+      "name": "POST /v1/plugins/optimizers/disable",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
         "line": 6332
@@ -11964,12 +11880,96 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /rollouts/prepare:7375",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/optimizers/install:6333",
+      "surface": "literal_route_candidate",
+      "name": "POST /v1/plugins/optimizers/install",
+      "source": {
+        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
+        "line": 6333
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/optimizers/start:6334",
+      "surface": "literal_route_candidate",
+      "name": "POST /v1/plugins/optimizers/start",
+      "source": {
+        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
+        "line": 6334
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/optimizers/stop:6335",
+      "surface": "literal_route_candidate",
+      "name": "POST /v1/plugins/optimizers/stop",
+      "source": {
+        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
+        "line": 6335
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/optimizers/update:6336",
+      "surface": "literal_route_candidate",
+      "name": "POST /v1/plugins/optimizers/update",
+      "source": {
+        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
+        "line": 6336
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/optimizers/remove:6337",
+      "surface": "literal_route_candidate",
+      "name": "POST /v1/plugins/optimizers/remove",
+      "source": {
+        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
+        "line": 6337
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /v1/plugins/manage:6338",
+      "surface": "literal_route_candidate",
+      "name": "POST /v1/plugins/manage",
+      "source": {
+        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
+        "line": 6338
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /rollouts/prepare:7400",
       "surface": "literal_route_candidate",
       "name": "POST /rollouts/prepare",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 7375
+        "line": 7400
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11978,12 +11978,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /rollouts/r1/events:7382",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /rollouts/r1/events:7407",
       "surface": "literal_route_candidate",
       "name": "GET /rollouts/r1/events",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 7382
+        "line": 7407
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -11992,37 +11992,9 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /rollouts:7392",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /rollouts:7417",
       "surface": "literal_route_candidate",
       "name": "POST /rollouts",
-      "source": {
-        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 7392
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /rollouts/r1/step:7412",
-      "surface": "literal_route_candidate",
-      "name": "POST /rollouts/r1/step",
-      "source": {
-        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 7412
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /rollouts/r1/event_log:7417",
-      "surface": "literal_route_candidate",
-      "name": "GET /rollouts/r1/event_log",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
         "line": 7417
@@ -12034,12 +12006,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /rollouts/prepare:7471",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /rollouts/r1/step:7437",
       "surface": "literal_route_candidate",
-      "name": "POST /rollouts/prepare",
+      "name": "POST /rollouts/r1/step",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 7471
+        "line": 7437
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -12048,12 +12020,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /rollouts/prepare:7509",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /rollouts/r1/event_log:7442",
       "surface": "literal_route_candidate",
-      "name": "POST /rollouts/prepare",
+      "name": "GET /rollouts/r1/event_log",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 7509
+        "line": 7442
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -12062,12 +12034,40 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /rollouts/r1/events:7516",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /rollouts/prepare:7496",
+      "surface": "literal_route_candidate",
+      "name": "POST /rollouts/prepare",
+      "source": {
+        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
+        "line": 7496
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /rollouts/prepare:7534",
+      "surface": "literal_route_candidate",
+      "name": "POST /rollouts/prepare",
+      "source": {
+        "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
+        "line": 7534
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:GET /rollouts/r1/events:7541",
       "surface": "literal_route_candidate",
       "name": "GET /rollouts/r1/events",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 7516
+        "line": 7541
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -12076,12 +12076,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /rollouts:7519",
+      "entryId": "literal_route_candidate:apps/synth_desktop/src-tauri/src/visuals_ipc.rs:POST /rollouts:7544",
       "surface": "literal_route_candidate",
       "name": "POST /rollouts",
       "source": {
         "path": "apps/synth_desktop/src-tauri/src/visuals_ipc.rs",
-        "line": 7519
+        "line": 7544
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -13995,9 +13995,9 @@
       "command": "./scripts/desktop-instance.sh clean"
     },
     {
-      "entryId": "package_command:package.json:desktop:instance:test:21",
+      "entryId": "package_command:package.json:desktop:check:21",
       "surface": "package_command",
-      "name": "desktop:instance:test",
+      "name": "desktop:check",
       "source": {
         "path": "package.json",
         "line": 21
@@ -14007,12 +14007,12 @@
       "domainOwner": null,
       "handlerVerified": false,
       "parityVerified": false,
-      "command": "./scripts/test-desktop-instance.sh"
+      "command": "./scripts/desktop.sh check"
     },
     {
-      "entryId": "package_command:package.json:desktop:check:22",
+      "entryId": "package_command:package.json:desktop:build:22",
       "surface": "package_command",
-      "name": "desktop:check",
+      "name": "desktop:build",
       "source": {
         "path": "package.json",
         "line": 22
@@ -14022,30 +14022,15 @@
       "domainOwner": null,
       "handlerVerified": false,
       "parityVerified": false,
-      "command": "./scripts/desktop.sh check"
-    },
-    {
-      "entryId": "package_command:package.json:desktop:build:23",
-      "surface": "package_command",
-      "name": "desktop:build",
-      "source": {
-        "path": "package.json",
-        "line": 23
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false,
       "command": "./scripts/desktop.sh build"
     },
     {
-      "entryId": "package_command:package.json:desktop:verify:27",
+      "entryId": "package_command:package.json:desktop:verify:26",
       "surface": "package_command",
       "name": "desktop:verify",
       "source": {
         "path": "package.json",
-        "line": 27
+        "line": 26
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14055,12 +14040,12 @@
       "command": "./scripts/desktop.sh verify"
     },
     {
-      "entryId": "package_command:package.json:desktop:verify:fast:28",
+      "entryId": "package_command:package.json:desktop:verify:fast:27",
       "surface": "package_command",
       "name": "desktop:verify:fast",
       "source": {
         "path": "package.json",
-        "line": 28
+        "line": 27
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14070,12 +14055,12 @@
       "command": "./scripts/desktop.sh check"
     },
     {
-      "entryId": "package_command:package.json:desktop:install:29",
+      "entryId": "package_command:package.json:desktop:install:28",
       "surface": "package_command",
       "name": "desktop:install",
       "source": {
         "path": "package.json",
-        "line": 29
+        "line": 28
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14085,12 +14070,12 @@
       "command": "./scripts/desktop.sh install"
     },
     {
-      "entryId": "package_command:package.json:desktop:install:release:30",
+      "entryId": "package_command:package.json:desktop:install:release:29",
       "surface": "package_command",
       "name": "desktop:install:release",
       "source": {
         "path": "package.json",
-        "line": 30
+        "line": 29
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14100,12 +14085,12 @@
       "command": "./scripts/desktop.sh install-release"
     },
     {
-      "entryId": "package_command:package.json:desktop:restart:31",
+      "entryId": "package_command:package.json:desktop:restart:30",
       "surface": "package_command",
       "name": "desktop:restart",
       "source": {
         "path": "package.json",
-        "line": 31
+        "line": 30
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14115,12 +14100,12 @@
       "command": "./scripts/desktop.sh restart"
     },
     {
-      "entryId": "package_command:package.json:desktop:stop:32",
+      "entryId": "package_command:package.json:desktop:stop:31",
       "surface": "package_command",
       "name": "desktop:stop",
       "source": {
         "path": "package.json",
-        "line": 32
+        "line": 31
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14130,12 +14115,12 @@
       "command": "./scripts/desktop.sh stop"
     },
     {
-      "entryId": "package_command:package.json:desktop:status:33",
+      "entryId": "package_command:package.json:desktop:status:32",
       "surface": "package_command",
       "name": "desktop:status",
       "source": {
         "path": "package.json",
-        "line": 33
+        "line": 32
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14145,12 +14130,12 @@
       "command": "./scripts/desktop.sh status"
     },
     {
-      "entryId": "package_command:package.json:desktop:ui-gates:34",
+      "entryId": "package_command:package.json:desktop:ui-gates:33",
       "surface": "package_command",
       "name": "desktop:ui-gates",
       "source": {
         "path": "package.json",
-        "line": 34
+        "line": 33
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14160,12 +14145,12 @@
       "command": "./scripts/desktop-ui-gates.sh"
     },
     {
-      "entryId": "package_command:package.json:desktop:ui-gates:bombadil:35",
+      "entryId": "package_command:package.json:desktop:ui-gates:bombadil:34",
       "surface": "package_command",
       "name": "desktop:ui-gates:bombadil",
       "source": {
         "path": "package.json",
-        "line": 35
+        "line": 34
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14175,12 +14160,12 @@
       "command": "./scripts/desktop-ui-gates.sh bombadil"
     },
     {
-      "entryId": "package_command:package.json:desktop:ui-gates:playwright:36",
+      "entryId": "package_command:package.json:desktop:ui-gates:playwright:35",
       "surface": "package_command",
       "name": "desktop:ui-gates:playwright",
       "source": {
         "path": "package.json",
-        "line": 36
+        "line": 35
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14190,12 +14175,12 @@
       "command": "./scripts/desktop-ui-gates.sh playwright"
     },
     {
-      "entryId": "package_command:package.json:desktop:v02-e2e:37",
+      "entryId": "package_command:package.json:desktop:v02-e2e:36",
       "surface": "package_command",
       "name": "desktop:v02-e2e",
       "source": {
         "path": "package.json",
-        "line": 37
+        "line": 36
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14205,12 +14190,12 @@
       "command": "./scripts/v02-e2e-gates.sh"
     },
     {
-      "entryId": "package_command:package.json:workshop:54",
+      "entryId": "package_command:package.json:workshop:53",
       "surface": "package_command",
       "name": "workshop",
       "source": {
         "path": "package.json",
-        "line": 54
+        "line": 53
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14220,12 +14205,12 @@
       "command": "cargo run --manifest-path apps/synth_desktop/src-tauri/Cargo.toml --bin workshop --"
     },
     {
-      "entryId": "package_command:package.json:mcp:visuals:55",
+      "entryId": "package_command:package.json:mcp:visuals:54",
       "surface": "package_command",
       "name": "mcp:visuals",
       "source": {
         "path": "package.json",
-        "line": 55
+        "line": 54
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14361,12 +14346,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "renderer_call_candidate:apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx:push:51",
+      "entryId": "renderer_call_candidate:apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx:push:54",
       "surface": "renderer_call_candidate",
       "name": "push",
       "source": {
         "path": "apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx",
-        "line": 51
+        "line": 54
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14375,26 +14360,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "renderer_call_candidate:apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx:push:53",
+      "entryId": "renderer_call_candidate:apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx:push:63",
       "surface": "renderer_call_candidate",
       "name": "push",
       "source": {
         "path": "apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx",
-        "line": 53
-      },
-      "classification": "unreviewed",
-      "operationId": null,
-      "domainOwner": null,
-      "handlerVerified": false,
-      "parityVerified": false
-    },
-    {
-      "entryId": "renderer_call_candidate:apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx:push:61",
-      "surface": "renderer_call_candidate",
-      "name": "push",
-      "source": {
-        "path": "apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx",
-        "line": 61
+        "line": 63
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14417,12 +14388,12 @@
       "parityVerified": false
     },
     {
-      "entryId": "renderer_call_candidate:apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx:push:77",
+      "entryId": "renderer_call_candidate:apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx:push:93",
       "surface": "renderer_call_candidate",
       "name": "push",
       "source": {
         "path": "apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx",
-        "line": 77
+        "line": 93
       },
       "classification": "unreviewed",
       "operationId": null,
@@ -14431,12 +14402,26 @@
       "parityVerified": false
     },
     {
-      "entryId": "renderer_call_candidate:apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx:join:79",
+      "entryId": "renderer_call_candidate:apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx:push:96",
+      "surface": "renderer_call_candidate",
+      "name": "push",
+      "source": {
+        "path": "apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx",
+        "line": 96
+      },
+      "classification": "unreviewed",
+      "operationId": null,
+      "domainOwner": null,
+      "handlerVerified": false,
+      "parityVerified": false
+    },
+    {
+      "entryId": "renderer_call_candidate:apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx:join:100",
       "surface": "renderer_call_candidate",
       "name": "join",
       "source": {
         "path": "apps/synth_desktop/src/renderer/src/components/MittenFrame.tsx",
-        "line": 79
+        "line": 100
       },
       "classification": "unreviewed",
       "operationId": null,
