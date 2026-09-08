@@ -480,9 +480,11 @@ pub(super) async fn start(
     if recipe.algorithm != workspace_recipe::AlgorithmKind::Eval {
         bail!("recipe `{}` is not an eval recipe", recipe.id);
     }
-    let spec = EvalSpec::from_workspace(&recipe, &workspace)?;
+    let mut spec = EvalSpec::from_workspace(&recipe, &workspace)?;
     let container =
         find_ready_container(service, &spec.family, request.container_id.as_deref()).await?;
+    let info = fresh_container_info(&container.base_url, "workspace eval identity").await?;
+    bind_workspace_container_identity(&mut spec, &info);
     // `start_eval` carries the state for the complete rollout/evidence
     // pipeline. In debug builds that future is large enough that embedding it
     // directly in each caller's state can overflow a Tokio worker before the
@@ -496,6 +498,20 @@ pub(super) async fn start(
         None,
     ))
     .await
+}
+
+// A workspace recipe selects the registered container. Its advertised world
+// and evaluator take precedence over legacy family-derived recipe defaults.
+fn bind_workspace_container_identity(spec: &mut EvalSpec, info: &Value) {
+    for (field, logical, target) in [
+        ("world_ref", "/logical_service_ids/world", &mut spec.world_ref),
+        ("evaluation_plan_ref", "/logical_service_ids/evaluator", &mut spec.evaluation_plan_ref),
+    ] {
+        if let Some(value) = info.pointer(logical).or_else(|| info.get(field))
+            .and_then(Value::as_str).filter(|value| !value.trim().is_empty()) {
+            *target = value.to_string();
+        }
+    }
 }
 
 /// The inline executor accepts only the final, approval-bound stage.
@@ -3009,6 +3025,9 @@ async fn register_policy_pin(
     if spec.harness == "nanohorizon" {
         return register_nanohorizon_policy_pin(client, base, spec, run_id).await;
     }
+    if spec.harness == "isolated_policy_process" && spec.policy_code.is_some() {
+        return register_source_policy_pin(client, base, spec).await;
+    }
     let pin = json!({ "harness": spec.harness, "config": spec.policy_config });
     let advertised = container_info
         .pointer("/capabilities/policy_refs")
@@ -3256,11 +3275,19 @@ async fn register_nanohorizon_policy_pin(
         bail!("container registered a different NanoHorizon policy config");
     }
 
+    register_source_policy_pin(client, base, spec).await
+}
+
+async fn register_source_policy_pin(
+    client: &reqwest::Client,
+    base: &str,
+    spec: &EvalSpec,
+) -> Result<Value> {
     let model_digest = expected_model_digest(spec)?;
     let mut state = read_container_policy(client, base).await?;
     if !installed_policy_matches(&state, spec, &model_digest) {
         let code = spec.policy_code.as_deref().context(
-            "policy_source_unavailable: NanoHorizon requires source bytes from the approved immutable revision",
+            "policy_source_unavailable: code policy requires source bytes from the approved immutable revision",
         )?;
         let response = client
             .put(format!("{base}/policy"))
@@ -4904,6 +4931,11 @@ async fn run_one_example(
     let mut prepare_body = json!({
         "rollout_id": rollout_id,
         "task_instance_id": task_instance_id,
+        "world_ref": spec.world_ref,
+        "evaluation_plan_ref": spec.evaluation_plan_ref,
+        "policy_ref": { "harness": spec.harness, "config": spec.policy_config },
+        "max_steps": spec.maximum_steps_per_rollout,
+        "max_calls": spec.maximum_model_calls_per_rollout,
         "model": spec.model,
         "reasoning_effort": spec.policy.get("reasoning_effort").or_else(|| spec.policy.get("effort")),
         "limits": {"maximumStepsPerRollout": spec.maximum_steps_per_rollout},
@@ -4911,6 +4943,9 @@ async fn run_one_example(
     });
     if prepare_body["reasoning_effort"].is_null() {
         prepare_body.as_object_mut().unwrap().remove("reasoning_effort");
+    }
+    if let Some(revision) = policy_revision_id {
+        prepare_body["policy_revision_id"] = json!(revision);
     }
     if let Some(revision) = annotation_protocol_revision_id {
         prepare_body
@@ -5968,6 +6003,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn workspace_eval_preserves_advertised_world_and_evaluator() {
+        let mut spec = EvalSpec::classify_fixture();
+        bind_workspace_container_identity(&mut spec, &json!({"logical_service_ids": {
+            "world": "world:craftax_default@symbolic_survival",
+            "evaluator": "eval:craftax.env_sum"
+        }}));
+        assert_eq!(spec.world_ref, "world:craftax_default@symbolic_survival");
+        assert_eq!(spec.evaluation_plan_ref, "eval:craftax.env_sum");
+    }
+
+    #[tokio::test]
+    async fn isolated_source_policy_registers_and_verifies_typed_identity() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.harness = "isolated_policy_process".into();
+        spec.provider = "none".into();
+        spec.model = "heuristic".into();
+        spec.policy_code = Some("def choose_actions(obs): return [0]".into());
+        let installed = json!({
+            "schema_version": "synth.container-policy.v1", "status": "installed",
+            "credential_state": "not_exposed",
+            "policy_ref": {"namespace": spec.harness, "name": spec.policy_config},
+            "policy_revision_id": "policy:test-revision",
+            "source_revision": spec.policy_source_revision,
+            "configuration_digest": spec.policy_configuration_digest,
+            "model_digest": expected_model_digest(&spec).unwrap()
+        });
+        let expected = json!({
+            "code": spec.policy_code, "harness": spec.harness,
+            "namespace": spec.harness, "name": spec.policy_config,
+            "configuration": spec.policy,
+            "model": {"provider": spec.provider, "model_id": spec.model},
+            "source_revision": spec.policy_source_revision
+        });
+        let writes = Arc::new(AtomicUsize::new(0));
+        let seen = writes.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            serve_json(listener, move |request: JsonHttpRequest| {
+                let installed = installed.clone();
+                let expected = expected.clone();
+                let seen = seen.clone();
+                async move {
+                    assert_eq!(request.path, "/policy");
+                    if request.method == "PUT" {
+                        assert_eq!(request.body, expected);
+                        seen.fetch_add(1, Ordering::SeqCst);
+                        JsonHttpResponse::ok(installed)
+                    } else if seen.load(Ordering::SeqCst) > 0 {
+                        JsonHttpResponse::ok(installed)
+                    } else {
+                        JsonHttpResponse::ok(json!({
+                            "schema_version": "synth.container-policy.v1",
+                            "status": "empty", "credential_state": "not_exposed"
+                        }))
+                    }
+                }
+            }).await
+        });
+        let client = reqwest::Client::new();
+        for _ in 0..2 {
+            let pin = register_policy_pin(&client, &base, &spec, &json!({}), "test").await.unwrap();
+            assert_eq!(pin["policyRevisionId"], "policy:test-revision");
+            assert_eq!(pin["immutable"], true);
+        }
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+        task.abort();
+    }
+
+    #[test]
     fn a_recipe_without_a_provider_requests_no_credential() {
         // `dataset_gold` and `scripted_react` run entirely inside the container
         // and issue no external model call. Asking the secrets proxy for a
@@ -6701,9 +6806,9 @@ mod tests {
     async fn spawn_eval_mock_opts(
         opts: MockEvalOptions,
     ) -> (String, tokio::task::JoinHandle<()>, Arc<AtomicUsize>) {
-        if opts.family == "healthbench" {
-            crate::secrets::install_test_live_openai();
-        }
+        // Every provider-backed mock needs its own explicit broker fixture;
+        // relying on a healthbench test to initialize it makes filtered runs fail.
+        crate::secrets::install_test_live_openai();
         let starts = Arc::new(AtomicUsize::new(0));
         let starts_h = starts.clone();
         let prepared = Arc::new(Mutex::new(BTreeMap::<String, bool>::new()));
@@ -7875,7 +7980,8 @@ max_total_rollouts = 4
     async fn a_finished_eval_returns_a_typed_eval_result() {
         let (svc, _dir, _) = service().await;
         let (run, task) = start_banking77(&svc, "sess_typed_result").await;
-        wait_terminal(&svc, &run.id).await;
+        let terminal = wait_terminal(&svc, &run.id).await;
+        assert_eq!(terminal.status, "completed", "summary={} error={:?}", terminal.summary, terminal.error);
         wait_manifest(&svc, &run.id).await;
         let result = svc.get_result(run.id.clone()).await.unwrap();
         assert_eq!(result["resultKind"], json!("eval_run_result.v1"));
@@ -8772,7 +8878,7 @@ max_total_rollouts = 4
     #[test]
     fn non_codex_workspace_eval_uses_chat_completions_capability() {
         let mut spec = EvalSpec::classify_fixture();
-        spec.harness = "harbor_fused".into();
+        spec.harness = "craftax_react".into();
 
         assert_eq!(
             container_proxy_operations(&spec),
@@ -9121,6 +9227,7 @@ max_total_rollouts = 4
     /// A Craftax-shaped container whose blocking rollout stays open while its
     /// journal becomes pollable page by page.
     async fn spawn_craftax_mock(opts: CraftaxMockOptions) -> CraftaxMock {
+        crate::secrets::install_test_live_openai();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let journals: Arc<Mutex<BTreeMap<String, (Vec<Value>, bool)>>> =
@@ -9156,6 +9263,13 @@ max_total_rollouts = 4
                                 }]
                             }
                         })),
+                        ("POST", "/policy-configs") => {
+                            let proxy = request.body.pointer("/config/base_url")
+                                .and_then(Value::as_str).unwrap_or("");
+                            assert!(proxy.contains("/cap/wcap_"), "mock policy must use a scoped proxy");
+                            assert!(request.body.pointer("/config/api_key").is_none());
+                            JsonHttpResponse::ok(json!({"config_id": request.body["config_id"]}))
+                        }
                         ("POST", "/rollouts/prepare") => {
                             let rollout_id = request.body.get("rollout_id").and_then(Value::as_str)
                                 .unwrap_or("roll_unknown").to_string();

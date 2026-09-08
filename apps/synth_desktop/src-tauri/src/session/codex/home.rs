@@ -784,6 +784,13 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         if existing.contains("[mcp_servers.workshop]") {
             let mut config: toml_edit::Document = existing.parse().context("parse generated Codex configuration")?;
             if let Some(servers) = config.get_mut("mcp_servers").and_then(toml_edit::Item::as_table_mut) {
+                if let Some(server) = servers.get_mut("workshop") {
+                    let owned = server.get("command").and_then(toml_edit::Item::as_str)
+                        .and_then(|command| Path::new(command).file_name()).and_then(|name| name.to_str()) == Some("workshop");
+                    if owned {
+                        server["env"]["SYNTH_SESSION_ID"] = toml_edit::value(&request.session_id);
+                    }
+                }
                 for (server, binary) in [
                     ("synth_plugins", "synth-plugins-mcp"), ("workshop_display", "synth-display-mcp"),
                     ("synth_containers", "synth-containers-mcp"), ("synth_visuals", "synth-visuals-mcp"),

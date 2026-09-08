@@ -1,6 +1,19 @@
 use super::*;
 use std::fs;
 
+#[test]
+fn native_caller_scope_survives_unified_bridge_without_borrowing_a_session() {
+    let tools = json!({"tools":[
+        {"name":"optimizer_list_recipes","inputSchema":{"properties":{"session_ref":{"type":"string"}}}},
+        {"name":"session_get","inputSchema":{"properties":{"session_id":{"type":"string"}}}}
+    ]});
+    assert_eq!(bind_native_caller_session(&tools, "optimizer_list_recipes", &json!({}), Some("native-chat")).unwrap(), json!({"session_ref":"native-chat"}));
+    assert!(bind_native_caller_session(&tools, "optimizer_list_recipes", &json!({"session_ref":"other-chat"}), Some("native-chat")).is_err());
+    assert_eq!(bind_native_caller_session(&tools, "optimizer_list_recipes", &json!({}), None).unwrap(), json!({}));
+    let target = json!({"session_id":"explicit-target"});
+    assert_eq!(bind_native_caller_session(&tools, "session_get", &target, Some("native-chat")).unwrap(), target);
+}
+
 fn temp() -> tempfile::TempDir {
     tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap()
 }
@@ -138,9 +151,7 @@ fn descriptor_cannot_redirect_credentials_off_machine_or_through_a_symlink() {
 
 #[test]
 fn descriptor_replacement_refreshes_retry_scope_without_exposing_credentials() {
-    let root =
-        tempfile::tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target"))
-            .unwrap();
+    let root = temp();
     let client = super::transport::RuntimeClient::new(root.path().to_path_buf()).unwrap();
     let arguments = serde_json::json!({"visual_id":"test"});
     let stopped = client.breaker_arguments(&arguments);

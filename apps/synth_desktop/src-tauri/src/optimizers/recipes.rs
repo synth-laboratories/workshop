@@ -29,7 +29,7 @@ pub(super) async fn start(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
-    start_inner(service, request, true).await
+    Box::pin(start_inner(service, request, true)).await
 }
 
 async fn start_inner(

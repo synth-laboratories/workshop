@@ -851,30 +851,33 @@ impl OptimizerService {
         &self,
         request: super::models::OptimizerRecipeRunRequest,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        // Keep algorithm-specific future state off the caller's worker stack.
+        // The unified HTTP -> approval -> recipe chain otherwise embeds the
+        // largest algorithm future at every dispatch layer in debug builds.
         match request.recipe_id.as_str() {
             super::sft_recipes::CRAFTAX_SFT_SMOKE_RECIPE => {
-                super::sft_recipes::start(self, request).await
+                Box::pin(super::sft_recipes::start(self, request)).await
             }
             super::hosted_gelo::HOSTED_GELO_CRAFTAX_RECIPE => {
-                super::hosted_gelo::start(self, request).await
+                Box::pin(super::hosted_gelo::start(self, request)).await
             }
             super::hosted_sft::HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE
             | super::hosted_sft::HOSTED_SFT_BANKING77_RECIPE => {
-                super::hosted_sft::start(self, request).await
+                Box::pin(super::hosted_sft::start(self, request)).await
             }
-            super::mlx_sft::QWEN_MLX_SFT_RECIPE => super::mlx_sft::start(self, request).await,
+            super::mlx_sft::QWEN_MLX_SFT_RECIPE => Box::pin(super::mlx_sft::start(self, request)).await,
             super::sidecar_training::LOCAL_MLX_CISPO_RECIPE
             | super::sidecar_training::HOSTED_CISPO_RECIPE
             | super::sidecar_training::HOSTED_BANKING77_CISPO_RECIPE => {
-                super::cispo::start(self, request).await
+                Box::pin(super::cispo::start(self, request)).await
             }
             id if super::sidecar_training::is_hosted_cispo_recipe(id) => {
-                super::cispo::start(self, request).await
+                Box::pin(super::cispo::start(self, request)).await
             }
             id if super::eval_recipes::is_eval_recipe(id) => {
-                super::eval_recipes::start(self, request).await
+                Box::pin(super::eval_recipes::start(self, request)).await
             }
-            _ => super::recipes::start(self, request).await,
+            _ => Box::pin(super::recipes::start(self, request)).await,
         }
     }
 
@@ -8448,6 +8451,18 @@ pub(in crate::optimizers) mod tests {
             dir,
             events_rx,
         )
+    }
+
+    #[tokio::test]
+    async fn recipe_dispatch_future_stays_bounded() {
+        let (service, _root, _) = service().await;
+        let request = serde_json::from_value(json!({
+            "recipeId": "missing.acceptance.recipe", "sessionRef": "test-session"
+        })).unwrap();
+        let future = service.start_recipe(request);
+        let bytes = std::mem::size_of_val(&future);
+        assert!(bytes <= 64 * 1024, "recipe dispatcher stores {bytes} bytes on its caller");
+        assert!(future.await.is_err());
     }
 
     #[tokio::test]

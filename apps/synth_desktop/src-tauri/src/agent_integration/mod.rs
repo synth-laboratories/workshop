@@ -174,6 +174,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         "mcp" => {
             let description = client.describe()?;
             let tools = json!({"tools": description["tools"]});
+            let caller_session = std::env::var("SYNTH_SESSION_ID").ok();
             crate::mcp_stdio::run_stdio_server_with_instructions(
                 crate::mcp_stdio::McpServerInfo {
                     name: "workshop",
@@ -181,8 +182,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 },
                 || tools.clone(),
                 |name, arguments| {
+                    let arguments = bind_native_caller_session(
+                        &tools, name, arguments, caller_session.as_deref(),
+                    ).map_err(|error| error.to_string())?;
                     client
-                        .call(name, arguments)
+                        .call(name, &arguments)
                         .map_err(|error| error.to_string())
                 },
                 |_, arguments| client.breaker_arguments(arguments),
@@ -192,6 +196,26 @@ pub fn run(args: Vec<String>) -> Result<()> {
         _ => unreachable!(),
     }
     Ok(())
+}
+
+/// Native private homes bind the caller; external instance-wide clients do not.
+/// Only the declared caller-reference field is filled, never a target session id.
+fn bind_native_caller_session(tools: &Value, name: &str, arguments: &Value, session: Option<&str>) -> Result<Value> {
+    let mut arguments = arguments.clone();
+    let Some(session) = session.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(arguments);
+    };
+    let caller_scoped = tools["tools"].as_array().into_iter().flatten()
+        .find(|tool| tool["name"] == name)
+        .and_then(|tool| tool.pointer("/inputSchema/properties/session_ref")).is_some();
+    if caller_scoped {
+        if let Some(supplied) = arguments.get("session_ref").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+            anyhow::ensure!(supplied == session, "session_ref does not match the native MCP caller session");
+        }
+        arguments.as_object_mut().context("tool arguments must be an object")?
+            .insert("session_ref".into(), json!(session));
+    }
+    Ok(arguments)
 }
 
 fn default_config_root(host: &str) -> PathBuf {
