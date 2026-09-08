@@ -4272,6 +4272,7 @@ async fn account_begin_sign_in(
     app: tauri::AppHandle,
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
 ) -> Result<device_auth::SignInBegin, AppError> {
+    let _operation = manager.operation.lock().await;
     let origin = device_auth::workshop_origin();
     let begin = manager.begin(&origin).await.map_err(AppError::from)?;
     use tauri_plugin_opener::OpenerExt;
@@ -4369,9 +4370,10 @@ async fn account_poll_sign_in(
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
 ) -> Result<device_auth::SignInPoll, AppError> {
+    let _operation = manager.operation.lock().await;
     let origin = device_auth::workshop_origin();
     let result = manager
-        .poll(&origin, |key| synth_config::store_api_key(key))
+        .poll(&origin, |key, independent| synth_config::store_paired_api_key(key, &origin, independent))
         .await
         .map_err(AppError::from)?;
     if matches!(result, device_auth::SignInPoll::Active) {
@@ -4394,9 +4396,10 @@ async fn account_poll_sign_in(
 
 #[tauri::command]
 #[specta::specta]
-fn account_cancel_sign_in(
+async fn account_cancel_sign_in(
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
 ) -> Result<(), AppError> {
+    let _operation = manager.operation.lock().await;
     manager.cancel();
     Ok(())
 }
@@ -4488,9 +4491,21 @@ async fn account_open_billing(
 #[tauri::command]
 #[specta::specta]
 async fn account_sign_out(
+    manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
     core: State<'_, Arc<CoreRuntime>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
 ) -> Result<BackendSettings, AppError> {
+    let _operation = manager.operation.lock().await;
+    let resolved = synth_config::resolve().map_err(AppError::from)?;
+    if let Some(key) = resolved.api_key.as_deref() {
+        if let Some(issuer) = synth_config::paired_key_issuer(key).map_err(AppError::from)? {
+            manager.revoke(&issuer, key).await.map_err(AppError::from)?;
+        }
+    }
+    if synth_config::resolve().map_err(AppError::from)?.api_key != resolved.api_key {
+        return Err(AppError::from(anyhow::anyhow!("account changed during sign-out; retry")));
+    }
+    manager.cancel();
     synth_config::remove_api_key().map_err(AppError::from)?;
     // Cloud facts belong to the signed-out session; local history and the
     // device ledger stay untouched. Optional analytics drop; the install id

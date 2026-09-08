@@ -500,6 +500,10 @@ pub fn update(request: BackendSettingsUpdate) -> Result<BackendSettings> {
 /// Persist a Synth API key obtained by device pairing or the write-only manual
 /// setup field into the configured 0600 env file, without returning the key.
 pub fn store_api_key(secret: &str) -> Result<()> {
+    store_api_key_with_receipt(secret, None)
+}
+
+fn store_api_key_with_receipt(secret: &str, receipt: Option<&str>) -> Result<()> {
     let secret = secret.trim();
     if secret.is_empty() {
         return Err(anyhow!("pairing returned an empty API key"));
@@ -516,7 +520,45 @@ pub fn store_api_key(secret: &str) -> Result<()> {
         .and_then(toml::Value::as_str)
         .unwrap_or(DEFAULT_API_KEY_ENV)
         .to_owned();
-    write_env_secret(&resolved.env_file, &api_key_env, secret)
+    write_env_values(
+        &resolved.env_file,
+        &[
+            (&api_key_env, Some(secret)),
+            (DEVICE_PAIR_RECEIPT_ENV, receipt),
+        ],
+    )
+}
+
+const DEVICE_PAIR_RECEIPT_ENV: &str = "SYNTH_DEVICE_PAIR_RECEIPT";
+
+/// Store provenance only for servers that explicitly issue independent device keys.
+pub fn store_paired_api_key(secret: &str, origin: &str, independent: bool) -> Result<()> {
+    let receipt = independent.then(|| {
+        serde_json::json!({
+            "issuer": origin,
+            "key_sha256": format!("{:x}", Sha256::digest(secret.trim().as_bytes())),
+        })
+        .to_string()
+    });
+    store_api_key_with_receipt(secret, receipt.as_deref())
+}
+
+/// A receipt must match the current credential; manual/legacy keys are local-only.
+pub fn paired_key_issuer(key: &str) -> Result<Option<String>> {
+    let resolved = resolve()?;
+    let Some(receipt) = read_env_value(&resolved.env_file, DEVICE_PAIR_RECEIPT_ENV) else {
+        return Ok(None);
+    };
+    receipt_issuer(&receipt, key)
+}
+
+fn receipt_issuer(receipt: &str, key: &str) -> Result<Option<String>> {
+    let receipt: serde_json::Value =
+        serde_json::from_str(&receipt).context("invalid device pairing receipt")?;
+    if receipt["key_sha256"].as_str() != Some(&format!("{:x}", Sha256::digest(key.as_bytes()))) {
+        return Ok(None);
+    }
+    Ok(receipt["issuer"].as_str().map(str::to_owned))
 }
 
 /// Removes the desktop-managed Synth API key from the private env file.
@@ -539,7 +581,8 @@ pub fn remove_api_key() -> Result<()> {
             "the API key comes from the process environment; remove {api_key_env} from the launching environment to sign out"
         ));
     }
-    remove_env_secret(&resolved.env_file, api_key_env)
+    remove_env_secret(&resolved.env_file, api_key_env)?;
+    remove_env_secret(&resolved.env_file, DEVICE_PAIR_RECEIPT_ENV)
 }
 
 pub fn openrouter_api_key() -> Result<Option<String>> {
@@ -1500,6 +1543,38 @@ fn read_env_value(path: &Path, key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+// Commit credential and provenance together so a failed write cannot orphan
+// a newly paired key or turn it into an untracked manual credential.
+fn write_env_values(path: &Path, values: &[(&str, Option<&str>)]) -> Result<()> {
+    let parent = path.parent().context("credential file has no parent")?;
+    fs::create_dir_all(parent)?;
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let mut lines: Vec<String> = contents
+        .lines()
+        .filter(|line| {
+            let line = line.trim().strip_prefix("export ").unwrap_or(line.trim());
+            !line
+                .split_once('=')
+                .is_some_and(|(key, _)| values.iter().any(|(name, _)| *name == key.trim()))
+        })
+        .map(str::to_owned)
+        .collect();
+    for (name, value) in values {
+        if let Some(value) = value {
+            lines.push(format!("{name}={value}"));
+        }
+    }
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    writeln!(temp, "{}", lines.join("\n"))?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
 fn write_env_secret(path: &Path, key: &str, secret: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -2293,5 +2368,52 @@ operations = { "rollouts.prepare" = false }
         );
         assert_eq!(parse_multi_agent_version("v1"), Some(MultiAgentVersion::V1));
         assert_eq!(parse_multi_agent_version("V2"), Some(MultiAgentVersion::V2));
+    }
+}
+
+#[cfg(test)]
+mod device_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn persisted_receipt_matches_only_the_paired_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.env");
+        let receipt = serde_json::json!({"issuer": "http://localhost:41216", "key_sha256": format!("{:x}", Sha256::digest(b"paired"))}).to_string();
+        write_env_values(
+            &path,
+            &[
+                ("SYNTH_API_KEY", Some("paired")),
+                (DEVICE_PAIR_RECEIPT_ENV, Some(&receipt)),
+            ],
+        )
+        .unwrap();
+        let reopened = read_env_value(&path, DEVICE_PAIR_RECEIPT_ENV).unwrap();
+        assert_eq!(
+            receipt_issuer(&reopened, "paired").unwrap().as_deref(),
+            Some("http://localhost:41216")
+        );
+        assert_eq!(receipt_issuer(&reopened, "manual").unwrap(), None);
+        write_env_values(
+            &path,
+            &[
+                ("SYNTH_API_KEY", Some("manual")),
+                (DEVICE_PAIR_RECEIPT_ENV, None),
+            ],
+        )
+        .unwrap();
+        assert!(read_env_value(&path, DEVICE_PAIR_RECEIPT_ENV).is_none());
+        assert_eq!(
+            read_env_value(&path, "SYNTH_API_KEY").as_deref(),
+            Some("manual")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 }

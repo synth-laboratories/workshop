@@ -15,6 +15,7 @@ crate-type = ["rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+tempfile = "3"
 anyhow = "1"
 base64 = "0.22"
 bytes = "1"
@@ -157,7 +158,6 @@ path = "src/bin/synth_secrets_mcp.rs"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
-tempfile = "3"
 
 # Local installs rebuild the whole app crate for any one-line change; release
 # incremental turns that ~35s codegen pass into a few seconds. Cargo applies

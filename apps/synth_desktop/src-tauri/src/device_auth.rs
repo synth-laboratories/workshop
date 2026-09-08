@@ -20,6 +20,7 @@ const LOCAL_WORKSHOP_URL: &str = "http://localhost:3000";
 
 #[derive(Clone)]
 struct PendingPair {
+    issuer: String,
     device_code: String,
     verification_uri: String,
     expires_at_epoch_s: u64,
@@ -54,9 +55,12 @@ struct InitResponse {
 #[derive(Deserialize)]
 struct TokenResponse {
     synth_api_key: String,
+    #[serde(default)]
+    key_scope: Option<String>,
 }
 
 pub struct DeviceAuthManager {
+    pub operation: tokio::sync::Mutex<()>,
     pending: Mutex<Option<PendingPair>>,
     http: reqwest::Client,
 }
@@ -92,6 +96,7 @@ pub fn workshop_origin() -> String {
 impl DeviceAuthManager {
     pub fn new() -> Self {
         Self {
+            operation: tokio::sync::Mutex::new(()),
             pending: Mutex::new(None),
             http: crate::http::http_client_builder()
                 // A redirect here means the pairing routes are auth-gated
@@ -107,7 +112,7 @@ impl DeviceAuthManager {
     /// is returned as-is so "Reopen browser" is just begin() again.
     pub async fn begin(&self, origin: &str) -> Result<SignInBegin> {
         if let Some(pending) = self.pending.lock().unwrap().clone() {
-            if pending.expires_at_epoch_s > now_epoch_s() + 10 {
+            if pending.issuer == origin && pending.expires_at_epoch_s > now_epoch_s() + 10 {
                 return Ok(SignInBegin {
                     verification_uri: pending.verification_uri,
                     expires_at_epoch_s: pending.expires_at_epoch_s,
@@ -139,6 +144,7 @@ impl DeviceAuthManager {
             format!("{origin}{}", init.verification_uri)
         };
         let pending = PendingPair {
+            issuer: origin.to_owned(),
             device_code: init.device_code,
             verification_uri: verification_uri.clone(),
             expires_at_epoch_s: now_epoch_s() + init.expires_in,
@@ -156,13 +162,18 @@ impl DeviceAuthManager {
     pub async fn poll(
         &self,
         origin: &str,
-        store: impl FnOnce(&str) -> Result<()>,
+        store: impl FnOnce(&str, bool) -> Result<()>,
     ) -> Result<SignInPoll> {
         let Some(pending) = self.pending.lock().unwrap().clone() else {
             return Ok(SignInPoll::Expired {
                 reason: "no sign-in in progress".into(),
             });
         };
+        if pending.issuer != origin {
+            return Err(anyhow!(
+                "Workshop server changed during pairing; cancel and start again"
+            ));
+        }
         if pending.expires_at_epoch_s <= now_epoch_s() {
             *self.pending.lock().unwrap() = None;
             return Ok(SignInPoll::Expired {
@@ -179,7 +190,10 @@ impl DeviceAuthManager {
         match response.status().as_u16() {
             200 => {
                 let token: TokenResponse = response.json().await.context("parse pairing result")?;
-                store(&token.synth_api_key)?;
+                store(
+                    &token.synth_api_key,
+                    token.key_scope.as_deref() == Some("device"),
+                )?;
                 *self.pending.lock().unwrap() = None;
                 Ok(SignInPoll::Active)
             }
@@ -198,6 +212,33 @@ impl DeviceAuthManager {
             }
             other => Err(anyhow!("sign-in service error ({other})")),
         }
+    }
+
+    /// Revoke at the recorded issuer; failures leave the local credential intact
+    /// so sign-out can be retried and never reports a false server-side success.
+    pub async fn revoke(&self, origin: &str, key: &str) -> Result<()> {
+        let url = reqwest::Url::parse(origin).context("invalid pairing issuer")?;
+        let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+        if url.scheme() != "https" && !(url.scheme() == "http" && local) {
+            return Err(anyhow!("pairing issuer requires HTTPS outside localhost"));
+        }
+        let response = self
+            .http
+            .post(format!(
+                "{}/api/auth/device/revoke",
+                origin.trim_end_matches('/')
+            ))
+            .bearer_auth(key)
+            .send()
+            .await
+            .context("could not revoke this device; retry sign-out when connected")?;
+        if response.status() != reqwest::StatusCode::NO_CONTENT {
+            return Err(anyhow!(
+                "device revocation failed ({}); retry sign-out",
+                response.status()
+            ));
+        }
+        Ok(())
     }
 
     pub fn cancel(&self) {
@@ -260,7 +301,7 @@ mod tests {
         let stored = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
         let s1 = stored.clone();
         let first = manager
-            .poll(&origin, move |k| {
+            .poll(&origin, move |k, _| {
                 s1.lock().unwrap().push(k.into());
                 Ok(())
             })
@@ -269,7 +310,7 @@ mod tests {
         assert_eq!(first, SignInPoll::Pending);
         let s2 = stored.clone();
         let second = manager
-            .poll(&origin, move |k| {
+            .poll(&origin, move |k, _| {
                 s2.lock().unwrap().push(k.into());
                 Ok(())
             })
@@ -281,9 +322,39 @@ mod tests {
         assert!(seen[1].contains("abc123") && seen[2].contains("abc123"));
         // pairing state is cleared after success
         assert!(matches!(
-            manager.poll(&origin, |_| Ok(())).await.unwrap(),
+            manager.poll(&origin, |_, _| Ok(())).await.unwrap(),
             SignInPoll::Expired { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn revoke_requires_confirmation_and_never_follows_redirects() {
+        for status in [204, 302, 500] {
+            let (origin, handle) = spawn_fake_workshop(vec![(status, String::new())]);
+            let manager = DeviceAuthManager::new();
+            assert_eq!(
+                manager.revoke(&origin, "device-test-key").await.is_ok(),
+                status == 204
+            );
+            let seen = handle.join().unwrap();
+            assert!(seen[0].starts_with("POST /api/auth/device/revoke "));
+            assert!(seen[0]
+                .to_lowercase()
+                .contains("authorization: bearer device-test-key"));
+        }
+        assert!(DeviceAuthManager::new()
+            .revoke("http://example.com", "never-send")
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn legacy_token_does_not_claim_device_ownership() {
+        let legacy: TokenResponse = serde_json::from_str(r#"{"synth_api_key":"legacy"}"#).unwrap();
+        assert!(legacy.key_scope.is_none());
+        let device: TokenResponse =
+            serde_json::from_str(r#"{"synth_api_key":"device","key_scope":"device"}"#).unwrap();
+        assert_eq!(device.key_scope.as_deref(), Some("device"));
     }
 
     #[tokio::test]
@@ -295,7 +366,7 @@ mod tests {
         ]);
         let manager = DeviceAuthManager::new();
         manager.begin(&origin).await.unwrap();
-        let result = manager.poll(&origin, |_| Ok(())).await.unwrap();
+        let result = manager.poll(&origin, |_, _| Ok(())).await.unwrap();
         assert!(matches!(result, SignInPoll::Expired { .. }));
         handle.join().unwrap();
     }

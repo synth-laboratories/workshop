@@ -3065,7 +3065,7 @@ fn operation_215(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
             let allowed: &[&str] = &[];
             anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
-            let result = crate::account_cancel_sign_in(app.try_state().context("runtime service is unavailable")?).map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            let result = crate::account_cancel_sign_in(app.try_state().context("runtime service is unavailable")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
             Ok(json!({"result": result}))
     })
 }
@@ -3076,7 +3076,7 @@ fn operation_216(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
             let allowed: &[&str] = &[];
             anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
-            let result = crate::account_sign_out(app.try_state().context("runtime service is unavailable")?, app.try_state().context("runtime service is unavailable")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            let result = crate::account_sign_out(app.try_state().context("runtime service is unavailable")?, app.try_state().context("runtime service is unavailable")?, app.try_state().context("runtime service is unavailable")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
             Ok(json!({"result": result}))
     })
 }
