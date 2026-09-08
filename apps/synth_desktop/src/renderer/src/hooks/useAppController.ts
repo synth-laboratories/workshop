@@ -639,7 +639,8 @@ export function useAppController() {
 		const onAccountChanged = (event: Event) => {
 			const configured = (event as CustomEvent<{ apiKeyConfigured?: boolean }>).detail?.apiKeyConfigured;
 			if (typeof configured === "boolean") setApiKeyConfigured(configured);
-			else void refreshHealth().catch(() => undefined);
+			// Connection details (including the credential fingerprint) must refresh too.
+			void refreshHealth().catch(() => undefined);
 			refreshAccountSummary();
 		};
 		window.addEventListener("synth:account-changed", onAccountChanged);

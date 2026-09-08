@@ -82,6 +82,7 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	// Two 4s poll ticks flip the stub to paired.
 	await expect(page.getByTestId("backend-settings")).toContainText("Authenticated", { timeout: 15_000 });
 	await expect(signIn.getByTestId("sign-in-status")).toContainText("Connected to Synth");
+	await expect(page.getByTestId("account-page-credential")).toContainText("sk…f1e2");
 	await page.getByRole("button", { name: /Back/ }).click();
 	await page.getByTestId("account-menu-trigger").click();
 	await expect(page.getByTestId("account-menu")).toContainText("Synth Dev");
@@ -107,6 +108,7 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	await signedInSettings.getByTestId("account-sign-out").click();
 	await expect(page.getByTestId("backend-settings")).toContainText("API key required");
 	await expect(signedInSettings.getByTestId("sign-in-status")).toContainText("creates your Synth account");
+	await expect(page.getByTestId("account-page-credential")).toHaveText("Not configured");
 });
 
 test("account acquires credentials through native browser pairing, never renderer input", async ({ page }) => {
