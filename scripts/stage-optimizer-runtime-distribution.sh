@@ -54,7 +54,14 @@ try:
         raise ValueError("missing or resized primary artifact")
     if hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
         raise ValueError("primary artifact digest mismatch")
-except (OSError, ValueError, json.JSONDecodeError, TypeError, AttributeError) as error:
+    for dependency in manifest["dependencyArtifacts"]:
+        name = dependency["fileName"]
+        if pathlib.Path(name).name != name:
+            raise ValueError("invalid dependency artifact name")
+        data = (root / "wheels" / name).read_bytes()
+        if len(data) != dependency["sizeBytes"] or hashlib.sha256(data).hexdigest() != dependency["sha256"]:
+            raise ValueError("dependency artifact digest mismatch")
+except (OSError, ValueError, json.JSONDecodeError, TypeError, AttributeError, KeyError) as error:
     print(f"[optimizers-runtime] existing distribution is not reusable: {error}", file=sys.stderr)
     raise SystemExit(1)
 PY
@@ -122,6 +129,25 @@ if [[ "$(dirname "$WHEEL")" != "$STAGING/wheels" ]]; then
   cp "$WHEEL" "$STAGING/wheels/"
 fi
 
+# Carry locally pinned wheel dependencies; pip cannot resolve unpublished
+# coordinated-release packages from the public index.
+python3 - "$PROJECT" "$STAGING/wheels" <<'PYDEPS'
+import hashlib, pathlib, shutil, sys, tomllib
+project, wheels = map(pathlib.Path, sys.argv[1:])
+lock = tomllib.loads((project / 'uv.lock').read_text())
+for package in lock['package']:
+    relative = package.get('source', {}).get('path', '')
+    if not relative.endswith('.whl'):
+        continue
+    path = (project / relative).resolve()
+    if not path.is_relative_to(project.resolve()):
+        raise SystemExit('dependency wheel must be vendored in the pinned project')
+    expected = package['wheels'][0]['hash']
+    if 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        raise SystemExit('vendored dependency does not match uv.lock')
+    shutil.copy2(path, wheels / path.name)
+PYDEPS
+
 python3 - "$STAGING" "$VERSION" "$SOURCE_REVISION" "$LOCK_SHA256" <<'PY'
 import hashlib
 import json
@@ -141,6 +167,10 @@ data = wheel.read_bytes()
     "version": version,
     "sourceRevision": source_revision,
     "lockSha256": lock_sha256,
+    "dependencyArtifacts": [
+        {"fileName": item.name, "sha256": hashlib.sha256(item.read_bytes()).hexdigest(), "sizeBytes": item.stat().st_size}
+        for item in sorted((root / "wheels").glob("*.whl")) if item != wheel
+    ],
     "artifact": {
         "fileName": wheel.name,
         "sha256": hashlib.sha256(data).hexdigest(),

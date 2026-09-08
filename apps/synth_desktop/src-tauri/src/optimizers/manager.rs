@@ -64,9 +64,9 @@ const MANIFEST_FILE: &str = "manifest.json";
 const WHEELHOUSE_MANIFEST_FILE: &str = "wheelhouse-manifest.json";
 const EMBEDDED_DISTRIBUTION_MANIFEST_FILE: &str = "manifest.json";
 const EMBEDDED_DISTRIBUTION_SCHEMA: &str = "synth.optimizer-runtime-distribution.v1";
-const OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "9de4740acadaba65e6e289c771cad559af569bf7";
+const OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "cfebb60b369b3017eea5f4422a26a720c54eafe0";
 const OPTIMIZER_DISTRIBUTION_LOCK_SHA256: &str =
-    "f1c84f754839f17480df64692d40553495b3f05d9c7bf86795014b22d0eabdcb";
+    "4f645abe4dfdb0ada0aef41406c25757a402c513108d988a8d3ad10d8184c92e";
 const RUNTIME_LEASE_FILE: &str = "runtime-lease.json";
 #[cfg(test)]
 const TEST_REAL_CHILD_SENTINEL: &str = ".test-real-child";
@@ -178,6 +178,7 @@ struct EmbeddedOptimizerDistribution {
     source_revision: String,
     lock_sha256: String,
     artifact: WheelArtifact,
+    dependency_artifacts: Vec<WheelArtifact>,
 }
 
 impl Default for OptimizerSidecarInstallSpec {
@@ -2725,6 +2726,8 @@ fn materialize_uv_runtime(
             "-d",
         ])
         .arg(&wheels)
+        .arg("--find-links")
+        .arg(package_source.parent().context("optimizer wheel directory")?)
         .arg(&package_source)
         .status()
         .context("download optimizer wheel")?;
@@ -2815,6 +2818,16 @@ fn read_embedded_optimizer_wheel(
         || distribution.lock_sha256 != OPTIMIZER_DISTRIBUTION_LOCK_SHA256
     {
         bail!("embedded Optimizers distribution does not match the release pin");
+    }
+    for dependency in &distribution.dependency_artifacts {
+        if dependency.file_name.contains('/') || dependency.file_name.contains('\\') {
+            bail!("embedded Optimizers dependency has an unsafe wheel name");
+        }
+        let bytes = fs::read(root.join("wheels").join(&dependency.file_name))
+            .context("read embedded Optimizers dependency")?;
+        if bytes.len() as u64 != dependency.size_bytes || sha256_hex(&bytes) != dependency.sha256 {
+            bail!("embedded Optimizers dependency failed digest verification");
+        }
     }
     let artifact = distribution.artifact;
     if artifact.file_name.contains('/') || artifact.file_name.contains('\\') {
@@ -3402,6 +3415,9 @@ mod tests {
         let bytes = b"verified bundled wheel";
         let wheel = wheels.join(&file_name);
         fs::write(&wheel, bytes).unwrap();
+        let dependency_name = "synth_containers-test.whl";
+        let dependency = wheels.join(dependency_name);
+        fs::write(&dependency, bytes).unwrap();
         let distribution = EmbeddedOptimizerDistribution {
             schema_version: EMBEDDED_DISTRIBUTION_SCHEMA.into(),
             package: "synth-optimizers".into(),
@@ -3413,6 +3429,11 @@ mod tests {
                 sha256: sha256_hex(bytes),
                 size_bytes: bytes.len() as u64,
             },
+            dependency_artifacts: vec![WheelArtifact {
+                file_name: dependency_name.into(),
+                sha256: sha256_hex(bytes),
+                size_bytes: bytes.len() as u64,
+            }],
         };
         fs::write(
             dir.path().join(EMBEDDED_DISTRIBUTION_MANIFEST_FILE),
@@ -3426,6 +3447,10 @@ mod tests {
             wheel
         );
 
+        fs::write(&dependency, b"tampered dependency wheel").unwrap();
+        assert!(read_embedded_optimizer_wheel(dir.path(), &catalog_spec(OFFICIAL_SIDECAR_VERSION))
+            .unwrap_err().to_string().contains("dependency failed digest"));
+        fs::write(&dependency, bytes).unwrap();
         fs::write(&wheel, b"tampered bundled wheel").unwrap();
         let error =
             read_embedded_optimizer_wheel(dir.path(), &catalog_spec(OFFICIAL_SIDECAR_VERSION))
