@@ -496,31 +496,82 @@ function providerLimitMessageFor(payload: Record<string, unknown>): string | und
 	const error = turn.error && typeof turn.error === "object"
 		? turn.error as Record<string, unknown>
 		: payload.error && typeof payload.error === "object" ? payload.error as Record<string, unknown> : undefined;
-	const code = typeof error?.codexErrorInfo === "string" ? error.codexErrorInfo.toLowerCase() : "";
+	const code = [error?.codexErrorInfo, error?.code, turn.code, payload.code]
+		.find((value): value is string => typeof value === "string")
+		?.toLowerCase() ?? "";
 	const rawMessage = typeof error?.message === "string" ? error.message.trim() : "";
 	const message = rawMessage.toLowerCase();
-	const provider = typeof payload.provider === "string" ? payload.provider.toLowerCase() : "";
-	if (code === "usagelimitexceeded" || message.includes("hit your usage limit")) {
+	const explicitProvider = [
+		error?.provider,
+		error?.providerId,
+		turn.provider,
+		turn.providerId,
+		payload.provider,
+		payload.providerId,
+		objectValue(payload.target)?.provider,
+		objectValue(payload.modelIdentity)?.provider,
+		objectValue(payload.credentialChain)?.provider
+	].find((value): value is string => typeof value === "string" && value.trim().length > 0);
+	let provider = explicitProvider?.trim().toLowerCase() ?? "";
+	if (!provider && (code.startsWith("codex_oauth_") || code === "usagelimitexceeded")) {
+		provider = "openai-codex-oauth";
+	} else if (!provider && message.includes("openrouter")) {
+		provider = "openrouter";
+	} else if (!provider && (message.includes("synth cloud") || message.includes("synth allowance"))) {
+		provider = "synth-cloud";
+	}
+	const providerPrefix = `Provider: ${providerLimitLabel(provider)}.`;
+	if (
+		code === "usagelimitexceeded" || code === "codex_oauth_usage_limit" ||
+		message.includes("hit your usage limit")
+	) {
 		const reset = /try again at\s+(.+?)(?:\.+)?$/i.exec(rawMessage)?.[1]?.trim();
 		return reset
-			? `Your ChatGPT usage limit has been reached. You are still signed in; use another model or try again at ${reset}.`
-			: "Your ChatGPT usage limit has been reached. You are still signed in; use another model or try again after your limit resets.";
+			? `${providerPrefix} Your usage limit has been reached. You are still signed in; use another model or try again at ${reset}.`
+			: `${providerPrefix} Your usage limit has been reached. You are still signed in; use another model or try again after your limit resets.`;
 	}
 	if (
 		provider === "openrouter" ||
 		message.includes("openrouter") ||
 		/(insufficient[_ ](?:credits|funds)|credit balance|no credits|payment required)/.test(message)
 	) {
-		return "Your OpenRouter credits are unavailable or exhausted. Add credits or choose another model, then retry.";
+		const prefix = `Provider: ${providerLimitLabel(provider || "openrouter")}.`;
+		return `${prefix} Credits are unavailable or exhausted. Add credits or choose another model, then retry.`;
 	}
 	if (
 		provider === "synth" || provider === "synth-cloud" ||
 		message.includes("synth cloud") || message.includes("synth allowance") ||
 		/(allowance (?:is )?(?:used up|exhausted)|billing (?:needs attention|limit))/.test(message)
 	) {
-		return "Your Synth Cloud allowance is unavailable. Manage billing or choose a local/API-key model, then retry.";
+		const prefix = `Provider: ${providerLimitLabel(provider || "synth-cloud")}.`;
+		return `${prefix} Your allowance is unavailable. Manage billing or choose a local/API-key model, then retry.`;
 	}
 	return undefined;
+}
+
+function providerLimitLabel(provider: string): string {
+	switch (provider.toLowerCase()) {
+		case "openai-codex-oauth":
+		case "chatgpt":
+		case "codex":
+			return "ChatGPT Codex";
+		case "openai":
+			return "OpenAI";
+		case "openrouter":
+			return "OpenRouter";
+		case "synth":
+		case "synth-cloud":
+			return "Synth Cloud";
+		case "google":
+		case "gemini":
+			return "Gemini";
+		case "":
+			return "Unknown";
+		default:
+			return provider
+				.replace(/[-_]+/g, " ")
+				.replace(/\b\w/g, (character) => character.toUpperCase());
+	}
 }
 
 export function eventsToActivity(

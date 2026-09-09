@@ -174,6 +174,38 @@ test("duplicate provider failures render once and hide raw provider payloads", (
 	assert.equal(system[0].body.includes("metadata"), false);
 });
 
+test("usage-limit failures always identify their provider", () => {
+	const cases = [
+		{
+			payload: { error: { codexErrorInfo: "usageLimitExceeded", message: "You hit your usage limit. Try again at 4:00 PM." } },
+			expected: "Provider: ChatGPT Codex. Your usage limit has been reached. You are still signed in; use another model or try again at 4:00 PM."
+		},
+		{
+			payload: { turn: { providerId: "openrouter", error: { codexErrorInfo: "usageLimitExceeded", message: "You hit your usage limit" } } },
+			expected: "Provider: OpenRouter. Your usage limit has been reached. You are still signed in; use another model or try again after your limit resets."
+		},
+		{
+			payload: { provider: "openrouter", error: { message: "insufficient credits" } },
+			expected: "Provider: OpenRouter. Credits are unavailable or exhausted. Add credits or choose another model, then retry."
+		},
+		{
+			payload: { modelIdentity: { provider: "synth-cloud" }, error: { message: "allowance exhausted" } },
+			expected: "Provider: Synth Cloud. Your allowance is unavailable. Manage billing or choose a local/API-key model, then retry."
+		},
+		{
+			payload: { error: { message: "payment required" } },
+			expected: "Provider: OpenRouter. Credits are unavailable or exhausted. Add credits or choose another model, then retry."
+		}
+	];
+
+	for (const [index, fixture] of cases.entries()) {
+		const messages = eventsToMessages([
+			event({ sequence: index + 1, eventKind: "run.failed", payload: fixture.payload })
+		]);
+		assert.equal(messages.at(-1)?.body, fixture.expected);
+	}
+});
+
 test("duplicate turn terminals after an assistant answer do not synthesize a false empty response", () => {
 	const messages = eventsToMessages([
 		event({ sequence: 1, eventKind: "run.started" }),
