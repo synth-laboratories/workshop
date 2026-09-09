@@ -265,10 +265,7 @@ mod tests {
 
     #[test]
     fn production_source_does_not_dial_mlx_loopback() {
-        let production = include_str!("mlx_sft.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
+        let production = &crate::optimizers::production_source(include_str!("mlx_sft.rs"));
         assert!(!production.contains(&["127.0.0.1:", "8787"].concat()));
         assert!(!production.contains("SYNTH_MLX_RL_URL"));
         assert!(production.contains("PLACEMENT_TRAINING_SFT_LOCAL"));

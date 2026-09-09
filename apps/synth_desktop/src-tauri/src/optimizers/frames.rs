@@ -63,6 +63,30 @@ pub struct OptimizerFrameContent {
     pub base64: String,
 }
 
+/// Where a retained frame's digest and seed live in a stored event.
+///
+/// `container_event` is the canonical spelling; `containerEvent` is the legacy
+/// one the reader still accepts, and the writer preserves whichever spelling
+/// the producer used. The read side listed only the legacy spelling under
+/// `delta`, so a canonically-spelled run retained its frames in
+/// `optimizer_run_media` and then served none of them: the bytes were admitted,
+/// catalogued, and permanently invisible to every frame query. Keep both
+/// spellings here, in one place, so the two sides cannot drift again.
+const FRAME_DIGEST_SQL: &str = "COALESCE(
+    json_extract(e.payload_json,'$.delta.container_event.payload.media.casDigest'),
+    json_extract(e.payload_json,'$.delta.containerEvent.payload.media.casDigest'),
+    json_extract(e.payload_json,'$.delta.container_event.frame.ref.contentDigest'),
+    json_extract(e.payload_json,'$.delta.containerEvent.frame.ref.contentDigest'),
+    json_extract(e.payload_json,'$.raw.container_event.frame.ref.contentDigest'),
+    json_extract(e.payload_json,'$.raw.containerEvent.frame.ref.contentDigest'))";
+
+const FRAME_SEED_SQL: &str = "CAST(COALESCE(
+    json_extract(e.payload_json,'$.delta.seed'),
+    json_extract(e.payload_json,'$.delta.container_event.seed'),
+    json_extract(e.payload_json,'$.delta.containerEvent.seed'),
+    json_extract(e.payload_json,'$.raw.container_event.seed'),
+    json_extract(e.payload_json,'$.raw.containerEvent.seed')) AS INTEGER)";
+
 fn container_event(event: &OptimizerEventEnvelope, raw: bool) -> Option<&Map<String, Value>> {
     if raw {
         let object = event.raw.as_object()?;
@@ -306,48 +330,36 @@ pub(super) fn latest(
     after_frame_sequence: u64,
 ) -> Result<OptimizerFrameDelta> {
     let (cursor, observed): (i64, i64) = conn.query_row(
-        "SELECT COALESCE(MAX(e.sequence_number), ?2), COUNT(*)
+        &format!("SELECT COALESCE(MAX(e.sequence_number), ?2), COUNT(*)
          FROM optimizer_events e
          JOIN optimizer_run_media m
            ON m.optimizer_run_id=e.optimizer_run_id
-          AND m.cas_digest=COALESCE(
-             json_extract(e.payload_json,'$.delta.container_event.payload.media.casDigest'),
-             json_extract(e.payload_json,'$.delta.containerEvent.frame.ref.contentDigest'),
-             json_extract(e.payload_json,'$.raw.container_event.frame.ref.contentDigest'))
+          AND m.cas_digest={FRAME_DIGEST_SQL}
          WHERE e.optimizer_run_id=?1 AND e.sequence_number>?2
-           AND m.media_type='image/png'",
+           AND m.media_type='image/png'"),
         params![optimizer_run_id, after_frame_sequence as i64],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let mut statement = conn.prepare(
-        "WITH ranked AS (
+        &format!("WITH ranked AS (
            SELECT e.optimizer_run_id,
-                  CAST(COALESCE(
-                    json_extract(e.payload_json,'$.delta.seed'),
-                    json_extract(e.payload_json,'$.delta.containerEvent.seed'),
-                    json_extract(e.payload_json,'$.raw.container_event.seed')) AS INTEGER) AS seed,
+                  {FRAME_SEED_SQL} AS seed,
                   e.sequence_number AS frame_sequence,e.event_id,
                   m.cas_digest AS content_digest,m.media_type AS content_type,
                   m.byte_size AS size_bytes,e.occurred_at,
                   ROW_NUMBER() OVER (
-                    PARTITION BY CAST(COALESCE(
-                      json_extract(e.payload_json,'$.delta.seed'),
-                      json_extract(e.payload_json,'$.delta.containerEvent.seed'),
-                      json_extract(e.payload_json,'$.raw.container_event.seed')) AS INTEGER)
+                    PARTITION BY {FRAME_SEED_SQL}
                     ORDER BY e.sequence_number DESC) AS rank
            FROM optimizer_events e
            JOIN optimizer_run_media m
              ON m.optimizer_run_id=e.optimizer_run_id
-            AND m.cas_digest=COALESCE(
-               json_extract(e.payload_json,'$.delta.container_event.payload.media.casDigest'),
-               json_extract(e.payload_json,'$.delta.containerEvent.frame.ref.contentDigest'),
-               json_extract(e.payload_json,'$.raw.container_event.frame.ref.contentDigest'))
+            AND m.cas_digest={FRAME_DIGEST_SQL}
            WHERE e.optimizer_run_id=?1 AND e.sequence_number>?2
              AND m.media_type='image/png'
          )
          SELECT optimizer_run_id,seed,frame_sequence,event_id,content_digest,
                 content_type,size_bytes,occurred_at
-         FROM ranked WHERE rank=1 ORDER BY frame_sequence ASC",
+         FROM ranked WHERE rank=1 ORDER BY frame_sequence ASC"),
     )?;
     let rows = statement.query_map(
         params![optimizer_run_id, after_frame_sequence as i64],
@@ -376,26 +388,17 @@ pub(super) fn list(
         .unwrap_or(i64::MAX as u64)
         .min(i64::MAX as u64) as i64;
     let mut statement = conn.prepare(
-        "SELECT e.optimizer_run_id,
-                CAST(COALESCE(
-                  json_extract(e.payload_json,'$.delta.seed'),
-                  json_extract(e.payload_json,'$.delta.containerEvent.seed'),
-                  json_extract(e.payload_json,'$.raw.container_event.seed')) AS INTEGER) AS seed,
+        &format!("SELECT e.optimizer_run_id,
+                {FRAME_SEED_SQL} AS seed,
                 e.sequence_number,e.event_id,m.cas_digest,m.media_type,m.byte_size,e.occurred_at
          FROM optimizer_events e
          JOIN optimizer_run_media m
            ON m.optimizer_run_id=e.optimizer_run_id
-          AND m.cas_digest=COALESCE(
-             json_extract(e.payload_json,'$.delta.container_event.payload.media.casDigest'),
-             json_extract(e.payload_json,'$.delta.containerEvent.frame.ref.contentDigest'),
-             json_extract(e.payload_json,'$.raw.container_event.frame.ref.contentDigest'))
+          AND m.cas_digest={FRAME_DIGEST_SQL}
          WHERE e.optimizer_run_id=?1
-           AND CAST(COALESCE(
-             json_extract(e.payload_json,'$.delta.seed'),
-             json_extract(e.payload_json,'$.delta.containerEvent.seed'),
-             json_extract(e.payload_json,'$.raw.container_event.seed')) AS INTEGER)=?2
+           AND {FRAME_SEED_SQL}=?2
            AND e.sequence_number<?3 AND m.media_type='image/png'
-         ORDER BY e.sequence_number DESC LIMIT ?4",
+         ORDER BY e.sequence_number DESC LIMIT ?4"),
     )?;
     let rows = statement.query_map(
         params![optimizer_run_id, seed, before, limit.clamp(1, 500)],
@@ -413,26 +416,17 @@ pub(super) fn content(
 ) -> Result<OptimizerFrameContent> {
     let (frame, kind): (OptimizerFrameRef, String) = conn
         .query_row(
-            "SELECT e.optimizer_run_id,
-                    CAST(COALESCE(
-                      json_extract(e.payload_json,'$.delta.seed'),
-                      json_extract(e.payload_json,'$.delta.containerEvent.seed'),
-                      json_extract(e.payload_json,'$.raw.container_event.seed')) AS INTEGER) AS seed,
+            &format!("SELECT e.optimizer_run_id,
+                    {FRAME_SEED_SQL} AS seed,
                     e.sequence_number,e.event_id,m.cas_digest,m.media_type,m.byte_size,e.occurred_at,
                     m.kind
              FROM optimizer_events e
              JOIN optimizer_run_media m
                ON m.optimizer_run_id=e.optimizer_run_id
-              AND m.cas_digest=COALESCE(
-                 json_extract(e.payload_json,'$.delta.container_event.payload.media.casDigest'),
-                 json_extract(e.payload_json,'$.delta.containerEvent.frame.ref.contentDigest'),
-                 json_extract(e.payload_json,'$.raw.container_event.frame.ref.contentDigest'))
+              AND m.cas_digest={FRAME_DIGEST_SQL}
              WHERE e.optimizer_run_id=?1
-               AND CAST(COALESCE(
-                 json_extract(e.payload_json,'$.delta.seed'),
-                 json_extract(e.payload_json,'$.delta.containerEvent.seed'),
-                 json_extract(e.payload_json,'$.raw.container_event.seed')) AS INTEGER)=?2
-               AND e.sequence_number=?3 AND m.media_type='image/png'",
+               AND {FRAME_SEED_SQL}=?2
+               AND e.sequence_number=?3 AND m.media_type='image/png'"),
             params![optimizer_run_id, seed, frame_sequence as i64],
             |row| Ok((frame_ref_from_row(row)?, row.get(8)?)),
         )
@@ -542,6 +536,62 @@ mod tests {
             )?;
             assert_eq!(retired_rows, 0, "the retired frame catalog must stay unwritten");
             assert_eq!(authoritative_rows, 3);
+            Ok(())
+        }).unwrap();
+    }
+
+    /// Every other test here spells the container event `containerEvent`, which
+    /// is the legacy spelling. A producer using the canonical `container_event`
+    /// had its frames admitted and catalogued and then served none of them,
+    /// because only the read side still insisted on the legacy spelling.
+    #[test]
+    fn canonically_spelled_frames_are_served_not_just_retained() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let store = ContentStore::new(storage.content_root());
+        storage.database().with_conn(|conn| {
+            insert_run(conn, "run-canonical")?;
+            for (sequence, marker) in [(1u64, 7u8), (2, 8)] {
+                let body = [b"\x89PNG\r\n\x1a\n".as_slice(), &[marker]].concat();
+                let mut event = OptimizerEventEnvelope {
+                    schema_version: "optimizer_event.v1".into(),
+                    event_id: Some(format!("canonical-{sequence}")),
+                    event_type: "eval.trial.event".into(),
+                    sequence_number: sequence,
+                    occurred_at: format!("2026-09-09T00:00:0{sequence}Z"),
+                    optimizer_run_id: "run-canonical".into(),
+                    algorithm_id: "eval".into(),
+                    level: None,
+                    item: None,
+                    // Canonical spelling, and no `raw` fallback to rescue it.
+                    delta: json!({"container_event":{"seed":404,"frame":{"data_url":data_url(&body)}}})
+                        .as_object().unwrap().clone(),
+                    snapshot: None,
+                    usage_delta: None,
+                    artifact_refs: vec![],
+                    error: None,
+                    raw: json!({}),
+                };
+                persist_event_frame(conn, &store, &mut event)?;
+                insert_frame_event(conn, &event)?;
+            }
+            let retained: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM optimizer_run_media WHERE optimizer_run_id='run-canonical'",
+                [], |row| row.get(0),
+            )?;
+            assert_eq!(retained, 2, "both frames are retained");
+
+            let delta = latest(conn, "run-canonical", 0)?;
+            assert_eq!(delta.observed_frames, 2, "retained frames must also be observable");
+            assert_eq!(
+                delta.frames.iter().map(|frame| (frame.seed, frame.frame_sequence)).collect::<Vec<_>>(),
+                vec![(404, 2)],
+                "the seed must resolve from the canonical spelling, and coalesce to its latest",
+            );
+            let history = list(conn, "run-canonical", 404, None, 10)?;
+            assert_eq!(history.iter().map(|frame| frame.frame_sequence).collect::<Vec<_>>(), vec![2, 1]);
+            let loaded = content(conn, &store, "run-canonical", 404, 1)?;
+            assert!(STANDARD.decode(loaded.base64).unwrap().starts_with(b"\x89PNG"));
             Ok(())
         }).unwrap();
     }

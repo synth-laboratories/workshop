@@ -32,6 +32,7 @@ function discoverTemplates(directory = familiesDir, found = new Map()) {
 const EXPECTED_IDS = [
   "analysis.annotation_workbench.v1",
   "analysis.chart.v1",
+  "analysis.swarm_trajectories.v1",
   "analysis.visual.v1",
   "annotation.overlay.v1",
   "blank.canvas.v1",
@@ -183,7 +184,7 @@ test("visuals package exposes the registered templates", () => {
   assert.equal(mermaid.rendererKind, "mermaid");
   assert.equal(declaredInputs(mermaid).length, 0);
   assert.ok(!existsSync(join(mermaidPath, "shell.tsx")));
-  assert.ok(!existsSync(join(mermaidPath, "examples")));
+  assert.ok(existsSync(join(mermaidPath, "examples", "fixture_binding.json")));
   for (const [id, rendererKind] of [
     ["diagram.systems.v1", "systems"],
     ["diagram.systems.dynamic.v1", "systems-dynamic"],

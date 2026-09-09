@@ -1,3 +1,4 @@
+import { openOptimizer } from "./v02-helpers";
 /**
  * A10-style responsive visual gate: real rendered DOM measurements and
  * screenshots at 1440 / 1024 / 768 / 390, driven by the REAL Banking77 GEPA
@@ -203,7 +204,7 @@ test.describe("GEPA workspace on the real Sol run", () => {
 		);
 		await page.reload();
 		await page.getByTestId("titlebar").waitFor();
-		await page.getByRole("button", { name: "Optimizers" }).click();
+		await openOptimizer(page);
 		await page.getByTestId(`optimizer-run-${SOL_ID}`).click();
 		await page.getByTestId("open-optimizer-visual").click();
 		await expect(page.getByTestId("gepa-workspace")).toBeVisible();
@@ -339,9 +340,9 @@ test.describe("Craftax semantic viewer", () => {
 		await page.reload();
 		await page.getByTestId("titlebar").waitFor();
 		await page.getByTestId("open-visuals").click();
-		await page.getByTestId("visuals-card-vis_craftax_gate").getByRole("button", { name: "Open" }).click();
+		await page.getByTestId("visuals-card-vis_craftax_gate").click();
 		// The template also renders in the gallery preview; measure the pane instance.
-		const viewer = page.getByTestId("visual-pane").getByTestId("visual-live-craftax");
+		const viewer = page.getByTestId("visuals-preview").getByTestId("visual-live-craftax");
 		await expect(viewer).toBeVisible();
 		// Fixture replay is interval-based; assert the terminal contract rather
 		// than an older copy label that no longer names the transport state.
@@ -394,7 +395,7 @@ test.describe("Craftax semantic viewer", () => {
 		await expect(selectedAchievementTimeline.locator(".cv-selected-achievement-marker")).toHaveCount(1);
 		await expect(selectedAchievementTimeline).toContainText("🪵");
 		await expect(selectedAchievementTimeline).toContainText("collect wood");
-		await page.getByTestId("toggle-visual-expand").click();
+		await page.getByRole("button", {name: "Expand", exact: true}).click();
 		await captureViewportSweep(page, "craftax");
 		await aggregateTimeline.screenshot({ path: join(SHOT_DIR, "craftax-aggregate-timeline-wide.png") });
 	});

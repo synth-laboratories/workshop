@@ -748,6 +748,11 @@ async fn dispatch_request(
     if method == "POST" && path == "/v1/review-window/capture" {
         return capture_review_window(app, &json_body).await;
     }
+    if method=="POST" && path.starts_with("/v1/visuals/") && path.ends_with("/engine") && json_body["operation"]=="capture.pixels" {
+        let id=path.trim_start_matches("/v1/visuals/").trim_end_matches("/engine");
+        if id.is_empty()||id.contains('/'){anyhow::bail!("invalid capture visual id");}
+        return capture_visual_session(app,id,&json_body).await;
+    }
     if method == "POST" && path == "/v1/capture" {
         return capture_surface(app, &json_body).await;
     }
@@ -1550,6 +1555,85 @@ fn parse_renderer_json(raw: &str) -> Option<Value> {
     serde_json::from_str::<Value>(trimmed).ok()
 }
 
+#[cfg(target_os = "macos")]
+async fn begin_visual_pixel_barrier(app:&AppHandle,id:&str)->Result<Value>{
+    let literal=serde_json::to_string(id)?;
+    let mounted_deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(8);
+    let revision=loop {
+        let raw=eval_string(app,&format!("(()=>{{const n=Array.from(document.querySelectorAll('[data-visual-session-id]')).find(n=>n.dataset.visualSessionId==={literal}&&n.dataset.visualSessionReady==='true');return n?JSON.stringify({{revision:Number(n.dataset.visualSessionRevision)}}):'';}})()"),std::time::Duration::from_secs(2)).await?;
+        if let Some(revision)=parse_renderer_json(&raw).and_then(|v|v["revision"].as_i64()){break revision;}
+        if tokio::time::Instant::now()>=mounted_deadline{anyhow::bail!("coherent capture requires a mounted, compatible visual session");}
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    let core=app.state::<Arc<CoreRuntime>>();
+    let frozen=core.visuals().engine().request(id.to_string(),json!({"operation":"capture.freeze","revision":revision})).await?;
+    let version=frozen["checkpoint"]["state"]["stateVersion"].as_i64().context("capture checkpoint missing version")?;
+    let result=async {
+        eval_string(app,&format!("(()=>{{if(!window.__synthVisualCapture)throw new Error('visual capture adapter unavailable');window.__synthVisualCapture.begin({literal},{revision},{version});return 'started';}})()"),std::time::Duration::from_secs(2)).await?;
+        let deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(8);
+        loop {
+            let stamp=read_visual_pixel_barrier(app).await?;
+            if let Some(error)=stamp["error"].as_str(){anyhow::bail!("{error}");}
+            if stamp["ready"]==true && stamp["mutations"]==0{return Ok(());}
+            if tokio::time::Instant::now()>=deadline{anyhow::bail!("visual pixel barrier did not settle (ready={}, mutations={})",stamp["ready"],stamp["mutations"]);}
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }.await;
+    if let Err(error)=result {
+        let _=core.visuals().engine().request(id.to_string(),json!({"operation":"capture.release","revision":revision,"token":frozen["token"]})).await;
+        let _=eval_string(app,"window.__synthVisualCapture?.release(); ''",std::time::Duration::from_secs(1)).await;
+        return Err(error);
+    }
+    Ok(json!({"visualId":id,"revision":revision,"token":frozen["token"],"checkpoint":frozen["checkpoint"]}))
+}
+
+#[cfg(target_os = "macos")]
+async fn read_visual_pixel_barrier(app:&AppHandle)->Result<Value>{
+    let raw=eval_string(app,"JSON.stringify(window.__synthVisualCapture?.read() ?? null)",std::time::Duration::from_secs(2)).await?;
+    parse_renderer_json(&raw).filter(|v|v.is_object()).context("visual pixel barrier unavailable")
+}
+
+#[cfg(target_os = "macos")]
+async fn end_visual_pixel_barrier(app:&AppHandle,barrier:&Value)->Result<Value>{
+    let stamp=async {
+        eval_string(app,"window.__synthVisualCapture?.verify(); ''",std::time::Duration::from_secs(2)).await?;
+        let deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(4);
+        loop {
+            let stamp=read_visual_pixel_barrier(app).await?;
+            if stamp.get("error").is_some() || stamp["verified"]==true { return Ok::<Value,anyhow::Error>(stamp); }
+            if tokio::time::Instant::now()>=deadline { anyhow::bail!("capture renderer verification timed out"); }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }.await;
+    let core=app.state::<Arc<CoreRuntime>>();
+    let released=core.visuals().engine().request(barrier["visualId"].as_str().context("capture visual identity")?.to_string(),
+        json!({"operation":"capture.release","revision":barrier["revision"],"token":barrier["token"]})).await;
+    let resumed=eval_string(app,"window.__synthVisualCapture?.release(); ''",std::time::Duration::from_secs(2)).await;
+    released?;resumed?;
+    let stamp=stamp?;
+    if stamp["ready"]!=true || stamp["verified"]!=true || stamp["mutations"]!=0 || stamp.get("error").is_some(){
+        anyhow::bail!("visual evidence or rendered presentation changed during pixel capture: {stamp}");
+    }
+    Ok(json!({"schemaVersion":"synth.visual-pixel-cut.v1","checkpoint":barrier["checkpoint"],"paint":stamp}))
+}
+
+/// Human toolbar and MCP use this same bounded pixel-capture workflow.
+pub(crate) async fn capture_visual_session(app:&AppHandle,id:&str,request:&Value)->Result<Value>{
+    let directory=crate::instance::data_root().join("visual-pixel-captures");
+    fs::create_dir_all(&directory)?;
+    let path=directory.join(format!("{}.png",uuid::Uuid::new_v4()));
+    let mut receipt=capture_surface(app,&json!({"scope":"visual","target":id,
+        "width":request["width"].as_u64().unwrap_or(1280),"height":request["height"].as_u64().unwrap_or(900),
+        "revision":request["revision"],"outputPath":path.to_string_lossy()})).await?;
+    let core=app.state::<Arc<CoreRuntime>>();
+    let checkpoint=&receipt["pixelCut"]["checkpoint"];
+    let saved=core.visuals().engine().request(id.to_string(),json!({"operation":"checkpoint.import",
+        "revision":checkpoint["state"]["revision"],"checkpoint":checkpoint})).await?;
+    receipt["pixelCut"]["checkpoint"]=saved["checkpoint"].clone();
+    fs::write(path.with_extension("json"),serde_json::to_vec_pretty(&receipt)?)?;
+    Ok(receipt)
+}
+
 /// The caller names the file; this side refuses to write outside its own data
 /// root. Both ends are canonicalized so `..` segments cannot slip past the
 /// prefix check.
@@ -1660,6 +1744,18 @@ pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Val
         }
     });
     let mut cropped_to = None;
+    let mut visual_barrier=None;
+    let snapshot=match (&scope,snapshot){
+        (CaptureScope::Visual(id),Ok(()))=>match begin_visual_pixel_barrier(app,id).await{
+            Ok(barrier)=>{
+                let revision_matches=body["revision"].is_null() || body["revision"]==barrier["revision"];
+                visual_barrier=Some(barrier);
+                if revision_matches{Ok(())}else{Err(anyhow::anyhow!("requested visual revision differs from mounted capture revision"))}
+            },
+            Err(error)=>Err(error),
+        },
+        (_,result)=>result,
+    };
     let snapshot = match snapshot {
         Ok(()) => match app.get_webview_window("main") {
             Some(window) => {
@@ -1703,6 +1799,14 @@ pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Val
         Ok(_) => harvest_capture_evidence(app).await,
         Err(_) => (Value::Null, Value::Null),
     };
+
+    let mut pixel_cut=Value::Null;
+    let snapshot=if let Some(barrier)=visual_barrier{
+        match end_visual_pixel_barrier(app,&barrier).await{
+            Ok(cut)=>{pixel_cut=cut;snapshot},
+            Err(error)=>Err(error),
+        }
+    }else{snapshot};
 
     let restore = restore_capture_geometry(app, &geometry, viewport.is_some());
     let capture_mode_restore = leave_capture_mode(app);
@@ -1766,6 +1870,7 @@ pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Val
                 },
                 "appState": app_state,
                 "audit": audit,
+                "pixelCut": pixel_cut,
                 "width": width,
                 "height": height,
                 "previous": {"width": geometry.previous.0, "height": geometry.previous.1},
@@ -3369,6 +3474,37 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }
             Ok(json!({"bundle": registry.get_seal(digest.to_string()).await?}))
         }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/engine") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/engine").trim_end_matches('/');
+            if matches!(body["operation"].as_str(),Some("attach"|"publish"|"corpus.put"|"evidence.put"|"playback.tick"|"playback.commit"|"record.tick"|"record.commit"|"capture.freeze"|"capture.release")) {
+                anyhow::bail!("control registration and scene publication belong to the mounted renderer");
+            }
+            registry.engine().request(id.to_string(), body.clone()).await
+        }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/presentation") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/presentation").trim_end_matches('/');
+            Ok(json!({"presentation": registry.state_store().presentation(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/presentation") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/presentation").trim_end_matches('/');
+            Ok(json!({"presentation": registry.state_store().put_presentation(id.to_string(), body).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/snapshots") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/snapshots").trim_end_matches('/');
+            Ok(json!({"snapshots": registry.state_store().snapshots(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/snapshots") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/snapshots").trim_end_matches('/');
+            Ok(json!({"snapshot": registry.state_store().put_snapshot(id.to_string(), body).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/recordings") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/recordings").trim_end_matches('/');
+            Ok(json!({"recordings": registry.state_store().recordings(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/recordings") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/recordings").trim_end_matches('/');
+            Ok(json!({"recording": registry.state_store().put_recording(id.to_string(), body).await?}))
+        }
         ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/annotations") => {
             let id = path
                 .trim_start_matches("/v1/visuals/")
@@ -3396,7 +3532,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .cloned()
                 .unwrap_or_default();
             let automated_findings =
-                if let Some(kind) = crate::visuals::systems::template_kind(&visual.template_id) {
+                if let Some(kind) = match visual.renderer_kind {
+                    crate::visuals::RendererKind::Systems => Some(crate::visuals::systems::SystemsKind::Static),
+                    crate::visuals::RendererKind::SystemsDynamic => Some(crate::visuals::systems::SystemsKind::Dynamic),
+                    _ => None,
+                } {
                     let asset = registry.visual_source(id.to_string()).await?;
                     let bytes = base64::engine::general_purpose::STANDARD
                         .decode(asset.base64)
@@ -3404,7 +3544,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     let source = String::from_utf8(bytes)
                         .context("systems authoring source must be UTF-8")?;
                     crate::visuals::systems::authoring_findings(&source, kind)?
-                } else if crate::visuals::charts::is_chart_template(&visual.template_id) {
+                } else if visual.renderer_kind == crate::visuals::RendererKind::Chart {
                     // Recorded by the render that produced the image. A chart's
                     // real width is only known after its bindings resolve, so
                     // re-deriving from the spec alone would under-report.
@@ -3688,7 +3828,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 bindings_digest.as_deref(),
                 &certification_identity,
             )?;
-            if let Some(kind) = crate::visuals::systems::template_kind(&current.template_id) {
+            if let Some(kind) = match current.renderer_kind {
+                crate::visuals::RendererKind::Systems => Some(crate::visuals::systems::SystemsKind::Static),
+                crate::visuals::RendererKind::SystemsDynamic => Some(crate::visuals::systems::SystemsKind::Dynamic),
+                _ => None,
+            } {
                 let asset = registry.visual_source(id.to_string()).await?;
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(asset.base64)
@@ -3703,7 +3847,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     );
                 }
             }
-            if crate::visuals::charts::is_chart_template(&current.template_id) {
+            if current.renderer_kind == crate::visuals::RendererKind::Chart {
                 let findings: Vec<String> = current
                     .metadata
                     .get("authoringFindings")
@@ -6963,6 +7107,7 @@ mod tests {
             shell_path: None,
             renderer_path: None,
             source_kind: None,
+            renderer_kind: None,
             example_binding: None,
             inputs: Vec::new(),
             slots: Vec::new(),

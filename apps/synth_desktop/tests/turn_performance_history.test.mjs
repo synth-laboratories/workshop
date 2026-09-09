@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { turnPerformanceLabels } from "../src/renderer/src/hooks/useTurnPerformanceLabels.ts";
-import { codexEventToRuntime } from "../src/renderer/src/runtime/nativeCodex.ts";
+import { codexEventToRuntime, coreEventToRuntime } from "../src/renderer/src/runtime/nativeCodex.ts";
 
 const at = (seconds) => new Date(Date.UTC(2026, 0, 1, 0, 0, seconds)).toISOString();
 const event = (sequence, seconds, eventKind, payload = {}) => ({ sequence, createdAt: at(seconds), eventKind, payload });
@@ -231,4 +231,38 @@ test("a long transcript projection remains bounded for startup and scrolling", (
 	const started = performance.now();
 	turnPerformanceLabels({ id: "large", title: "large", messages }, events);
 	assert.ok(performance.now() - started < 500, "temporal projection regressed transcript startup");
+});
+
+
+test("provider completed envelopes preserve cancellation in replay", () => {
+ for (const status of ["interrupted", "cancelled", "canceled"]) {
+  const result = codexEventToRuntime({sessionId: "s", method: "turn/completed", params: {
+   turn: {id: "stopped-turn", status}
+  }, createdAt: at(3)}, 4);
+  assert.equal(result.eventKind, "run.cancelled");
+ }
+});
+
+
+test("cancelled response duration never says Worked", () => {
+ const chat = {id: "s", title: "cancelled", messages: [
+  {id: "u", role: "user", body: "count", at: at(0)},
+  {id: "a", role: "assistant", body: "1", at: at(1)}
+ ]};
+ for (const kind of ["run.cancelled", "turn/interrupted"]) {
+  const labels = turnPerformanceLabels(chat, [event(1, 0, "turn/accepted"), event(2, 3, kind)]);
+  assert.equal(labels.byMessageId.a.worked, "Stopped after 3s");
+ }
+});
+
+
+test("durable cancellation replay retains the original event timestamp", () => {
+ const original = at(7);
+ const row = {sessionId: "s", sessionSequence: 42, kind: "turn/interrupted",
+  payload: {turnId: "t", reason: "operator_cancelled"}, createdAt: original, source: "codex"};
+ for (let replay = 0; replay < 3; replay++) {
+  const projected = coreEventToRuntime(row);
+  assert.equal(projected.createdAt, original);
+  assert.equal(projected.eventKind, "run.cancelled");
+ }
 });

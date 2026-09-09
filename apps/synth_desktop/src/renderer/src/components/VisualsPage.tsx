@@ -59,6 +59,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 	}, []);
 	const [openActionsId, setOpenActionsId] = useState<string | null>(null);
 	const [previewDetailsOpen, setPreviewDetailsOpen] = useState(false);
+	const [mirrorPane, setMirrorPane] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [listEpoch, setListEpoch] = useState(0);
@@ -136,6 +137,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 	useEffect(() => {
 		setOpenActionsId(null);
 		setPreviewDetailsOpen(false);
+		setMirrorPane(false);
 	}, [selectedId, tab, search]);
 
 	useEffect(() => {
@@ -523,6 +525,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 									<div role="menu" aria-label={`${selected.title} preview actions`}>
 										<button type="button" role="menuitem" aria-pressed={previewDetailsOpen} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); setPreviewDetailsOpen((open) => !open); }}>Details &amp; provenance</button>
 										{selected.sessionId && onGoToChat ? <button type="button" role="menuitem" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onGoToChat(selected.sessionId!); }}>Go to chat</button> : null}
+										<button type="button" role="menuitem" aria-pressed={mirrorPane} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); setMirrorPane(value => !value); }}>{mirrorPane ? "Close mirrored pane" : "Open mirrored pane"}</button>
 										<button type="button" role="menuitem" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); void renameVisual(selected); }}>Rename</button>
 										<button type="button" role="menuitem" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); void archiveVisual(selected); }}>Archive</button>
 									</div>
@@ -532,7 +535,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 									className="ws-btn ws-btn-primary visuals-open-canvas"
 									aria-pressed={Boolean(focusVisualId)}
 									title={focusVisualId ? "Show the visual library" : "Focus this visual and hide the library"}
-									onClick={() => setFocusVisualId(focusVisualId ? null : selected.id)}
+									onClick={() => { setSelectedId(selected.id); setFocusVisualId(focusVisualId ? null : selected.id); }}
 								>
 									{focusVisualId ? "Show library" : "Expand"}
 								</button>
@@ -585,7 +588,10 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 								<iframe className="visual-sealed-frame" title={`Sealed ${selected.title} revision ${sealedBundle.seal.visualRevision}`} sandbox="" srcDoc={sealedBundle.indexHtml} />
 								{compareBundle ? <iframe className="visual-sealed-frame" title={`Sealed ${selected.title} revision ${compareBundle.seal.visualRevision}`} sandbox="" srcDoc={compareBundle.indexHtml} /> : null}
 							</div>
-						) : <VisualHost artifact={artifactFromVisualRecord(selected)} />}
+						) : mirrorPane ? <div className="visual-live-mirror">
+							<VisualHost artifact={artifactFromVisualRecord(selected)} />
+							{mirrorPane ? <section aria-label="Mirrored visual pane"><p role="status">Mirrored view · shared controls and logical clock</p><VisualHost artifact={artifactFromVisualRecord(selected)} /></section> : null}
+						</div> : <VisualHost artifact={artifactFromVisualRecord(selected)} />}
 					</div>
 				) : null}
 			</div>

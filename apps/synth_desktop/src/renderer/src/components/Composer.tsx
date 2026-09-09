@@ -580,6 +580,7 @@ function ModelMenu({
 													type="button"
 													role="option"
 													data-testid={`composer-model-option-local-laguna-${policy.isBase ? "base" : policy.modelId}`}
+													disabled={["not_installed", "error", "starting", "loading"].includes(state.model.status)}
 													aria-selected={selectedHere}
 													className={`composer-model-option${selectedHere ? " selected" : ""}`}
 													onClick={() => {
@@ -590,7 +591,7 @@ function ModelMenu({
 												>
 													<span className="composer-model-option-main">
 														<span className="composer-model-option-label">{policyLabel(policy)}</span>
-														<span className="composer-model-option-desc">{policy.isBase ? "Original model · This Mac" : "SFT variant · This Mac"}</span>
+														<span className="composer-model-option-desc">{state.model.status === "starting" ? "Connecting to local runtime…" : state.model.status === "loading" ? "Loading local weights…" : policy.isBase ? "Original model · This Mac" : "SFT variant · This Mac"}</span>
 													</span>
 													{selectedHere ? <span className="composer-model-check" aria-hidden>✓</span> : null}
 												</button>

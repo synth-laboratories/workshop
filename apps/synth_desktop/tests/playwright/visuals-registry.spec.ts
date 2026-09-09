@@ -1,3 +1,4 @@
+import { openOutputs } from "./v02-helpers";
 import { expect, test } from "./browser.fixture";
 import type { Page } from "@playwright/test";
 import type { VisualRecord } from "@synth/runtime-protocol";
@@ -235,14 +236,16 @@ test("an already-open pane rejects stale gets and reconciles a dropped final upd
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualRace: { isAttached(): boolean } }).__visualRace.isAttached())).toBe(true);
-	await page.getByTestId("open-visuals").click();
+	await page.getByTestId("open-experiments").click();
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualRace: { isAttached(): boolean } }).__visualRace.isAttached())).toBe(true);
 	await page.evaluate(() => (window as typeof window & { __visualRace: { show13(): void; update14(): void } }).__visualRace.show13());
 	await page.evaluate(() => (window as typeof window & { __visualRace: { show13(): void; update14(): void } }).__visualRace.update14());
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualRace: { getCount(): number } }).__visualRace.getCount())).toBe(2);
 	await expect.poll(() => page.evaluate(() => window.__synthEval?.getState().openVisualId)).toBe("vis_race");
 	await expect(page.getByTestId("visual-pane")).toContainText("Revision 14");
-	await expect(page.getByTestId("visual-pane")).toContainText("rev 14");
+	await page.getByRole("button", {name: "Visual details and actions", exact: true}).click();
+	await expect(page.getByTestId("visual-pane-identity")).toContainText("rev 14");
+	await page.keyboard.press("Escape");
 	await page.evaluate(() => (window as typeof window & { __visualRace: { release13(): void } }).__visualRace.release13());
 	await expect(page.getByTestId("visual-pane")).toContainText("Revision 14");
 
@@ -286,7 +289,7 @@ test("an owned visual.show does not steal another chat's right pane", async ({ p
 	}, [sampleVisual, { ...sampleVisual, id: "vis_healthbench", title: "HealthBench smoke" }]);
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
-	await page.getByTestId("open-visuals").click();
+	await page.getByTestId("open-experiments").click();
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualOwner: { show(visualId: string, ownerSessionId?: string): void } }).__visualOwner !== undefined)).toBeTruthy();
 	await page.evaluate(() => (window as typeof window & { __visualOwner: { show(visualId: string, ownerSessionId?: string): void } }).__visualOwner.show("vis_test_reward", "chat-banking77"));
 	await expect.poll(() => page.evaluate(() => window.__synthEval?.getState().openVisualId ?? null)).toBe(null);
@@ -349,8 +352,8 @@ test("an optimizer visual event appears immediately in its chat Outputs shelf", 
 	await page.getByTestId("local-chat-visual-output-session").click();
 	await page.evaluate(() => (window as typeof window & { __optimizerVisual: { emit(): void } }).__optimizerVisual.emit());
 	const transcript = page.getByTestId("chat-transcript");
-	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
-	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect((await openOutputs(page))).toContainText(/Outputs\s*1/);
+	await (await openOutputs(page)).click();
 	await expect(page.getByTestId("visuals-icon-vis_optimizer_output")).toContainText("HealthBench live eval");
 });
 
@@ -395,8 +398,8 @@ test("a durable optimizer visual restores to its chat Outputs shelf outside the 
 	await page.reload();
 	await page.getByTestId("local-chat-restored-visual-output-session").click();
 	const transcript = page.getByTestId("chat-transcript");
-	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
-	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect((await openOutputs(page))).toContainText(/Outputs\s*1/);
+	await (await openOutputs(page)).click();
 	await expect(page.getByTestId("visuals-icon-vis_restored_optimizer_output")).toContainText("Restored HealthBench eval");
 });
 
@@ -431,8 +434,8 @@ test("a durable optimizer visual remains in Outputs when conversation replay fai
 	await page.reload();
 	await page.getByTestId("local-chat-journal-failed-output-session").click();
 	const transcript = page.getByTestId("chat-transcript");
-	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
-	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect((await openOutputs(page))).toContainText(/Outputs\s*1/);
+	await (await openOutputs(page)).click();
 	await expect(page.getByTestId("visuals-icon-vis_journal_failed_output")).toContainText("Recovered eval checkpoint");
 });
 
@@ -463,9 +466,9 @@ test("a persisted report is discoverable from Outputs after reopening a chat", a
 	});
 	await page.reload();
 	await page.getByTestId("local-chat-report-output-session").click();
-	await page.getByTestId("resource-shelf-trigger").click();
+	await (await openOutputs(page)).click();
 	await expect(page.getByTestId("report-output-rep_reopen_01")).toContainText("Bounded Craftax baseline");
-	await expect(page.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
+	await expect((await openOutputs(page))).toContainText(/Outputs\s*1/);
 });
 
 test("session-owned eval, cancelled, and failed runs remain inspectable in Outputs after reopen", async ({ page }) => {
@@ -538,7 +541,7 @@ test("session-owned eval, cancelled, and failed runs remain inspectable in Outpu
 	await page.reload();
 	await page.getByTestId("local-chat-run-output-session").click();
 	const transcript = page.getByTestId("chat-transcript");
-	await transcript.getByTestId("resource-shelf-trigger").click();
+	await (await openOutputs(page)).click();
 	await expect(page.getByTestId("run-output-opt_eval_cancelled_01")).toContainText("Cancelled Craftax eval");
 	await expect(page.getByTestId("run-output-opt_eval_failed_01")).toContainText("Failed HealthBench eval");
 	await expect(page.getByTestId("run-output-opt_eval_complete_01")).toContainText("Completed Qwen SFT");
@@ -600,7 +603,7 @@ test("a stale running local eval is refreshed before Outputs lists it after reop
 	});
 	await page.reload();
 	await page.getByTestId("local-chat-stale-running-output-session").click();
-	await page.getByTestId("resource-shelf-trigger").click();
+	await (await openOutputs(page)).click();
 	await expect(page.getByTestId("run-output-opt_eval_stale_01")).toContainText("opt_eval_stale_01 · completed");
 });
 

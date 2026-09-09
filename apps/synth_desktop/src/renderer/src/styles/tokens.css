@@ -104,6 +104,7 @@
 	--selected-edge: var(--color-selection);
 	/* Text that sits ON the selection color. */
 	--selected-contrast: #ffffff;
+	--action-primary-bg: #b84416;
 
 	/* ── Status tones ── the only status colors. Always paired with a word;
 	   never color alone. ── */
@@ -154,6 +155,7 @@
 	--surface-active: rgba(255, 255, 255, 0.08);
 	--border-strong: #3a3e46;
 	--selected-contrast: #10161f;
+	--action-primary-bg: var(--selected-edge);
 
 	--tone-neutral-bg: #24272d;
 	--tone-neutral-fg: #a3aab4;

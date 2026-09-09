@@ -535,7 +535,7 @@ mod tests {
             "update",
             "remove",
         ];
-        let mcp_schema = include_str!("../bin/synth_plugins_mcp.rs");
+        let mcp_schema = include_str!("../adapters/mcp/operations/plugins.rs");
         for operation in advertised {
             assert!(
                 mcp_schema.contains(&format!("\"{operation}\"")),

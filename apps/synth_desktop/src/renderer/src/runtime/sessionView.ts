@@ -224,10 +224,26 @@ function mapAsyncPhase(status: Session["status"], events: RuntimeEvent[] = []): 
 	}
 }
 
+/** Select one thread from the shared journal without mixing sibling lifecycles.
+ * Child views retain at most 600 events and never create a second event store.
+ */
+export function conversationThreadEvents(events: RuntimeEvent[], threadId: string | null, includeUnscoped = false): RuntimeEvent[] {
+	if (!threadId) return [];
+	const selected: RuntimeEvent[] = [];
+	for (let index = events.length - 1; index >= 0 && selected.length < 600; index -= 1) {
+		const event = events[index]!;
+		const id = eventThreadId(event.payload ?? {}, eventItem(event));
+		if (id === threadId || (includeUnscoped && !id)) selected.push(event);
+	}
+	return selected.reverse();
+}
+
 export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 	const byId = new Map<string, ChatMessage>();
 	const order: string[] = [];
 	const subagentIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
+	const scopedThreadIds = new Set(events.map((event) => eventThreadId(event.payload ?? {}, eventItem(event))).filter(Boolean));
+	const isSingleThreadProjection = scopedThreadIds.size === 1;
 	let activeAssistantId: string | null = null;
 	let producedAssistantForTurn = false;
 	let compactedDuringTurn = false;
@@ -240,7 +256,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 		// letting those terminal events reach the parent would manufacture
 		// "provider ended" messages and reset the parent's streaming state.
 		const sourceThreadId = eventThreadId(payload, eventItem(event));
-		if (sourceThreadId && subagentIds.has(sourceThreadId)) continue;
+		if (!isSingleThreadProjection && sourceThreadId && subagentIds.has(sourceThreadId)) continue;
 		if (event.eventKind === "run.started") {
 			activeAssistantId = null;
 			producedAssistantForTurn = false;
@@ -521,6 +537,9 @@ function providerLimitMessageFor(payload: Record<string, unknown>): string | und
 		provider = "synth-cloud";
 	}
 	const providerPrefix = `Provider: ${providerLimitLabel(provider)}.`;
+	if (/\b401\b|unauthorized|invalid[_ ]api[_ ]key|missing authentication header/.test(message)) {
+		return `${providerPrefix} Your credentials were rejected. Update the provider API key or sign in again, then resend your message. Your message is preserved in this conversation.`;
+	}
 	if (
 		code === "usagelimitexceeded" || code === "codex_oauth_usage_limit" ||
 		message.includes("hit your usage limit")
@@ -1264,6 +1283,9 @@ export function eventsToLocalActivity(
 	options?: { enforcePlacementInvariant?: boolean }
 ): Record<string, LocalActivityLine[]> {
 	const assistantIds = messages.filter((message) => message.role === "assistant").map((message) => message.id);
+	const childThreadIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
+	const scopedThreadIds = new Set(events.map((event) => eventThreadId(event.payload ?? {}, eventItem(event))).filter(Boolean));
+	const isSingleThreadProjection = scopedThreadIds.size === 1;
 	const lastContentSequenceByMessageId = new Map<string, number>();
 	const approvalKey = (event: RuntimeEvent): string | undefined => {
 		const payload = event.payload ?? {};
@@ -1422,6 +1444,7 @@ export function eventsToLocalActivity(
 			}
 			continue;
 		}
+		if (!isSingleThreadProjection && threadId && childThreadIds.has(threadId)) continue;
 		const explicit = typeof payload.messageId === "string" ? payload.messageId : null;
 		const messageText = event.eventKind.startsWith("message.")
 			? (typeof payload.delta === "string" ? payload.delta
@@ -1477,6 +1500,15 @@ export function eventsToLocalActivity(
 		if (event.eventKind === "run.completed" || event.eventKind === "run.failed" || event.eventKind === "run.cancelled") {
 			const key = runIdentity(payload) ?? activeRunKey;
 			if (key && completedRunKeys.has(key)) continue;
+			// A turn without an assistant answer projects a terminal system message.
+			// Seal its pending activity there so the next reply cannot inherit a
+			// previous turn's failure duration or tool activity.
+			const terminalMessageId = `terminal-${event.sequence}`;
+			if (current === "__active__" && messages.some((message) => message.id === terminalMessageId)) {
+				(byMessage[terminalMessageId] ??= []).push(...(byMessage.__active__ ?? []));
+				delete byMessage.__active__;
+				current = terminalMessageId;
+			}
 			const actions = actionCountLabel(runActions);
 			if (event.eventKind === "run.cancelled") {
 				for (const line of shownToolLines.values()) {

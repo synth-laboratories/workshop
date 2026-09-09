@@ -205,9 +205,10 @@ test("like-for-like ranking follows the declared achievement metric", () => {
       comparison: {
         comparison_kind: "like_for_like",
         metric: "mean_achievements",
+        comparison_contract: {digest: "qa-achievements", benchmark: "qa", metric: "mean_achievements"},
         rows: [
-          { model: "reward-winner", mean_reward: 0.9, mean_achievements: 1 },
-          { model: "achievement-winner", mean_reward: 0.2, mean_achievements: 4 }
+          { comparison_contract_digest: "qa-achievements", model: "reward-winner", mean_reward: 0.9, mean_achievements: 1 },
+          { comparison_contract_digest: "qa-achievements", model: "achievement-winner", mean_reward: 0.2, mean_achievements: 4 }
         ]
       }
     })
@@ -222,9 +223,10 @@ test("like-for-like cost ranking treats lower cost as better", () => {
       comparison: {
         comparison_kind: "like_for_like",
         metric: "cost_usd",
+        comparison_contract: {digest: "qa-cost", benchmark: "qa", metric: "cost_usd"},
         rows: [
-          { model: "expensive", cost_usd: 0.8 },
-          { model: "efficient", cost_usd: 0.2 }
+          { comparison_contract_digest: "qa-cost", model: "expensive", cost_usd: 0.8 },
+          { comparison_contract_digest: "qa-cost", model: "efficient", cost_usd: 0.2 }
         ]
       }
     })

@@ -88,3 +88,46 @@ pub use local_lora::durable_lora_root;
 pub fn local_lora_is_laguna_compatible(checkpoint: &SavedLoraCheckpoint) -> bool {
     local_lora::is_laguna_compatible(checkpoint)
 }
+
+/// A module's own source with every `#[cfg(test)]` item removed.
+///
+/// The guards that scan production source for forbidden URLs used to take
+/// everything before the *first* `#[cfg(test)]`. That silently stopped covering
+/// production the moment a second test module was added above the functions
+/// being guarded: the scan then ran over a prefix containing none of them, and
+/// the guard failed instead of guarding. Strip every annotated item instead, so
+/// the guard sees all of the production source and none of the tests.
+///
+/// Test modules are top level and rustfmt closes them with a `}` in column
+/// zero, which is the boundary this walks to.
+#[cfg(test)]
+pub(crate) fn production_source(source: &str) -> String {
+    let mut kept = Vec::new();
+    let mut skipping = false;
+    for line in source.lines() {
+        if !skipping && line.trim_start().starts_with("#[cfg(test)]") {
+            skipping = true;
+            continue;
+        }
+        if skipping {
+            if line == "}" {
+                skipping = false;
+            }
+            continue;
+        }
+        kept.push(line);
+    }
+    kept.join("\n")
+}
+
+#[cfg(test)]
+mod production_source_tests {
+    #[test]
+    fn strips_every_test_module_not_just_the_first() {
+        let source = "fn a() {}\n#[cfg(test)]\nmod early {\n    fn t() {}\n}\nfn guarded() {}\n#[cfg(test)]\nmod tests {\n    fn u() {}\n}\n";
+        let production = super::production_source(source);
+        assert!(production.contains("fn guarded()"), "{production}");
+        assert!(!production.contains("mod early"), "{production}");
+        assert!(!production.contains("mod tests"), "{production}");
+    }
+}

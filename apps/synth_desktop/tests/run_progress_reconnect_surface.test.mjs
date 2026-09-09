@@ -17,8 +17,11 @@ test("the browser runtime subscription has a ten-attempt terminal retry bound", 
 
 test("VisualHost preserves the store's failed state instead of relabeling it interrupted", () => {
 	const host = read("components/VisualHost.tsx");
-	assert.match(host, /snapshot\.state === "interrupted" \|\| snapshot\.state === "failed"/);
-	assert.match(host, /setConnectionState\(snapshot\.state\)/);
+	const orchestration = readFileSync(join(appRoot, "..", "..", "packages", "workshop-visuals", "runtime", "optimizerOrchestration.ts"), "utf8");
+	assert.match(host, /observeOptimizerVisual\(/);
+	assert.match(host, /setConnectionState\(frame\.connection\)/);
+	assert.match(orchestration, /snapshot\.state==='interrupted'\|\|snapshot\.state==='failed'/);
+	assert.match(orchestration, /connection=snapshot\.state/);
 });
 
 test("nullable provider cost is rendered through the missing-aware formatter", () => {

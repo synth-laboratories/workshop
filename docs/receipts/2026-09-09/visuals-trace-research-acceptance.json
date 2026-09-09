@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "workshop.visuals-trace-research-acceptance.v1",
+  "visualId": "accept-trace-rollout-inspector-v5",
+  "revision": 1,
+  "traceDigest": "sha256:2fd0826094b1ba44208ae54b65dacf308baa91878d0c879323f37dab0f6c2edf",
+  "eventCount": 28,
+  "pinnedSnapshot": "sha256:d5e59e23ba3ca685f2ca810e4149c56d8b82c1969b265f249a28acc116fe1e89",
+  "selectedEvent": "evt_61414e959510bba1",
+  "section": "events",
+  "recordingId": "374ea2da-5571-498e-919e-226dc2bd2076",
+  "staleRejected": true,
+  "replayRestored": true,
+  "checkpointRestored": true,
+  "mcpAgrees": true,
+  "captures": [
+    "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/de0df13f-59b2-4073-9324-a9d8c105e85e.png",
+    "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/29425a36-3e03-46e2-ab8c-048ee5ba80ce.png"
+  ]
+}

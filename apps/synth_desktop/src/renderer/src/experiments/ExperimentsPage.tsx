@@ -199,7 +199,7 @@ export function ExperimentsPage({ initialId, onBack, onOpenReport, onSectionChan
 	};
 
 	return (
-		<PluginPage className="experiments-page workbench" testId="experiments-workbench">
+		<PluginPage className="experiments-page" testId="experiments-workbench">
 			<PluginPageHeader title="Experiments" description="Saved comparisons, working notes, and publication-ready reports. Nothing is uploaded." onBack={onBack} />
 			<PluginTabs tabs={[{ id: "experiments", label: "Experiments" }, { id: "log", label: "Research logs" }, { id: "reports", label: "Reports" }]} selected={section} onSelect={(item) => { setSection(item); onSectionChange?.(item); }} label="Research sections" testIdPrefix="research-tab" />
 			{section === "experiments" && loaded && !error && rows.length === 0 && !query.trim() ? (

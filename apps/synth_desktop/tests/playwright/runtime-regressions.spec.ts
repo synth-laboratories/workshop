@@ -1,3 +1,4 @@
+import { openOutputs } from "./v02-helpers";
 import type { Page } from "@playwright/test";
 import { expect, test } from "./browser.fixture";
 import { BROWSER_MODEL_CATALOG } from "../../src/renderer/src/runtime/modelCatalog";
@@ -513,6 +514,7 @@ test("V1 child events open the shared conversation transcript without treating i
 	const delegation = page.getByText("Review migration safety started");
 	await expect(delegation).toBeVisible();
 	await delegation.click();
+	await page.getByTestId("subagent-row-child-thread").click();
 	const child = page.getByTestId("subagent-conversation");
 	await expect(child).toBeVisible();
 	await expect(child.getByTestId("chat-transcript")).toBeVisible();
@@ -532,8 +534,9 @@ test("V1 child events open the shared conversation transcript without treating i
 
 	await expect(child).toContainText("Migration boundary is safe.");
 	await expect(child.getByTestId("subagent-status")).toHaveText("Working");
-	await child.getByRole("button", { name: "Details" }).click();
-	await expect(child).toContainText('"count": 0');
+	await expect(child).toContainText("Visual draft created");
+	await expect(child).toContainText("operation create");
+	await expect(page.getByTestId("chat-transcript").first()).not.toContainText("Visual draft created");
 	await expect(child).not.toContainText("[object Object]");
 
 	await page.evaluate(() => {
@@ -545,7 +548,7 @@ test("V1 child events open the shared conversation transcript without treating i
 	});
 
 	await expect(child.getByTestId("subagent-status")).toHaveText("Completed");
-	await child.getByTestId("subagent-back").click();
+	await page.getByTestId("subagents-back").click();
 	await expect(page.getByTestId("subagent-conversation")).toHaveCount(0);
 	await expect(page.getByTestId("chat-transcript")).toContainText("Review migration safety started");
 });
@@ -583,6 +586,7 @@ test("V2 child lifecycle uses the same transcript route and isolates sibling out
 	});
 
 	await page.getByText("Readme Location started").click();
+	await page.getByTestId("subagent-row-child-v2-thread").click();
 	const child = page.getByTestId("subagent-conversation");
 	await expect(child).toBeVisible();
 	await expect(child.getByTestId("chat-transcript")).toBeVisible();
@@ -669,8 +673,9 @@ test("two V2 children overlap in wall-clock and keep a dedicated Subagents rail"
 		send("turn/started", { threadId: "child-overlap-b", turn: { id: "turn-b" } });
 	});
 	await expect(page.getByTestId("visual-subagents")).toBeVisible();
-	await page.getByTestId("resource-shelf-trigger").click();
+	await (await openOutputs(page)).click();
 	await expect(page.getByTestId("subagents-rail")).toBeVisible();
+	await page.getByTestId("visuals-icon-codex-subagents").click();
 	await expect(page.getByTestId("visual-subagents")).toContainText("Working · 2");
 	await page.waitForTimeout(1500);
 	await page.evaluate(() => {
@@ -1069,7 +1074,7 @@ test("a cold local turn says it is waiting on local until model residency is rep
 	await page.reload();
 	await page.getByTestId("local-chat-cold-session").click();
 	await page.evaluate(() => (window as typeof window & { __emitColdTurn: () => void }).__emitColdTurn());
-	await expect(page.getByTestId("model-working")).toContainText("Waiting on local…");
+	await expect(page.getByTestId("model-working")).toContainText("Loading…");
 	await expect(page.getByTestId("model-working")).toHaveAttribute("data-waiting-on", "local");
 	await expect(page.getByTestId("model-working")).not.toContainText("Working…");
 	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
@@ -1396,8 +1401,7 @@ test("model-switch compaction renders above the continued turn's tool calls", as
 	});
 	await installLagunaFixture(page, "ready");
 	await page.getByTestId("local-chat-switch-compact-session").click();
-	await page.getByTestId("activity-mode-menu-trigger").click();
-	await page.getByTestId("activity-mode-option-detailed").click();
+	await page.evaluate(async () => { const {updatePreferences} = await import("/src/preferences"); updatePreferences(current => ({...current, toolActivity: {mode: "detailed"}})); });
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitSwitchCompactCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitSwitchCompactCodex;
 		const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "switch-compact-session", method, params });
@@ -1534,8 +1538,7 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	});
 	await installLagunaFixture(page, "ready");
 	await page.getByTestId("local-chat-tool-session").click();
-	await page.getByTestId("activity-mode-menu-trigger").click();
-	await page.getByTestId("activity-mode-option-detailed").click();
+	await page.evaluate(async () => { const {updatePreferences} = await import("/src/preferences"); updatePreferences(current => ({...current, toolActivity: {mode: "detailed"}})); });
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitToolCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitToolCodex;
@@ -1552,14 +1555,11 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(transcript).not.toContainText("MUST_NOT_RENDER");
 	const containerOpen = transcript.getByTestId("tool-container-open-craftax-local");
 	await expect(containerOpen).toBeVisible();
-	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs");
-	const toolbarGeometry = await transcript.getByTestId("transcript-toolbar").evaluate((toolbar) => {
-		const activity = toolbar.querySelector<HTMLElement>("[data-testid=activity-mode-menu-trigger]")!.getBoundingClientRect();
-		const outputs = toolbar.querySelector<HTMLElement>("[data-testid=resource-shelf-trigger]")!.getBoundingClientRect();
-		const bounds = toolbar.getBoundingClientRect();
-		return { separated: activity.right + 4 <= outputs.left, contained: activity.top >= bounds.top && outputs.bottom <= bounds.bottom };
-	});
-	expect(toolbarGeometry).toEqual({ separated: true, contained: true });
+	await expect((await openOutputs(page))).toContainText("Outputs");
+	const outputsPanel = page.getByTestId("workbench-side-panel");
+	await expect(outputsPanel.getByRole("tab", {name: "Outputs", exact: true})).toHaveAttribute("aria-selected", "true");
+	await expect(page.getByTestId("resource-shelf")).toBeVisible();
+	await page.getByTestId("toggle-inference-rail").click();
 	await expect(page.getByTestId("resource-shelf")).toHaveCount(0);
 	await containerOpen.click();
 	const containerPane = page.getByTestId("container-pane");
@@ -1636,7 +1636,7 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(transcript.getByText("Completed", { exact: true })).toHaveCount(2);
 	await expect(transcript.getByText("Needs attention", { exact: true })).toBeVisible();
 	await expect(transcript).toContainText("template id craftax.rollout.v1 · title Craftax rollout · 2ms");
-	await transcript.getByTestId("resource-shelf-trigger").click();
+	await (await openOutputs(page)).click();
 	const resourceShelf = page.getByTestId("resource-shelf");
 	await expect(resourceShelf).toContainText("Containers");
 	await expect(resourceShelf).toContainText("Visuals");
@@ -1649,8 +1649,7 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(visualPane).toBeVisible();
 	await expect(visualPane).toContainText("Reward comparison");
 	await expect(visualPane.getByTestId("visual-craftax-eval-matrix")).toBeVisible();
-	await page.getByTestId("activity-mode-menu-trigger").click();
-	await page.getByTestId("activity-mode-option-grouped").click();
+	await page.evaluate(async () => { const {updatePreferences} = await import("/src/preferences"); updatePreferences(current => ({...current, toolActivity: {mode: "grouped"}})); });
 	const groupedActions = transcript.locator(".activity-group").first();
 	await groupedActions.locator(".activity-group-toggle").click();
 	await expect(groupedActions.locator(".activity-group-step")).toHaveCount(4);
@@ -1957,5 +1956,8 @@ test("a recent folder can create and attach to a conversation from the landing c
 	await recentFolder.click();
 
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __workspacePickerSession: () => string }).__workspacePickerSession())).not.toBe("");
+	await page.getByTestId("composer-add-menu-trigger").click();
+	await page.getByTestId("composer-slash-btn").click();
+	await page.getByTestId("slash-command-item-workspace").click();
 	await expect(page.getByTestId("workspace-attachment")).toContainText("GitHub");
 });

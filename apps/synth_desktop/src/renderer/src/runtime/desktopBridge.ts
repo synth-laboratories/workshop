@@ -869,6 +869,19 @@ window.synthWorkspaceScope ??= isTauri
 			getTemplate: (templateId) => fromGenerated(spectaCommands.visualsTemplatesGet(templateId)),
 			list: (query) => fromGenerated(spectaCommands.visualsList(wire(query ?? null))),
 			get: (visualId) => fromGenerated(spectaCommands.visualsGet(visualId)),
+			engine: (visualId, request) => fromGenerated(spectaCommands.visualsEngine(visualId, request)) as Promise<Record<string, unknown>>,
+			onEngineChanged: (callback) => {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen<{ visualId: string; revision: number; viewKey: string }>("visual-engine-changed", (event) => callback(event.payload)).then((stop) => { if (disposed) stop(); else unlisten = stop; });
+				return () => { disposed = true; unlisten?.(); };
+			},
+			presentation: (visualId) => fromGenerated(spectaCommands.visualsPresentationGet(visualId)) as Promise<import("@synth/visuals-protocol").PresentationState | null>,
+			putPresentation: (visualId, presentation) => fromGenerated(spectaCommands.visualsPresentationPut(visualId, presentation)) as Promise<import("@synth/visuals-protocol").PresentationState>,
+			snapshots: (visualId) => fromGenerated(spectaCommands.visualsSnapshotsList(visualId)) as Promise<import("@synth/visuals-protocol").VisualSnapshot[]>,
+			putSnapshot: (visualId, snapshot) => fromGenerated(spectaCommands.visualsSnapshotPut(visualId, snapshot)) as Promise<import("@synth/visuals-protocol").VisualSnapshot>,
+			recordings: (visualId) => fromGenerated(spectaCommands.visualsRecordingsList(visualId)) as Promise<import("@synth/visuals-protocol").VisualRecording[]>,
+			putRecording: (visualId, recording) => fromGenerated(spectaCommands.visualsRecordingPut(visualId, recording)) as Promise<import("@synth/visuals-protocol").VisualRecording>,
 			reportObservation: (observation) => fromGenerated(spectaCommands.visualsObservationReport(wire(observation))),
 			revisions: (visualId) => fromGenerated(spectaCommands.visualsRevisions(visualId)),
 			annotations: (visualId) => fromGenerated(spectaCommands.visualsAnnotationsList(visualId)),

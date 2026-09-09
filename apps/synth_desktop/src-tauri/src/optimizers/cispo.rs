@@ -688,10 +688,7 @@ mod tests {
 
     #[test]
     fn production_source_does_not_name_mlx_or_tinker_urls() {
-        let production = include_str!("cispo.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
+        let production = &crate::optimizers::production_source(include_str!("cispo.rs"));
         let start_local = production
             .split("async fn start_local")
             .nth(1)

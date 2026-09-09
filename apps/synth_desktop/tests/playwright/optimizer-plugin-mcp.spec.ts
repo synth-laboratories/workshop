@@ -1,3 +1,4 @@
+import { openOptimizer } from "./v02-helpers";
 import { expect, test } from "./browser.fixture";
 
 // The sidebar and the Optimizers page both read the registry listing now, so
@@ -52,7 +53,7 @@ test("plugin phases stay visible as the install progresses", async ({ page }) =>
 	});
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
-	await page.getByTestId("open-optimizers").click();
+	await openOptimizer(page);
 	await page.getByTestId("optimizer-tab-plugin").click();
 	await expect(page.getByTestId("optimizer-plugin-phase")).toHaveText("Downloading");
 	await page.evaluate(() => (window as any).__setPluginPhase("verifying"));
@@ -93,7 +94,7 @@ test("plugin lifecycle errors preserve the structured response body", async ({ p
 	});
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
-	await page.getByTestId("open-optimizers").click();
+	await openOptimizer(page);
 	await page.getByTestId("optimizer-tab-plugin").click();
 	await page.getByTestId("plugin-start").click();
 	await expect(page.getByTestId("optimizer-error")).toContainText("Capability check failed — HTTP 502");
@@ -128,6 +129,7 @@ test("disabled Optimizers plugin stays navigable and says why", async ({ page })
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 
+	await openOptimizer(page);
 	const row = page.getByTestId("open-optimizers");
 	await expect(row).toHaveCount(1);
 	await expect(page.getByTestId("plugin-status-optimizers")).toContainText("Disabled");
@@ -147,6 +149,7 @@ test("a disabled plugin holding live runs does not imply they stopped", async ({
 	}, disabledPlugin);
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
+	await openOptimizer(page);
 	await expect(page.getByTestId("plugin-status-optimizers")).toContainText("2 running");
 });
 
@@ -154,7 +157,7 @@ test("the Plugins section replaces the Research and Data groupings", async ({ pa
 	await expect(page.getByTestId("plugins-nav")).toHaveCount(1);
 	await expect(page.getByTestId("research-nav")).toHaveCount(0);
 	await expect(page.getByTestId("inventory-nav")).toHaveCount(0);
-	for (const testId of ["open-visuals", "open-reports", "open-optimizers", "open-inventory"]) {
+	for (const testId of ["open-visuals", "open-experiments", "open-inventory", "open-inference"]) {
 		await expect(page.getByTestId(testId)).toHaveCount(1);
 	}
 });
@@ -185,6 +188,11 @@ test("optimizer visual posts a subscription receipt after replay", async ({ page
 			listRecipes: async () => [],
 			list: async () => [run],
 			get: async () => run,
+			runViewV2: async () => ({
+				algorithm: "gepa",
+				header: {runId: run.id, algorithm: "gepa", lifecycle: "waiting_for_viewer", phase: null, condition: "healthy", placement: "local_python_process", specId: "ready-spec", specDigest: "sha256:ready", executionBindings: [], inputRefs: [], outputRefs: [], visualRefs: [], artifacts: [], usage: {}, work: {}, evidence: {completeness: "absent", refs: []}, terminal: null, projectionSchemaVersion: "optimizer.gepa.projection.v2", asOfSequence: 0, projectionRevision: 1},
+				projection: {workItems: [], usage: {}, candidates: {}, candidateOrder: [], frontierHistory: [], rolloutsAllocated: 0, rolloutsScored: 0, rolloutsFailed: 0, rolloutBudget: 0}, result: null
+			}),
 			create: async () => run,
 			startRecipe: async () => run,
 			refresh: async () => run,
@@ -215,7 +223,7 @@ test("optimizer visual posts a subscription receipt after replay", async ({ page
 				updatedAt: now,
 				bindings: {
 					schemaVersion: "synth.visual-bindings.v1",
-					slots: [{ slot: "optimizer_run", kind: "optimizer_run", source: "banking77_ready" }]
+					inputs: [{ input: "optimizer_run", kind: "optimizer_run", source: "banking77_ready" }]
 				},
 				metadata: {}
 			}),
@@ -225,7 +233,7 @@ test("optimizer visual posts a subscription receipt after replay", async ({ page
 	});
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
-	await page.getByTestId("open-optimizers").click();
+	await openOptimizer(page);
 	await page.getByTestId("open-optimizer-visual").click();
 	await expect.poll(() => page.evaluate(() => (window as any).__visualReady.length)).toBeGreaterThan(0);
 	const receipt = await page.evaluate(() => (window as any).__visualReady[0]);

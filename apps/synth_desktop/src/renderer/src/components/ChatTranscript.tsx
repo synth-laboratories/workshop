@@ -22,6 +22,7 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import "./PaidComputeApprovalModal.css";
 
 type Props = {
+	readOnly?: boolean;
 	chat: LocalChat;
 	events?: RuntimeEvent[];
 	openArtifactId: string | null;
@@ -841,6 +842,7 @@ function UserMessage({ id, body, images, onExpansionChange }: { id: string; body
 }
 
 export function ChatTranscript({
+	readOnly = false,
 	chat,
 	events = [],
 	openArtifactId,
@@ -1074,7 +1076,7 @@ export function ChatTranscript({
 						});
 						return (
 							<div key={m.id} className={`local-turn local-turn-${m.role}`}>
-								{m.role === "assistant" ? renderPresented(presented, messageArtifacts, primaryOpen, running) : null}
+								{m.role !== "user" ? renderPresented(presented, messageArtifacts, primaryOpen, running) : null}
 								{m.role === "user" ? (
 									<UserMessage id={m.id} body={m.body} images={m.images} onExpansionChange={keepTailVisible} />
 								) : m.role === "system" ? (
@@ -1091,7 +1093,7 @@ export function ChatTranscript({
 										</div>
 									</div>
 								)}
-								{m.role === "assistant" ? renderPresented(presentedAfter, [], false, running) : null}
+								{m.role !== "user" ? renderPresented(presentedAfter, [], false, running) : null}
 								{(runProgressByMessage[m.id] ?? []).map((item) => (
 									<RunProgressCard
 										key={item.runId}
@@ -1156,9 +1158,9 @@ export function ChatTranscript({
 						) : null}
 					</div>
 			</div>
-			<ComposerLayoutHost />
-			{paidComputeApproval ? <PaidComputeApprovalModal line={paidComputeApproval} onApprove={onApprove} onReject={onReject} /> : null}
-			{!paidComputeApproval && credentialAccessApproval ? <CredentialAccessApprovalModal line={credentialAccessApproval} onApprove={onApprove} onReject={onReject} /> : null}
+			{!readOnly ? <ComposerLayoutHost /> : null}
+			{!readOnly && paidComputeApproval ? <PaidComputeApprovalModal line={paidComputeApproval} onApprove={onApprove} onReject={onReject} /> : null}
+			{!readOnly && !paidComputeApproval && credentialAccessApproval ? <CredentialAccessApprovalModal line={credentialAccessApproval} onApprove={onApprove} onReject={onReject} /> : null}
 		</div>
 	);
 }

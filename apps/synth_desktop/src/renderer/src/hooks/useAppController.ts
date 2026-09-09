@@ -47,6 +47,7 @@ import {
 } from "../types/landing";
 import { useInferenceMonitor } from "../components/InferencePanel";
 import { artifactFromVisualRecord } from "../components/VisualHost";
+import { presentWorkspaceVisual } from "../runtime/visualPresentation";
 import { useAccountShell } from "./useAccountShell";
 import { usePluginStatuses } from "./usePluginStatuses";
 import { useComputerUse } from "./useComputerUse";
@@ -692,6 +693,8 @@ export function useAppController() {
 				if (!disposed) {
 					setBootError(null);
 					setRuntimeBootReady(true);
+					setView((current) => current.kind === "chat" && !sessionsRef.current.some((session) => session.id === current.chatId)
+						? { kind: "landing" } : current);
 				}
 			})
 			.catch((reason: unknown) => {
@@ -1590,13 +1593,22 @@ export function useAppController() {
 			if (!visualId) return;
 			const eventRevision = typeof payload?.revision === "number" ? payload.revision : -1;
 			if (event.kind === "visual.show") {
+				// `ownerSessionId` is the conversation that owns the visual. The
+				// event's own `sessionId` is whoever *opened* it, which the
+				// registry sets even for a workspace visual nobody owns.
+				// Falling back to it classified every workspace visual as
+				// chat-owned, and the branch below then returned without opening
+				// anything whenever that conversation was not the active view --
+				// leaving the library, the one surface that renders a workspace
+				// visual, never told. `show` became a silent no-op: no session,
+				// no controls, no error, and only a review capture could still
+				// bring the pane round.
 				const owner =
-					typeof payload?.ownerSessionId === "string"
+					typeof payload?.ownerSessionId === "string" && payload.ownerSessionId
 						? payload.ownerSessionId
-						: typeof event.sessionId === "string"
-							? event.sessionId
-							: null;
-				const ownerViewKey = owner ? `chat:${owner}` : viewKey;
+						: null;
+				if(!owner){presentWorkspaceVisual(visualId);return;}
+				const ownerViewKey = `chat:${owner}`;
 				openArtifactByViewRef.current[ownerViewKey] = visualId;
 				openArtifactByViewRef.current.window = visualId;
 				if (owner && owner !== activeSessionIdRef.current) {
@@ -2006,7 +2018,7 @@ export function useAppController() {
 								(event.eventKind === "approval.granted"
 									|| event.eventKind === "approval.rejected"
 									|| event.eventKind === "approval.expired")
-								&& payload?.approvalId === approvalId
+								&& event.payload?.approvalId === approvalId
 							);
 							if (alreadyProjected) return;
 							const sequence = allocateNativeSequence(activeSessionId);

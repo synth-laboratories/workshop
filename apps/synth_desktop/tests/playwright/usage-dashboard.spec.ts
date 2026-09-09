@@ -325,6 +325,7 @@ test("the usage dashboard leads with spend, a daily chart, and a labelled breakd
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByTestId("open-inventory").click();
+	await page.getByTestId("open-inference").click();
 	await page.getByTestId("inventory-tab-usage").click();
 
 	const panel = page.getByTestId("usage-panel");
@@ -369,6 +370,7 @@ test("hovering the chart names every band and its value for that day", async ({ 
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByTestId("open-inventory").click();
+	await page.getByTestId("open-inference").click();
 	await page.getByTestId("inventory-tab-usage").click();
 
 	const chart = page.getByTestId("usage-chart");
@@ -419,10 +421,11 @@ test("a device with no usage says so instead of drawing an empty chart", async (
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByTestId("open-inventory").click();
+	await page.getByTestId("open-inference").click();
 	await page.getByTestId("inventory-tab-usage").click();
 
-	await expect(page.getByTestId("usage-hero-value")).toHaveText("Unavailable");
-	await expect(page.getByTestId("usage-hero-note")).toContainText("No request in this window carried a price");
+	await expect(page.getByTestId("usage-hero-value")).toHaveText("0");
+	await expect(page.getByTestId("usage-hero-note")).toContainText("cost unavailable because these requests carried no price");
 	await expect(page.getByTestId("usage-chart-empty")).toBeVisible();
 	// Unreported cache traffic is named, never rendered as a confident zero.
 	await expect(page.getByTestId("usage-stat-cached")).toContainText("Unavailable");
@@ -472,10 +475,11 @@ test("unpriced requests say Unavailable in the breakdown and 100% Unpriced, not 
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByTestId("open-inventory").click();
+	await page.getByTestId("open-inference").click();
 	await page.getByTestId("inventory-tab-usage").click();
 
-	await expect(page.getByTestId("usage-hero-value")).toHaveText("Unavailable");
-	await expect(page.getByTestId("usage-hero-note")).toContainText("No request in this window carried a price");
+	await expect(page.getByTestId("usage-hero-value")).toHaveText("675K");
+	await expect(page.getByTestId("usage-hero-note")).toContainText("cost unavailable because these requests carried no price");
 	await expect(page.getByTestId("usage-provider-openrouter")).toContainText("Unavailable");
 	await expect(page.getByTestId("usage-stat-requests")).toContainText("6");
 	await expect(page.getByTestId("usage-stat-total")).toContainText("675K");

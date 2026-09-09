@@ -1,0 +1,97 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+body{font:16px system-ui;padding:20px;color:#192a38;background:#f5f7f9}
+img{display:block;width:256px;height:192px;image-rendering:pixelated;border:1px solid #cfd8e0;background:#fff}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:16px 0 0}
+dt{font-weight:600}
+</style></head><body>
+<h1>Managed media</h1>
+<p>Networkless acceptance fixture. Frame bytes arrive on the native media port; this document never fetches.</p>
+<img alt="Latest frame" />
+<dl>
+<dt>seed</dt><dd id="seed">—</dd>
+<dt>frame</dt><dd id="sequence">—</dd>
+<dt>mode</dt><dd id="mode">—</dd>
+<dt>history</dt><dd id="history">0</dd>
+<dt>digest</dt><dd id="digest">—</dd>
+<dt>session</dt><dd id="session">no state yet</dd>
+</dl>
+<script>
+let state, registered=false, history=[], latest=null;
+function send(operation,fields){parent.postMessage({type:'synth.visual.session.request.v1',requestId:String(Date.now())+Math.random(),operation,...fields},'*');}
+// A frame body can arrive between two session-state messages, so the version
+// this document last saw may already be stale. Queue what the pane is showing
+// and flush it against the next state it is actually given; a dropped commit
+// would leave the picture and the committed state disagreeing.
+let pending=null;
+function commit(values){pending=Object.assign(pending||{},values);flush();}
+function flush(){
+  if(!state||!pending)return;
+  const values=pending;pending=null;
+  send('act',{action:{id:String(Date.now())+Math.random(),kind:'presentation.patch',expectedStateVersion:state.stateVersion,payload:{values}}});
+}
+function paint(){
+  document.getElementById('seed').textContent=latest?String(latest.seed):'—';
+  document.getElementById('sequence').textContent=latest?String(latest.frameSequence):'—';
+  document.getElementById('mode').textContent=latest?latest.mode:'—';
+  document.getElementById('digest').textContent=latest&&latest.frame?String(latest.frame.contentDigest).slice(0,16):'—';
+  document.getElementById('history').textContent=String(history.length);
+  if(latest)document.querySelector('img').src=latest.dataUrl;
+}
+addEventListener('message',function(event){
+  const data=event.data||{};
+  if(event.source===parent&&data.type==='synth.visual.session.state.v1'){
+    state=data.state;
+    flush();
+    if(!registered){
+      registered=true;
+      // Plain, non-nullable controls with concrete "nothing yet" defaults: a
+      // rejected registration is silent, and the pane would then paint frames
+      // that never reach committed state.
+      send('register',{controls:[
+        {id:'frame.selectedSeed',label:'Selected seed',type:'number',minimum:-1},
+        {id:'frame.selectedSequence',label:'Selected frame',type:'number',minimum:-1},
+        {id:'frame.shownSequence',label:'Shown frame',type:'number',minimum:-1},
+        {id:'frame.shownSeed',label:'Shown seed',type:'number',minimum:-1},
+        {id:'frame.shownMode',label:'Shown mode',type:'string'},
+        {id:'frame.shownDigest',label:'Shown digest',type:'string'},
+        {id:'frame.historyDepth',label:'History depth',type:'number',minimum:0}
+      ],defaults:{'frame.selectedSeed':-1,'frame.selectedSequence':-1,'frame.shownSequence':-1,'frame.shownSeed':-1,'frame.shownMode':'','frame.shownDigest':'','frame.historyDepth':0}});
+      return;
+    }
+    // A human or agent selection asks the host for that historical body. The
+    // document never reaches the network; the host owns the media port.
+    const wanted=Number(state.values['frame.selectedSequence']);
+    const wantedSeed=Number(state.values['frame.selectedSeed']);
+    // A selection names its own seed. Asking with whichever seed the live lane
+    // happened to deliver last builds a (seed, frame) pair that never existed,
+    // and the host answers "not found" for a frame the run really holds.
+    if(wanted>=0&&wantedSeed>=0&&!(latest&&Number(latest.frameSequence)===wanted&&Number(latest.seed)===wantedSeed)){
+      parent.postMessage({type:'synth.visual.managed.frame-request.v1',seed:wantedSeed,frameSequence:wanted},'*');
+    }
+    return;
+  }
+  if(event.source!==window)return;
+  if(data.type==='synth.visual.frame-history.v1'){
+    history=(data.payload&&data.payload.frames)||[];
+    paint();
+    commit({'frame.historyDepth':history.length});
+    return;
+  }
+  if(data.type==='synth.visual.frame-delta.v1'){
+    // An explicit selection outranks the live lane: a later live frame must not
+    // silently replace the frame a human or agent asked to look at.
+    const wanted=state?Number(state.values['frame.selectedSequence']):-1;
+    const wantedSeed=state?Number(state.values['frame.selectedSeed']):-1;
+    if(data.payload.mode==='live'&&wanted>=0&&wantedSeed>=0
+      &&!(Number(data.payload.frameSequence)===wanted&&Number(data.payload.seed)===wantedSeed))return;
+    latest=data.payload;
+    paint();
+    commit({
+      'frame.shownSequence':latest.frameSequence,
+      'frame.shownSeed':latest.seed,
+      'frame.shownMode':latest.mode,
+      'frame.shownDigest':latest.frame?String(latest.frame.contentDigest):''
+    });
+  }
+});
+</script></body></html>

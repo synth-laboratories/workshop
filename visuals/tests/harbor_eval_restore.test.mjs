@@ -284,6 +284,7 @@ test("frame evidence is counted across the run, not only the selected trial", ()
 
 test("the anonymous data prop does not shadow a single declared input", async () => {
   const { anonymousDataProp } = await import("../runtime/bind.ts");
+  assert.equal(anonymousDataProp({}),undefined,"Absent bindings must not fabricate an object payload during cold mount");
   const acceptance = { events: [{ kind: "acceptance", payload: { decision: "pass" } }] };
   // `live.intern_acceptance.v1` reads `props.data ?? props.acceptance`. Handing
   // it the whole map made it read `{ acceptance: {...} }`, find no `events`,

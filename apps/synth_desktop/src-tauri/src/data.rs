@@ -236,6 +236,133 @@ pub struct InspectedAsset {
     pub verified: bool,
 }
 
+/// Media types declared by the sealed traces inside a trusted archive, keyed by
+/// the qualified digest of the artifact body.
+///
+/// Content addressing has no opinion about what a body is, so the bundle
+/// manifest types every CAS blob as `application/octet-stream`. Only the sealed
+/// Trace V5 document declares an artifact's `media_type` and `role`. Deriving
+/// media presence from the blob inventory alone therefore reports "no media"
+/// for every real capture whose frames live in the CAS, which silently hides
+/// those traces from the media filter and from media-bound visuals.
+fn declared_artifact_media(
+    archive: Option<&[u8]>,
+    assets: &[InspectedAsset],
+) -> Result<std::collections::HashMap<String, (String, Option<String>)>> {
+    let mut declared = std::collections::HashMap::new();
+    let Some(archive) = archive else {
+        return Ok(declared);
+    };
+    let sealed: Vec<String> = assets
+        .iter()
+        .filter(|asset| asset.available && asset.kind == "trace")
+        .map(|asset| asset.relative_path.clone())
+        .collect();
+    if sealed.is_empty() {
+        return Ok(declared);
+    }
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive))
+        .context("open trusted trace archive for artifact declarations")?;
+    for path in sealed {
+        let Ok(mut entry) = zip.by_name(&path) else {
+            continue;
+        };
+        if entry.size() > MAX_SEALED_TRACE_BYTES {
+            bail!("sealed trace {path} exceeds {MAX_SEALED_TRACE_BYTES} bytes");
+        }
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        entry.read_to_end(&mut bytes)?;
+        let document: Value = serde_json::from_slice(&bytes)
+            .with_context(|| format!("decode sealed trace {path}"))?;
+        let Some(artifacts) = document.get("artifacts").and_then(Value::as_array) else {
+            continue;
+        };
+        for artifact in artifacts {
+            let (Some(digest), Some(media_type)) = (
+                artifact.get("digest").and_then(Value::as_str),
+                artifact.get("media_type").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            let role = artifact
+                .get("role")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            declared.insert(qualified_sha256(digest)?, (media_type.to_owned(), role));
+        }
+    }
+    Ok(declared)
+}
+
+/// Publish the sealed trace's own media bodies into Workshop's blob CAS.
+///
+/// A replayed visual resolves a frame by content digest. While media existed
+/// only in the live run relay, a sealed trace could name a frame it could not
+/// show, and a consumer had no honest choice but to fall back to the live
+/// latest-frame endpoint — which is exactly what replay must never do. The
+/// bodies are already verified inside the trusted archive, so republishing them
+/// under their own digest adds no new authority: it only makes the sealed
+/// bundle self-sufficient for offline replay.
+fn publish_declared_media(
+    content: &ContentStore,
+    archive: Option<&[u8]>,
+    assets: &[InspectedAsset],
+    declared: &std::collections::HashMap<String, (String, Option<String>)>,
+) -> Result<Vec<String>> {
+    let mut published = Vec::new();
+    let (Some(archive), false) = (archive, declared.is_empty()) else {
+        return Ok(published);
+    };
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive))
+        .context("open trusted trace archive for media publication")?;
+    for asset in assets {
+        if !asset.available || !asset.verified {
+            continue;
+        }
+        let Some(digest) = asset.bytes_digest.as_deref() else {
+            continue;
+        };
+        let qualified = qualified_sha256(digest)?;
+        let Some((media_type, _)) = declared.get(&qualified) else {
+            continue;
+        };
+        if !is_media_type(media_type) || content.exists("blobs", &qualified[7..]) {
+            continue;
+        }
+        let mut entry = match zip.by_name(&asset.relative_path) {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if entry.size() > MAX_MEDIA_OBJECT_BYTES {
+            bail!(
+                "sealed media {} exceeds {MAX_MEDIA_OBJECT_BYTES} bytes",
+                asset.relative_path
+            );
+        }
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        entry.read_to_end(&mut bytes)?;
+        let stored = content.put_bytes("blobs", &bytes)?;
+        if qualified_sha256(&stored)? != qualified {
+            bail!(
+                "sealed media {} did not hash to its declared digest",
+                asset.relative_path
+            );
+        }
+        published.push(qualified);
+    }
+    Ok(published)
+}
+
+const MAX_MEDIA_OBJECT_BYTES: u64 = 32 * 1024 * 1024;
+
+fn is_media_type(media_type: &str) -> bool {
+    media_type.starts_with("image/")
+        || media_type.starts_with("audio/")
+        || media_type.starts_with("video/")
+}
+
+const MAX_SEALED_TRACE_BYTES: u64 = 64 * 1024 * 1024;
+
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 pub struct InspectedProjection {
     pub path: String,
@@ -821,6 +948,23 @@ impl DataStore {
             archive_digest = Some(qualified_stored);
         }
 
+        // Type the CAS blobs from the sealed traces, and publish their media
+        // bodies, before anything is written: the blob inventory alone cannot
+        // tell an observation frame from a log, and a replayed visual must be
+        // able to resolve that frame without the live run relay.
+        let declared_media = if trusted {
+            declared_artifact_media(inspected.archive_bytes.as_deref(), &inspected.inspection.assets)?
+        } else {
+            std::collections::HashMap::new()
+        };
+        let published_media = publish_declared_media(
+            &self.content,
+            inspected.archive_bytes.as_deref(),
+            &inspected.inspection.assets,
+            &declared_media,
+        )?;
+        debug_assert!(published_media.len() <= declared_media.len());
+
         let now = Utc::now().to_rfc3339();
         let source_uri = request
             .source_uri
@@ -926,11 +1070,18 @@ impl DataStore {
                     params![bundle_digest,archive_digest,archive_path,&compatibility,&validation_status,&source_kind,&source_uri,assets.len() as i64,archive_byte_size,&now,serde_json::to_string(&inspection_json)?],
                 )?;
 
+                let declared_for = |asset: &InspectedAsset| {
+                    asset
+                        .bytes_digest
+                        .as_deref()
+                        .and_then(|digest| qualified_sha256(digest).ok())
+                        .and_then(|digest| declared_media.get(&digest))
+                };
                 let has_media = assets.iter().any(|asset| {
                     asset.available
-                        && (asset.media_type.starts_with("image/")
-                            || asset.media_type.starts_with("audio/")
-                            || asset.media_type.starts_with("video/"))
+                        && (is_media_type(&asset.media_type)
+                            || declared_for(asset)
+                                .is_some_and(|(media_type, _)| is_media_type(media_type)))
                 });
                 let has_evidence = assets
                     .iter()
@@ -1008,7 +1159,7 @@ impl DataStore {
                     conn.execute(
                         "INSERT INTO trace_index(trace_digest,projector_version,trace_kind,producer,model,provider,harness,benchmark,task_id,seed,terminal_reason,lifecycle_status,capture_status,reward,cost_usd,prompt_tokens,completion_tokens,span_count,event_count,tool_call_count,error_count,started_at,ended_at,duration_ms,has_media,has_evidence,search_text)
                          VALUES(?1,'synth.trace-inspection.v1',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)
-                         ON CONFLICT(trace_digest) DO UPDATE SET projector_version=excluded.projector_version,trace_kind=excluded.trace_kind,producer=excluded.producer,model=excluded.model,provider=excluded.provider,harness=excluded.harness,benchmark=excluded.benchmark,task_id=excluded.task_id,seed=excluded.seed,terminal_reason=excluded.terminal_reason,lifecycle_status=excluded.lifecycle_status,capture_status=excluded.capture_status,reward=excluded.reward,cost_usd=excluded.cost_usd,prompt_tokens=excluded.prompt_tokens,completion_tokens=excluded.completion_tokens,span_count=excluded.span_count,event_count=excluded.event_count,tool_call_count=excluded.tool_call_count,error_count=excluded.error_count,started_at=excluded.started_at,ended_at=excluded.ended_at,duration_ms=excluded.duration_ms,search_text=excluded.search_text",
+                         ON CONFLICT(trace_digest) DO UPDATE SET projector_version=excluded.projector_version,trace_kind=excluded.trace_kind,producer=excluded.producer,model=excluded.model,provider=excluded.provider,harness=excluded.harness,benchmark=excluded.benchmark,task_id=excluded.task_id,seed=excluded.seed,terminal_reason=excluded.terminal_reason,lifecycle_status=excluded.lifecycle_status,capture_status=excluded.capture_status,reward=excluded.reward,cost_usd=excluded.cost_usd,prompt_tokens=excluded.prompt_tokens,completion_tokens=excluded.completion_tokens,span_count=excluded.span_count,event_count=excluded.event_count,tool_call_count=excluded.tool_call_count,error_count=excluded.error_count,started_at=excluded.started_at,ended_at=excluded.ended_at,duration_ms=excluded.duration_ms,has_media=excluded.has_media,has_evidence=excluded.has_evidence,search_text=excluded.search_text",
                         params![&trace_digest,&trace.trace_kind,&trace.producer,&trace.model,&trace.provider,&trace.harness,&trace.benchmark,&trace.task_id,trace.seed,&trace.terminal_reason,&trace.lifecycle_status,&trace.capture_status,trace.reward,trace.cost_usd,trace.prompt_tokens,trace.completion_tokens,trace.span_count.unwrap_or(0),trace.event_count.unwrap_or(0),trace.tool_call_count.unwrap_or(0),trace.error_count.unwrap_or(0),&trace.started_at,&trace.ended_at,trace.duration_ms,has_media as i64,has_evidence as i64,&search_text],
                     )?;
                     records.push(load_trace(conn, &row_id)?.context("load imported trace")?);
@@ -1016,11 +1167,21 @@ impl DataStore {
 
                 for asset in &assets {
                     let Some(bytes_digest) = asset.bytes_digest.as_deref() else { continue; };
+                    // A blob the sealed trace declares keeps that declaration, so a
+                    // consumer can find an observation frame without reopening the
+                    // archive. Anything the manifest already typed is left alone.
+                    let (media_type, role) = match declared_for(asset) {
+                        Some((declared, declared_role)) if !is_media_type(&asset.media_type) => (
+                            declared.as_str(),
+                            declared_role.as_deref().or(asset.role.as_deref()),
+                        ),
+                        _ => (asset.media_type.as_str(), asset.role.as_deref()),
+                    };
                     conn.execute(
                         "INSERT INTO trace_assets(bundle_digest,relative_path,kind,role,bytes_digest,semantic_digest,media_type,byte_size,availability)
                          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
                          ON CONFLICT(bundle_digest,relative_path) DO UPDATE SET kind=excluded.kind,role=excluded.role,bytes_digest=excluded.bytes_digest,semantic_digest=excluded.semantic_digest,media_type=excluded.media_type,byte_size=excluded.byte_size,availability=excluded.availability",
-                        params![bundle_digest,&asset.relative_path,&asset.kind,&asset.role,qualified_sha256(bytes_digest)?,asset.semantic_digest.as_deref().map(qualified_sha256).transpose()?,&asset.media_type,asset.byte_size.unwrap_or(0),if asset.available && asset.verified {"verified"} else if asset.available {"available"} else {"missing"}],
+                        params![bundle_digest,&asset.relative_path,&asset.kind,role,qualified_sha256(bytes_digest)?,asset.semantic_digest.as_deref().map(qualified_sha256).transpose()?,media_type,asset.byte_size.unwrap_or(0),if asset.available && asset.verified {"verified"} else if asset.available {"available"} else {"missing"}],
                     )?;
                 }
 
@@ -1838,6 +1999,178 @@ mod tests {
             })
             .await
             .unwrap()
+    }
+
+    /// A real capture stores its frames in the content-addressed blob store,
+    /// whose manifest types every body as `application/octet-stream`. Only the
+    /// sealed trace declares that a blob is a PNG observation, so ingest must
+    /// read the declaration; otherwise every populated capture reports
+    /// `hasMedia: false` and disappears from the media filter.
+    fn inspection_with_a_sealed_png_artifact(
+        trace_hex: &str,
+    ) -> crate::trace_ingest::InspectedInput {
+        let frame = b"\x89PNG\r\n\x1a\n deterministic test frame";
+        let frame_digest = format!("sha256:{:x}", Sha256::digest(frame));
+        let sealed = serde_json::json!({
+            "schema_version": "synth.trace.v5",
+            "trace_id": "rollout-1",
+            "artifacts": [{
+                "artifact_id": "art_frame",
+                "digest": frame_digest,
+                "logical_name": "frame-000.png",
+                "media_type": "image/png",
+                "role": "observation",
+                "size_bytes": frame.len(),
+                "uri": "blobs/sha256/aa/frame"
+            }]
+        });
+        let mut archive = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut archive));
+            let options = zip::write::SimpleFileOptions::default();
+            writer
+                .start_file("traces/rollout-1/sealed/trace.json", options)
+                .unwrap();
+            std::io::Write::write_all(&mut writer, sealed.to_string().as_bytes()).unwrap();
+            writer.start_file("blobs/sha256/aa/frame", options).unwrap();
+            std::io::Write::write_all(&mut writer, frame).unwrap();
+            writer.finish().unwrap();
+        }
+        let archive_digest = format!("sha256:{:x}", Sha256::digest(&archive));
+        let inspection_json = serde_json::json!({
+            "schema_version": "synth.trace-inspection.v1",
+            "input_kind": "bundle_archive",
+            "compatibility": "native",
+            "source_bytes_digest": archive_digest,
+            "bundle_digest": format!("sha256:{}", "c".repeat(64)),
+            "archive_digest": archive_digest,
+            "self_contained": true,
+            "trusted": true,
+            "validation": {"valid": true, "issues": []},
+            "traces": [{
+                "trace_id": "rollout-1",
+                "trace_digest": format!("sha256:{trace_hex}"),
+                "schema_version": "synth.trace.v5"
+            }],
+            "assets": [
+                {
+                    "path": "traces/rollout-1/sealed/trace.json",
+                    "kind": "trace",
+                    "role": "sealed_trace",
+                    "bytes_digest": format!("sha256:{:x}", Sha256::digest(sealed.to_string().as_bytes())),
+                    "media_type": "application/json",
+                    "byte_size": sealed.to_string().len(),
+                    "available": true,
+                    "verified": true
+                },
+                {
+                    "path": "blobs/sha256/aa/frame",
+                    "kind": "blob",
+                    "role": "blob",
+                    "bytes_digest": frame_digest,
+                    "media_type": "application/octet-stream",
+                    "byte_size": frame.len(),
+                    "available": true,
+                    "verified": true
+                }
+            ],
+            "projections": []
+        });
+        crate::trace_ingest::InspectedInput {
+            inspection: serde_json::from_value(inspection_json.clone()).unwrap(),
+            inspection_json,
+            archive_bytes: Some(archive),
+            raw_file_bytes: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn sealed_artifact_declarations_type_the_content_addressed_blobs() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let db = storage.database().clone();
+        let content = ContentStore::new(storage.content_root());
+        let data = DataStore::new(db.clone(), content.clone());
+        let trace_hex = "d".repeat(64);
+        let frame = b"\x89PNG\r\n\x1a\n deterministic test frame";
+        let frame_digest = format!("{:x}", Sha256::digest(frame));
+        assert!(
+            !content.exists("blobs", &frame_digest),
+            "the frame must not already be published"
+        );
+        let (result, _) = data
+            .commit_inspected_trace(
+                ingest_request(None),
+                inspection_with_a_sealed_png_artifact(&trace_hex),
+            )
+            .await
+            .unwrap();
+        assert!(result.trusted);
+
+        let (has_media, blob_media, blob_role, sealed_media): (i64, String, Option<String>, String) =
+            db.clone()
+                .run(move |conn| {
+                    let has_media = conn.query_row(
+                        "SELECT has_media FROM trace_index WHERE trace_digest=?1",
+                        params![format!("sha256:{}", "d".repeat(64))],
+                        |row| row.get(0),
+                    )?;
+                    let (blob_media, blob_role) = conn.query_row(
+                        "SELECT media_type, role FROM trace_assets WHERE relative_path='blobs/sha256/aa/frame'",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?;
+                    let sealed_media = conn.query_row(
+                        "SELECT media_type FROM trace_assets WHERE kind='trace'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    Ok((has_media, blob_media, blob_role, sealed_media))
+                })
+                .await
+                .unwrap();
+        assert_eq!(has_media, 1, "a sealed PNG artifact is media");
+        assert_eq!(blob_media, "image/png", "the blob keeps its declared type");
+        assert_eq!(blob_role.as_deref(), Some("observation"));
+        assert_eq!(
+            sealed_media, "application/json",
+            "an asset the manifest already typed is left alone"
+        );
+
+        // A trace first indexed without media (an older ingest, or a bundle
+        // whose media arrived later) must not keep the stale flag: the index is
+        // what the media filter reads, so a silent disagreement with the trace
+        // record hides a populated capture.
+        db.clone()
+            .run(|conn| {
+                conn.execute("UPDATE trace_index SET has_media=0, has_evidence=0", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        data.commit_inspected_trace(
+            ingest_request(None),
+            inspection_with_a_sealed_png_artifact(&"d".repeat(64)),
+        )
+        .await
+        .unwrap();
+        let reindexed: i64 = db
+            .clone()
+            .run(|conn| {
+                Ok(conn.query_row("SELECT has_media FROM trace_index", [], |row| row.get(0))?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(reindexed, 1, "re-import must correct a stale media flag");
+
+        // Offline replay resolves a frame by digest from Workshop's blob CAS.
+        // Without this the sealed trace names a frame it cannot show, and the
+        // only way to render one is the live endpoint replay must never poll.
+        assert_eq!(
+            content.get_bytes("blobs", &frame_digest).unwrap(),
+            frame,
+            "the sealed media body must be resolvable by its own digest"
+        );
     }
 
     #[tokio::test]

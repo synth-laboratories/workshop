@@ -336,6 +336,13 @@ export const commands = {
 	offset: number | null,
 } | null) => typedError<VisualRecord_Serialize[], AppError_Serialize>(__TAURI_INVOKE("visuals_list", { query })),
 	visualsGet: (visualId: string) => typedError<VisualRecord_Serialize, AppError_Serialize>(__TAURI_INVOKE("visuals_get", { visualId })),
+	visualsEngine: (visualId: string, request: unknown) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visuals_engine", { visualId, request })),
+	visualsPresentationGet: (visualId: string) => typedError<unknown | null, AppError_Serialize>(__TAURI_INVOKE("visuals_presentation_get", { visualId })),
+	visualsPresentationPut: (visualId: string, presentation: unknown) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visuals_presentation_put", { visualId, presentation })),
+	visualsSnapshotsList: (visualId: string) => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("visuals_snapshots_list", { visualId })),
+	visualsSnapshotPut: (visualId: string, snapshot: unknown) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visuals_snapshot_put", { visualId, snapshot })),
+	visualsRecordingsList: (visualId: string) => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("visuals_recordings_list", { visualId })),
+	visualsRecordingPut: (visualId: string, recording: unknown) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visuals_recording_put", { visualId, recording })),
 	visualsObservationReport: (observation: RenderedVisualObservation) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("visuals_observation_report", { observation })),
 	visualsRevisions: (visualId: string) => typedError<VisualRevision[], AppError_Serialize>(__TAURI_INVOKE("visuals_revisions", { visualId })),
 	visualsAnnotationsList: (visualId: string) => typedError<VisualAnnotation[], AppError_Serialize>(__TAURI_INVOKE("visuals_annotations_list", { visualId })),
@@ -4323,6 +4330,11 @@ export type TemplateMeta = {
 	 */
 	family?: string | null,
 	version?: string | null,
+	/**
+	 *  Registered renderer capability. Dispatch is based on this descriptor,
+	 *  never on a hard-coded template id.
+	 */
+	rendererKind?: string | null,
 	description?: string | null,
 	tags?: string[],
 	path?: string | null,

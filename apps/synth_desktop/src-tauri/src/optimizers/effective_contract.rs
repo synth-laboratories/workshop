@@ -407,6 +407,7 @@ mod tests {
             shell_path: None,
             renderer_path: None,
             source_kind: None,
+            renderer_kind: None,
             example_binding: None,
             inputs: vec![],
             slots: vec![],

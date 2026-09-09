@@ -82,17 +82,6 @@ pub fn lock_wait_snapshot() -> (u64, u64, u64, u64, u64, u64, u64) {
     )
 }
 
-/// Tests only: start from a known state.
-pub fn reset_lock_wait() {
-    LOCK_WAIT.reads.store(0, Ordering::Relaxed);
-    LOCK_WAIT.read_wait_us.store(0, Ordering::Relaxed);
-    LOCK_WAIT.read_wait_max_us.store(0, Ordering::Relaxed);
-    LOCK_WAIT.writes.store(0, Ordering::Relaxed);
-    LOCK_WAIT.write_wait_us.store(0, Ordering::Relaxed);
-    LOCK_WAIT.write_wait_max_us.store(0, Ordering::Relaxed);
-    LOCK_WAIT.timeouts.store(0, Ordering::Relaxed);
-}
-
 pub fn app_data_root() -> PathBuf {
     crate::instance::data_root()
 }
@@ -449,7 +438,10 @@ mod tests {
     async fn lock_acquisition_wait_is_measured_and_attributed() {
         let temp = tempfile::tempdir().unwrap();
         let storage = Storage::open(temp.path()).unwrap();
-        reset_lock_wait();
+        // These counters are process-global diagnostics. Other database tests
+        // run concurrently, so resetting them here makes exact totals racy.
+        // Measure this test's contribution as a monotonic delta instead.
+        let before = storage.diagnostics().unwrap().lock_wait;
 
         storage
             .database()
@@ -466,9 +458,14 @@ mod tests {
             .unwrap();
 
         let diagnostics = storage.diagnostics().unwrap();
-        assert_eq!(diagnostics.lock_wait.read_transactions, 1);
-        assert_eq!(diagnostics.lock_wait.write_transactions, 1);
-        assert_eq!(diagnostics.lock_wait.timeouts, 0);
+        assert!(
+            diagnostics.lock_wait.read_transactions >= before.read_transactions + 1,
+            "the read transaction must be represented in lock-wait diagnostics"
+        );
+        assert!(
+            diagnostics.lock_wait.write_transactions >= before.write_transactions + 1,
+            "the write transaction must be represented in lock-wait diagnostics"
+        );
         // A deferred read takes a WAL snapshot rather than queueing, so its
         // wait is the thing that should stay near zero. A rising read wait
         // means a read path is opening `Immediate` somewhere.

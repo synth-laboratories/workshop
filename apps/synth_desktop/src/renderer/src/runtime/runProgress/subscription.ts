@@ -467,8 +467,9 @@ function shouldHydrateEvidence(entry: Entry, viewV2?: OptimizerRunViewV2): boole
 	for (const mode of entry.evidenceModes.values()) {
 		if (mode === "full") return true;
 	}
-	void viewV2;
-	return false;
+	// Legacy transports have no summary projection; bounded event pages are
+	// their only progress authority. Native V2 aggregate readers remain journal-free.
+	return !viewV2;
 }
 
 /**

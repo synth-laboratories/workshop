@@ -28,6 +28,7 @@ import type {
 	OptimizerAlgorithmInfo,
 	OptimizerRunRecord
 } from "@synth/runtime-protocol";
+import type { PresentationState, VisualRecording, VisualSnapshot } from "@synth/visuals-protocol";
 export type { OptimizerAlgorithmInfo, OptimizerRunRecord };
 import type {
 	AnalysisSettings as JesterkyAnalysisSettings,
@@ -633,6 +634,14 @@ export type VisualsBridge = {
 		offset?: number;
 	}): Promise<VisualRecord[]>;
 	get(visualId: string): Promise<VisualRecord>;
+	engine?(visualId: string, request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	onEngineChanged?(callback: (identity: { visualId: string; revision: number; viewKey: string }) => void): () => void;
+	presentation(visualId: string): Promise<PresentationState | null>;
+	putPresentation(visualId: string, presentation: PresentationState & { expectedStateVersion: number }): Promise<PresentationState>;
+	snapshots(visualId: string): Promise<VisualSnapshot[]>;
+	putSnapshot(visualId: string, snapshot: VisualSnapshot): Promise<VisualSnapshot>;
+	recordings(visualId: string): Promise<VisualRecording[]>;
+	putRecording(visualId: string, recording: VisualRecording): Promise<VisualRecording>;
 	reportObservation(observation: {
 		schemaVersion: "synth.rendered-visual-observation.v1";
 		visualId: string;

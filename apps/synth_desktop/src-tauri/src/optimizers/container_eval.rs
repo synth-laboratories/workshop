@@ -9747,12 +9747,19 @@ max_total_rollouts = 4
                                 }]
                             }
                         })),
-                        ("POST", "/policy-configs") => {
+                        ("POST", path) if path == "/policy-configs" || path.starts_with("/policy-configs/") => {
                             let proxy = request.body.pointer("/config/base_url")
                                 .and_then(Value::as_str).unwrap_or("");
                             assert!(proxy.contains("/cap/wcap_"), "mock policy must use a scoped proxy");
                             assert!(request.body.pointer("/config/api_key").is_none());
-                            JsonHttpResponse::ok(json!({"config_id": request.body["config_id"]}))
+                            let requested = request
+                                .body
+                                .get("config_id")
+                                .or_else(|| request.body.get("configId"))
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            JsonHttpResponse::ok(json!({"config_id": requested}))
                         }
                         ("POST", "/rollouts/prepare") => {
                             let rollout_id = request.body.get("rollout_id").and_then(Value::as_str)
@@ -9763,11 +9770,15 @@ max_total_rollouts = 4
                                 "rollout_id": rollout_id,
                                 "stream": {
                                     "id": format!("stream:{rollout_id}"),
+                                    // A craftax run publishes a live visual, and binding
+                                    // that pane needs a declared SSE url -- the host
+                                    // refuses to guess one. Events still flow over the
+                                    // poll transport; this is the descriptor the pane
+                                    // binds, which is why omitting it failed the run
+                                    // before a single event was relayed.
                                     "transports": {
                                         "poll": {"url": format!("/rollouts/{rollout_id}/events")},
-                                        "sse": if request.body.pointer("/telemetry/transport") == Some(&json!("sse")) {
-                                            json!({"url": format!("/rollouts/{rollout_id}/stream")})
-                                        } else { Value::Null }
+                                        "sse": {"url": format!("/rollouts/{rollout_id}/stream")}
                                     }
                                 }
                             }))

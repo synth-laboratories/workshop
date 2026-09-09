@@ -173,7 +173,11 @@ mod tests {
     #[test]
     fn parses_name_and_description_from_every_bundled_skill() {
         let hits = list_skills();
-        assert_eq!(hits.len(), BUNDLED_SKILLS.len());
+        let expected = BUNDLED_SKILLS
+            .iter()
+            .filter(|skill| skill.id != "use-synth-jesterky" || crate::plugins::jesterky::available())
+            .count();
+        assert_eq!(hits.len(), expected);
         for hit in &hits {
             assert!(!hit.name.is_empty(), "{} missing a name", hit.id);
             assert!(

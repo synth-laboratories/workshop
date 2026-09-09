@@ -82,6 +82,7 @@ test("allowlist matches the advertised sourced kit", () => {
     "react/jsx-runtime",
     "react/jsx-dev-runtime",
     "react-dom",
+    "@synth/visuals-react",
     "@synth/visuals/chrome",
     "@synth/visuals/chrome/useLiveEvalStream",
     "@synth/visuals/components/agent_trace.v1",

@@ -1,0 +1,12 @@
+{
+  "name": "@synth/visuals-protocol",
+  "version": "0.10.0",
+  "private": true,
+  "type": "module",
+  "scripts":{"typecheck":"tsc -p tsconfig.json"},
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./schema/synth.visuals-core.v1.schema.json",
+    "./session-schema": "./schema/synth.visual-session.v1.schema.json"
+  }
+}

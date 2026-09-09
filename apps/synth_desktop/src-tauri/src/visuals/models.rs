@@ -62,14 +62,22 @@ impl RendererKind {
     }
 
     pub fn parse(value: &str) -> Self {
+        Self::try_parse(value).unwrap_or(Self::Template)
+    }
+
+    /// Parse an authored renderer declaration without silently converting a
+    /// typo into the generic template renderer. `parse` remains permissive for
+    /// historical database rows written before renderer registration existed.
+    pub fn try_parse(value: &str) -> Option<Self> {
         match value {
-            "tsx" => Self::Tsx,
-            "html" => Self::Html,
-            "mermaid" => Self::Mermaid,
-            "systems" => Self::Systems,
-            "systems-dynamic" => Self::SystemsDynamic,
-            "chart" => Self::Chart,
-            _ => Self::Template,
+            "template" => Some(Self::Template),
+            "tsx" => Some(Self::Tsx),
+            "html" => Some(Self::Html),
+            "mermaid" => Some(Self::Mermaid),
+            "systems" => Some(Self::Systems),
+            "systems-dynamic" => Some(Self::SystemsDynamic),
+            "chart" => Some(Self::Chart),
+            _ => None,
         }
     }
 }

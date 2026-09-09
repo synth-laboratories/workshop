@@ -8420,6 +8420,15 @@ pub(in crate::optimizers) mod tests {
         tempfile::TempDir,
         tokio::sync::broadcast::Receiver<AppEvent>,
     ) {
+        // Every recipe these tests exercise declares a real provider, so the run
+        // asks the secrets proxy for a scoped workload credential before its
+        // first model call. Only the healthbench harness installed one, which
+        // left every other container-eval test failing at that gate -- trials
+        // cancelled, no records, and an error that read as a broken relay rather
+        // than as a harness that never supplied the credential the recipe
+        // legitimately needs. The installer is idempotent and backed by an
+        // in-memory store: it reads no Keychain and holds no real key.
+        crate::secrets::install_test_live_openai();
         let dir = tempdir().unwrap();
         let storage = Storage::open(dir.path().join("core")).unwrap();
         let journal = EventJournal::new(storage.database().clone());

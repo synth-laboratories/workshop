@@ -74,6 +74,11 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_69,
     MIGRATION_70,
     MIGRATION_71,
+    MIGRATION_72,
+    MIGRATION_73,
+    MIGRATION_74,
+    MIGRATION_75,
+    MIGRATION_76,
 ];
 
 const MIGRATION_70: &str = r#"
@@ -5654,4 +5659,123 @@ CREATE INDEX IF NOT EXISTS human_annotation_adjudication_campaign
 
 const MIGRATION_71: &str = r#"
 CREATE TABLE desktop_state (key TEXT PRIMARY KEY, value TEXT, revision INTEGER NOT NULL CHECK(revision > 0));
+"#;
+
+/// Durable, engine-owned visual interaction state. Domain data stays in its
+/// authoritative stores; these rows preserve how a human or agent explored
+/// and presented one exact visual revision.
+const MIGRATION_72: &str = r#"
+CREATE TABLE visual_presentation_states (
+    visual_id TEXT PRIMARY KEY REFERENCES visuals(id) ON DELETE CASCADE,
+    visual_revision INTEGER NOT NULL,
+    state_version INTEGER NOT NULL CHECK(state_version >= 0),
+    schema_version TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (visual_id, visual_revision)
+        REFERENCES visual_revisions(visual_id, revision)
+);
+
+CREATE TABLE visual_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    visual_id TEXT NOT NULL REFERENCES visuals(id) ON DELETE CASCADE,
+    visual_revision INTEGER NOT NULL,
+    state_version INTEGER NOT NULL CHECK(state_version >= 0),
+    snapshot_json TEXT NOT NULL,
+    semantic_scene_digest TEXT NOT NULL,
+    presentation_digest TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    FOREIGN KEY (visual_id, visual_revision)
+        REFERENCES visual_revisions(visual_id, revision)
+);
+CREATE INDEX visual_snapshots_visual_time
+ON visual_snapshots(visual_id, captured_at);
+
+CREATE TABLE visual_recordings (
+    recording_id TEXT PRIMARY KEY,
+    visual_id TEXT NOT NULL REFERENCES visuals(id) ON DELETE CASCADE,
+    recording_json TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT
+);
+CREATE INDEX visual_recordings_visual_time
+ON visual_recordings(visual_id, started_at);
+
+CREATE TABLE visual_recording_events (
+    recording_id TEXT NOT NULL REFERENCES visual_recordings(recording_id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL CHECK(sequence > 0),
+    state_version INTEGER NOT NULL CHECK(state_version >= 0),
+    event_json TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    PRIMARY KEY(recording_id, sequence)
+);
+"#;
+
+const MIGRATION_73: &str = r#"
+CREATE TABLE visual_engine_sessions (
+ visual_id TEXT NOT NULL, revision INTEGER NOT NULL, view_key TEXT NOT NULL,
+ state_json TEXT NOT NULL, state_version INTEGER NOT NULL DEFAULT 0,
+ published_at TEXT, active_recording TEXT,
+ PRIMARY KEY(visual_id,revision,view_key),
+ FOREIGN KEY(visual_id,revision) REFERENCES visual_revisions(visual_id,revision)
+);
+CREATE TABLE visual_engine_receipts (
+ visual_id TEXT NOT NULL, revision INTEGER NOT NULL, view_key TEXT NOT NULL,
+ command_key TEXT NOT NULL, request_json TEXT NOT NULL, receipt_json TEXT NOT NULL,
+ PRIMARY KEY(visual_id,revision,view_key,command_key)
+);
+CREATE TABLE visual_engine_checkpoints (
+ id TEXT PRIMARY KEY, visual_id TEXT NOT NULL, revision INTEGER NOT NULL,
+ view_key TEXT NOT NULL, checkpoint_json TEXT NOT NULL, created_at TEXT NOT NULL,
+ FOREIGN KEY(visual_id,revision) REFERENCES visual_revisions(visual_id,revision)
+);
+CREATE INDEX visual_engine_checkpoint_lookup ON visual_engine_checkpoints(visual_id,revision,view_key,created_at);
+CREATE TABLE visual_engine_recordings (
+ id TEXT PRIMARY KEY, visual_id TEXT NOT NULL, revision INTEGER NOT NULL,
+ view_key TEXT NOT NULL, initial_json TEXT NOT NULL, created_at TEXT NOT NULL, ended_at TEXT,
+ FOREIGN KEY(visual_id,revision) REFERENCES visual_revisions(visual_id,revision)
+);
+CREATE INDEX visual_engine_recording_lookup ON visual_engine_recordings(visual_id,revision,view_key,created_at);
+CREATE TABLE visual_engine_events (
+ recording_id TEXT NOT NULL REFERENCES visual_engine_recordings(id), sequence INTEGER NOT NULL,
+ event_json TEXT NOT NULL, PRIMARY KEY(recording_id,sequence)
+);
+"#;
+
+const MIGRATION_74: &str = r#"
+CREATE TABLE visual_corpora (
+ visual_id TEXT NOT NULL, visual_revision INTEGER NOT NULL, corpus_id TEXT NOT NULL,
+ corpus_revision TEXT NOT NULL, schema_id TEXT NOT NULL, expected_count INTEGER NOT NULL,
+ sealed INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(visual_id,visual_revision,corpus_id,corpus_revision),
+ FOREIGN KEY(visual_id,visual_revision) REFERENCES visual_revisions(visual_id,revision)
+);
+CREATE TABLE visual_corpus_rows (
+ visual_id TEXT NOT NULL, visual_revision INTEGER NOT NULL, corpus_id TEXT NOT NULL, corpus_revision TEXT NOT NULL,
+ row_id TEXT NOT NULL, position INTEGER NOT NULL, row_json TEXT NOT NULL,
+ PRIMARY KEY(visual_id,visual_revision,corpus_id,corpus_revision,row_id),
+ UNIQUE(visual_id,visual_revision,corpus_id,corpus_revision,position),
+ FOREIGN KEY(visual_id,visual_revision,corpus_id,corpus_revision) REFERENCES visual_corpora(visual_id,visual_revision,corpus_id,corpus_revision)
+);
+CREATE INDEX visual_corpus_order ON visual_corpus_rows(visual_id,visual_revision,corpus_id,corpus_revision,position);
+"#;
+
+const MIGRATION_75: &str = r#"
+CREATE TABLE visual_corpus_details (
+ visual_id TEXT NOT NULL, visual_revision INTEGER NOT NULL, corpus_id TEXT NOT NULL,
+ corpus_revision TEXT NOT NULL, row_id TEXT NOT NULL, details_json TEXT NOT NULL,
+ PRIMARY KEY(visual_id,visual_revision,corpus_id,corpus_revision,row_id),
+ FOREIGN KEY(visual_id,visual_revision,corpus_id,corpus_revision,row_id)
+ REFERENCES visual_corpus_rows(visual_id,visual_revision,corpus_id,corpus_revision,row_id)
+);
+"#;
+
+const MIGRATION_76: &str = r#"
+CREATE TABLE visual_evidence_cuts (
+ visual_id TEXT NOT NULL, visual_revision INTEGER NOT NULL, digest TEXT NOT NULL,
+ value_json TEXT NOT NULL, captured_at TEXT NOT NULL,
+ PRIMARY KEY(visual_id,visual_revision,digest),
+ FOREIGN KEY(visual_id,visual_revision) REFERENCES visual_revisions(visual_id,revision)
+);
 "#;

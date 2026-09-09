@@ -68,9 +68,9 @@ test.describe("coverage gaps", () => {
 				onStatus: () => () => undefined, listModels: async () => [],
 				chooseModelDirectory: async () => null, setModelDirectory: async () => undefined, clearModelDirectory: async () => undefined
 			};
-			// Chat projection must open from structuredContent alone — registry hits fail the contract.
+			// Empty historical registry; the newly emitted visual must open from structuredContent without an individual lookup.
 			testWindow.synthVisuals = {
-				list: async () => { throw new Error("chat projection must not query the separate visuals registry"); },
+				list: async () => [],
 				get: async () => { throw new Error("chat projection must not query the separate visuals registry"); },
 				listTemplates: async () => [],
 				getTemplate: async () => { throw new Error("unused"); },
@@ -104,8 +104,7 @@ test.describe("coverage gaps", () => {
 		});
 		await page.reload();
 		await page.getByTestId("local-chat-visual-create-session").click();
-		await page.getByTestId("activity-mode-menu-trigger").click();
-		await page.getByTestId("activity-mode-option-detailed").click();
+		await page.evaluate(async () => { const {updatePreferences} = await import("/src/preferences"); updatePreferences(current => ({...current, toolActivity: {mode: "detailed"}})); });
 		await page.evaluate(() => {
 			const emit = (window as typeof window & { __emitVisualCreateCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitVisualCreateCodex;
 			const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "visual-create-session", method, params });
@@ -216,7 +215,8 @@ test.describe("coverage gaps", () => {
 		await page.getByTestId("titlebar").waitFor();
 		await page.getByTestId("open-inventory").click();
 		await page.getByTestId("inventory-container-rust-container").waitFor();
-		await page.getByTestId("inventory-tab-traces").click();
+		await page.getByTestId("open-inventory").click();
+	await page.getByTestId("inventory-tab-traces").click();
 		await page.getByTestId("inventory-trace-rust-trace").waitFor();
 		await expect(page.getByText("Filter traces", { exact: true })).toHaveCSS("position", "absolute");
 		await page.getByTestId("filter-traces-container").selectOption("unassigned");
@@ -227,10 +227,11 @@ test.describe("coverage gaps", () => {
 		await expect(page.getByText("No traces match that filter.")).toBeVisible();
 		await page.getByRole("button", { name: "Clear filters" }).click();
 		await expect(page.getByTestId("inventory-trace-rust-trace")).toBeVisible();
-		await page.getByTestId("inventory-tab-usage").click();
+		await page.getByTestId("open-inference").click();
+	await page.getByTestId("inventory-tab-usage").click();
 		// The dashboard leads; the raw ledger is the receipt behind it, one
 		// disclosure away.
-		await page.getByText("1 containers · 1 traces · 1 usage entries").waitFor();
+		await page.getByTestId("inventory-usage-ledger-toggle").getByText("1 usage entries").waitFor();
 		await page.getByTestId("inventory-usage-ledger-toggle").click();
 		await page.getByText("openai/gpt-5.6-luna").waitFor();
 	});

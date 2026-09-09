@@ -1,0 +1,4 @@
+{
+  "bindings": [],
+  "content": "flowchart LR\n  Human[Human intent] --> Engine[Visual session]\n  AI[AI intent] --> Engine\n  Engine --> Pixels[Coherent pixels]"
+}

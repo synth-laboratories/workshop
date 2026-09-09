@@ -2708,7 +2708,9 @@ mod tests {
 
     #[test]
     fn operations_match_the_shim_catalog() {
-        let shim = include_str!("bin/synth_annotations_mcp.rs");
+        // The binary is now a compatibility entry point; the shared adapter is
+        // the single executable MCP catalog used by both stdio and the host.
+        let shim = include_str!("adapters/mcp/operations/annotations.rs");
         for (name, _, _) in OPERATIONS {
             assert!(
                 shim.contains(&format!("(\"{name}\",")),

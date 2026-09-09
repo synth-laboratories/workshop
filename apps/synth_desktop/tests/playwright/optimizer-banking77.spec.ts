@@ -1,3 +1,4 @@
+import { openOptimizer } from "./v02-helpers";
 import { expect, test } from "./browser.fixture";
 
 test.beforeEach(async ({ page }) => {
@@ -124,7 +125,7 @@ test.beforeEach(async ({ page }) => {
 	});
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
-	await page.getByRole("button", { name: "Optimizers" }).click();
+	await openOptimizer(page);
 });
 
 test("failed local recipes surface bounded stderr diagnostics and log paths", async ({ page }) => {
@@ -178,7 +179,7 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 			},
 			projection: {
 				workItems: [], phase: "selection", usage: { promptTokens: 100, completionTokens: 5, steps: 4 },
-				candidates: { cand_seed: { id: "cand_seed", source: "seed", trainReward: 0.5, gateAccepted: true, values: { stage2_system: "Return exactly one Banking77 intent label." } } },
+				candidates: { cand_seed: { id: "cand_seed", source: "seed", trainReward: 0.5, gateAccepted: true, rewardVector: { example_1: 0.5 }, values: { stage2_system: "Return exactly one Banking77 intent label." } } },
 				candidateOrder: ["cand_seed"], seedCandidateId: "cand_seed", selectedCandidateId: "cand_seed",
 				frontierHistory: ["cand_seed"], incumbentId: "cand_seed", rolloutsAllocated: 4, rolloutsScored: 4,
 				rolloutsFailed: 0, proposalsRequested: 0, proposalsReturned: 0, maxActiveWorkers: 1, rolloutBudget: 4
@@ -198,6 +199,7 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 	});
 	await page.getByTestId("optimizers-search").fill("rich");
 	await page.getByTestId("open-optimizer-visual").click();
+	await page.getByTestId("gepa-search-details").locator("summary").click();
 	await expect(page.getByTestId("gepa-workbench-controls")).toBeVisible();
 	await page.getByTestId("gepa-candidate-sort").selectOption("score");
 	await page.getByTestId("gepa-sort-direction").selectOption("desc");
@@ -207,6 +209,7 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 	await expect.poll(() => page.evaluate(() => window.localStorage.getItem("synth.optimizer.gepa.presentation.v1:banking77_rich"))).toContain('"sort":"score"');
 	// The frontier canvas names candidates semantically; the seed candidate reads "Seed".
 	await expect(page.getByTestId("gepa-pareto-frontier")).toContainText("Seed");
+	await page.getByTestId("gepa-run-details").locator("summary").click();
 	await expect(page.getByLabel("Usage")).toContainText("4");
 	await expect(page.getByLabel("Usage")).toContainText("105");
 	await expect(page.getByLabel("Artifacts", { exact: true })).toContainText("result_manifest.json");
@@ -220,6 +223,7 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 	await expect(page.getByTestId("gepa-candidate-content")).toContainText("Return exactly one Banking77 intent label.");
 	await expect(page.getByTestId("copy-gepa-candidate")).toBeEnabled();
 	await expect(page.getByTestId("download-gepa-candidate")).toBeEnabled();
+	await page.getByRole("button", { name: "Visual details and actions", exact: true }).click();
 	await page.getByRole("button", { name: /^Label/ }).click();
 	await page.getByTestId("optimizer-candidate-cand_seed").click();
 	await page.getByLabel("Label note").fill("Review the accepted seed prompt");
@@ -277,6 +281,7 @@ test("an unresolved live optimizer binding is honest and never renders GEPA demo
 	});
 	await page.getByTestId("optimizers-search").fill("Offline");
 	await page.getByTestId("open-optimizer-visual").click();
-	await expect(page.getByTestId("optimizer-run-unavailable")).toContainText("run is offline");
+	await expect(page.getByText("Run evidence unavailable", {exact: true})).toBeVisible();
+	await expect(page.getByText("run is offline", {exact: true})).toBeVisible();
 	await expect(page.getByTestId("optimizer-candidate-cand_seed")).toHaveCount(0);
 });

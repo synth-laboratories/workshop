@@ -43,7 +43,8 @@ test("chat, terminal, and right panel each use one soft frame with ergonomic tog
 	assert.match(css, /\.mitten-frame-svg > path \{[^}]*fill: #fff;[^}]*stroke: var\(--color-border-strong/);
 	assert.match(css, /workbench-side-panel-option-tabs \.workbench-side-panel-tab-shell\.is-selected/);
 	assert.equal(mitten.match(/<svg\b/g)?.length, 1);
-	assert.equal(mitten.match(/<path\b/g)?.length, 1);
+	assert.match(mitten, /className="mitten-frame-fill" d=\{geometry\.path\}/);
+	assert.match(mitten, /className="mitten-frame-stroke" d=\{geometry\.openRightPath\}/);
 	assert.match(mitten, /One SVG path owns the complete pane silhouette/);
 	assert.match(mitten, /const first = start <= left \+ 1\.5/);
 	assert.match(mitten, /const leftJoin = first \? 0/);

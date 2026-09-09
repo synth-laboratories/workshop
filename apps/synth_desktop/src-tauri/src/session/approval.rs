@@ -1828,6 +1828,13 @@ mod tests {
     }
 
     fn openrouter_paid(max_cost_usd_micros: Option<u64>) -> ApprovalKind {
+        openrouter_paid_with_digest(max_cost_usd_micros, "sha256:spec")
+    }
+
+    fn openrouter_paid_with_digest(
+        max_cost_usd_micros: Option<u64>,
+        preparation_digest: &str,
+    ) -> ApprovalKind {
         ApprovalKind::PaidCompute {
             operation: "optimizer.evaluation.inline.start".into(),
             parameters: json!({
@@ -1847,7 +1854,7 @@ mod tests {
             evaluator_model: None,
             timeout_seconds: None,
             credential_names: vec!["openrouter:workshop_secrets_proxy".into()],
-            preparation_digest: Some("sha256:spec".into()),
+            preparation_digest: Some(preparation_digest.into()),
         }
     }
 
@@ -1996,7 +2003,7 @@ mod tests {
             .try_auto_authorize_paid_compute(
                 app.handle(),
                 "sess-a",
-                &openrouter_paid(Some(100_000)),
+                &openrouter_paid_with_digest(Some(100_000), "sha256:second"),
             )
             .await
             .unwrap()
@@ -2005,7 +2012,7 @@ mod tests {
             .try_auto_authorize_paid_compute(
                 app.handle(),
                 "sess-a",
-                &openrouter_paid(Some(100_000))
+                &openrouter_paid_with_digest(Some(100_000), "sha256:third")
             )
             .await
             .unwrap()
@@ -2030,7 +2037,7 @@ mod tests {
                     .try_auto_authorize_paid_compute(
                         &handle,
                         "sess-a",
-                        &openrouter_paid(Some(100_000)),
+                        &openrouter_paid_with_digest(Some(100_000), "sha256:left"),
                     )
                     .await
             })
@@ -2042,7 +2049,7 @@ mod tests {
                     .try_auto_authorize_paid_compute(
                         &handle,
                         "sess-a",
-                        &openrouter_paid(Some(100_000)),
+                        &openrouter_paid_with_digest(Some(100_000), "sha256:right"),
                     )
                     .await
             })

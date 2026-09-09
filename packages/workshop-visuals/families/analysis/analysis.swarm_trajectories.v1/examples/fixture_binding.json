@@ -1,0 +1,9 @@
+{
+  "bindings": [
+    {
+      "slot": "trajectories",
+      "kind": "fixture",
+      "source": "families/analysis/analysis.swarm_trajectories.v1/examples/trajectories.json"
+    }
+  ]
+}

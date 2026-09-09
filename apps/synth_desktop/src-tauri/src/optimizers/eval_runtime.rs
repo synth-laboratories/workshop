@@ -1,6 +1,6 @@
 //! Desktop-owned Eval runtime pin.
 //!
-//! Eval is not a second Python distribution. It consumes the same 0.2.19
+//! Eval is not a second Python distribution. It consumes the same pinned
 //! `synth-optimizers` install GEPA uses, but it has its own manifest, digest,
 //! and About row so a missing pin is visible instead of resolving from a
 //! developer `.venv`.
@@ -200,11 +200,11 @@ mod tests {
         let python = runtime.join("python3");
         fs::write(&python, b"#!/bin/sh\nexit 0\n").unwrap();
         let sidecar = OptimizerSidecarVersion {
-            version: "0.2.20".into(),
+            version: EVAL.dev.into(),
             digest: "abc123".into(),
             signature: "sig".into(),
             algorithm_id: "gepa".into(),
-            algorithm_version: "synth-optimizers-0.2.19".into(),
+            algorithm_version: format!("synth-optimizers-{}", EVAL.dev),
             recipe_schema_version: "gepa.recipe.v1".into(),
             selected: true,
             path: root.path().display().to_string(),
@@ -214,7 +214,7 @@ mod tests {
         let python = runtime.join("python3");
         fs::write(&python, b"#!/bin/sh\nexit 0\n").unwrap();
         let manifest = sidecar_to_manifest(&sidecar).unwrap();
-        assert_eq!(manifest.version, "0.2.20");
+        assert_eq!(manifest.version, EVAL.dev);
         assert_eq!(manifest.digest, "abc123");
         assert_eq!(manifest.python.as_deref(), Some(python.to_str().unwrap()));
         manifest.validate().unwrap();

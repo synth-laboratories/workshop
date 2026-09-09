@@ -94,8 +94,10 @@ export async function installVisuals(
 
 export async function openVisual(page: Page, visualId: string) {
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId(`visuals-card-${visualId}`).getByRole("button", { name: "Open" }).click();
-	return page.getByTestId("visual-pane");
+	const actions = page.getByTestId(`visuals-actions-${visualId}`);
+	await actions.locator("summary").click();
+	await actions.getByRole("menuitem", { name: "Open canvas" }).click();
+	return page.getByTestId("visuals-preview");
 }
 
 export async function metricValue(pane: ReturnType<Page["getByTestId"]>, label: string): Promise<string> {
@@ -112,10 +114,18 @@ export async function metricValue(pane: ReturnType<Page["getByTestId"]>, label: 
 	}, label);
 }
 
-/** Open the optional optimizer integration through its catalog entry. */
+/** Open an optional integration through the user-facing catalog and pin it for lifecycle assertions. */
 export async function openOptimizer(page: Page) {
-	await page.getByRole("button", { name: "Integrations", exact: true }).click();
-	const entry = page.getByTestId("plugin-viewer-optimizers");
-	await entry.getByRole("checkbox", { name: "Show in sidebar" }).check();
-	await entry.getByRole("button", { name: "Open", exact: true }).click();
+ await page.getByRole("button", { name: "Integrations", exact: true }).click();
+ const entry = page.getByTestId("plugin-viewer-optimizers");
+ await entry.getByRole("checkbox", { name: "Show in sidebar" }).check();
+ await entry.getByRole("button", { name: "Open", exact: true }).click();
+}
+
+export async function openOutputs(page: Page) {
+ const panel = page.getByTestId("workbench-side-panel");
+ if (!await panel.isVisible()) await page.getByTestId("toggle-inference-rail").click();
+ const tab = page.getByTestId("workbench-side-tab-outputs");
+ await tab.click();
+ return tab;
 }

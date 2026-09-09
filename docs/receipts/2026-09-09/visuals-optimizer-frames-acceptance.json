@@ -1,0 +1,62 @@
+{
+  "schemaVersion": "workshop.visuals-optimizer-frames-acceptance.v1",
+  "synthetic": true,
+  "producer": "workshop-visuals/native_visual_optimizer_frames.mjs",
+  "measurement": false,
+  "optimizerRunId": "accept-frames-535f23ae-42bb-4669-a2ac-0a0b0231af71",
+  "sourceExample": "families/optimizers/eval/optimizer.eval.live.v1/examples/events.json",
+  "frames": [
+    {
+      "seed": 102,
+      "frameSequence": 11,
+      "sha256": "sha256:6c838caf653cd0e137735d89897c1a14905ed7089b7b2e3e5b9238e08f50b1c6",
+      "bytes": 8405
+    },
+    {
+      "seed": 102,
+      "frameSequence": 12,
+      "sha256": "sha256:80bc17e61140e959f2402e5574bb43b76d002726f6d2056e1f7b5ac6c7d9c1e6",
+      "bytes": 8409
+    },
+    {
+      "seed": 101,
+      "frameSequence": 13,
+      "sha256": "sha256:d781c01227583c49735129c8a7beeb38de692967d38575ff82fbe6487d00145b",
+      "bytes": 8326
+    },
+    {
+      "seed": 101,
+      "frameSequence": 14,
+      "sha256": "sha256:33b1b2ccbd2e1f7964b417fe0bc35aa5625268e5add433d8259866ccc8814a27",
+      "bytes": 8347
+    },
+    {
+      "seed": 101,
+      "frameSequence": 15,
+      "sha256": "sha256:a6f5cc203289fa8279eafa2d96e06ce226309349b3ecc813190082c161ac5fff",
+      "bytes": 8415
+    },
+    {
+      "seed": 101,
+      "frameSequence": 16,
+      "sha256": "sha256:b18e349f93b56cb203dd0e52704f2bd1940e20787eb75812d5d0be5cb8b29950",
+      "bytes": 8355
+    },
+    {
+      "seed": 102,
+      "frameSequence": 17,
+      "sha256": "sha256:8558af9da08cf489daacc7ca76cdd24b3afc6a3a9121cd5d18213d1033c442c1",
+      "bytes": 8310
+    },
+    {
+      "seed": 102,
+      "frameSequence": 18,
+      "sha256": "sha256:06fc2fe4ef5847c6fb30a1b6ed46ab7f093bf3a70549d5f4bbd5e4f358b777a9",
+      "bytes": 8296
+    }
+  ],
+  "distinctBodies": 8,
+  "observedFrames": 8,
+  "coalescedTo": 2,
+  "historyDepth": 4
+}

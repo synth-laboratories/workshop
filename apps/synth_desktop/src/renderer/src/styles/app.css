@@ -244,6 +244,7 @@ html[data-synth-review-capture] .titlebar,
 html[data-synth-review-capture] .terminal-panel,
 html[data-synth-review-capture] .composer-dock,
 html[data-synth-review-capture] .dev-bar,
+html[data-synth-review-capture] .visual-session-tools,
 html[data-synth-review-capture] .inventory-workbench > .visual-pane,
 html[data-synth-review-capture] .inventory-workbench > .pane-resize-handle {
 	display: none !important;
@@ -7067,6 +7068,10 @@ html.visual-expanded .composer-dock {
 	border-left: 1px solid var(--color-border);
 }
 
+.inventory-workbench.with-visual:has([data-testid="inventory-page"]) .visual-pane {
+	flex-basis: min(var(--visual-pane-width, 720px), calc(100% - 367px));
+}
+
 .inventory-workbench.with-container .inventory-page {
 	flex: 1 1 auto;
 	min-width: 0;
@@ -7949,7 +7954,7 @@ html.visual-expanded .composer-dock {
 
 .visuals-preview {
 	container-type: inline-size;
-	container-name: visuals-preview;
+	container-name: visuals-preview visual-pane;
 	border: 1px solid var(--color-border);
 	border-radius: 12px;
 	padding: 16px;
@@ -10803,6 +10808,9 @@ html.compact-workbench .experiment-task-disclosure {
   overflow-wrap: anywhere;
 }
 
-/* Reserve navigation hit areas when optimizer setup content overflows. */
+/* Reserve navigation hit areas even when optimizer setup content overflows. */
 .optimizers-page > .optimizer-tabs { flex: 0 0 auto; min-height: 34px; }
 .optimizers-page > .plugin-page-header { flex-shrink: 0; }
+.visual-live-mirror { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.visual-live-mirror > * { min-width: 0; }
+@media (max-width: 1000px) { .visual-live-mirror { grid-template-columns: minmax(0, 1fr); } }

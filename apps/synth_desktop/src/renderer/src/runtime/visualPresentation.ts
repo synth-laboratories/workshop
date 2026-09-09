@@ -1,6 +1,12 @@
 /** One host-to-renderer presentation intent, shared by the shell and library. */
 export type VisualPresentation = { visualId: string; requestId: string };
 
+export function presentWorkspaceVisual(visualId:string):void{
+	const intent={visualId,requestId:crypto.randomUUID()};
+	window.__workshopVisualPresentation=intent;
+	window.dispatchEvent(new CustomEvent("workshop:visual-present",{detail:intent}));
+}
+
 declare global {
 	interface Window {
 		__workshopVisualPresentation?: VisualPresentation;

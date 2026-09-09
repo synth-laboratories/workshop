@@ -1,3 +1,4 @@
+import { openOptimizer } from "./v02-helpers";
 import { expect, test } from "./browser.fixture";
 import type { Page } from "@playwright/test";
 
@@ -77,7 +78,7 @@ test.describe("preferences persistence", () => {
 });
 
 test.describe("tool activity presentation", () => {
-	test("settings and transcript menu share the same mode labels", async ({ page }) => {
+	test("settings mode changes persist in the transcript", async ({ page }) => {
 		await openSettings(page);
 		await expect(page.getByTestId("tool-activity-detailed")).toContainText("Detailed");
 		await expect(page.getByTestId("tool-activity-grouped")).toContainText("Grouped");
@@ -115,8 +116,10 @@ test.describe("tool activity presentation", () => {
 		await page.getByTestId("titlebar").waitFor();
 		await page.getByTestId("local-chat-activity-chat").click();
 		await expect(page.getByTestId("chat-transcript")).toHaveAttribute("data-activity-mode", "detailed");
-		await page.getByTestId("activity-mode-menu-trigger").click();
-		await page.getByTestId("activity-mode-option-compact").click();
+		await openSettings(page);
+		await page.getByTestId("tool-activity-compact").click();
+		await page.getByRole("button", { name: "← Back" }).click();
+		await page.getByTestId("local-chat-activity-chat").click();
 		await expect(page.getByTestId("chat-transcript")).toHaveAttribute("data-activity-mode", "compact");
 	});
 });
@@ -534,7 +537,7 @@ test("narrow viewport keeps composer reachable without horizontal overflow", asy
 
 
 test("optimizer workbench keeps its hierarchy at desktop and compact widths", async ({ page }) => {
-	await page.getByRole("button", { name: "Optimizers" }).click();
+	await openOptimizer(page);
 	await expect(page.getByTestId("optimizers-page")).toBeVisible();
 	await expect(page.getByTestId("optimizer-toolbar")).toBeVisible();
 	await expect(page.getByRole("heading", { name: "Optimizers" })).toBeVisible();
@@ -563,7 +566,8 @@ test("Optimizer and Data primitives remain themed and contained in dark mode", a
 		{ entry: "open-optimizers", page: "optimizers-page" },
 		{ entry: "open-inventory", page: "inventory-page" }
 	]) {
-		await page.getByTestId(surface.entry).click();
+		if (surface.entry === "open-optimizers") await openOptimizer(page);
+		else await page.getByTestId(surface.entry).click();
 		const audit = await page.getByTestId(surface.page).evaluate((element) => {
 			const style = getComputedStyle(element);
 			const raised = element.querySelector<HTMLElement>(".ws-card, .ws-list, .ws-panel");

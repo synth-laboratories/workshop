@@ -198,18 +198,19 @@ test("Codex thread compaction uses the native app glyph and divider", () => {
 
 test("Trace V5 viewer keeps async resolution revision-safe and failures explicit", () => {
 	const host = read("components/VisualHost.tsx");
-	assert.match(host, /bindTemplateSlots\(template, bindings, \{ loadTraceV5/);
-	assert.match(host, /resolveTraceProjection\(source, "rollout-inspector"\)/);
-	assert.match(host, /if \(cancelled\) return;/);
+	const projection = readFileSync(join(appRoot, "..", "..", "packages", "workshop-visuals", "runtime", "bindingProjection.ts"), "utf8");
+	assert.match(host, /resolveBoundVisual\(template,artifact\.bindings/);
+	assert.match(host, /resolveTraceProjection\(digest,"rollout-inspector"\)/);
+	assert.match(host, /if\(controller\.signal\.aborted\)return;/);
 	assert.match(host, /artifact\.revision/);
-	assert.match(host, /status: "loading", props: \{\}/);
+	assert.match(host, /status:"loading",props:\{\}/);
+	assert.match(projection, /bindTemplateSlots\(template,bindings,guarded\)/);
+	assert.match(projection, /if\(signal\.aborted\)/);
 	for (const state of [
-		"Trace is quarantined",
-		"Unsupported trace schema",
-		"Trace extractor unavailable",
-		"Sealed trace archive missing",
-		"Trace resolver unavailable"
-	]) assert.match(host, new RegExp(state));
+		"Unsupported trace projection schema",
+		"Trace projection resolver is unavailable",
+		"Trace window identity mismatch"
+	]) assert.match(projection, new RegExp(state));
 });
 
 test("Data Inspect persists trace identity and digest binding without projection payload", () => {

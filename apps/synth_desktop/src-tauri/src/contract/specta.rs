@@ -218,6 +218,13 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::visuals_templates_get,
             crate::visuals_list,
             crate::visuals_get,
+            crate::visuals_engine,
+            crate::visuals_presentation_get,
+            crate::visuals_presentation_put,
+            crate::visuals_snapshots_list,
+            crate::visuals_snapshot_put,
+            crate::visuals_recordings_list,
+            crate::visuals_recording_put,
             crate::visuals_observation_report,
             crate::visuals_revisions,
             crate::visuals_annotations_list,
@@ -593,7 +600,7 @@ mod tests {
         // and supersession. The previous 323 expectation undercounted six.
         // 329 → 338: seven ACP commands and two runtime-owned desktop state commands.
         assert_eq!(
-            exported, 341,
+            exported, 348,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

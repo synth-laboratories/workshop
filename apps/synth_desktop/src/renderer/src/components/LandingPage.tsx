@@ -3,12 +3,14 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { apiProviderForTarget, EXECUTION_TARGETS, isOpenRouterTargetId, LAUNCH_PICKER_TARGETS, MODEL_ACCESS_LABEL, MODEL_ACCESS_ORDER, modelAccessForTarget, TARGET_GROUP_LABEL } from "../types/landing";
 import { targetOptionForId } from "../runtime/modelCatalog";
 import type { ExecutionTargetOption, LandingState, ModelAccessKind } from "../types/landing";
+import { ManderPresence } from "./mander";
 import { SynthLogo } from "./SynthLogo";
 import type { LagunaPolicy } from "../bridge/types";
 import { policyLabel } from "../runtime/lagunaPolicies";
 import { ComposerLayoutHost } from "./ComposerLayout";
 
 type Props = {
+	showMascot?: boolean;
 	state: LandingState;
 	onConfigureAccount?: () => void;
 };
@@ -303,6 +305,7 @@ export function ModelPicker({
 }
 
 export function LandingPage({
+	showMascot = false,
 	state,
 	onConfigureAccount,
 }: Props) {
@@ -335,6 +338,7 @@ export function LandingPage({
 					</div>
 				) : null}
 			</div>
+			{showMascot ? <ManderPresence chat={{id: "landing", title: "New conversation", messages: []}} running={false} /> : null}
 			<ComposerLayoutHost />
 		</div>
 	);

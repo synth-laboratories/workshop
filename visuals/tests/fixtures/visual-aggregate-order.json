@@ -1,0 +1,11 @@
+{
+  "rows": [
+    {"id":"a","value":"1"}, {"id":"b","value":1},
+    {"id":"c","value":true}, {"id":"d","value":false},
+    {"id":"e","value":null}, {"id":"f"},
+    {"id":"g","value":"😀"}, {"id":"h","value":""},
+    {"id":"i","value":-3}, {"id":"j","value":"(missing)"},
+    {"id":"k","value":"frequent"}, {"id":"l","value":"frequent"}
+  ],
+  "values": ["frequent", {"missing":true}, null, false, true, -3, 1, "(missing)", "1", "", "😀"]
+}

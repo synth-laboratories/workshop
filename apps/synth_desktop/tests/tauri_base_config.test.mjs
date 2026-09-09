@@ -62,7 +62,8 @@ test("every build entry point passes the packaging overlay", () => {
 	assert.match(pkg.scripts.build, /tauri build --config src-tauri\/tauri\.package\.json/);
 	const instance = readFileSync(join(repoRoot, "scripts/desktop-instance.sh"), "utf8");
 	assert.match(instance, /PACKAGE_CONFIG="src-tauri\/tauri\.package\.json"/);
-	assert.match(instance, /tauri build --debug [^\n]*--config "\$PACKAGE_CONFIG" --config "\$CONFIG"/);
+	assert.match(instance, /local tauri_configs=\(--config "\$PACKAGE_CONFIG" --config "\$CONFIG"\)/);
+	assert.match(instance, /tauri build --debug [^\n]*"\$\{tauri_configs\[@\]\}"/);
 	assert.match(instance, /tauri dev [^\n]*--config "\$PACKAGE_CONFIG" --config "\$CONFIG"/);
 	assert.doesNotMatch(instance, /tauri (dev|build)(?![^\n]*PACKAGE_CONFIG)[^\n]*--config "\$CONFIG"/);
 	const desktop = readFileSync(join(repoRoot, "scripts/desktop.sh"), "utf8");
@@ -71,6 +72,6 @@ test("every build entry point passes the packaging overlay", () => {
 
 test("isolated packaged QA launches preserve operator-provided SFT dataset paths", () => {
 	const instance = readFileSync(join(repoRoot, "scripts/desktop-instance.sh"), "utf8");
-	assert.match(instance, /SYNTH_MLX_SFT_TRAIN_JSONL="\$sft_train_jsonl"/);
-	assert.match(instance, /SYNTH_MLX_SFT_EVAL_JSONL="\$sft_eval_jsonl"/);
+	assert.match(instance, /"SYNTH_MLX_SFT_TRAIN_JSONL": sft_train/);
+	assert.match(instance, /"SYNTH_MLX_SFT_EVAL_JSONL": sft_eval/);
 });

@@ -119,8 +119,8 @@ async function installVisuals(page: Page): Promise<void> {
 }
 
 async function openFixture(page: Page, fixture: Fixture) {
-  await page.getByTestId(`visuals-card-${fixture.id}`).getByRole("button", { name: "Open" }).click();
-  const pane = page.getByTestId("visual-pane");
+  await page.getByTestId(`visuals-card-${fixture.id}`).click();
+  const pane = page.getByTestId("visuals-preview");
   const visual = pane.getByTestId(fixture.testId);
   await expect(visual).toBeVisible();
   return { pane, visual };
@@ -144,10 +144,10 @@ test("V6: axe, browser AX tree, keyboard names, focus, reduced motion, and 200% 
     await cdp.send("Accessibility.enable");
     for (const fixture of FIXTURES) {
       const { pane, visual } = await openFixture(page, fixture);
-      await page.getByTestId("toggle-visual-expand").evaluate((button: HTMLButtonElement) => button.click());
+      await page.getByRole("button", {name: "Expand", exact: true}).evaluate((button: HTMLButtonElement) => button.click());
       await expect(visual).toBeVisible();
       const axe = await new AxeBuilder({ page })
-        .include('[data-testid="visual-pane"]')
+        .include('[data-testid="visuals-preview"]')
         .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
         .analyze();
       const blocking = axe.violations.filter((violation) => violation.impact === "critical" || violation.impact === "serious");
@@ -182,6 +182,10 @@ test("V6: axe, browser AX tree, keyboard names, focus, reduced motion, and 200% 
       // Keyboard operation receipts for each interaction family: selection,
       // native disclosure, and range scrubbing are exercised without clicks.
       if (fixture.family === "GEPA") {
+        const searchDisclosure = visual.getByTestId("gepa-search-details").locator("summary").first();
+        await searchDisclosure.focus();
+        await page.keyboard.press("Enter");
+        await expect(visual.getByTestId("gepa-search-details")).toHaveAttribute("open", "");
         const candidate = visual.locator('[data-testid^="optimizer-candidate-"]').first();
         await candidate.focus();
         await page.keyboard.press("Enter");
@@ -241,7 +245,7 @@ test("V6: axe, browser AX tree, keyboard names, focus, reduced motion, and 200% 
         zoom200: zoomMetrics
       });
       expect(blocking, `${fixture.family} serious/critical axe violations`).toEqual([]);
-      await page.getByTestId("toggle-visual-expand").evaluate((button: HTMLButtonElement) => button.click());
+      await page.getByRole("button", {name: "Show library", exact: true}).evaluate((button: HTMLButtonElement) => button.click());
     }
 
     await page.emulateMedia({ reducedMotion: "reduce" });

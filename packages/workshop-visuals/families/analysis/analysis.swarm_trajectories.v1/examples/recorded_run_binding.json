@@ -1,0 +1,5 @@
+{
+  "isolateRun": true,
+  "importOptimizerFixture": "families/optimizers/eval/optimizer.eval.live.v1/examples/events.json",
+  "bindings": [{"slot":"optimizer_run","kind":"optimizer_run","source":"opt_eval_example","schema":"synth.optimizer-run-document.v1"}]
+}
