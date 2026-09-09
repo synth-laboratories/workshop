@@ -400,11 +400,13 @@ impl CodexManager {
         };
         let thread_id = nested_id(&result, "threadId")
             .ok_or_else(|| anyhow!("Codex {method} response missing thread id: {result}"))?;
+        let mcp_reload_pending = server.persistent;
         let session = Arc::new(Session {
             attachment_id,
             server,
             thread_id: thread_id.clone(),
             turn_id: RwLock::new(None),
+            mcp_reload_pending: Mutex::new(mcp_reload_pending),
             model: request.model.clone(),
             approval_policy: request
                 .approval_policy
@@ -785,6 +787,24 @@ impl CodexManager {
             .map(validate_reasoning_effort)
             .transpose()?;
         let session = self.session(&request.session_id).await?;
+        {
+            let mut pending = session.mcp_reload_pending.lock().await;
+            if *pending {
+                // Rejoining a running turn never reaches this new-turn path.
+                // Check the daemon too, before replacing any live MCP child.
+                let snapshot = session.server.request(
+                    "thread/read",
+                    json!({"threadId": session.thread_id, "includeTurns": false}),
+                ).await.context("check durable Codex thread before MCP refresh")?;
+                anyhow::ensure!(
+                    snapshot.pointer("/thread/status/type").and_then(Value::as_str) == Some("idle"),
+                    "durable Codex thread must be idle before refreshing MCP helpers; finish or resume its active turn first"
+                );
+                session.server.request("config/mcpServer/reload", Value::Null)
+                    .await.context("refresh durable Codex MCP helpers before a new turn")?;
+                *pending = false;
+            }
+        }
         if record_prompt {
             self.record_user_prompt(
                 &app,

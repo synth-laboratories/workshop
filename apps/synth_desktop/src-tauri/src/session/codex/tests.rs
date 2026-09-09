@@ -231,6 +231,41 @@ async fn missing_rollout_on_resume_starts_a_replacement_thread() {
     assert_eq!(methods, vec!["thread/resume", "thread/start"]);
 }
 
+#[tokio::test]
+async fn durable_mcp_refresh_requires_idle_and_success_before_new_turn() {
+    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let temp = tempdir().unwrap();
+    let root = temp.path().join("codex");
+    let manager = CodexManager::with_paths(SessionPersistence::Null, root.clone(), fixture_binary(), CodexManager::test_broker());
+    let app = tauri::test::mock_app();
+    let request = test_request(temp.path(), "refresh-mcp");
+    manager.start(app.handle().clone(), request.clone()).await.unwrap();
+    let session = manager.sessions.read().await.get(&request.session_id).unwrap().clone();
+    // Exercise a retained-daemon attachment using the process-boundary fixture.
+    *session.mcp_reload_pending.lock().await = true;
+    let home = root.join("homes/refresh-mcp");
+    let turn = || CodexTurnStartRequest {
+        session_id: request.session_id.clone(), prompt: "new turn".into(),
+        effort: None, ui_context: None, client_message_id: None,
+    };
+    fs::write(home.join("active-thread"), "1").unwrap();
+    assert!(manager.start_turn(app.handle().clone(), turn()).await.unwrap_err().to_string().contains("must be idle"));
+    assert!(!fixture_requests(&root, &request.session_id).iter().any(|r| r["method"] == "config/mcpServer/reload" || r["method"] == "turn/start"));
+    fs::remove_file(home.join("active-thread")).unwrap();
+    fs::write(home.join("reject-mcp-reload"), "1").unwrap();
+    assert!(manager.start_turn(app.handle().clone(), turn()).await.is_err());
+    assert!(*session.mcp_reload_pending.lock().await);
+    assert!(!fixture_requests(&root, &request.session_id).iter().any(|r| r["method"] == "turn/start"));
+    fs::remove_file(home.join("reject-mcp-reload")).unwrap();
+    manager.start_turn(app.handle().clone(), turn()).await.unwrap();
+    assert!(!*session.mcp_reload_pending.lock().await);
+    let requests = fixture_requests(&root, &request.session_id);
+    let methods: Vec<_> = requests.iter().filter_map(|r| r["method"].as_str()).collect();
+    assert_eq!(methods.iter().filter(|m| **m == "config/mcpServer/reload").count(), 2);
+    assert!(methods.iter().rposition(|m| *m == "config/mcpServer/reload").unwrap() < methods.iter().position(|m| *m == "turn/start").unwrap());
+    manager.close(&request.session_id).await.unwrap();
+}
+
 /// These waits poll a spawned fixture process, so they are load-sensitive:
 /// five seconds passed on an idle machine and failed intermittently while a
 /// build or another suite ran alongside. The assertion is that the state

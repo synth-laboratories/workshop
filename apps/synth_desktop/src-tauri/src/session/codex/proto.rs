@@ -613,6 +613,8 @@ pub(crate) struct Session {
     pub(crate) server: Arc<AppServer>,
     pub(crate) thread_id: String,
     pub(crate) turn_id: RwLock<Option<String>>,
+    /// A durable daemon can retain old MCP children across desktop upgrades.
+    pub(crate) mcp_reload_pending: Mutex<bool>,
     pub(crate) model: String,
     pub(crate) approval_policy: String,
     pub(crate) sandbox: String,
