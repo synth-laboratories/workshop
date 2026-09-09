@@ -1,5 +1,6 @@
 # Synth Desktop / workshop
 node_modules/
+/dist/
 apps/*/node_modules/
 apps/*/out/
 apps/*/dist/
