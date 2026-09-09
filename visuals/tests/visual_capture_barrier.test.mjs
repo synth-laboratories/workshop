@@ -18,6 +18,7 @@ test('pixel barrier verifies DOM, committed versions and explicit renderer adapt
   await begin();await ready();assert.equal((await read()).mutations,0);
   await page.evaluate(()=>document.querySelector('[data-visual-session-id] div').textContent='Changed evidence');
   assert.ok((await read()).mutations>0);
+  assert.ok((await read()).mutationTargets.some(target=>target==='childList:DIV:'));
   await page.evaluate(()=>window.__synthVisualCapture.release());assert.equal(await read(),null);
   await page.evaluate(()=>document.querySelector('[data-visual-session-id] div').style.backgroundImage='url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")');
   await begin();await page.waitForFunction(()=>window.__synthVisualCapture.read()?.error);

@@ -4,6 +4,7 @@ import { visualExtensions } from "@synth/visuals";
 import { VisualSessionProvider, VisualSessionToolbar, useVisualSessionClient, useVisualSessionSnapshot, installVisualCaptureBarrier } from "@synth/visuals-react";
 import type { ArtifactRef } from "../types/landing";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 
 function ControlScene() {
   const client = useVisualSessionClient(); const snapshot = useVisualSessionSnapshot();
@@ -49,7 +50,10 @@ export function WorkshopVisualSession({ artifact, children }: { artifact: Artifa
     return createVisualClient({visualId,revision,viewKey:"default"},{id:definition?.id ?? artifact.templateId ?? artifact.rendererKind ?? "visual",version:definition?.version ?? "1.0.0"},{
       pixelCapture:true,
       evidenceCuts:true,
-      request:(request) => bridge.engine!(visualId,request),
+      request:async(request) => {
+        try{return await bridge.engine!(visualId,request);}
+        catch(reason){throw new Error(publicError(reason));}
+      },
       subscribe: bridge.onEngineChanged ? (changed) => bridge.onEngineChanged!((identity) => {
         if(identity.visualId===visualId && identity.revision===revision && identity.viewKey==="default") changed();
       }) : undefined,

@@ -2,7 +2,7 @@
  * commits first. This guard pauses compositor/media animation, waits for assets,
  * then rejects ANY DOM/evidence change while pixels are being photographed.
  * Canvas/opaque frames need an explicit renderer freeze adapter, never a guess. */
-type Stamp={visualId:string;revision:number;stateVersion:number;mutations:number;ready:boolean;verified?:boolean;error?:string};
+type Stamp={visualId:string;revision:number;stateVersion:number;mutations:number;mutationTargets?:string[];ready:boolean;verified?:boolean;error?:string};
 /** A renderer must stop all pixel-producing work before resolving prepare.
  * verify runs immediately before releasing the native screenshot barrier.
  * release must be idempotent, including when preparation was cancelled. */
@@ -23,6 +23,15 @@ let blockedSelector='[data-visual-capture-blocked]';
 // A native offscreen snapshot performs its own paint. It must not wait for
 // requestAnimationFrame, which WebKit suspends for occluded windows.
 let nativeSnapshotPaint=false;
+function recordMutations(barrier:Barrier,records:MutationRecord[]){
+  barrier.stamp.mutations+=records.length;
+  const targets=barrier.stamp.mutationTargets??=[];
+  for(const record of records){
+    const target=record.target instanceof Element?record.target:record.target.parentElement;
+    const description=`${record.type}:${target?.tagName??'node'}:${record.attributeName??''}`;
+    if(targets.length<8&&!targets.includes(description))targets.push(description);
+  }
+}
 const rootsFor=(id:string)=>Array.from(document.querySelectorAll<HTMLElement>("[data-visual-session-id]"))
   .filter(node=>node.dataset.visualSessionId===id && Array.from(node.children).some(child=>child.getBoundingClientRect().width>0));
 const frame=()=>new Promise<void>((resolve,reject)=>{
@@ -103,7 +112,7 @@ function begin(visualId:string,revision:number,stateVersion:number){
       // Recheck after asynchronous image/font loading. A native event may have
       // caught this pane up while assets were resolving.
       for(const root of roots)if(Number(root.dataset.visualSessionVersion)!==stateVersion)throw new Error("Capture version changed");
-      barrier.observer=new MutationObserver(records=>{barrier.stamp.mutations+=records.length;});
+      barrier.observer=new MutationObserver(records=>recordMutations(barrier,records));
       for(const root of roots)barrier.observer.observe(root,{subtree:true,attributes:true,childList:true,characterData:true});
       barrier.stamp.ready=true;
     }catch(error){barrier.stamp.error=error instanceof Error?error.message:String(error);}
@@ -111,7 +120,7 @@ function begin(visualId:string,revision:number,stateVersion:number){
 }
 function read(){
   if(!active)return null;
-  active.stamp.mutations+=active.observer?.takeRecords().length ?? 0;
+  recordMutations(active,active.observer?.takeRecords()??[]);
   if(active.roots.some(root=>!root.isConnected || Number(root.dataset.visualSessionVersion)!==active!.stamp.stateVersion))
     active.stamp.error="Capture surface detached or changed version";
   return {...active.stamp};
