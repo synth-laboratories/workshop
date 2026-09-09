@@ -61,7 +61,7 @@ provider and installed-release checks that have not been performed.
 The `workshop` executable is also built and bundled alongside the Desktop
 executable. With an installed build that includes this integration, replace
 `npm run workshop --` above with
-`"/Applications/Synth Desktop.app/Contents/MacOS/workshop"`; no source checkout,
+`"/Applications/Synth Workshop.app/Contents/MacOS/workshop"`; no source checkout,
 Node.js, or Rust toolchain is needed to run that packaged executable.
 Named development instances have their own executable and data root; use the
 matching instance rather than another running Workshop window.

@@ -50,3 +50,10 @@ test("source builds resolve public pinned inputs and explicitly use ad-hoc signi
   assert.match(sources, /GIT_TERMINAL_PROMPT=0/);
   assert.doesNotMatch(sources, /tblite|reset --hard/);
 });
+
+test("build receipts bind the source present before compilation", () => {
+  assert.ok(build.indexOf("BUILD_SOURCE_REVISION=") < build.indexOf('"$ROOT/scripts/stage-mlx-runtime-distribution.sh"'));
+  assert.match(build, /source changed during build; refusing/);
+  assert.match(build, /commit = "\$BUILD_SOURCE_REVISION"/);
+  assert.match(build, /dirty = "\$BUILD_SOURCE_DIRTY" == "true"/);
+});

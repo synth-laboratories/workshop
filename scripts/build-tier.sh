@@ -10,6 +10,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/mcp-adapters.sh"
 APP_DIR="$ROOT/apps/synth_desktop"
 OUT_ROOT="$ROOT/work/tier-builds"
+BUILD_SOURCE_REVISION="$(git -C "$ROOT" rev-parse HEAD)"
+BUILD_SOURCE_DIFF="$(git -C "$ROOT" diff HEAD -- | shasum -a 256 | awk '{print $1}')"
+BUILD_SOURCE_DIRTY="false"
+[[ -n "$(git -C "$ROOT" status --porcelain)" ]] && BUILD_SOURCE_DIRTY="true"
 
 REQUESTED="${1:-}"
 PROFILE_FLAG=""
@@ -84,6 +88,11 @@ build_one() {
   done
   # Preserve Chromium framework symlinks and verify actual packaged startup.
   "$ROOT/scripts/finalize-browser-app.sh" "$bundle_dir/$product.app"
+  [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$BUILD_SOURCE_REVISION" \
+    && "$(git -C "$ROOT" diff HEAD -- | shasum -a 256 | awk '{print $1}')" == "$BUILD_SOURCE_DIFF" ]] || {
+    echo "[build-tier] source changed during build; refusing a misleading provenance receipt" >&2
+    exit 1
+  }
   out_dir="$OUT_ROOT/$tier"
   rm -rf "$out_dir"
   mkdir -p "$out_dir"
@@ -93,8 +102,8 @@ build_one() {
 import json, subprocess, sys
 from pathlib import Path
 from datetime import datetime, timezone
-commit = subprocess.run(["git", "-C", "$ROOT", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-dirty = bool(subprocess.run(["git", "-C", "$ROOT", "status", "--porcelain"], capture_output=True, text=True).stdout.strip())
+commit = "$BUILD_SOURCE_REVISION"
+dirty = "$BUILD_SOURCE_DIRTY" == "true"
 if not commit:
     export_manifest = Path("$ROOT") / "PUBLIC_EXPORT_MANIFEST.json"
     if export_manifest.is_file():
