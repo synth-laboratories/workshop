@@ -9156,6 +9156,22 @@ max_total_rollouts = 4
                                 }]
                             }
                         })),
+                        // The host registers the effective policy config with the
+                        // container before its first rollout and requires the
+                        // container to echo the identity it asked for. The eval mock
+                        // has served this for a while; without it here every craftax
+                        // test failed at registration with a 404 that read as a relay
+                        // fault rather than a route this mock never learned.
+                        ("POST", path) if path == "/policy-configs" || path.starts_with("/policy-configs/") => {
+                            let requested = request
+                                .body
+                                .get("config_id")
+                                .or_else(|| request.body.get("configId"))
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            JsonHttpResponse::ok(json!({"config_id": requested}))
+                        }
                         ("POST", "/rollouts/prepare") => {
                             let rollout_id = request.body.get("rollout_id").and_then(Value::as_str)
                                 .unwrap_or("roll_unknown").to_string();
@@ -9165,7 +9181,16 @@ max_total_rollouts = 4
                                 "rollout_id": rollout_id,
                                 "stream": {
                                     "id": format!("stream:{rollout_id}"),
-                                    "transports": {"poll": {"url": format!("/rollouts/{rollout_id}/events")}}
+                                    // A craftax run publishes a live visual, and binding
+                                    // that pane needs a declared SSE url -- the host
+                                    // refuses to guess one. Events still flow over the
+                                    // poll transport; this is the descriptor the pane
+                                    // binds, which is why omitting it failed the run
+                                    // before a single event was relayed.
+                                    "transports": {
+                                        "poll": {"url": format!("/rollouts/{rollout_id}/events")},
+                                        "sse": {"url": format!("/rollouts/{rollout_id}/stream")}
+                                    }
                                 }
                             }))
                         }
