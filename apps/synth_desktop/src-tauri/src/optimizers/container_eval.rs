@@ -274,6 +274,11 @@ impl EvalSpec {
                     .with_context(|| format!("read policy source {}", path.display()))
             })
             .transpose()?;
+        // Code edits must invalidate the installed policy even when the recipe
+        // TOML is unchanged. Configuration and model have separate digests.
+        let policy_source_revision = policy_code.as_ref()
+            .map(|code| super::admission::digest_bytes(code.as_bytes()).as_str().to_string())
+            .unwrap_or_else(|| recipe.source_hash.clone());
         let policy_configuration_digest =
             super::admission::CanonicalJson::new(Value::Object(recipe.policy.clone()))?
                 .digest()
@@ -298,7 +303,7 @@ impl EvalSpec {
             policy_config: recipe.policy_config.clone(),
             policy: recipe.policy.clone(),
             policy_code,
-            policy_source_revision: recipe.source_hash.clone(),
+            policy_source_revision,
             policy_configuration_digest,
             provider: recipe.provider.clone(),
             model: recipe.model.clone(),
@@ -6008,6 +6013,38 @@ async fn append_cancelled_terminal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_policy_code_edits_invalidate_the_source_pin_without_recipe_edits() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("workshop.recipes")).unwrap();
+        std::fs::write(root.path().join("policy.py"), "def choose_actions(**kwargs): return ['noop']\n").unwrap();
+        std::fs::write(root.path().join("workshop.recipes/source.toml"), r#"
+id = "eval.source-pin.test"
+algorithm = "eval"
+title = "Source pin"
+container = "local"
+provider = "none"
+model = "heuristic"
+locality = "container"
+family = "craftax"
+harness = "isolated_policy_process"
+policy_config = "heuristic"
+policy_source = "policy.py"
+train_seeds = [0]
+[bounds]
+max_cost_usd = 0.01
+max_total_rollouts = 1
+"#).unwrap();
+        let recipe = workspace_recipe::find_recipe(root.path(), "eval.source-pin.test").unwrap();
+        let before = EvalSpec::from_workspace(&recipe, root.path()).unwrap();
+        std::fs::write(root.path().join("policy.py"), "def choose_actions(**kwargs): return ['east']\n").unwrap();
+        let after = EvalSpec::from_workspace(&recipe, root.path()).unwrap();
+        assert_ne!(before.policy_source_revision, after.policy_source_revision);
+        assert_eq!(before.policy_configuration_digest, after.policy_configuration_digest);
+        assert_eq!(after.policy_source_revision,
+            super::super::admission::digest_bytes(after.policy_code.as_ref().unwrap().as_bytes()).as_str());
+    }
 
     #[test]
     fn workspace_eval_preserves_advertised_world_and_evaluator() {
