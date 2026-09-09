@@ -202,7 +202,14 @@ export function Shell({ title, lede, projection, data, analysisFindings = [], tr
   const [windowError, setWindowError] = useState<string | null>(null);
   const [windowBusy, setWindowBusy] = useState(false);
   const requestEpoch = useRef(0);
-  useEffect(() => { requestEpoch.current++; setLoaded(undefined); setWindowError(null); setWindowBusy(false); }, [initial]);
+  // Host refreshes may reconstruct the same immutable projection object. Reset
+  // navigation only when its pinned source/window changes, not its JS identity.
+  const initialIdentity = JSON.stringify([
+    initial?.schema_version, initial?.trace_id, initial?.trace_digest,
+    initial?.view_window?.snapshotDigest, initial?.view_window?.sourceProjectionDigest,
+    initial?.view_window?.offset, initial?.view_window?.limit,
+  ]);
+  useEffect(() => { requestEpoch.current++; setLoaded(undefined); setWindowError(null); setWindowBusy(false); }, [initialIdentity]);
   const payload = loaded ?? initial; const visual = payload?.visual; const items = visual?.items ?? [];
   const window = payload?.view_window;
   async function loadWindow(offset: number) {
