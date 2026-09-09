@@ -57,3 +57,9 @@ test("build receipts bind the source present before compilation", () => {
   assert.match(build, /commit = "\$BUILD_SOURCE_REVISION"/);
   assert.match(build, /dirty = "\$BUILD_SOURCE_DIRTY" == "true"/);
 });
+
+test("local build prerequisites reject a pre-Swift-6 terminal toolchain", () => {
+  const install = readFileSync(new URL("scripts/install.sh", root), "utf8");
+  assert.match(install, /swift_major >= 6/);
+  assert.match(install, /Select Xcode 16\+/);
+});

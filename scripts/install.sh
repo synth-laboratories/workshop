@@ -64,6 +64,10 @@ require_command xcode-select "Install the Xcode command-line tools with: xcode-s
 xcode_path="$(xcode-select -p 2>/dev/null)" || fail "Xcode command-line tools are not configured. Run: xcode-select --install"
 [[ -d "$xcode_path" ]] || fail "Xcode developer directory does not exist: $xcode_path"
 note "Xcode command-line tools: $xcode_path"
+require_command swift "Install Xcode 16 or newer (Swift 6 is required by the terminal host)."
+swift_major="$(swift --version | sed -nE 's/.*Swift version ([0-9]+).*/\1/p' | head -n 1)"
+[[ "$swift_major" =~ ^[0-9]+$ ]] && (( swift_major >= 6 )) || \
+  fail "Swift 6+ is required. Select Xcode 16+ with DEVELOPER_DIR before building."
 
 require_command git "Install Git (included with the Xcode command-line tools)."
 require_command node "Install Node.js 20 or newer."
