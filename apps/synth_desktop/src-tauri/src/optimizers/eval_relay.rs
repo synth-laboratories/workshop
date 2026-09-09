@@ -1674,7 +1674,13 @@ async fn retain_frame(
         return Ok(None);
     }
 
-    let resolved = resolve_frame_url(ctx.base, ctx.rollout_id, step, url)?;
+    let resolved = resolve_frame_url(
+        ctx.base,
+        ctx.rollout_id,
+        step,
+        payload.get("viewer").and_then(Value::as_str),
+        url,
+    )?;
     let bytes = fetch_frame_bytes(ctx, &resolved).await?;
     let (width, height) = decode_png_dimensions(&bytes)?;
     let cas_digest = ctx
@@ -1727,6 +1733,7 @@ pub(crate) fn resolve_frame_url(
     base: &str,
     rollout_id: &str,
     step: i64,
+    viewer: Option<&str>,
     declared: &str,
 ) -> Result<reqwest::Url> {
     let origin = reqwest::Url::parse(base).context("container base URL")?;
@@ -1738,7 +1745,21 @@ pub(crate) fn resolve_frame_url(
     {
         bail!("frame media is limited to registered loopback HTTP containers");
     }
+    // URL joining normalizes dot segments. Reject non-canonical declarations
+    // before that normalization can erase evidence of traversal.
+    if declared.contains('%')
+        || declared.contains('\\')
+        || declared.split('/').any(|part| matches!(part, "." | ".."))
+    {
+        bail!("frame URL contains encoded or traversing path components");
+    }
     let resolved = origin.join(declared).context("declared frame URL")?;
+    if resolved.fragment().is_some()
+        || !resolved.username().is_empty()
+        || resolved.password().is_some()
+    {
+        bail!("frame URL carries a fragment or credentials");
+    }
     if resolved.scheme() != origin.scheme()
         || resolved.host_str() != origin.host_str()
         || resolved.port_or_known_default() != origin.port_or_known_default()
@@ -1748,7 +1769,21 @@ pub(crate) fn resolve_frame_url(
     if resolved.query().is_some() {
         bail!("frame URL {resolved} carries a query string");
     }
-    let expected = format!("/rollouts/{rollout_id}/frames/{step}.png");
+    // Viewer IDs are one literal path component, never a path supplied by
+    // the producer. Bind actor frames to the event's explicit viewer.
+    let expected = match viewer {
+        Some(viewer) => {
+            if viewer.is_empty()
+                || !viewer
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
+                bail!("frame viewer is not a safe identifier");
+            }
+            format!("/rollouts/{rollout_id}/frames/{step}/{viewer}.png")
+        }
+        None => format!("/rollouts/{rollout_id}/frames/{step}.png"),
+    };
     if resolved.path() != expected {
         bail!(
             "frame URL path {} is not this rollout's step {step} ({expected})",
@@ -2053,7 +2088,9 @@ mod tests {
     #[test]
     fn frame_urls_must_name_this_rollout_and_step() {
         let base = "http://127.0.0.1:9110";
-        assert!(resolve_frame_url(base, "roll_a", 7, "/rollouts/roll_a/frames/7.png").is_ok());
+        assert!(
+            resolve_frame_url(base, "roll_a", 7, None, "/rollouts/roll_a/frames/7.png").is_ok()
+        );
         for hostile in [
             "/rollouts/roll_b/frames/7.png",
             "/rollouts/roll_a/frames/8.png",
@@ -2063,9 +2100,32 @@ mod tests {
             "/etc/passwd",
         ] {
             assert!(
-                resolve_frame_url(base, "roll_a", 7, hostile).is_err(),
+                resolve_frame_url(base, "roll_a", 7, None, hostile).is_err(),
                 "accepted {hostile}"
             );
+        }
+    }
+
+    #[test]
+    fn actor_frame_urls_are_bound_to_the_declared_viewer() {
+        let base = "http://127.0.0.1:9110";
+        let valid = "/rollouts/roll_a/frames/7/agent_0.png";
+        assert!(resolve_frame_url(base, "roll_a", 7, Some("agent_0"), valid).is_ok());
+        assert!(resolve_frame_url(base, "roll_a", 7, None, valid).is_err());
+        for hostile in [
+            "/rollouts/roll_b/frames/7/agent_0.png",
+            "/rollouts/roll_a/frames/8/agent_0.png",
+            "/rollouts/roll_a/frames/7/agent_1.png",
+            "/rollouts/roll_a/frames/7/agent_0.png?x=1",
+            "/rollouts/roll_a/frames/7/%2fagent_0.png",
+            "/rollouts/roll_a/frames/7/other/../agent_0.png",
+            "/rollouts/roll_a/frames/7/agent_0.png#fragment",
+            "http://example.com/rollouts/roll_a/frames/7/agent_0.png",
+        ] {
+            assert!(resolve_frame_url(base, "roll_a", 7, Some("agent_0"), hostile).is_err());
+        }
+        for viewer in ["", "..", "../agent_0", "a/b", "%2e%2e", "a?b"] {
+            assert!(resolve_frame_url(base, "roll_a", 7, Some(viewer), valid).is_err());
         }
     }
 
@@ -2075,6 +2135,7 @@ mod tests {
             "https://frames.example.com",
             "roll_a",
             0,
+            None,
             "/rollouts/roll_a/frames/0.png"
         )
         .is_err());
