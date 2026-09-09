@@ -317,11 +317,11 @@ mod tests {
         assert_ne!(OPTIMIZERS.official, OPTIMIZERS.dev);
     }
 
-    /// Eval is provisioned by Desktop from the 0.2.20 sidecar pin.
+    /// Eval is provisioned by Desktop from the coordinated sidecar pin.
     #[test]
     fn eval_runtime_is_pinned_and_managed() {
         assert!(EVAL.provisioned_by_desktop);
-        assert_eq!(EVAL.official, "0.2.20");
+        assert_eq!(EVAL.official, OPTIMIZERS.official);
         assert_eq!(EVAL.min_supported, "0.2.20");
         assert!(EVAL.meets_floor("0.2.20"));
         assert!(!EVAL.meets_floor("0.2.14"));
