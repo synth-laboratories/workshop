@@ -24,7 +24,8 @@ mkdir -p "$dist"
 ditto "$app" "$stage/Synth Workshop.app"
 # Ad-hoc signing keeps the local package internally consistent without using
 # a Developer ID identity or macOS Keychain. It is explicitly not notarization.
-codesign --force --deep --options runtime --sign - "$stage/Synth Workshop.app"
+# Nested browser/helper code keeps its own signing and JIT entitlements.
+codesign --force --options runtime --sign - "$stage/Synth Workshop.app"
 codesign --verify --deep --strict "$stage/Synth Workshop.app"
 rm -f "$archive" "$archive.sha256" "$manifest"
 ditto -c -k --sequesterRsrc --keepParent "$stage/Synth Workshop.app" "$archive"
