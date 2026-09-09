@@ -5334,17 +5334,24 @@ pub(crate) async fn import_container_trace_into(
             // that can never render.
             "inspectable": source_kind == "container_bundle" && !indexed.is_empty(),
             "traces": indexed,
-            "note": if indexed.is_empty() {
-                "Imported as a provenance record only: this container returned a lite seal, not a self-contained Trace V5 bundle, so it cannot be projected into the inspector."
-            } else {
-                "Sealed Trace V5 is now indexed in Workshop."
-            },
+            "validation": result.validation,
+            "note": trace_import_note(source_kind, result.trusted, !indexed.is_empty()),
             "embeddedFrameCount": frames.len(),
             "maxStep": max_step,
         }),
         event,
         frames,
     ))
+}
+
+fn trace_import_note(source_kind: &str, trusted: bool, indexed: bool) -> &'static str {
+    if source_kind == "container_seal" {
+        "Imported as a provenance record only: this container returned a lite seal, not a self-contained Trace V5 bundle, so it cannot be projected into the inspector."
+    } else if !trusted || !indexed {
+        "The container returned a trace bundle, but inspection did not produce a trusted indexed trace. See validation for the failure; resolve it before retrying the import."
+    } else {
+        "Sealed Trace V5 is now indexed in Workshop."
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -6748,6 +6755,16 @@ mod tests {
             sealed_trace_lite_routes("roll_e_bundle", Some(&announced)),
             vec!["/rollouts/roll_e_bundle/trace".to_string()]
         );
+    }
+
+    #[test]
+    fn bundle_inspection_failure_is_not_reported_as_a_lite_seal() {
+        let failed = trace_import_note("container_bundle", false, false);
+        assert!(failed.contains("See validation"));
+        assert!(!failed.contains("lite seal"));
+        assert!(trace_import_note("container_seal", false, false).contains("lite seal"));
+        assert_eq!(trace_import_note("container_bundle", true, true),
+            "Sealed Trace V5 is now indexed in Workshop.");
     }
 
     #[test]
