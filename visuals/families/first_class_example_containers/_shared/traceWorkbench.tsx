@@ -388,7 +388,11 @@ function RunAggregateHeader({
         padding: "var(--sv-sp-3)",
         border: "1px solid var(--sv-border)",
         borderRadius: "var(--sv-radius-lg)",
-        background: "color-mix(in srgb, var(--sv-surface) 96%, transparent)",
+        // Opaque, not 96%: this panel is pinned over the frame column while the
+        // page scrolls, and 4% transparency let a dark rollout frame show
+        // through it — which is what "the summary and frame overlap" looks
+        // like in a screenshot even when neither box has moved.
+        background: "var(--sv-surface)",
         boxShadow: "0 6px 18px rgba(0,0,0,.08)"
       }}
     >

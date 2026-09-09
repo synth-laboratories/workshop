@@ -130,3 +130,103 @@ test("the workstation summary and frame do not overlap in a narrow library windo
 		expect(geometry.overflow, `the workstation must not force horizontal scroll at ${width}px`).toBeLessThanOrEqual(1);
 	}
 });
+
+/**
+ * Expanded-workbench scroll regression.
+ *
+ * Native acceptance reported the summary and frame overlapping in the expanded
+ * workbench "while scrolling", which the narrow-library sweep above does not
+ * reach. The run summary is `position: sticky; top: 0` above 420px, so it is
+ * *meant* to sit over the scrolling content — the defect a sticky header can
+ * actually have is being taller than the space it sticks in, at which point it
+ * covers the frame permanently and no amount of scrolling reveals it.
+ *
+ * This measures that: after scrolling to the bottom, some of the frame column
+ * must still be visible below the pinned summary. It changes no layout; the
+ * sticky design belongs to the visuals owner.
+ */
+test("the pinned run summary never swallows the frame in an expanded workbench", async ({ page }) => {
+	const run = {
+		schemaVersion: "optimizer_run.v1",
+		id: "opt_eval_expanded_scroll",
+		algorithmId: "eval",
+		status: "completed",
+		objective: "Expanded workstation",
+		summary: { task: "dungeongrid", bounds: { maximumRollouts: 8 } },
+		usage: {}
+	};
+	// Enough trials that the summary carries its full block and the page scrolls.
+	const events = Array.from({ length: 8 }, (_, index) => ({
+		type: "eval.trial.started",
+		delta: {
+			workItemId: `eval:trial:${index}`,
+			trial_id: `trial:dungeongrid:${index}`,
+			rollout_id: `roll_${index}`,
+			seed: index,
+			pool: "train",
+			scenario: "dungeongrid/coordination"
+		}
+	}));
+	await installVisuals(page, [liveVisual({
+		id: "vis_expanded_scroll_workbench",
+		templateId: "trace.workbench.v1",
+		title: "Expanded workstation",
+		bindings: {
+			schemaVersion: "synth.visual-bindings.v1",
+			inputs: [{ input: "optimizer_run", kind: "optimizer_run", data: { run, events } }]
+		}
+	})]);
+
+	await page.getByTestId("open-visuals").click();
+	await page.getByTestId("visuals-row-vis_expanded_scroll_workbench").click();
+	const preview = page.getByTestId("visuals-preview");
+	const workbench = preview.getByTestId("trace-workbench");
+	await expect(workbench).toBeVisible();
+
+	// Short viewports are where a tall pinned summary runs out of room.
+	for (const height of [900, 700, 560]) {
+		await page.setViewportSize({ width: 1440, height });
+		await expect(workbench).toBeVisible();
+
+		const geometry = await workbench.evaluate((root) => {
+			const summary = root.querySelector(".trace-workbench-aggregate") as HTMLElement | null;
+			const frame = root.querySelector(".trace-workbench-frame-column") as HTMLElement | null;
+			if (!summary || !frame) return null;
+			// Scroll whichever ancestor actually scrolls, then measure.
+			let scroller: HTMLElement | null = root;
+			while (scroller && scroller.scrollHeight <= scroller.clientHeight + 1) {
+				scroller = scroller.parentElement;
+			}
+			if (scroller) scroller.scrollTop = scroller.scrollHeight;
+			const summaryRect = summary.getBoundingClientRect();
+			const frameRect = frame.getBoundingClientRect();
+			const covered = Math.max(0, Math.min(summaryRect.bottom, frameRect.bottom) - Math.max(summaryRect.top, frameRect.top));
+			return {
+				scrolled: Boolean(scroller),
+				summaryHeight: summaryRect.height,
+				frameHeight: frameRect.height,
+				uncovered: frameRect.height - covered,
+				viewport: window.innerHeight
+			};
+		});
+
+		// A pinned panel that content scrolls beneath has to hide it. Anything
+		// translucent reads as the two boxes overlapping.
+		const background = await workbench.locator(".trace-workbench-aggregate").evaluate((element) =>
+			getComputedStyle(element).backgroundColor
+		);
+		expect(background, `the pinned summary must be opaque at ${height}px`).not.toMatch(/rgba\(.*,\s*0?\.\d+\)$/);
+
+		expect(geometry, `the ${height}px layout must render a summary and a frame column`).not.toBeNull();
+		const measured = geometry!;
+		// A pinned header taller than its own viewport can never be scrolled past.
+		expect(
+			measured.summaryHeight,
+			`the pinned summary must leave room to scroll at ${height}px viewport`
+		).toBeLessThan(measured.viewport);
+		expect(
+			measured.uncovered,
+			`some of the frame must stay visible below the pinned summary at ${height}px`
+		).toBeGreaterThan(0);
+	}
+});
