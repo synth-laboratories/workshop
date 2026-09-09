@@ -136,7 +136,13 @@ impl Peer {
         Ok(())
     }
 
-    pub async fn request(&self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
+    /// Write a request and hand back a handle for its reply.
+    ///
+    /// The frame is on the wire when this returns. A caller that must order a
+    /// later notification after this request — a cancellation, which is only
+    /// meaningful once the peer has the prompt — can await this before
+    /// releasing whatever lock serialises the two.
+    pub async fn begin_request(&self, method: &str, params: Value) -> Result<PendingRequest> {
         let id = self.sequence.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         {
@@ -151,11 +157,15 @@ impl Peer {
             self.pending.lock().await.remove(&id);
             return Err(error);
         }
-        let outcome = tokio::time::timeout(timeout, rx).await;
-        self.pending.lock().await.remove(&id);
-        outcome
-            .context("ACP request timed out; do not blindly retry an uncertain mutation")?
-            .context("ACP response channel closed")?
+        Ok(PendingRequest {
+            id,
+            reply: rx,
+            pending: self.pending.clone(),
+        })
+    }
+
+    pub async fn request(&self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
+        self.begin_request(method, params).await?.wait(timeout).await
     }
 
     pub async fn notify(&self, method: &str, params: Value) -> Result<()> {
@@ -185,6 +195,24 @@ impl Peer {
         child.start_kill()?;
         child.wait().await?;
         Ok(())
+    }
+}
+
+/// One request already written, awaiting its reply.
+pub struct PendingRequest {
+    id: u64,
+    reply: oneshot::Receiver<Result<Value>>,
+    pending: Arc<Mutex<Pending>>,
+}
+
+impl PendingRequest {
+    pub async fn wait(self, timeout: Duration) -> Result<Value> {
+        let Self { id, reply, pending } = self;
+        let outcome = tokio::time::timeout(timeout, reply).await;
+        pending.lock().await.remove(&id);
+        outcome
+            .context("ACP request timed out; do not blindly retry an uncertain mutation")?
+            .context("ACP response channel closed")?
     }
 }
 

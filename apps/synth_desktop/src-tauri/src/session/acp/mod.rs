@@ -2,6 +2,8 @@
 //! Workshop's existing services. Agent protocol details stay in journal payloads.
 pub mod commands;
 pub mod config;
+#[cfg(test)]
+mod tests;
 mod transport;
 
 use crate::{
@@ -42,18 +44,20 @@ struct Attachment {
     permissions: Arc<tokio::sync::Semaphore>,
 }
 
-pub struct Manager {
+/// Generic over the Tauri runtime so lifecycle faults can be driven against a
+/// mock app, the way the Codex manager already is. Production keeps `Wry`.
+pub struct Manager<R: tauri::Runtime = tauri::Wry> {
     core: Arc<CoreRuntime>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
     approvals: Arc<ApprovalBroker>,
     attachments: Mutex<HashMap<String, Arc<Attachment>>>,
     lifecycle: Mutex<()>,
 }
 
-impl Manager {
+impl<R: tauri::Runtime> Manager<R> {
     pub fn new(
         core: Arc<CoreRuntime>,
-        app: tauri::AppHandle,
+        app: tauri::AppHandle<R>,
         approvals: Arc<ApprovalBroker>,
     ) -> Self {
         Self {
@@ -543,21 +547,69 @@ impl Manager {
             .store(false, std::sync::atomic::Ordering::SeqCst);
         *active = Some(run_id.clone());
         drop(active);
+        // The prompt goes on the wire before this call returns, under the same
+        // lifecycle lock `cancel` and `close` take. Spawning the write instead
+        // let a cancellation issued immediately afterwards overtake the prompt
+        // it was cancelling: the peer saw a cancel with nothing pending, then
+        // a prompt nobody would ever cancel again, and the turn survived until
+        // the cancellation deadline force-terminated it.
+        let started = attachment
+            .peer
+            .begin_request(
+                "session/prompt",
+                json!({"sessionId":attachment.remote_id,"prompt":[{"type":"text","text":text}]}),
+            )
+            .await;
+        let started = match started {
+            Ok(started) => started,
+            Err(error) => {
+                *attachment.active_run.lock().await = None;
+                if let Ok(mutation) = self
+                    .core
+                    .runs()
+                    .transition(
+                        run_id.clone(),
+                        RunStatus::Failed,
+                        Some(json!({"error":error.to_string(),"outcomeUncertain":false})),
+                        EventSource::Acp,
+                    )
+                    .await
+                {
+                    self.core.broadcast_committed(mutation.event);
+                }
+                self.core.release_turn(id.clone()).await?;
+                self.status(&id, SessionStatus::Failed).await?;
+                return Err(error);
+            }
+        };
         let manager = self.clone();
         let turn_id = run_id.clone();
         let session_id = id.clone();
         tokio::spawn(async move {
-            let request = attachment.peer.request("session/prompt", json!({"sessionId":attachment.remote_id,"prompt":[{"type":"text","text":text}]}),
-                Duration::from_secs(u64::from(attachment.backend.max_turn_seconds)));
+            let request =
+                started.wait(Duration::from_secs(u64::from(attachment.backend.max_turn_seconds)));
             tokio::pin!(request);
             let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
             let result = loop {
                 tokio::select! {
+                    // A finished request outranks a due tick. Without this, a
+                    // cancellation the peer answered immediately was not
+                    // observed until the next heartbeat — the same instant the
+                    // cancellation deadline force-terminates the turn — so a
+                    // clean cancel could be recorded as a forced termination
+                    // and detach the agent.
+                    biased;
                     result = &mut request => break result,
                     _ = heartbeat.tick() => {
                         // The host still owns the bounded request, including human waits.
                         // EOF, timeout and cancellation settle it through the same path.
-                        let _lock = manager.lifecycle.lock().await;
+                        // Never park this loop on the lifecycle lock: cancel and
+                        // close hold it, and a request that finished meanwhile
+                        // has to stay observable. A skipped beat costs one
+                        // interval out of a twenty-second lease.
+                        let Ok(_lock) = manager.lifecycle.try_lock() else {
+                            continue;
+                        };
                         if !manager.current(&session_id, &attachment).await
                             || attachment.active_run.lock().await.as_deref() != Some(turn_id.as_str()) {
                             break Err(anyhow::anyhow!("ACP turn attachment changed"));
@@ -814,7 +866,7 @@ impl Manager {
     }
 }
 
-impl crate::services::ManagedService for Manager {
+impl<R: tauri::Runtime> crate::services::ManagedService for Manager<R> {
     fn name(&self) -> &'static str {
         "acp-agents"
     }
