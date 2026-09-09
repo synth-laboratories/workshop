@@ -1447,10 +1447,7 @@ mod tests {
 
     #[test]
     fn start_paths_do_not_dial_the_public_sft_loopback() {
-        let production = include_str!("hosted_sft.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
+        let production = &crate::optimizers::production_source(include_str!("hosted_sft.rs"));
         assert!(!production.contains("client.base_url"));
         assert!(production.contains("admit_hosted"));
         assert!(production.contains("PLACEMENT_TRAINING_SFT_HOSTED"));
