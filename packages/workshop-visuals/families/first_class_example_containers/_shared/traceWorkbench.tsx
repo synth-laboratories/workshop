@@ -29,6 +29,7 @@
 
 import { useVisualState, useVisualPlaybackDriver } from "@synth/visuals-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { StableTraceInput } from "./StableTraceInput";
 
 import { VisualChrome } from "../../../chrome/VisualChrome.tsx";
 import "./traceWorkbench.css";
@@ -713,7 +714,7 @@ function TrajectoryRail({
 
   return (
     <div style={{ display: "grid", gridTemplateRows: "auto 1fr", gap: "var(--sv-sp-2)", minHeight: 0 }}>
-      <input
+      <StableTraceInput
         value={query}
         onChange={(event) => onQuery(event.target.value)}
         placeholder={
@@ -1595,7 +1596,7 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
               <button type="button" style={button} onClick={() => gotoFrame((frameIndex ?? -1) + 1)}>
                 next ▶
               </button>
-              <input
+              <StableTraceInput
                 type="range"
                 min={0}
                 max={Math.max(0, view.frames.length - 1)}
