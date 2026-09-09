@@ -5425,6 +5425,14 @@ fn extract_imported_trace_frames(
             .into_iter()
             .flatten()
         {
+            // A frame's `step` is a producer claim about the frame, and some
+            // producers file the frame ordinal there: RuneBench numbers 236
+            // frames 0-235 for a 22-step episode. Letting frames widen this
+            // would report 235 environment steps for that rollout, so the
+            // ceiling comes only from events whose step is an environment step.
+            if event.get("event_type").and_then(Value::as_str) == Some("frame") {
+                continue;
+            }
             for pointer in ["/payload/env_steps", "/payload/step", "/payload/step_index"] {
                 if let Some(step) = event.pointer(pointer).and_then(Value::as_i64) {
                     max_step = Some(max_step.map_or(step, |current| current.max(step)));
@@ -7640,12 +7648,72 @@ mod tests {
         let (frames, max_step, provenance) =
             extract_imported_trace_frames(&archive_path, "roll_portable").unwrap();
         assert_eq!(frames.len(), 1);
-        assert_eq!(max_step, Some(0));
+        // This bundle has no environment event, so it establishes no
+        // environment step. The frame's own `step` is a claim about the frame.
+        assert_eq!(max_step, None);
         assert_eq!(frames[0].bytes, png);
         assert_eq!(frames[0].step, 0);
         assert_eq!(frames[0].width, 1);
         assert_eq!(frames[0].height, 1);
         assert_eq!(frames[0].producer_digest.as_deref(), Some("producer16"));
         assert_eq!(provenance.unwrap()["producer_commit"], "containers@abc123");
+    }
+
+    /// A producer that numbers frames sequentially and files that number under
+    /// `step` must not raise the environment step ceiling. RuneBench does this:
+    /// 236 frames claim steps 0-235 while the episode reaches step 22.
+    #[test]
+    fn frame_ordinals_do_not_inflate_the_reported_environment_step() {
+        use std::io::Write;
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+            .unwrap();
+        let digest = format!("sha256:{:x}", sha2::Sha256::digest(&png));
+        let uri = format!("blobs/sha256/{}/{}", &digest[7..9], &digest[7..]);
+        let mut events = vec![
+            json!({"event_type": "observation", "payload": {"step": 1}}),
+            json!({"event_type": "action", "payload": {"step": 2, "action": "chop"}}),
+        ];
+        for ordinal in 0..6 {
+            events.push(json!({
+                "event_type": "frame",
+                "artifact_ids": ["frame_0"],
+                "payload": {"step": ordinal, "source_event_digest": format!("producer{ordinal}")},
+            }));
+        }
+        let document = json!({
+            "identity": {"rollout_id": "roll_ordinal"},
+            "provenance": {
+                "producer_commit": "containers@abc123",
+                "container_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "artifacts": [{
+                "artifact_id": "frame_0",
+                "digest": digest,
+                "media_type": "image/png",
+                "size_bytes": png.len(),
+                "uri": uri,
+            }],
+            "events": events,
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("ordinal.zip");
+        let file = fs::File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        archive
+            .start_file("traces/roll_ordinal/sealed/trace.json", options)
+            .unwrap();
+        archive
+            .write_all(&serde_json::to_vec(&document).unwrap())
+            .unwrap();
+        archive.start_file(&uri, options).unwrap();
+        archive.write_all(&png).unwrap();
+        archive.finish().unwrap();
+
+        let (_frames, max_step, _provenance) =
+            extract_imported_trace_frames(&archive_path, "roll_ordinal").unwrap();
+        // Six frames claim up to step 5; the episode only ever reached step 2.
+        assert_eq!(max_step, Some(2));
     }
 }

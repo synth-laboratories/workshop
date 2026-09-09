@@ -103,8 +103,16 @@ export type TraceRubricGrade = {
 };
 
 export type TraceFrame = {
-  /** Environment step this frame renders. */
-  step: number;
+  /** One-based position in the retained frame list. Always known. */
+  position: number;
+  /**
+   * Environment step this frame renders, when the producer substantiated one.
+   *
+   * `null` means no environment step could be established — including the case
+   * where the producer sent a `step` that the trace's own environment events
+   * refute. A frame ordinal is not a step, and must never be shown as one.
+   */
+  step: number | null;
   /** Media reference, when the relay retained bytes for it. */
   media: MediaRef | null;
   /** Why there are no bytes, when there are none. */
@@ -113,6 +121,9 @@ export type TraceFrame = {
   producerDigest: string | null;
   sequence: number;
 };
+
+/** Where a frame's environment step came from, or why there is none. */
+export type FrameStepBasis = "producer" | "frame_ordinal" | "absent";
 
 export type TraceStep = {
   id: string;
@@ -180,6 +191,9 @@ export type TraceCoverage = {
   uniqueCasBlobs: number;
   /** Bounds the relay hit, verbatim. Never summarized away. */
   degradations: Array<{ reason: string; detail: string; dropped: number }>;
+  /** Whether frames carry a real environment step, and why not when they do not. */
+  frameSteps: FrameStepBasis;
+  frameStepReasons: string[];
   /**
    * The producer's own declaration about model-call capture. Authoritative:
    * the viewer reports it rather than inferring capture from what it can see.
@@ -498,13 +512,39 @@ function emptyStep(
  * one opens — which is what makes a live fold and a sealed fold agree without
  * either needing to know which it is.
  */
+/**
+ * Event kinds whose `step` is an environment step by definition.
+ *
+ * `frame` is deliberately absent: a frame's `step` is the claim under test, so
+ * letting it widen the ceiling would make the check vacuous.
+ */
+const ENVIRONMENT_STEP_EVENTS = new Set([
+  "observation",
+  "action",
+  "action_applied",
+  "action_rejected",
+  "reward_signal"
+]);
+
+/** The highest environment step the trace's own environment events establish. */
+function environmentStepCeiling(events: readonly ContainerEvent[]): number | null {
+  let ceiling: number | null = null;
+  for (const event of events) {
+    if (!ENVIRONMENT_STEP_EVENTS.has(String(event.kind ?? ""))) continue;
+    const payload = (event.payload ?? {}) as Any;
+    const value = num(payload.step ?? payload.turn);
+    if (value === null) continue;
+    ceiling = ceiling === null ? value : Math.max(ceiling, value);
+  }
+  return ceiling;
+}
+
 export function foldCraftaxTrace(
   events: readonly ContainerEvent[],
   identity: TraceIdentity
 ): EvalTraceView {
   const steps: TraceStep[] = [];
   const frames: TraceFrame[] = [];
-  const frameIndexByStep = new Map<number, number[]>();
   let current: TraceStep | null = null;
   let systemPrompt: string | null = null;
   // The observation standing before the next call opens. Craftax emits the
@@ -737,10 +777,12 @@ export function foldCraftaxTrace(
         break;
       }
       case "frame": {
-        const stepNumber = num(payload.step);
         const media = mediaRefFrom(payload);
         const frame: TraceFrame = {
-          step: stepNumber ?? frames.length,
+          position: frames.length + 1,
+          // The producer's claim, kept as-is for now. Whether it is an
+          // environment step at all is decided once the whole trace is known.
+          step: num(payload.step),
           media,
           unavailable: media
             ? null
@@ -754,9 +796,6 @@ export function foldCraftaxTrace(
         };
         const index = frames.length;
         frames.push(frame);
-        const existing = frameIndexByStep.get(frame.step) ?? [];
-        existing.push(index);
-        frameIndexByStep.set(frame.step, existing);
         if (current) {
           current.frames.push(index);
           current.raw.push(event.sequence);
@@ -780,6 +819,31 @@ export function foldCraftaxTrace(
     const target = steps[0] ?? step();
     target.frames.unshift(...pendingFrames);
     pendingFrames = [];
+  }
+
+  // A producer that numbers frames sequentially and files that number under
+  // `step` is describing a position, not an environment step. RuneBench does
+  // exactly this: 236 frames claim steps 0-235 while the episode's own
+  // observations, actions and reward run 1-22. Believing the frame would report
+  // 235 environment steps for a 22-step episode, so a claim that leaves the
+  // range the trace itself establishes is refused rather than displayed.
+  const stepCeiling = environmentStepCeiling(events);
+  const claimedCeiling = frames.reduce<number | null>(
+    (highest, frame) => (frame.step === null ? highest : Math.max(highest ?? frame.step, frame.step)),
+    null
+  );
+  const frameStepsAreOrdinals =
+    stepCeiling !== null && claimedCeiling !== null && claimedCeiling > stepCeiling;
+  const frameStepBasis: FrameStepBasis = frameStepsAreOrdinals
+    ? "frame_ordinal"
+    : claimedCeiling === null
+      ? "absent"
+      : "producer";
+  const frameStepReasons = frameStepsAreOrdinals
+    ? [`the producer numbered ${frames.length} frames up to step ${claimedCeiling}, but this trace's environment events only reach step ${stepCeiling}; frame position is being reported, not an environment step`]
+    : [];
+  if (frameStepsAreOrdinals) {
+    for (const frame of frames) frame.step = null;
   }
 
   const relay = (identity.relay ?? {}) as Any;
@@ -844,6 +908,8 @@ export function foldCraftaxTrace(
       framesRetained: retainedFrames ?? retainedMedia.length,
       uniqueCasBlobs,
       degradations: Array.isArray(relay.degradations) ? relay.degradations : [],
+      frameSteps: frameStepBasis,
+      frameStepReasons,
       modelCalls: identity.policyCallCoverage ?? "unknown",
       modelCallReasons: identity.policyCallCoverageReasons ?? [],
       rawProvider: identity.rawProviderCoverage ?? "unknown"
@@ -1116,13 +1182,15 @@ export function reconcileCraftaxTrace(
 	// the durable local media authority until Containers embeds PNG objects in
 	// the bundle. Carry only matching live media references onto sealed logical
 	// frames; never carry semantic fields across the authority boundary.
-	const liveMedia = new Map<string, TraceFrame["media"]>();
+	// Producer sequence already identifies a frame event uniquely; the step half
+	// of this key disambiguated nothing and is no longer always known.
+	const liveMedia = new Map<number, TraceFrame["media"]>();
 	for (const frame of live.frames) {
-		if (frame.media) liveMedia.set(`${frame.sequence}:${frame.step}`, frame.media);
+		if (frame.media) liveMedia.set(frame.sequence, frame.media);
 	}
 	const frames = sealed.frames.map((frame) => ({
 		...frame,
-		media: frame.media ?? liveMedia.get(`${frame.sequence}:${frame.step}`) ?? null
+		media: frame.media ?? liveMedia.get(frame.sequence) ?? null
 	}));
 	// Verifier grades are an evaluation overlay, not environment semantics. A
 	// container may seal the policy/environment trace before its post-hoc grader

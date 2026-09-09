@@ -544,7 +544,12 @@ function FrameCanvas({
   loaded: LoadedMedia | undefined;
   branding: TraceWorkbenchBranding;
 }) {
-  const label = frame ? `${branding.label} frame at step ${frame.step}` : "No frame for this call";
+  // Position is always knowable; the environment step is a producer claim that
+  // may have been refused. Naming the frame by its position keeps the label
+  // true either way, and the step is added only when there is one.
+  const label = frame
+    ? `${branding.label} frame ${frame.position}${frame.step === null ? "" : ` · environment step ${frame.step}`}`
+    : "No frame for this call";
   const surface: React.CSSProperties = {
     display: "grid",
     placeItems: "center",
@@ -1594,7 +1599,7 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
               <span style={{ ...mono, fontSize: "var(--sv-fs-micro)", color: "var(--sv-text-faint)" }}>
                 frame {view.frames.length ? (frameIndex ?? 0) + 1 : 0}/{view.frames.length} · call{" "}
                 {view.steps.length ? selectedCall + 1 : 0}/{view.steps.length}
-                {frame ? ` · t${frame.step}` : ""}
+                {frame && frame.step !== null ? ` · t${frame.step}` : ""}
               </span>
               {!following && !terminal ? (
                 <button
@@ -1625,6 +1630,28 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
                     record are absent, not aborted, and are never reconstructed from frames or actions.
                   </div>
                   {view.coverage.modelCallReasons.map((reason, index) => (
+                    <div key={index} style={{ fontSize: "var(--sv-fs-micro)", color: "var(--sv-text-muted)" }}>
+                      {reason}
+                    </div>
+                  ))}
+                </div>
+              </Disclosure>
+            ) : null}
+            {/* A frame ordinal filed under `step` is the producer describing a
+                position. Saying so is the only way a reader can tell why the
+                frame count and the environment step count disagree. */}
+            {view.coverage.frameSteps === "frame_ordinal" ? (
+              <Disclosure
+                summary="Frame steps: position only"
+                count={view.coverage.frameStepReasons.length}
+              >
+                <div style={{ display: "grid", gap: 3 }}>
+                  <div style={{ fontSize: "var(--sv-fs-micro)", color: "var(--sv-text-muted)" }}>
+                    Frames are labelled by their position in the retained sequence. This producer sent a
+                    frame ordinal where an environment step belongs, so no environment step is shown for
+                    a frame rather than one that would be wrong.
+                  </div>
+                  {view.coverage.frameStepReasons.map((reason, index) => (
                     <div key={index} style={{ fontSize: "var(--sv-fs-micro)", color: "var(--sv-text-muted)" }}>
                       {reason}
                     </div>
