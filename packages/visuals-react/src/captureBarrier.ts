@@ -24,10 +24,16 @@ let blockedSelector='[data-visual-capture-blocked]';
 // requestAnimationFrame, which WebKit suspends for occluded windows.
 let nativeSnapshotPaint=false;
 function recordMutations(barrier:Barrier,records:MutationRecord[]){
-  barrier.stamp.mutations+=records.length;
   const targets=barrier.stamp.mutationTargets??=[];
   for(const record of records){
     const target=record.target instanceof Element?record.target:record.target.parentElement;
+    // React refreshes these input attributes even when their value is
+    // unchanged. Ignore only identical assignments, not a real transition:
+    // A -> B -> A still has a record whose old value B differs from current A.
+    if(record.type==='attributes'&&target instanceof HTMLInputElement&&
+      (record.attributeName==='name'||record.attributeName==='type')&&
+      record.oldValue===target.getAttribute(record.attributeName))continue;
+    barrier.stamp.mutations++;
     const description=`${record.type}:${target?.tagName??'node'}:${record.attributeName??''}`;
     if(targets.length<8&&!targets.includes(description))targets.push(description);
   }
@@ -113,7 +119,7 @@ function begin(visualId:string,revision:number,stateVersion:number){
       // caught this pane up while assets were resolving.
       for(const root of roots)if(Number(root.dataset.visualSessionVersion)!==stateVersion)throw new Error("Capture version changed");
       barrier.observer=new MutationObserver(records=>recordMutations(barrier,records));
-      for(const root of roots)barrier.observer.observe(root,{subtree:true,attributes:true,childList:true,characterData:true});
+      for(const root of roots)barrier.observer.observe(root,{subtree:true,attributes:true,attributeOldValue:true,childList:true,characterData:true});
       barrier.stamp.ready=true;
     }catch(error){barrier.stamp.error=error instanceof Error?error.message:String(error);}
   })();

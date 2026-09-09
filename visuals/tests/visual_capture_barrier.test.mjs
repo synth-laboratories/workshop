@@ -59,6 +59,22 @@ test('offscreen native paint preparation does not depend on foreground animation
  }finally{await browser.close();}
 });
 
+test('React identical input writes are harmless but changed-and-restored attributes invalidate capture',async()=>{
+ const bundle=await build({entryPoints:[fileURLToPath(new URL('../../packages/visuals-react/src/captureBarrier.ts',import.meta.url))],bundle:true,write:false,format:'iife',globalName:'Capture'});
+ const browser=await chromium.launch();
+ try{
+  const page=await browser.newPage();
+  await page.setContent('<div data-visual-session-id="v" data-visual-session-revision="1" data-visual-session-version="2" data-visual-session-ready="true"><input type="range" name="frame"></div>');
+  await page.addScriptTag({content:bundle.outputFiles[0].text});
+  await page.evaluate(()=>{Capture.installVisualCaptureBarrier({nativeSnapshotPaint:true});window.__synthVisualCapture.begin('v',1,2);});
+  await page.waitForFunction(()=>window.__synthVisualCapture.read()?.ready);
+  await page.evaluate(()=>{const input=document.querySelector('input');input.setAttribute('type','range');input.setAttribute('name','frame');});
+  assert.equal(await page.evaluate(()=>window.__synthVisualCapture.read().mutations),0);
+  await page.evaluate(()=>{const input=document.querySelector('input');input.setAttribute('type','text');input.setAttribute('type','range');});
+  assert.ok(await page.evaluate(()=>window.__synthVisualCapture.read().mutations)>0);
+ }finally{await browser.close();}
+});
+
 test('static opaque frames freeze and verify without executing authored scripts',async()=>{
  const root=fileURLToPath(new URL('../../',import.meta.url));
  const bundle=await build({stdin:{contents:String.raw`import React from 'react';import {createRoot} from 'react-dom/client';import {StaticVisualDocument} from './packages/visuals-react/src/staticDocument.tsx';import {installVisualCaptureBarrier} from './packages/visuals-react/src/captureBarrier.ts';
