@@ -1,0 +1,9 @@
+{
+  "bindings": [
+    {
+      "slot": "optimizer_run",
+      "kind": "fixture",
+      "source": "families/optimizers/eval/optimizer.eval.live.v1/examples/events.json"
+    }
+  ]
+}

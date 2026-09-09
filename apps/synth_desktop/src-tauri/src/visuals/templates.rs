@@ -96,6 +96,10 @@ pub struct TemplateMeta {
     pub family: Option<String>,
     #[serde(default)]
     pub version: Option<String>,
+    /// Registered renderer capability. Dispatch is based on this descriptor,
+    /// never on a hard-coded template id.
+    #[serde(default)]
+    pub renderer_kind: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
@@ -190,7 +194,9 @@ pub fn visuals_root() -> PathBuf {
         return PathBuf::from(value);
     }
     if let Ok(workshop) = std::env::var("SYNTH_WORKSHOP_ROOT") {
-        return PathBuf::from(workshop).join("visuals");
+        let root = PathBuf::from(workshop);
+        let package = root.join("packages/workshop-visuals");
+        return if package.join("families").is_dir() { package } else { root.join("visuals") };
     }
     if let Ok(executable) = std::env::current_exe() {
         if let Some(macos_dir) = executable.parent() {
@@ -202,7 +208,7 @@ pub fn visuals_root() -> PathBuf {
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../..")
-        .join("visuals")
+        .join("packages/workshop-visuals")
 }
 
 pub fn list_templates(genre: Option<&str>) -> anyhow::Result<Vec<TemplateMeta>> {
@@ -402,12 +408,17 @@ fn build_template_index_inner(
     Ok(templates)
 }
 
+/// Managed templates are one instance's imports, never part of the shipped
+/// visuals package.
+///
+/// This carried its own `SYNTH_DESKTOP_DATA_ROOT` lookup and fell back to
+/// `visuals_root()`, so with the variable unset an import wrote into the
+/// package directory itself — contaminating the source tree, and adding that
+/// instance's imported template to every later build's template index. Resolve
+/// the instance the one way the rest of the app resolves it, which also honours
+/// a bundle descriptor and the canonical data root.
 fn managed_templates_root() -> PathBuf {
-    std::env::var("SYNTH_DESKTOP_DATA_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| visuals_root())
-        .join("visuals")
-        .join("templates")
+    crate::instance::data_root().join("visuals").join("templates")
 }
 
 /// Copy one reviewed, networkless HTML visual package into this instance's
@@ -669,6 +680,10 @@ fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
         shell_path: None,
         renderer_path: None,
         source_kind: None,
+        renderer_kind: value
+            .get("rendererKind")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         example_binding: None,
         binding_schema: declared.clone(),
         inputs: declared.clone(),
@@ -831,6 +846,10 @@ mod tests {
 
     #[test]
     fn recursively_indexes_templates_by_manifest_id() {
+        // Managed templates come from the instance data root, so an index test
+        // that leaves it pointing at the developer's real instance reports that
+        // machine's imports as bundled templates.
+        let _instance = crate::instance::IsolatedDataRoot::new("visual-template-index");
         let temp = tempfile::tempdir().unwrap();
         write_template(
             &temp.path().join("families/analysis/example.v1"),

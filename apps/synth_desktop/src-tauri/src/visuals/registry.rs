@@ -52,6 +52,14 @@ impl VisualRegistry {
         &self.content
     }
 
+    pub fn state_store(&self) -> super::VisualStateStore {
+        super::VisualStateStore::new(self.db.clone())
+    }
+
+    pub fn engine(&self) -> super::engine::VisualEngine {
+        super::engine::VisualEngine::new(self.db.clone())
+    }
+
     /// Wire the optimizer service in after both exist. Idempotent.
     ///
     /// The two hold each other — the optimizer service owns a `VisualRegistry`
@@ -249,10 +257,23 @@ impl VisualRegistry {
         let upgraded_slots = canonical.upgraded_slots.clone();
         let bindings = canonical.value;
         validate_optimizer_run_bindings(&bindings)?;
-        let is_mermaid = mermaid::is_mermaid_template(&template.id);
-        let systems_kind = systems::template_kind(&template.id);
-        let is_chart = charts::is_chart_template(&template.id);
-        let is_sourced = sourced::is_sourced_template(&template.id);
+        let declared_renderer = template
+            .renderer_kind
+            .as_deref()
+            .map(|kind| {
+                RendererKind::try_parse(kind).ok_or_else(|| {
+                    anyhow!("template {} declares unknown rendererKind {kind:?}", template.id)
+                })
+            })
+            .transpose()?;
+        let is_mermaid = declared_renderer == Some(RendererKind::Mermaid);
+        let systems_kind = match declared_renderer.as_ref() {
+            Some(RendererKind::Systems) => Some(SystemsKind::Static),
+            Some(RendererKind::SystemsDynamic) => Some(SystemsKind::Dynamic),
+            _ => None,
+        };
+        let is_chart = declared_renderer == Some(RendererKind::Chart);
+        let is_sourced = declared_renderer == Some(RendererKind::Tsx);
         let is_managed_html =
             template.source_kind.as_deref() == Some("managed") && template.renderer_path.is_some();
         // Imported HTML is immutable package source. Accepting caller content
@@ -326,20 +347,10 @@ impl VisualRegistry {
             }
         }
         let status = request.status.unwrap_or(VisualStatus::Draft);
-        let renderer_kind = if is_mermaid {
-            RendererKind::Mermaid
-        } else if systems_kind == Some(SystemsKind::Static) {
-            RendererKind::Systems
-        } else if systems_kind == Some(SystemsKind::Dynamic) {
-            RendererKind::SystemsDynamic
-        } else if is_chart {
-            RendererKind::Chart
-        } else if is_sourced {
-            RendererKind::Tsx
-        } else if is_managed_html {
+        let renderer_kind = if is_managed_html {
             RendererKind::Html
         } else {
-            request.renderer_kind.unwrap_or(RendererKind::Template)
+            declared_renderer.or(request.renderer_kind).unwrap_or(RendererKind::Template)
         };
         let mut metadata = request.metadata.unwrap_or_else(|| json!({}));
         if is_mermaid {
@@ -497,15 +508,15 @@ impl VisualRegistry {
             &bindings_form,
             &upgraded_slots,
         );
-        if mermaid::is_mermaid_template(&record.template_id) {
+        if record.renderer_kind == RendererKind::Mermaid {
             let rendered = self.render_mermaid(&record.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
         }
-        if systems::template_kind(&record.template_id).is_some() {
+        if matches!(record.renderer_kind, RendererKind::Systems | RendererKind::SystemsDynamic) {
             let rendered = self.render_systems(&record.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
         }
-        if charts::is_chart_template(&record.template_id) {
+        if record.renderer_kind == RendererKind::Chart {
             let rendered = self.render_chart(&record.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
         }
@@ -531,16 +542,16 @@ impl VisualRegistry {
         let content_changed = request.content.is_some();
         let bindings_changed = request.bindings.is_some();
         if let Some(source) = request.content.as_deref() {
-            if mermaid::is_mermaid_template(&existing.template_id) {
+            if existing.renderer_kind == RendererKind::Mermaid {
                 mermaid::validate_source(source)?;
             }
-            if let Some(kind) = systems::template_kind(&existing.template_id) {
+            if let Some(kind) = match existing.renderer_kind { RendererKind::Systems => Some(SystemsKind::Static), RendererKind::SystemsDynamic => Some(SystemsKind::Dynamic), _ => None } {
                 systems::validate_source(source, kind)?;
             }
-            if charts::is_chart_template(&existing.template_id) {
+            if existing.renderer_kind == RendererKind::Chart {
                 charts::validate_source(source)?;
             }
-            if sourced::is_sourced_template(&existing.template_id) {
+            if existing.renderer_kind == RendererKind::Tsx {
                 let trimmed = source.trim();
                 if trimmed.is_empty() {
                     bail!("{} requires content", existing.template_id);
@@ -567,10 +578,10 @@ impl VisualRegistry {
             request.bindings = Some(canonical.value);
         }
         if let Some(bindings) = request.bindings.as_ref() {
-            if mermaid::is_mermaid_template(&existing.template_id) {
+            if existing.renderer_kind == RendererKind::Mermaid {
                 refuse_mermaid_stream_slot(bindings)?;
             }
-            if systems::template_kind(&existing.template_id).is_some() {
+            if matches!(existing.renderer_kind, RendererKind::Systems | RendererKind::SystemsDynamic) {
                 refuse_mermaid_stream_slot(bindings)?;
             }
         }
@@ -678,15 +689,15 @@ impl VisualRegistry {
             &bindings_form,
             &upgraded_slots,
         );
-        if content_changed && mermaid::is_mermaid_template(&updated.template_id) {
+        if content_changed && updated.renderer_kind == RendererKind::Mermaid {
             let rendered = self.render_mermaid(&updated.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
         }
-        if content_changed && systems::template_kind(&updated.template_id).is_some() {
+        if content_changed && matches!(updated.renderer_kind, RendererKind::Systems | RendererKind::SystemsDynamic) {
             let rendered = self.render_systems(&updated.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
         }
-        if (content_changed || bindings_changed) && charts::is_chart_template(&updated.template_id)
+        if (content_changed || bindings_changed) && updated.renderer_kind == RendererKind::Chart
         {
             let rendered = self.render_chart(&updated.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
@@ -696,7 +707,7 @@ impl VisualRegistry {
 
     pub async fn save(&self, id: String, tsx: Option<String>) -> Result<(VisualRecord, Value)> {
         let current = self.get(id.clone()).await?;
-        let body = if sourced::is_sourced_template(&current.template_id) {
+        let body = if current.renderer_kind == RendererKind::Tsx {
             tsx.filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| anyhow!("{} requires content", current.template_id))?
         } else {
@@ -864,13 +875,13 @@ impl VisualRegistry {
 
     pub async fn visual_source(&self, id: String) -> Result<VisualAsset> {
         let visual = self.get(id).await?;
-        let media_type = if mermaid::is_mermaid_template(&visual.template_id) {
+        let media_type = if visual.renderer_kind == RendererKind::Mermaid {
             mermaid::MEDIA_TYPE_SOURCE
-        } else if systems::template_kind(&visual.template_id).is_some() {
+        } else if matches!(visual.renderer_kind, RendererKind::Systems | RendererKind::SystemsDynamic) {
             systems::MEDIA_TYPE_SOURCE
-        } else if charts::is_chart_template(&visual.template_id) {
+        } else if visual.renderer_kind == RendererKind::Chart {
             charts::MEDIA_TYPE_SOURCE
-        } else if sourced::is_sourced_template(&visual.template_id) {
+        } else if visual.renderer_kind == RendererKind::Tsx {
             sourced::MEDIA_TYPE_SOURCE
         } else if visual.renderer_kind == RendererKind::Html {
             "text/html"
@@ -925,9 +936,9 @@ impl VisualRegistry {
         size_class: Option<String>,
     ) -> Result<VisualAsset> {
         let visual = self.get(id.clone()).await?;
-        let systems_kind = systems::template_kind(&visual.template_id);
-        let is_chart = charts::is_chart_template(&visual.template_id);
-        if !mermaid::is_mermaid_template(&visual.template_id) && systems_kind.is_none() && !is_chart
+        let systems_kind = match visual.renderer_kind { RendererKind::Systems => Some(SystemsKind::Static), RendererKind::SystemsDynamic => Some(SystemsKind::Dynamic), _ => None };
+        let is_chart = visual.renderer_kind == RendererKind::Chart;
+        if visual.renderer_kind != RendererKind::Mermaid && systems_kind.is_none() && !is_chart
         {
             bail!("visual {} has no SVG rendition renderer", visual.id);
         }
@@ -1038,11 +1049,11 @@ impl VisualRegistry {
 
     pub async fn render_visual(&self, id: &str) -> Result<VisualRecord> {
         let visual = self.get(id.to_string()).await?;
-        if mermaid::is_mermaid_template(&visual.template_id) {
+        if visual.renderer_kind == RendererKind::Mermaid {
             self.render_mermaid(id).await
-        } else if systems::template_kind(&visual.template_id).is_some() {
+        } else if matches!(visual.renderer_kind, RendererKind::Systems | RendererKind::SystemsDynamic) {
             self.render_systems(id).await
-        } else if charts::is_chart_template(&visual.template_id) {
+        } else if visual.renderer_kind == RendererKind::Chart {
             self.render_chart(id).await
         } else {
             // Native rendering is for deterministic source-to-SVG templates.
@@ -1064,7 +1075,7 @@ impl VisualRegistry {
 
     pub async fn render_mermaid(&self, id: &str) -> Result<VisualRecord> {
         let visual = self.get(id.to_string()).await?;
-        if !mermaid::is_mermaid_template(&visual.template_id) {
+        if visual.renderer_kind != RendererKind::Mermaid {
             bail!("visual {id} is not a mermaid diagram");
         }
         let digest = visual
@@ -1112,8 +1123,11 @@ impl VisualRegistry {
 
     pub async fn render_systems(&self, id: &str) -> Result<VisualRecord> {
         let visual = self.get(id.to_string()).await?;
-        let kind = systems::template_kind(&visual.template_id)
-            .ok_or_else(|| anyhow!("visual {id} is not a systems diagram"))?;
+        let kind = match visual.renderer_kind {
+            RendererKind::Systems => SystemsKind::Static,
+            RendererKind::SystemsDynamic => SystemsKind::Dynamic,
+            _ => bail!("visual {id} is not a systems diagram"),
+        };
         let digest = visual
             .content_digest
             .clone()
@@ -1275,7 +1289,7 @@ impl VisualRegistry {
 
     pub async fn render_chart(&self, id: &str) -> Result<VisualRecord> {
         let visual = self.get(id.to_string()).await?;
-        if !charts::is_chart_template(&visual.template_id) {
+        if visual.renderer_kind != RendererKind::Chart {
             bail!("visual {id} is not a chart");
         }
         let digest = visual

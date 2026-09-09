@@ -302,3 +302,29 @@ test("visual tool operations project as lifecycle milestones", () => {
 	assert.equal(line.visualStage, "draft");
 	assert.equal(line.label, "Visual draft created");
 });
+
+ test("authentication rejection gives credential remediation without leaking the proxy URL", () => {
+ const messages = eventsToMessages([
+  event({sequence: 1, eventKind: "run.started"}),
+  event({sequence: 2, eventKind: "run.failed", payload: {provider: "openrouter", error: {message: "unexpected status 401 Unauthorized: Missing Authentication header, url: http://127.0.0.1:58328/api/v1/responses, cf-ray: private-request"}}})
+ ]);
+ const system = messages.find(message => message.role === "system");
+ assert.match(system.body, /Update the provider API key or sign in again/);
+ assert.doesNotMatch(system.body, /127\.0\.0\.1|cf-ray|credits|Try again/);
+ });
+
+
+test("a retry answer does not inherit the preceding failed turn summary", () => {
+ const events = [
+  event({sequence: 1, payload: {role: "user", messageId: "u1", content: "first"}}),
+  event({sequence: 2, eventKind: "run.started", payload: {runId: "r1"}}),
+  event({sequence: 3, eventKind: "run.failed", payload: {runId: "r1", error: {message: "401 Unauthorized"}}, createdAt: "2026-08-12T00:00:07.000Z"}),
+  event({sequence: 4, payload: {role: "user", messageId: "u2", content: "retry"}, createdAt: "2026-08-12T00:00:08.000Z"}),
+  event({sequence: 5, eventKind: "run.started", payload: {runId: "r2"}, createdAt: "2026-08-12T00:00:08.000Z"}),
+  event({sequence: 6, payload: {role: "assistant", messageId: "a2", content: "Recovered"}, createdAt: "2026-08-12T00:00:09.000Z"}),
+  event({sequence: 7, eventKind: "run.completed", payload: {runId: "r2"}, createdAt: "2026-08-12T00:00:09.000Z"})
+ ];
+ const activity = eventsToLocalActivity(events, eventsToMessages(events));
+ assert.match(activity["terminal-3"].find(line => line.kind === "run_summary").label, /Stopped with an error after 7s/);
+ assert.deepEqual(activity.a2.filter(line => line.kind === "run_summary").map(line => line.label), ["Worked 1s"]);
+});

@@ -363,8 +363,8 @@
 }
 
 .ws-btn-primary {
-	border-color: var(--selected-edge);
-	background: var(--selected-edge);
+	border-color: var(--action-primary-bg);
+	background: var(--action-primary-bg);
 	color: var(--selected-contrast);
 	font-weight: var(--fw-semi);
 }

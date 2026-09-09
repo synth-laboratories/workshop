@@ -62,7 +62,7 @@ WORKTREE_HASH="$(printf '%s' "$WORKTREE" | shasum -a 256 | awk '{print substr($1
 DEFAULT_NAME="codex-$WORKTREE_HASH"
 NAME="${NAME:-$DEFAULT_NAME}"
 RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.9}"
-APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.9.7}"
+APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.10.0}"
 BOOT_EPOCH="inst_$(uuidgen | tr -d '-' | tr '[:upper:]' '[:lower:]')"
 PROCESS_START_TIME="$(ps -p $$ -o lstart= | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 

@@ -32,7 +32,7 @@ test("persisted trace.workbench.v1 resolves through the bundled registry and Vis
 	await expect(pane.getByTestId("trace-workbench")).toBeVisible();
 	await expect(pane).not.toContainText("Template unavailable");
 	await expect(pane).not.toContainText("No bundled shell is registered");
-	const paneBody = pane.locator(".visual-pane-body");
+	const paneBody = pane;
 	await paneBody.evaluate((element) => {
 		Object.assign((element as HTMLElement).style, {
 			alignSelf: "flex-end",

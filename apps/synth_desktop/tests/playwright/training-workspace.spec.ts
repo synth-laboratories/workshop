@@ -1,3 +1,4 @@
+import { openOptimizer } from "./v02-helpers";
 import { expect, test } from "./browser.fixture";
 
 test.beforeEach(async ({ page }) => {
@@ -47,7 +48,7 @@ test.beforeEach(async ({ page }) => {
 	});
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
-	await page.getByRole("button", { name: "Optimizers" }).click();
+	await openOptimizer(page);
 	await page.getByTestId("optimizer-tab-launch").click();
 	await expect(page.getByTestId("training-workspace")).toBeVisible();
 });
@@ -70,7 +71,7 @@ test("resolved config routes hosted launches through the native optimizer", asyn
 	await page.getByTestId("training-tab-train").click();
 	await page.getByLabel("Recipe").selectOption("sft");
 	await expect(page.getByTestId("training-resolved-config")).toContainText("Before · checkpoints · final");
-	await expect(page.getByTestId("training-resolved-config")).toContainText("Container tunnel · exact checkpoint");
+	await expect(page.getByTestId("training-resolved-config")).toContainText("Public Tinker service");
 	await page.getByLabel("Compute").selectOption("tinker");
 	await page.getByLabel("Dataset / workload").selectOption("ctr-alfworld-cleanroom");
 	await expect(page.getByTestId("training-resolved-config")).toContainText("Hosted · Tinker");
@@ -83,10 +84,14 @@ test("real unscored checkpoint evidence remains reviewable without inventing a p
 	await page.evaluate(() => {
 		(window as any).synthOptimizers.startRecipe = async () => ({ id: "real-run", status: "running" });
 		(window as any).synthOptimizers.refresh = async () => ({ id: "real-run", status: "completed" });
-		(window as any).synthOptimizers.eventsAfter = async () => [{
-			type: "training.evaluation.completed",
-			delta: { evaluation: { phase: "checkpoint", step: 10, checkpoint_id: "ckpt-10", score: null, status: "completed", detail: { scored: 0, total: 2 } } }
-		}];
+		(window as any).synthOptimizers.runSummary = async () => ({
+			unchanged: false, projectionRevision: 1, tailCursor: 1,
+			summary: {schemaVersion: "optimizer_run_summary.v1", runId: "real-run", algorithm: "sft", status: "completed", lifecycle: "terminal", projectionRevision: 1, asOfSequence: 1, tailCursor: 1, collections: [{collection: "evaluations", count: 1, latestRevision: 1}], work: {}, usage: {}, budget: {bytes: 512, limit: 65536, within: true}}
+		});
+		(window as any).synthOptimizers.runCollection = async (runId: string, collection: string) => ({
+			runId, collection, projectionRevision: 1, asOfSequence: 1, total: 1, nextCursor: null, truncatedByBytes: false, limit: 100,
+			rows: [{runId, collection, itemId: "eval-10", ordinal: 0, revision: 1, details: {phase: "checkpoint", step: 10, checkpointId: "ckpt-10", score: null, status: "completed", sampleCount: 2}}]
+		});
 	});
 	await page.getByTestId("training-tab-train").click();
 	await page.getByLabel("Compute").selectOption("tinker");
@@ -96,7 +101,7 @@ test("real unscored checkpoint evidence remains reviewable without inventing a p
 	await expect(evidence).toContainText("no scores returned");
 	await evidence.getByRole("button", { name: "Review checkpoint evaluation at step 10" }).click();
 	await expect(page.getByTestId("training-evaluation-dialog")).toContainText("ckpt-10");
-	await expect(page.getByTestId("training-evaluation-dialog")).toContainText('"scored": 0');
+	await expect(page.getByTestId("training-evaluation-dialog").getByRole("row", {name: /ckpt-10.*checkpoint.*2/})).toBeVisible();
 });
 
 test("a run cannot start until an exact training workload is advertised", async ({ page }) => {
@@ -106,7 +111,7 @@ test("a run cannot start until an exact training workload is advertised", async 
 	});
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
-	await page.getByRole("button", { name: "Optimizers" }).click();
+	await openOptimizer(page);
 	await page.getByTestId("optimizer-tab-launch").click();
 	await page.getByTestId("training-tab-train").click();
 	await expect(

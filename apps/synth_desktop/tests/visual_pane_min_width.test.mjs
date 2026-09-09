@@ -41,7 +41,7 @@ test("the Visuals inventory is a compact list and its pane can consume nearly th
   assert.match(css, /\.inventory-workbench\.with-visual \.visual-pane\s*\{[^}]*var\(--visual-pane-width, 720px\)[^}]*calc\(100% - 167px\)/s);
   assert.match(css, /\.visuals-layout:not\(\.reports-layout\) > \.visuals-grid\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column/s);
   assert.match(css, /\.visuals-layout:not\(\.reports-layout\) > \.visuals-grid > \.visuals-card\s*\{[^}]*grid-template-columns:/s);
-  assert.match(routes, /chatRoute \? \(showSidePanel \? 680 : 260\) : 160/);
+  assert.match(routes, /chatRoute \? \(showSidePanel \? 680 : 260\) : view.kind === "inventory" \? 360 : 160/);
 });
 
 test("the unified workbench side panel preserves a draggable boundary", () => {
@@ -147,7 +147,7 @@ test("routes.tsx keeps the window host and tabbed dock visual hosts distinct", (
 	// The standalone pane renders for a chat without the dock and for the
 	// inventory surfaces that own visuals; independent destinations never
 	// inherit a previously opened artifact.
-	assert.match(source, /const inventoryOwnsVisualPane = \(view\.kind === "experiments"/);
+	assert.match(source, /const inventoryOwnsVisualPane = \(view\.kind === "inventory" && inventoryVisualId === openArtifactId && inventoryVisualId != null\)/);
 	assert.match(source, /const visualPaneVisible = Boolean\(openArtifact && \(\s*\(chatRoute && !showSidePanel\)\s*\|\| inventoryOwnsVisualPane\s*\)\)/);
 	assert.match(source, /id: `visual:\$\{artifact\.id\}`/);
 	assert.match(source, /activeTabId=\{sidePanelTab === "visual"/);

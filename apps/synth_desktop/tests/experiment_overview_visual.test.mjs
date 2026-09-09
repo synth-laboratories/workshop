@@ -81,7 +81,7 @@ test("experiment overview keeps missing measurements distinct from zero", () => 
 	}));
 
 	assert.match(html, /Missing<\/span><strong[^>]*>—<\/strong>/);
-	assert.match(html, /Observed zero<\/span><strong[^>]*>0<\/strong>/);
+	assert.match(html, /Observed zero<\/span><strong[^>]*>\+?0(?:\.0+)?<\/strong>/);
 	assert.doesNotMatch(html, /No variants have been recorded[\s\S]*0 variants/);
 });
 

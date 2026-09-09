@@ -1,0 +1,1 @@
+{"schemaVersion":"synth.visual-template.v1","id":"accept.managed-media.v1","title":"Managed media acceptance","version":"1.0.0","rendererKind":"html","inputs":[{"name":"data","description":"Managed payload naming the optimizer run whose frames this pane reads","accepts":["inline"],"required":true,"schema":"synth.visual.managed_payload.v1"}]}

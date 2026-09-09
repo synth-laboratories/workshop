@@ -1,0 +1,17 @@
+{
+  "rows":[
+    {"id":"a","metadata":{"agent":"worker"},"events":[{"kind":"tool.error","step":1},{"kind":"tool.success","step":3}],"relations":[{"kind":"child","agentId":"worker"}]},
+    {"id":"b","events":[{"kind":"tool.success","step":1},{"kind":"tool.error","step":3}],"relations":[]},
+    {"id":"c","events":[{"kind":"tool.error","step":1},{"kind":"tool.success","step":1}]},
+    {"id":"d","events":[null,"tool.error",true,{"kind":"tool.error","step":"1"},{"kind":"tool.success","step":3}]},
+    {"id":"e","events":null},
+    {"id":"f"}
+  ],
+  "cases":[
+    {"where":{"op":"any","field":"events","where":{"op":"eq","field":"kind","value":"tool.error"}},"ids":["a","b","c","d"]},
+    {"where":{"op":"sequence","field":"events","sequenceField":"step","before":{"op":"eq","field":"kind","value":"tool.error"},"after":{"op":"eq","field":"kind","value":"tool.success"}},"ids":["a"]},
+    {"where":{"op":"sequence","field":"events","sequenceField":"step","maxGap":1,"before":{"op":"eq","field":"kind","value":"tool.error"},"after":{"op":"eq","field":"kind","value":"tool.success"}},"ids":[]},
+    {"where":{"op":"any","field":"relations","where":{"op":"and","expressions":[{"op":"eq","field":"kind","value":"child"},{"op":"eq","field":"agentId","value":"worker"}]}},"ids":["a"]},
+    {"where":{"op":"not","expression":{"op":"any","field":"events","where":{"op":"all"}}},"ids":["e","f"]}
+  ]
+}

@@ -3176,6 +3176,52 @@ async fn visuals_get(
 
 #[tauri::command]
 #[specta::specta]
+async fn visuals_engine(app: tauri::AppHandle, state: State<'_, Arc<CoreRuntime>>, visual_id: String, request: contract::specta::OpaqueJson) -> Result<contract::specta::OpaqueJson, AppError> {
+    visuals::engine::attach_event_host(app.clone());
+    if request.0["operation"]=="capture.pixels" {
+        return visuals_ipc::capture_visual_session(&app,&visual_id,&request.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from);
+    }
+    state.visuals().engine().request(visual_id, request.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_presentation_get(state: State<'_, Arc<CoreRuntime>>, visual_id: String) -> Result<Option<contract::specta::OpaqueJson>, AppError> {
+    state.visuals().state_store().presentation(visual_id).await.map(|value| value.map(contract::specta::OpaqueJson)).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_presentation_put(state: State<'_, Arc<CoreRuntime>>, visual_id: String, presentation: contract::specta::OpaqueJson) -> Result<contract::specta::OpaqueJson, AppError> {
+    state.visuals().state_store().put_presentation(visual_id, presentation.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_snapshots_list(state: State<'_, Arc<CoreRuntime>>, visual_id: String) -> Result<Vec<contract::specta::OpaqueJson>, AppError> {
+    state.visuals().state_store().snapshots(visual_id).await.map(|values| values.into_iter().map(contract::specta::OpaqueJson).collect()).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_snapshot_put(state: State<'_, Arc<CoreRuntime>>, visual_id: String, snapshot: contract::specta::OpaqueJson) -> Result<contract::specta::OpaqueJson, AppError> {
+    state.visuals().state_store().put_snapshot(visual_id, snapshot.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_recordings_list(state: State<'_, Arc<CoreRuntime>>, visual_id: String) -> Result<Vec<contract::specta::OpaqueJson>, AppError> {
+    state.visuals().state_store().recordings(visual_id).await.map(|values| values.into_iter().map(contract::specta::OpaqueJson).collect()).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_recording_put(state: State<'_, Arc<CoreRuntime>>, visual_id: String, recording: contract::specta::OpaqueJson) -> Result<contract::specta::OpaqueJson, AppError> {
+    state.visuals().state_store().put_recording(visual_id, recording.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 fn visuals_observation_report(
     observation: visuals_ipc::RenderedVisualObservation,
 ) -> Result<(), AppError> {
@@ -5563,7 +5609,78 @@ pub fn run() {
     }
     let specta = contract::specta::builder();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        fn offer_restart(webview: &tauri::Webview<tauri::Wry>, shown: &AtomicBool) {
+            if shown.swap(true, Ordering::SeqCst) { return; }
+            let app = webview.app_handle().clone();
+            // Attach the prompt to the surviving native window. An unparented
+            // macOS alert can leave the failed main window looking blank.
+            webview.app_handle().dialog()
+                .message("Workshop could not restore this window. Restart Workshop to recover. Restarting interrupts active work; unsaved edits may have been lost.")
+                .parent(&webview.window())
+                .title("Workshop view stopped")
+                .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom("Restart Workshop".into(), "Keep window open".into()))
+                .show(move |restart| { if restart { app.restart(); } });
+        }
+        let crashes = std::sync::Mutex::new(Vec::<std::time::Instant>::new());
+        let offered = Arc::new(AtomicBool::new(false));
+        builder.on_web_content_process_terminate(move |webview| {
+            if webview.label() != "main" { return; }
+            let now = std::time::Instant::now();
+            let attempt = {
+                let mut recent = crashes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                recent.retain(|at| now.duration_since(*at) < std::time::Duration::from_secs(60));
+                let attempt = recent.len();
+                if attempt < 3 { recent.push(now); }
+                attempt
+            };
+            if attempt >= 2 { offer_restart(webview, &offered); return; }
+            let webview = webview.clone();
+            let offered = offered.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                let url = if tauri::is_dev() {
+                    webview.app_handle().config().build.dev_url.clone()
+                        .unwrap_or_else(|| "tauri://localhost".parse().expect("valid app URL"))
+                } else { "tauri://localhost".parse().expect("valid app URL") };
+                if webview.navigate(url).is_err() { offer_restart(&webview, &offered); return; }
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let usable = Arc::new(AtomicBool::new(false));
+                let answered = usable.clone();
+                let _ = webview.eval_with_callback("Boolean(document.getElementById('root')?.children.length)", move |value| {
+                    if value == "true" { answered.store(true, Ordering::SeqCst); }
+                });
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                if !usable.load(Ordering::SeqCst) {
+                    // A terminated WKWebView can accept navigation while remaining blank.
+                    // Replace only the desktop view; the runtime and its stored work survive.
+                    let app = webview.app_handle().clone();
+                    if let Some(window) = app.get_webview_window("main") {
+                        if window.destroy().is_err() { offer_restart(&webview, &offered); return; }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    if let Err(error) = crate::platform::desktop_runtime::control(&app, "attach").await {
+                        crate::platform::logging::report("lib", "renderer_recovery", error.to_string());
+                        return;
+                    }
+                    if let Some(replacement) = app.get_webview_window("main") {
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        let restored = Arc::new(AtomicBool::new(false));
+                        let answered = restored.clone();
+                        let _ = replacement.eval_with_callback("Boolean(document.getElementById('root')?.children.length)", move |value| {
+                            if value == "true" { answered.store(true, Ordering::SeqCst); }
+                        });
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        if !restored.load(Ordering::SeqCst) { offer_restart(replacement.as_ref(), &offered); }
+                    }
+                }
+            });
+        })
+    };
+    builder
         // This must be the first plugin registered. All app state, IPC, and
         // SQLite ownership belongs to the original process.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {

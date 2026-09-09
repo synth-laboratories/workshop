@@ -198,8 +198,9 @@ export function turnPerformanceLabels(
 			if (event.eventKind === "turn/accepted") acceptedAt = at;
 		}
 		const value = measurements.get(message.id);
+		const stopped = terminal && ["run.cancelled", "turn/interrupted", "run.failed", "turn/failed"].includes(terminal.eventKind);
 		const worked = isFinal && terminalAt != null && acceptedAt != null && terminalAt >= acceptedAt
-			? `Worked ${compactDuration(terminalAt - acceptedAt)}`
+			? `${stopped ? "Stopped after" : "Worked"} ${compactDuration(terminalAt - acceptedAt)}`
 			: null;
 		byMessageId[message.id] = {
 			generation: generationLabel(value),

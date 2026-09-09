@@ -441,6 +441,8 @@ const VISUAL_OPERATIONS: &[(&str, &str)] = &[
     ("import_template", "visual_import_template"),
     ("list", "visual_list"),
     ("get", "visual_get"),
+    ("inspect", "visual_inspect"),
+    ("session", "visual_session"),
     ("create", "visual_create"),
     ("create_with_bind", "visual_create"),
     ("update", "visual_update"),
@@ -490,6 +492,11 @@ pub(crate) fn tools() -> Value {
             {"name":"visual_import_template","description":"Import one networkless template.json + renderer.html package into this Desktop instance's managed visual registry","inputSchema":{"type":"object","properties":{"source_path":{"type":"string","description":"Absolute package directory containing template.json and renderer.html"}},"required":["source_path"],"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"visual_inspect","description":"Inspect the artifact and shared visual-session controls, committed values and last matching semantic scene. The session is unavailable until its exact revision has been opened.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"visual_session","description":"Operate the same committed presentation a human sees. Inspect discovers controls. Act uses presentation.set (target.id and payload.value) or an atomic presentation.patch (payload.values), with action.id and expectedStateVersion. Capture saves semantic state; capture.pixels opens the mounted visual, freezes presentation, captures a coherent PNG, and saves its semantic checkpoint and receipt; restore and record.seek restore presentation only and never run domain effects. Lists and recording reads are paginated. Read-only corpus.query, corpus.aggregate and corpus.sample operate on a registered immutable corpus; pass its exact id, revision, schema and count. Query results are bounded but counts and denominators cover the full matching corpus.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer","minimum":1},"viewKey":{"type":"string"},"operation":{"enum":["inspect","act","capture","capture.pixels","restore","checkpoints","checkpoint.read","checkpoint.import","recordings","record.start","record.stop","record.read","record.seek","record.play","record.import","corpus.query","corpus.aggregate","corpus.sample"]},"corpus":{"type":"object"},"query":{"type":"object"},"window":{"type":"object"},"field":{"type":"string"},"cohortId":{"type":"string"},"strategy":{"enum":["random","diverse","boundary","outlier","representative","failure"]},"count":{"type":"integer","minimum":0,"maximum":100},"options":{"type":"object"},"action":{"type":"object"},"expectedStateVersion":{"type":"integer","minimum":0},"checkpointId":{"type":"string"},"checkpoint":{"type":"object"},"recordingId":{"type":"string"},"recording":{"type":"object"},"sequence":{"type":"integer","minimum":0},"playing":{"type":"boolean"},"after":{"type":"integer","minimum":0},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}},"required":["visual_id","revision","operation"],"additionalProperties":false}},
+            {"name":"visual_set_presentation","description":"Legacy presentation-record storage only; does not drive mounted visuals. Use visual_session act for shared live presentation.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer","minimum":1},"expected_state_version":{"type":"integer","minimum":0},"schema_version":{"type":"string"},"value":{"type":"object"}},"required":["visual_id","revision","value"],"additionalProperties":false}},
+            {"name":"visual_snapshot","description":"Persist one coherent synth.visuals-core.v1 semantic snapshot for an exact visual revision.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"snapshot":{"type":"object"}},"required":["visual_id","snapshot"],"additionalProperties":false}},
+            {"name":"visual_recording","description":"Legacy exploration-record import/list only. Use visual_session record.start, record.stop, record.read and record.seek for the mounted session.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"operation":{"type":"string","enum":["list","put"]},"recording":{"type":"object"}},"required":["visual_id","operation"],"additionalProperties":false}},
             {"name":"visual_create","description":"Create a visual from a registered template. Give every visual a short, sensible display_name for the Outputs shelf; keep title descriptive. sourced.visual.v1 compiles arguments.content (allowlisted TSX) in the pane. Prefer create_with_bind with input+kind+data for experiment.overview.v1, analysis.visual.v1, and compose.visual.v1. compose.visual.v1 binds spec, then stream (eval) or optimizer_run (GEPA/SFT/CISPO optimizer_event.v1). Do not flatten Harbor/Craftax eval traces into optimizer_run. Hosted RLVR is CISPO, not rlvr.*. Unconstrained fetch/EventSource modules fail closed. For ad-hoc data charts prefer visual_chart.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"display_name":{"type":"string","minLength":1,"maxLength":64,"description":"Short human-readable name, usually 2–6 words, unique within the task."},"content":{"type":"string"},"props":{"type":"object"},"bindings":{"type":"object"},"input":{"type":"string","description":"Required input name for create_with_bind, e.g. experiment or spec. slot still binds; new writers use input."},"slot":{"type":"string","description":"Read-only alias of input on stored envelopes; still binds."},"kind":{"type":"string","description":"Binding kind. Inline inputs require data."},"data":{"description":"Required when kind is inline"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
             {"name":"visual_create_from_template","description":"Alias of visual_create. Include a short sensible display_name (2–6 words, unique in the task).","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"display_name":{"type":"string","minLength":1,"maxLength":64,"description":"Short human-readable name, usually 2–6 words, unique within the task."},"props":{"type":"object"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
             {"name":"visual_update","description":"Revise visual bindings, title, short display_name, trusted-template configuration, or Mermaid/systems/chart content","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"display_name":{"type":"string","minLength":1,"maxLength":64,"description":"Short human-readable name, usually 2–6 words."},"content":{"type":"string"},"bindings":{"type":"object","description":"Canonical synth.visual-bindings.v1 envelope: {\"schemaVersion\":\"synth.visual-bindings.v1\",\"inputs\":[{\"input\":...,\"kind\":...,\"source\":...}]}. slot still binds on stored envelopes; new writers emit input/inputs. A slot-keyed map such as {\"stream\":[...]} is legacy, is upgraded with a warning, and will be refused in a later release. Prefer visual_bind_data_source.","properties":{"schemaVersion":{"type":"string","const":"synth.visual-bindings.v1"},"inputs":{"type":"array","items":{"type":"object","properties":{"input":{"type":"string"},"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"data":{}},"required":["kind"]}}},"required":["schemaVersion"]},"status":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["visual_id"],"additionalProperties":false}},
@@ -814,6 +821,49 @@ fn call_scoped(name: &str, args: &Value, session_env: Option<String>, public: bo
                 .and_then(Value::as_str)
                 .ok_or("visual_id required")?;
             request("GET", &format!("/v1/visuals/{id}"), None)
+        }
+        "visual_inspect" => {
+            let id = args.get("visual_id").and_then(Value::as_str).ok_or("visual_id required")?;
+            let visual = request("GET", &format!("/v1/visuals/{id}"), None)?;
+            let presentation = request("GET", &format!("/v1/visuals/{id}/presentation"), None)?;
+            let snapshots = request("GET", &format!("/v1/visuals/{id}/snapshots"), None)?;
+            let recordings = request("GET", &format!("/v1/visuals/{id}/recordings"), None)?;
+            let record=visual.get("visual").unwrap_or(&visual);
+            let revision=record.get("currentRevision").or_else(||record.get("current_revision")).or_else(||record.get("revision")).cloned().unwrap_or(json!(1));
+            let session=match request("POST",&format!("/v1/visuals/{id}/engine"),Some(json!({"operation":"inspect","revision":revision}))) {
+                Ok(state)=>state,
+                Err(reason)=>json!({"available":false,"reason":reason})
+            };
+            Ok(json!({"visual":visual.get("visual"),"session":session,"presentation":presentation.get("presentation"),"snapshots":snapshots.get("snapshots"),"recordings":recordings.get("recordings")}))
+        }
+        "visual_session" => {
+            let id=args.get("visual_id").and_then(Value::as_str).ok_or("visual_id required")?;
+            request("POST",&format!("/v1/visuals/{id}/engine"),Some(args.clone()))
+        }
+        "visual_set_presentation" => {
+            let id = args.get("visual_id").and_then(Value::as_str).ok_or("visual_id required")?;
+            request("POST", &format!("/v1/visuals/{id}/presentation"), Some(json!({
+                "revision": args.get("revision"),
+                "expectedStateVersion": args.get("expected_state_version"),
+                "schemaVersion": args.get("schema_version"),
+                "value": args.get("value")
+            })))
+        }
+        "visual_snapshot" => {
+            let id = args.get("visual_id").and_then(Value::as_str).ok_or("visual_id required")?;
+            let snapshot = args.get("snapshot").filter(|value| value.is_object()).ok_or("snapshot must be an object")?;
+            request("POST", &format!("/v1/visuals/{id}/snapshots"), Some(snapshot.clone()))
+        }
+        "visual_recording" => {
+            let id = args.get("visual_id").and_then(Value::as_str).ok_or("visual_id required")?;
+            match args.get("operation").and_then(Value::as_str) {
+                Some("list") => request("GET", &format!("/v1/visuals/{id}/recordings"), None),
+                Some("put") => {
+                    let recording = args.get("recording").filter(|value| value.is_object()).ok_or("recording must be an object for put")?;
+                    request("POST", &format!("/v1/visuals/{id}/recordings"), Some(recording.clone()))
+                }
+                _ => Err("visual_recording operation must be list or put".into()),
+            }
         }
         "visual_create" | "visual_create_from_template" => {
             // Ownership is bound by the host, not claimed by the caller. An
@@ -1618,24 +1668,11 @@ fn capture_review(args: &Value) -> Result<Value, String> {
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let temp_stem = format!(".capture-{}", uuid::Uuid::new_v4().simple());
     let temp_png_path = root.join(format!("{temp_stem}.png"));
-    let mut window_receipt = Value::Null;
-    let (capture_mode, captured) = if matches!(
-        renderer_kind,
-        "mermaid" | "systems" | "systems-dynamic" | "chart"
-    ) {
-        request("POST", &format!("/v1/visuals/{id}/render"), None)?;
-        let captured = capture_svg_review(
-            id,
-            renderer_kind,
-            width,
-            height,
-            &root,
-            &temp_stem,
-            &temp_png_path,
-        )?;
-        ("deterministic-svg", captured)
-    } else {
-        window_receipt = capture_desktop_review(id, revision, width, height, &temp_png_path)?;
+    // A source rendition is an export, not a capture of the current viewport,
+    // logical time or source toggle. Every certified review uses the same
+    // mounted-session pixel barrier, including declarative diagrams.
+    let window_receipt = capture_desktop_review(id, revision, width, height, &temp_png_path)?;
+    let (capture_mode, captured) = {
         let captured = (
             window_receipt
                 .pointer("/resizedViewport/width")
@@ -1691,6 +1728,10 @@ fn capture_review(args: &Value) -> Result<Value, String> {
     } else {
         None
     };
+    let current_identity=request("GET",&format!("/v1/visuals/{id}/authoring"),None)?;
+    if current_identity.get("certificationIdentity")!=Some(&certification_identity) {
+        return Err("visual source/certification identity changed during capture; retry at the new revision".into());
+    }
     let png = fs::read(&temp_png_path).map_err(|error| error.to_string())?;
     let screenshot_sha256 = format!("sha256:{:x}", Sha256::digest(&png));
     let digest_name = screenshot_sha256
@@ -2104,6 +2145,7 @@ fn capture_macos_desktop_review(
         "restored": receipt.get("restored").cloned(),
         "required": before.get("required").cloned().unwrap_or(Value::Bool(true)),
         "observation": stable_observation,
+        "pixelCut": receipt.get("pixelCut").cloned(),
     }))
 }
 

@@ -1,0 +1,15 @@
+{
+  "name": "@synth/visuals-react",
+  "version": "0.10.0",
+  "private": true,
+  "type": "module",
+  "scripts":{"typecheck":"tsc -p tsconfig.json"},
+  "dependencies": {
+    "@synth/visuals-protocol": "*",
+    "@synth/visuals-sdk": "*"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0"
+  },
+  "exports": { ".": "./src/index.tsx", "./session": "./src/session.ts" }
+}

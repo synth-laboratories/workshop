@@ -1051,3 +1051,13 @@ test("an active full-evidence consumer retains a bounded window and reports the 
 	unsubscribe();
 	installRunProgressDiagnostics(() => undefined);
 });
+
+test("legacy aggregate reader hydrates bounded progress when no V2 projection exists", async () => {
+ const transport = fakeTransport({ runs: {"run-a": runRecord({cursorSeq: 3})}, pages: {"run-a": [event(1), event(2), event(3)]} });
+ setRunProgressTransport(transport);
+ const seen = [];
+ subscribeToRun("run-a", value => seen.push(value), {evidence: "projection"});
+ await settle();
+ assert.equal(seen.at(-1).cursor, 3);
+ assert.equal(seen.at(-1).events.length, 3);
+});

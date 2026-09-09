@@ -282,7 +282,7 @@ test("finite fixture replay is ready without a live subscription control", () =>
   assert.match(hook, /ready: Boolean\(fixtureEvents\?\.length\)/);
   assert.match(hook, /setState\("terminal"\)/);
   assert.match(hook, /fixtureReplayIdentity\(fixtureEvents, visualId, revision\)/);
-  assert.match(hook, /\[fixtureIdentity, replayMs\]/, "equivalent host arrays must not restart finite fixture playback");
+  assert.match(hook, /\[fixtureIdentity, replayMs,\s*hosted\]/, "equivalent host arrays must not restart finite fixture playback");
   // A declared stream always wins over a fixture: local example evidence never
   // stands in for the transport a visual actually declared.
   assert.match(hook, /declared \? live : fixture/);

@@ -1,0 +1,39 @@
+{
+  "bindings": [
+    {
+      "slot": "result",
+      "kind": "inline",
+      "data": {
+        "snapshotId": "acceptance-fixture",
+        "resultDigest": "fixture:trace-catalog",
+        "resultCount": 2,
+        "queriedAt": "2026-09-08T12:00:00Z",
+        "queryAst": {
+          "where": {
+            "benchmark": "explicit-fixture"
+          }
+        },
+        "facets": {
+          "rows": [
+            {
+              "traceDigest": "fixture:trace-a",
+              "model": "fixture-model",
+              "benchmark": "explicit-fixture",
+              "eventCount": 3,
+              "reward": 0.8,
+              "captureStatus": "fixture"
+            },
+            {
+              "traceDigest": "fixture:trace-b",
+              "model": "fixture-model",
+              "benchmark": "explicit-fixture",
+              "eventCount": 2,
+              "reward": null,
+              "captureStatus": "fixture"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

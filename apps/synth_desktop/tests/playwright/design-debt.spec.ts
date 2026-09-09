@@ -62,19 +62,20 @@ test.describe("design locks (must pass)", () => {
 		await expect(changelog).toContainText("build provenance");
 	});
 
-	test("Inventory exposes Attach container defaulting to Craftax GameBench rust :8080", async ({ page }) => {
+	test("Inventory exposes Attach container defaulting to Craftax GameBench rust :8098", async ({ page }) => {
 		await page.getByTestId("open-inventory").click();
 		await expect(page.getByTestId("inventory-page")).toBeVisible();
 		await page.getByTestId("attach-container").click();
 		const form = page.locator(".inventory-attach-form");
 		await expect(form).toBeVisible();
-		await expect(form.locator('input[inputmode="url"]')).toHaveValue("http://127.0.0.1:8080");
-		await expect(form.locator("input").first()).toHaveValue("Craftax GameBench rust");
+		await expect(form.locator('input[inputmode="url"]')).toHaveValue("http://127.0.0.1:8098");
+		await expect(form.locator("input").first()).toHaveValue("Craftax Rust");
 	});
 
 	test("Inventory Traces honestly scopes the v0.2 catalog as read-only", async ({ page }) => {
 		await page.getByTestId("open-inventory").click();
-		await page.getByTestId("inventory-tab-traces").click();
+		await page.getByTestId("open-inventory").click();
+	await page.getByTestId("inventory-tab-traces").click();
 		await expect(page.getByTestId("trace-catalog-read-only")).toBeVisible();
 		await expect(page.getByTestId("import-trace-v5")).toHaveCount(0);
 		await expect(page.getByTestId("filter-traces")).toBeVisible();
@@ -418,8 +419,11 @@ test.describe("design debt (expected fail until fixed)", () => {
 		await expect(page.getByTestId("container-pane")).toBeVisible();
 		await expect(page.getByTestId("container-pane")).toContainText("craftax-singleplayer");
 		const pane = page.getByTestId("container-pane");
-		const before = await pane.boundingBox();
 		const handle = page.getByRole("separator", { name: "Resize container inspector" });
+		// Start below the viewport ceiling so the drag can actually grow the pane.
+		await handle.press("Home");
+		await expect.poll(async () => (await pane.boundingBox())?.width).toBe(340);
+		const before = await pane.boundingBox();
 		const handleBox = await handle.boundingBox();
 		if (!before || !handleBox) throw new Error("container split geometry unavailable");
 		await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + 80);
@@ -518,10 +522,20 @@ test.describe("design debt (expected fail until fixed)", () => {
 				async revisions() { return []; },
 				onShow() { return () => undefined; }
 			} as typeof window.synthVisuals;
+			const runtime = window.synthRuntime!;
+			const previousRequest = runtime.request.bind(runtime);
+			runtime.request = async (path: string, options: any) => {
+				if (path === "/v1/traces/window") {
+					const resolved = await window.synthInventory!.resolveTraceProjection(options.body.trace_digest, "rollout-inspector");
+					return {...resolved.payload, schema_version: "synth.trace-projection.rollout-inspector-window.v1", window: {offset: 0, limit: 200, total: 3, nextOffset: null}};
+				}
+				return previousRequest(path, options);
+			};
 		});
 		await page.reload();
 		await page.getByTestId("open-inventory").click();
-		await page.getByTestId("inventory-tab-traces").click();
+		await page.getByTestId("open-inventory").click();
+	await page.getByTestId("inventory-tab-traces").click();
 		await page.getByTestId("open-trace-debt-trace").click();
 		await expect(page.getByTestId("visual-trace-rollout-inspector")).toBeVisible();
 		await expect(page.getByTestId("inventory-traces")).toBeVisible();
@@ -531,8 +545,8 @@ test.describe("design debt (expected fail until fixed)", () => {
 		expect(viewerBox?.width ?? 0).toBeGreaterThan(350);
 		await expect(page.getByTestId("visual-trace-rollout-inspector")).toContainText("Tool calls2");
 		await expect(page.getByTestId("visual-trace-rollout-inspector")).toContainText("Evidence1");
-		await page.getByRole("button", { name: "Play playback" }).click();
-		await expect(page.getByRole("button", { name: "Pause playback" })).toBeVisible();
+		await page.getByRole("button", { name: "Next", exact: true }).click();
+		await expect(page.locator('[data-trace-item-id="command-start"]')).toHaveAttribute("aria-current", "true");
 
 		await page.getByTestId("open-trace-debt-trace").click();
 		await expect(page.getByTestId("visual-trace-rollout-inspector")).toBeVisible();

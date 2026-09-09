@@ -12,34 +12,24 @@
  * resolves in the same tick as an inline one.
  */
 
-const SHARED = import.meta.glob("../../../../../../visuals/fixtures/*.json", {
+import {createFixtureIndex} from "@synth/workshop-visuals/runtime/fixtureIndex.ts";
+import {generatedVisualFixtures} from "@synth/workshop-visuals/runtime/generatedFixtures.ts";
+
+const SHARED = import.meta.glob("../../../../../../packages/workshop-visuals/fixtures/*.json", {
   eager: true,
   import: "default"
 }) as Record<string, unknown>;
 
-const TEMPLATE_EXAMPLES = import.meta.glob("../../../../../../visuals/families/*/*/examples/*.json", {
+const TEMPLATE_EXAMPLES = import.meta.glob("../../../../../../packages/workshop-visuals/families/**/examples/*.json", {
   eager: true,
   import: "default"
 }) as Record<string, unknown>;
 
-/** Suffix index: a binding names a path relative to `visuals/`, not to here. */
-function index(): Map<string, unknown> {
-  const byPath = new Map<string, unknown>();
-  for (const [key, value] of [...Object.entries(SHARED), ...Object.entries(TEMPLATE_EXAMPLES)]) {
-    const normalized = key.replace(/^.*\/visuals\//, "");
-    byPath.set(normalized, value);
-    // Also index by bare file name, so a binding written as
-    // `annotation_markers.json` finds `fixtures/annotation_markers.json`.
-    const file = normalized.split("/").at(-1);
-    if (file && !byPath.has(file)) byPath.set(file, value);
-  }
-  return byPath;
-}
 
-const PACKAGED = index();
+const PACKAGED = createFixtureIndex([...Object.entries(SHARED),...Object.entries(TEMPLATE_EXAMPLES)]);
 
 export function packagedFixtureNames(): string[] {
-  return [...PACKAGED.keys()].sort();
+  return [...PACKAGED.names(),...Object.keys(generatedVisualFixtures)].sort();
 }
 
 /**
@@ -52,9 +42,6 @@ export function packagedFixtureNames(): string[] {
 export function loadPackagedFixture(source: string | undefined): unknown {
   const wanted = (source ?? "").trim().replace(/^\.?\//, "");
   if (!wanted) throw new Error("A fixture binding carries no source path");
-  const found = PACKAGED.get(wanted) ?? PACKAGED.get(wanted.split("/").at(-1) ?? "");
-  if (found === undefined) {
-    throw new Error(`No packaged fixture named "${wanted}"`);
-  }
-  return found;
+  if(Object.hasOwn(generatedVisualFixtures,wanted))return generatedVisualFixtures[wanted]!();
+  return PACKAGED.load(wanted);
 }

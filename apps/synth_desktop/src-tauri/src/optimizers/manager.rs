@@ -453,6 +453,15 @@ impl OptimizerManager {
         status.updated_at = now_ms();
         let previous = {
             let mut current = self.status.write().await;
+            // A read refresh must not emit an event for an unchanged status:
+            // the renderer responds to optimizer:status by reading plugins_list.
+            // Ignore the poll timestamp when deciding whether anything changed.
+            let mut comparable = status.clone();
+            comparable.updated_at = current.updated_at;
+            if *current == comparable {
+                current.updated_at = status.updated_at;
+                return;
+            }
             let previous = current.phase.clone();
             *current = status.clone();
             previous
@@ -3354,6 +3363,44 @@ mod tests {
     fn manager() -> (OptimizerManager, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         (OptimizerManager::with_home(dir.path().to_path_buf()), dir)
+    }
+
+    #[tokio::test]
+    async fn status_refresh_does_not_emit_unchanged_status() {
+        let (manager, _dir) = manager();
+        let mut updates = manager.subscribe();
+        let mut status = manager.status().await;
+        status.phase = "stopped".into();
+        manager.set_status(status.clone()).await;
+        assert_eq!(updates.try_recv().unwrap().phase, "stopped");
+        status.updated_at = u64::MAX;
+        manager.set_status(status.clone()).await;
+        assert!(matches!(
+            updates.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        status.detail = Some("new diagnostic detail".into());
+        manager.set_status(status).await;
+        assert_eq!(
+            updates.try_recv().unwrap().detail.as_deref(),
+            Some("new diagnostic detail")
+        );
+    }
+
+    #[tokio::test]
+    async fn status_refresh_read_does_not_feed_its_own_subscription() {
+        let (manager, _dir) = manager();
+        let mut updates = manager.subscribe();
+        manager.refresh().await;
+        assert_eq!(updates.try_recv().unwrap().phase, "not_installed");
+        // Model the renderer reading again after receiving the first event.
+        for _ in 0..20 {
+            manager.refresh().await;
+        }
+        assert!(matches!(
+            updates.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
     }
 
     #[test]

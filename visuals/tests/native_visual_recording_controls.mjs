@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+
+const [root,visualId,revisionText]=process.argv.slice(2);
+if(!root?.startsWith('/tmp/workshop-visuals-native-')||!visualId?.startsWith('accept-'))throw new Error('Only isolated acceptance fixtures may be mutated');
+const revision=Number(revisionText);
+if(!Number.isSafeInteger(revision)||revision<1)throw new Error('Explicit revision required');
+const helper=fileURLToPath(new URL('./native_visual_mcp.mjs',import.meta.url));
+const call=(operation,fields={})=>JSON.parse(execFileSync(process.execPath,[helper,root,visualId,operation,JSON.stringify({revision,...fields})],{encoding:'utf8',timeout:50000}));
+const initial=call('inspect');
+assert.equal(initial.activeRecording,null,'Do not interrupt another recording');
+const control=initial.state.controls.find(control=>control.type==='boolean');
+assert.ok(control,'Fixture needs a boolean presentation control');
+const recording=call('record.start');
+const changed=call('act',{action:{id:crypto.randomUUID(),kind:'presentation.patch',expectedStateVersion:initial.state.stateVersion,payload:{values:{[control.id]:!initial.state.values[control.id]}}}});
+call('record.stop');
+let state=call('record.seek',{recordingId:recording.recordingId,sequence:0,expectedStateVersion:changed.state.stateVersion}).state;
+state=call('record.play',{playing:false,intervalMs:75,expectedStateVersion:state.stateVersion}).state;
+assert.equal(state.replay.intervalMs,75);
+state=call('record.seek',{recordingId:recording.recordingId,sequence:1,expectedStateVersion:state.stateVersion}).state;
+assert.equal(state.replay.intervalMs,75);assert.equal(state.replay.playing,false);
+assert.equal(state.values[control.id],!initial.state.values[control.id]);
+state=call('record.seek',{recordingId:recording.recordingId,sequence:0,expectedStateVersion:state.stateVersion}).state;
+assert.equal(state.values[control.id],initial.state.values[control.id]);
+assert.equal(state.replay.intervalMs,75);
+console.log(JSON.stringify({visualId,revision,recordingId:recording.recordingId,speedPersisted:true,forwardAndBackRestored:true,stateVersion:state.stateVersion},null,2));

@@ -225,7 +225,7 @@ test("idle telemetry is compact by default with diagnostics behind Advanced", ()
 	assert.match(html, /28\.8 tok\/s/);
 	assert.match(html, /ttft 22\.43 s/);
 	assert.match(html, /<details class="inference-advanced">/);
-	assert.match(html, /<summary>Advanced<\/summary>/);
+	assert.match(html, /<summary data-testid="inference-advanced-summary">Advanced<\/summary>/);
 	assert.doesNotMatch(html, /<details class="inference-advanced" open/);
 });
 

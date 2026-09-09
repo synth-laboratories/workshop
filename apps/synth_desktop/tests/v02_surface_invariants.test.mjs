@@ -166,7 +166,7 @@ test("hosted SFT uses only the public synth-optimizers control plane", () => {
 	assert.doesNotMatch(hostedSftBody, /HostedOptimizerClient|MlxLoopback/);
 	assert.doesNotMatch(sidecarTraining, /8787|OPTIMIZERS_BETA|SYNTH_OPTIMIZERS_BETA/);
 	assert.match(hostedSft, /kind:\s*"optimizer_sidecar"\.into\(\)/);
-	assert.match(service, /fn primary_visual_template[\s\S]*"sft" \| "cispo" => "optimizer\.sft\.live\.v1"/);
+	assert.match(service, /fn primary_visual_template[\s\S]*"sft" => "optimizer\.sft\.live\.v1"[\s\S]*"cispo" => "optimizer\.cispo\.live\.v1"/);
 	assert.match(commands, /"sft\.craftax\.nemotron-nano\.tinker\.v1"[\s\S]*SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN/);
 	assert.match(
 		commands,
@@ -174,11 +174,11 @@ test("hosted SFT uses only the public synth-optimizers control plane", () => {
 	);
 });
 
-test("v0.2 transcript shows median throughput while working and after assistant messages", () => {
-	const source = read("components/ChatTranscript.tsx");
-	assert.match(source, /data-testid="model-working-median-tps"/);
-	assert.match(source, /data-testid={`assistant-median-tps-\${m\.id}`}/);
-	assert.match(source, /medianTpsLabel\?\.replace\(\/\\bp50\\b\/g, "median"\)/);
+test("transcript generation labels retain per-turn measurement ownership", () => {
+ const source = read("components/ChatTranscript.tsx");
+ assert.match(source, /data-testid="model-working-generation-tps"/);
+ assert.match(source, /turnTpsLabels\.byMessageId\[m\.id\]/);
+ assert.doesNotMatch(source, /medianTpsLabel/);
 });
 
 test("v0.2 grouped activity keeps visual and container MCP calls out of used-tools summaries", () => {

@@ -2279,6 +2279,20 @@ mod tests {
         ReportRegistry::new(storage.database().clone(), journal, content, visuals)
     }
 
+    // These storage/admission fixtures start after quality review. Supply its
+    // current identity pin rather than weakening the production seal guard.
+    async fn pin_fixture_quality_identity(storage: &Storage, visuals: &VisualRegistry, id: &str) {
+        let identity = visuals.certification_identity(id.to_owned()).await.unwrap();
+        let id = id.to_owned();
+        storage.database().run(move |conn| {
+            conn.execute(
+                "UPDATE visuals SET metadata_json=json_set(metadata_json,'$.qualityGate.certificationIdentity',json(?1)) WHERE id=?2",
+                params![identity.to_string(), id],
+            )?;
+            Ok(())
+        }).await.unwrap();
+    }
+
     #[tokio::test]
     async fn seal_inlines_visual_bytes_without_network_access() {
         let dir = tempdir().unwrap();
@@ -2313,6 +2327,7 @@ mod tests {
             })
             .await
             .unwrap();
+        pin_fixture_quality_identity(&storage, &visuals, &visual.id).await;
         let (visual_seal, _) = visuals.seal(visual.id.clone(), 1).await.unwrap();
         let reports = ReportRegistry::new(storage.database().clone(), journal, content, visuals);
         let (report, _) = reports
@@ -2480,6 +2495,7 @@ mod tests {
             })
             .await
             .unwrap();
+        pin_fixture_quality_identity(&storage, &visuals, &visual.id).await;
         let (visual_seal, _) = visuals.seal(visual.id.clone(), 1).await.unwrap();
         let reports = ReportRegistry::new(storage.database().clone(), journal, content, visuals);
         let (report, _) = reports

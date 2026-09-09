@@ -282,6 +282,14 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 	const [transcriptCollapsed, setTranscriptCollapsed] = useState(false);
 	const [openVisualTabs, setOpenVisualTabs] = useState<ArtifactRef[]>([]);
 	const [humanAnnotationSessionId, setHumanAnnotationSessionId] = useState<string | null>(null);
+	const [inventoryVisualId, setInventoryVisualId] = useState<string | null>(null);
+	useEffect(() => {
+		if (view.kind !== "inventory") setInventoryVisualId(null);
+		if (view.kind === "chat" && openArtifact?.id) {
+			setSidePanelTab("visual");
+			setSidePanelOpen(true);
+		}
+	}, [view.kind, openArtifact?.id, setSidePanelOpen, setSidePanelTab]);
 	const [experimentSectionOwnsVisualPane, setExperimentSectionOwnsVisualPane] = useState(true);
 	useEffect(() => {
 		if (view.kind === "experiments") setExperimentSectionOwnsVisualPane(true);
@@ -491,7 +499,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 	// (Plugins, Reports, Data, Inference, and Settings) must not inherit an
 	// unrelated right-hand pane merely because a visual was previously open.
 	// Visuals owns its list/preview split; mounting the dock duplicates the visual.
-	const inventoryOwnsVisualPane = (view.kind === "experiments" && experimentSectionOwnsVisualPane)
+	const inventoryOwnsVisualPane = (view.kind === "inventory" && inventoryVisualId === openArtifactId && inventoryVisualId != null)
+		|| (view.kind === "experiments" && experimentSectionOwnsVisualPane)
 		|| view.kind === "optimizers" || view.kind === "jesterky";
 	const visualPaneVisible = Boolean(openArtifact && (
 		(chatRoute && !showSidePanel)
@@ -694,7 +703,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					{view.kind === "environment-qa" ? <EnvironmentQaPage onBack={leavePluginToRecentChat} /> : null}
 					{view.kind === "inventory" ? (
 						<DataPage
-							onOpenVisual={openVisualRecord}
+							onOpenVisual={(visual) => { setInventoryVisualId(visual.id); openVisualRecord(visual); }}
 							onOpenContainer={(id) => void toggleContainer(id)}
 							openContainerId={openContainer?.id ?? null}
 							onBack={leavePluginToRecentChat}
@@ -728,7 +737,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						<>
 							<PaneResizeHandle
 								value={inventoryContainerWidth}
-								minPrimary={chatRoute ? (showSidePanel ? 680 : 260) : 160}
+								minPrimary={chatRoute ? (showSidePanel ? 680 : 260) : view.kind === "inventory" ? 360 : 160}
 								minSecondary={chatRoute ? 260 : 340}
 								onChange={resizeInventoryPane}
 								ariaLabel="Resize visual pane"
@@ -886,7 +895,6 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 				</div>
 			) : null}
 
-			{!chatRoute ? bottomPanel : null}
 
 			{view.kind === "computer-use" ? (
 				<div className="inventory-workbench">
@@ -906,10 +914,13 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 
 			{view.kind === "landing" ? (
 				<LandingPage
+					showMascot={preferences.appearance.showMascot}
 					state={state}
 					onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
 				/>
 			) : null}
+
+			{!chatRoute ? bottomPanel : null}
 
 			{/*
 			 * v0.1 removal contract: the CloudDesk sync/async routes are the

@@ -13,6 +13,9 @@ pub mod mermaid;
 mod models;
 mod registry;
 mod renditions;
+mod state;
+pub mod engine;
+mod query_engine;
 #[cfg(target_os = "macos")]
 pub mod snapshot;
 pub mod sourced;
@@ -31,7 +34,11 @@ pub fn templates_root_for_tests() -> std::path::PathBuf {
 /// renderer; sourced TSX compiles in the Desktop pane. Callers that just need
 /// "some template" — tests, pickers — must skip these rather than sniff the id.
 pub fn requires_canonical_source(template_id: &str) -> bool {
-    mermaid::is_mermaid_template(template_id)
+    resolve_template(template_id)
+        .ok()
+        .and_then(|template| template.renderer_kind)
+        .is_some_and(|kind| matches!(kind.as_str(), "mermaid" | "systems" | "systems-dynamic" | "chart" | "tsx"))
+        || mermaid::is_mermaid_template(template_id)
         || systems::template_kind(template_id).is_some()
         || charts::is_chart_template(template_id)
         || sourced::is_sourced_template(template_id)
@@ -56,7 +63,9 @@ pub use models::{
 };
 pub use registry::VisualRegistry;
 pub use renditions::{VisualAsset, VisualRendition};
+pub use state::VisualStateStore;
 pub use templates::{
     certification_renderer_digest, import_managed_template, list_templates, resolve_template,
     AuthoringAffordance, TemplateMeta, TemplateObservationContract, TemplateReadinessContract,
 };
+mod collection_corpus;

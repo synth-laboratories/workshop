@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const RECEIPT_DIR = process.env.SYNTH_EXTERNAL_VISUAL_RECEIPTS ??
-  "/Users/joshuapurtell/Documents/Codex/2026-08-12/let/receipts/external-acceptance/visuals";
+  join(import.meta.dirname, "../../test-results/external-acceptance/visuals");
 const ENVELOPE_COUNT = 100_000;
 const LANE_COUNT = 10;
 const POLICY_DELTA_COUNT = 10_000;
@@ -177,12 +177,13 @@ test("V5: actual Craftax viewer sustains 10 lanes and 100k envelopes with bounde
     await page.evaluate(() => { (window as any).__v5LongTasks = []; });
 
     await page.getByTestId("open-visuals").click();
-    await page.getByTestId("visuals-card-vis_craftax_v5_acceptance").getByRole("button", { name: "Open" }).click();
-    const viewer = page.getByTestId("visual-pane").getByTestId("visual-live-craftax");
+    await page.getByTestId("visuals-card-vis_craftax_v5_acceptance").click();
+    const viewer = page.getByTestId("visuals-preview").getByTestId("visual-live-craftax");
     await expect(viewer).toBeVisible();
     await viewer.getByRole("button", { name: "Replay", exact: true }).click();
     await expect(viewer.getByRole("navigation", { name: "Rollout lanes" }).getByRole("button")).toHaveCount(LANE_COUNT, { timeout: 180_000 });
-    await expect(viewer).toContainText("sealed/reconciled", { timeout: 180_000 });
+    await expect(viewer.locator(".cv-connection")).toHaveText("replay complete", { timeout: 180_000 });
+    await viewer.getByRole("button", {name: "Jump to end", exact: true}).click();
 
     await viewer.getByRole("button", { name: "Raw trace", exact: true }).click();
     const traceMode = viewer.getByRole("button", { name: "Full trace" });
@@ -252,5 +253,37 @@ test("V5: actual Craftax viewer sustains 10 lanes and 100k envelopes with bounde
   } finally {
     await cdp.detach().catch(() => undefined);
     await closeServer(stress.server);
+  }
+});
+
+test("leaving a visual stops durable replay after an in-flight page resolves", async ({ page }) => {
+  const pending: Array<import("node:http").ServerResponse> = [];
+  let requests = 0;
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    response.setHeader("Access-Control-Allow-Origin", "*");
+    response.setHeader("Content-Type", "application/json");
+    requests += 1;
+    if (Number(url.searchParams.get("after") ?? 0) === 0) {
+      response.end(JSON.stringify({page: {events: [stressEnvelope(0), stressEnvelope(1)]}, cursor: {next: 500, has_more: true, closed: false}}));
+    } else pending.push(response);
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("replay test did not bind");
+  try {
+    await installVisual(page, visualRecord(`http://127.0.0.1:${address.port}`));
+    await page.getByTestId("open-visuals").click();
+    await expect.poll(() => pending.length).toBeGreaterThan(0);
+    await page.getByTestId("open-inventory").click();
+    await expect(page.getByTestId("inventory-page")).toBeVisible();
+    const before = requests;
+    for (const response of pending) response.end(JSON.stringify({page: {events: [stressEnvelope(2)]}, cursor: {next: 1000, has_more: true, closed: false}}));
+    // Cover both immediate backlog draining and the 500ms live poll timer.
+    await page.waitForTimeout(750);
+    expect(requests).toBe(before);
+  } finally {
+    server.closeAllConnections();
+    await closeServer(server);
   }
 });

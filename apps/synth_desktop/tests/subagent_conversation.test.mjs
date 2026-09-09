@@ -19,10 +19,9 @@ buildSync({
 });
 
 const {
-	buildSubagentConversation,
+	conversationThreadEvents,
 	eventsToLocalActivity,
-	eventsToMessages,
-	parentConversationEvents
+	eventsToMessages
 } = await import(pathToFileURL(compiled).href);
 
 const session = {
@@ -65,29 +64,33 @@ function fixture() {
 }
 
 test("parent and child normalize from the same ordered event record without sibling leakage", () => {
-	const events = fixture();
-	const parentEvents = parentConversationEvents(events, { rootThreadId: "parent-thread" });
-	const parentMessages = eventsToMessages(parentEvents);
-	const child = buildSubagentConversation(session, events, "child-a");
-	assert.ok(child);
-	assert.deepEqual(parentMessages.map((message) => message.body), ["Audit the migration.", "I will delegate the audit."]);
-	assert.deepEqual(child.chat.messages.map((message) => message.body), ["Inspect the migration boundary.", "Boundary is safe."]);
-	assert.equal(child.agent.delegationSequence, 3);
-	assert.equal(child.agent.parentThreadId, "parent-thread");
-	assert.equal(child.chat.messages.some((message) => message.body.includes("Sibling")), false);
-	assert.equal(buildSubagentConversation(session, events, "child-a")?.chat.messages.length, child.chat.messages.length);
+ const events = fixture();
+ const parentEvents = conversationThreadEvents(events, "parent-thread", true);
+ const childEvents = conversationThreadEvents(events, "child-a");
+ const parentMessages = eventsToMessages(parentEvents);
+ const childMessages = eventsToMessages(childEvents);
+ assert.deepEqual(parentMessages.map(message => message.body), ["Audit the migration.", "I will delegate the audit."]);
+ assert.deepEqual(childMessages.map(message => message.body), ["Boundary is safe."]);
+ assert.equal(JSON.stringify(eventsToLocalActivity(events, parentMessages)).includes("visual-a"), false);
+ assert.equal(childMessages.some(message => message.body.includes("Sibling")), false);
+ assert.deepEqual(conversationThreadEvents(events, null), []);
 });
 
-test("tool payloads remain structural, bounded, and preserve zero separately from missing", () => {
-	const child = buildSubagentConversation(session, fixture(), "child-a");
-	assert.ok(child);
-	const lines = Object.values(child.chat.activityByMessageId ?? {}).flat();
-	const tool = lines.find((line) => line.label === "synth_visuals.visual_manage");
-	assert.ok(tool);
-	assert.ok(tool.inspectable?.some((entry) => entry.label === "Arguments" && entry.value.includes('"count": 0')));
-	assert.ok(tool.inspectable?.some((entry) => entry.label === "Result" && entry.value.includes('"visual-a"')));
-	assert.equal(tool.inspectable?.some((entry) => entry.value.includes("[object Object]")), false);
-	assert.equal(tool.inspectable?.some((entry) => entry.truncated), false);
+test("child tool activity uses the same safe projection and a bounded event window", () => {
+ const events = conversationThreadEvents(fixture(), "child-a");
+ const messages = eventsToMessages(events);
+ const lines = Object.values(eventsToLocalActivity(events, messages)).flat();
+ const tool = lines.find(line => line.label === "Visual draft created");
+ assert.ok(tool);
+ assert.equal(tool.artifactId, "visual-a");
+ assert.match(tool.detail, /operation create/);
+ assert.equal(JSON.stringify(tool).includes("{malformed"), false);
+ assert.equal(JSON.stringify(tool).includes("[object Object]"), false);
+ const many = Array.from({length: 1500}, (_, index) => event(index, "message.delta", {thread_id: index % 2 ? "child-a" : "child-b", delta: "."}));
+ const bounded = conversationThreadEvents(many, "child-a");
+ assert.equal(bounded.length, 600);
+ assert.equal(bounded[0].sequence, 301);
+ assert.equal(bounded.at(-1).sequence, 1499);
 });
 
 test("reasoning remains hidden unless the runtime explicitly permits it", () => {

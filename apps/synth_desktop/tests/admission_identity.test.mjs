@@ -100,7 +100,7 @@ test("preview details and report pinning preserve vis_ identity without noisy li
   );
   assert.match(routes, /view\.kind === "reports"/);
   assert.match(routes, /settingsWithPane/);
-  assert.match(routes, /onBack=\{leaveReports\}/);
+  assert.match(routes, /onBack=\{leavePluginToRecentChat\}/);
   assert.match(routes, /leaveInventory/);
   assert.match(routes, /onBack=\{\(\) => leaveInventory\(inventoryOriginRef\.current\)\}/);
   assert.match(routes, /VISUAL_OPS_FOLLOW_EVENT/);

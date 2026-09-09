@@ -1352,6 +1352,14 @@ mod tests {
             )
             .await
             .unwrap();
+        // This storage round-trip fixture needs the same certification pin as
+        // a real authoring gate; a bare ready=true is correctly treated stale.
+        let identity=registry.certification_identity(created.id.clone()).await.unwrap();
+        let target=created.id.clone();
+        registry.db.run(move|conn|{
+            conn.execute("UPDATE visuals SET metadata_json=json_set(metadata_json,'$.qualityGate.certificationIdentity',json(?1)) WHERE id=?2",params![identity.to_string(),target])?;
+            Ok(())
+        }).await.unwrap();
         let (sealed, _) = registry.seal(created.id.clone(), 1).await.unwrap();
         let (sealed_retry, _) = registry.seal(created.id.clone(), 1).await.unwrap();
         assert_eq!(sealed.receipt_digest, sealed_retry.receipt_digest);

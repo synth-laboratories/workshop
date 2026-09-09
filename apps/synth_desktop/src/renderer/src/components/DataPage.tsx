@@ -180,7 +180,9 @@ export function DataPage({
 				throw new Error("Rust Data store is unavailable");
 			}
 			if (surface === "data") {
-				setContainers(await bridges.inventory.listContainers());
+				const [nextContainers, nextTraces] = await Promise.all([bridges.inventory.listContainers(), bridges.inventory.listTraces()]);
+				setContainers(nextContainers);
+				setTraces(nextTraces);
 				return;
 			}
 			const [nextContainers, nextUsage] = await Promise.all([
@@ -341,14 +343,14 @@ export function DataPage({
 		<PluginPage testId={surface === "inference" ? "inference-page" : "inventory-page"}>
 			<PluginPageHeader
 				title={surface === "inference" ? "Inference" : "Data"}
-				description={surface === "inference" ? "Model runtime, Codex traces, generation activity, usage, and request health." : "Local containers available to Workshop."}
+				description={surface === "inference" ? "Model runtime, Codex traces, generation activity, usage, and request health." : "Local containers and recorded traces available to Workshop."}
 				onBack={onBack}
 				actions={surface === "data" ? <button type="button" className="ws-btn ws-btn-secondary" onClick={() => void refresh()}>Refresh</button> : null}
 			/>
 
 			<PluginTabs tabs={surface === "inference"
 				? [{ id: "runtime", label: "Runtime" }, { id: "traces", label: "Codex traces", count: codexSessionCount }, { id: "usage", label: "Usage", count: usage.length }]
-				: [{ id: "containers", label: "Containers", count: activeContainers.length }]}
+				: [{ id: "containers", label: "Containers", count: activeContainers.length }, { id: "traces", label: "Recorded traces", count: traces.length }]}
 				selected={tab} onSelect={setTab} label={surface === "inference" ? "Inference sections" : "Data sections"} testIdPrefix="inventory-tab" />
 
 			{error ? (
@@ -413,7 +415,7 @@ export function DataPage({
 				</div>
 			) : null}
 
-			{false ? (
+			{surface === "data" && tab === "traces" ? (
 				<div className="ws-stack ws-stack-loose" data-testid="inventory-traces">
 					<section className="ws-card ws-card-split" aria-label="Trace catalog summary">
 						<div className="ws-card-body">

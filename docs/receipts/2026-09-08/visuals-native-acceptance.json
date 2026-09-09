@@ -1,0 +1,956 @@
+{
+  "schemaVersion": "synth.visuals-native-acceptance.v1",
+  "observedAt": "2026-09-09T02:08:36Z",
+  "releaseLine": "v0.10.x",
+  "scope": "Isolated native Workshop WKWebView; explicit packaged/imported fixtures; no provider execution",
+  "instanceRoot": "/tmp/workshop-visuals-native-Pjo0DW",
+  "classification": "Partial acceptance: capture/interaction mechanics verified, full domain signoff remains open",
+  "totals": {
+    "nativeCaptures": 40,
+    "verifiedPaintCuts": 40,
+    "genericControlRoundTrips": 30,
+    "captureOnly": 10
+  },
+  "humanMcpRestartReplay": {
+    "family": "analysis.swarm_trajectories.v1",
+    "revision": 3,
+    "rootCount": 1000,
+    "parentCount": 692,
+    "cohortCount": 352,
+    "humanActions": [
+      "outcome success",
+      "behavior recovery",
+      "return to prior aggregate"
+    ],
+    "mcpAction": "swarm.eventIndex = 4",
+    "recordingId": "7c345f45-f26c-4a79-b1b5-46d6af61729e",
+    "acknowledgedEventsSurvivedRestart": 5,
+    "completeSessionEqualAfterRestart": true,
+    "semanticValuesEqualAfterReplay": true,
+    "pixelComparison": {
+      "pixels": 4608000,
+      "differing": 0,
+      "before": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/8c5d1379-96d0-4a35-9737-542fe3de4574.png",
+      "after": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/c315a76f-fae9-4530-9543-9f380588b669.png"
+    }
+  },
+  "inspection": {
+    "method": "All 40 native viewport captures visually inspected in labelled contact sheets; swarm replay additionally inspected full size",
+    "limitations": [
+      "Viewport captures do not prove content below the viewport",
+      "Several live/optimizer fixtures expose only missing or early-history evidence",
+      "MCP capture_review and two inspected reviews passed; ready/seal certification is blocked by the clean committed build requirement",
+      "No native two-pane signoff yet",
+      "No arbitrary real-run lazy trajectory adapter signoff"
+    ]
+  },
+  "rows": [
+    {
+      "family": "analysis.annotation_workbench.v1",
+      "revision": 2,
+      "visualId": "accept-analysis-annotation_workbench-v1",
+      "interaction": {
+        "control": "annotation.view",
+        "recordingId": "5399f7b3-119f-4ba2-8146-ad7e593ea8f2",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/05c42c95-b588-4bd0-93b1-8981fbd6fa57.png",
+      "checkpointId": "72915a97-c0a4-4163-b781-75121febe7be",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-analysis-annotation_workbench-v1"
+      }
+    },
+    {
+      "family": "analysis.chart.v1",
+      "revision": 2,
+      "visualId": "accept-analysis-chart-v1",
+      "interaction": {
+        "control": "rendition.source",
+        "recordingId": "94233865-a214-4e6e-bfce-c6ea88db5fd1",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/523cec66-39d8-4456-98a1-caff5ca3e1c5.png",
+      "checkpointId": "7bc1b522-aac6-4fff-846b-235303fa43c0",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-analysis-chart-v1"
+      }
+    },
+    {
+      "family": "analysis.swarm_trajectories.v1",
+      "revision": 3,
+      "visualId": "accept-analysis-swarm_trajectories-v1",
+      "interaction": {
+        "control": "swarm.sampling",
+        "recordingId": "3bd34f01-9ec8-4d13-b747-a948a1b65f6f",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/d78867a8-6e9a-414f-9586-0dbcc55de92a.png",
+      "checkpointId": "66847215-ab4d-4b6c-ad2c-61b1633ea20a",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 3,
+        "stateVersion": 9,
+        "verified": true,
+        "visualId": "accept-analysis-swarm_trajectories-v1"
+      }
+    },
+    {
+      "family": "analysis.visual.v1",
+      "revision": 2,
+      "visualId": "accept-analysis-visual-v1",
+      "interaction": {
+        "reason": "No safely toggleable registered control; family-specific seek/selection acceptance required"
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/86b30e52-e36f-4db2-bb2f-67b381d6960f.png",
+      "checkpointId": "984c7d8f-3c31-426f-8902-efbc2cd78c57",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 0,
+        "verified": true,
+        "visualId": "accept-analysis-visual-v1"
+      }
+    },
+    {
+      "family": "annotation.overlay.v1",
+      "revision": 2,
+      "visualId": "accept-annotation-overlay-v1",
+      "interaction": {
+        "control": "overlay.index",
+        "recordingId": "2e84e573-bca8-4a23-8e8a-2b37f0da0dc8",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/a3ac6d27-ee08-47bd-9b1a-a50de7acc35a.png",
+      "checkpointId": "5d116aa1-0113-49b6-9893-a29ad2f5c330",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-annotation-overlay-v1"
+      }
+    },
+    {
+      "family": "blank.canvas.v1",
+      "revision": 2,
+      "visualId": "accept-blank-canvas-v1",
+      "interaction": {
+        "reason": "No safely toggleable registered control; family-specific seek/selection acceptance required"
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/3ef537c2-65ac-4390-8fa6-145f00ead9bf.png",
+      "checkpointId": "f2f30989-6677-4ea5-a4c1-6ae75a2044b4",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 0,
+        "verified": true,
+        "visualId": "accept-blank-canvas-v1"
+      }
+    },
+    {
+      "family": "compose.visual.v1",
+      "revision": 2,
+      "visualId": "accept-compose-visual-v1",
+      "interaction": {
+        "reason": "No safely toggleable registered control; family-specific seek/selection acceptance required"
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/c33facf4-8fdd-43b8-a62c-c430de1a01dd.png",
+      "checkpointId": "19233ded-bcf8-45ac-bde2-d602b58a7763",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 0,
+        "verified": true,
+        "visualId": "accept-compose-visual-v1"
+      }
+    },
+    {
+      "family": "craftax.eval_matrix.v1",
+      "revision": 2,
+      "visualId": "accept-craftax-eval_matrix-v1",
+      "interaction": {
+        "reason": "No safely toggleable registered control; family-specific seek/selection acceptance required"
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/952ca6ab-f0fb-4940-8a8b-ab38c2819328.png",
+      "checkpointId": "aa174e11-f5dd-42ce-8b3a-fe8c6ef2783f",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 0,
+        "verified": true,
+        "visualId": "accept-craftax-eval_matrix-v1"
+      }
+    },
+    {
+      "family": "craftax.rollout_scrub.v1",
+      "revision": 2,
+      "visualId": "accept-craftax-rollout_scrub-v1",
+      "interaction": {
+        "control": "craftax.rollout.index",
+        "recordingId": "2f5f15c5-d58b-4f06-84d7-62f2bb051f3e",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/e87444b9-b566-4bb2-b61d-fa5fa76b80c2.png",
+      "checkpointId": "7f906db8-f6c5-4731-8d96-24919e76343c",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-craftax-rollout_scrub-v1"
+      }
+    },
+    {
+      "family": "craftax.trace_workbench.v1",
+      "revision": 2,
+      "visualId": "accept-craftax-trace_workbench-v1",
+      "interaction": {
+        "control": "trace.selectedCall",
+        "recordingId": "449869c3-964f-43a5-8562-00ea88f4b466",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/70f893ea-3c20-404f-bbf2-d5b69979225b.png",
+      "checkpointId": "5e56de51-cf67-4b11-91bf-f87fe1374d50",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-craftax-trace_workbench-v1"
+      }
+    },
+    {
+      "family": "diagram.mermaid.v1",
+      "revision": 2,
+      "visualId": "accept-diagram-mermaid-v1",
+      "interaction": {
+        "control": "rendition.source",
+        "recordingId": "6d1edaf1-614a-4075-93e9-dd82566b0659",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/0b3c844d-e8b5-4c21-b3df-cff368a3ed58.png",
+      "checkpointId": "ec429287-ddd5-46a8-bb6b-64d7aa61d5bc",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-diagram-mermaid-v1"
+      }
+    },
+    {
+      "family": "diagram.systems.dynamic.v1",
+      "revision": 2,
+      "visualId": "accept-diagram-systems-dynamic-v1",
+      "interaction": {
+        "control": "dynamic.source",
+        "recordingId": "817c5c0a-aba5-4e2b-b025-58ca8560e620",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/77c3a180-c28c-4a44-a805-7a77187ebc14.png",
+      "checkpointId": "aa7836bd-f912-4715-93bd-1d1570c99ad2",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-diagram-systems-dynamic-v1"
+      }
+    },
+    {
+      "family": "diagram.systems.v1",
+      "revision": 2,
+      "visualId": "accept-diagram-systems-v1",
+      "interaction": {
+        "control": "rendition.source",
+        "recordingId": "afb7e8d4-e2d2-4442-8a65-699b6890d0ca",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/7d431df2-629c-4132-b3de-0292200d0adc.png",
+      "checkpointId": "f00aa959-59b3-4b78-81b2-03b7f779a733",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 4,
+        "verified": true,
+        "visualId": "accept-diagram-systems-v1"
+      }
+    },
+    {
+      "family": "experiment.overview.v1",
+      "revision": 2,
+      "visualId": "accept-experiment-overview-v1",
+      "interaction": {
+        "reason": "No safely toggleable registered control; family-specific seek/selection acceptance required"
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/9b1f8d0f-b209-45de-a670-bd35e2ad9f89.png",
+      "checkpointId": "db1641f4-8fe7-4d42-9e7c-29cab86e1ba2",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 0,
+        "verified": true,
+        "visualId": "accept-experiment-overview-v1"
+      }
+    },
+    {
+      "family": "live.annotated_rollouts.v1",
+      "revision": 2,
+      "visualId": "accept-live-annotated_rollouts-v1",
+      "interaction": {
+        "control": "annotated.showHistory",
+        "recordingId": "e027f267-9bbb-4e6f-a0de-265d9e2f87ae",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/8aebc122-088a-44b6-9140-198c84a01f92.png",
+      "checkpointId": "50eb9365-698d-4a89-84e4-4e334974be08",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 6,
+        "verified": true,
+        "visualId": "accept-live-annotated_rollouts-v1"
+      },
+      "fullSizeInspected": true
+    },
+    {
+      "family": "live.container_rollouts.v1",
+      "revision": 2,
+      "visualId": "accept-live-container_rollouts-v1",
+      "interaction": {
+        "control": "container.cursor",
+        "recordingId": "dc5ede27-65d7-477d-9cb0-e8dbec1bc8eb",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/f5cfd1a9-acd5-4ac0-bff4-482cacd5e7b5.png",
+      "checkpointId": "0e2ef205-4732-488d-afda-c5e104099310",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-live-container_rollouts-v1"
+      }
+    },
+    {
+      "family": "live.craftax.v1",
+      "revision": 2,
+      "visualId": "accept-live-craftax-v1",
+      "interaction": {
+        "control": "craftax.traceMode",
+        "recordingId": "4de073ec-9b18-4597-905d-222e81eb7dfc",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/718f9e56-a85f-48eb-b735-d7b0dc5fbd2a.png",
+      "checkpointId": "654e74d6-8d75-4400-bf31-dfd1b600b37d",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 4,
+        "verified": true,
+        "visualId": "accept-live-craftax-v1"
+      },
+      "fullSizeInspected": true
+    },
+    {
+      "family": "live.eval_stream.v1",
+      "revision": 2,
+      "visualId": "accept-live-eval_stream-v1",
+      "interaction": {
+        "reason": "No safely toggleable registered control; family-specific seek/selection acceptance required"
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/b5e89ef0-4e13-4b47-ab6c-b9dcc4d046eb.png",
+      "checkpointId": "17d3487f-4722-4471-810d-bdad19a83c20",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 0,
+        "verified": true,
+        "visualId": "accept-live-eval_stream-v1"
+      }
+    },
+    {
+      "family": "live.harbor_eval.v1",
+      "revision": 2,
+      "visualId": "accept-live-harbor_eval-v1",
+      "interaction": {
+        "control": "harbor.showFullStream",
+        "recordingId": "18db90d8-c93d-4a98-9b6f-d800b5e4d721",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/560e7025-423b-4945-974a-8bd2ea89def1.png",
+      "checkpointId": "1aaf004d-96c3-4259-815b-ffc8096b5b26",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-live-harbor_eval-v1"
+      }
+    },
+    {
+      "family": "live.intern_acceptance.v1",
+      "revision": 2,
+      "visualId": "accept-live-intern_acceptance-v1",
+      "interaction": {
+        "reason": "No safely toggleable registered control; family-specific seek/selection acceptance required"
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/df217eab-5f2b-448d-83b3-55897e0baf5d.png",
+      "checkpointId": "8640dbc6-7ac9-4631-9b94-e04088cf6e74",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 0,
+        "verified": true,
+        "visualId": "accept-live-intern_acceptance-v1"
+      }
+    },
+    {
+      "family": "model.compare.v1",
+      "revision": 2,
+      "visualId": "accept-model-compare-v1",
+      "interaction": {
+        "reason": "No safely toggleable registered control; family-specific seek/selection acceptance required"
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/fea7fabc-eb3e-4f01-806e-0434e50814f7.png",
+      "checkpointId": "fe53f381-2cc0-4a66-af0f-cb3e34a6c214",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 0,
+        "verified": true,
+        "visualId": "accept-model-compare-v1"
+      }
+    },
+    {
+      "family": "optimizer.cispo.live.v1",
+      "revision": 2,
+      "visualId": "accept-optimizer-cispo-live-v1",
+      "interaction": {
+        "control": "optimizer.sequence",
+        "recordingId": "6b5c38b9-d55a-489d-9341-bdf6df5b0bf0",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/08051d2c-c7d4-4e17-822a-f42a5a056340.png",
+      "checkpointId": "191ff3e7-560b-4f15-a9b8-4896351700b0",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-optimizer-cispo-live-v1"
+      }
+    },
+    {
+      "family": "optimizer.eval.live.v1",
+      "revision": 2,
+      "visualId": "accept-optimizer-eval-live-v1",
+      "interaction": {
+        "control": "optimizer.sequence",
+        "recordingId": "985324bc-8ec2-4e6a-9e1d-2258515ed200",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/4155bd17-709c-4c6b-9b9b-ce019713cecd.png",
+      "checkpointId": "f1104691-06ee-4d0c-84e5-a1d06e31189d",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-optimizer-eval-live-v1"
+      }
+    },
+    {
+      "family": "optimizer.gepa.candidate.v1",
+      "revision": 2,
+      "visualId": "accept-optimizer-gepa-candidate-v1",
+      "interaction": {
+        "control": "optimizer.sequence",
+        "recordingId": "f987eb26-a0c4-4566-a36f-fdc58ab286bd",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/fa6d30e9-db12-4dc1-bc05-67adcdad0df2.png",
+      "checkpointId": "b9b5206c-a5de-49fa-9010-7ae56fe021ee",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-optimizer-gepa-candidate-v1"
+      }
+    },
+    {
+      "family": "optimizer.gepa.evaluations.v1",
+      "revision": 2,
+      "visualId": "accept-optimizer-gepa-evaluations-v1",
+      "interaction": {
+        "control": "optimizer.sequence",
+        "recordingId": "45e09155-c3e0-4eec-afb2-e3ce9beec3f2",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/ea2c6479-34db-4c21-9552-3ffcd3278958.png",
+      "checkpointId": "2fad2db8-596d-47ce-a83f-cc28906132f8",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-optimizer-gepa-evaluations-v1"
+      }
+    },
+    {
+      "family": "optimizer.gepa.frontier.v1",
+      "revision": 2,
+      "visualId": "accept-optimizer-gepa-frontier-v1",
+      "interaction": {
+        "control": "optimizer.sequence",
+        "recordingId": "a85ff0a9-b885-4d41-9024-de842a172df6",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/4b6331be-cd3c-4e3e-b11f-db808b63a057.png",
+      "checkpointId": "0958c77c-926a-4e6e-927a-1e6b9f6e4a97",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-optimizer-gepa-frontier-v1"
+      }
+    },
+    {
+      "family": "optimizer.gepa.live.v1",
+      "revision": 2,
+      "visualId": "accept-optimizer-gepa-live-v1",
+      "interaction": {
+        "control": "optimizer.sequence",
+        "recordingId": "038a5802-c812-4141-9f37-dc595f545172",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/24208ef7-a293-4b51-bd1a-aea6056d7bef.png",
+      "checkpointId": "7723dc2f-f3d0-4b21-8035-1d0a1aab413d",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-optimizer-gepa-live-v1"
+      }
+    },
+    {
+      "family": "optimizer.run.v1",
+      "revision": 3,
+      "visualId": "accept-optimizer-run-v1",
+      "interaction": {
+        "control": "optimizer.sequence",
+        "recordingId": "c2e30444-bd41-48b2-be8a-e34c79d17834",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/a2dad7b1-ce59-43be-b833-ec4dc21e22c5.png",
+      "checkpointId": "fd293e62-1d9a-4705-aec5-51b0e5ed26c5",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 3,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-optimizer-run-v1"
+      }
+    },
+    {
+      "family": "optimizer.sft.checkpoints.v1",
+      "revision": 2,
+      "visualId": "accept-optimizer-sft-checkpoints-v1",
+      "interaction": {
+        "control": "optimizer.sequence",
+        "recordingId": "c852365e-acdc-44e6-9e45-eb7f6fdc053d",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/95146fdb-6f2f-4524-8d88-35d8e9c2e8cc.png",
+      "checkpointId": "665167b9-fd9c-403f-8a2b-af2bccf90b13",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-optimizer-sft-checkpoints-v1"
+      }
+    },
+    {
+      "family": "optimizer.sft.dataset.v1",
+      "revision": 2,
+      "visualId": "accept-optimizer-sft-dataset-v1",
+      "interaction": {
+        "control": "optimizer.sequence",
+        "recordingId": "514a548a-27a9-4d5b-8a80-ac83ed982f9e",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/02537e33-359c-4213-ad56-6ddaf4a9e023.png",
+      "checkpointId": "914e5055-a206-4c17-be4b-6713384e2d6e",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-optimizer-sft-dataset-v1"
+      }
+    },
+    {
+      "family": "optimizer.sft.examples.v1",
+      "revision": 2,
+      "visualId": "accept-optimizer-sft-examples-v1",
+      "interaction": {
+        "control": "optimizer.sequence",
+        "recordingId": "b4e54e34-8860-41f8-915d-383a167897e3",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/b4e6d8d5-4c98-4cad-9858-c5ddf050fd72.png",
+      "checkpointId": "3ced98c7-5758-4f7f-86dd-cb5064af8e7a",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-optimizer-sft-examples-v1"
+      }
+    },
+    {
+      "family": "optimizer.sft.lineage.v1",
+      "revision": 2,
+      "visualId": "accept-optimizer-sft-lineage-v1",
+      "interaction": {
+        "control": "optimizer.sequence",
+        "recordingId": "c9939a64-55ca-4e18-ba1a-a65e1c0a7e80",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/0e41f8f9-9533-421c-9676-7d9accb2346f.png",
+      "checkpointId": "733f6093-00f5-4453-ad55-7c2e99ca3634",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-optimizer-sft-lineage-v1"
+      }
+    },
+    {
+      "family": "optimizer.sft.live.v1",
+      "revision": 2,
+      "visualId": "accept-optimizer-sft-live-v1",
+      "interaction": {
+        "control": "optimizer.sequence",
+        "recordingId": "9380f1e1-30fc-4f55-ace7-fe70d6eec0c4",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/d917354f-729f-4dfa-98c6-ad34940f91ec.png",
+      "checkpointId": "17cbd8bd-2237-4d21-aa84-ea4c2cf6a424",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-optimizer-sft-live-v1"
+      }
+    },
+    {
+      "family": "optimizer.sft.rollouts.v1",
+      "revision": 2,
+      "visualId": "accept-optimizer-sft-rollouts-v1",
+      "interaction": {
+        "control": "optimizer.sequence",
+        "recordingId": "4cec130a-4660-45cd-a20f-0a0432da7890",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/32106f69-8445-487b-baed-2c04ad1466b4.png",
+      "checkpointId": "50b1cb07-bb6b-4033-8f40-ecef1a212dc1",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-optimizer-sft-rollouts-v1"
+      }
+    },
+    {
+      "family": "posttrain.rollout_viewer.v1",
+      "revision": 2,
+      "visualId": "accept-posttrain-rollout_viewer-v1",
+      "interaction": {
+        "control": "posttrain.index",
+        "recordingId": "81478899-d918-4a8c-8cdf-502565e77814",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/1e1a5928-2add-4674-93ff-617b6318dec2.png",
+      "checkpointId": "8c97bc4d-e581-42ce-bfd8-c61b2473d797",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-posttrain-rollout_viewer-v1"
+      }
+    },
+    {
+      "family": "reward.breakdown.v1",
+      "revision": 2,
+      "visualId": "accept-reward-breakdown-v1",
+      "interaction": {
+        "reason": "No safely toggleable registered control; family-specific seek/selection acceptance required"
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/11262ce0-1420-43c1-b473-58752aeb620d.png",
+      "checkpointId": "e355bf87-b0c0-4121-89e5-6a9003e79eed",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 0,
+        "verified": true,
+        "visualId": "accept-reward-breakdown-v1"
+      }
+    },
+    {
+      "family": "sourced.visual.v1",
+      "revision": 2,
+      "visualId": "accept-sourced-visual-v1",
+      "interaction": {
+        "control": "authored.step",
+        "recordingId": "339e57da-23e1-4b7b-8757-c3fe44faca2f",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/1a38414d-d3df-4fe4-99be-e0f18babdd3f.png",
+      "checkpointId": "09f5a77d-85f7-485a-a1f6-33dfe141e243",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-sourced-visual-v1"
+      }
+    },
+    {
+      "family": "trace.catalog.v1",
+      "revision": 2,
+      "visualId": "accept-trace-catalog-v1",
+      "interaction": {
+        "reason": "No safely toggleable registered control; family-specific seek/selection acceptance required"
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/7ebf2e38-9637-4e89-a3c6-75258c09e8fe.png",
+      "checkpointId": "e9651f21-73b8-49ef-9fe6-d0a080b7cef3",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 0,
+        "verified": true,
+        "visualId": "accept-trace-catalog-v1"
+      }
+    },
+    {
+      "family": "trace.rollout_inspector.v1",
+      "revision": 2,
+      "visualId": "accept-trace-rollout_inspector-v1",
+      "interaction": {
+        "control": "agent.acceptance-fixture.section",
+        "recordingId": "cd02acb0-b099-4689-97f2-c067c85f97a1",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/2f463f5c-1d64-4a37-ab5c-92c983fd2f75.png",
+      "checkpointId": "374f62cc-a117-4bb3-9d66-d0d8ef11e1c9",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-trace-rollout_inspector-v1"
+      }
+    },
+    {
+      "family": "trace.workbench.v1",
+      "revision": 2,
+      "visualId": "accept-trace-workbench-v1",
+      "interaction": {
+        "control": "trace.selectedCall",
+        "recordingId": "8e4178c7-2984-4c0d-9480-23a7639ea303",
+        "staleRejected": true,
+        "replayRestored": true
+      },
+      "pixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/463195be-3555-4c8f-b397-48430d4ec648.png",
+      "checkpointId": "9d073b04-7600-4683-8176-7d58daa49398",
+      "paint": {
+        "mutations": 0,
+        "ready": true,
+        "revision": 2,
+        "stateVersion": 2,
+        "verified": true,
+        "visualId": "accept-trace-workbench-v1"
+      }
+    }
+  ],
+  "sourceRevisionAcceptance": {
+    "visualId": "accept-source-pin-2f931a49-d390-4b1e-b7c6-93f7b583e72c",
+    "oldRevision": 1,
+    "newRevision": 2,
+    "foreignRevisionRestoreRejected": true,
+    "newStateUnchanged": true,
+    "beforePixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/d4773914-e207-4cb9-9449-4274e7c56f0a.png",
+    "afterPixelPath": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/715b3311-44f5-499e-a3a6-7e687b0f264f.png",
+    "beforeCheckpoint": "2a333a1b-59e6-46db-b5bf-3135ac36ddf4",
+    "afterCheckpoint": "0ced17d0-43ba-4dff-bdf5-55e803c47615"
+  },
+  "reviewAcceptance": {
+    "wide": {
+      "capture_mode": "host-webview-snapshot",
+      "capture_time": "2026-09-09T02:18:52.672566+00:00",
+      "certification_identity": {
+        "bindingsDigest": "e4e737c7ae0521fda0384164ee5fe83c6ab0aee09fe8d8264dcd3df9e4d6262e",
+        "buildRevision": "7a099b0c7306-dirty",
+        "contentDigest": "53ca55f89b12ac15314fb8d9bc8257e0fb33e290bf94fe043b80caf858c3dca0",
+        "executableDigest": "sha256:11609741282935ddaedb089b836a3740191bf86d4b358ce89732151d168a535f",
+        "rendererDigest": "sha256:3c93afd03ba060f883037af9b0695918f383a2910f6b04db14352f6779c0f614",
+        "rendererKind": "mermaid",
+        "revision": 2,
+        "schemaVersion": "synth.visual-certification-identity.v1",
+        "sourceRevision": "7a099b0c7306-dirty",
+        "templateDigest": "sha256:2ed07f35405bbabb726c2c2ddd5b6093a25b68cf4e9490387e5c19b56e8de91c",
+        "templateId": "diagram.mermaid.v1",
+        "visualId": "accept-source-pin-2f931a49-d390-4b1e-b7c6-93f7b583e72c"
+      },
+      "instruction": "Inspect the attached PNG image before submitting visual_review. If any collision, truncation, crossing, weak hierarchy, or excessive density is visible, update and capture again.",
+      "observations": null,
+      "renderer_kind": "mermaid",
+      "requested_viewport": {
+        "height": 900,
+        "width": 1280
+      },
+      "revision": 2,
+      "screenshot_path": "/tmp/workshop-visuals-native-Pjo0DW/visual-review-captures/accept-source-pin-2f931a49-d390-4b1e-b7c6-93f7b583e72c/r2/1280x900/sha256-f49cf5c2b298ec5083180c0339e1b24faae580fff8b10c2bc4ac4afc5d6eaad2-identity-7f703e912e87e50550749c2da4793cac129854f152ab1f89ff6cf41ee89bdbf4-receipt-4af18f87129de3a140669f02f23b39e05be0f70710a74afd85c643d54b2a64fc.png",
+      "screenshot_sha256": "sha256:f49cf5c2b298ec5083180c0339e1b24faae580fff8b10c2bc4ac4afc5d6eaad2",
+      "viewport": {
+        "height": 900,
+        "width": 1280
+      },
+      "visual_id": "accept-source-pin-2f931a49-d390-4b1e-b7c6-93f7b583e72c"
+    },
+    "compact": {
+      "capture_mode": "host-webview-snapshot",
+      "capture_time": "2026-09-09T02:19:24.798803+00:00",
+      "certification_identity": {
+        "bindingsDigest": "e4e737c7ae0521fda0384164ee5fe83c6ab0aee09fe8d8264dcd3df9e4d6262e",
+        "buildRevision": "7a099b0c7306-dirty",
+        "contentDigest": "53ca55f89b12ac15314fb8d9bc8257e0fb33e290bf94fe043b80caf858c3dca0",
+        "executableDigest": "sha256:11609741282935ddaedb089b836a3740191bf86d4b358ce89732151d168a535f",
+        "rendererDigest": "sha256:3c93afd03ba060f883037af9b0695918f383a2910f6b04db14352f6779c0f614",
+        "rendererKind": "mermaid",
+        "revision": 2,
+        "schemaVersion": "synth.visual-certification-identity.v1",
+        "sourceRevision": "7a099b0c7306-dirty",
+        "templateDigest": "sha256:2ed07f35405bbabb726c2c2ddd5b6093a25b68cf4e9490387e5c19b56e8de91c",
+        "templateId": "diagram.mermaid.v1",
+        "visualId": "accept-source-pin-2f931a49-d390-4b1e-b7c6-93f7b583e72c"
+      },
+      "instruction": "Inspect the attached PNG image before submitting visual_review. If any collision, truncation, crossing, weak hierarchy, or excessive density is visible, update and capture again.",
+      "observations": null,
+      "renderer_kind": "mermaid",
+      "requested_viewport": {
+        "height": 1024,
+        "width": 768
+      },
+      "revision": 2,
+      "screenshot_path": "/tmp/workshop-visuals-native-Pjo0DW/visual-review-captures/accept-source-pin-2f931a49-d390-4b1e-b7c6-93f7b583e72c/r2/768x1020/sha256-8bb61207dbef8cca3b376b419aa592c03baae7da447ac4cb6b6a49516531167b-identity-7f703e912e87e50550749c2da4793cac129854f152ab1f89ff6cf41ee89bdbf4-receipt-29aacde37e226bbd98080aacc0100126d03b946ec78ab2ce624ea0314140d2f4.png",
+      "screenshot_sha256": "sha256:8bb61207dbef8cca3b376b419aa592c03baae7da447ac4cb6b6a49516531167b",
+      "viewport": {
+        "height": 1020,
+        "width": 768
+      },
+      "visual_id": "accept-source-pin-2f931a49-d390-4b1e-b7c6-93f7b583e72c"
+    },
+    "inspectedAndRecordedReviews": 2,
+    "readiness": "refused",
+    "reason": "visual readiness requires a clean committed renderer build; current revision is 7a099b0c7306-dirty",
+    "sealClaim": false
+  },
+  "tests": {
+    "javascript": {
+      "passed": 456,
+      "skipped": 1
+    },
+    "nativeVisualFilter": {
+      "passed": 187,
+      "ignored": 4
+    },
+    "coreAndAppTypechecks": "passed",
+    "standaloneBrowser": "passed"
+  }
+}

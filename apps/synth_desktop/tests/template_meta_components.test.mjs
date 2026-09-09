@@ -46,7 +46,7 @@ test("PLUGIN_NAV does not treat Laguna as a plugin row", () => {
   assert.match(nav, /pluginId: "computer-use"/);
   assert.doesNotMatch(nav, /id:\s*"laguna"/);
   assert.doesNotMatch(nav, /pluginId:\s*"laguna"/);
-  const pluginsMcp = read("apps/synth_desktop/src-tauri/src/bin/synth_plugins_mcp.rs");
-  assert.match(pluginsMcp, /"enum":\["optimizers"\]/);
+  const pluginsMcp = read("apps/synth_desktop/src-tauri/src/adapters/mcp/operations/plugins.rs");
+  assert.match(pluginsMcp, /"enum":\["optimizers","jesterky"\]/);
   assert.doesNotMatch(pluginsMcp, /"enum":\["optimizers","laguna"\]/);
 });

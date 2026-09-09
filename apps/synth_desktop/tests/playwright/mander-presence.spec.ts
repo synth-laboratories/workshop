@@ -77,24 +77,26 @@ test.describe("optional chat mascot", () => {
 		await expect(page.getByTestId("mander-presence-summary")).toHaveText("Reward curve flattened");
 	});
 
-	test("composer toolbar toggle shows the mascot on landing", async ({ page }) => {
+	test("Settings toggle shows the mascot on landing", async ({ page }) => {
 		await expect(page.getByTestId("landing-page")).toBeVisible();
-		await expect(page.getByTestId("composer-mascot")).toHaveAttribute("aria-pressed", "false");
 		await expect(page.getByTestId("mander-presence")).toHaveCount(0);
-		await page.getByTestId("composer-mascot").click();
-		await expect(page.getByTestId("composer-mascot")).toHaveAttribute("aria-pressed", "true");
+		await openSettings(page);
+		await page.getByTestId("show-mascot-on").click();
+		await page.getByRole("button", {name: "← Back", exact: true}).click();
+		await page.getByTestId("new-conversation").click();
 		await expect(page.getByTestId("mander-presence")).toBeVisible();
 		await expect(page.getByTestId("mander")).toHaveAttribute("data-mander-state", "idle");
 		const composerBox = await page.getByTestId("composer").boundingBox();
 		const mascotBox = await page.getByTestId("mander-presence").boundingBox();
 		expect(composerBox && mascotBox).toBeTruthy();
-		expect(mascotBox!.x).toBeGreaterThan(composerBox!.x + composerBox!.width - 12);
-		expect(mascotBox!.y).toBeLessThan(composerBox!.y + composerBox!.height / 3);
+		expect(mascotBox!.x).toBeGreaterThanOrEqual(composerBox!.x);
+		expect(mascotBox!.x + mascotBox!.width).toBeLessThanOrEqual(composerBox!.x + composerBox!.width);
+		expect(mascotBox!.y + mascotBox!.height).toBeLessThanOrEqual(composerBox!.y);
 		const stored = await page.evaluate(() => window.localStorage.getItem("synth.preferences.v1"));
 		expect(JSON.parse(stored!).appearance.showMascot).toBe(true);
 	});
 
-	test("composer toolbar toggle shows the mascot in the active chat", async ({ page }) => {
+	test("Settings toggle shows the mascot in the active chat", async ({ page }) => {
 		await page.addInitScript(() => {
 			(window as typeof window & { synthCodex?: unknown }).synthCodex = {
 				defaultWorkspace: async () => "/workspaces/default",
@@ -122,10 +124,11 @@ test.describe("optional chat mascot", () => {
 		});
 		await page.reload();
 		await page.getByTestId("local-chat-mascot-toggle").click();
-		await expect(page.getByTestId("composer-mascot")).toHaveAttribute("aria-pressed", "false");
 		await expect(page.getByTestId("mander-presence")).toHaveCount(0);
-		await page.getByTestId("composer-mascot").click();
-		await expect(page.getByTestId("composer-mascot")).toHaveAttribute("aria-pressed", "true");
+		await openSettings(page);
+		await page.getByTestId("show-mascot-on").click();
+		await page.getByRole("button", {name: "← Back", exact: true}).click();
+		await page.getByTestId("local-chat-mascot-toggle").click();
 		await expect(page.getByTestId("mander-presence")).toBeVisible();
 		await expect(page.getByTestId("mander-presence-summary")).toHaveText("Reading reward traces");
 		const stored = await page.evaluate(() => window.localStorage.getItem("synth.preferences.v1"));

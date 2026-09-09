@@ -42,7 +42,7 @@ test("[v0.2] Craftax live visual replays fixture evidence and keeps missing usag
 	await expect(viewer).toContainText("not emitted", { timeout: 15_000 });
 	await expect(viewer).not.toContainText("$0.00");
 	await expect(viewer).not.toContainText("stream.subscribed");
-	const paneBody = pane.locator(".visual-pane-body");
+	const paneBody = pane;
 	await paneBody.evaluate((element) => {
 		Object.assign((element as HTMLElement).style, {
 			alignSelf: "flex-end",
@@ -127,9 +127,10 @@ test("[v0.2] two live visuals do not import each other's evidence", async ({ pag
 	const pane = await openVisual(page, "vis_v02_iso_a");
 	await expect(pane.getByTestId("visual-live-craftax")).toContainText("ALPHA-ONLY observation", { timeout: 20_000 });
 	await expect(pane.getByTestId("visual-live-craftax")).not.toContainText("BRAVO-ONLY observation");
-	await page.getByTestId("visuals-card-vis_v02_iso_b").getByRole("button", { name: "Open" }).click();
-	await expect(page.getByTestId("visual-pane").getByTestId("visual-live-craftax")).toContainText("BRAVO-ONLY observation", { timeout: 20_000 });
-	await expect(page.getByTestId("visual-pane").getByTestId("visual-live-craftax")).not.toContainText("ALPHA-ONLY observation");
+	await page.getByRole("button", {name: "Show library", exact: true}).click();
+	await page.getByTestId("visuals-card-vis_v02_iso_b").click();
+	await expect(pane.getByTestId("visual-live-craftax")).toContainText("BRAVO-ONLY observation", { timeout: 20_000 });
+	await expect(pane.getByTestId("visual-live-craftax")).not.toContainText("ALPHA-ONLY observation");
 });
 
 test("[v0.2] live.eval_stream.v1 shortcut pane mounts advertised compose landmarks", async ({ page }) => {

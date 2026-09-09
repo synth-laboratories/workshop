@@ -168,12 +168,13 @@ test("the window has generous drag surfaces without swallowing titlebar controls
 	const regions = await page.evaluate(() => ({
 		titlebar: getComputedStyle(document.querySelector<HTMLElement>('[data-testid="titlebar"]')!).getPropertyValue("-webkit-app-region"),
 		tab: getComputedStyle(document.querySelector<HTMLElement>('.titlebar [role="group"]')!).getPropertyValue("-webkit-app-region"),
-		close: getComputedStyle(document.querySelector<HTMLElement>('.tab-close')!).getPropertyValue("-webkit-app-region"),
+
 		terminal: getComputedStyle(document.querySelector<HTMLElement>('[aria-label="Show terminal"]')!).getPropertyValue("-webkit-app-region")
 	}));
 	expect(regions.titlebar).toBe("drag");
 	expect(regions.tab).toBe("drag");
-	expect(regions.close).toBe("no-drag");
+	// The permanent landing tab has no close control.
+	await expect(page.getByRole("button", { name: "Close tab", exact: true })).toHaveCount(0);
 	expect(regions.terminal).toBe("no-drag");
 
 	const visibleSidebarInset = await page.evaluate(() => {
@@ -205,7 +206,7 @@ test("terminal panel is discoverable and toggles without changing the active sur
 		const terminal = document.querySelector<HTMLElement>("[data-testid=terminal-panel]")!.getBoundingClientRect();
 		const composer = document.querySelector<HTMLElement>("[data-testid=composer]")!.getBoundingClientRect();
 		return {
-			terminalFlushWithBottom: Math.abs(terminal.bottom - main.bottom) <= 1,
+			terminalFlushWithBottom: Math.abs(terminal.bottom - (main.bottom - 8)) <= 1,
 			composerClearsTerminal: composer.bottom <= terminal.top - 16
 		};
 	});
@@ -250,7 +251,7 @@ test("model picker stays visible and clickable above the terminal at supported s
 		});
 		await page.getByTestId("composer-model").click();
 		await expect(page.getByTestId("composer-model-menu")).toBeHidden();
-		await page.getByTestId("terminal-panel").getByRole("button", { name: "Hide terminal" }).click();
+		await page.getByTestId("titlebar").getByRole("button", { name: "Hide terminal" }).click();
 	}
 });
 
