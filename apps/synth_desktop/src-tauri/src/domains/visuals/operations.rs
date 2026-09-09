@@ -181,6 +181,10 @@ pub struct PresentResult {
     pub revision: i64,
     /// Presentation was requested; use visual_observe to inspect renderer evidence.
     pub requested: bool,
+    /// The window's own fullscreen state once the transition settled, not the
+    /// state that was asked for. Compare it with `app_capture`'s
+    /// `windowFullscreen`; they are read the same way.
+    pub fullscreen: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]

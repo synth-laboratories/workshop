@@ -18,6 +18,58 @@ struct Registration {
     handler: Handler,
 }
 
+/// One observation of the main window during a fullscreen transition.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct WindowSample {
+    pub fullscreen: bool,
+    /// Physical inner size.
+    pub size: (u32, u32),
+    /// Physical size of the monitor the window is on, when that is known.
+    pub monitor: Option<(u32, u32)>,
+}
+
+/// Whether a transition toward `target` has actually settled.
+///
+/// macOS animates the transition and sets the style-mask bit when the animation
+/// *starts*, so `is_fullscreen()` on its own reports intent, not arrival. Worse,
+/// an operation that arrives mid-animation can make AppKit abandon the
+/// transition, leaving the window at its old size with the bit cleared again —
+/// which is how a present call acknowledged success and a capture taken
+/// afterwards found a 1280x900 window reporting `windowFullscreen=false`.
+///
+/// Requiring the geometry to agree with the flag, and to have stopped moving,
+/// is what separates a settled window from one still in flight.
+pub(crate) fn fullscreen_settled(
+    target: bool,
+    sample: WindowSample,
+    previous: Option<WindowSample>,
+) -> bool {
+    // The flag must say what we asked for, and the window must have held still
+    // for a whole interval: mid-animation every sample differs from the last.
+    if sample.fullscreen != target || previous != Some(sample) {
+        return false;
+    }
+    match sample.monitor {
+        // Entering: the window has to actually cover its monitor.
+        Some(monitor) if target => sample.size.0 >= monitor.0 && sample.size.1 >= monitor.1,
+        // Leaving: it has to have stopped covering it.
+        Some(monitor) => sample.size.0 < monitor.0 || sample.size.1 < monitor.1,
+        // Nothing to compare against; the flag plus stability is all there is.
+        None => true,
+    }
+}
+
+fn sample_window(window: &tauri::WebviewWindow) -> anyhow::Result<WindowSample> {
+    let size = window.inner_size()?;
+    Ok(WindowSample {
+        fullscreen: window.is_fullscreen()?,
+        size: (size.width, size.height),
+        monitor: window
+            .current_monitor()?
+            .map(|monitor| (monitor.size().width, monitor.size().height)),
+    })
+}
+
 fn register<O: PublicOperation>(handler: Handler) -> Registration {
     Registration {
         name: O::MCP_NAME,
@@ -126,12 +178,18 @@ fn registrations() -> Vec<Registration> {
                     anyhow::anyhow!("presentation_unavailable: Workshop has no main window")
                 })?;
                 window.set_fullscreen(request.fullscreen)?;
-                tokio::time::timeout(std::time::Duration::from_secs(8), async {
+                // Poll until the window has arrived, not until it has agreed to
+                // leave. Sampling twice as fast as the settle check needs means
+                // a stable pair is two consecutive readings of a still window.
+                let settled = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+                    let mut previous = None;
                     loop {
-                        if window.is_fullscreen()? == request.fullscreen {
-                            return Ok::<_, anyhow::Error>(());
+                        let sample = sample_window(&window)?;
+                        if fullscreen_settled(request.fullscreen, sample, previous) {
+                            return Ok::<_, anyhow::Error>(sample);
                         }
-                        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                        previous = Some(sample);
+                        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
                     }
                 })
                 .await
@@ -149,6 +207,9 @@ fn registrations() -> Vec<Registration> {
                     visual_id: visual.id,
                     revision: visual.current_revision,
                     requested: true,
+                    // Observed after the transition settled, so a caller does
+                    // not have to take the acknowledgement's word for it.
+                    fullscreen: settled.fullscreen,
                 })?)
             })
         }),
@@ -324,6 +385,61 @@ pub async fn dispatch(
 
 #[cfg(test)]
 mod tests {
+    use super::{fullscreen_settled, WindowSample};
+
+    const MONITOR: (u32, u32) = (3456, 2234);
+
+    fn sample(fullscreen: bool, size: (u32, u32)) -> WindowSample {
+        WindowSample { fullscreen, size, monitor: Some(MONITOR) }
+    }
+
+    #[test]
+    fn the_style_mask_flipping_is_not_arrival() {
+        // What the old wait accepted: macOS sets the bit when the animation
+        // starts, while the window is still its old size. Acknowledging here is
+        // what let a later capture find a window that was never fullscreen.
+        let starting = sample(true, (1728, 1084));
+        assert!(!fullscreen_settled(true, starting, Some(starting)));
+    }
+
+    #[test]
+    fn a_window_still_growing_has_not_settled() {
+        let first = sample(true, (2400, 1600));
+        let second = sample(true, (3000, 1900));
+        assert!(!fullscreen_settled(true, second, Some(first)));
+    }
+
+    #[test]
+    fn covering_the_monitor_and_holding_still_is_settled() {
+        let arrived = sample(true, MONITOR);
+        // One reading is never enough; the pair is what proves it stopped.
+        assert!(!fullscreen_settled(true, arrived, None));
+        assert!(fullscreen_settled(true, arrived, Some(arrived)));
+    }
+
+    #[test]
+    fn leaving_fullscreen_settles_only_once_the_window_shrinks() {
+        let still_covering = sample(false, MONITOR);
+        assert!(!fullscreen_settled(false, still_covering, Some(still_covering)));
+        let shrunk = sample(false, (1728, 1084));
+        assert!(fullscreen_settled(false, shrunk, Some(shrunk)));
+    }
+
+    #[test]
+    fn an_abandoned_transition_is_never_reported_as_settled() {
+        // The observed failure: AppKit gives up, the bit clears and the window
+        // sits at a size an earlier capture left behind.
+        let reverted = sample(false, (1280, 900));
+        assert!(!fullscreen_settled(true, reverted, Some(reverted)));
+    }
+
+    #[test]
+    fn without_a_monitor_the_flag_and_stability_are_all_there_is() {
+        let unknown = WindowSample { fullscreen: true, size: (1280, 900), monitor: None };
+        assert!(fullscreen_settled(true, unknown, Some(unknown)));
+        assert!(!fullscreen_settled(false, unknown, Some(unknown)));
+    }
+
     #[test]
     fn every_discovered_operation_has_a_unique_executable_registration() {
         let entries = super::registrations();
