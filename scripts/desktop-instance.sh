@@ -1515,21 +1515,19 @@ dev_instance() {
   # claims the current source.
   export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
 
-  local adapters_ready=1 adapter
+  local adapter
   local adapter_bin_args=()
   for adapter in "${SYNTH_MCP_ADAPTERS[@]}"; do
-    [[ -x "$TARGET_ROOT/debug/$adapter" ]] || adapters_ready=0
     adapter_bin_args+=(--bin "$adapter")
   done
-  if [[ "$adapters_ready" == "0" || "${SYNTH_DESKTOP_REBUILD_ADAPTERS:-0}" == "1" ]]; then
-    echo "[desktop:$NAME] building embedded-agent MCP adapters"
-    cargo build \
-      --manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
-      --features eval-driver \
-      "${adapter_bin_args[@]}"
-  else
-    echo "[desktop:$NAME] reusing embedded-agent MCP adapters (set SYNTH_DESKTOP_REBUILD_ADAPTERS=1 to refresh)"
-  fi
+  # Existing binaries do not establish source freshness. Let Cargo validate
+  # every adapter against this checkout and provenance environment on each
+  # build; unchanged targets are reused by Cargo itself.
+  echo "[desktop:$NAME] verifying/building embedded-agent MCP adapters"
+  cargo build \
+    --manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
+    --features eval-driver \
+    "${adapter_bin_args[@]}"
 
   revalidate_provenance "post-build" "$pre_build_revision"
   if [[ "$COMMAND" == "cua-build" || "$COMMAND" == "cua-live-build" ]]; then

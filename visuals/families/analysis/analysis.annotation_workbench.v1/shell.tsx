@@ -192,6 +192,7 @@ export function Shell(props: ShellProps) {
   };
 
   const title = props.title ?? campaign.title ?? "Annotation workbench";
+  const importedEvidence = campaign.status === "sealed" && coverage.jobs === 0 && Boolean(projection.evidenceHead?.digest);
   const semanticCount = findings.length + milestones.length + (projection.jobs?.length ?? 0);
 
   return (
@@ -200,7 +201,9 @@ export function Shell(props: ShellProps) {
       title={title}
       lede={
         props.lede ??
-        `${coverage.sealed ?? 0}/${coverage.jobs ?? 0} jobs sealed · ${validation.selectorsResolved ?? 0} selectors resolved · ${campaign.status ?? "unknown"}`
+        (importedEvidence
+          ? `Sealed evidence imported · job history unavailable · ${validation.selectorsResolved ?? 0} selectors resolved`
+          : `${coverage.sealed ?? 0}/${coverage.jobs ?? 0} jobs sealed · ${validation.selectorsResolved ?? 0} selectors resolved · ${campaign.status ?? "unknown"}`)
       }
       testId="visual-annotation-workbench"
       observation={{
@@ -212,7 +215,9 @@ export function Shell(props: ShellProps) {
     >
       <MetricStrip
         metrics={[
-          { label: "Sealed", value: `${coverage.sealed ?? 0}/${coverage.jobs ?? 0}` },
+          importedEvidence
+            ? { label: "Evidence", value: "Sealed" }
+            : { label: "Sealed", value: `${coverage.sealed ?? 0}/${coverage.jobs ?? 0}` },
           { label: "Abstained", value: String(coverage.abstained ?? 0) },
           { label: "Rejected", value: String(coverage.rejected ?? 0) },
           { label: "Selectors", value: String(validation.selectorsResolved ?? 0) },

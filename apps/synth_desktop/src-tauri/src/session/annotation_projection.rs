@@ -687,7 +687,19 @@ pub fn campaign_row(
 pub fn refresh_campaign_coverage(conn: &Connection, campaign_id: &str) -> Result<String> {
     let jobs = list_jobs_for_campaign(conn, campaign_id)?;
     let states: Vec<String> = jobs.iter().map(|job| job.state.clone()).collect();
-    let status = campaign_status_from_jobs(&states);
+    // An imported sealed head has evidence, but no local job history. Do not
+    // turn that absence into a newly submitted campaign or invent job rows.
+    let imported_head: bool = conn.query_row(
+        "SELECT COALESCE(json_extract(metadata_json, '$.source') = 'sealed_container_evidence_head', 0)
+         FROM annotation_campaigns WHERE campaign_id=?1",
+        [campaign_id],
+        |row| row.get(0),
+    ).optional()?.unwrap_or(false);
+    let status = if jobs.is_empty() && imported_head {
+        "sealed"
+    } else {
+        campaign_status_from_jobs(&states)
+    };
     let rejected: i64 = jobs.iter().filter_map(|job| job.rejected_count).sum();
     let applied: i64 = jobs.iter().filter_map(|job| job.applied_count).sum();
     let abstained_findings: i64 = jobs.iter().filter_map(|job| job.abstained_count).sum();
@@ -1494,6 +1506,17 @@ mod tests {
             campaign_status_from_jobs(&["failed".into(), "failed".into()]),
             "failed"
         );
+    }
+
+    #[test]
+    fn imported_head_stays_sealed_without_fabricating_jobs() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        apply_migrations(&conn).unwrap();
+        ensure_import_campaign(&conn, "import", "ctr", "trace", None).unwrap();
+        assert_eq!(refresh_campaign_coverage(&conn, "import").unwrap(), "sealed");
+        assert!(list_jobs_for_campaign(&conn, "import").unwrap().is_empty());
+        ensure_campaign_stub(&conn, "pending", "ctr").unwrap();
+        assert_eq!(refresh_campaign_coverage(&conn, "pending").unwrap(), "submitted");
     }
 
     #[test]
