@@ -398,6 +398,138 @@ which reads `payload.artifacts` — cannot fire. Sealed frames are reachable by
 digest but not yet *linked* to their step. That linkage belongs to
 synth-containers and was deliberately not patched from this repo.
 
+## September 9 (third pass): release target, certification, and the rest
+
+### 1 and 5 are done: there is a clean release branch, and it certifies
+
+The integration decision turned out to be narrow once the tree was read
+properly. `visuals/{catalog,chrome,components,families,fixtures,registry,
+runtime,templates-internal}` are symlinks into `packages/workshop-visuals`, so
+git's 250 deletions plus one untracked package directory are the *move*, not
+loss. Of 407 dirty entries, 351 sit under visuals-lane prefixes and 56 do not —
+and reading those 56 individually, all but five belong to this lane too
+(`visuals_ipc.rs`, `storage/migrations.rs` for migrations 73-76, `specta.rs`,
+the MCP visuals adapter, the package manifests, the visuals tests).
+
+The five excluded are the Codex session lane the original handoff names as
+unrelated: `session/codex/{event_pump,manager,proto,tests}.rs` and
+`tests/fixtures/fake_codex_app_server.py`, plus two untracked session tests.
+**The compiler confirmed the boundary**: HEAD plus everything else builds
+clean, so the visuals lane does not depend on that lane's uncommitted work.
+
+Branch `codex/v0.10.0-visuals-release` on top of `7a099b0c`, three commits,
+working tree clean:
+
+* `a9de8817` the visuals engine extraction and its five fixed defects
+* `9c5358ee` the container-eval harness credential and mock routes
+* `f8cbecbf` the production-source guards
+
+On that identity: renderer build passes, native builds, the binary stamps
+`f8cbecbf1849` with **no `-dirty`**, and `./scripts/desktop-instance.sh print`
+resolves the same clean revision — the launcher's own `cua-build` gate
+("dirty source tree; cua-build requires a clean checkout") is satisfied.
+
+**Certification passed.** Against an instance running that binary:
+`capture_review` at 1440x900 and 760x760, both PNGs opened and judged at full
+size, both reviews recorded with the template's full required check set
+(`rendered`, `noOverflow`, `primarySurfaceVisible`, `screenshotInspected`, and
+for a diagram `noTextCollisions` and `focalDensity`), then `mark_ready` —
+which ran `validate_certification_build_identity` and **accepted**. That is the
+blocker the earlier handoff recorded as explicit; it is now closed. Receipt:
+`acceptance/certification.json` in the instance root.
+
+Still not run, and named as such: the `visual_seal` export, and a smoke test of
+a release-profile packaged app. `mark_ready` is the gate that was blocked; the
+seal is a further export step.
+
+One trap worth writing down: a clean release checkout needs its **own installed
+`node_modules`**. Symlinking another worktree's makes esbuild resolve React
+twice, and two managed-frame browser tests fail in a way that looks like a
+missing changeset rather than a duplicated dependency.
+
+### The 27 optimizer failures were committed, not other lanes' dirt
+
+My earlier characterisation was wrong in a way worth correcting: a completely
+clean checkout of `7a099b0c` fails 27-29 `optimizers::` tests. They are on the
+branch, not in anyone's working tree. Three causes, two fixed:
+
+* **The container-eval harness never supplied a credential.** Every recipe those
+  tests exercise declares a real provider, so the run asks the secrets proxy for
+  a scoped workload credential before its first model call; only the healthbench
+  harness installed one. Every other test failed at that gate with its trials
+  cancelled and no records — which reads as a broken relay, not a missing
+  credential. Fixed in the shared `service()` builder.
+* **The craftax mock had fallen behind the protocol it stands in for.** It never
+  learned `POST /policy-configs` (404, read as a relay fault) and never declared
+  the SSE transport that binding a live visual requires (the host refuses to
+  guess one). Both routes added, mirroring the eval mock.
+* **Four remain**, and they are product-intent assertions the optimizers lane
+  owns, not harness gaps: proxy capability classification
+  (`responses.create` vs `chat.completions.create`), a telemetry token count
+  (116385 vs 100471), a projection field (`Null` vs `0`), and cancellation
+  settlement (`failed` vs `cancelled`). Editing those assertions to green would
+  be weakening a guard, so they are handed over as they are.
+
+Separately, the three `production_source_*` guards had stopped guarding: each
+took everything before the *first* `#[cfg(test)]`, which silently stopped
+covering production the moment a second test module was added above the
+functions being scanned. Two had already turned into failures; the third passes
+only because its file still has one test module. All three now strip every
+`#[cfg(test)]` item through one shared helper.
+
+**27-29 → 4 on a clean checkout.** Measure against 4, not against zero.
+
+### Consumer audit: clean, with one finding
+
+Every surface that mounts a visual does it through `VisualHost` — the visuals
+library, the visual pane, the annotation workspace, the route host. Nothing
+outside `VisualHost` touches `__synthVisualCapture` or holds a session client,
+and no consumer runs its own playback loop; the `setInterval`s in the renderer
+are unrelated clocks and pollers. `ChartVisual`, `MermaidVisual`,
+`SystemsMapVisual` and `SystemsDynamicVisual` are pure renderers used only by
+the host and own no session, playback or capture state.
+
+The one finding: `ReportsPage.tsx` imports a family shell directly
+(`@synth/visual-templates/analysis/trace.rollout_inspector.v1/shell`) and
+renders it outside the host. It works because a shell falls back to ordinary
+local React state when unhosted, and a report is read-only — but that pane gets
+no session, no retained reads, no capture barrier and no observation. Whether
+reports should route through the host is a product decision with its own
+acceptance; it is recorded here rather than changed.
+
+### Item 3's remaining leg
+
+* **Capture below the initial viewport — done.** `capture.pixels` is taken at
+  the mounted pane's own fixed surface, so it cannot reach further down; the
+  review window is the adjustable surface. `native_visual_capture_viewport.mjs`
+  proves a taller review viewport photographs more of the same committed state
+  (1040 → 2006 device pixels), and the region the short viewport could never
+  show was inspected: it holds the Previous/Next controls, the trace timeline,
+  two transcript cards and the footer.
+* **In-flight cancellation — done.** `native_visual_managed_media.mjs` now
+  issues two selections in flight and asserts the later one wins, then holds
+  still and asserts no superseded read lands late to overwrite it.
+* **Recording-speed UI and detached/offscreen panes remain open.** Both are
+  human-ergonomics checks on surfaces this harness drives only through committed
+  state; native MCP cadence and stepping already pass.
+
+### The containers linkage gap has a patch, on its own branch
+
+`EventV5.artifact_ids` exists and validation already refuses an id no artifact
+matches, but nothing ever populated it for an application-event capture, so
+every consumer projection reported no artifacts per event and Workshop's
+sealed-media branch could never fire. Implemented on
+`feat/link-events-to-their-artifacts` in a clean worktree of
+`containers@a5743ef`: the collector accepts `artifact_ids`, the detached
+capture service accepts it on the wire and refuses anything that is not a list
+of strings, and the finalizer copies it onto the sealed event. Two new tests
+plus 247 existing tracing tests pass.
+
+**Not adopted here, deliberately.** Workshop pins synth-containers by exact
+version (`0.4.2.dev20260903`), so taking this needs a version bump and a
+re-register, which cascades into every other lane using that pin. It is a
+handover to the containers lane, not a change this release can make on its own.
+
 ## Remaining work: execute in this order
 
 ### 1. Establish the actual release integration target

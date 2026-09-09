@@ -259,7 +259,37 @@ other lanes' in-flight work in this mixed worktree. This matters for remaining
 step 1: a clean release checkout must not carry them, and they must not be
 mistaken for visuals regressions.
 
-**Containers-side gap, recorded not worked around.** The detached capture
+### September 9 (third pass) — release branch, certification, and the audit
+
+- **Release target exists and is clean.** `codex/v0.10.0-visuals-release` on
+  `7a099b0c`, three commits, empty working tree. The integration decision was
+  narrow: of 407 dirty entries, all but the five Codex session files belong to
+  this lane, and the compiler confirmed it — HEAD plus everything else builds
+  without them. The binary stamps `f8cbecbf1849` with no `-dirty`, and
+  `desktop-instance.sh print` resolves the same clean revision.
+- **Certification passed.** `capture_review` at 1440x900 and 760x760, both
+  images opened and judged, both reviews recorded with the full required check
+  set, then `mark_ready` — which ran `validate_certification_build_identity`
+  and accepted. The dirty-build refusal recorded earlier as an explicit release
+  blocker is closed. `visual_seal` export and a release-profile packaged smoke
+  are still not run.
+- **The 27 optimizer failures were committed, not working-tree dirt.** A clean
+  checkout of `7a099b0c` fails 27-29 of them. Two causes fixed (a harness that
+  never supplied the credential its recipes declare, and a craftax mock two
+  routes behind the protocol); three source-scan guards repaired; four remain
+  and are product-intent assertions the optimizers lane owns. 27-29 → 4.
+- **Consumer audit is clean but for one row.** Every surface that mounts a
+  visual goes through `VisualHost`; nothing else holds a session client, drives
+  capture, or runs a playback loop. `ReportsPage` imports a family shell
+  directly and renders it unhosted — it works because a shell degrades to local
+  React state and a report is read-only, but that pane has no retained reads,
+  no capture barrier and no observation.
+- **Capture below the fold and in-flight cancellation are closed**, by
+  `native_visual_capture_viewport.mjs` and an added leg in
+  `native_visual_managed_media.mjs`. Recording-speed ergonomics and
+  detached/offscreen panes remain open.
+
+**Containers-side gap, now a patch on its own branch.** The detached capture
 finalizer never populates `EventV5.artifact_ids`, so the rollout-inspector
 projection's per-event `artifacts` list is always empty and
 `craftaxTraceView`'s sealed-media branch — which reads `payload.artifacts` —
