@@ -45,10 +45,12 @@
 import { mediaRefFrom, type MediaRef } from "./mediaClient.ts";
 import {
   closedTracePolicyCallClosure,
+  normalizePolicyCallCoverage,
   parentTerminalEventKind,
   parentTerminalPolicyCallClosure,
   producerPolicyCallClosure,
   type PolicyCallClosure,
+  type PolicyCallCoverage,
   type PolicyCallOutcome
 } from "./policyCallOutcome.ts";
 
@@ -117,8 +119,20 @@ export type TraceStep = {
   /** One-based, stable across appends. */
   index: number;
   title: string;
-  /** `running` is live only; every closed call uses the shared outcome enum. */
-  status: "running" | PolicyCallOutcome;
+  /**
+   * Whether a policy call was actually recorded here.
+   *
+   * A producer that emits no `span.policy.opened` still produces actions,
+   * observations and frames, and those are folded into segments so nothing is
+   * dropped. A segment is not a call: it has no outcome to abort, and calling
+   * it one would invent a boundary the producer never recorded.
+   */
+  kind: "policy_call" | "uncaptured_segment";
+  /**
+   * `running` is live only; every closed call uses the shared outcome enum.
+   * `not_captured` belongs to segments, which never carry a call outcome.
+   */
+  status: "running" | "not_captured" | PolicyCallOutcome;
   closure: PolicyCallClosure | null;
   turn_start: number | null;
   turn_end: number | null;
@@ -166,6 +180,15 @@ export type TraceCoverage = {
   uniqueCasBlobs: number;
   /** Bounds the relay hit, verbatim. Never summarized away. */
   degradations: Array<{ reason: string; detail: string; dropped: number }>;
+  /**
+   * The producer's own declaration about model-call capture. Authoritative:
+   * the viewer reports it rather than inferring capture from what it can see.
+   */
+  modelCalls: PolicyCallCoverage;
+  /** The producer's reasons for that coverage, verbatim. */
+  modelCallReasons: string[];
+  /** The producer's declaration about raw provider payload retention. */
+  rawProvider: PolicyCallCoverage;
 };
 
 export type EvalTraceView = {
@@ -224,7 +247,65 @@ export type TraceIdentity = {
   parentTerminal?: boolean;
   /** Relay receipt from the trial record, when there is one. */
   relay?: Any | null;
+  /**
+   * The producer's declared model-call capture, when the source states one.
+   * A live relay declares nothing and stays `unknown`.
+   */
+  policyCallCoverage?: PolicyCallCoverage;
+  policyCallCoverageReasons?: string[];
+  rawProviderCoverage?: PolicyCallCoverage;
 };
+
+/**
+ * Read the Trace V5 capture contract.
+ *
+ * `completeness` is the document-level declaration; the per-session `coverage`
+ * blocks are the same statement per actor. The weakest declaration wins, so a
+ * trace whose agent session lost model calls is never reported as complete
+ * because another session was.
+ */
+export function policyCallCoverageFromSealedTrace(document: Any): {
+  modelCalls: PolicyCallCoverage;
+  reasons: string[];
+  rawProvider: PolicyCallCoverage;
+} {
+  const rank: Record<PolicyCallCoverage, number> = {
+    complete: 3,
+    partial: 2,
+    unavailable: 1,
+    unknown: 0
+  };
+  const blocks: Any[] = [
+    (document?.completeness ?? {}) as Any,
+    ...(Array.isArray(document?.sessions) ? document.sessions : []).map(
+      (session: Any) => (session?.coverage ?? {}) as Any
+    )
+  ];
+  const weakest = (field: string): PolicyCallCoverage => {
+    const declared = blocks
+      .map((block) => block?.[field])
+      .filter((value) => value !== undefined && value !== null)
+      .map(normalizePolicyCallCoverage);
+    if (!declared.length) return "unknown";
+    return declared.reduce((low, value) => (rank[value] < rank[low] ? value : low));
+  };
+  const reasons = new Set<string>();
+  for (const block of blocks) {
+    for (const reason of Array.isArray(block?.reasons) ? block.reasons : []) {
+      if (typeof reason === "string" && reason) reasons.add(reason);
+    }
+  }
+  const usage = (document?.usage ?? {}) as Any;
+  const rawProvider = weakest("raw_provider");
+  return {
+    modelCalls: weakest("model_calls"),
+    reasons: [...reasons],
+    // A trace that retained no usage provenance cannot have complete raw
+    // provider payloads, whatever the coverage block says.
+    rawProvider:
+      usage.provenance === "unavailable" && rawProvider === "complete" ? "partial" : rawProvider
+  };
+}
 
 /**
  * Normalize relayed optimizer events for one trial.
@@ -382,12 +463,17 @@ function proposedFrom(calls: TraceToolCall[], plan: string[] | null): string[] {
   return out;
 }
 
-function emptyStep(index: number, sequence: number): TraceStep {
+function emptyStep(
+  index: number,
+  sequence: number,
+  kind: TraceStep["kind"] = "policy_call"
+): TraceStep {
   return {
-    id: `call-${index}`,
+    id: kind === "policy_call" ? `call-${index}` : `segment-${index}`,
     index,
     title: `Policy call ${index}`,
-    status: "running",
+    kind,
+    status: kind === "policy_call" ? "running" : "not_captured",
     closure: null,
     turn_start: null,
     turn_end: null,
@@ -436,13 +522,30 @@ export function foldCraftaxTrace(
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
 
-  const step = (): TraceStep => {
-    if (current) return current;
-    // An event that belongs to a call arrived before any call opened — an
-    // environment prologue, or a producer that omits policy spans. It gets a
-    // step of its own rather than being dropped.
-    current = emptyStep(steps.length + 1, 0);
-    current.title = steps.length === 0 ? "Environment prologue" : `Segment ${steps.length + 1}`;
+  /**
+   * The step an event belongs to.
+   *
+   * `policy_call` events arriving without a `span.policy.opened` are still a
+   * call — a malformed envelope, which the producer contract flags elsewhere.
+   * Everything else that arrives with no call open is an environment segment:
+   * it holds the events so none are dropped, but it is never presented as a
+   * call, because the producer never recorded one to present.
+   */
+  const step = (kind: TraceStep["kind"] = "uncaptured_segment"): TraceStep => {
+    if (current) {
+      // A malformed policy envelope may open inside a segment. Promote it once;
+      // a later environment event never demotes a real call.
+      if (kind === "policy_call" && current.kind === "uncaptured_segment") {
+        current.kind = "policy_call";
+        current.id = `call-${current.index}`;
+        current.status = "running";
+        current.title = `Policy call ${++calls}`;
+      }
+      return current;
+    }
+    current = emptyStep(steps.length + 1, 0, kind);
+    if (kind === "policy_call") current.title = `Policy call ${++calls}`;
+    else current.title = steps.length === 0 ? "Environment prologue" : `Segment ${steps.length + 1}`;
     steps.push(current);
     return current;
   };
@@ -467,7 +570,7 @@ export function foldCraftaxTrace(
         break;
       }
       case "span.policy.data": {
-        const target = step();
+        const target = step("policy_call");
         target.raw.push(event.sequence);
         const messages = messagesFrom(payload);
         if (messages.length) {
@@ -499,7 +602,7 @@ export function foldCraftaxTrace(
         break;
       }
       case "span.policy.plan": {
-        const target = step();
+        const target = step("policy_call");
         target.raw.push(event.sequence);
         const plan = Array.isArray(payload.actions) ? payload.actions.map(String) : null;
         if (plan?.length) target.action.proposed = plan;
@@ -669,10 +772,23 @@ export function foldCraftaxTrace(
     }
   }
 
+  // Frames that arrived before anything opened are handed to the first policy
+  // call as its "before" picture. A producer that recorded no call never gets
+  // that handover, and the frames would otherwise be retained but belong to no
+  // step, which reads as a missing frame rather than a missing call boundary.
+  if (pendingFrames.length) {
+    const target = steps[0] ?? step();
+    target.frames.unshift(...pendingFrames);
+    pendingFrames = [];
+  }
+
   const relay = (identity.relay ?? {}) as Any;
   const traceClosed = identity.parentTerminal === true || identity.sealed === true || relay.journalClosed === true;
   for (const target of steps) {
-    if (traceClosed && target.status === "running") {
+    // Only a call that actually opened can be closed by its parent going
+    // terminal. An uncaptured segment has no call to abort, and labelling it
+    // aborted would report a producer failure that did not happen.
+    if (traceClosed && target.kind === "policy_call" && target.status === "running") {
       target.closure = identity.parentTerminal === true
         ? parentTerminalPolicyCallClosure("run.view.v2", null)
         : closedTracePolicyCallClosure(identity.sealed === true ? "trace.sealed" : "relay.journal.closed");
@@ -727,7 +843,10 @@ export function foldCraftaxTrace(
       framesDeclared: declaredFrames ?? frames.length,
       framesRetained: retainedFrames ?? retainedMedia.length,
       uniqueCasBlobs,
-      degradations: Array.isArray(relay.degradations) ? relay.degradations : []
+      degradations: Array.isArray(relay.degradations) ? relay.degradations : [],
+      modelCalls: identity.policyCallCoverage ?? "unknown",
+      modelCallReasons: identity.policyCallCoverageReasons ?? [],
+      rawProvider: identity.rawProviderCoverage ?? "unknown"
     },
     events: [...events]
   };
@@ -749,10 +868,14 @@ export function craftaxTraceFromSealedTrace(
   document: Any,
   identity: TraceIdentity
 ): EvalTraceView {
+  const coverage = policyCallCoverageFromSealedTrace(document);
   return foldCraftaxTrace(containerEventsFromSealedTrace(document), {
     ...identity,
     sealed: true,
-    contentDigest: identity.contentDigest ?? text(document?.content_digest)
+    contentDigest: identity.contentDigest ?? text(document?.content_digest),
+    policyCallCoverage: identity.policyCallCoverage ?? coverage.modelCalls,
+    policyCallCoverageReasons: identity.policyCallCoverageReasons ?? coverage.reasons,
+    rawProviderCoverage: identity.rawProviderCoverage ?? coverage.rawProvider
   });
 }
 

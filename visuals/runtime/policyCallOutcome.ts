@@ -27,6 +27,31 @@ export type PolicyCallClosureReason =
   | "parent_terminal_before_policy_close"
   | "trace_closed_before_policy_close";
 
+/**
+ * What the producer said about its own model-call capture, verbatim from the
+ * Trace V5 `completeness`/`coverage` contract.
+ *
+ * A trace that recorded no policy spans is not the same fact as a rollout that
+ * made no model calls, and neither is an aborted call. `unknown` is for a
+ * source that declares nothing — a live relay — and is never upgraded by
+ * counting frames, actions or anything else the viewer can see.
+ */
+export const POLICY_CALL_COVERAGES = ["complete", "partial", "unavailable", "unknown"] as const;
+
+export type PolicyCallCoverage = (typeof POLICY_CALL_COVERAGES)[number];
+
+export function normalizePolicyCallCoverage(value: unknown): PolicyCallCoverage {
+  const candidate = String(value ?? "").toLowerCase();
+  return (POLICY_CALL_COVERAGES as readonly string[]).includes(candidate)
+    ? (candidate as PolicyCallCoverage)
+    : "unknown";
+}
+
+/** Coverage that means the producer did not record call boundaries. */
+export function policyCallsWereCaptured(coverage: PolicyCallCoverage): boolean {
+  return coverage === "complete";
+}
+
 export type PolicyCallClosure = {
   outcome: PolicyCallOutcome;
   reason: PolicyCallClosureReason;

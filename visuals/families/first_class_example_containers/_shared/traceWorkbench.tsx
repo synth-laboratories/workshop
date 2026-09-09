@@ -778,7 +778,13 @@ function TrajectoryRail({
                 </span>
                 <span style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
                   {step.status === "running" ? <Chip label="running" tone="accent" /> : null}
-                  {step.status !== "running" && step.status !== "completed" ? (
+                  {/* A segment has no call outcome. Its own chip says the
+                      producer recorded no boundary; a red failure chip would
+                      report an abort that never happened. */}
+                  {step.status === "not_captured" ? (
+                    <Chip label="no call recorded" tone="warn" />
+                  ) : null}
+                  {step.status !== "running" && step.status !== "not_captured" && step.status !== "completed" ? (
                     <Chip label={step.status.replaceAll("_", " ")} tone="bad" />
                   ) : null}
                   {step.achievements.map((name) => (
@@ -899,9 +905,11 @@ function CallDetail({
           <p style={{ ...body, color: "var(--sv-text-faint)" }}>
             {step.status === "running"
               ? "This call is still open; the model has not answered yet."
-              : step.status === "aborted"
-                ? `This call was aborted: ${step.closure?.reason.replaceAll("_", " ") ?? "closure reason unavailable"} (${step.closure?.source ?? "source unavailable"}).`
-              : "No reasoning or message was recorded for this call."}
+              : step.status === "not_captured"
+                ? `This producer recorded no policy-call boundaries, so the environment events below belong to no single call. Declared model-call coverage: ${view.coverage.modelCalls}. Nothing here is an aborted call.`
+                : step.status === "aborted"
+                  ? `This call was aborted: ${step.closure?.reason.replaceAll("_", " ") ?? "closure reason unavailable"} (${step.closure?.source ?? "source unavailable"}).`
+                  : "No reasoning or message was recorded for this call."}
           </p>
         ) : null}
         {step.tool_calls.map((call, index) => (
@@ -1594,6 +1602,28 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
               ) : null}
             </div>}
             <Hud step={step} />
+            {/* The producer's own capture declaration, stated rather than
+                inferred. A viewer cannot tell "made no model calls" from "did
+                not record them" by looking at events, so it must not try. */}
+            {view.coverage.modelCalls !== "complete" ? (
+              <Disclosure
+                summary={`Model-call capture: ${view.coverage.modelCalls}`}
+                count={view.coverage.modelCallReasons.length}
+              >
+                <div style={{ display: "grid", gap: 3 }}>
+                  <div style={{ fontSize: "var(--sv-fs-micro)", color: "var(--sv-text-muted)" }}>
+                    The producer declared model-call coverage <strong>{view.coverage.modelCalls}</strong> and
+                    raw provider payloads <strong>{view.coverage.rawProvider}</strong>. Calls this trace did not
+                    record are absent, not aborted, and are never reconstructed from frames or actions.
+                  </div>
+                  {view.coverage.modelCallReasons.map((reason, index) => (
+                    <div key={index} style={{ fontSize: "var(--sv-fs-micro)", color: "var(--sv-text-muted)" }}>
+                      {reason}
+                    </div>
+                  ))}
+                </div>
+              </Disclosure>
+            ) : null}
             {view.coverage.degradations.length ? (
               <Disclosure summary="Retention receipts" count={view.coverage.degradations.length}>
                 <div style={{ display: "grid", gap: 3 }}>
