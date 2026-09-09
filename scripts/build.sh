@@ -17,8 +17,8 @@ arch="$(uname -m)"
 dist="$repo_root/dist"
 stage="$(mktemp -d -t workshop-package.XXXXXX)"
 trap 'rm -rf "$stage"' EXIT
-archive="$dist/Synth-Workshop-v${version}-macOS-${arch}-UNNOTARIZED.zip"
-manifest="$dist/Synth-Workshop-v${version}-macOS-${arch}-UNNOTARIZED.json"
+archive="$dist/Synth-Workshop-v${version}-stable-macOS-${arch}-UNNOTARIZED.zip"
+manifest="$dist/Synth-Workshop-v${version}-stable-macOS-${arch}-UNNOTARIZED.json"
 
 mkdir -p "$dist"
 ditto "$app" "$stage/Synth Workshop.app"
@@ -42,12 +42,15 @@ from pathlib import Path
 target, archive, sha256, version, arch = sys.argv[1:]
 root = Path.cwd()
 commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+receipt = json.loads((root / "work/tier-builds/stable/manifest.json").read_text())
 dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], text=True).strip())
+if dirty or receipt.get("treeDirty") or receipt.get("commit") != commit or receipt.get("profile") != "release":
+    raise SystemExit("Refusing publication metadata for a dirty, debug, or source-mismatched package")
 document = {
-    "schema": "workshop.local-distribution.v1",
+    "schema": "workshop.distribution.v1",
     "product": "Synth Workshop",
     "version": version,
-    "channel": "beta",
+    "channel": "stable",
     "platform": "macOS",
     "architecture": arch,
     "bundleIdentifier": "com.synth.desktop",
@@ -68,4 +71,4 @@ echo "App bundle: $app"
 echo "Download ZIP: $archive"
 echo "Checksum: $archive.sha256"
 echo "Manifest: $manifest"
-echo "WARNING: ad-hoc signed and not Apple-notarized; intended for local/friends beta only."
+echo "WARNING: ad-hoc signed and not Apple-notarized. Publication still requires release acceptance."
