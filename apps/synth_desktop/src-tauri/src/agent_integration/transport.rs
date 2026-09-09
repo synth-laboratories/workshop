@@ -142,14 +142,19 @@ impl RuntimeClient {
                 .timeout(Duration::from_secs(if route == "/v1/workshop/describe" {
                     5
                 } else {
-                    120
+                    // Calls may wait for consecutive human paid-compute and
+                    // credential decisions. A two-minute HTTP deadline could
+                    // expire while the native dialog was still actionable.
+                    1800
                 }))
                 .send()
                 .await
-                .map_err(|_| {
-                    anyhow::anyhow!(
-                        "cannot reach the selected Workshop runtime; check that it is running"
-                    )
+                .map_err(|error| {
+                    if error.is_timeout() {
+                        anyhow::anyhow!("Workshop operation timed out; inspect its status before retrying because it may still be pending")
+                    } else {
+                        anyhow::anyhow!("cannot reach the selected Workshop runtime; check that it is running")
+                    }
                 })?;
             let status = response.status();
             let bytes = response

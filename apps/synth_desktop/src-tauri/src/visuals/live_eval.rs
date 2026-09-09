@@ -9,7 +9,13 @@ pub const FORBIDDEN_LIVE_EVAL_SLOTS: &[&str] = &["live", "jobs"];
 pub const LIVE_CRAFTAX_TEMPLATE: &str = "live.craftax.v1";
 pub const LIVE_HARBOR_TEMPLATE: &str = "live.harbor_eval.v1";
 pub const CRAFTAX_TEN_LANE_SEEDS: [i64; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-const SECRET_BINDING_KEYS: &[&str] = &["authorization", "api_token", "worker_token", "bearer"];
+const SECRET_BINDING_KEYS: &[&str] = &[
+    "authorization",
+    "api_key",
+    "api_token",
+    "worker_token",
+    "bearer",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LiveEvalFamily {
@@ -393,7 +399,20 @@ pub fn live_eval_bind_metadata(
         LiveEvalFamily::Harbor => assert_harbor_live_frames(info)?,
         LiveEvalFamily::Craftax => {}
     }
-    let mut bind = serde_json::Map::new();
+    // Preserve the observed producer contract. Cached registration defaults
+    // must not replace its benchmark, policy pins or capture capabilities.
+    let advertised = info
+        .get("liveEval")
+        .or_else(|| info.get("live_eval"))
+        .or_else(|| info.pointer("/metadata/liveEval"))
+        .or_else(|| info.pointer("/metadata/live_eval"));
+    let policy_refs = advertised
+        .and_then(|value| value.get("policyRefs"))
+        .or(policy_refs);
+    let mut bind = advertised
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
     bind.insert("family".into(), json!(family.as_str()));
     bind.insert("templateId".into(), json!(family.template_id()));
     bind.insert("input".into(), json!(LIVE_EVAL_INPUT));
@@ -407,7 +426,8 @@ pub fn live_eval_bind_metadata(
             } else {
                 "unsupported"
             };
-            bind.insert("liveFrames".into(), json!(live_frames));
+            bind.entry("liveFrames")
+                .or_insert_with(|| json!(live_frames));
         }
         LiveEvalFamily::Craftax => {
             if let Some(frames) = info.get("live_frames") {
@@ -618,6 +638,29 @@ mod tests {
         .unwrap();
         assert_eq!(content_reference_bind["liveFrames"], "supported");
         assert!(assert_live_eval_slot(bind["slot"].as_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn registration_preserves_producer_benchmark_and_policy_contract() {
+        let info = json!({"liveEval": {
+            "family": "harbor", "benchmarkFamily": "runebench",
+            "frameTransport": "content-reference", "liveFrames": "supported",
+            "annotationProtocol": "runebench.live-deterministic.v1",
+            "policyRefs": [{"harness": "harbor_fused", "config": "luna_low"}, {"harness": "harbor_fused", "config": "luna_high"}]
+        }});
+        let stale = json!([{"harness": "harbor_fused", "config": "sol_med"}]);
+        let bind = live_eval_bind_metadata(LiveEvalFamily::Harbor, &info, Some(&stale)).unwrap();
+        assert_eq!(bind["benchmarkFamily"], "runebench");
+        assert_eq!(bind["policyRefs"], info["liveEval"]["policyRefs"]);
+        assert_eq!(bind["frameTransport"], "content-reference");
+        assert_eq!(bind["liveFrames"], "supported");
+        assert_eq!(
+            bind["annotationProtocol"],
+            "runebench.live-deterministic.v1"
+        );
+        let mut unsafe_info = info;
+        unsafe_info["liveEval"]["api_key"] = json!("must-not-be-retained");
+        assert!(live_eval_bind_metadata(LiveEvalFamily::Harbor, &unsafe_info, None).is_err());
     }
 
     #[test]
