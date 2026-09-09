@@ -7,6 +7,8 @@ on:
     branches:
       - main
       - dev
+      # Validate the release candidate over SSH before integration promotion.
+      - codex/v010-production-parity
 
 jobs:
   conform:
