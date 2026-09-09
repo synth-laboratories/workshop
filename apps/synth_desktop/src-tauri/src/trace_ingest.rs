@@ -448,7 +448,7 @@ mod tests {
                 .join(synth_containers_version())
                 .join("current/.venv/bin/synth-trace")
         );
-        assert_eq!(synth_containers_version(), "0.4.2.dev20260903");
+        assert_eq!(synth_containers_version(), "0.4.2.dev20260908");
     }
 
     /// The Containers platform seal spells its stream identity as the flat key
