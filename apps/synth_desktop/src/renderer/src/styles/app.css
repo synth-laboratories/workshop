@@ -10862,5 +10862,5 @@ html.compact-workbench .experiment-task-disclosure {
 .optimizers-page > .optimizer-tabs { flex: 0 0 auto; min-height: 34px; }
 .optimizers-page > .plugin-page-header { flex-shrink: 0; }
 .visual-live-mirror { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-.visual-live-mirror > * { min-width: 0; }
+.visual-live-mirror > * { min-width: 0; container-type: inline-size; container-name: visual-pane; }
 @media (max-width: 1000px) { .visual-live-mirror { grid-template-columns: minmax(0, 1fr); } }

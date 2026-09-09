@@ -1,6 +1,34 @@
 import { expect, test } from "./browser.fixture";
 import { installVisuals, liveVisual, openVisual } from "./v02-helpers";
 
+test("mirrored workstations respond to each pane width without crossing the gutter", async ({ page }) => {
+	await page.setViewportSize({ width: 1280, height: 900 });
+	const run = { schemaVersion: "optimizer_run.v1", id: "opt_eval_mirror", algorithmId: "eval", status: "completed", objective: "Mirrored workstation", summary: { task: "dungeongrid", bounds: { maximumRollouts: 1 } }, usage: {} };
+	const events = [{ type: "eval.trial.started", delta: { workItemId: "eval:trial:0", trial_id: "trial:mirror:0", rollout_id: "roll_mirror", seed: 1, pool: "train", scenario: "dungeongrid/coordination" } }];
+	// Frame-centric branding exercises both columns even without retained images.
+	await installVisuals(page, [liveVisual({ id: "vis_mirror_workbench", templateId: "craftax.trace_workbench.v1", title: "Mirrored workstation", bindings: { schemaVersion: "synth.visual-bindings.v1", inputs: [{ input: "optimizer_run", kind: "optimizer_run", data: { run, events } }] } })]);
+	await page.getByTestId("open-visuals").click();
+	await page.getByTestId("visuals-row-vis_mirror_workbench").click();
+	await page.getByRole("button", { name: "Expand", exact: true }).click();
+	await page.getByLabel("More actions for Mirrored workstation", { exact: true }).click();
+	await page.getByRole("menuitem", { name: "Open mirrored pane" }).click();
+	const mirror = page.locator(".visual-live-mirror");
+	await expect(mirror.getByTestId("craftax-trace-workbench")).toHaveCount(2);
+	for (const pane of await mirror.locator(":scope > *").all()) {
+		await expect(pane.locator(".trace-workbench-layout")).toBeVisible();
+		const geometry = await pane.evaluate((root) => {
+			const frame = root.querySelector(".trace-workbench-frame-column")!.getBoundingClientRect();
+			const calls = root.querySelector(".trace-workbench-call-column")!.getBoundingClientRect();
+			const bounds = root.getBoundingClientRect();
+			return { paneWidth: bounds.width, verticalGap: calls.top - frame.bottom, overflow: root.scrollWidth - root.clientWidth, rightOverflow: Math.max(frame.right, calls.right) - bounds.right };
+		});
+		expect(geometry.paneWidth).toBeLessThan(700);
+		expect(geometry.verticalGap).toBeGreaterThanOrEqual(-1);
+		expect(geometry.overflow).toBeLessThanOrEqual(1);
+		expect(geometry.rightOverflow).toBeLessThanOrEqual(1);
+	}
+});
+
 test("persisted trace.workbench.v1 resolves through the bundled registry and VisualHost", async ({ page }) => {
 	const run = {
 		schemaVersion: "optimizer_run.v1",
