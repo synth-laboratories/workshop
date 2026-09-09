@@ -1271,6 +1271,113 @@ fn harbor_terminal_bindings(existing: &Value, overview: &Value) -> Result<Value>
     Ok(json!({ "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION, "inputs": inputs }))
 }
 
+/// What one Harbor live-visual repair did. Every arm is a terminal answer for
+/// the run it was asked about; none of them reruns evaluation or edits evidence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum HarborVisualRepair {
+    /// A new revision now carries the terminal snapshot. The old revision is
+    /// retained by the registry and stays resolvable.
+    Repaired { from_revision: i64, to_revision: i64 },
+    /// The visual already carries the same terminal snapshot. A second repair
+    /// of the same run is this, not another revision.
+    AlreadySettled,
+    /// Nothing here to repair: no Harbor live pane, or a run still in flight
+    /// that will settle through the ordinary path.
+    NotApplicable,
+    /// The overview holds no terminal experiment snapshot to project. The
+    /// producer is the only source of one, so this fails without writing.
+    ProducerUnavailable,
+}
+
+/// The terminal experiment snapshot a Harbor live pane should carry offline.
+fn harbor_terminal_snapshot(bindings: &Value) -> Option<Value> {
+    crate::visuals::binding_descriptors(bindings)
+        .ok()?
+        .into_iter()
+        .find(|row| {
+            row.get("input").and_then(Value::as_str) == Some("experiment")
+                && row.pointer("/data/schemaVersion").and_then(Value::as_str) == Some(EXPERIMENT_SCHEMA)
+                && row.pointer("/data/aggregate/lifecycle").and_then(Value::as_str) == Some("terminal")
+        })
+}
+
+/// Repair one historical Harbor live visual that settled before terminal
+/// snapshots were retained.
+///
+/// Bounded to a single already-terminal run, idempotent, and additive: it
+/// publishes a new revision through the ordinary update path, so previous
+/// revisions and every receipt that names them keep resolving. It never
+/// re-runs evaluation, never edits the terminal manifest or summary, and
+/// never invents a snapshot the producer did not record.
+pub(super) async fn repair_harbor_terminal_visual(
+    service: &OptimizerService,
+    run: &OptimizerRunRecord,
+) -> Result<HarborVisualRepair> {
+    // A run that has not settled still owns its own live pane; repairing it
+    // would race the worker that is about to settle it honestly.
+    let visual_status = match run.status.as_str() {
+        "completed" | "cancelled" | "degraded" => VisualStatus::Saved,
+        "failed" | "failed_evidence" => VisualStatus::Failed,
+        _ => return Ok(HarborVisualRepair::NotApplicable),
+    };
+    let Some(summary) = run.summary.as_object() else {
+        return Ok(HarborVisualRepair::NotApplicable);
+    };
+    let by_role = summary.get("visualIds").and_then(Value::as_object);
+    let Some(live_visual_id) = by_role
+        .and_then(|roles| roles.get(LIVE_EVAL_VISUAL_ROLE))
+        .and_then(Value::as_str)
+    else {
+        return Ok(HarborVisualRepair::NotApplicable);
+    };
+    let live = service.visuals().get(live_visual_id.to_string()).await?;
+    if live.template_id != HARBOR_LIVE_TEMPLATE {
+        return Ok(HarborVisualRepair::NotApplicable);
+    }
+    let Some(overview_id) = summary.get("visualId").and_then(Value::as_str) else {
+        return Ok(HarborVisualRepair::NotApplicable);
+    };
+    let overview = service.visuals().get(overview_id.to_string()).await?;
+    let Some(snapshot) = harbor_terminal_snapshot(&overview.bindings) else {
+        return Ok(HarborVisualRepair::ProducerUnavailable);
+    };
+    // The same snapshot already projected is the duplicate-repair case and the
+    // unchanged-source case at once: nothing to write, so no new revision.
+    if harbor_terminal_snapshot(&live.bindings).as_ref() == Some(&snapshot) {
+        return Ok(HarborVisualRepair::AlreadySettled);
+    }
+    let bindings = harbor_terminal_bindings(&live.bindings, &overview.bindings)?;
+    let from_revision = live.current_revision;
+    let (updated, _) = service
+        .visuals()
+        .update_at_revision(
+            live_visual_id.to_string(),
+            VisualUpdateRequest {
+                title: None,
+                bindings: Some(bindings),
+                status: Some(visual_status),
+                renderer_kind: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                content: None,
+                metadata: None,
+                // Additive by construction: the repaired projection becomes a
+                // new revision, and the revision the run settled at stays
+                // exactly as the producer left it.
+                bump_revision: Some(true),
+            },
+            // A concurrent writer means someone else is settling this pane.
+            // Losing the compare-and-set is a refusal, not a retry.
+            Some(from_revision),
+        )
+        .await?;
+    Ok(HarborVisualRepair::Repaired {
+        from_revision,
+        to_revision: updated.current_revision,
+    })
+}
+
 async fn settle_live_annotation_visual(
     service: &OptimizerService,
     visual_id: Option<&str>,
@@ -6228,7 +6335,7 @@ max_total_rollouts = 1
     use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
     use crate::optimizers::models::OptimizerRecipeRunRequest;
     use crate::optimizers::service::tests::service;
-    use crate::visuals::VisualQuery;
+    use crate::visuals::{VisualCreateRequest, VisualQuery};
     use hyper::StatusCode;
     use rusqlite::params;
     use serde_json::json;
@@ -7902,6 +8009,289 @@ max_total_rollouts = 4
     /// the run was still live and cost was unknown, and the receipt landed
     /// afterwards. This is the state a run reopened under a newer Workshop
     /// build is in.
+    /// A Harbor run that settled before terminal snapshots were retained,
+    /// reconstructed at the shape those runs are actually in: a live pane
+    /// holding only its stream authority, and an overview holding the terminal
+    /// experiment snapshot the pane should be able to show offline.
+    async fn historical_harbor_run(
+        svc: &OptimizerService,
+        run_id: &str,
+        status: &str,
+        overview_lifecycle: &str,
+    ) -> (OptimizerRunRecord, String, String) {
+        let approved = super::super::admission::tests::nanohorizon_approved_specification();
+        let spec = EvalSpec::from_execution_spec(
+            approved.spec(),
+            "runebench".into(),
+            "world:runebench@eval".into(),
+        )
+        .unwrap();
+        let seeds = spec.train.clone();
+        let (run, _) = svc
+            .create_admitted_eval(
+                serde_json::from_value(json!({
+                    "algorithmId": EVAL_ALGORITHM_ID,
+                    "id": run_id,
+                    "openVisual": false,
+                    "summary": {
+                        "recipeSourceKind": "inline",
+                        "task": spec.family,
+                        "costCeilingUsd": spec.cost_ceiling_usd,
+                        "records": [],
+                    },
+                }))
+                .unwrap(),
+                approved,
+                seeds.len(),
+            )
+            .await
+            .unwrap();
+
+        let snapshot = json!({"input":"experiment","kind":"inline","schema":EXPERIMENT_SCHEMA,
+            "data":{"schemaVersion":EXPERIMENT_SCHEMA,
+                    "aggregate":{"lifecycle":overview_lifecycle},
+                    "status":"completed",
+                    "results":{"rollouts":[{"reward":200,"traceId":"tracev5_retained"}]}}});
+        let (overview, _) = svc
+            .visuals()
+            .create(VisualCreateRequest {
+                template_id: EXPERIMENT_TEMPLATE.into(),
+                title: Some("overview".into()),
+                bindings: Some(json!({
+                    "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+                    "inputs": [snapshot],
+                })),
+                id: None,
+                status: Some(VisualStatus::Saved),
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                // The repair resolves both panes through the run summary, which is the
+                // only association a historical run actually left behind.
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: None,
+                source_model: None,
+                content: None,
+                metadata: None,
+            })
+            .await
+            .unwrap();
+        // The pane as it was left: stream authority only, no terminal snapshot.
+        let (live, _) = svc
+            .visuals()
+            .create(VisualCreateRequest {
+                template_id: HARBOR_LIVE_TEMPLATE.into(),
+                title: Some("live".into()),
+                bindings: Some(json!({
+                    "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+                    "inputs": [live_stream_descriptor(
+                        "http://127.0.0.1:1/rollouts/a/stream",
+                        "http://127.0.0.1:1/rollouts/a/events",
+                    )],
+                })),
+                id: None,
+                status: Some(VisualStatus::Live),
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                // The repair resolves both panes through the run summary, which is the
+                // only association a historical run actually left behind.
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: None,
+                source_model: None,
+                content: None,
+                metadata: None,
+            })
+            .await
+            .unwrap();
+
+        let (overview_id, live_id) = (overview.id.clone(), live.id.clone());
+        let owned_status = status.to_string();
+        svc.patch_run(run.id.clone(), move |run| {
+            let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+            summary.insert("visualId".into(), json!(overview_id));
+            summary.insert(
+                "visualIds".into(),
+                json!({ LIVE_EVAL_VISUAL_ROLE: live_id, "primary": overview_id }),
+            );
+            run.summary = Value::Object(summary);
+            run.status = owned_status.clone();
+            Ok(())
+        })
+        .await
+        .unwrap();
+        (
+            svc.get(run.id.clone()).await.unwrap(),
+            overview.id,
+            live.id,
+        )
+    }
+
+    #[tokio::test]
+    async fn repairing_a_historical_harbor_pane_adds_a_revision_and_is_idempotent() {
+        let (svc, _dir, _) = service().await;
+        let (run, _overview_id, live_id) =
+            historical_harbor_run(&svc, "opt_eval_runebench_repair", "completed", "terminal").await;
+
+        let before = svc.visuals().get(live_id.clone()).await.unwrap();
+        assert_eq!(
+            harbor_terminal_snapshot(&before.bindings),
+            None,
+            "the fixture must start from a pane with no terminal snapshot"
+        );
+
+        let repair = repair_harbor_terminal_visual(&svc, &run).await.unwrap();
+        let HarborVisualRepair::Repaired {
+            from_revision,
+            to_revision,
+        } = repair
+        else {
+            panic!("expected a repair, got {repair:?}");
+        };
+        assert_eq!(from_revision, before.current_revision);
+        assert!(
+            to_revision > from_revision,
+            "the repair must publish a new revision, not overwrite the settled one"
+        );
+
+        let after = svc.visuals().get(live_id.clone()).await.unwrap();
+        assert!(harbor_terminal_snapshot(&after.bindings).is_some());
+        assert_eq!(after.status, VisualStatus::Saved);
+        // Stream authority is preserved, not replaced by the snapshot.
+        assert_eq!(
+            crate::visuals::binding_descriptors(&after.bindings)
+                .unwrap()
+                .len(),
+            2
+        );
+
+        // Duplicate repair: the same run, again, writes nothing.
+        let again = repair_harbor_terminal_visual(&svc, &run).await.unwrap();
+        assert_eq!(again, HarborVisualRepair::AlreadySettled);
+        let unchanged = svc.visuals().get(live_id).await.unwrap();
+        assert_eq!(unchanged.current_revision, to_revision);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_run_repairs_to_a_saved_pane() {
+        let (svc, _dir, _) = service().await;
+        let (run, _overview_id, live_id) =
+            historical_harbor_run(&svc, "opt_eval_runebench_cancelled", "cancelled", "terminal")
+                .await;
+
+        assert!(matches!(
+            repair_harbor_terminal_visual(&svc, &run).await.unwrap(),
+            HarborVisualRepair::Repaired { .. }
+        ));
+        let after = svc.visuals().get(live_id).await.unwrap();
+        assert_eq!(after.status, VisualStatus::Saved);
+        assert!(harbor_terminal_snapshot(&after.bindings).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_failed_run_repairs_to_a_failed_pane_rather_than_claiming_success() {
+        let (svc, _dir, _) = service().await;
+        let (run, _overview_id, live_id) =
+            historical_harbor_run(&svc, "opt_eval_runebench_failed", "failed", "terminal").await;
+
+        assert!(matches!(
+            repair_harbor_terminal_visual(&svc, &run).await.unwrap(),
+            HarborVisualRepair::Repaired { .. }
+        ));
+        let after = svc.visuals().get(live_id).await.unwrap();
+        assert_eq!(after.status, VisualStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn an_overview_without_a_terminal_snapshot_is_refused_without_writing() {
+        let (svc, _dir, _) = service().await;
+        let (run, _overview_id, live_id) = historical_harbor_run(
+            &svc,
+            "opt_eval_runebench_no_producer",
+            "completed",
+            "running",
+        )
+        .await;
+        let before = svc.visuals().get(live_id.clone()).await.unwrap();
+
+        assert_eq!(
+            repair_harbor_terminal_visual(&svc, &run).await.unwrap(),
+            HarborVisualRepair::ProducerUnavailable
+        );
+        let after = svc.visuals().get(live_id).await.unwrap();
+        assert_eq!(after.current_revision, before.current_revision);
+        assert_eq!(after.bindings, before.bindings);
+        assert_eq!(after.status, before.status);
+    }
+
+    #[tokio::test]
+    async fn an_unsettled_run_is_left_to_settle_itself() {
+        let (svc, _dir, _) = service().await;
+        let (run, _overview_id, live_id) =
+            historical_harbor_run(&svc, "opt_eval_runebench_running", "running", "terminal").await;
+        let before = svc.visuals().get(live_id.clone()).await.unwrap();
+
+        assert_eq!(
+            repair_harbor_terminal_visual(&svc, &run).await.unwrap(),
+            HarborVisualRepair::NotApplicable
+        );
+        let after = svc.visuals().get(live_id).await.unwrap();
+        assert_eq!(after.current_revision, before.current_revision);
+        assert_eq!(after.bindings, before.bindings);
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_source_snapshot_publishes_no_second_revision() {
+        let (svc, _dir, _) = service().await;
+        let (run, overview_id, live_id) = historical_harbor_run(
+            &svc,
+            "opt_eval_runebench_unchanged",
+            "completed",
+            "terminal",
+        )
+        .await;
+        let HarborVisualRepair::Repaired { to_revision, .. } =
+            repair_harbor_terminal_visual(&svc, &run).await.unwrap()
+        else {
+            panic!("the first repair must publish a revision");
+        };
+
+        // Re-reading an unchanged overview is not a reason to republish, even
+        // when the overview itself has been touched since.
+        let overview = svc.visuals().get(overview_id.clone()).await.unwrap();
+        svc.visuals()
+            .update(
+                overview_id,
+                VisualUpdateRequest {
+                    title: Some("overview, retitled".into()),
+                    bindings: Some(overview.bindings.clone()),
+                    status: None,
+                    renderer_kind: None,
+                    message_id: None,
+                    run_id: None,
+                    trace_id: None,
+                    content: None,
+                    metadata: None,
+                    bump_revision: Some(true),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            repair_harbor_terminal_visual(&svc, &run).await.unwrap(),
+            HarborVisualRepair::AlreadySettled
+        );
+        assert_eq!(
+            svc.visuals().get(live_id).await.unwrap().current_revision,
+            to_revision
+        );
+    }
+
     async fn settled_inline_eval_with_a_stale_cost_projection(
         svc: &OptimizerService,
         run_id: &str,

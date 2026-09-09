@@ -1156,12 +1156,20 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
     ?? null
   ) as Any | null;
   const aggregate = evalAggregateV1(aggregateCandidate, typeof run?.id === "string" ? run.id : null);
+  // `run` is already read from either the live optimizer payload or the bound
+  // input; events were read only from the payload, so an inline-bound run
+  // arrived with its own relayed events silently dropped.
+  const boundEvents = Array.isArray(props.events)
+    ? props.events
+    : Array.isArray(props.data?.events)
+      ? props.data.events
+      : [];
   const optimizerEvents = useMemo(
     () => [
-      ...(Array.isArray(props.events) ? props.events : []),
+      ...boundEvents,
       ...(Array.isArray(props.enrichmentEvents) ? props.enrichmentEvents : [])
     ],
-    [props.events, props.enrichmentEvents]
+    [boundEvents, props.enrichmentEvents]
   );
   const media = props.media ?? NO_MEDIA;
   const commandFailures = useMemo(

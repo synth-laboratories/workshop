@@ -3018,6 +3018,17 @@ impl OptimizerService {
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let mut run = self.get(optimizer_run_id.clone()).await?;
         super::container_eval::refresh_terminal_visual_projection_if_stale(self, &run).await?;
+        // A Harbor run that settled before terminal snapshots were retained
+        // opens with an empty live pane. Repair it here, where a reader has
+        // actually asked for it: bounded to this run, idempotent, additive,
+        // and never a reason to refuse to open the run it is repairing.
+        if let Err(error) = super::container_eval::repair_harbor_terminal_visual(self, &run).await {
+            crate::platform::logging::report(
+                "container_eval",
+                "harbor_visual_repair",
+                format!("could not repair the Harbor live visual for {optimizer_run_id}: {error:#}"),
+            );
+        }
         let presentation_session_ref = session_ref.or_else(|| run.session_ref.clone());
         let title = format!(
             "{} · {}",
