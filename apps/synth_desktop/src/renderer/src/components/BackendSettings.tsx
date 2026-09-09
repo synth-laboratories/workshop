@@ -5,7 +5,7 @@ import { publicError } from "../runtime/publicError";
 
 type PairState =
 	| { kind: "idle" }
-	| { kind: "pairing"; verificationUri: string }
+	| { kind: "pairing"; verificationUri: string; userCode?: string | null }
 	| { kind: "error"; message: string };
 
 function announceAccountChange(next: SynthBackendSettings) {
@@ -47,7 +47,7 @@ export function AccountSignIn() {
 
 	const stopPolling = () => {
 		if (pollTimer.current !== null) {
-			window.clearInterval(pollTimer.current);
+			window.clearTimeout(pollTimer.current);
 			pollTimer.current = null;
 		}
 	};
@@ -60,9 +60,12 @@ export function AccountSignIn() {
 		try {
 			const begin = await bridges.account.beginSignIn();
             if (generation !== identityGeneration.current) return;
-			setPair({ kind: "pairing", verificationUri: begin.verificationUri });
+			setPair({ kind: "pairing", verificationUri: begin.verificationUri, userCode: begin.userCode });
 			stopPolling();
-			pollTimer.current = window.setInterval(() => {
+			const schedulePoll = (seconds: number) => {
+				pollTimer.current = window.setTimeout(poll, Math.max(1, Math.min(30, seconds)) * 1000);
+			};
+			const poll = () => {
 				void bridges.account?.pollSignIn().then((result) => {
                     if (generation !== identityGeneration.current) return;
 					if (result.status === "active") {
@@ -77,13 +80,16 @@ export function AccountSignIn() {
 					} else if (result.status === "expired") {
 						stopPolling();
 						setPair({ kind: "error", message: result.reason });
+					} else {
+						schedulePoll(result.retryInS ?? begin.intervalS ?? 4);
 					}
 				}).catch((error) => {
                     if (generation !== identityGeneration.current) return;
 					stopPolling();
 					setPair({ kind: "error", message: publicError(error) });
 				});
-			}, 4000);
+			};
+			schedulePoll(begin.intervalS ?? 4);
 		} catch (error) {
             if (generation !== identityGeneration.current) return;
 			setPair({ kind: "error", message: publicError(error) });
@@ -121,6 +127,7 @@ export function AccountSignIn() {
 					<span role="status" className="finetune-meta" data-testid="sign-in-status">
 						Finish sign-in in your browser — this page updates automatically.
 					</span>
+					{pair.userCode ? <span data-testid="sign-in-user-code">Confirm this code in your browser: <strong>{pair.userCode}</strong></span> : null}
 					<div className="backend-signin-actions">
 						<button type="button" className="settings-secondary-btn" onClick={() => void beginSignIn()}>Reopen browser</button>
 						<button type="button" className="settings-secondary-btn" data-testid="sign-in-cancel" onClick={cancelSignIn}>Cancel</button>

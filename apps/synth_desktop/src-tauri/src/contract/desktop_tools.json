@@ -48847,12 +48847,27 @@
               "verificationUri": {
                 "type": "string"
               },
+              "userCode": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "intervalS": {
+                "type": "number"
+              },
               "expiresAtEpochS": {
                 "type": "number"
               }
             },
             "required": [
               "verificationUri",
+              "userCode",
+              "intervalS",
               "expiresAtEpochS"
             ],
             "additionalProperties": false
@@ -49085,6 +49100,86 @@
               },
               "metered": {
                 "type": "boolean"
+              },
+              "effectivePriceUsd": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "billingInterval": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "grantKind": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "entitlementState": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "entitlementStartsAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "entitlementExpiresAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "campaignId": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "claimState": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
               },
               "monthlyAllowanceUsd": {
                 "anyOf": [
@@ -49534,6 +49629,86 @@
               "metered": {
                 "type": "boolean"
               },
+              "effectivePriceUsd": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "billingInterval": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "grantKind": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "entitlementState": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "entitlementStartsAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "entitlementExpiresAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "campaignId": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "claimState": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
               "monthlyAllowanceUsd": {
                 "anyOf": [
                   {
@@ -49856,10 +50031,14 @@
             "properties": {
               "status": {
                 "const": "pending"
+              },
+              "retryInS": {
+                "type": "number"
               }
             },
             "required": [
-              "status"
+              "status",
+              "retryInS"
             ],
             "additionalProperties": false
           },

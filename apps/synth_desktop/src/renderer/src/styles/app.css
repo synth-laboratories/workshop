@@ -1938,6 +1938,18 @@ html:not(.sidebar-hidden):not(.visual-expanded) .titlebar:not(.titlebar-native-i
 	justify-content: center;
 }
 
+.account-entitlement-card {
+	display: grid;
+	gap: 8px;
+	padding: 12px;
+	margin-bottom: 12px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background: var(--color-bg-subtle);
+}
+
+.account-entitlement-card p { margin: 0; color: var(--color-text-faint); }
+
 .landing-consent {
 	display: flex;
 	align-items: center;

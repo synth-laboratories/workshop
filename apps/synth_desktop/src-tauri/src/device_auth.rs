@@ -17,12 +17,16 @@ const INIT_PATH: &str = "/api/auth/device/init";
 const TOKEN_PATH: &str = "/api/auth/device/token";
 const PROD_WORKSHOP_URL: &str = "https://www.usesynth.ai";
 const LOCAL_WORKSHOP_URL: &str = "http://localhost:3000";
+const DEFAULT_POLL_INTERVAL_S: u64 = 4;
+const MAX_POLL_INTERVAL_S: u64 = 30;
 
 #[derive(Clone)]
 struct PendingPair {
     issuer: String,
     device_code: String,
     verification_uri: String,
+    user_code: Option<String>,
+    interval_s: u64,
     expires_at_epoch_s: u64,
 }
 
@@ -30,15 +34,25 @@ struct PendingPair {
 #[serde(rename_all = "camelCase")]
 pub struct SignInBegin {
     pub verification_uri: String,
+    pub user_code: Option<String>,
+    #[specta(type = specta_typescript::Number)]
+    pub interval_s: u64,
     #[specta(type = specta_typescript::Number)]
     pub expires_at_epoch_s: u64,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, specta::Type)]
-#[serde(rename_all = "camelCase", tag = "status")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "status"
+)]
 pub enum SignInPoll {
     /// Browser approval not observed yet; keep polling.
-    Pending,
+    Pending {
+        #[specta(type = specta_typescript::Number)]
+        retry_in_s: u64,
+    },
     /// Key received, stored, and runtime reloaded.
     Active,
     /// Code expired or consumed; a fresh begin is required.
@@ -49,6 +63,12 @@ pub enum SignInPoll {
 struct InitResponse {
     device_code: String,
     verification_uri: String,
+    #[serde(default)]
+    verification_uri_complete: Option<String>,
+    #[serde(default)]
+    user_code: Option<String>,
+    #[serde(default)]
+    interval: Option<u64>,
     expires_in: u64,
 }
 
@@ -115,6 +135,8 @@ impl DeviceAuthManager {
             if pending.issuer == origin && pending.expires_at_epoch_s > now_epoch_s() + 10 {
                 return Ok(SignInBegin {
                     verification_uri: pending.verification_uri,
+                    user_code: pending.user_code,
+                    interval_s: pending.interval_s,
                     expires_at_epoch_s: pending.expires_at_epoch_s,
                 });
             }
@@ -138,21 +160,33 @@ impl DeviceAuthManager {
             ));
         }
         let init: InitResponse = response.json().await.context("parse pairing start")?;
-        let verification_uri = if init.verification_uri.starts_with("http") {
-            init.verification_uri
+        let raw_uri = init
+            .verification_uri_complete
+            .unwrap_or(init.verification_uri);
+        let verification_uri = if raw_uri.starts_with("http") {
+            raw_uri
         } else {
-            format!("{origin}{}", init.verification_uri)
+            format!("{origin}{raw_uri}")
         };
+        ensure_same_origin(origin, &verification_uri)?;
         let pending = PendingPair {
             issuer: origin.to_owned(),
             device_code: init.device_code,
             verification_uri: verification_uri.clone(),
+            user_code: init.user_code.clone(),
+            interval_s: init
+                .interval
+                .unwrap_or(DEFAULT_POLL_INTERVAL_S)
+                .clamp(1, MAX_POLL_INTERVAL_S),
             expires_at_epoch_s: now_epoch_s() + init.expires_in,
         };
         let expires_at_epoch_s = pending.expires_at_epoch_s;
+        let interval_s = pending.interval_s;
         *self.pending.lock().unwrap() = Some(pending);
         Ok(SignInBegin {
             verification_uri,
+            user_code: init.user_code,
+            interval_s,
             expires_at_epoch_s,
         })
     }
@@ -197,7 +231,26 @@ impl DeviceAuthManager {
                 *self.pending.lock().unwrap() = None;
                 Ok(SignInPoll::Active)
             }
-            428 => Ok(SignInPoll::Pending),
+            428 => Ok(SignInPoll::Pending {
+                retry_in_s: pending.interval_s,
+            }),
+            429 => {
+                let retry_in_s = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.trim().parse::<u64>().ok())
+                    .unwrap_or(pending.interval_s.saturating_mul(2))
+                    .clamp(pending.interval_s, MAX_POLL_INTERVAL_S);
+                if let Some(current) = self.pending.lock().unwrap().as_mut() {
+                    if current.device_code == pending.device_code
+                        && current.issuer == pending.issuer
+                    {
+                        current.interval_s = retry_in_s;
+                    }
+                }
+                Ok(SignInPoll::Pending { retry_in_s })
+            }
             404 | 410 => {
                 *self.pending.lock().unwrap() = None;
                 Ok(SignInPoll::Expired {
@@ -244,6 +297,25 @@ impl DeviceAuthManager {
     pub fn cancel(&self) {
         *self.pending.lock().unwrap() = None;
     }
+}
+
+/// Opening a link carries the desktop's authority. An issuer must not redirect
+/// pairing to another origin, even if the response came from the right server.
+fn ensure_same_origin(origin: &str, uri: &str) -> Result<()> {
+    let origin = reqwest::Url::parse(origin).context("parse Workshop origin")?;
+    let target = reqwest::Url::parse(uri).context("parse verification link")?;
+    if !matches!(target.scheme(), "https" | "http")
+        || target.scheme() != origin.scheme()
+        || target.host_str() != origin.host_str()
+        || target.port_or_known_default() != origin.port_or_known_default()
+        || !target.username().is_empty()
+        || target.password().is_some()
+    {
+        return Err(anyhow!(
+            "sign-in service returned an untrusted verification link; refusing to open it"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -307,7 +379,12 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(first, SignInPoll::Pending);
+        assert_eq!(
+            first,
+            SignInPoll::Pending {
+                retry_in_s: DEFAULT_POLL_INTERVAL_S
+            }
+        );
         let s2 = stored.clone();
         let second = manager
             .poll(&origin, move |k, _| {
@@ -325,6 +402,66 @@ mod tests {
             manager.poll(&origin, |_, _| Ok(())).await.unwrap(),
             SignInPoll::Expired { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn polling_slowdown_is_pending_and_persists_the_backoff() {
+        let init = r#"{"device_code":"abc123","verification_uri":"/signin","user_code":"ABCD-1234","interval":5,"expires_in":600}"#;
+        let (origin, handle) = spawn_fake_workshop(vec![
+            (200, init.into()),
+            (429, "{}".into()),
+            (428, "{}".into()),
+        ]);
+        let manager = DeviceAuthManager::new();
+        let begin = manager.begin(&origin).await.unwrap();
+        assert_eq!(begin.user_code.as_deref(), Some("ABCD-1234"));
+        assert_eq!(begin.interval_s, 5);
+        assert_eq!(
+            manager.poll(&origin, |_, _| Ok(())).await.unwrap(),
+            SignInPoll::Pending { retry_in_s: 10 }
+        );
+        assert_eq!(
+            manager.poll(&origin, |_, _| Ok(())).await.unwrap(),
+            SignInPoll::Pending { retry_in_s: 10 }
+        );
+        handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn begin_refuses_verification_links_outside_the_issuer() {
+        let init = r#"{"device_code":"abc123","verification_uri":"https://other.example/signin","expires_in":600}"#;
+        let (origin, handle) = spawn_fake_workshop(vec![(200, init.into())]);
+        let manager = DeviceAuthManager::new();
+        assert!(manager
+            .begin(&origin)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("refusing to open"));
+        assert!(manager.pending.lock().unwrap().is_none());
+        handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn begin_prefers_the_complete_same_origin_verification_link() {
+        let init = r#"{"device_code":"abc123","verification_uri":"/signin","verification_uri_complete":"/signin?code=ABCD","expires_in":600}"#;
+        let (origin, handle) = spawn_fake_workshop(vec![(200, init.into())]);
+        let begin = DeviceAuthManager::new().begin(&origin).await.unwrap();
+        assert_eq!(begin.verification_uri, format!("{origin}/signin?code=ABCD"));
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn verification_link_rejects_scheme_port_and_userinfo_changes() {
+        for uri in [
+            "http://example.com/signin",
+            "https://example.com:444/signin",
+            "https://user@example.com/signin",
+            "file:///signin",
+        ] {
+            assert!(ensure_same_origin("https://example.com", uri).is_err());
+        }
+        assert!(ensure_same_origin("https://example.com", "https://example.com/signin").is_ok());
     }
 
     #[tokio::test]

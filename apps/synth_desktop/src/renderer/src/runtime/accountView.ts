@@ -39,6 +39,14 @@ export type AccountViewModel = {
 	statusNote: string | null;
 	/** The expandable `Usage remaining` summary in the account menu. */
 	allowance: AllowanceSummary;
+	activation: ActivationSummary;
+};
+
+export type ActivationSummary = {
+	state: "inactive" | "verifying" | "active" | "blocked";
+	label: string;
+	note: string;
+	rows: { label: string; value: string }[];
 };
 
 /**
@@ -197,6 +205,7 @@ export function buildAccountView(
 	})();
 
 	const allowance = buildAllowance(state, plan, isDevSeed);
+	const activation = buildActivationSummary(summary, state, plan, isDevSeed);
 
 	const statusNote = summary?.stale
 		? `Showing the last known plan${summary.error ? ` — ${summary.error}` : ""}`
@@ -215,7 +224,75 @@ export function buildAccountView(
 		primaryAction,
 		cloudBlockedReason: blockedReason(state, plan),
 		statusNote,
-		allowance
+		allowance,
+		activation
+	};
+}
+
+function buildActivationSummary(
+	summary: SynthAccountSummary | null,
+	state: SynthAccountState,
+	plan: SynthAccountPlan | null,
+	isDevSeed: boolean
+): ActivationSummary {
+	if (isDevSeed) {
+		return {
+			state: "active",
+			label: "Local development account",
+			note: "This is a labelled local stand-in, not a Synth Cloud entitlement.",
+			rows: [{ label: "Plan", value: plan?.name ?? "Synth Dev" }]
+		};
+	}
+	if (state === "local_only" || state === "signed_out" || state === "pairing") {
+		return {
+			state: "inactive",
+			label: state === "pairing" ? "Connecting…" : "Not connected",
+			note: state === "pairing"
+				? "Finish approval in your browser. Workshop will verify access here."
+				: "Connect Synth to verify an account-backed entitlement.",
+			rows: []
+		};
+	}
+	if (state !== "active" || (plan?.entitlementState && plan.entitlementState !== "active")) {
+		return {
+			state: "blocked",
+			label: "Cloud access unavailable",
+			note: blockedReason(state, plan) ?? "Synth Cloud has not reported an active entitlement.",
+			rows: []
+		};
+	}
+	const identity = summary?.email ?? summary?.displayName;
+	const organization = summary?.organization?.displayName ?? summary?.organization?.id;
+	const expires = formatDate(plan?.entitlementExpiresAt);
+	const required = [
+		identity,
+		organization,
+		plan?.name,
+		typeof plan?.effectivePriceUsd === "number" ? "price" : null,
+		typeof plan?.monthlyAllowanceUsd === "number" ? "allowance" : null,
+		plan?.entitlementState,
+		plan?.grantKind === "promotion" ? expires : "not-required"
+	];
+	if (required.some((value) => !value)) {
+		return {
+			state: "verifying",
+			label: "Verifying access…",
+			note: "Connected, but Synth Cloud has not yet reported every activation detail. Refresh before starting cloud work.",
+			rows: []
+		};
+	}
+	return {
+		state: "active",
+		label: "Synth Cloud active",
+		note: "Account-backed work is ready.",
+		rows: [
+			{ label: "Account", value: identity as string },
+			{ label: "Organization", value: organization as string },
+			{ label: "Plan", value: plan?.name as string },
+			{ label: "Effective price", value: `${formatUsd(plan?.effectivePriceUsd)}${plan?.billingInterval ? `/${plan.billingInterval}` : ""}` },
+			{ label: "Included allowance", value: formatUsd(plan?.monthlyAllowanceUsd) },
+			...(expires ? [{ label: "Expires", value: expires }] : [])
+		]
 	};
 }
 
