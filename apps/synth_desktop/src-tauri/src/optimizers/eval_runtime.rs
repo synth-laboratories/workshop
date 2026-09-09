@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn pinned_eval_runtime_is_managed_at_0_2_19() {
         assert!(EVAL.provisioned_by_desktop);
-        assert_eq!(EVAL.official, "0.2.20");
+        assert_eq!(EVAL.official, "0.2.21");
         assert_eq!(EVAL.min_supported, "0.2.20");
         assert!(EVAL.meets_floor("0.2.20"));
         assert!(!EVAL.meets_floor("0.2.14"));

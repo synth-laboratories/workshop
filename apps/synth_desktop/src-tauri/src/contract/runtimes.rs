@@ -141,7 +141,7 @@ fn numeric_segments(version: &str) -> Vec<u64> {
 pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
     runtime_id: "optimizers",
     package: "synth-optimizers",
-    official: "0.2.20",
+    official: "0.2.21",
     // Behind official: this cut predates both required routes. It still
     // installs — its own channel's floor is what it is measured against — and
     // then fails the handshake, which is the honest place for that failure.
@@ -178,13 +178,13 @@ pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
 
 /// The local container-evaluation runtime.
 ///
-/// Desktop provisions it from the same 0.2.20 `synth-optimizers` install as
+/// Desktop provisions it from the same 0.2.21 `synth-optimizers` install as
 /// GEPA, writing a digest-pinned manifest under `data_root()/runtime/eval`.
 pub const EVAL: RuntimeContract = RuntimeContract {
     runtime_id: "eval",
     package: "synth-optimizers[eval]",
-    official: "0.2.20",
-    dev: "0.2.20",
+    official: "0.2.21",
+    dev: "0.2.21",
     min_supported: "0.2.20",
     min_supported_dev: "0.2.20",
     ownership_protocol: 2,

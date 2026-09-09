@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="$ROOT/runtime-distributions/optimizers"
-VERSION="0.2.20"
+VERSION="0.2.21"
 # Derived from the Rust catalog, never restated. manager.rs is what verifies
 # the embedded distribution at install time, so constants copied here can drift
 # from it -- and did: bumping only this script staged 0.2.20 while the app
