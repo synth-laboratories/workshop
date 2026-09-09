@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "workshop.visuals-nested-selection-acceptance.v1",
+  "targets": [
+    {
+      "visualId": "accept-live-eval_stream-v1",
+      "control": "eval.cursor",
+      "identity": "eval_run_demo_01:2",
+      "recordingId": "e456c7d4-b877-4b7f-9307-c8f30d1672d7",
+      "captures": [
+        "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/de5eec89-7d74-4dde-a087-f89b31e5fb63.png",
+        "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/f358c608-de23-46f8-b007-34781982dc8c.png"
+      ]
+    },
+    {
+      "visualId": "accept-compose-visual-v1",
+      "control": "compose.cursor",
+      "identity": "eval_run_demo_01:2",
+      "recordingId": "cead3e38-329b-41b3-baf5-40b4551fbbb2",
+      "captures": [
+        "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/5221822f-a52d-4a6d-92cc-53f2c280dcd7.png",
+        "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/eca7ca1d-47fe-4098-a5d6-77c9f880f127.png"
+      ]
+    }
+  ]
+}

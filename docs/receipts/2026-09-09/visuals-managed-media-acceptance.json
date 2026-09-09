@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "workshop.visuals-managed-media-acceptance.v1",
+  "visualId": "accept-managed-media-d01c8c67-16c8-4513-81ee-ad854bb7a9b9",
+  "optimizerRunId": "accept-frames-535f23ae-42bb-4669-a2ac-0a0b0231af71",
+  "seed": 101,
+  "liveFrame": {
+    "sequence": 16,
+    "sha256": "sha256:b18e349f93b56cb203dd0e52704f2bd1940e20787eb75812d5d0be5cb8b29950"
+  },
+  "historicalFrame": {
+    "sequence": 13,
+    "sha256": "sha256:d781c01227583c49735129c8a7beeb38de692967d38575ff82fbe6487d00145b"
+  },
+  "historyDepth": 4,
+  "recordingId": "a29bd4e1-102a-4993-9f8c-66a35dcc91d6",
+  "racedSelection": {
+    "superseded": 13,
+    "winner": 14
+  },
+  "captures": [
+    "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/746bc782-0282-44b9-b79a-ef28ac35f185.png",
+    "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/4b58aca1-2d1a-478a-98d5-bf4ae91288fd.png",
+    "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/a3ccef1f-b88a-476e-be2e-aaa9ddbc1d61.png"
+  ]
+}

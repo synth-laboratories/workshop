@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "workshop.visuals-trace-media-acceptance.v1",
+  "producedBy": "workshop-visuals/produce_trace_v5_fixture.mjs",
+  "synthetic": true,
+  "containersVersion": "0.4.2.dev20260903",
+  "traces": [
+    {
+      "rolloutId": "visuals-acceptance-rollout-1",
+      "digest": "sha256:2fd0826094b1ba44208ae54b65dacf308baa91878d0c879323f37dab0f6c2edf",
+      "eventCount": 28,
+      "hasMedia": true,
+      "frames": [
+        "sha256:0ca439eb5c660bed1a786daa42ebf7aa1914e697398d125d0de3f70eed5af35f",
+        "sha256:1c8897430e1e25466010ce8d18f8500e0632a6951a5952a8efee81ceec6749d5",
+        "sha256:3aa4fdf2e7b5578176fb736f38229a15a96152c390cd7d88a7b76961b11a05fc",
+        "sha256:69e4ab4146a37bff5a3410c7e7f8be318ee4c59c918d2dc78592eb5570c1cad2"
+      ]
+    },
+    {
+      "rolloutId": "visuals-acceptance-rollout-2",
+      "digest": "sha256:7b8a20d81a2c9baf4cb3f5ea5e8b4353b4afbbb175f803d05a00818ba22fa39e",
+      "eventCount": 28,
+      "hasMedia": true,
+      "frames": [
+        "sha256:91b1f586938bb22dc6ba1e3b819acffc1519c88ec3ad8f8aa8ff718297c44bfe",
+        "sha256:fa2b07291ba6a7ecc33536186f141257a6d4a4255f485fceb5c27fc51d54f337",
+        "sha256:892700051cebf4a45603ff2f9ec224e76ba94f2d73591f560d47ab6f3f4f4d16",
+        "sha256:23627e853ce3150459552ea9bec32429c4c92071158ba710b5e325452df60c5d"
+      ]
+    },
+    {
+      "rolloutId": "visuals-acceptance-rollout-3",
+      "digest": "sha256:93db93200ed93051453605c048c9c79b70672ccec3b44a16f96b9a20d951b7a4",
+      "eventCount": 28,
+      "hasMedia": true,
+      "frames": [
+        "sha256:c03e1ba65f4199d7c67fcd72bceab5a4aaca4f48432732d35ac462be8cc1a889",
+        "sha256:b2b150c29d8aef01009b5e4040ba12e51816c1448545d4c4553a9296e0f1cb8b",
+        "sha256:c037e35a68b749468a845a2b773092e0495459bbffaf5fa418dbd3a18ba11a3e",
+        "sha256:9af7f741d23948deda96a0b38afe682833b943fb8bf5aac85ca2c601f8660658"
+      ]
+    }
+  ],
+  "casFramesResolved": 12,
+  "pinnedSnapshot": "sha256:d5e59e23ba3ca685f2ca810e4149c56d8b82c1969b265f249a28acc116fe1e89"
+}
