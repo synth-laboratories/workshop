@@ -1938,6 +1938,44 @@ html:not(.sidebar-hidden):not(.visual-expanded) .titlebar:not(.titlebar-native-i
 	justify-content: center;
 }
 
+.landing-consent {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	width: min(100%, 516px);
+	margin-top: 14px;
+	padding: 10px 12px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background: var(--color-bg-subtle);
+	color: var(--color-text-faint);
+	font-size: var(--font-size-sm);
+	text-align: left;
+}
+
+.landing-consent-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+
+.settings-inline-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+
+.telemetry-event-list {
+	margin-top: 8px;
+	max-height: 220px;
+	overflow-y: auto;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	padding: 6px 10px;
+}
+
+.telemetry-event-row {
+	display: flex;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 3px 0;
+	font-size: var(--font-size-sm);
+}
+
+.telemetry-event-row small { color: var(--color-text-faint); }
+
 .quick-card {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr);

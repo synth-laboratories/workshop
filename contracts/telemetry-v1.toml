@@ -1,0 +1,252 @@
+# Workshop product-telemetry contract — the single source of truth for the
+# event dictionary, consent policy version, retention, and sync eligibility.
+#
+# Consumers:
+#   - Desktop Rust embeds this file (src-tauri/src/telemetry/contract.rs) and
+#     refuses any event or property not declared here.
+#   - Backend mirrors the sync-eligible event names and classes in
+#     app/api/v1/routes_product.py (PRODUCT_REGISTRY["workshop"]). Update both
+#     in the same change; the backend list must never be broader than this file.
+#
+# Rules this file cannot relax (enforced in code regardless of contents):
+#   - No prompts, traces, filenames, paths, secrets, or free-form strings.
+#   - Nested property values are refused.
+#   - Events with sync = "local_only" never leave the device, consent or not.
+#   - Optional events record only while product analytics is enabled, and sync
+#     only after explicit consent (collection_policy_version below).
+#
+# Bumping collection_policy_version re-triggers the consent ask on every
+# install; bump it whenever what is collected or where it goes changes.
+
+schema = 1
+dictionary_version = "workshop.product-telemetry.v2"
+collection_policy_version = "workshop.product-telemetry.policy.v2"
+retention_days_optional = 90
+retention_days_essential = 365
+
+# Attached to every accepted event by the host. Not product content.
+envelope_properties = [
+  "schema_version",
+  "app_version",
+  "release_channel",
+  "platform",
+  "architecture",
+  "install_id",
+  "collection_policy_version",
+  "outcome",
+  "duration_ms",
+  "error_class",
+  "workflow_family",
+]
+
+# class: funnel | product | reliability — the family a rollup groups by.
+# sensitivity: optional (consent-gated, deleted on opt-out/sign-out)
+#            | essential (always recorded locally)
+# sync: eligible | local_only — whether the flusher may ever ship it.
+
+[[event]]
+name = "download_initiated"
+purpose = "Count signed-artifact download starts from the public funnel."
+owner = "workshop-distribution"
+class = "funnel"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["release_channel", "platform", "architecture"]
+
+[[event]]
+name = "download_served"
+purpose = "Count successful signed-artifact delivery, distinct from download clicks."
+owner = "workshop-distribution"
+class = "funnel"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["release_channel", "platform", "architecture"]
+
+[[event]]
+name = "app_first_launch"
+purpose = "Record the first launch of an install, distinct from signup."
+owner = "workshop-activation"
+class = "funnel"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["platform", "architecture"]
+
+[[event]]
+name = "signup_completed"
+purpose = "Record first-time account creation on this install."
+owner = "workshop-identity"
+class = "funnel"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["outcome"]
+
+[[event]]
+name = "signin_completed"
+purpose = "Record a successful device pairing or session restore."
+owner = "workshop-identity"
+class = "funnel"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["outcome"]
+
+[[event]]
+name = "signout_completed"
+purpose = "Record completed local session removal without session material."
+owner = "workshop-identity"
+class = "funnel"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["outcome"]
+
+[[event]]
+name = "local_activation_completed"
+purpose = "Record a successful local-only activation milestone."
+owner = "workshop-activation"
+class = "product"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["workflow_family", "outcome"]
+
+[[event]]
+name = "hosted_activation_completed"
+purpose = "Record a successful entitled hosted activation milestone."
+owner = "workshop-activation"
+class = "product"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["workflow_family", "outcome"]
+
+[[event]]
+name = "first_workspace_opened"
+purpose = "Record the first agent or workspace opened on this install."
+owner = "workshop-activation"
+class = "product"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["workflow_family"]
+
+[[event]]
+name = "first_run_succeeded"
+purpose = "Record the first successful local or hosted run."
+owner = "workshop-activation"
+class = "product"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["workflow_family", "outcome"]
+
+[[event]]
+name = "first_experiment_visual"
+purpose = "Record the first experiment visual created on this install."
+owner = "workshop-activation"
+class = "product"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["workflow_family"]
+
+[[event]]
+name = "first_report_shared"
+purpose = "Record the first private or team report share."
+owner = "workshop-activation"
+class = "product"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["outcome"]
+
+[[event]]
+name = "hosted_job_started"
+purpose = "Count hosted job starts for activation and reliability."
+owner = "workshop-reliability"
+class = "reliability"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["workflow_family"]
+
+[[event]]
+name = "hosted_job_completed"
+purpose = "Count hosted job completions without run contents."
+owner = "workshop-reliability"
+class = "reliability"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["workflow_family", "outcome", "duration_ms"]
+
+[[event]]
+name = "hosted_job_failed"
+purpose = "Count hosted job failures by normalized error class only."
+owner = "workshop-reliability"
+class = "reliability"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["workflow_family", "outcome", "error_class"]
+
+[[event]]
+name = "workflow_started"
+purpose = "Count workflow starts by family for reliability."
+owner = "workshop-reliability"
+class = "reliability"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["workflow_family"]
+
+[[event]]
+name = "workflow_terminal"
+purpose = "Count workflow terminals by coarse outcome."
+owner = "workshop-reliability"
+class = "reliability"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["workflow_family", "outcome", "duration_ms", "error_class"]
+
+[[event]]
+name = "artifact_created"
+purpose = "Count artifact creation without artifact contents."
+owner = "workshop-activation"
+class = "product"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["workflow_family"]
+
+[[event]]
+name = "recipe_saved"
+purpose = "Count recipe saves without recipe names or contents."
+owner = "workshop-activation"
+class = "product"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["workflow_family"]
+
+[[event]]
+name = "report_created"
+purpose = "Count report creation, distinct from sharing."
+owner = "workshop-activation"
+class = "product"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["outcome"]
+
+[[event]]
+name = "report_published"
+purpose = "Count approved private/team report publication."
+owner = "workshop-activation"
+class = "product"
+sensitivity = "optional"
+sync = "eligible"
+properties = ["outcome"]
+
+[[event]]
+name = "recovery_attempted"
+purpose = "Essential reliability: session or run recovery was attempted."
+owner = "workshop-reliability"
+class = "reliability"
+sensitivity = "essential"
+sync = "local_only"
+properties = ["error_class", "outcome"]
+
+[[event]]
+name = "recovery_succeeded"
+purpose = "Essential reliability: session or run recovery succeeded."
+owner = "workshop-reliability"
+class = "reliability"
+sensitivity = "essential"
+sync = "local_only"
+properties = ["outcome"]

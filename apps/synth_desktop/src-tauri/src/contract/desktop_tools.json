@@ -31057,6 +31057,16 @@
                   }
                 ]
               },
+              "rendererKind": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
               "description": {
                 "anyOf": [
                   {
@@ -31308,6 +31318,16 @@
                 ]
               },
               "version": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "rendererKind": {
                 "anyOf": [
                   {
                     "type": "null"
@@ -32068,6 +32088,272 @@
       },
       "_meta": {
         "workshop/operationId": "desktop.visuals_get.v1"
+      }
+    },
+    {
+      "name": "visuals_engine",
+      "description": "Workshop visuals engine. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "visualId": {
+            "type": "string"
+          },
+          "request": {}
+        },
+        "required": [
+          "visualId",
+          "request"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {}
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {}
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.visuals_engine.v1"
+      }
+    },
+    {
+      "name": "visuals_presentation_get",
+      "description": "Workshop visuals presentation get. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "visualId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "visualId"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {}
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {}
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.visuals_presentation_get.v1"
+      }
+    },
+    {
+      "name": "visuals_presentation_put",
+      "description": "Workshop visuals presentation put. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "visualId": {
+            "type": "string"
+          },
+          "presentation": {}
+        },
+        "required": [
+          "visualId",
+          "presentation"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {}
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {}
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.visuals_presentation_put.v1"
+      }
+    },
+    {
+      "name": "visuals_snapshots_list",
+      "description": "Workshop visuals snapshots list. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "visualId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "visualId"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "type": "array",
+            "items": {}
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {}
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.visuals_snapshots_list.v1"
+      }
+    },
+    {
+      "name": "visuals_snapshot_put",
+      "description": "Workshop visuals snapshot put. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "visualId": {
+            "type": "string"
+          },
+          "snapshot": {}
+        },
+        "required": [
+          "visualId",
+          "snapshot"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {}
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {}
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.visuals_snapshot_put.v1"
+      }
+    },
+    {
+      "name": "visuals_recordings_list",
+      "description": "Workshop visuals recordings list. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "visualId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "visualId"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "type": "array",
+            "items": {}
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {}
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.visuals_recordings_list.v1"
+      }
+    },
+    {
+      "name": "visuals_recording_put",
+      "description": "Workshop visuals recording put. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "visualId": {
+            "type": "string"
+          },
+          "recording": {}
+        },
+        "required": [
+          "visualId",
+          "recording"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {}
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {}
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.visuals_recording_put.v1"
       }
     },
     {
@@ -63073,15 +63359,96 @@
               "optionalEnabled": {
                 "type": "boolean"
               },
-              "consentVersion": {
-                "type": "string"
+              "consent": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/T2"
+                  },
+                  {
+                    "$ref": "#/$defs/T3"
+                  },
+                  {
+                    "$ref": "#/$defs/T4"
+                  }
+                ]
+              },
+              "needsAsk": {
+                "type": "boolean"
+              },
+              "syncAllowed": {
+                "type": "boolean"
+              },
+              "lastSyncAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
               }
             },
             "required": [
               "dictionaryVersion",
               "collectionPolicyVersion",
               "optionalEnabled",
-              "consentVersion"
+              "consent",
+              "needsAsk",
+              "syncAllowed",
+              "lastSyncAt"
+            ],
+            "additionalProperties": false
+          },
+          "T2": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "const": "unset"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "additionalProperties": false
+          },
+          "T3": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "const": "granted"
+              },
+              "version": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "version",
+              "at"
+            ],
+            "additionalProperties": false
+          },
+          "T4": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "const": "declined"
+              },
+              "version": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "version",
+              "at"
             ],
             "additionalProperties": false
           }
@@ -63136,15 +63503,96 @@
               "optionalEnabled": {
                 "type": "boolean"
               },
-              "consentVersion": {
-                "type": "string"
+              "consent": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/T2"
+                  },
+                  {
+                    "$ref": "#/$defs/T3"
+                  },
+                  {
+                    "$ref": "#/$defs/T4"
+                  }
+                ]
+              },
+              "needsAsk": {
+                "type": "boolean"
+              },
+              "syncAllowed": {
+                "type": "boolean"
+              },
+              "lastSyncAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
               }
             },
             "required": [
               "dictionaryVersion",
               "collectionPolicyVersion",
               "optionalEnabled",
-              "consentVersion"
+              "consent",
+              "needsAsk",
+              "syncAllowed",
+              "lastSyncAt"
+            ],
+            "additionalProperties": false
+          },
+          "T2": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "const": "unset"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "additionalProperties": false
+          },
+          "T3": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "const": "granted"
+              },
+              "version": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "version",
+              "at"
+            ],
+            "additionalProperties": false
+          },
+          "T4": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "const": "declined"
+              },
+              "version": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "version",
+              "at"
             ],
             "additionalProperties": false
           }
@@ -64131,6 +64579,250 @@
       },
       "_meta": {
         "workshop/operationId": "desktop.observability_status.v1"
+      }
+    },
+    {
+      "name": "product_telemetry_set_consent",
+      "description": "Workshop product telemetry set consent. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "granted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "granted"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/T1"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "dictionaryVersion": {
+                "type": "string"
+              },
+              "collectionPolicyVersion": {
+                "type": "string"
+              },
+              "optionalEnabled": {
+                "type": "boolean"
+              },
+              "consent": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/T2"
+                  },
+                  {
+                    "$ref": "#/$defs/T3"
+                  },
+                  {
+                    "$ref": "#/$defs/T4"
+                  }
+                ]
+              },
+              "needsAsk": {
+                "type": "boolean"
+              },
+              "syncAllowed": {
+                "type": "boolean"
+              },
+              "lastSyncAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "dictionaryVersion",
+              "collectionPolicyVersion",
+              "optionalEnabled",
+              "consent",
+              "needsAsk",
+              "syncAllowed",
+              "lastSyncAt"
+            ],
+            "additionalProperties": false
+          },
+          "T2": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "const": "unset"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "additionalProperties": false
+          },
+          "T3": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "const": "granted"
+              },
+              "version": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "version",
+              "at"
+            ],
+            "additionalProperties": false
+          },
+          "T4": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "const": "declined"
+              },
+              "version": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "version",
+              "at"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.product_telemetry_set_consent.v1"
+      }
+    },
+    {
+      "name": "product_telemetry_recent",
+      "description": "Workshop product telemetry recent. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "limit"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/T1"
+            }
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "eventId": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              },
+              "sensitivity": {
+                "type": "string"
+              },
+              "properties": {}
+            },
+            "required": [
+              "eventId",
+              "name",
+              "at",
+              "sensitivity",
+              "properties"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.product_telemetry_recent.v1"
+      }
+    },
+    {
+      "name": "product_telemetry_flush_now",
+      "description": "Workshop product telemetry flush now. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {}
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.product_telemetry_flush_now.v1"
       }
     }
   ]

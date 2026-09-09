@@ -679,6 +679,21 @@ export const commands = {
 	logsQuery: (request: LogQuery) => typedError<LogQueryResult, AppError_Serialize>(__TAURI_INVOKE("logs_query", { request })),
 	failureExportBundle: (failureId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("failure_export_bundle", { failureId })),
 	observabilityStatus: () => __TAURI_INVOKE<ObservabilityStatus>("observability_status"),
+	/**
+	 *  The first-run consent answer. `granted` enables optional analytics and
+	 *  sync; `declined` disables optional analytics and deletes queued events.
+	 */
+	productTelemetrySetConsent: (granted: boolean) => typedError<TelemetryPolicy, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_set_consent", { granted })),
+	/**
+	 *  Transparency view: the most recent locally stored events, exactly as they
+	 *  would sync. Display-safe by construction — the gate refused anything else.
+	 */
+	productTelemetryRecent: (limit: number) => typedError<TelemetryEventRecord[], AppError_Serialize>(__TAURI_INVOKE("product_telemetry_recent", { limit })),
+	/**
+	 *  Manual flush for Settings and QA. Reports the number of events shipped;
+	 *  without current consent it ships nothing and reports zero.
+	 */
+	productTelemetryFlushNow: () => typedError<number, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_flush_now")),
 };
 
 /* Types */
@@ -1188,6 +1203,10 @@ export type ComputerUseSnapshot = {
 	/**  Bundle identifiers this session may drive without a fresh card. */
 	allowedApps: string[],
 };
+
+export type ConsentState =
+/**  Never asked (or the stored record is unreadable — treated as unasked). */
+{ state: "unset" } | { state: "granted"; version: string; at: string } | { state: "declined"; version: string; at: string };
 
 export type ContainerDeployment = {
 	id: string,
@@ -4305,11 +4324,27 @@ export type TariffCard = {
 	cacheWriteUsdPerM: number | null,
 };
 
+export type TelemetryEventRecord = {
+	eventId: string,
+	name: string,
+	at: string,
+	sensitivity: string,
+	properties: unknown,
+};
+
 export type TelemetryPolicy = {
 	dictionaryVersion: string,
 	collectionPolicyVersion: string,
 	optionalEnabled: boolean,
-	consentVersion: string,
+	consent: ConsentState,
+	/**
+	 *  The consent ask is due: never answered, or answered under an older
+	 *  collection policy.
+	 */
+	needsAsk: boolean,
+	/**  Sync-eligible events may currently leave the device. */
+	syncAllowed: boolean,
+	lastSyncAt: string | null,
 };
 
 export type TemplateMeta = {

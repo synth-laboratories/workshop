@@ -38,14 +38,28 @@ not call identity or entitlement services.
 
 ## Telemetry policy
 
-Optional analytics default to the visible preference state and can be disabled
-under Settings → Privacy. Disabling it deletes queued optional events.
-Essential recovery events are retained for 365 days; optional events for 90
-days. Sign-out deletes optional events. Account-deletion requests are routed to
-the Synth privacy owner; financial/audit usage records follow their separate
-legal retention policy.
+The event dictionary, policy version, retention, and sync eligibility live in
+`contracts/telemetry-v1.toml` — the single source of truth. Desktop embeds it;
+the backend registry (`app/api/v1/routes_product.py`, product `workshop`)
+mirrors its sync-eligible names and must never be broader.
 
-The v1 allowlist is the `AllowedTelemetryEvent` union in the shared contract.
+Consent is three-state and honest: never-asked is distinct from a recorded
+choice, every choice pins the collection-policy version it was made under, and
+bumping `collection_policy_version` re-asks on every install. The first run
+asks once ("Share anonymous usage stats?"); until answered, optional events
+record locally and nothing syncs. Allowing enables sync; declining disables
+optional analytics and deletes queued events. The same choice is changeable
+under Settings → Privacy, which also shows the recorded choice with its date,
+last sync time, and a "View collected events" transparency list.
+
+Sync ships only consent-granted, sync-eligible optional events, in idempotent
+batches (`pte_` client ids) to `POST /api/v1/product/usage-events` on the
+profile's backend, via a background flusher that re-checks consent on every
+pass. Essential recovery events are local-only regardless of consent and are
+retained for 365 days; optional events for 90. Sign-out deletes optional
+events. Account-deletion requests are routed to the Synth privacy owner;
+financial/audit usage records follow their separate legal retention policy.
+
 Feature code cannot send arbitrary renderer dictionaries: event creation is
 host-owned and every name, field, scalar type, and outcome is validated before
 storage. Unknown or nested properties are rejected.

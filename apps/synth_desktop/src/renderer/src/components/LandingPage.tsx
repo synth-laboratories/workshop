@@ -8,6 +8,7 @@ import { SynthLogo } from "./SynthLogo";
 import type { LagunaPolicy } from "../bridge/types";
 import { policyLabel } from "../runtime/lagunaPolicies";
 import { ComposerLayoutHost } from "./ComposerLayout";
+import { bridges } from "../runtime/desktopBridge";
 
 type Props = {
 	showMascot?: boolean;
@@ -317,6 +318,26 @@ export function LandingPage({
         window.addEventListener("workshop:state-changed", refresh);
         return () => window.removeEventListener("workshop:state-changed", refresh);
     }, []);
+	// The consent ask is host-owned state, not localStorage: it shows whenever
+	// the host says a choice (under the current collection policy) is missing,
+	// and a policy bump re-asks. Until answered, telemetry stays local-only.
+	const [consentAskDue, setConsentAskDue] = useState(false);
+	const [consentSaving, setConsentSaving] = useState(false);
+	const [consentError, setConsentError] = useState<string | null>(null);
+	useEffect(() => {
+		void bridges.telemetry
+			?.getPolicy()
+			.then((policy) => setConsentAskDue(policy.needsAsk))
+			.catch(() => setConsentAskDue(false));
+	}, []);
+	const answerConsent = (granted: boolean) => {
+		setConsentSaving(true);
+		setConsentError(null);
+		void bridges.telemetry?.setConsent(granted)
+			.then((policy) => setConsentAskDue(policy.needsAsk))
+			.catch(() => setConsentError("Could not save your choice. Please try again."))
+			.finally(() => setConsentSaving(false));
+	};
 	return (
 		<div className="landing" data-testid="landing-page">
 			<div className="landing-hero">
@@ -335,6 +356,36 @@ export function LandingPage({
 						<button type="button" className="quick-card" onClick={onConfigureAccount}>
 							<span><strong>Sign in to Synth</strong><small>Connect cloud models</small></span>
 						</button>
+					</div>
+				) : null}
+				{consentAskDue ? (
+					<div className="landing-consent" data-testid="telemetry-consent-ask">
+						<span>
+							Share usage stats? Counts and outcomes only — never prompts,
+							files, or keys. These may be associated with your signed-in account.
+							Change anytime in Settings → Privacy.
+						</span>
+						<div className="landing-consent-actions">
+							<button
+								type="button"
+								className="settings-secondary-btn"
+								data-testid="telemetry-consent-allow"
+								disabled={consentSaving}
+								onClick={() => answerConsent(true)}
+							>
+								Allow
+							</button>
+							<button
+								type="button"
+								className="settings-secondary-btn"
+								data-testid="telemetry-consent-decline"
+								disabled={consentSaving}
+								onClick={() => answerConsent(false)}
+							>
+								No thanks
+							</button>
+							{consentError ? <span role="alert">{consentError}</span> : null}
+						</div>
 					</div>
 				) : null}
 			</div>

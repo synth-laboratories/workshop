@@ -25,6 +25,9 @@ BUNDLE_ID="ai.usesynth.workshop.ComputerUseHelper"
 TEAM_ID="${SYNTH_TEAM_ID:-}"
 SIGN_IDENTITY="${SYNTH_SIGN_IDENTITY:-}"
 NOTARY_PROFILE="${SYNTH_NOTARY_PROFILE:-}"
+NOTARY_KEY="${SYNTH_NOTARY_KEY_PATH:-}"
+NOTARY_KEY_ID="${SYNTH_NOTARY_KEY_ID:-}"
+NOTARY_ISSUER="${SYNTH_NOTARY_ISSUER:-}"
 
 note() { echo "[helper] $*"; }
 die() { echo "[helper] ERROR: $*" >&2; exit 1; }
@@ -36,6 +39,7 @@ Usage: ./scripts/build-computer-use-helper.sh <command>
   build      Compile release and assemble the .app bundle (no signing)
   sign       Sign with Developer ID and the hardened runtime
   notarize   Submit to Apple, wait, then staple the ticket
+  check-notary-auth Validate credential selection without accessing credentials
   verify     Re-run every check Desktop runs before it will launch the helper
   all        build -> sign -> notarize -> verify
   dev        build, then ad-hoc sign for local development or an explicitly
@@ -46,7 +50,11 @@ Usage: ./scripts/build-computer-use-helper.sh <command>
 Environment:
   SYNTH_TEAM_ID          required for sign/notarize
   SYNTH_SIGN_IDENTITY    required for sign
-  SYNTH_NOTARY_PROFILE   required for notarize (see: xcrun notarytool store-credentials)
+  SYNTH_NOTARY_KEY_PATH  App Store Connect private key file (no Keychain)
+  SYNTH_NOTARY_KEY_ID    required with SYNTH_NOTARY_KEY_PATH
+  SYNTH_NOTARY_ISSUER    issuer UUID for team keys; omit for individual keys
+  SYNTH_NOTARY_PROFILE   alternative Keychain profile; requires explicit authorization
+  SYNTH_ALLOW_KEYCHAIN   set to 1 only after authorization for this operation
   SYNTH_HELPER_OUTPUT    bundle output directory (default: $CRATE/target/bundle)
 EOF
 }
@@ -87,14 +95,32 @@ sign() {
   note "signed"
 }
 
+notary_auth() {
+  NOTARY_ARGS=()
+  if [ -n "$NOTARY_KEY" ] || [ -n "$NOTARY_KEY_ID" ] || [ -n "$NOTARY_ISSUER" ]; then
+    [ -z "$NOTARY_PROFILE" ] || die "choose API key or Keychain profile, not both"
+    [ -n "$NOTARY_KEY" ] && [ -n "$NOTARY_KEY_ID" ] || die "notarization requires both key path and key ID"
+    [ -f "$NOTARY_KEY" ] || die "notarization key file is missing"
+    NOTARY_ARGS=(--key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID")
+    if [ -n "$NOTARY_ISSUER" ]; then
+      NOTARY_ARGS+=(--issuer "$NOTARY_ISSUER")
+    fi
+  elif [ -n "$NOTARY_PROFILE" ]; then
+    [ "${SYNTH_ALLOW_KEYCHAIN:-}" = 1 ] || die "Keychain access requires explicit authorization for this operation"
+    NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+  else
+    die "configure an authorized notarization API key or explicitly authorized Keychain profile"
+  fi
+}
+
 notarize() {
-  [ -n "$NOTARY_PROFILE" ] || die "SYNTH_NOTARY_PROFILE is required to notarize"
+  notary_auth
   [ -d "$BUNDLE" ] || die "no bundle at $BUNDLE; run build and sign first"
   local zip="$OUTPUT/helper-for-notarization.zip"
   note "submitting to Apple (this waits for the result)"
   rm -f "$zip"
   /usr/bin/ditto -c -k --keepParent "$BUNDLE" "$zip"
-  xcrun notarytool submit "$zip" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun notarytool submit "$zip" "${NOTARY_ARGS[@]}" --wait
   rm -f "$zip"
 
   # We staple; the reference implementation does not. Without a stapled ticket
@@ -162,6 +188,7 @@ case "$COMMAND" in
   build) build ;;
   sign) sign ;;
   notarize) notarize ;;
+  check-notary-auth) notary_auth; note "credential selection valid; no submission performed" ;;
   verify) verify ;;
   dev) dev ;;
   ensure-dev) ensure_dev ;;

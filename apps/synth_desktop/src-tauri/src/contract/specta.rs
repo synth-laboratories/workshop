@@ -443,6 +443,9 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::adapters::tauri::logs_query,
             crate::adapters::tauri::failure_export_bundle,
             crate::adapters::tauri::observability_status,
+            crate::telemetry::product_telemetry_set_consent,
+            crate::telemetry::product_telemetry_recent,
+            crate::telemetry::product_telemetry_flush_now,
         ])
 }
 
@@ -599,8 +602,9 @@ mod tests {
         // cancellation, submission, export, campaign lifecycle/adjudication
         // and supersession. The previous 323 expectation undercounted six.
         // 329 → 338: seven ACP commands and two runtime-owned desktop state commands.
+        // 348 → 351: consent, recent telemetry, and flush commands.
         assert_eq!(
-            exported, 348,
+            exported, 351,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(
