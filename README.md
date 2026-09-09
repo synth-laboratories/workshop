@@ -4,7 +4,8 @@ Official downloads: [usesynth.ai/download](https://www.usesynth.ai/download).
 
 For an Apple Silicon source checkout, run `./scripts/install.sh`, then
 `./scripts/workshop.sh build-and-run`. This produces a separate ad-hoc signed
-Workshop Local app and DMG. Install `uv` alongside the checked prerequisites.
+Workshop Local app and DMG. Install `uv` alongside the checked prerequisites;
+Python 3.11+ must be available as `python3` on your PATH.
 The build fetches exact public Containers, Optimizers, and MLX source revisions
 into `work/build-sources`; no sibling checkouts or release credentials are needed.
 Runtime staging validates the pinned dependencies. TBLite is eval-only and is

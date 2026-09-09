@@ -70,7 +70,7 @@ require_command node "Install Node.js 20 or newer."
 require_command npm "Install npm 10 or newer."
 require_command rustc "Install Rust from https://rustup.rs/."
 require_command cargo "Install Rust from https://rustup.rs/."
-require_command python3 "Install Python 3 (required by the desktop launcher)."
+require_command python3 "Install Python 3.11 or newer (required by runtime staging)."
 require_command jq "Install jq (for example: brew install jq)."
 require_command rg "Install ripgrep (for example: brew install ripgrep)."
 require_command curl "Install the macOS command-line tools."
@@ -79,6 +79,8 @@ require_major node 20
 require_major npm 10
 require_major rustc 1
 require_major python3 3
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' || \
+  fail "Python 3.11+ must be available as python3 on PATH (runtime staging uses tomllib)."
 
 [[ -f "$ROOT/package.json" && -f "$ROOT/package-lock.json" ]] || \
   fail "Run this script from a complete Workshop checkout containing package.json and package-lock.json."

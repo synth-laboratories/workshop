@@ -25,6 +25,10 @@ case "$REQUESTED" in
   *) echo "usage: scripts/build-tier.sh <stable|local> [--debug] (v0.10 no longer has tier feature flags)" >&2; exit 2 ;;
 esac
 [[ $# -le 2 && ( $# -lt 2 || "$2" == --debug ) ]] || { echo "expected only optional --debug" >&2; exit 2; }
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' || {
+  echo "Python 3.11+ must be available as python3 on PATH for runtime staging." >&2
+  exit 1
+}
 
 # Shared packaged resources (same for every tier); stage once. Resolve the
 # MLX release checkout by the catalog revision, not by a historical name.
