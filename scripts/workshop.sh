@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="Synth Workshop Local.app"
-BUNDLE_ROOT="$ROOT/apps/synth_desktop/src-tauri/target/release/bundle"
+BUNDLE_ROOT="${CARGO_TARGET_DIR:-$ROOT/apps/synth_desktop/src-tauri/target}/release/bundle"
 APP_PATH="$BUNDLE_ROOT/macos/$APP"
 VERSION="$(node -p "require('$ROOT/apps/synth_desktop/package.json').version")"
 DMG_PATH="$BUNDLE_ROOT/dmg/Synth Workshop Local_${VERSION}_aarch64.dmg"
@@ -29,19 +29,15 @@ fail() {
 
 build() {
   "$ROOT/scripts/install.sh" --check
+  command -v uv >/dev/null || fail "Install uv before building Workshop."
   [[ -d "$ROOT/node_modules" ]] || fail "Dependencies are not installed. Run: ./scripts/install.sh"
   printf '[workshop] building local app and DMG (no release credentials)\n'
-  python3 "$ROOT/scripts/stage-trace-runtime.py" --containers "${SYNTH_CONTAINERS_PROJECT_ROOT:-$ROOT/../containers}"
-  "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
-  "$ROOT/scripts/stage-optimizer-runtime-distribution.sh"
-  if [[ ! -x "$ROOT/services/victoria-logs/victoria-logs" ]]; then
-    "$ROOT/scripts/diagnostics/fetch-victorialogs.sh"
-  fi
-  (cd "$ROOT/apps/synth_desktop" && \
-    npx tauri build --bundles app --config src-tauri/tauri.package.json --config src-tauri/tauri.local.conf.json)
+  source "$ROOT/scripts/prepare-build-sources.sh"
+  SYNTH_APP_SIGN_IDENTITY=- SYNTH_SIGN_IDENTITY=- APPLE_SIGNING_IDENTITY=- \
+    "$ROOT/scripts/build-tier.sh" local
   [[ -d "$APP_PATH" ]] || fail "Build completed without producing $APP_PATH"
   printf '[workshop] applying ad-hoc local signature\n'
-  /usr/bin/codesign --force --deep --sign - "$APP_PATH"
+  /usr/bin/codesign --force --sign - "$APP_PATH"
   /usr/bin/codesign --verify --deep --strict "$APP_PATH"
 
   local dmg_root

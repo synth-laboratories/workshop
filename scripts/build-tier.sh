@@ -17,8 +17,8 @@ PROFILE="release"
 [[ "${2:-}" == "--debug" ]] && { PROFILE_FLAG="--debug"; PROFILE="debug"; }
 
 case "$REQUESTED" in
-  stable) TIERS=(stable) ;;
-  *) echo "usage: scripts/build-tier.sh stable [--debug] (v0.10 no longer has tier feature flags)" >&2; exit 2 ;;
+  stable|local) TIERS=("$REQUESTED") ;;
+  *) echo "usage: scripts/build-tier.sh <stable|local> [--debug] (v0.10 no longer has tier feature flags)" >&2; exit 2 ;;
 esac
 [[ $# -le 2 && ( $# -lt 2 || "$2" == --debug ) ]] || { echo "expected only optional --debug" >&2; exit 2; }
 

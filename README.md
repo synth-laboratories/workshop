@@ -4,11 +4,19 @@ Official downloads: [usesynth.ai/download](https://www.usesynth.ai/download).
 
 For an Apple Silicon source checkout, run `./scripts/install.sh`, then
 `./scripts/workshop.sh build-and-run`. This produces a separate ad-hoc signed
-Workshop Local app. Runtime staging validates the pinned dependencies; local
-builds are not official notarized distributions. `./scripts/install.sh --check`
+Workshop Local app and DMG. Install `uv` alongside the checked prerequisites.
+The build fetches exact public Containers, Optimizers, and MLX source revisions
+into `work/build-sources`; no sibling checkouts or release credentials are needed.
+Runtime staging validates the pinned dependencies. TBLite is eval-only and is
+not needed to build or use Workshop. `./scripts/install.sh --check`
 checks prerequisites without modifying local configuration.
 
-> **Visibility note:** This repository is currently **private**. It is intended to become **public**.
+**v0.10 distribution policy:** both the downloadable app and source builds are
+ad-hoc signed and **not Apple-notarized**. We do not claim Developer-ID or
+Gatekeeper approval. See the download page for the artifact checksum and macOS
+first-launch instructions; verify the source before allowing an app to run.
+
+This repository is public; the source-build path uses public, revision-pinned dependencies.
 
 Synth Desktop / Local Agent Workbench — a local-first agent research and development workbench where agents can run locally (Laguna XS 2.1) or in Synth Cloud (Intern sync/async), and where every run produces inspectable, replayable, quantitative, version-linked artifacts.
 

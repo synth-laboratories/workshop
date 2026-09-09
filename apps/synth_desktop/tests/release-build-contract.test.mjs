@@ -39,3 +39,14 @@ test("archive sealing preserves nested browser JIT entitlements", () => {
   assert.doesNotMatch(archive, /codesign --force --deep/);
   assert.match(archive, /codesign --verify --deep --strict/);
 });
+
+test("source builds resolve public pinned inputs and explicitly use ad-hoc signing", () => {
+  const local = readFileSync(new URL("scripts/workshop.sh", root), "utf8");
+  assert.match(local, /source "\$ROOT\/scripts\/prepare-build-sources.sh"/);
+  assert.match(local, /SYNTH_APP_SIGN_IDENTITY=- SYNTH_SIGN_IDENTITY=- APPLE_SIGNING_IDENTITY=-/);
+  assert.doesNotMatch(local, /codesign --force --deep/);
+  const sources = readFileSync(new URL("scripts/prepare-build-sources.sh", root), "utf8");
+  assert.match(sources, /credential.helper=/);
+  assert.match(sources, /GIT_TERMINAL_PROMPT=0/);
+  assert.doesNotMatch(sources, /tblite|reset --hard/);
+});
