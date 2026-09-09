@@ -14,6 +14,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 120
     env:
+      DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
       SYNTH_APP_SIGN_IDENTITY: '-'
       SYNTH_SIGN_IDENTITY: '-'
       APPLE_SIGNING_IDENTITY: '-'
@@ -30,6 +31,8 @@ jobs:
       - name: Configure public build prerequisites
         shell: bash
         run: |
+          xcodebuild -version
+          swift --version
           rustup toolchain install 1.97.1 --profile minimal
           uv python install 3.11
           dirname "$(uv python find 3.11)" >> "$GITHUB_PATH"
