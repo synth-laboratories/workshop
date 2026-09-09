@@ -50,10 +50,21 @@ pub(crate) fn fullscreen_settled(
         return false;
     }
     match sample.monitor {
-        // Entering: the window has to actually cover its monitor.
-        Some(monitor) if target => sample.size.0 >= monitor.0 && sample.size.1 >= monitor.1,
-        // Leaving: it has to have stopped covering it.
-        Some(monitor) => sample.size.0 < monitor.0 || sample.size.1 < monitor.1,
+        // Entering: the content area has to cover substantially all of its
+        // monitor. AppKit's fullscreen inner size excludes the display's
+        // camera/menu-bar safe area (66 physical pixels on the acceptance
+        // machine), so requiring exact monitor height rejects a window that
+        // has actually arrived. Integer arithmetic keeps this deterministic.
+        Some(monitor) if target => {
+            u64::from(sample.size.0) * 100 >= u64::from(monitor.0) * 95
+                && u64::from(sample.size.1) * 100 >= u64::from(monitor.1) * 95
+        }
+        // Leaving: it has to have stopped covering substantially all of the
+        // monitor under the same safe-area-aware definition.
+        Some(monitor) => {
+            u64::from(sample.size.0) * 100 < u64::from(monitor.0) * 95
+                || u64::from(sample.size.1) * 100 < u64::from(monitor.1) * 95
+        }
         // Nothing to compare against; the flag plus stability is all there is.
         None => true,
     }
@@ -414,6 +425,15 @@ mod tests {
         let arrived = sample(true, MONITOR);
         // One reading is never enough; the pair is what proves it stopped.
         assert!(!fullscreen_settled(true, arrived, None));
+        assert!(fullscreen_settled(true, arrived, Some(arrived)));
+    }
+
+    #[test]
+    fn fullscreen_content_safe_area_is_still_settled() {
+        // Native acceptance on a 3456x2234 display observes a 3456x2168
+        // fullscreen content surface: AppKit reserves 66 physical pixels for
+        // the display safe area even though the style mask is fullscreen.
+        let arrived = sample(true, (3456, 2168));
         assert!(fullscreen_settled(true, arrived, Some(arrived)));
     }
 
