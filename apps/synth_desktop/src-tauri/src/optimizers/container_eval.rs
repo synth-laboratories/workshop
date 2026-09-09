@@ -5909,7 +5909,10 @@ fn container_matches_family(task_family: Option<&str>, metadata: &Value, family:
     // trusted registry fields so an explicitly selected, healthy DeepSWE
     // container is not rejected merely because its top-level task_family is
     // the generic `harbor` runtime.
+    // Externally registered adapters may use the generic family `external`;
+    // their fresh target_id is still an authoritative exact target identity.
     for pointer in [
+        "/info/target_id",
         "/info/platform_id",
         "/info/environment_ref",
         "/info/evaluation_plan_ref",
@@ -6164,6 +6167,19 @@ max_total_rollouts = 1
             &metadata,
             "healthbench"
         ));
+    }
+
+    #[test]
+    fn external_container_matches_fresh_target_identity_without_a_launch_declaration() {
+        let metadata = json!({"info": {
+            "runtime_family": "external",
+            "target_id": "dungeongrid_code_policy",
+            "environment_ref": "env:dungeongrid_gold"
+        }});
+        assert!(container_matches_family(Some("external"), &metadata, "dungeongrid_code_policy"));
+        assert!(container_matches_family(Some("external"), &metadata, "dungeongrid"));
+        assert!(!container_matches_family(Some("external"), &metadata, "craftax"));
+        assert!(!container_matches_family(Some("external"), &json!({}), "dungeongrid_code_policy"));
     }
 
     #[test]
