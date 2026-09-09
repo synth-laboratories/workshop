@@ -1,10 +1,32 @@
 #!/usr/bin/env node
-import { chromium } from "playwright";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+
+// The packaged runtime keeps its pinned Playwright nested under the runtime
+// root, which no static specifier can reach from this script's location. The
+// host resolves the runtime once and passes it here, so readiness and this
+// process always load the same package. A checkout without an assembled
+// runtime still resolves the bare specifier from its own node_modules.
+const require = createRequire(import.meta.url);
+const runtimeRoot = process.env.SYNTH_BROWSER_RUNTIME_ROOT;
+const playwrightSpecifier = runtimeRoot
+  ? path.join(runtimeRoot, "node_modules", "playwright")
+  : "playwright";
+// The assembled runtime installs full headed Chromium and no headless shell,
+// so an unpinned launch would ask for an artifact that was never bundled and
+// report it as an uninstalled Playwright. Pinning the executable makes a
+// session start the exact binary readiness measured, headless or not.
+let chromium;
+try {
+  ({ chromium } = require(playwrightSpecifier));
+} catch (error) {
+  process.stderr.write(`browser_runtime_unavailable: cannot load Playwright from ${playwrightSpecifier}: ${error?.message ?? error}\n`);
+  process.exit(78);
+}
 
 const PROTOCOL_VERSION = "workshop.browser.v1";
 const DEFAULT_MAX_CHARS = 16_000;
@@ -287,6 +309,7 @@ async function handle(operation, args = {}) {
       headless: process.env.SYNTH_BROWSER_HEADLESS === "1",
       acceptDownloads: true,
       downloadsPath: path.join(dir, "downloads"),
+      ...(runtimeRoot ? { executablePath: chromium.executablePath() } : {}),
     });
     await installRevisionTracking(context);
     const session = { id: id("browser_session"), profileName, dir, context, tabs: new Map(), auditPath: path.join(dir, "audit.jsonl") };

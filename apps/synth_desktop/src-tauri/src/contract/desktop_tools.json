@@ -29518,6 +29518,45 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "runtimeSource": {
+                "type": "string"
+              },
+              "runtimeRoot": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "nodeSource": {
+                "type": "string"
+              },
+              "nodePath": {
+                "type": "string"
+              },
+              "playwrightVersion": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "chromiumPath": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
               }
             },
             "required": [
@@ -29531,7 +29570,13 @@
               "backendPath",
               "profileRoot",
               "allowedOrigins",
-              "defaultLocalOrigins"
+              "defaultLocalOrigins",
+              "runtimeSource",
+              "runtimeRoot",
+              "nodeSource",
+              "nodePath",
+              "playwrightVersion",
+              "chromiumPath"
             ],
             "additionalProperties": false
           }
@@ -29622,6 +29667,45 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "runtimeSource": {
+                "type": "string"
+              },
+              "runtimeRoot": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "nodeSource": {
+                "type": "string"
+              },
+              "nodePath": {
+                "type": "string"
+              },
+              "playwrightVersion": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "chromiumPath": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
               }
             },
             "required": [
@@ -29635,7 +29719,13 @@
               "backendPath",
               "profileRoot",
               "allowedOrigins",
-              "defaultLocalOrigins"
+              "defaultLocalOrigins",
+              "runtimeSource",
+              "runtimeRoot",
+              "nodeSource",
+              "nodePath",
+              "playwrightVersion",
+              "chromiumPath"
             ],
             "additionalProperties": false
           }
@@ -29726,6 +29816,45 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "runtimeSource": {
+                "type": "string"
+              },
+              "runtimeRoot": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "nodeSource": {
+                "type": "string"
+              },
+              "nodePath": {
+                "type": "string"
+              },
+              "playwrightVersion": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "chromiumPath": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
               }
             },
             "required": [
@@ -29739,7 +29868,13 @@
               "backendPath",
               "profileRoot",
               "allowedOrigins",
-              "defaultLocalOrigins"
+              "defaultLocalOrigins",
+              "runtimeSource",
+              "runtimeRoot",
+              "nodeSource",
+              "nodePath",
+              "playwrightVersion",
+              "chromiumPath"
             ],
             "additionalProperties": false
           }

@@ -134,8 +134,14 @@ impl Backend {
     fn spawn() -> Result<Self> {
         let script = super::backend_script_path();
         anyhow::ensure!(script.is_file(), "managed browser backend is not installed");
-        let mut command =
-            Command::new(std::env::var_os("SYNTH_BROWSER_NODE").unwrap_or_else(|| "node".into()));
+        // Readiness and launch share one resolution, so a session can never
+        // start against a different interpreter, package or Chromium than the
+        // one Settings reported. An unusable runtime fails here, named.
+        let runtime = super::current_runtime();
+        if let Some(problem) = runtime.problem.as_deref() {
+            anyhow::bail!("managed browser runtime is unavailable: {problem}");
+        }
+        let mut command = Command::new(&runtime.node);
         command.arg(script).env_clear();
         for key in [
             "PATH",
@@ -146,6 +152,8 @@ impl Backend {
             "WAYLAND_DISPLAY",
             "XDG_RUNTIME_DIR",
             "SystemRoot",
+            // Only meaningful without an assembled runtime; the resolution
+            // below overrides it whenever one was selected.
             "PLAYWRIGHT_BROWSERS_PATH",
             // Explicit operator launch policy; never accepted from tool args.
             "SYNTH_BROWSER_HEADLESS",
@@ -156,6 +164,7 @@ impl Backend {
                 command.env(key, value);
             }
         }
+        super::apply_runtime_env(&mut command, &runtime);
         command
             .env("SYNTH_BROWSER_POLICY_FILE", super::policy_path())
             .env("SYNTH_BROWSER_PROFILE_ROOT", super::profile_root())

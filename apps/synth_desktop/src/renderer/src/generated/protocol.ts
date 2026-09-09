@@ -892,6 +892,16 @@ export type BrowserRuntimeStatus = {
 	profileRoot: string,
 	allowedOrigins: string[],
 	defaultLocalOrigins: string[],
+	/**
+	 *  Which runtime readiness actually measured, and which the next managed
+	 *  session will start. `path` means no assembled runtime was found.
+	 */
+	runtimeSource: string,
+	runtimeRoot: string | null,
+	nodeSource: string,
+	nodePath: string,
+	playwrightVersion: string | null,
+	chromiumPath: string | null,
 };
 
 /**
