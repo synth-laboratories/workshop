@@ -4,17 +4,17 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="$ROOT/runtime-distributions/optimizers"
-VERSION="0.2.21"
-# Derived from the Rust catalog, never restated. manager.rs is what verifies
-# the embedded distribution at install time, so constants copied here can drift
-# from it -- and did: bumping only this script staged 0.2.20 while the app
-# still demanded 686f41c4, and the install failed with "embedded Optimizers
-# distribution does not match the release pin". Same defect the MLX staging
-# script already carried, for the same reason.
+# Every pin is derived from the Rust catalog, never restated. manager.rs is what
+# verifies the embedded distribution at install time, so constants copied here
+# can drift from it -- and did: bumping only this script staged 0.2.20 while the
+# app still demanded 686f41c4, and the install failed with "embedded Optimizers
+# distribution does not match the release pin". The version was still a copy
+# after that fix, which is the same defect one field further along.
 OPTIMIZER_CATALOG="$ROOT/apps/synth_desktop/src-tauri/src/optimizers/manager.rs"
+VERSION="$(rg -o 'DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-([0-9][0-9A-Za-z.\-]*)"' --replace '$1' -m1 "$OPTIMIZER_CATALOG")"
 EXPECTED_SOURCE_REVISION="$(rg -o 'OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "([0-9a-f]{40})"' --replace '$1' -m1 "$OPTIMIZER_CATALOG")"
 EXPECTED_LOCK_SHA256="$(rg -o 'OPTIMIZER_DISTRIBUTION_LOCK_SHA256: &str =\s*\n?\s*"([0-9a-f]{64})"' --replace '$1' -m1 --multiline "$OPTIMIZER_CATALOG")"
-[[ -n "$EXPECTED_SOURCE_REVISION" && -n "$EXPECTED_LOCK_SHA256" ]] || {
+[[ -n "$VERSION" && -n "$EXPECTED_SOURCE_REVISION" && -n "$EXPECTED_LOCK_SHA256" ]] || {
   echo "[optimizers-runtime] cannot read the pinned catalog from $OPTIMIZER_CATALOG" >&2
   exit 1
 }
