@@ -781,7 +781,7 @@ async fn start_eval(
         .await
         {
             let _ =
-                settle_live_annotation_visual(&worker, worker_live_visual_id.as_deref(), "failed")
+                settle_live_annotation_visual(&worker, worker_live_visual_id.as_deref(), None, "failed")
                     .await;
             // A worker can fail before its first progress projection (for
             // example when Workshop refuses to mint a secrets proxy).  Its
@@ -818,6 +818,11 @@ async fn start_eval(
                         format!("could not record visual delivery failure for {worker_run_id}: {record_error:#}"),
                     );
                 }
+            }
+            if let Err(error) = settle_live_annotation_visual(
+                &worker, worker_live_visual_id.as_deref(), Some(&worker_visual_id), "failed",
+            ).await {
+                let _ = worker.record_visual_projection_delivery_failure(&worker_run_id, &error).await;
             }
         }
         worker.unregister_local_recipe(&worker_run_id).await;
@@ -1251,13 +1256,40 @@ async fn append_live_annotation_bindings(
     Ok(())
 }
 
+/// Preserve the recorded stream authority while adding the settled projection.
+/// The producer may go offline after completion; its absence is not a new run state.
+fn harbor_terminal_bindings(existing: &Value, overview: &Value) -> Result<Value> {
+    let snapshot = crate::visuals::binding_descriptors(overview)?
+        .into_iter()
+        .find(|row| row.get("input").and_then(Value::as_str) == Some("experiment")
+            && row.pointer("/data/schemaVersion").and_then(Value::as_str) == Some(EXPERIMENT_SCHEMA)
+            && row.pointer("/data/aggregate/lifecycle").and_then(Value::as_str) == Some("terminal"))
+        .ok_or_else(|| anyhow::anyhow!("Harbor settlement requires a terminal experiment snapshot"))?;
+    let mut inputs = crate::visuals::binding_descriptors(existing)?;
+    inputs.retain(|row| row.get("input").and_then(Value::as_str) != Some("experiment"));
+    inputs.push(snapshot);
+    Ok(json!({ "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION, "inputs": inputs }))
+}
+
 async fn settle_live_annotation_visual(
     service: &OptimizerService,
     visual_id: Option<&str>,
+    overview_id: Option<&str>,
     status: &str,
 ) -> Result<()> {
     let Some(visual_id) = visual_id else {
         return Ok(());
+    };
+    let visual = service.visuals().get(visual_id.to_string()).await?;
+    let bindings = if visual.template_id == HARBOR_LIVE_TEMPLATE {
+        if let Some(overview_id) = overview_id {
+            let overview = service.visuals().get(overview_id.to_string()).await?;
+            Some(harbor_terminal_bindings(&visual.bindings, &overview.bindings)?)
+        } else {
+            None
+        }
+    } else {
+        None
     };
     let visual_status = match status {
         "completed" | "cancelled" | "degraded" => VisualStatus::Saved,
@@ -1269,7 +1301,7 @@ async fn settle_live_annotation_visual(
             visual_id.to_string(),
             VisualUpdateRequest {
                 title: None,
-                bindings: None,
+                bindings,
                 status: Some(visual_status),
                 renderer_kind: None,
                 message_id: None,
@@ -2115,7 +2147,7 @@ async fn run_eval_worker(
     .await?;
     evidence(
         "live_annotation_visual",
-        settle_live_annotation_visual(&service, live_visual_id.as_deref(), status),
+        settle_live_annotation_visual(&service, live_visual_id.as_deref(), Some(&visual_id), status),
     )
     .await?;
     // This is the final mutable summary/visual projection. `append_terminal`
@@ -10446,6 +10478,23 @@ max_total_rollouts = 1
 #[cfg(test)]
 mod live_annotation_binding_tests {
     use super::*;
+
+    #[test]
+    fn harbor_settlement_retains_snapshot_without_losing_stream_authority() {
+        let stream = live_stream_descriptor("http://127.0.0.1:1/stream", "http://127.0.0.1:1/events");
+        let existing = json!({"schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION, "inputs": [stream.clone()]});
+        let snapshot = json!({"input":"experiment", "kind":"inline", "schema":EXPERIMENT_SCHEMA,
+            "data":{"schemaVersion":EXPERIMENT_SCHEMA,"aggregate":{"lifecycle":"terminal"},
+                    "status":"completed","results":{"rollouts":[{"reward":200,"traceId":"tracev5_retained"}]}}});
+        let overview = json!({"schemaVersion":VISUAL_BINDINGS_SCHEMA_VERSION,"inputs":[snapshot.clone()]});
+        let merged = harbor_terminal_bindings(&existing, &overview).unwrap();
+        assert_eq!(merged["inputs"], json!([stream, snapshot]));
+        assert_eq!(harbor_terminal_bindings(&merged, &overview).unwrap(), merged);
+        let mut running = overview.clone();
+        running["inputs"][0]["data"]["aggregate"]["lifecycle"] = json!("running");
+        assert!(harbor_terminal_bindings(&existing, &running).is_err());
+        assert!(harbor_terminal_bindings(&existing, &existing).is_err());
+    }
 
     #[test]
     fn declared_harbor_and_craftax_templates_get_a_real_live_stream_visual() {
