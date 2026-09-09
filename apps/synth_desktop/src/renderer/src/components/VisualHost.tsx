@@ -1,5 +1,6 @@
 import { Component, useEffect, useMemo, useRef, useState, type ComponentType, type ErrorInfo, type MouseEvent, type ReactNode } from "react";
-import { ReactVisualRendererRegistry, useVisualSessionClient, useVisualSessionSnapshot, useVisualEvidence } from "@synth/visuals-react";
+import { ReactVisualRendererRegistry, useVisualSessionClient, useVisualSessionSnapshot } from "@synth/visuals-react";
+import { useTemplateEvidence } from "../visuals/useTemplateEvidence";
 import { ManagedHtmlFrame } from "@synth/workshop-visuals/components/ManagedHtmlFrame.tsx";
 export { managedHtmlPayload } from "@synth/workshop-visuals/components/ManagedHtmlFrame.tsx";
 import { WorkshopVisualSession } from "../visuals/WorkshopVisualSession";
@@ -89,7 +90,7 @@ function PinnedTemplate({Shell,...props}:{Shell:ComponentType<ShellProps>}&Shell
 		if(value&&typeof value==="object")seen.set(value,key);
 	}
 	const data=JSON.parse(JSON.stringify({values,aliases})) as {values:ShellProps;aliases:Record<string,string>};
-	const cut=useVisualEvidence("template",data);
+	const cut=useTemplateEvidence(data);
 	if(!cut.ready||!cut.value)return <div data-visual-capture-blocked="true" role={cut.error?"alert":"status"}>{cut.error??"Restoring pinned visual evidence…"}</div>;
 	const restored={...cut.value.values};
 	for(const [key,source] of Object.entries(cut.value.aliases))restored[key]=restored[source];

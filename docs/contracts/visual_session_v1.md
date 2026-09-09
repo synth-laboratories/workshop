@@ -88,6 +88,13 @@ Hosts advertise `evidenceCuts` to enable `useVisualEvidence` and
 JSON body (at most 1.5 MB) scoped to the visual revision. `evidence.read` is
 read-only and verifies the stored digest. Presentation controls retain digest
 references; checkpoints and recording events do not repeat the source bodies.
+Workshop template props use `synth.template-evidence-pages.v1`: a pinned manifest
+references immutable JSON-string pages (120,000 UTF-16 code units each), plus
+the canonical digest of the reconstructed payload. Every page and the complete
+payload are verified before rendering. The adapter limits the payload to 16 MB
+and 134 pages; larger inputs require a domain paginated explorer. It does not
+raise the native per-body limit or truncate retained evidence. Legacy direct
+payload checkpoints remain readable. Replay reads only the referenced pages.
 Workshop pins template data, complete stream views, historical projections,
 research reads, and collection pages/items before displaying them. Replay uses
 only retained answers, never the live read port. A missing or corrupt answer
