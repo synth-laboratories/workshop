@@ -513,6 +513,7 @@ impl Manager {
             "agent already has an active turn; cancel or wait"
         );
         let run_id = format!("run_acp_{}", uuid::Uuid::new_v4().simple());
+        self.core.claim_turn(id.clone(), run_id.clone(), Some(attachment.generation.clone())).await?;
         let run = self
             .core
             .runs()
@@ -525,7 +526,14 @@ impl Manager {
                 metadata: json!({}),
                 source: EventSource::Acp,
             })
-            .await?;
+            .await;
+        let run = match run {
+            Ok(run) => run,
+            Err(error) => {
+                self.core.release_turn(id.clone()).await?;
+                return Err(error);
+            }
+        };
         self.core.broadcast_committed(run.event);
         self.status(&id, SessionStatus::Running).await?;
         self.event(&id, "agent.prompt", json!({"runId":run_id,"text":text}))
@@ -539,8 +547,27 @@ impl Manager {
         let turn_id = run_id.clone();
         let session_id = id.clone();
         tokio::spawn(async move {
-            let result = attachment.peer.request("session/prompt", json!({"sessionId":attachment.remote_id,"prompt":[{"type":"text","text":text}]}),
-                Duration::from_secs(u64::from(attachment.backend.max_turn_seconds))).await.and_then(|result| {
+            let request = attachment.peer.request("session/prompt", json!({"sessionId":attachment.remote_id,"prompt":[{"type":"text","text":text}]}),
+                Duration::from_secs(u64::from(attachment.backend.max_turn_seconds)));
+            tokio::pin!(request);
+            let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+            let result = loop {
+                tokio::select! {
+                    result = &mut request => break result,
+                    _ = heartbeat.tick() => {
+                        // The host still owns the bounded request, including human waits.
+                        // EOF, timeout and cancellation settle it through the same path.
+                        let _lock = manager.lifecycle.lock().await;
+                        if !manager.current(&session_id, &attachment).await
+                            || attachment.active_run.lock().await.as_deref() != Some(turn_id.as_str()) {
+                            break Err(anyhow::anyhow!("ACP turn attachment changed"));
+                        }
+                        if let Err(error) = manager.core.heartbeat_turn(session_id.clone()).await {
+                            break Err(error);
+                        }
+                    }
+                }
+            }.and_then(|result| {
                     anyhow::ensure!(matches!(result["stopReason"].as_str(), Some("end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled")), "invalid ACP stop reason");
                     Ok(result)
                 });
@@ -608,6 +635,7 @@ impl Manager {
                 )
                 .await;
             *attachment.active_run.lock().await = None;
+            let _ = manager.core.release_turn(session_id.clone()).await;
             if status == RunStatus::Failed {
                 let _ = attachment.peer.stop().await;
             }
@@ -689,6 +717,7 @@ impl Manager {
                 .await?;
             self.core.broadcast_committed(mutation.event);
         }
+        self.core.release_turn(id.to_owned()).await?;
         self.event(id, "agent.detached", json!({"reason":reason}))
             .await?;
         Ok(())

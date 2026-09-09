@@ -99,7 +99,9 @@ pub fn read(root: &Path) -> Result<Vec<Backend>> {
 mod tests {
     use super::*;
     fn directory() -> tempfile::TempDir {
-        tempfile::tempdir_in(Path::new(env!("CARGO_MANIFEST_DIR")).join("target")).unwrap()
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        fs::create_dir_all(&root).unwrap();
+        tempfile::tempdir_in(root).unwrap()
     }
     #[test]
     fn backend_limits_and_environment_must_stay_in_the_configured_workspace() {
