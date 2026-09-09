@@ -21,6 +21,11 @@ named operations directly; do not use shell or scan ports as a fallback.
    engine is not a policy and proves no model was in the loop.
 5. Register a container only when the user or workspace gives an explicit URL.
    Use `container_register`; never infer a localhost port.
+6. An already-running, healthy registered target can be evaluated by its exact
+   container ID through ordinary optimizer admission. A workspace launch
+   declaration is required for `container_ensure`/`container_reconcile`, not for
+   using an externally registered target. Do not reconcile it just to make it
+   eligible; let the requested workflow validate its fresh capabilities.
 
 ## Select by capability, not by liveness
 
