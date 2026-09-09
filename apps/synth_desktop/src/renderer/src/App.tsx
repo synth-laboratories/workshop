@@ -148,6 +148,7 @@ export default function App() {
 	const appTitlebar = (
 		<AppTitlebar
 			tabLabel={c.view.kind === "landing" ? "New conversation" : c.tabLabel}
+			isChatTab={c.view.kind === "chat" || c.view.kind === "landing"}
 			activeLocalModel={Boolean(c.activeLocalModel)}
 			reserveNativeControls={c.view.kind === "settings" || !c.sidebarVisible}
 			brand={c.view.kind === "settings" && c.view.section === "models" ? "openai" : "synth"}

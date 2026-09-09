@@ -132,6 +132,7 @@ import {
 	visualRevisionReducer
 } from "../runtime/visualRevisionState";
 import type { MainView } from "../routes";
+import { PLUGIN_NAV } from "../runtime/pluginNav";
 
 // `turn/start` only proves the app-server accepted the request. It does not
 // prove the provider stream is alive, so never leave the operator at Working…
@@ -2225,23 +2226,19 @@ export function useAppController() {
 		return () => window.removeEventListener("keydown", onKeyDown);
 	}, [closeSearch, openSearch, searchOpen]);
 
+	// Plugin destinations take their name from the one nav table the sidebar
+	// already uses, so a destination cannot be added without one. Spelling them
+	// out here had left Jesterky, Environment QA and Computer Use to fall
+	// through to the trailing default, where they wore the selected model's
+	// name — Jesterky's page was titled "GPT-5.6 Luna".
+	const pluginDestination = PLUGIN_NAV.find((entry) => entry.id === view.kind);
 	const tabLabel =
-		view.kind === "settings"
+		pluginDestination
+			? pluginDestination.label
+		: view.kind === "settings"
 			? "Settings"
 			: view.kind === "connectors"
 				? "Connectors"
-			: view.kind === "visuals"
-				? "Visuals"
-			: view.kind === "reports"
-				? "Reports"
-			: view.kind === "experiments"
-				? "Experiments"
-			: view.kind === "optimizers"
-				? "Optimizers"
-			: view.kind === "inventory"
-				? "Data"
-			: view.kind === "inference"
-				? "Inference"
 			: view.kind === "plugins"
 				? "Integrations"
 				: view.kind === "async"

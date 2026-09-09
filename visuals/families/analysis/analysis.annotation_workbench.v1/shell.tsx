@@ -191,6 +191,44 @@ export function Shell(props: ShellProps) {
     setView("findings");
   };
 
+  // "No finding was reported", "a filter is hiding them" and "nothing has been
+  // analysed" are three different claims, and a blank panel makes all three look
+  // like the same absence. Say which one it is.
+  const emptyFindings = (): { headline: string; detail: string } | null => {
+    if (visibleFindings.length) return null;
+    if (labelFilter) {
+      return {
+        headline: `No finding carries the label ${labelFilter}.`,
+        detail: findings.length === 1
+          ? "One finding exists under another label."
+          : `${findings.length} findings exist under other labels.`
+      };
+    }
+    if (importedEvidence) {
+      return {
+        headline: "This is imported evidence; no annotation job ran here.",
+        detail: "The retained jobs reported no finding. That is their result, not a gap in this pane, and no finding is inferred from the trace."
+      };
+    }
+    if ((coverage.jobs ?? 0) > 0) {
+      const aside = [
+        coverage.abstained ? `${coverage.abstained} abstained` : null,
+        coverage.rejected ? `${coverage.rejected} rejected` : null,
+        coverage.failed ? `${coverage.failed} failed` : null
+      ].filter(Boolean).join(" · ");
+      return {
+        headline: `${coverage.jobs} annotation ${coverage.jobs === 1 ? "job" : "jobs"} reported no finding.`,
+        detail: aside
+          ? `Reported alongside: ${aside}. An abstention is not a clean result.`
+          : "Every job completed and none raised anything."
+      };
+    }
+    return {
+      headline: "No annotation job has run against this campaign.",
+      detail: "Nothing has been analysed yet, so there is nothing to report either way."
+    };
+  };
+
   const title = props.title ?? campaign.title ?? "Annotation workbench";
   const importedEvidence = campaign.status === "sealed" && coverage.jobs === 0 && Boolean(projection.evidenceHead?.digest);
   const semanticCount = findings.length + milestones.length + (projection.jobs?.length ?? 0);
@@ -307,6 +345,27 @@ export function Shell(props: ShellProps) {
               {citing.length} finding{citing.length === 1 ? "" : "s"} cite `{focusedSpan}`.
             </p>
           ) : null}
+          {(() => {
+            const empty = emptyFindings();
+            return empty ? (
+              <div
+                data-testid="analysis-findings-empty"
+                role="note"
+                style={{
+                  border: "1px dashed var(--sv-border)",
+                  borderRadius: "var(--sv-radius-lg)",
+                  padding: 16,
+                  display: "grid",
+                  gap: 4
+                }}
+              >
+                <strong style={{ fontSize: "var(--sv-fs-body)" }}>{empty.headline}</strong>
+                <span style={{ fontSize: "var(--sv-fs-meta)", color: "var(--sv-text-muted)" }}>
+                  {empty.detail}
+                </span>
+              </div>
+            ) : null;
+          })()}
           <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 8 }}>
             {visibleFindings.map((finding) => (
               <li key={finding.id}>

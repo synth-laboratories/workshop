@@ -48,6 +48,8 @@ function IconEllipsis() {
 
 export type AppTitlebarProps = {
 	tabLabel: string;
+	/** False on a plugin destination, which is a place rather than a conversation. */
+	isChatTab?: boolean;
 	activeLocalModel: boolean;
 	terminalOpen: boolean;
 	sidePanelOpen: boolean;
@@ -73,6 +75,7 @@ export type TabCopyItem = {
 
 export function AppTitlebar({
 	tabLabel,
+	isChatTab = true,
 	activeLocalModel,
 	terminalOpen,
 	sidePanelOpen,
@@ -110,7 +113,7 @@ export function AppTitlebar({
 	return (
 		<header className={`titlebar${reserveNativeControls ? " titlebar-native-inset" : ""}`} data-testid="titlebar" data-tauri-drag-region="">
 			<div className="titlebar-tabs" data-tauri-drag-region="">
-				<div className="tab tab-active" role="group" aria-label={`${tabLabel} chat tab`} data-tauri-drag-region="">
+				<div className="tab tab-active" role="group" aria-label={isChatTab ? `${tabLabel} chat tab` : `${tabLabel} tab`} data-tauri-drag-region="">
 					{showTabIcon ? (brand === "openai" ? (
 						<ProviderMark kind="openai" className="tab-logo" />
 					) : (
