@@ -2262,6 +2262,7 @@ async fn append_provider_usage_reconciliation(
     let Some(secrets) = crate::secrets::live() else {
         return Ok(());
     };
+    secrets.revoke_run(run_id)?;
     let Some(receipt) = secrets.provider_usage_receipt(run_id)? else {
         return Ok(());
     };
@@ -2281,6 +2282,7 @@ async fn append_provider_usage_reconciliation_at_least(
     let Some(secrets) = crate::secrets::live() else {
         return Ok(());
     };
+    secrets.revoke_run(run_id)?;
     let mut last = None;
     for attempt in 0..20 {
         last = secrets.provider_usage_receipt(run_id)?;
@@ -2537,7 +2539,7 @@ async fn append_eval_terminal(
         record,
         cancelled,
         spec.cost_ceiling_usd,
-        !spec.provider.trim().is_empty() && !spec.model.trim().is_empty(),
+        provider_needs_credentials(&spec.provider) && !spec.model.trim().is_empty(),
     );
     let evidence_state = record
         .get("evidenceState")
@@ -4132,7 +4134,7 @@ async fn persist_progress(
     let cost_ceiling_usd = spec.cost_ceiling_usd;
     let provider = spec.provider.clone();
     let model = spec.model.clone();
-    let provider_receipt_authoritative = !provider.trim().is_empty() && !model.trim().is_empty();
+    let provider_receipt_authoritative = provider_needs_credentials(&provider) && !model.trim().is_empty();
     let run_before_patch = service.get(run_id.to_string()).await?;
     let started_at = run_before_patch
         .started_at
@@ -4517,6 +4519,9 @@ fn usage_with_authoritative_provider_receipt(
         (Some(policy), None, false) => Some(policy),
         _ => None,
     };
+    if let Some(runtime_policy) = measured.extra.get("policyUsage").cloned() {
+        measured.extra.entry("runtimePolicyUsage").or_insert(runtime_policy);
+    }
     measured
         .extra
         .insert("policyUsage".into(), policy.to_json());
@@ -4904,7 +4909,7 @@ async fn run_one_example(
         let mut telemetry = authoritative_poll_telemetry();
         if let Some(object) = telemetry.as_object_mut() {
             object.insert("retention".into(), json!("run"));
-            if spec.live_annotation.is_some() {
+            if ctx.live_visual_id.is_some() || spec.live_annotation.is_some() {
                 // The live pane binds declared SSE sources for both streams
                 // (the relay keeps polling); SSE is a declared, non-auto
                 // transport, so the authoritative-run refusal does not apply.
@@ -4931,6 +4936,7 @@ async fn run_one_example(
     let mut prepare_body = json!({
         "rollout_id": rollout_id,
         "task_instance_id": task_instance_id,
+        "seed": example.seed,
         "world_ref": spec.world_ref,
         "evaluation_plan_ref": spec.evaluation_plan_ref,
         "policy_ref": { "harness": spec.harness, "config": spec.policy_config },
@@ -5033,6 +5039,7 @@ async fn run_one_example(
         "slot": "stream",
         "telemetry": telemetry,
         "task_instance_id": task_instance_id,
+        "seed": example.seed,
         "world_ref": spec.world_ref,
         "evaluation_plan_ref": spec.evaluation_plan_ref,
         "policy_ref": { "harness": spec.harness, "config": spec.policy_config },
@@ -6590,7 +6597,7 @@ mod tests {
         assert_eq!(merged.cost_usd, Some(0.016353));
         assert_eq!(merged.rollouts, 1, "runtime rollout count stays distinct");
         assert_eq!(
-            merged.extra["policyUsage"]["promptTokens"],
+            merged.extra["runtimePolicyUsage"]["promptTokens"],
             json!(100_471),
             "producer/runtime telemetry remains available as a separate lane"
         );
@@ -7668,7 +7675,10 @@ max_total_rollouts = 4
                 .count()
                 >= dispatched
         );
-        assert_eq!(manifest["usage"]["completeness"], json!("partial"));
+        // Cancellation leaves partial work, while the fake broker's settled
+        // zero-call receipt is complete and independently reconciled.
+        assert_eq!(manifest["usage"]["completeness"], json!("reconciled"));
+        assert_ne!(manifest["evidence"]["completeness"], json!("complete"));
         let terminal_event = events
             .iter()
             .find(|event| event.event_type == "optimizer.run.cancelled")
@@ -9227,7 +9237,6 @@ max_total_rollouts = 4
     /// A Craftax-shaped container whose blocking rollout stays open while its
     /// journal becomes pollable page by page.
     async fn spawn_craftax_mock(opts: CraftaxMockOptions) -> CraftaxMock {
-        crate::secrets::install_test_live_openai();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let journals: Arc<Mutex<BTreeMap<String, (Vec<Value>, bool)>>> =
@@ -9279,7 +9288,12 @@ max_total_rollouts = 4
                                 "rollout_id": rollout_id,
                                 "stream": {
                                     "id": format!("stream:{rollout_id}"),
-                                    "transports": {"poll": {"url": format!("/rollouts/{rollout_id}/events")}}
+                                    "transports": {
+                                        "poll": {"url": format!("/rollouts/{rollout_id}/events")},
+                                        "sse": if request.body.pointer("/telemetry/transport") == Some(&json!("sse")) {
+                                            json!({"url": format!("/rollouts/{rollout_id}/stream")})
+                                        } else { Value::Null }
+                                    }
                                 }
                             }))
                         }
@@ -9518,7 +9532,9 @@ id = "{CRAFTAX_EVAL}"
 algorithm = "eval"
 title = "Craftax baseline eval"
 container = "craftax"
-provider = "openai"
+# This mock emits fixture telemetry; it never calls a provider. Keep relay
+# accounting tests separate from the real proxy-receipt tests above.
+provider = "none"
 model = "gpt-5.6-luna"
 locality = "host"
 family = "craftax"

@@ -205,14 +205,23 @@ fn bind_native_caller_session(tools: &Value, name: &str, arguments: &Value, sess
     let Some(session) = session.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(arguments);
     };
-    let caller_scoped = tools["tools"].as_array().into_iter().flatten()
-        .find(|tool| tool["name"] == name)
-        .and_then(|tool| tool.pointer("/inputSchema/properties/session_ref")).is_some();
+    let schema = tools["tools"].as_array().into_iter().flatten()
+        .find(|tool| tool["name"] == name).map(|tool| &tool["inputSchema"]);
+    let nested = schema.and_then(|schema| schema.get("x-workshop-caller-session-path"))
+        .and_then(Value::as_str) == Some("/arguments/session_ref");
+    let caller_scoped = nested || schema.and_then(|schema| schema.pointer("/properties/session_ref")).is_some();
     if caller_scoped {
-        if let Some(supplied) = arguments.get("session_ref").and_then(Value::as_str).filter(|value| !value.is_empty()) {
-            anyhow::ensure!(supplied == session, "session_ref does not match the native MCP caller session");
+        let payload = if nested {
+            arguments.get_mut("arguments").context("operation arguments required")?
+        } else {
+            &mut arguments
+        };
+        for key in ["session_ref", "sessionRef"] {
+            if let Some(supplied) = payload.get(key).and_then(Value::as_str).filter(|value| !value.is_empty()) {
+                anyhow::ensure!(supplied == session, "session_ref does not match the native MCP caller session");
+            }
         }
-        arguments.as_object_mut().context("tool arguments must be an object")?
+        payload.as_object_mut().context("tool arguments must be an object")?
             .insert("session_ref".into(), json!(session));
     }
     Ok(arguments)

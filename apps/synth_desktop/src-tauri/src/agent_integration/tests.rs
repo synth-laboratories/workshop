@@ -14,6 +14,23 @@ fn native_caller_scope_survives_unified_bridge_without_borrowing_a_session() {
     assert_eq!(bind_native_caller_session(&tools, "session_get", &target, Some("native-chat")).unwrap(), target);
 }
 
+#[test]
+fn native_caller_scope_binds_declared_nested_operation_arguments() {
+    let tools = json!({"tools":[{"name":"optimizer_manage","inputSchema":{
+        "x-workshop-caller-session-path":"/arguments/session_ref"
+    }}]});
+    let args = json!({"operation":"list_recipes","arguments":{}});
+    let bound = bind_native_caller_session(&tools, "optimizer_manage", &args, Some("native-chat")).unwrap();
+    assert_eq!(bound["arguments"]["session_ref"], "native-chat");
+    assert_eq!(bound["operation"], "list_recipes");
+    assert!(bound.get("session_ref").is_none());
+    let wrong = json!({"operation":"list_recipes","arguments":{"session_ref":"another-chat"}});
+    assert!(bind_native_caller_session(&tools, "optimizer_manage", &wrong, Some("native-chat")).is_err());
+    let wrong_alias = json!({"operation":"evaluation_start","arguments":{"sessionRef":"another-chat"}});
+    assert!(bind_native_caller_session(&tools, "optimizer_manage", &wrong_alias, Some("native-chat")).is_err());
+    assert_eq!(bind_native_caller_session(&tools, "optimizer_manage", &args, None).unwrap(), args);
+}
+
 fn temp() -> tempfile::TempDir {
     tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap()
 }
