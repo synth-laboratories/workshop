@@ -25,7 +25,11 @@ ditto "$app" "$stage/Synth Workshop.app"
 # Ad-hoc signing keeps the local package internally consistent without using
 # a Developer ID identity or macOS Keychain. It is explicitly not notarization.
 # Nested browser/helper code keeps its own signing and JIT entitlements.
-codesign --force --options runtime --sign - "$stage/Synth Workshop.app"
+# Ad-hoc binaries have no shared Developer ID TeamIdentifier. Enabling library
+# validation through hardened runtime here rejects the bundled Ghostty dylib at
+# load time even though --verify --deep --strict succeeds. Developer-ID builds
+# can opt into hardened runtime in their separately authorized signing pipeline.
+codesign --force --sign - "$stage/Synth Workshop.app"
 codesign --verify --deep --strict "$stage/Synth Workshop.app"
 rm -f "$archive" "$archive.sha256" "$manifest"
 ditto -c -k --sequesterRsrc --keepParent "$stage/Synth Workshop.app" "$archive"
