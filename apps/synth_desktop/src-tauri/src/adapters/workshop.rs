@@ -81,6 +81,10 @@ fn sample_window(window: &tauri::WebviewWindow) -> anyhow::Result<WindowSample> 
     })
 }
 
+fn fullscreen_capture_ready(stable_for: std::time::Duration) -> bool {
+    stable_for >= std::time::Duration::from_millis(600)
+}
+
 fn register<O: PublicOperation>(handler: Handler) -> Registration {
     Registration {
         name: O::MCP_NAME,
@@ -194,10 +198,19 @@ fn registrations() -> Vec<Registration> {
                 // a stable pair is two consecutive readings of a still window.
                 let settled = tokio::time::timeout(std::time::Duration::from_secs(8), async {
                     let mut previous = None;
+                    let mut stable_since = None;
                     loop {
                         let sample = sample_window(&window)?;
                         if fullscreen_settled(request.fullscreen, sample, previous) {
-                            return Ok::<_, anyhow::Error>(sample);
+                            // Geometry can jump to the destination before the
+                            // AppKit transition finishes. One 60 ms pair let a
+                            // following capture interrupt that transition.
+                            let since = stable_since.get_or_insert_with(tokio::time::Instant::now);
+                            if fullscreen_capture_ready(since.elapsed()) {
+                                return Ok::<_, anyhow::Error>(sample);
+                            }
+                        } else {
+                            stable_since = None;
                         }
                         previous = Some(sample);
                         tokio::time::sleep(std::time::Duration::from_millis(60)).await;
@@ -396,7 +409,14 @@ pub async fn dispatch(
 
 #[cfg(test)]
 mod tests {
-    use super::{fullscreen_settled, WindowSample};
+    use super::{fullscreen_capture_ready, fullscreen_settled, WindowSample};
+
+    #[test]
+    fn capture_waits_beyond_the_first_matching_geometry_pair() {
+        assert!(!fullscreen_capture_ready(std::time::Duration::from_millis(60)));
+        assert!(!fullscreen_capture_ready(std::time::Duration::from_millis(599)));
+        assert!(fullscreen_capture_ready(std::time::Duration::from_millis(600)));
+    }
 
     const MONITOR: (u32, u32) = (3456, 2234);
 
