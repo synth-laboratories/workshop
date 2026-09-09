@@ -103,7 +103,7 @@ if [[ "$LOCK_SHA256" != "$EXPECTED_LOCK_SHA256" ]]; then
   exit 1
 fi
 
-UV="${SYNTH_OPTIMIZER_UV_PATH:-}"
+UV="${SYNTH_OPTIMIZER_UV_PATH:-$(command -v uv || true)}"
 if [[ -z "$UV" ]]; then
   for candidate in /opt/homebrew/bin/uv /usr/local/bin/uv "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
     if [[ -x "$candidate" ]]; then UV="$candidate"; break; fi

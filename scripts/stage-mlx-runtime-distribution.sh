@@ -18,7 +18,7 @@ EXPECTED_LOCK_SHA256="$(rg -o 'MLX_RUNTIME_LOCK_SHA256: &str =\s*\n?\s*"([0-9a-f
   echo "[mlx-runtime] cannot read the pinned catalog from $MLX_CATALOG" >&2
   exit 1
 }
-UV="${SYNTH_OPTIMIZER_UV_PATH:-}"
+UV="${SYNTH_OPTIMIZER_UV_PATH:-$(command -v uv || true)}"
 
 # Only consulted when the staged wheelhouse cannot be reused. A verified
 # distribution is immutable input to a build, so requiring a clean release
