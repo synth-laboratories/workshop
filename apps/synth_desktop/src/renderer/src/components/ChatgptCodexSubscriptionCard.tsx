@@ -22,10 +22,17 @@ export function oauthErrorMessage(reason: unknown): string {
 export function ChatgptCodexSubscriptionCard() {
 	const [status, setStatus] = useState<CodexOauthStatus>(EMPTY);
 	const [busy, setBusy] = useState(false);
+	const [submitting, setSubmitting] = useState(false);
+	const [awaitingCallback, setAwaitingCallback] = useState(false);
 	const [manual, setManual] = useState(false);
 	const [redirectUrl, setRedirectUrl] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const pollRef = useRef<number | null>(null);
+	const generation = useRef(0);
+	const stopPolling = () => {
+		if (pollRef.current != null) window.clearInterval(pollRef.current);
+		pollRef.current = null;
+	};
 
 	const publish = (next: CodexOauthStatus) => {
 		setStatus(next);
@@ -33,53 +40,86 @@ export function ChatgptCodexSubscriptionCard() {
 	};
 
 	useEffect(() => {
-		void bridges.codexOauth?.status().then(publish).catch(() => setStatus(EMPTY));
-		return () => { if (pollRef.current != null) window.clearInterval(pollRef.current); };
+		const attempt = generation.current;
+		void bridges.codexOauth?.status().then(next => { if (attempt === generation.current) publish(next); }).catch(() => undefined);
+		return () => { ++generation.current; stopPolling(); };
 	}, []);
 
 	const connect = async () => {
+		const attempt = ++generation.current;
+		stopPolling();
 		setBusy(true);
+		setAwaitingCallback(false);
+		setRedirectUrl("");
 		setError(null);
 		try {
 			const begin = await bridges.codexOauth!.begin();
+			if (attempt !== generation.current) return;
+			setAwaitingCallback(true);
 			setManual(begin.mode === "manual");
+			const deadline = Date.now() + 300_000;
+			let polling = false;
 			if (pollRef.current != null) window.clearInterval(pollRef.current);
 			pollRef.current = window.setInterval(() => {
+				if (polling || attempt !== generation.current) return;
+				if (Date.now() >= deadline) {
+					++generation.current; stopPolling(); setBusy(false); setAwaitingCallback(false);
+					setError("ChatGPT sign-in timed out. Start over to try again.");
+					void bridges.codexOauth?.cancel().catch(() => undefined); return;
+				}
+				polling = true;
 				void bridges.codexOauth!.status().then((next) => {
+					if (attempt !== generation.current) return;
 					publish(next);
 					if (next.state === "ready" && pollRef.current != null) {
 						window.clearInterval(pollRef.current);
 						pollRef.current = null;
 						setBusy(false);
+						setAwaitingCallback(false);
 					} else if (next.state === "refresh_failed" && pollRef.current != null) {
 						window.clearInterval(pollRef.current);
 						pollRef.current = null;
 						setBusy(false);
+						setAwaitingCallback(false);
 						setError(next.guidance);
 					}
-				});
+				}).catch(reason => {
+					if (attempt !== generation.current) return;
+					stopPolling(); setBusy(false); setAwaitingCallback(false);
+					setError(oauthErrorMessage(reason));
+				}).finally(() => { polling = false; });
 			}, 750);
 		} catch (reason) {
+			if (attempt !== generation.current) return;
 			setBusy(false);
+			setAwaitingCallback(false);
 			setError(oauthErrorMessage(reason));
 		}
 	};
 
 	const completeManual = async () => {
+		const attempt = ++generation.current;
+		stopPolling();
+		setSubmitting(true);
 		setBusy(true);
 		setError(null);
 		try {
-			publish(await bridges.codexOauth!.completeManual(redirectUrl));
+			const next = await bridges.codexOauth!.completeManual(redirectUrl);
+			if (attempt !== generation.current) return;
+			publish(next);
+			setAwaitingCallback(false);
 			setRedirectUrl("");
 			setManual(false);
 		} catch (reason) {
+			if (attempt !== generation.current) return;
 			setError(oauthErrorMessage(reason));
 		} finally {
-			setBusy(false);
+			if (attempt === generation.current) { setBusy(false); setSubmitting(false); }
 		}
 	};
 
 	const disconnect = async () => {
+		++generation.current; stopPolling(); setAwaitingCallback(false);
 		setBusy(true);
 		setError(null);
 		try { publish(await bridges.codexOauth!.disconnect()); }
@@ -88,6 +128,7 @@ export function ChatgptCodexSubscriptionCard() {
 	};
 
 	const cancel = async () => {
+		++generation.current; setSubmitting(false); setAwaitingCallback(false); setManual(false); setRedirectUrl("");
 		if (pollRef.current != null) window.clearInterval(pollRef.current);
 		pollRef.current = null;
 		await bridges.codexOauth?.cancel().catch(() => undefined);
@@ -95,6 +136,7 @@ export function ChatgptCodexSubscriptionCard() {
 	};
 
 	const restart = async () => {
+		++generation.current; setSubmitting(false); setAwaitingCallback(false);
 		if (pollRef.current != null) window.clearInterval(pollRef.current);
 		pollRef.current = null;
 		await bridges.codexOauth?.cancel().catch(() => undefined);
@@ -119,7 +161,7 @@ export function ChatgptCodexSubscriptionCard() {
 					<span className="codex-subscription-guidance-icon" aria-hidden />
 					<div>
 						<p data-testid="codex-oauth-guidance">{status.guidance}</p>
-						<p className="codex-subscription-note">Uses your Codex allowance, not API credits or Platform API access.</p>
+						<p className="codex-subscription-note">Uses your Codex allowance, not API credits or Platform API access. Connected means signed in; model access still depends on your account and workspace. No automatic fallback to a paid API provider.</p>
 					</div>
 				</div>
 				<div className="settings-inline-actions codex-subscription-actions">
@@ -131,14 +173,14 @@ export function ChatgptCodexSubscriptionCard() {
 				</div>
 				{manual ? <div className="settings-inline-actions codex-subscription-manual" data-testid="codex-oauth-manual">
 					<input aria-label="ChatGPT OAuth redirect URL" value={redirectUrl} onChange={(event) => setRedirectUrl(event.target.value)} placeholder="http://localhost:1455/auth/callback?code=…&state=…" />
-					<button className="codex-subscription-primary" type="button" disabled={busy || !redirectUrl.trim()} onClick={() => void completeManual()}>Complete sign-in</button>
+					<button className="codex-subscription-primary" type="button" disabled={submitting || !awaitingCallback || !redirectUrl.trim()} onClick={() => void completeManual()}>Complete sign-in</button>
 				</div> : null}
 				{error ? <div className="model-locations-error" role="alert"><strong>Couldn’t re-sync ChatGPT.</strong> {error} Use Start over to create a fresh authorization attempt.</div> : null}
 			</div>
 			{status.canUseModels ? <div className="codex-subscription-models" data-testid="codex-oauth-authorized-models">
-				<div className="codex-subscription-models-head"><div><strong>Available in the composer</strong><span>ChatGPT subscription · plan allowance</span></div><span>3 models</span></div>
+				<div className="codex-subscription-models-head"><div><strong>Models in the composer · access depends on your account</strong><span>ChatGPT subscription · plan allowance</span></div><span>4 models</span></div>
 				<div className="codex-subscription-model-grid">
-					{[["GPT-5.6 Sol", "gpt-5.6-sol", "Fast iteration"], ["GPT-5.6 Luna", "gpt-5.6-luna", "Everyday coding"], ["GPT-5.6 Terra", "gpt-5.6-terra", "Deep reasoning"]].map(([name, id, fit]) => <article className="codex-subscription-model" key={id}><span className="codex-subscription-model-dot" aria-hidden /><div><strong>{name}</strong><span>{fit}</span><code>{id}</code></div></article>)}
+					{[["GPT-6 Astra", "gpt-6-astra", "Complex work · account access required"], ["GPT-5.6 Sol", "gpt-5.6-sol", "Fast iteration"], ["GPT-5.6 Luna", "gpt-5.6-luna", "Everyday coding"], ["GPT-5.6 Terra", "gpt-5.6-terra", "Deep reasoning"]].map(([name, id, fit]) => <article className="codex-subscription-model" key={id}><span className="codex-subscription-model-dot" aria-hidden /><div><strong>{name}</strong><span>{fit}</span><code>{id}</code></div></article>)}
 				</div>
 			</div> : null}
 		</SettingsCard>

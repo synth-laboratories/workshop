@@ -1,0 +1,14 @@
+services:
+  ma:
+    build: .
+    platform: linux/amd64
+    container_name: workshop-runebench-${MA_RUN_ID:?run through example.sh}
+    init: true
+    environment:
+      MA_RUN_ID: ${MA_RUN_ID}
+      MA_EVIDENCE_KIND: ${MA_EVIDENCE_KIND:-scripted}
+    shm_size: 2gb
+    ports:
+      - "127.0.0.1:8126:8790"
+    volumes:
+      - ${MA_ARTIFACTS:?run through example.sh}:/logs/ma

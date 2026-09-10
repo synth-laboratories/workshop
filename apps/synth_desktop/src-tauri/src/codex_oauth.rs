@@ -332,6 +332,7 @@ pub struct Manager {
     pending: Mutex<Option<Pending>>,
     failure: StateMutex<Option<AuthFailure>>,
     authenticating: AtomicBool,
+    listener_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Manager {
@@ -368,6 +369,7 @@ impl Manager {
             pending: Mutex::new(None),
             failure: StateMutex::new(None),
             authenticating: AtomicBool::new(false),
+            listener_task: Mutex::new(None),
         }
     }
 
@@ -375,6 +377,10 @@ impl Manager {
         let mut guard = self.pending.lock().await;
         if guard.is_some() {
             bail!("A ChatGPT subscription sign-in is already in progress");
+        }
+        if let Some(task) = self.listener_task.lock().await.take() {
+            task.abort();
+            let _ = task.await;
         }
         let verifier = random_urlsafe(32);
         let state = random_urlsafe(24);
@@ -399,16 +405,15 @@ impl Manager {
             .failure
             .lock()
             .expect("OAuth failure state mutex poisoned") = None;
-        drop(guard);
-
         let mode = match TcpListener::bind(("127.0.0.1", 1455)).await {
             Ok(listener) => {
                 let manager = self.clone();
-                tokio::spawn(async move { manager.accept_callback(listener).await });
+                *self.listener_task.lock().await = Some(tokio::spawn(async move { manager.accept_callback(listener).await }));
                 "auto"
             }
             Err(_) => "manual",
         };
+        drop(guard);
         Ok(BeginResult {
             authorize_url: url.into(),
             mode: mode.into(),
@@ -431,7 +436,8 @@ impl Manager {
             return;
         };
         let mut bytes = vec![0; 16 * 1024];
-        let read = stream.read(&mut bytes).await.unwrap_or(0);
+        let read = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut bytes))
+            .await.ok().and_then(Result::ok).unwrap_or(0);
         let request = String::from_utf8_lossy(&bytes[..read]);
         let target = request
             .lines()
@@ -531,13 +537,19 @@ impl Manager {
                 .map(str::to_owned),
             last_refresh_ms: now,
         };
+        // A cancelled/replaced request must never reconnect an account after
+        // its token exchange returns. Serialize the check and save with cancel.
+        let mut current = self.pending.lock().await;
+        if current.as_ref().map(|value| value.state.as_str()) != Some(pending.state.as_str()) {
+            bail!("ChatGPT sign-in was cancelled or replaced; no credentials were stored");
+        }
         let _refresh_lock = self.store.lock_refresh()?;
         self.store.save(&credential)?;
         *self
             .failure
             .lock()
             .expect("OAuth failure state mutex poisoned") = None;
-        *self.pending.lock().await = None;
+        *current = None;
         self.authenticating.store(false, Ordering::Release);
         self.status()
     }
@@ -688,6 +700,10 @@ impl Manager {
     pub async fn cancel(&self) -> Result<()> {
         *self.pending.lock().await = None;
         self.authenticating.store(false, Ordering::Release);
+        if let Some(task) = self.listener_task.lock().await.take() {
+            task.abort();
+            let _ = task.await;
+        }
         Ok(())
     }
 

@@ -29,6 +29,7 @@ import type { DesktopPreferences } from "../preferences";
 import { ProviderMark } from "./ProviderMark";
 import { bridges } from "../runtime/desktopBridge";
 import { ChatgptCodexSubscriptionCard } from "./ChatgptCodexSubscriptionCard";
+import { OpenRouterSetupCard } from "./OpenRouterSetupCard";
 import { ContextSettings } from "./ContextSettings";
 import { SecretsSettings } from "./SecretsSettings";
 import { ProjectSourcesSettings } from "./ProjectSourcesSettings";
@@ -553,6 +554,7 @@ export function SettingsPage({
 							</SettingsCard>
 							<AuthorizedModelsSettings connection={account.connection} />
 							<ChatgptCodexSubscriptionCard />
+							<OpenRouterSetupCard />
 							<SettingsCard testId="models-all" className="settings-card-embed">
 								<ModelObservabilitySettings />
 							</SettingsCard>

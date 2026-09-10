@@ -26,6 +26,7 @@ work/bombadil-src/
 .env.*
 .turbo/
 work/
+runtime-distributions/codex/
 apps/synth_desktop/src-tauri/generated-resources/
 apps/synth_desktop/browser/runtime
 runtime-distributions/trace/

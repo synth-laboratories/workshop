@@ -1,0 +1,15 @@
+{
+  "id": "woodcutting-team-sprint-v1",
+  "title": "Woodland sprint",
+  "evidence_kind": "provider-backed",
+  "duration_seconds": 150,
+  "tick_ms": 300,
+  "xp_multiplier": 1,
+  "score": "Sum of each teammate's Woodcutting XP gained since arm, using the last complete engine tick at or before the wall deadline.",
+  "actors": [
+    {"id":"maa","team":"moss","role":"lead","position":{"x":3200,"z":3243},"color":"#3d876a"},
+    {"id":"mab","team":"moss","role":"scout","position":{"x":3201,"z":3243},"color":"#74b49b"},
+    {"id":"mba","team":"ember","role":"lead","position":{"x":3200,"z":3245},"color":"#be633e"},
+    {"id":"mbb","team":"ember","role":"scout","position":{"x":3201,"z":3245},"color":"#df9c65"}
+  ]
+}

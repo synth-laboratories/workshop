@@ -1,0 +1,23 @@
+{
+  "schema": "workshop.example.v1",
+  "id": "runebench-woodland-sprint",
+  "upstream": "https://github.com/MaxBittker/runebench",
+  "sdk": "https://github.com/MaxBittker/rs-sdk",
+  "image": "ghcr.io/maxbittker/rs-agent-benchmark@sha256:baa2f071f19c9e5fffe6c2003cb444a11421af33e1a3df4e666ae5db974411ba",
+  "platform": "linux/amd64",
+  "actors": 4,
+  "defaultMode": "scripted",
+  "defaultDurationSeconds": 25,
+  "traceSchema": "synth.trace.v5",
+  "containersPackage": "synth-containers==0.4.3",
+  "viewer": "http://127.0.0.1:8128/viewer",
+  "visualSource": "viewer.tsx",
+  "visualDataBuilder": "build_web.mjs",
+  "sample": {
+    "file": "sample.tar.gz",
+    "sha256": "d2d2da454fce87bb827fc927020824a717fb4c996f6b001ab2d4231ac11fbca6",
+    "run": "20260907T182716Z-scripted",
+    "kind": "scripted",
+    "modelCalls": 0
+  }
+}

@@ -31,8 +31,15 @@ export function useVisualSessionSnapshot() {
  * outside this hook. Unhosted fixtures retain ordinary local React behavior. */
 export function useVisualState<T>(id: string, initial: T | (() => T), options: Partial<Omit<VisualControl, "id">> = {}): [T, Dispatch<SetStateAction<T>>] {
   const client = useVisualSessionClient();
-  const snapshot = useVisualSessionSnapshot();
   const [fallback, setFallback] = useState(initial);
+  // A control subscribes to its value, not scene publications or unrelated
+  // controls. Otherwise read-only host updates re-render every input and React
+  // temporarily clears input names even while the presentation is unchanged.
+  const readValue = useCallback(() => {
+    const snapshot=client?.getSnapshot();
+    return snapshot && Object.hasOwn(snapshot.state.values,id) ? snapshot.state.values[id] : fallback;
+  },[client,id,fallback]);
+  const value=useSyncExternalStore(client?.subscribe ?? emptySubscribe,readValue,readValue);
   const defaultValue = useRef(fallback);
   const controlRef = useRef<VisualControl | null>(null);
   if (!controlRef.current || controlRef.current.id !== id) {
@@ -50,7 +57,6 @@ export function useVisualState<T>(id: string, initial: T | (() => T), options: P
       return JSON.parse(JSON.stringify(next ?? null)) as JsonValue;
     }).catch(() => {}); // The shared session surface displays persistence errors.
   }, [client, id]);
-  const value = snapshot && Object.hasOwn(snapshot.state.values, id) ? snapshot.state.values[id] : fallback;
   return [(value === null && defaultValue.current === undefined ? undefined : value) as T, set];
 }
 

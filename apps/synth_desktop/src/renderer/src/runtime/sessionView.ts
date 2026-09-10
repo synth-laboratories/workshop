@@ -13,6 +13,7 @@ import {
 	CHATGPT_LUNA_MODEL,
 	CHATGPT_SOL_MODEL,
 	CHATGPT_TERRA_MODEL,
+	CHATGPT_ASTRA_MODEL,
 	SYNTH_CLOUD_LAGUNA_S_MODEL,
 	SYNTH_CLOUD_LAGUNA_XS_B200_MODEL,
 	SYNTH_CLOUD_LAGUNA_XS_H100_MODEL,
@@ -105,6 +106,8 @@ export function targetIdToExecutionTarget(targetId: string, adapter: string | nu
 	}
 
 	switch (targetId) {
+		case "chatgpt-astra":
+			return { kind: "remote", provider: "openai-codex-oauth", model: CHATGPT_ASTRA_MODEL, adapter: remoteAdapter };
 		case "chatgpt-luna":
 		case "chatgpt-sol":
 		case "chatgpt-terra":
@@ -165,7 +168,7 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 			: "synth-cloud-laguna-s";
 	}
 	if (target.provider === "openai-codex-oauth") {
-		return target.model === CHATGPT_SOL_MODEL ? "chatgpt-sol" : target.model === CHATGPT_TERRA_MODEL ? "chatgpt-terra" : "chatgpt-luna";
+		return target.model === CHATGPT_ASTRA_MODEL ? "chatgpt-astra" : target.model === CHATGPT_SOL_MODEL ? "chatgpt-sol" : target.model === CHATGPT_TERRA_MODEL ? "chatgpt-terra" : "chatgpt-luna";
 	}
 	if (target.targetId) {
 		if (!modelCatalogEntry(target.targetId)) rememberHistoricalOpenRouterTarget(target, target.targetId);

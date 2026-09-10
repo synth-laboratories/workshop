@@ -44,6 +44,23 @@ const frame=()=>new Promise<void>((resolve,reject)=>{
   const timeout=setTimeout(()=>{cancelAnimationFrame(id);reject(new Error("Capture paint frame timed out; ensure the native window is visible"));},2000);
   const id=requestAnimationFrame(()=>{clearTimeout(timeout);resolve();});
 });
+/** Window resizing and queued React effects may commit after native layout has
+ * acknowledged the viewport. Wait for a bounded quiet interval BEFORE freezing
+ * images and opening the pixel cut. Mutations during the cut still invalidate it. */
+async function settleRoots(roots:HTMLElement[],signal:AbortSignal){
+  await new Promise<void>((resolve,reject)=>{
+    let quiet:ReturnType<typeof setTimeout>;
+    const observer=new MutationObserver(()=>arm());
+    const finish=(error?:Error)=>{clearTimeout(quiet);clearTimeout(deadline);observer.disconnect();signal.removeEventListener('abort',abort);error?reject(error):resolve();};
+    const abort=()=>finish(new Error('Capture preparation cancelled'));
+    const arm=()=>{clearTimeout(quiet);quiet=setTimeout(()=>finish(),250);};
+    const deadline=setTimeout(()=>finish(new Error('Capture surface did not settle before pixel freeze')),2000);
+    signal.addEventListener('abort',abort,{once:true});
+    if(signal.aborted){abort();return;}
+    for(const root of roots)observer.observe(root,{subtree:true,attributes:true,childList:true,characterData:true});
+    arm();
+  });
+}
 function release(){
   if(!active)return;
   active.closed=true;active.observer?.disconnect();
@@ -97,6 +114,8 @@ function begin(visualId:string,revision:number,stateVersion:number){
       await Promise.all(barrier.adapters.map(adapter=>adapter.prepare(barrier.abort.signal,{nativeSnapshotPaint})));
       if(barrier.closed)return;
       await document.fonts.ready;
+      await settleRoots(roots,barrier.abort.signal);
+      if(barrier.closed)return;
       await Promise.all(roots.flatMap(root=>Array.from(root.querySelectorAll("img"))).map(async image=>{
         if(!image.complete)await image.decode();
         if(!image.naturalWidth)throw new Error("Capture contains an unavailable image");

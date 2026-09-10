@@ -70,10 +70,13 @@ export function codexStartRequest(
 			sessionId, workspace, baseUrl: "https://chatgpt.com/backend-api/codex",
 			model: target.model, providerName: "openai-codex-oauth",
 			providerTitle: "ChatGPT subscription (Codex OAuth)", providerEnvKey: "",
-			autoCompactTokenLimit: autoCompactTokenLimits.luna ?? 250_000, serviceTier, ...approval
+			autoCompactTokenLimit: target.model === "gpt-6-astra" ? autoCompactTokenLimits.astra ?? 250_000 : autoCompactTokenLimits.luna ?? 250_000,
+			serviceTier: target.model === "gpt-6-astra" ? "default" : serviceTier, ...approval
 		};
 	}
-	const autoCompactTokenLimit = target.model.includes("gpt-5.6-luna")
+	const autoCompactTokenLimit = target.model === "openai/gpt-6-astra"
+		? autoCompactTokenLimits.astra ?? 250_000
+		: target.model.includes("gpt-5.6-luna")
 		? autoCompactTokenLimits.luna ?? 250_000
 		: target.model.includes("muse-spark-1.2")
 			? 250_000
