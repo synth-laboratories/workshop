@@ -116,7 +116,7 @@ export function GeneralTraceView({ projection, items = projection.items ?? [], v
   const attached = (item: TraceItem) => notes.filter(note => annotationMatches(note, item, projection));
   const active = (item: TraceItem) => attached(item).filter(note => !superseded.has(note.id));
   const focused = !full && extension?.filterItems ? extension.filterItems(items) : items;
-  const rows = items.filter(item => full || focused.includes(item) || active(item).length > 0 || item.item_id === selectedId).filter(item => item.kind !== 'evidence.annotation' &&
+  const rows = items.filter(item => full || focused.includes(item) || active(item).length > 0 || item.item_id === selectedId).filter(item => (item.kind !== 'evidence.annotation' || item.item_id === selectedId) &&
     (full || !/^(eval\.|media\.|policy\.finished)/.test(item.kind) || active(item).length > 0) && (!onlyAnnotated || active(item).length > 0));
   const base = extension?.base ?? view;
   const groups = base === 'general' || full ? rows.map(item => ({ id: item.item_id, items: [item] })) : extension?.groupItems?.(rows) ?? decisionGroups(rows);
@@ -129,7 +129,7 @@ export function GeneralTraceView({ projection, items = projection.items ?? [], v
     if (row) setSelectedId(row.item.item_id);
   }, [cursorMs, projection.trace_id]);
   useEffect(() => {
-    if (selection && items.some(item => item.item_id === selection.itemId)) { setSelectedId(selection.itemId); setFollow(true); }
+    if (selection && items.some(item => item.item_id === selection.itemId)) { setSelectedId(selection.itemId); setFollow(true); setFull(true); setOnlyAnnotated(false); }
   }, [selection?.itemId, selection?.revision]);
   useEffect(() => {
     if (!selectedId || !follow) return;
@@ -156,6 +156,8 @@ export function GeneralTraceView({ projection, items = projection.items ?? [], v
   }
   function jump(direction: number) { const index = markers.findIndex(item => item.item_id === selectedId); const next = index < 0 ? (direction > 0 ? 0 : markers.length - 1) : index + direction; if (markers[next]) choose(markers[next]); }
   const Content = base === 'codex' ? CodexContent : base === 'react' ? ReActContent : GeneralContent;
+  const extensionContext = extension?.renderContext?.(selected);
+  const showNotes = notes.length > 0 || Boolean(context) || Boolean(extensionContext);
   return <section className="atv" data-trace-view={extension?.id ?? base}>
     <style>{`.atv{font:13px/1.5 system-ui;min-width:0}.atv button{font:inherit;cursor:pointer}.atv-controls,.atv-header{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.atv-controls{margin:8px 0}.atv-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(200px,28%);gap:16px}.atv-transcript{max-height:650px;overflow:auto}.atv-turn{border-top:1px solid #a0a0a055;padding:10px 0}.atv-item{padding:6px 8px;border-left:3px solid transparent;overflow-wrap:anywhere}.atv-item[aria-current=true]{border-color:#327f69;background:#327f690c}.atv-header{justify-content:space-between;color:var(--sv-text-muted,#667468)}.atv-text{font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;margin:8px 0}.atv-note{padding:10px;margin:8px 0;border:1px solid #ba963c77;border-radius:6px}.atv-note p{margin:5px 0}.atv-item p{margin:5px 0}.atv-item>button{padding:3px 6px;font-size:11px}.atv-item details{margin-top:4px}.atv-item a{font-size:11px}.atv-item .atv-header{font-size:11px}.atv-note small{opacity:.75}.atv-notes{border-left:1px solid #a0a0a055;padding-left:12px;max-height:650px;overflow:auto}.atv details{margin-top:8px}.atv-timeline{display:flex;gap:4px;overflow:auto;padding:8px 0}.atv-timeline button{flex-shrink:0;font-size:11px}.atv-timeline button[aria-current=true]{background:#327f69;color:white}.atv h4{margin:0 0 8px}@container(max-width:650px){.atv-layout{grid-template-columns:1fr}.atv-notes{border-left:0;padding-left:0}}`}</style>
     <div className="atv-controls">
@@ -168,7 +170,7 @@ export function GeneralTraceView({ projection, items = projection.items ?? [], v
       <small>{rows.length} items · {notes.filter(note => !superseded.has(note.id)).length} current annotations</small>
     </div>
     <nav className="atv-timeline" aria-label="Trace event timeline" onScroll={e => scrubTimeline(e.currentTarget)}>{markers.map(item => <button key={item.item_id} data-marker-id={item.item_id} style={{borderTop:`3px solid ${projection.lanes?.find(lane => lane.actor_id === item.actor_id)?.color ?? '#547c92'}`}} type="button" aria-current={selectedId === item.item_id} title={item.kind} onClick={() => { markerClickUntil.current = performance.now() + 200; choose(item); }}>{projection.lanes?.find(lane => lane.actor_id === item.actor_id)?.display_name ?? item.detail?.native_actor_id ?? item.actor_id ?? 'Shared'} · {elapsed(eventTime(item, projection.items ?? [])) || 'untimed'} {item.detail?.result?.success === false ? '✕ ' : ''}{eventLabel(item)}{active(item).length ? ` · ${active(item).length} notes` : ''}</button>)}</nav>
-    <div className="atv-layout">
+    <div className="atv-layout" style={!showNotes ? { gridTemplateColumns: 'minmax(0,1fr)' } : undefined}>
       <div className="atv-transcript" ref={transcript}>
         {!groups.length && <p>No matching trace items.</p>}
         {groups.slice(0, limit).map((group, index) => <section className="atv-turn" key={group.id}>
@@ -185,16 +187,16 @@ export function GeneralTraceView({ projection, items = projection.items ?? [], v
         </section>)}
         {groups.length > limit && <button type="button" onClick={() => setLimit(n => n + 60)}>Show next 60</button>}
       </div>
-      <aside className="atv-notes" aria-label="Trace annotations">
+      {showNotes ? <aside className="atv-notes" aria-label="Trace annotations">
         {context}
-        {extension?.renderContext?.(selected)}
+        {extensionContext}
         <h4>{selected ? `Annotations · ${selected.title ?? selected.kind}` : 'Annotations'}</h4>
         {!selected && <p>Select a trace item or annotation marker to inspect its notes.</p>}
         {selected && attached(selected).length === 0 && <p>No annotations on this item.</p>}
         {selected && attached(selected).filter(note => !superseded.has(note.id)).map(note => <AnnotationNote key={note.id} annotation={note} superseded={false} onOpen={onOpenAnnotation}/>)}
         {selected && attached(selected).some(note => superseded.has(note.id)) && <details><summary>Superseded annotation history</summary>{attached(selected).filter(note => superseded.has(note.id)).map(note => <AnnotationNote key={note.id} annotation={note} superseded={true}/>)}</details>}
         {unresolved.length > 0 && <details><summary>{unresolved.length} unresolved annotation targets</summary><p>These targets are absent from this projection or refer to a different trace version.</p>{unresolved.map(note => <AnnotationNote key={note.id} annotation={note} superseded={superseded.has(note.id)} onOpen={onOpenAnnotation}/>)}</details>}
-      </aside>
+      </aside> : null}
     </div>
   </section>;
 }

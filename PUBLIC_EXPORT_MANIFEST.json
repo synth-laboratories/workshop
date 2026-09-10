@@ -4003,10 +4003,10 @@
       "sha256": "f44aae70d7a18a2c5b0f90467951f611bc861ba228f32d56cbb1683c5e5facda"
     },
     {
-      "bytes": 56823,
+      "bytes": 61226,
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/components/ReportsPage.tsx",
-      "sha256": "b8f4bfe17d008d59227d1cde173f5d472bd8dc186ad64f9c2fa9bb0e4f2a2f48"
+      "sha256": "6ec108fb175076e170c184fab74764366af5fe728424f90a68a3d74942c97a99"
     },
     {
       "bytes": 4739,
@@ -5011,10 +5011,10 @@
       "sha256": "b97bc591fffb8a9d354a39125ed955238190831b3935e2113cb9162c596f99fe"
     },
     {
-      "bytes": 341534,
+      "bytes": 341847,
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/styles/app.css",
-      "sha256": "40b9bdf29dfecfae768716dd91eb0522ae1d7a547b319b9085ad6222b4d3fabf"
+      "sha256": "ff8e3ba8cb60cf7a26f4ce0cced369dac078d6649d86f4c7efeefb2c4b53af98"
     },
     {
       "bytes": 1855,
@@ -5671,10 +5671,10 @@
       "sha256": "5ebd8decfd3ddaa2f4704ec9aacdec81fa8877a7595f4c28f37a3d27b74dd23d"
     },
     {
-      "bytes": 14906,
+      "bytes": 15197,
       "mode": "100644",
       "path": "packages/workshop-visuals/components/agent_trace.v1/AgentTraceInspector.tsx",
-      "sha256": "77fc520f81d97b7813db72c12a6ce7f409ed5309902a2653aa817dda27cc2b25"
+      "sha256": "2c3d852c8cfcc705d9bba203b6da6dc4ec5eb95433f13b86eca9af24b2ebfcc6"
     },
     {
       "bytes": 3753,
@@ -5707,10 +5707,10 @@
       "sha256": "c229cfb751271e0bfa77e4819eb51d5ddbf8540032c525b1095fb60c6c8e988d"
     },
     {
-      "bytes": 19977,
+      "bytes": 20277,
       "mode": "100644",
       "path": "packages/workshop-visuals/components/agent_trace.v1/TraceViews.tsx",
-      "sha256": "d566793902e5fbe49a6e1aec56554cd1b00f8d4999a15047a602b3972714557d"
+      "sha256": "6dcf7671faea00baf255843658603cb3947fc99b04cc42eacb0366cb4d9d54fc"
     },
     {
       "bytes": 2042,
@@ -7690,7 +7690,7 @@
   "policySha256": "f5ef8fbb4560ee9e401c26c94da6f6189732be76291915027bd7ee3f5f5684dd",
   "schema": "workshop.public-export-manifest.v1",
   "source": {
-    "commit": "b39c7f686cb51522179a3c938d1ab7756026c89c",
-    "tree": "bb76f53df76aa90e60f8565b52d6e1700497b8f5"
+    "commit": "7ef1b6fb69770e997e8e62c6d9cacffbd26d06b5",
+    "tree": "76ea0cabbe5a32ded58158131ae1c1e3e5a6e4b8"
   }
 }
