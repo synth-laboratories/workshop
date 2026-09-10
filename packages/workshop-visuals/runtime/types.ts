@@ -146,6 +146,7 @@ export type VisualTemplateMeta = {
       minimumRolloutCount?: number;
       minimumRenderedFrameCount?: number;
       minimumSemanticEventCount?: number;
+      minimumTransportEnvelopeCount?: number;
       requireTerminal?: boolean;
     };
   };
