@@ -48,6 +48,7 @@ import { semanticCountsFromRunView } from "../runtime/runProgress/semanticCounts
 import type { ProgressAgreement } from "../runtime/runProgress/project";
 import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
 import { MermaidVisual } from "./MermaidVisual";
+import { DocumentPane, isDocumentArtifact } from "../documents/DocumentPane";
 import { SystemsMapVisual } from "./SystemsMapVisual";
 import { ChartVisual } from "./ChartVisual";
 import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
@@ -1107,6 +1108,7 @@ class VisualErrorBoundary extends Component<
 }
 
 const visualRenderers = new ReactVisualRendererRegistry<ArtifactRef>()
+    .register({ id: "document", matches: isDocumentArtifact, component: DocumentPane })
 	.register({ id: "systems-dynamic", matches: (artifact) => artifact.rendererKind === "systems-dynamic", component: SystemsDynamicVisual })
 	.register({ id: "systems", matches: (artifact) => artifact.rendererKind === "systems", component: SystemsMapVisual })
 	.register({ id: "chart", matches: (artifact) => artifact.rendererKind === "chart", component: ChartVisual })

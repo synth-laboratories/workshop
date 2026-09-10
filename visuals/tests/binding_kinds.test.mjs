@@ -33,7 +33,7 @@ function templateFor(kind) {
   };
 }
 
-test("every advertised binding kind is exercised by bindTemplateSlots", async () => {
+test("every generic binding kind is exercised by bindTemplateSlots", async () => {
   const loaders = {
     async loadFixture(source) {
       assert.equal(source, "fixtures/demo.json");
@@ -102,6 +102,15 @@ test("every advertised binding kind is exercised by bindTemplateSlots", async ()
       assert.equal(result.slots.payload.data.from, kind);
     }
   }
+});
+
+test("workspace files cannot be read through a generic template loader", async () => {
+  const result = await bindTemplateSlots(templateFor("workspace_file"), [{
+    input: "payload", kind: "workspace_file", source: "/outside-workspace/secret.txt",
+    data: { from: "forged-inline-bypass" }
+  }]);
+  assert.match(result.errors.join(" "), /scoped host pane/);
+  assert.equal(result.slots.payload, undefined);
 });
 
 test("trace_v5 and local_cas are distinct loaders, never aliases", async () => {

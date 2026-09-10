@@ -354,6 +354,9 @@ pub const NAMES: &[&str] = &[
     "product_telemetry_set_consent",
     "product_telemetry_recent",
     "product_telemetry_flush_now",
+    "workspace_read_file",
+    "workspace_list_dir",
+    "document_show",
 ];
 
 type Reply<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Value>> + Send + 'a>>;
@@ -710,6 +713,9 @@ pub fn invoke<'a>(app: &'a tauri::AppHandle, name: &str, args: Value) -> Reply<'
         "product_telemetry_set_consent" => operation_348(app, args),
         "product_telemetry_recent" => operation_349(app, args),
         "product_telemetry_flush_now" => operation_350(app, args),
+        "workspace_read_file" => operation_351(app, args),
+        "workspace_list_dir" => operation_352(app, args),
+        "document_show" => operation_353(app, args),
         _ => Box::pin(async { anyhow::bail!("unknown desktop operation") }),
     }
 }
@@ -4571,6 +4577,39 @@ fn operation_350(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
             let allowed: &[&str] = &[];
             anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
             let result = crate::telemetry::product_telemetry_flush_now(app.try_state().context("runtime service is unavailable")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            Ok(json!({"result": result}))
+    })
+}
+
+fn operation_351(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+    Box::pin(async move {
+            anyhow::ensure!(args.is_object(), "operation arguments must be an object");
+            // Handler: apps/synth_desktop/src-tauri/src/documents/commands.rs
+            let allowed: &[&str] = &["sessionId", "path"];
+            anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
+            let result = crate::documents::commands::workspace_read_file(app.try_state().context("runtime service is unavailable")?, serde_json::from_value(args.get("sessionId").cloned().unwrap_or(Value::Null)).context("invalid sessionId")?, serde_json::from_value(args.get("path").cloned().unwrap_or(Value::Null)).context("invalid path")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            Ok(json!({"result": result}))
+    })
+}
+
+fn operation_352(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+    Box::pin(async move {
+            anyhow::ensure!(args.is_object(), "operation arguments must be an object");
+            // Handler: apps/synth_desktop/src-tauri/src/documents/commands.rs
+            let allowed: &[&str] = &["sessionId", "path"];
+            anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
+            let result = crate::documents::commands::workspace_list_dir(app.try_state().context("runtime service is unavailable")?, serde_json::from_value(args.get("sessionId").cloned().unwrap_or(Value::Null)).context("invalid sessionId")?, serde_json::from_value(args.get("path").cloned().unwrap_or(Value::Null)).context("invalid path")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            Ok(json!({"result": result}))
+    })
+}
+
+fn operation_353(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+    Box::pin(async move {
+            anyhow::ensure!(args.is_object(), "operation arguments must be an object");
+            // Handler: apps/synth_desktop/src-tauri/src/documents/commands.rs
+            let allowed: &[&str] = &["sessionId", "path"];
+            anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
+            let result = crate::documents::commands::document_show(app.try_state().context("runtime service is unavailable")?, serde_json::from_value(args.get("sessionId").cloned().unwrap_or(Value::Null)).context("invalid sessionId")?, serde_json::from_value(args.get("path").cloned().unwrap_or(Value::Null)).context("invalid path")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
             Ok(json!({"result": result}))
     })
 }

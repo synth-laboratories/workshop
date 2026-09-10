@@ -31,6 +31,7 @@ mod credential_broker;
 pub mod data;
 mod device_auth;
 mod desktop_links;
+pub mod documents;
 pub mod diagnostics;
 mod domain;
 mod domains;

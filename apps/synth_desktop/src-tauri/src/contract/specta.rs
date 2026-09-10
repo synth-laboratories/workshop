@@ -446,6 +446,9 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::telemetry::product_telemetry_set_consent,
             crate::telemetry::product_telemetry_recent,
             crate::telemetry::product_telemetry_flush_now,
+            crate::documents::commands::workspace_read_file,
+            crate::documents::commands::workspace_list_dir,
+            crate::documents::commands::document_show,
         ])
 }
 
@@ -603,8 +606,9 @@ mod tests {
         // and supersession. The previous 323 expectation undercounted six.
         // 329 → 338: seven ACP commands and two runtime-owned desktop state commands.
         // 348 → 351: consent, recent telemetry, and flush commands.
+        // 351 → 354: scoped workspace read/list and document presentation.
         assert_eq!(
-            exported, 351,
+            exported, 354,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

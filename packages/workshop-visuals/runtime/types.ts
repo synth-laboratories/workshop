@@ -6,6 +6,7 @@
 /** How a template input is fed at runtime. */
 export const VISUAL_BINDINGS_SCHEMA_VERSION = "synth.visual-bindings.v1" as const;
 export type VisualBindingKind =
+  | "workspace_file"
   | "inline"
   | "trace_v5"
   | "local_cas"
