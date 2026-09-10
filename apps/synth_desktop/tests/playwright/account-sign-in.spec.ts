@@ -6,19 +6,24 @@ import { expect, test } from "./browser.fixture";
 test("browser sign-in pairs the device and flips the account to authenticated", async ({ page }) => {
 	await page.addInitScript(() => {
 		let polls = 0;
+		const pollTimes: number[] = [];
 		let paired = false;
 		window.synthAccount = {
 			beginSignIn: async () => ({
 				verificationUri: "https://www.usesynth.ai/signin?redirect_to=x",
+				userCode: "ABCD-1234",
+				intervalS: 1,
 				expiresAtEpochS: Math.floor(Date.now() / 1000) + 600
 			}),
 			pollSignIn: async () => {
 				polls += 1;
+				pollTimes.push(Date.now());
+				sessionStorage.setItem("pairing-poll-times", JSON.stringify(pollTimes));
 				if (polls >= 2) {
 					paired = true;
 					return { status: "active" as const };
 				}
-				return { status: "pending" as const };
+				return { status: "pending" as const, retryInS: 2 };
 			},
 			cancelSignIn: async () => undefined,
 			signOut: async () => {
@@ -78,10 +83,15 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 
 	await signIn.getByTestId("sign-in-begin").click();
 	await expect(signIn.getByTestId("sign-in-status")).toContainText("Finish sign-in in your browser");
+	await expect(signIn.getByTestId("sign-in-user-code")).toContainText("ABCD-1234");
 
-	// Two 4s poll ticks flip the stub to paired.
+	// The first response increases the interval; the next poll honors it.
 	await expect(page.getByTestId("backend-settings")).toContainText("Authenticated", { timeout: 15_000 });
+	const times = await page.evaluate(() => JSON.parse(sessionStorage.getItem("pairing-poll-times") ?? "[]") as number[]);
+	expect(times).toHaveLength(2);
+	expect(times[1] - times[0]).toBeGreaterThanOrEqual(1900);
 	await expect(signIn.getByTestId("sign-in-status")).toContainText("Connected to Synth");
+	await expect(page.getByTestId("account-page-credential")).toContainText("sk…f1e2");
 	await page.getByRole("button", { name: /Back/ }).click();
 	await page.getByTestId("account-menu-trigger").click();
 	await expect(page.getByTestId("account-menu")).toContainText("Synth Dev");
@@ -107,6 +117,7 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	await signedInSettings.getByTestId("account-sign-out").click();
 	await expect(page.getByTestId("backend-settings")).toContainText("API key required");
 	await expect(signedInSettings.getByTestId("sign-in-status")).toContainText("creates your Synth account");
+	await expect(page.getByTestId("account-page-credential")).toHaveText("Not configured");
 });
 
 test("account acquires credentials through native browser pairing, never renderer input", async ({ page }) => {

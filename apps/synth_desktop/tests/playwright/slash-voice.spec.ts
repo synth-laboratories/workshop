@@ -43,6 +43,7 @@ async function enableComposer(page: Page): Promise<void> {
 test("slash button opens command menu and /new returns to landing", async ({ page }) => {
 	await enableComposer(page);
 
+	await page.getByTestId("composer-add-menu-trigger").click();
 	await page.getByTestId("composer-slash-btn").click();
 	const menu = page.getByTestId("slash-command-menu");
 	await expect(menu).toBeVisible();

@@ -36,6 +36,7 @@ async fn imports_real_bundle_into_trusted_catalog_and_keeps_duplicate_identity()
         source_kind: Some("real_harbor_smoke".into()),
         title: Some("Real Trace V5 smoke".into()),
         source_uri: Some("dogfood://harbor/trace-v5".into()),
+        container_id: None,
     };
 
     let (first, first_event) = data

@@ -4,7 +4,7 @@ import { bridges } from "../runtime/desktopBridge";
 import { SettingsCard } from "./SettingsCard";
 import { ProviderMark } from "./ProviderMark";
 
-const EMPTY: CodexOauthStatus = { state: "disconnected", action: "connect", canUseModels: false, guidance: "Connect a ChatGPT subscription.", configured: false };
+const EMPTY: CodexOauthStatus = { state: "disconnected", action: "connect", canUseModels: false, guidance: "Connect a ChatGPT subscription.", configured: false, accountHint: null, lastRefresh: null, expiresAt: null };
 
 export function oauthErrorMessage(reason: unknown): string {
 	if (reason instanceof Error && reason.message.trim()) return reason.message;

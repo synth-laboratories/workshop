@@ -68,7 +68,7 @@ Isolated instances / multiple builds: [`HANDOFF_ISOLATED_DEV_INSTANCES.md`](./HA
 | [`design-debt.spec.ts`](./tests/playwright/design-debt.spec.ts) | Intended locks + expected-fail debt |
 | [`design_debt.test.mjs`](./tests/design_debt.test.mjs) | Static stub / smell greps |
 | [`gaps.spec.ts`](./tests/playwright/gaps.spec.ts) | Migration gaps (MCP, Intern w/o Python, SQLite migrate) |
-| [`containers.md`](./containers.md) + [`HANDOFF_CONTAINERS_CRAFTAX.md`](./HANDOFF_CONTAINERS_CRAFTAX.md) | Register/hydrate Craftax `:8098` |
+| [`containers.md`](./containers.md) + [`HANDOFF_CONTAINERS_CRAFTAX.md`](./HANDOFF_CONTAINERS_CRAFTAX.md) | Register/hydrate Craftax façade `:8080` |
 | [`HANDOFF_TRACES_V5.md`](./HANDOFF_TRACES_V5.md) + [`TRACES_V5_STORAGE_FORMAT.md`](./TRACES_V5_STORAGE_FORMAT.md) | Ingest → Open → PostTrain |
 | [`local_lora.md`](./local_lora.md) | LoRA UI removed until wired — do not restore stubs |
 | [`HANDOFF_INTERN_LOCAL_SLOT.md`](./HANDOFF_INTERN_LOCAL_SLOT.md) | Leave-safe, Provide input, local slot honesty |
@@ -98,7 +98,7 @@ Do this on a real build. File issues as you go (fix or `test.fail`).
 - [ ] Reload Laguna should eventually call a real reload (debt today)  
 
 ### Inventory · Containers
-- [ ] Attach → `http://127.0.0.1:8098` (Craftax Rust) after GameBench serve  
+- [ ] Attach → `http://127.0.0.1:8080` (Craftax GameBench rust) after `python -m craftax_gold`  
 - [ ] Probe up/down; expanded info shows hydrated `/info`  
 - [ ] See [`HANDOFF_CONTAINERS_CRAFTAX.md`](./HANDOFF_CONTAINERS_CRAFTAX.md)  
 
@@ -220,5 +220,5 @@ You may still **flag** those with tests/docs if CUA hits them.
 1. `npm run desktop:dev` + skim `polish.md` / this handoff  
 2. Run `design-debt.spec.ts` + `test:a11y` once  
 3. CUA: Account stub → **fix** (wire to Settings → Account) → flip tests → log polish  
-4. CUA: Attach Craftax if `:8098` up; else Import Trace fixture → Open  
+4. CUA: Attach Craftax if `:8080` up; else Import Trace fixture → Open  
 5. Compare one trajectory open vs Poolside trajectories site — note gaps in `polish.md`  

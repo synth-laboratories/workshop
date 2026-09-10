@@ -27,8 +27,7 @@ async function expectLegacyAccountChromeAbsent(page: Page): Promise<void> {
 			}))
 			.filter(({ testId }) =>
 				testId !== "toggle-terminal" &&
-				testId !== "toggle-inference-rail" &&
-				testId !== "app-version"
+				testId !== "toggle-inference-rail"
 			)
 	);
 	expect(unexpectedActions, "titlebar actions are limited to terminal and inference controls").toEqual([]);

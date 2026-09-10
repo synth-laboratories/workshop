@@ -36,16 +36,25 @@ export type PluginStatusesState = {
 export function usePluginStatuses(): PluginStatusesState {
 	const [pluginStatuses, setPluginStatuses] = useState<PluginStatus[] | null>(null);
 	const mounted = useRef(true);
+	const inFlight = useRef<Promise<void> | null>(null);
 
-	const refreshPluginStatuses = useCallback(async () => {
-		if (!bridges.plugins) return;
-		try {
-			const next = await bridges.plugins.list();
-			if (mounted.current) setPluginStatuses(next);
-		} catch {
-			// A registry read failure must not blank the nav: keep the last
-			// known statuses and let the destination page report the error.
-		}
+	const refreshPluginStatuses = useCallback((): Promise<void> => {
+		if (!bridges.plugins) return Promise.resolve();
+		if (inFlight.current) return inFlight.current;
+		// Install the gate before invoking the bridge: a status read can itself
+		// deliver an event. Focus/events must not multiply outstanding IPC work.
+		const request = Promise.resolve().then(async () => {
+			try {
+				const next = await bridges.plugins!.list();
+				if (mounted.current) setPluginStatuses(next);
+			} catch {
+				// Preserve the last known state; a later refresh can retry.
+			} finally {
+				inFlight.current = null;
+			}
+		});
+		inFlight.current = request;
+		return request;
 	}, []);
 
 	useEffect(() => {

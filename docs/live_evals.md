@@ -12,7 +12,7 @@
 > policy × task × execution-profile matrices are proposed in
 > `private_eval_workspace_extensions.md`.
 
-**Status:** Containers/Workshop floor implemented; real Craftax reference accepted; Harbor and hosted dig.bench acceptance remain external
+**Status:** Containers/Workshop floor implemented; real Craftax reference accepted; Harbor acceptance remains external. Live eval families are Craftax and Harbor only.
 **Working mode:** First-class templates, skill, MCP, and persisted stream replay backed by real producer receipts
 **Initial examples:** Harbor / GameBench, Craftax Rust with a ReAct policy, and Banking77
 
@@ -401,7 +401,6 @@ The registered family shares one missing-safe reducer and the required slot `str
   replay, RewardSignals, achievements, and ReAct opened/plan/data/closed partials;
 - `live.harbor_eval.v1`: Harbor trial/tool/verifier projection without claiming
   child Craftax frame affordances on the parent;
-- `live.digbench.v1`: text observations/actions/stats with frames unsupported;
 - `live.eval_stream.v1` and `live.container_rollouts.v1`: generic fallback views.
 
 Task-specific panels should be declared capabilities or optional slots, not separate
@@ -753,10 +752,7 @@ Evals consume the published schemas/test kit; neither should fork the trace voca
 4. **External acceptance:** the packaged Harbor/GameBench Docker task currently fails
    before trial start because its Dockerfile copies repository-root paths from an
    environment-subdirectory build context. Fix that source bundle before claiming A2.
-5. **Credential acceptance:** hosted dig.bench requires `DIGBENCH_API_TOKEN`; its mock
-   contract is implemented, but a real public A8 receipt is not fabricated in its
-   absence.
-9. Run independent CUA and capture a release receipt.
+5. Run independent CUA and capture a release receipt.
 
 ## Verification matrix
 

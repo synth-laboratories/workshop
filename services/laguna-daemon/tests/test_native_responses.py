@@ -8,7 +8,9 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from typing import Any
+from unittest import mock
 
 from fastapi.testclient import TestClient
 from openresponses_types import ResponseResource
@@ -25,7 +27,7 @@ from laguna_daemon.responses_api.backends.mlx import (
     _TurnStateMachine,
 )
 from laguna_daemon.responses_api.backends.fake import FakeBackend
-from laguna_daemon.responses_api.backends.protocol import ModelEvent, ToolBinding
+from laguna_daemon.responses_api.backends.protocol import CompiledTurn, ModelEvent, ToolBinding
 from laguna_daemon.responses_api.errors import ResponsesError
 from laguna_daemon.responses_api.ids import new_id
 from laguna_daemon.responses_api.service import ResponsesService
@@ -752,6 +754,66 @@ class NativeBackendContractTests(unittest.TestCase):
             self.assertIsNone(backend._tokenizer)
             self.assertFalse(backend.residency(30)["loaded"])
             asyncio.run(backend.close())
+
+    def test_native_backend_tracks_empty_text_generation_progress(self) -> None:
+        """A token-source update need not wait for a displayable text delta."""
+
+        async def exercise() -> float | None:
+            backend = NativeMlxBackend(model_path=Path("/nonexistent"))
+            backend._model = object()
+
+            class Tokenizer:
+                def encode(self, *_args: object, **_kwargs: object) -> list[int]:
+                    return [1, 2, 3, 4]
+
+            backend._tokenizer = Tokenizer()
+            turn = CompiledTurn(
+                generation_id="gen_empty_progress",
+                model="laguna-xs-2.1",
+                request={},
+                context_items=[],
+                messages=[],
+                prompt="prompt",
+                tools=[],
+                bindings={},
+                max_output_tokens=8,
+                temperature=0.7,
+                top_p=1.0,
+            )
+            response = SimpleNamespace(
+                generation_tokens=2,
+                prompt_tokens=4,
+                cached_tokens=1,
+                generation_tps=47.1254,
+                text="",
+                finish_reason="stop",
+            )
+            mlx_vlm = ModuleType("mlx_vlm")
+            mlx_vlm.stream_generate = lambda *_args, **_kwargs: iter([response])
+            sample_utils = ModuleType("mlx_vlm.sample_utils")
+            sample_utils.make_sampler = lambda **_kwargs: object()
+
+            try:
+                with (
+                    mock.patch.dict(
+                        "sys.modules",
+                        {"mlx_vlm": mlx_vlm, "mlx_vlm.sample_utils": sample_utils},
+                    ),
+                    mock.patch(
+                        "laguna_daemon.responses_api.backends.mlx._ActivatedCustomGrammarProcessor",
+                        return_value=SimpleNamespace(enabled=False),
+                    ),
+                ):
+                    events = [event async for event in backend.stream(turn)]
+                self.assertEqual([event.kind for event in events], ["usage", "finish"])
+                await asyncio.sleep(0)
+                timing = backend.generation_metrics(turn.generation_id)
+                self.assertIsNotNone(timing)
+                return timing.decode_tokens_per_second() if timing else None
+            finally:
+                await backend.close()
+
+        self.assertEqual(asyncio.run(exercise()), 47.125)
 
     def test_coordinator_closes_backend_stream_when_event_sink_fails(self) -> None:
         class LeaseBackend(FakeBackend):

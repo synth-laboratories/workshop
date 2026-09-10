@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { RuntimeEvent } from "@synth/runtime-protocol";
 import type { LocalChat } from "../types/landing";
+import type { ModelPerformanceTurnSample } from "../bridge";
 
 const GENERATION_TPS_UNAVAILABLE = "Generation speed unavailable";
 const GENERATION_SPEED_EVENT = "turn/generationSpeed";
@@ -69,7 +70,8 @@ function measurement(event: RuntimeEvent): GenerationSpeedMeasurement | null {
 /** Whether a rate may be shown as this segment's speed. */
 function isPublishable(value: GenerationSpeedMeasurement): boolean {
 	return typeof value.tps === "number" && Number.isFinite(value.tps) && value.tps > 0
-		&& (value.status === "completed" || value.status === "partial");
+		&& (value.status === "completed" || value.status === "partial")
+		&& value.tokenCountSource !== "provider_response_visible_usage";
 }
 
 /**
@@ -93,12 +95,21 @@ function detail(value: GenerationSpeedMeasurement): string {
 		value.unavailableReason ? `reason ${value.unavailableReason}` : null,
 		value.qualityFlags.length ? `flags ${value.qualityFlags.join(", ")}` : null
 	].filter((field): field is string => field !== null);
-	return `Client-observed text delivery; excludes tools and reasoning. ${fields.join(" · ")}`;
+	const method = value.tokenCountSource === "provider_response_output_usage"
+		? "Exact full response output over the complete model-output interval"
+		: "Client-observed text delivery";
+	const exclusions = value.tokenCountSource === "provider_response_output_usage"
+		? "excludes TTFT and tool execution; includes reasoning output and time"
+		: "excludes TTFT and tools";
+	return `${method}; ${exclusions}. ${fields.join(" · ")}`;
 }
 
 function generationLabel(value: GenerationSpeedMeasurement | undefined): string {
 	if (!value || !isPublishable(value)) return GENERATION_TPS_UNAVAILABLE;
-	const rate = `Observed generation: ${formatTps(value.tps!)} tok/s`;
+	const prefix = value.tokenCountSource === "provider_response_output_usage"
+		? "Observed generation estimate"
+		: "Observed generation";
+	const rate = `${prefix}: ${formatTps(value.tps!)} tok/s`;
 	return value.status === "partial" ? `${rate} (partial)` : rate;
 }
 
@@ -127,7 +138,12 @@ export type TurnPerformanceLabel = {
  * never render time. It is elapsed wall time for the whole turn — deliberately
  * a different quantity from generation speed, and never divided into one.
  */
-export function turnPerformanceLabels(chat: LocalChat, events: RuntimeEvent[], running = false) {
+export function turnPerformanceLabels(
+	chat: LocalChat,
+	events: RuntimeEvent[],
+	running = false,
+	_turnSamples: ModelPerformanceTurnSample[] = []
+) {
 	const byMessageId: Record<string, TurnPerformanceLabel> = {};
 	const ordered = [...events].sort((a, b) => a.sequence - b.sequence);
 	const messages = chat.messages;
@@ -182,8 +198,9 @@ export function turnPerformanceLabels(chat: LocalChat, events: RuntimeEvent[], r
 			if (event.eventKind === "turn/accepted") acceptedAt = at;
 		}
 		const value = measurements.get(message.id);
+		const stopped = terminal && ["run.cancelled", "turn/interrupted", "run.failed", "turn/failed"].includes(terminal.eventKind);
 		const worked = isFinal && terminalAt != null && acceptedAt != null && terminalAt >= acceptedAt
-			? `Worked ${compactDuration(terminalAt - acceptedAt)}`
+			? `${stopped ? "Stopped after" : "Worked"} ${compactDuration(terminalAt - acceptedAt)}`
 			: null;
 		byMessageId[message.id] = {
 			generation: generationLabel(value),
@@ -197,6 +214,34 @@ export function turnPerformanceLabels(chat: LocalChat, events: RuntimeEvent[], r
 	return { byMessageId, live: null as string | null };
 }
 
-export function useTurnPerformanceLabels(chat: LocalChat, events: RuntimeEvent[], running: boolean) {
-	return useMemo(() => turnPerformanceLabels(chat, events, running), [chat, events, running]);
+export type TurnSamplesLoader = (sessionId: string) => Promise<ModelPerformanceTurnSample[]>;
+
+export function useTurnPerformanceLabels(
+	chat: LocalChat,
+	events: RuntimeEvent[],
+	running: boolean,
+	loadTurnSamples?: TurnSamplesLoader
+) {
+	const [turnSamples, setTurnSamples] = useState<ModelPerformanceTurnSample[]>([]);
+	const terminalCursor = useMemo(
+		() => events.filter(isTerminal).map((event) => event.sequence).join(","),
+		[events]
+	);
+
+	useEffect(() => {
+		let disposed = false;
+		// A provider may settle and persist its authoritative usage before the UI
+		// clears its last activity line.  The terminal journal event is the source
+		// of truth for whether a settled sample is eligible to display.
+		if ((!terminalCursor && running) || !loadTurnSamples) return () => { disposed = true; };
+		void loadTurnSamples(chat.id)
+			.then((samples) => { if (!disposed) setTurnSamples(samples); })
+			.catch(() => { if (!disposed) setTurnSamples([]); });
+		return () => { disposed = true; };
+	}, [chat.id, loadTurnSamples, running, terminalCursor]);
+
+	return useMemo(
+		() => turnPerformanceLabels(chat, events, running, turnSamples),
+		[chat, events, running, turnSamples]
+	);
 }

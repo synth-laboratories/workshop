@@ -1,0 +1,11 @@
+{
+  "name": "@synth/visuals-sdk",
+  "version": "0.10.0",
+  "private": true,
+  "type": "module",
+  "scripts":{"typecheck":"tsc -p tsconfig.json"},
+  "dependencies": {
+    "@synth/visuals-protocol": "*"
+  },
+  "exports": "./src/index.ts"
+}

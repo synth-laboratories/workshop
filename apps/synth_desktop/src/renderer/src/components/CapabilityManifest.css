@@ -1,0 +1,82 @@
+.capability-manifest-frame {
+	min-width: 0;
+	padding: 14px 16px 16px;
+	overflow-x: auto;
+}
+
+.capability-manifest {
+	width: 100%;
+	border-collapse: separate;
+	border-spacing: 0;
+	table-layout: fixed;
+	font-size: var(--fs-meta, 12px);
+	line-height: var(--lh-body, 1.5);
+	color: var(--color-text);
+}
+
+.capability-manifest-caption {
+	caption-side: top;
+	text-align: left;
+	font-size: var(--fs-micro, 11px);
+	font-weight: var(--fw-semi, 650);
+	letter-spacing: var(--tracking-eyebrow, 0.08em);
+	text-transform: uppercase;
+	color: var(--color-text-muted);
+	padding: 0 0 10px 2px;
+}
+
+.capability-manifest th,
+.capability-manifest td {
+	text-align: left;
+	vertical-align: top;
+	padding: var(--sp-1, 4px) var(--sp-2, 8px) var(--sp-1, 4px) 0;
+	border-bottom: 1px solid var(--color-border);
+}
+
+.capability-manifest th:first-child,
+.capability-manifest td:first-child { width: 21%; padding-left: 12px; }
+.capability-manifest th:nth-child(2),
+.capability-manifest td:nth-child(2) { width: 25%; }
+.capability-manifest th:last-child,
+.capability-manifest td:last-child { width: 54%; padding-right: 12px; }
+
+.capability-manifest th {
+	padding-top: 8px;
+	padding-bottom: 8px;
+	background: var(--color-bg-subtle);
+	border-top: 1px solid var(--color-border);
+}
+
+.capability-manifest th:first-child { border-left: 1px solid var(--color-border); border-top-left-radius: 9px; }
+.capability-manifest th:last-child { border-right: 1px solid var(--color-border); border-top-right-radius: 9px; }
+.capability-manifest td { padding-top: 10px; padding-bottom: 10px; background: var(--color-card); }
+.capability-manifest td:first-child { border-left: 1px solid var(--color-border); font-weight: 620; }
+.capability-manifest td:last-child { border-right: 1px solid var(--color-border); }
+.capability-manifest tbody tr:last-child td:first-child { border-bottom-left-radius: 9px; }
+.capability-manifest tbody tr:last-child td:last-child { border-bottom-right-radius: 9px; }
+
+.capability-manifest th {
+	font-size: var(--fs-micro, 11px);
+	font-weight: var(--fw-medium, 550);
+	color: var(--color-text-muted);
+}
+
+.capability-manifest td:first-child {
+	font-family: var(--code-font-family);
+	white-space: nowrap;
+}
+
+.capability-manifest td:nth-child(2) {
+	color: var(--color-text-muted);
+	white-space: nowrap;
+}
+
+.diagnostics-panel > .capability-manifest-frame {
+	padding-bottom: var(--sp-2, 8px);
+	border-bottom: 1px solid var(--color-border);
+	margin-bottom: var(--sp-1, 4px);
+}
+
+@media (max-width: 760px) {
+	.capability-manifest { min-width: 620px; }
+}

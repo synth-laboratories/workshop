@@ -44,7 +44,7 @@ pub fn recipe_catalog() -> Value {
         "availability": availability,
         "limits": limits(),
         "credentialInputs": [],
-        "prerequisites": ["Trusted Craftax gold binary", "Trusted SFT bridge runtime", "GROQ_API_KEY", "TINKER_API_KEY"],
+        "prerequisites": ["craftax-gamebench-rust façade (or SYNTH_CRAFTAX_GOLD_BIN + image PYTHONPATH)", "Trusted SFT bridge runtime", "GROQ_API_KEY", "TINKER_API_KEY"],
     })
 }
 
@@ -136,7 +136,7 @@ pub async fn start(
         local_path: None,
     };
     let (run, event) = service.create(create).await?;
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
@@ -155,7 +155,7 @@ pub async fn start(
         )
         .await
         {
-            let _ = append_terminal(&worker, &run_id, true, error.to_string()).await;
+            let _ = append_terminal(&worker, &run_id, true, format!("{error:#}")).await;
         }
         worker.unregister_local_recipe(&run_id).await;
     });
@@ -171,7 +171,7 @@ async fn run_worker(
     run_dir: PathBuf,
     groq: String,
     tinker: String,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: super::CancelObserver,
 ) -> Result<()> {
     append_status(&service, &run_id, "optimizer.run.started", "running").await?;
     let mut owned_craftax = if craftax_ready() {
@@ -180,20 +180,29 @@ async fn run_worker(
         let stdout = fs::File::create(run_dir.join("craftax.stdout.log"))?;
         let stderr = fs::File::create(run_dir.join("craftax.stderr.log"))?;
         Some(
-            Command::new(&craftax)
-                .args(["--port", "8098", "--host", "127.0.0.1"])
+            Command::new(&python)
+                .args([
+                    "-m",
+                    "craftax_gold",
+                    "--port",
+                    "8080",
+                    "--host",
+                    "127.0.0.1",
+                ])
                 .env("GROQ_API_KEY", &groq)
+                .env("SYNTH_CRAFTAX_GOLD_BIN", &craftax)
+                .env("PYTHONPATH", craftax_image_pythonpath())
                 .stdin(Stdio::null())
                 .stdout(Stdio::from(stdout))
                 .stderr(Stdio::from(stderr))
                 .kill_on_drop(true)
                 .spawn()
-                .context("launch trusted Craftax service")?,
+                .context("launch craftax-gamebench-rust façade")?,
         )
     };
     if owned_craftax.is_some() {
         let mut ready = false;
-        for _ in 0..60 {
+        for _ in 0..120 {
             if craftax_ready() {
                 ready = true;
                 break;
@@ -201,7 +210,7 @@ async fn run_worker(
             sleep(Duration::from_millis(250)).await;
         }
         if !ready {
-            bail!("owned Craftax service did not become ready on 127.0.0.1:8098");
+            bail!("owned Craftax service did not become ready on 127.0.0.1:8080");
         }
     }
     let stdout_path = run_dir.join("workshop.stdout.log");
@@ -247,10 +256,21 @@ async fn run_worker(
                 return Ok(());
             }
             changed = cancel.changed() => {
-                if changed.is_ok() && *cancel.borrow() {
+                if changed.is_ok() && cancel.borrow().is_some() {
                     child.kill().await.context("cancel Craftax SFT process")?;
                     if let Some(craftax) = owned_craftax.as_mut() { let _ = craftax.kill().await; }
-                    append_status(&service, &run_id, "optimizer.run.cancelled", "cancelled").await?;
+                    let request = cancel
+                        .borrow()
+                        .as_ref()
+                        .cloned()
+                        .expect("cancel observer changed with a request");
+                    service
+                        .settle_run(
+                            run_id.clone(),
+                            super::kernel::SettleCause::Cancelled { request },
+                            None,
+                        )
+                        .await?;
                     return Ok(());
                 }
             }
@@ -554,18 +574,7 @@ async fn append_terminal(
     if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
         return Ok(());
     }
-    append_status(
-        service,
-        run_id,
-        if failed {
-            "optimizer.run.failed"
-        } else {
-            "optimizer.run.completed"
-        },
-        if failed { "failed" } else { "completed" },
-    )
-    .await?;
-    if failed {
+    let error = if failed {
         let run = service.get(run_id.to_string()).await?;
         let stderr = run
             .summary
@@ -585,20 +594,23 @@ async fn append_terminal(
                     .rev()
                     .collect::<String>()
             });
-        let error = json!({"message":tail.as_deref().unwrap_or(&detail),"stderrTail":tail,"logPath":stderr});
-        service
-            .append_event_payloads(
-                run_id.to_string(),
-                vec![
-                    OptimizerEventDraft::new("optimizer.recipe.diagnostic", "sft")
-                        .idempotency_key("diagnostic")
-                        .level("error")
-                        .delta(map_of("status", json!("failed")))
-                        .error(error),
-                ],
-            )
-            .await?;
-    }
+        Some(json!({
+            "message": tail.as_deref().unwrap_or(&detail),
+            "supervisorDetail": detail,
+            "stderrTail": tail,
+            "logPath": stderr
+        }))
+    } else {
+        None
+    };
+    let cause = if failed {
+        super::kernel::SettleCause::Failed {
+            detail: detail.clone(),
+        }
+    } else {
+        super::kernel::SettleCause::Completed
+    };
+    service.settle_run(run_id.to_string(), cause, error).await?;
     Ok(())
 }
 
@@ -626,21 +638,33 @@ fn resolve_python() -> Result<PathBuf> {
         .context("canonicalize Craftax SFT Python")
 }
 fn resolve_craftax() -> Result<PathBuf> {
-    let path = std::env::var_os("SYNTH_CRAFTAX_GOLD_PATH")
+    let path = std::env::var_os("SYNTH_CRAFTAX_GOLD_BIN")
+        .or_else(|| std::env::var_os("SYNTH_CRAFTAX_GOLD_PATH"))
         .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("SYNTH_CRAFTAX_GOLD_PATH is not configured"))?;
+        .ok_or_else(|| {
+            anyhow!("SYNTH_CRAFTAX_GOLD_BIN or SYNTH_CRAFTAX_GOLD_PATH is not configured")
+        })?;
     if !path.is_file() {
-        bail!("Craftax gold binary unavailable; build craftax_gold or set SYNTH_CRAFTAX_GOLD_PATH")
+        bail!("Craftax gold binary unavailable; build craftax_gold or set SYNTH_CRAFTAX_GOLD_BIN")
     }
     path.canonicalize()
         .context("canonicalize Craftax gold binary")
 }
 
 fn craftax_ready() -> bool {
-    let Ok(address) = "127.0.0.1:8098".parse() else {
+    let Ok(address) = "127.0.0.1:8080".parse() else {
         return false;
     };
     std::net::TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_ok()
+}
+
+fn craftax_image_pythonpath() -> PathBuf {
+    std::env::var_os("SYNTH_CRAFTAX_IMAGE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                .join("GitHub/evals/containers/images/craftax-gamebench-rust")
+        })
 }
 fn resolve_secret(name: &str) -> Result<String> {
     if !matches!(name, "GROQ_API_KEY" | "TINKER_API_KEY") {

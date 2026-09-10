@@ -55,13 +55,13 @@ pub struct LegacyMigrationOptions {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EntityCount {
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub found: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub imported: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub existing: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub skipped: u64,
 }
 
@@ -91,7 +91,7 @@ pub struct MigrationReceipt {
     pub counts: BTreeMap<String, EntityCount>,
     pub warnings: Vec<String>,
     pub integrity_check: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub foreign_key_violations: u64,
     pub rollback: RollbackMetadata,
 }

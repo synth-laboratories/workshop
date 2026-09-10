@@ -7,6 +7,7 @@
 
 import type {
 	CodexBridge,
+	AnalysisBridge,
 	CodexOauthBridge,
 	ContextBridge,
 	CoreBridge,
@@ -33,10 +34,12 @@ import type {
 	UsageBridge,
 	VisualsBridge,
 	ReportsBridge,
+	RegisteredInstance,
 	WhisperBridge,
 	WorkspaceScopeBridge,
 	ComposerImageAttachment,
-	SecretsBridge
+	SecretsBridge,
+	HumanAnnotationsBridge
 } from "./bridge/types";
 
 export {};
@@ -48,9 +51,11 @@ declare global {
 			chooseWorkspaceDirectory(): Promise<string | null>;
 			chooseImageFiles(): Promise<ComposerImageAttachment[]>;
 			getInstanceDiagnostics(): Promise<DesktopInstanceDiagnostics>;
+			getInstances(): Promise<RegisteredInstance[]>;
 		};
 		/** Browser fixture/explicit compatibility bridge; not installed by Tauri. */
 		synthRuntime?: RuntimeBridge;
+		synthAnalysis?: AnalysisBridge;
 		synthLaguna?: LagunaBridge;
 		synthTrainingModels?: TrainingModelsBridge;
 		synthTrainingArtifacts?: TrainingArtifactsBridge;
@@ -78,6 +83,7 @@ declare global {
 		synthTerminal: TerminalBridge;
 		synthSecrets?: SecretsBridge;
 		synthTelemetry?: ProductTelemetryBridge;
+		synthHumanAnnotations?: HumanAnnotationsBridge;
 		/** Dev/test semantic eval API — tree-shaken from packaged production builds. */
 		__synthEval?: SemanticEvalApi;
 		__synthPreferences?: {

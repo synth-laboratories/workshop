@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "../../../services/laguna-daemon/laguna_daemon": "services/laguna-daemon/laguna_daemon",
+      "../../../services/victoria-logs": "services/victoria-logs",
+      "../../../packages/workshop-visuals/families": "visuals/families",
+      "../../../packages/workshop-visuals/chrome": "visuals/chrome",
+      "../../../packages/workshop-visuals/components": "visuals/components",
+      "../../../packages/workshop-visuals/runtime": "visuals/runtime",
+      "../../../visuals/ambient.d.ts": "visuals/ambient.d.ts",
+      "../../../visuals/package.json": "visuals/package.json",
+      "../../../visuals/tsconfig.json": "visuals/tsconfig.json",
+      "../../../helpers/synth-computer-use/target/bundle/Synth Computer Use.app": "Synth Computer Use.app",
+      "../browser/playwright_backend.mjs": "browser/playwright_backend.mjs",
+      "../browser/readiness_probe.mjs": "browser/readiness_probe.mjs",
+      "../../../runtime-distributions/mlx-rl": "runtimes/mlx-rl",
+      "../../../runtime-distributions/optimizers": "runtimes/optimizers",
+      "../../../runtime-distributions/trace/bin": "bin",
+      "../../../runtime-distributions/trace/trace-runtime": "trace-runtime"
+    }
+  }
+}

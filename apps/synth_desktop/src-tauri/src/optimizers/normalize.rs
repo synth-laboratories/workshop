@@ -1,8 +1,33 @@
-//! Normalize local OSS (GEPA) and hosted optimizers-beta (GELO/go-ex) payloads
+//! Normalize local OSS (GEPA) and hosted optimizers-beta (GO-EX) payloads
 //! into the shared `optimizer_event.v1` envelope.
 
-use super::models::{OptimizerEventEnvelope, OPTIMIZER_EVENT_SCHEMA_VERSION};
+use super::models::{OptimizerEventEnvelope, OptimizerRunStatus, OPTIMIZER_EVENT_SCHEMA_VERSION};
 use serde_json::{json, Map, Value};
+
+pub(super) fn checkpoint_child_event(kind: &str, payload: &Map<String, Value>) -> (String, Map<String, Value>) {
+    let mut delta = payload.clone();
+    if kind == "sft.child_eval.progress" && payload.get("event").and_then(Value::as_str) == Some("eval.child.attached") {
+        if let Some(child) = payload.get("run_id").and_then(Value::as_str) {
+            delta.insert("childEvalRunId".into(), json!(child));
+            return ("sft.checkpoint_evaluation.started".into(), delta);
+        }
+    }
+    if kind == "sft.child_eval.completed" {
+        if let Some(child) = payload.get("eval_job_id").and_then(Value::as_str) {
+            delta.insert("childEvalRunId".into(), json!(child));
+            delta.insert("evaluation".into(), json!({
+                "evaluation_id": child, "checkpoint_id": payload.get("checkpoint_id"),
+                "phase": payload.get("role"), "step": payload.get("step"),
+                "score": payload.get("value"), "metric": payload.get("metric_ref"),
+                "evaluator": payload.get("evaluator_id"), "sample_count": payload.get("completed"),
+                "status": payload.get("status"), "units": payload.get("units"),
+                "reward_version": payload.get("reward_version")
+            }));
+            return ("sft.checkpoint_evaluation.completed".into(), delta);
+        }
+    }
+    (kind.into(), delta)
+}
 
 pub fn normalize_event(
     raw: &Value,
@@ -73,7 +98,7 @@ fn normalize_canonical(
             .or_else(|| obj.get("seq"))
             .or_else(|| obj.get("_seq")),
     )?;
-    let event_type = obj
+    let mut event_type = obj
         .get("type")
         .or_else(|| obj.get("event_type"))
         .and_then(Value::as_str)
@@ -103,17 +128,22 @@ fn normalize_canonical(
         .to_string();
     let mut delta = obj
         .get("delta")
+        .or_else(|| (obj.get("schema_version").and_then(Value::as_str) == Some("training.event.v1")).then(|| obj.get("payload")).flatten())
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    lift_child_resource_ref(&mut delta);
-    if event_type == "optimizer.state.transitioned" {
-        if let Some(status) = delta.get("to").cloned() {
-            if !delta.contains_key("status") {
-                delta.insert("status".to_string(), status);
-            }
+    if event_type == "training.lifecycle" {
+        match delta.get("state").and_then(Value::as_str) {
+            Some("paused" | "blocked_evaluation" | "blocked_budget" | "blocked_uncertain") => event_type = "optimizer.run.paused".into(),
+            Some("cancel_requested") => event_type = "optimizer.run.cancelling".into(),
+            Some("running") => event_type = "optimizer.run.resumed".into(),
+            _ => {}
         }
     }
+    if event_type.starts_with("sft.child_eval.") {
+        (event_type, delta) = checkpoint_child_event(&event_type, &delta);
+    }
+    lift_child_resource_ref(&mut delta);
     let usage_delta = obj
         .get("usage_delta")
         .or_else(|| obj.get("usageDelta"))
@@ -187,11 +217,6 @@ fn normalize_gepa_oss(
     lift_child_resource_ref(&mut delta);
     if let Some(message) = obj.get("message").and_then(Value::as_str) {
         delta.insert("message".into(), json!(message));
-    }
-    if event_type == "optimizer.state.transitioned" {
-        if let Some(status) = fields.get("to") {
-            delta.insert("status".into(), status.clone());
-        }
     }
     let item = infer_item_from_gepa(&event_type, &fields);
     let snapshot = gepa_snapshot(&event_type, &fields);
@@ -318,9 +343,11 @@ fn normalize_hosted_or_goex(
 
 pub fn normalize_algorithm_id(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
-        "gelo" | "goex" | "go_ex" | "go-ex" => "go-ex".into(),
+        "go-ex" => "go-ex".into(),
         "gepa" => "gepa".into(),
+        "eval" => "eval".into(),
         "sft" => "sft".into(),
+        "cispo" => "cispo".into(),
         other if !other.is_empty() => other.to_string(),
         _ => "unknown".into(),
     }
@@ -344,7 +371,8 @@ pub fn cloud_run_to_mirror(
     let status = obj
         .get("status")
         .and_then(Value::as_str)
-        .unwrap_or("unknown")
+        .and_then(OptimizerRunStatus::parse)?
+        .as_str()
         .to_string();
     let cursor_seq = as_u64(obj.get("cursor_seq")).unwrap_or(0);
     let objective = obj
@@ -558,6 +586,18 @@ fn as_u64(value: Option<&Value>) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn training_payload_and_acknowledged_controls_survive_normalization() {
+        for (state, expected) in [("pause_requested", "training.lifecycle"), ("paused", "optimizer.run.paused"), ("running", "optimizer.run.resumed"), ("blocked_evaluation", "optimizer.run.paused"), ("blocked_budget", "optimizer.run.paused"), ("blocked_uncertain", "optimizer.run.paused"), ("cancel_requested", "optimizer.run.cancelling")] {
+            let raw = serde_json::json!({"schema_version":"training.event.v1", "optimizer_run_id":"run", "algorithm_id":"sft", "sequence_number":1,
+                "type":"training.lifecycle", "payload":{"state":state,"checkpoint_id":"checkpoint-1"}});
+            let event = super::normalize_event(&raw, "run", "sft").unwrap();
+            assert_eq!(event.event_type, expected);
+            assert_eq!(event.delta["checkpoint_id"], "checkpoint-1");
+            assert_eq!(event.delta["state"], state);
+        }
+    }
     use super::*;
 
     #[test]
@@ -610,18 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn enriches_canonical_gepa_status_and_runtime_usage() {
-        let transition = json!({
-            "schema_version": "optimizer_event.v1",
-            "type": "optimizer.state.transitioned",
-            "sequence_number": 69,
-            "optimizer_run_id": "gepa_live_1",
-            "algorithm_id": "gepa",
-            "delta": {"to": "completed"}
-        });
-        let event = normalize_event(&transition, "fallback", "gepa").unwrap();
-        assert_eq!(event.delta["status"], json!("completed"));
-
+    fn enriches_canonical_runtime_usage() {
         let completed = json!({
             "schema_version": "optimizer_event.v1",
             "type": "runtime.job.completed",
@@ -680,9 +709,10 @@ mod tests {
     }
 
     #[test]
-    fn maps_gelo_alias_to_go_ex() {
-        assert_eq!(normalize_algorithm_id("GELO"), "go-ex");
-        assert_eq!(normalize_algorithm_id("goex"), "go-ex");
+    fn preserves_noncanonical_algorithm_names_for_fail_closed_validation() {
+        assert_eq!(normalize_algorithm_id("GELO"), "gelo");
+        assert_eq!(normalize_algorithm_id("goex"), "goex");
+        assert_eq!(normalize_algorithm_id("go-ex"), "go-ex");
     }
 
     #[test]

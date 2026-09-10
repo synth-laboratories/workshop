@@ -1,4 +1,5 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { listen } from "@tauri-apps/api/event";
 import type {
 	ContainerDeployment,
 	OptimizerRunRecord,
@@ -11,9 +12,11 @@ import { publicError } from "./runtime/publicError";
 import type { ArtifactRef, LandingState, LocalChat } from "./types/landing";
 import type { AccountViewModel } from "./runtime/accountView";
 import type { DeviceUsageSummary } from "./components/UsageSheet";
-import type { DesktopPreferences, ToolActivityMode } from "./preferences";
+import type { DesktopPreferences } from "./preferences";
 import { applyPreferencesToDocument } from "./preferences";
 import type { LagunaStatus, ModelPerformanceSummary, PluginPermission, PluginStatus, SynthAccountSummary, SynthBackendSettings } from "./bridge";
+import type { LagunaPolicy } from "./bridge/types";
+import type { HostedInferenceLifecycle } from "./runtime/hostedInferenceLifecycle";
 import type { ComputerUseView } from "./runtime/computerUse";
 import type { InferenceMonitor } from "./components/InferencePanel";
 import type { ApprovalMode, ApprovalPolicy, SandboxMode } from "./runtime/nativeCodex";
@@ -22,36 +25,111 @@ import { primaryVisualId, useChatOutputs } from "./hooks/useChatOutputs";
 import { ContainerPane } from "./components/ContainerPane";
 import { ConnectorsPage } from "./components/ConnectorsPage";
 import { InferencePanel } from "./components/InferencePanel";
+import { PluginsPage } from "./components/PluginsPage";
 import { DataPage } from "./components/DataPage";
 import { LandingPage } from "./components/LandingPage";
 import { ComputerUsePage } from "./components/ComputerUsePage";
+import { JesterkyPage } from "./components/JesterkyPage";
 import { OptimizersPage } from "./components/OptimizersPage";
+import { EnvironmentQaPage } from "./components/EnvironmentQaPage";
 import { PaneResizeHandle } from "./components/PaneResizeHandle";
 import { SettingsPage } from "./components/SettingsPage";
 import { VisualPane } from "./components/VisualHost";
 import { VisualsPage } from "./components/VisualsPage";
 import { ReportsPage } from "./components/ReportsPage";
+import { ExperimentsPage } from "./experiments/ExperimentsPage";
 import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
+import { MittenFrame } from "./components/MittenFrame";
+import type { SidePanelTab } from "./hooks/useShellLayout";
 import { ResponsesTracePanel } from "./components/ResponsesTracePanel";
-import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
-import { sessionIsLocalChat, sessionIsSync } from "./runtime/sessionView";
-import { bridges } from "./runtime/desktopBridge";
+import { ErrorsLogsPanel } from "./components/ErrorsLogsPanel";
+import { HumanAnnotationWorkspace } from "./components/HumanAnnotationWorkspace";
+import { sessionIsLocalChat } from "./runtime/sessionView";
+import { bridges, isDesktopApp } from "./runtime/desktopBridge";
+import {
+	openTraceReference,
+	VISUAL_OPS_FOLLOW_EVENT,
+	VISUAL_OPS_UNREACHABLE_EVENT,
+	VISUAL_REFERENCE_ERROR_EVENT,
+	VISUAL_REFERENCE_OPENED_EVENT,
+	type VisualOpsFollowDetail
+} from "./runtime/visualReferences";
 
 export type MainView =
 	| { kind: "landing" }
 	| { kind: "chat"; chatId: string }
 	| { kind: "sync"; sessionId: string }
 	| { kind: "async"; sessionId: string }
-	| { kind: "settings"; section?: "general" | "models" | "inference" | "context" | "voice" | "account" | "secrets" | "about" }
+	| { kind: "settings"; section?: "general" | "models" | "inference" | "context" | "voice" | "plugins" | "account" | "secrets" | "about" }
 	| { kind: "connectors" }
 	| { kind: "inventory" }
+	| { kind: "inference" }
+	| { kind: "plugins" }
 	| { kind: "visuals" }
 	| { kind: "reports"; reportId?: string }
+	| { kind: "experiments"; experimentId?: string }
 	| { kind: "optimizers" }
+	| { kind: "jesterky" }
+	| { kind: "environment-qa" }
 	| { kind: "computer-use" };
+
+const INVENTORY_ORIGIN_KINDS = new Set<MainView["kind"]>([
+	"visuals",
+	"experiments",
+	"optimizers",
+	"jesterky",
+	"environment-qa",
+	"inventory",
+	"inference",
+	"plugins",
+	"settings",
+	"reports"
+]);
+
+const REPORT_HASH_FRAGMENTS = new Set([
+	"research-log",
+	"findings",
+	"methods",
+	"outline",
+	"experiment-records",
+	"traces",
+	"limitations",
+	"claims",
+	"review-comments",
+	"results",
+	"result"
+]);
+
+function isReportFragment(hash: string): boolean {
+	const id = hash.startsWith("#") ? hash.slice(1) : hash;
+	if (!id) return false;
+	if (REPORT_HASH_FRAGMENTS.has(id)) return true;
+	return id.startsWith("visual-");
+}
+
+function clearReportFragment(): void {
+	if (typeof window === "undefined") return;
+	if (!isReportFragment(window.location.hash)) return;
+	window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}`);
+}
+
+type OriginLayout = {
+	sidePanelOpen: boolean;
+	sidePanelTab: SidePanelTab;
+};
+
+type OriginFrame = {
+	view: MainView;
+	layout?: OriginLayout;
+};
+
+function isCloudDeskOrigin(view: MainView): boolean {
+	return view.kind === "sync" || view.kind === "async";
+}
 
 export type MainRoutesProps = {
 	view: MainView;
+	chatTitlebar?: ReactNode;
 	computerUse: ComputerUseView;
 	computerUseBusy: boolean;
 	onInstallComputerUse: () => void;
@@ -64,13 +142,17 @@ export type MainRoutesProps = {
 	sessions: Session[];
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
+	lagunaAdapters: LagunaPolicy[];
+	selectedLagunaAdapterId: string | null;
+	onSelectLagunaAdapter: (checkpointId: string | null) => void;
 	activeChat: LocalChat | null;
 	eventsBySession: Record<string, RuntimeEvent[]>;
 	activeChatSession: Session | undefined;
 	activeChatRunning: boolean;
 	activeChatWarmingUp: boolean;
+	activeHostedInferencePhase: string | null;
+	activeHostedInference: HostedInferenceLifecycle | null;
 	activeLocalModel: boolean;
-	activeSessionId: string | null;
 	openArtifact: ArtifactRef | null;
 	openArtifactId: string | null;
 	openContainer: ContainerDeployment | null;
@@ -78,11 +160,13 @@ export type MainRoutesProps = {
 	setContainerPaneExpanded: (expanded: boolean) => void;
 	inventoryContainerWidth: number;
 	setInventoryContainerWidth: (width: number) => void;
+	sidePanelWidth: number;
+	setSidePanelWidth: (width: number) => void;
 	persistLayoutSnapshot: (patch: Partial<DesktopPreferences["layout"]["last"]>) => void;
 	showSidePanel: boolean;
 	sidePanelCanSharePane: boolean;
-	sidePanelTab: "outputs" | "inference" | "trace";
-	setSidePanelTab: (tab: "outputs" | "inference" | "trace") => void;
+	sidePanelTab: SidePanelTab;
+	setSidePanelTab: (tab: SidePanelTab) => void;
 	transcriptHistoryBySession: Record<string, TranscriptHistoryState>;
 	loadOlderTranscript: () => void;
 	setSidePanelOpen: (open: boolean) => void;
@@ -107,6 +191,7 @@ export type MainRoutesProps = {
 	setSandboxMode: (mode: SandboxMode) => void;
 	showToast: (message: string) => void;
 	startOptimizerAgent: (title: string, prompt: string) => Promise<void>;
+    ensureTrainingApprovalSession: () => Promise<string>;
 	pluginStatuses: readonly PluginStatus[] | null;
 	refreshPluginStatuses: () => Promise<void>;
 	openChat: (chatId: string) => void;
@@ -114,8 +199,10 @@ export type MainRoutesProps = {
 	toggleArtifact: (id: string | null) => void;
 	toggleContainer: (id: string | null) => Promise<void>;
 	probeOpenContainer: () => Promise<void>;
+	repairOpenContainer: () => Promise<void>;
+	restartOpenContainer: () => Promise<void>;
 	controlActive: (kind: "approve" | "reject" | "cancel", payload?: Record<string, unknown>) => Promise<void>;
-	onActivityModeChange: (mode: ToolActivityMode) => void;
+	bottomPanel?: ReactNode;
 };
 
 /**
@@ -125,6 +212,7 @@ export type MainRoutesProps = {
 export function MainRoutes(props: MainRoutesProps): ReactNode {
 	const {
 		view,
+		chatTitlebar,
 		setView,
 		computerUse,
 		computerUseBusy,
@@ -135,13 +223,13 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		onRevokeComputerUseApp,
 		state,
 		sessions,
-		selectedTargetId,
-		onSelectTarget,
 		activeChat,
 		eventsBySession,
 		activeChatSession,
 		activeChatRunning,
 		activeChatWarmingUp,
+		activeHostedInferencePhase,
+		activeHostedInference,
 		activeLocalModel,
 		openArtifact,
 		openArtifactId,
@@ -152,6 +240,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		refreshPluginStatuses,
 		inventoryContainerWidth,
 		setInventoryContainerWidth,
+		sidePanelWidth,
+		setSidePanelWidth,
 		persistLayoutSnapshot,
 		showSidePanel,
 		sidePanelCanSharePane,
@@ -170,7 +260,6 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		onReloadLaguna,
 		openBilling,
 		refreshAccountSummary,
-		setUsageSheetOpen,
 		setSidebarVisible,
 		setSidebarWidth,
 		setTerminalOpen,
@@ -179,17 +268,94 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		setSandboxMode,
 		showToast,
 		startOptimizerAgent,
+        ensureTrainingApprovalSession,
 		openChat,
 		openVisualRecord,
 		toggleArtifact,
 		toggleContainer,
 		probeOpenContainer,
+		repairOpenContainer,
+		restartOpenContainer,
 		controlActive,
-		onActivityModeChange,
-		activeSessionId,
+		bottomPanel,
 		transcriptHistoryBySession,
 		loadOlderTranscript
 	} = props;
+	const [transcriptCollapsed, setTranscriptCollapsed] = useState(false);
+	const [openVisualTabs, setOpenVisualTabs] = useState<ArtifactRef[]>([]);
+	const [humanAnnotationSessionId, setHumanAnnotationSessionId] = useState<string | null>(null);
+	const [inventoryVisualId, setInventoryVisualId] = useState<string | null>(null);
+	useEffect(() => {
+		if (view.kind !== "inventory") setInventoryVisualId(null);
+		if (view.kind === "chat" && openArtifact?.id) {
+			setSidePanelTab("visual");
+			setSidePanelOpen(true);
+		}
+	}, [view.kind, openArtifact?.id, setSidePanelOpen, setSidePanelTab]);
+	const [experimentSectionOwnsVisualPane, setExperimentSectionOwnsVisualPane] = useState(true);
+	useEffect(() => {
+		if (view.kind === "experiments") setExperimentSectionOwnsVisualPane(true);
+	}, [view.kind]);
+	useEffect(() => {
+		if (!showSidePanel) setTranscriptCollapsed(false);
+	}, [showSidePanel]);
+	useEffect(() => {
+		const annotations = bridges.humanAnnotations;
+		if (!annotations) return;
+		return annotations.onShow((sessionId) => {
+			setHumanAnnotationSessionId(sessionId);
+			setSidePanelTab("review");
+			setSidePanelOpen(true);
+			setTranscriptCollapsed(true);
+		});
+	}, [setSidePanelOpen, setSidePanelTab]);
+	useEffect(() => {
+		if (!openArtifact) return;
+		setOpenVisualTabs((current) => {
+			const index = current.findIndex((artifact) => artifact.id === openArtifact.id);
+			if (index < 0) return [...current, openArtifact];
+			const next = [...current];
+			next[index] = openArtifact;
+			return next;
+		});
+	}, [openArtifact]);
+	useEffect(() => {
+		if (!isDesktopApp()) return;
+		let disposed = false;
+		let unlisten: (() => void) | undefined;
+		void listen<{ instance?: string | null; view: string; runId?: string | null }>(
+			"desktop:deep-link",
+			(event) => {
+				const route = event.payload;
+				if (route.instance && route.instance !== document.documentElement.dataset.desktopInstance) {
+					showToast(`This link targets Workshop instance ${route.instance}. Open it from the instance switcher.`);
+					return;
+				}
+				if (route.runId) persistLayoutSnapshot({ optimizers: { selectedRunId: route.runId } });
+				if (route.view === "optimizers" || route.runId) setView({ kind: "optimizers" });
+				else if (route.view === "experiments") setView({ kind: "experiments" });
+				else if (route.view === "visuals") setView({ kind: "visuals" });
+				else setView({ kind: "landing" });
+			}
+		).then((stop) => {
+			if (disposed) stop();
+			else unlisten = stop;
+		}).catch((reason) => showToast(publicError(reason)));
+		return () => {
+			disposed = true;
+			unlisten?.();
+		};
+	}, [persistLayoutSnapshot, setView, showToast]);
+	useEffect(() => {
+		const opened = (event: Event) => openVisualRecord((event as CustomEvent<VisualRecord>).detail);
+		const failed = (event: Event) => showToast((event as CustomEvent<string>).detail);
+		window.addEventListener(VISUAL_REFERENCE_OPENED_EVENT, opened);
+		window.addEventListener(VISUAL_REFERENCE_ERROR_EVENT, failed);
+		return () => {
+			window.removeEventListener(VISUAL_REFERENCE_OPENED_EVENT, opened);
+			window.removeEventListener(VISUAL_REFERENCE_ERROR_EVENT, failed);
+		};
+	}, [openVisualRecord, showToast]);
 	const chatOutputs = useChatOutputs(activeChat ?? { id: "", title: "", messages: [] });
 	const openOwnedRun = (run: OptimizerRunRecord) => {
 		const visualId = primaryVisualId(run);
@@ -212,40 +378,216 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 			}
 		})();
 	};
+	useEffect(() => {
+		const markUnreachable = (detail: VisualOpsFollowDetail) => {
+			window.dispatchEvent(new CustomEvent(VISUAL_OPS_UNREACHABLE_EVENT, { detail }));
+		};
+		const follow = (event: Event) => {
+			const detail = (event as CustomEvent<VisualOpsFollowDetail>).detail;
+			if (!detail?.id || !detail.kind) return;
+			if (detail.kind === "session") {
+				const session = sessions.find((item) => item.id === detail.id);
+				if (session && sessionIsLocalChat(session)) {
+					openChat(detail.id);
+					return;
+				}
+				markUnreachable(detail);
+				return;
+			}
+			if (detail.kind === "run") {
+				void (async () => {
+					if (!bridges.optimizers) {
+						markUnreachable(detail);
+						return;
+					}
+					try {
+						const run = await bridges.optimizers.get(detail.id);
+						openOwnedRun(run);
+						if (!primaryVisualId(run)) setView({ kind: "optimizers" });
+					} catch {
+						markUnreachable(detail);
+					}
+				})();
+				return;
+			}
+			void openTraceReference(detail.id).then(
+				(visual) => {
+					window.dispatchEvent(new CustomEvent(VISUAL_REFERENCE_OPENED_EVENT, { detail: visual }));
+				},
+				() => markUnreachable(detail)
+			);
+		};
+		window.addEventListener(VISUAL_OPS_FOLLOW_EVENT, follow);
+		return () => window.removeEventListener(VISUAL_OPS_FOLLOW_EVENT, follow);
+	}, [sessions, openChat, openOwnedRun, setView]);
+	// Chat, Visuals, Experiments, Optimizers, Data, and Reports share one
+	// workbench so VisualPane keeps expand, SSE, and seal state. Settings
+	// joins that host only while a pane is open; otherwise it is full-page.
+	const chatRoute = view.kind === "chat" && activeChat != null;
+	const settingsWithPane = view.kind === "settings" && Boolean(openArtifact);
+	const inventoryHost =
+		view.kind === "visuals" ||
+		view.kind === "experiments" ||
+		view.kind === "optimizers" || view.kind === "jesterky" ||
+		view.kind === "environment-qa" ||
+		view.kind === "inventory" ||
+		view.kind === "inference" ||
+		view.kind === "plugins" ||
+		view.kind === "reports";
+	const paneHost = inventoryHost || chatRoute || settingsWithPane;
+	const inventoryOriginRef = useRef<MainView | null>(null);
+	const originStackRef = useRef<OriginFrame[]>([]);
+	const restoringOriginRef = useRef(false);
+	const previousViewRef = useRef(view);
+	const recentChatIdRef = useRef<string | null>(view.kind === "chat" ? view.chatId : activeChat?.id ?? null);
+	if (view.kind === "chat") recentChatIdRef.current = view.chatId;
+	if (previousViewRef.current.kind !== view.kind) {
+		if (restoringOriginRef.current) {
+			restoringOriginRef.current = false;
+		} else if (INVENTORY_ORIGIN_KINDS.has(view.kind)) {
+			const previous = previousViewRef.current;
+			originStackRef.current.push({
+				view: previous,
+				layout: previous.kind === "chat"
+					? { sidePanelOpen: showSidePanel, sidePanelTab }
+					: undefined
+			});
+			inventoryOriginRef.current = previous;
+		} else {
+			originStackRef.current = [];
+			inventoryOriginRef.current = null;
+		}
+	}
+	previousViewRef.current = view;
+	useEffect(() => {
+		if (view.kind === "reports") return;
+		clearReportFragment();
+	}, [view.kind]);
+	const leaveInventory = (fallbackOrigin: MainView | null) => {
+		restoringOriginRef.current = true;
+		const frame = originStackRef.current.pop() ?? (fallbackOrigin ? { view: fallbackOrigin } : null);
+		inventoryOriginRef.current = originStackRef.current.at(-1)?.view ?? null;
+		if (view.kind === "reports") clearReportFragment();
+		const origin = frame?.view ?? fallbackOrigin;
+		if (origin?.kind === "chat") {
+			openChat(origin.chatId);
+			if (frame?.layout) {
+				setSidePanelOpen(frame.layout.sidePanelOpen);
+				setSidePanelTab(frame.layout.sidePanelTab);
+			}
+			return;
+		}
+		if (origin && !isCloudDeskOrigin(origin)) {
+			setView(origin);
+			return;
+		}
+		setView({ kind: "landing" });
+	};
+	const leavePluginToRecentChat = () => {
+		originStackRef.current = [];
+		inventoryOriginRef.current = null;
+		const recentChatId = recentChatIdRef.current
+			?? activeChat?.id
+			?? sessions.find(sessionIsLocalChat)?.id
+			?? null;
+		if (recentChatId) {
+			openChat(recentChatId);
+			return;
+		}
+		setView({ kind: "landing" });
+	};
+	// An open artifact is durable navigation state, but it is only rendered on
+	// surfaces that actually own or inspect visuals. Independent destinations
+	// (Plugins, Reports, Data, Inference, and Settings) must not inherit an
+	// unrelated right-hand pane merely because a visual was previously open.
+	// Visuals owns its list/preview split; mounting the dock duplicates the visual.
+	const inventoryOwnsVisualPane = (view.kind === "inventory" && inventoryVisualId === openArtifactId && inventoryVisualId != null)
+		|| (view.kind === "experiments" && experimentSectionOwnsVisualPane)
+		|| view.kind === "optimizers" || view.kind === "jesterky";
+	const visualPaneVisible = Boolean(openArtifact && (
+		(chatRoute && !showSidePanel)
+		|| inventoryOwnsVisualPane
+	));
+	const openArtifactInDock = (id: string | null) => {
+		if (id == null) {
+			toggleArtifact(null);
+			setSidePanelTab("outputs");
+			return;
+		}
+		if (openArtifactId !== id) toggleArtifact(id);
+		setSidePanelTab("visual");
+		setSidePanelOpen(true);
+	};
+	const closeVisualTab = (id: string) => {
+		const index = openVisualTabs.findIndex((artifact) => artifact.id === id);
+		const remaining = openVisualTabs.filter((artifact) => artifact.id !== id);
+		setOpenVisualTabs(remaining);
+		if (openArtifactId !== id) return;
+		const neighbor = remaining[Math.min(index, remaining.length - 1)] ?? null;
+		if (neighbor) {
+			toggleArtifact(neighbor.id);
+			setSidePanelTab("visual");
+			return;
+		}
+		openArtifactInDock(null);
+	};
+	const visualPaneContent = openArtifact ? (
+		<VisualPane
+			key="window-visual-host"
+			artifact={openArtifact}
+			onClose={() => {
+				toggleArtifact(null);
+				if (chatRoute && showSidePanel) setSidePanelTab("outputs");
+			}}
+		/>
+	) : null;
+	const chatContainerVisible = Boolean(chatRoute && openContainer && (!showSidePanel || sidePanelCanSharePane));
+	const inventoryContainerVisible = view.kind === "inventory" && Boolean(openContainer);
+	const resizeInventoryPane = (width: number) => {
+		setInventoryContainerWidth(width);
+		persistLayoutSnapshot({ outputPaneWidth: width });
+	};
+	const resizeSidePanel = (width: number) => setSidePanelWidth(width);
+	const paneClassName = chatRoute
+		? `workbench${visualPaneVisible ? " with-visual" : ""}${chatContainerVisible ? " with-container" : ""}${chatContainerVisible && containerPaneExpanded ? " container-expanded" : ""}${showSidePanel ? " with-side-panel" : ""}${transcriptCollapsed ? " transcript-collapsed" : ""}`
+		: `inventory-workbench${visualPaneVisible ? " with-visual" : ""}${inventoryContainerVisible ? " with-container" : ""}${inventoryContainerVisible && containerPaneExpanded ? " container-expanded" : ""}`;
+
+	const settingsPage = view.kind === "settings" ? (
+		<SettingsPage
+			account={{
+				view: accountView,
+				summary: accountSummary,
+				deviceUsage: accountUsage,
+				connection: backendSettings,
+				onBilling: (action) => void openBilling(action),
+				onRefresh: () => refreshAccountSummary(true),
+				onOpenDeviceUsage: () => setView({ kind: "inventory" })
+			}}
+			key={view.section ?? "general"}
+			onBack={() => leaveInventory(inventoryOriginRef.current)}
+			onSectionChange={(section) => setView({ kind: "settings", section })}
+			onReloadLaguna={onReloadLaguna}
+			lagunaPhase={laguna?.phase}
+			pluginStatuses={pluginStatuses}
+			initialSection={view.section}
+			preferences={preferences}
+			onPreferencesChange={(next) => {
+				setPreferences(next);
+				applyPreferencesToDocument(next);
+				setSidebarVisible(next.layout.last.sidebarVisible);
+				setSidebarWidth(next.layout.last.sidebarWidth);
+				setInventoryContainerWidth(next.layout.last.outputPaneWidth);
+				setTerminalOpen(next.layout.last.bottomPanelVisible);
+				setApprovalMode(next.approvalMode);
+				setApprovalPolicy(next.approvalPolicy);
+				setSandboxMode(next.sandboxMode);
+			}}
+		/>
+	) : null;
 
 	return (
 		<>
-			{view.kind === "settings" ? (
-				<SettingsPage
-					account={{
-						view: accountView,
-						summary: accountSummary,
-						deviceUsage: accountUsage,
-						connection: backendSettings,
-						onBilling: (action) => void openBilling(action),
-						onRefresh: () => refreshAccountSummary(true),
-						onOpenDeviceUsage: () => setView({ kind: "inventory" })
-					}}
-					key={view.section ?? "general"}
-					onBack={() => setView({ kind: "landing" })}
-					onSectionChange={(section) => setView({ kind: "settings", section })}
-					onReloadLaguna={onReloadLaguna}
-					lagunaPhase={laguna?.phase}
-					initialSection={view.section}
-					preferences={preferences}
-					onPreferencesChange={(next) => {
-						setPreferences(next);
-						applyPreferencesToDocument(next);
-						setSidebarVisible(next.layout.last.sidebarVisible);
-						setSidebarWidth(next.layout.last.sidebarWidth);
-						setInventoryContainerWidth(next.layout.last.outputPaneWidth);
-						setTerminalOpen(next.layout.last.bottomPanelVisible);
-						setApprovalMode(next.approvalMode);
-						setApprovalPolicy(next.approvalPolicy);
-						setSandboxMode(next.sandboxMode);
-					}}
-				/>
-			) : null}
+			{view.kind === "settings" && !openArtifact ? settingsPage : null}
 
 			{view.kind === "connectors" ? (
 				<ConnectorsPage
@@ -260,80 +602,306 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 				/>
 			) : null}
 
-			{view.kind === "visuals" ? (
-				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`} style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}>
-					<VisualsPage
-						onOpenVisual={openVisualRecord}
-						onGoToChat={(sessionId) => {
-							const session = sessions.find((item) => item.id === sessionId);
-							if (!session) return;
-							if (sessionIsLocalChat(session)) openChat(sessionId);
-							else if (sessionIsSync(session)) setView({ kind: "sync", sessionId });
-							else setView({ kind: "async", sessionId });
-						}}
-						onBack={() => setView({ kind: "landing" })}
-						onCreate={() => {
-							void (async () => {
-								if (!bridges.visuals) {
-									showToast("Visual registry requires Synth Desktop");
+			{paneHost ? (
+				<div
+					key="window-pane-host"
+					className={paneClassName}
+					style={{ "--visual-pane-width": `${inventoryContainerWidth}px`, "--container-pane-width": `${inventoryContainerWidth}px`, "--side-panel-width": `${sidePanelWidth}px` } as CSSProperties}
+				>
+					{chatRoute && activeChat ? (
+						<div className="workbench-primary-stack">
+						<section className="chat-pane-frame" aria-label="Chat pane">
+							<MittenFrame thumbSelector=".titlebar .tab-active" bodySelector=".chat-transcript" omitRightStroke={showSidePanel} />
+							{chatTitlebar}
+							<ChatTranscript
+								chat={activeChat}
+								events={eventsBySession[activeChat.id] ?? []}
+								openArtifactId={openArtifactId}
+								onOpenArtifact={openArtifactInDock}
+								openContainerId={openContainer?.id ?? null}
+								onOpenContainer={(id) => void toggleContainer(id)}
+								onApprove={(approvalId, decision) => void controlActive("approve", { approvalId, decision })}
+								onAlwaysAllow={(approvalId) =>
+									void controlActive("approve", { approvalId, decision: "always" })
+								}
+								onReject={(approvalId) => void controlActive("reject", { approvalId })}
+								running={activeChatRunning}
+								warmingUp={activeChatWarmingUp}
+								hostedInferencePhase={activeHostedInferencePhase}
+								hostedInference={activeHostedInference}
+								localInferencePhase={activeChatSession?.target.kind === "local"
+									? inferenceMonitor.snapshot?.active?.phase === "loading" || inferenceMonitor.snapshot?.active?.phase === "prefill"
+										? inferenceMonitor.snapshot.active.phase
+										: laguna?.phase === "loading" ? "loading" : null
+									: null}
+								onAdvanced={() => {
+									setSidePanelTab("trace");
+									setSidePanelOpen(true);
+								}}
+								activityMode={preferences.toolActivity.mode}
+								showMascot={preferences.appearance.showMascot}
+								session={activeChatSession}
+								historyState={transcriptHistoryBySession[activeChat.id]}
+								onLoadOlder={loadOlderTranscript}
+							/>
+						</section>
+							{bottomPanel}
+						</div>
+					) : null}
+					{view.kind === "visuals" ? (
+						<VisualsPage
+							onOpenVisual={openVisualRecord}
+							onGoToChat={(sessionId) => {
+								const session = sessions.find((item) => item.id === sessionId);
+								if (!session || !sessionIsLocalChat(session)) return;
+								openChat(sessionId);
+							}}
+							onOpenReport={(reportId) => setView({ kind: "reports", reportId })}
+							onBack={leavePluginToRecentChat}
+						/>
+					) : null}
+					{view.kind === "experiments" ? (
+						<ExperimentsPage
+							initialId={view.experimentId}
+							onBack={leavePluginToRecentChat}
+							onOpenReport={(reportId) => setView({ kind: "reports", reportId })}
+							onSectionChange={(section) => setExperimentSectionOwnsVisualPane(section === "experiments")}
+						/>
+					) : null}
+					{view.kind === "jesterky" ? <JesterkyPage pluginStatuses={pluginStatuses} onRefreshPlugins={refreshPluginStatuses} onBack={leavePluginToRecentChat} onOpenVisuals={() => setView({kind: "visuals"})} /> : null}
+					{view.kind === "optimizers" ? (
+						<OptimizersPage
+                            onEnsureApprovalSession={async () => {
+                                const sessionId = await ensureTrainingApprovalSession();
+                                inventoryOriginRef.current = { kind: "chat", chatId: sessionId };
+                                return sessionId;
+                            }}
+							sessionRef={
+								inventoryOriginRef.current?.kind === "chat"
+									? inventoryOriginRef.current.chatId
+									: inventoryOriginRef.current?.kind === "sync" || inventoryOriginRef.current?.kind === "async"
+										? inventoryOriginRef.current.sessionId
+										: null
+							}
+							pluginStatuses={pluginStatuses}
+							initialRunId={preferences.layout.last.optimizers.selectedRunId}
+							onSelectedRunIdChange={(selectedRunId) => persistLayoutSnapshot({ optimizers: { selectedRunId } })}
+							selectedContainerId={openContainer?.id ?? null}
+							onRefreshPlugins={refreshPluginStatuses}
+							accessibilityHidden={visualPaneVisible}
+							onStartAgent={(guide) => startOptimizerAgent(`Plan a ${guide.name} optimization`, guide.prompt)}
+							onOpenVisual={(visualId) => {
+								void (async () => {
+									if (!bridges.visuals) {
+										showToast("Visual registry requires Synth Desktop");
+										return;
+									}
+									try {
+										const visual = await bridges.visuals.get(visualId);
+										openVisualRecord(visual);
+									} catch (reason) {
+										showToast(publicError(reason));
+									}
+								})();
+							}}
+							onBack={leavePluginToRecentChat}
+						/>
+					) : null}
+					{view.kind === "environment-qa" ? <EnvironmentQaPage onBack={leavePluginToRecentChat} /> : null}
+					{view.kind === "inventory" ? (
+						<DataPage
+							onOpenVisual={(visual) => { setInventoryVisualId(visual.id); openVisualRecord(visual); }}
+							onOpenContainer={(id) => void toggleContainer(id)}
+							openContainerId={openContainer?.id ?? null}
+							onBack={leavePluginToRecentChat}
+						/>
+					) : null}
+					{view.kind === "inference" ? (
+						<DataPage
+							surface="inference"
+							onOpenVisual={openVisualRecord}
+							onOpenContainer={(id) => void toggleContainer(id)}
+							openContainerId={openContainer?.id ?? null}
+							sessions={sessions}
+							activeSessionId={activeChatSession?.id ?? null}
+							onBack={leavePluginToRecentChat}
+						/>
+					) : null}
+					{view.kind === "plugins" ? (
+						<PluginsPage
+							preferences={preferences}
+							pluginStatuses={pluginStatuses}
+							onPreferencesChange={setPreferences}
+							onOpenPlugin={(id) => setView({ kind: id === "inventory" ? "inventory" : id === "inference" ? "inference" : id === "computer-use" ? "computer-use" : id === "reports" ? "reports" : id })}
+							onBack={leavePluginToRecentChat}
+						/>
+					) : null}
+					{view.kind === "reports" ? (
+						<ReportsPage initialReportId={view.reportId} onBack={leavePluginToRecentChat} />
+					) : null}
+					{view.kind === "settings" && openArtifact ? settingsPage : null}
+					{visualPaneVisible && visualPaneContent ? (
+						<>
+							<PaneResizeHandle
+								value={inventoryContainerWidth}
+								minPrimary={chatRoute ? (showSidePanel ? 680 : 260) : view.kind === "inventory" ? 360 : 160}
+								minSecondary={chatRoute ? 260 : 340}
+								onChange={resizeInventoryPane}
+								ariaLabel="Resize visual pane"
+							/>
+							{visualPaneContent}
+						</>
+					) : null}
+					{chatContainerVisible && openContainer ? (
+						<ContainerPane
+							container={openContainer}
+							expanded={containerPaneExpanded}
+							onExpandedChange={setContainerPaneExpanded}
+							onProbe={() => void probeOpenContainer()}
+							onRestart={() => void restartOpenContainer()}
+							onRepair={() => void repairOpenContainer()}
+							onClose={() => void toggleContainer(null)}
+						/>
+					) : null}
+					{inventoryContainerVisible && openContainer ? (
+						<>
+							<PaneResizeHandle value={inventoryContainerWidth} onChange={resizeInventoryPane} />
+							<ContainerPane
+								container={openContainer}
+								expanded={containerPaneExpanded}
+								onExpandedChange={setContainerPaneExpanded}
+								onProbe={() => void probeOpenContainer()}
+								onRestart={() => void restartOpenContainer()}
+								onRepair={() => void repairOpenContainer()}
+								onClose={() => void toggleContainer(null)}
+							/>
+						</>
+					) : null}
+					{chatRoute && showSidePanel && activeChat ? (
+						<>
+							<PaneResizeHandle
+								value={sidePanelWidth}
+								minPrimary={380}
+								minSecondary={260}
+								onChange={resizeSidePanel}
+								allowPrimaryCollapse
+								primaryCollapsed={transcriptCollapsed}
+								onPrimaryCollapsedChange={setTranscriptCollapsed}
+								ariaLabel="Resize workbench side panel"
+							/>
+							<WorkbenchSidePanel
+							activeTabId={sidePanelTab === "visual" && openArtifactId
+								? `visual:${openArtifactId}`
+								: sidePanelTab === "errors" ? "diagnostics" : sidePanelTab}
+							onTabChange={(tabId) => {
+								if (tabId.startsWith("visual:")) {
+									const visualId = tabId.slice("visual:".length);
+									if (openArtifactId !== visualId) toggleArtifact(visualId);
+									setSidePanelTab("visual");
 									return;
 								}
-								try {
-									const templates = await bridges.visuals.listTemplates();
-									const templateId = templates[0]?.id ?? "reward.breakdown.v1";
-									const visual = await bridges.visuals.create({
-										templateId,
-										title: "New visual",
-										bindings: {},
-										sessionId: activeSessionId ?? undefined
-									});
-									openVisualRecord(visual);
-									showToast(`Created visual · ${visual.title}`);
-								} catch (reason) {
-									showToast(publicError(reason));
+								if (
+									tabId === "outputs"
+									|| tabId === "inference"
+									|| tabId === "trace"
+									|| tabId === "diagnostics"
+									|| tabId === "review"
+								) {
+									setSidePanelTab(tabId);
 								}
-							})();
-						}}
-					/>
-					{openArtifact ? (
-						<><PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => { setInventoryContainerWidth(width); persistLayoutSnapshot({ outputPaneWidth: width }); }} ariaLabel="Resize visual pane" /><VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} /></>
+							}}
+							onClose={() => setSidePanelOpen(false)}
+							tabs={[
+								...(humanAnnotationSessionId ? [{
+									id: "review",
+									label: "Review",
+									title: "Human annotation review",
+									kind: "document" as const,
+									content: <HumanAnnotationWorkspace sessionId={humanAnnotationSessionId} focused={transcriptCollapsed} onFocusedChange={setTranscriptCollapsed} onClose={() => {
+										setHumanAnnotationSessionId(null);
+										setTranscriptCollapsed(false);
+										setSidePanelTab("outputs");
+									}} />,
+									onClose: () => { setHumanAnnotationSessionId(null); setTranscriptCollapsed(false); setSidePanelTab("outputs"); }
+								}] : []),
+								...openVisualTabs.map((artifact) => ({
+										id: `visual:${artifact.id}`,
+										label: artifact.displayName?.trim() || artifact.title || "Visual",
+										title: artifact.title || artifact.displayName || "Visual",
+										content: (
+											<VisualPane
+												key={`dock-visual-${artifact.id}`}
+												artifact={artifact}
+												onClose={() => closeVisualTab(artifact.id)}
+											/>
+										),
+										kind: "document" as const,
+										onClose: () => closeVisualTab(artifact.id)
+									})),
+								{
+									id: "outputs",
+									label: "Outputs",
+									badge: chatOutputs.count,
+									content: (
+										<OutputsPanel
+											chat={activeChat}
+											openArtifactId={openArtifactId}
+											onOpenArtifact={openArtifactInDock}
+											openContainerId={openContainer?.id ?? null}
+											onOpenContainer={(id) => void toggleContainer(id)}
+											onOpenReport={(reportId) => setView({ kind: "reports", reportId })}
+											onOpenRun={openOwnedRun}
+										/>
+									)
+								},
+								{
+									id: "trace",
+									label: "Advanced",
+									content: <ResponsesTracePanel sessionId={activeChat.id} running={activeChatRunning} />
+								},
+								{
+									id: "diagnostics",
+									label: "Diagnostics",
+									content: (
+										<ErrorsLogsPanel
+											sessionId={activeChat.id}
+											onOpenContainer={(id) => void toggleContainer(id)}
+										/>
+									)
+								},
+								...(activeLocalModel
+									? [
+											{
+												id: "inference",
+												label: "Inference",
+												content: (
+													<InferencePanel
+														visible
+														monitor={inferenceMonitor}
+														status={laguna}
+														observedPerformance={
+															persistedPerformanceByTarget.get("local-laguna") ?? null
+														}
+														selectedModel={activeChatSession?.target.kind === "local" ? activeChatSession.target.model : null}
+														turnRunning={Boolean(
+															activeChatRunning && activeChatSession?.target.kind === "local"
+														)}
+														warmingUp={activeChatWarmingUp}
+														onOpenSettings={() =>
+															setView({ kind: "settings", section: "inference" })
+														}
+													/>
+												)
+											}
+										]
+									: [])
+							]}
+							/>
+						</>
 					) : null}
 				</div>
 			) : null}
 
-			{view.kind === "reports" ? (
-				<div className="inventory-workbench">
-					<ReportsPage initialReportId={view.reportId} onBack={() => setView({ kind: "landing" })} />
-				</div>
-			) : null}
-
-			{view.kind === "optimizers" ? (
-				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`} style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}>
-					<OptimizersPage
-						pluginStatuses={pluginStatuses}
-						onRefreshPlugins={refreshPluginStatuses}
-						onStartAgent={(guide) => startOptimizerAgent(`Plan a ${guide.name} optimization`, guide.prompt)}
-						onOpenVisual={(visualId) => {
-							void (async () => {
-								if (!bridges.visuals) {
-									showToast("Visual registry requires Synth Desktop");
-									return;
-								}
-								try {
-									const visual = await bridges.visuals.get(visualId);
-									openVisualRecord(visual);
-								} catch (reason) {
-									showToast(publicError(reason));
-								}
-							})();
-						}}
-						onBack={() => setView({ kind: "landing" })}
-					/>
-					{openArtifact ? (
-						<><PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => { setInventoryContainerWidth(width); persistLayoutSnapshot({ outputPaneWidth: width }); }} ariaLabel="Resize visual pane" /><VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} /></>
-					) : null}
-				</div>
-			) : null}
 
 			{view.kind === "computer-use" ? (
 				<div className="inventory-workbench">
@@ -351,202 +919,15 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 				</div>
 			) : null}
 
-			{view.kind === "inventory" ? (
-				<div
-					className={`inventory-workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}`}
-					style={{ "--container-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}
-				>
-					<DataPage
-						onOpenVisual={openVisualRecord}
-						onOpenContainer={(id) => void toggleContainer(id)}
-						openContainerId={openContainer?.id ?? null}
-						onBack={() => setView({ kind: "landing" })}
-					/>
-					{openArtifact ? (
-						<><PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => { setInventoryContainerWidth(width); persistLayoutSnapshot({ outputPaneWidth: width }); }} ariaLabel="Resize visual pane" /><VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} /></>
-					) : null}
-					{openContainer ? (
-						<>
-							<PaneResizeHandle
-								value={inventoryContainerWidth}
-								onChange={(width) => {
-									setInventoryContainerWidth(width);
-									persistLayoutSnapshot({ outputPaneWidth: width });
-								}}
-							/>
-							<ContainerPane
-								container={openContainer}
-								expanded={containerPaneExpanded}
-								onExpandedChange={setContainerPaneExpanded}
-								onProbe={() => void probeOpenContainer()}
-								onClose={() => void toggleContainer(null)}
-							/>
-						</>
-					) : null}
-				</div>
-			) : null}
-
 			{view.kind === "landing" ? (
 				<LandingPage
+					showMascot={preferences.appearance.showMascot}
 					state={state}
-					selectedTargetId={selectedTargetId}
-					onSelectTarget={onSelectTarget}
 					onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
-					onConfigureModels={() => setView({ kind: "settings", section: "models" })}
-					onResolveBilling={() => setUsageSheetOpen(true)}
 				/>
 			) : null}
 
-	{view.kind === "chat" && activeChat ? (
-				(() => {
-				const visualPaneVisible = Boolean(openArtifact && (!showSidePanel || sidePanelCanSharePane));
-				const containerPaneVisible = Boolean(openContainer && (!showSidePanel || sidePanelCanSharePane));
-				return (
-				<div
-					className={`workbench${visualPaneVisible ? " with-visual" : ""}${containerPaneVisible ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}${showSidePanel ? " with-side-panel" : ""}`}
-					style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}
-				>
-					<ChatTranscript
-						chat={activeChat}
-						events={eventsBySession[activeChat.id] ?? []}
-						openArtifactId={openArtifactId}
-						onOpenArtifact={(id) => {
-							if (showSidePanel && !sidePanelCanSharePane) {
-								setSidePanelOpen(false);
-								if (openArtifactId === id) return;
-							}
-							toggleArtifact(id);
-						}}
-						openContainerId={openContainer?.id ?? null}
-						onOpenContainer={(id) => void toggleContainer(id)}
-						onApprove={(approvalId) => void controlActive("approve", { approvalId })}
-						onAlwaysAllow={(approvalId) =>
-							void controlActive("approve", { approvalId, decision: "always" })
-						}
-						onReject={(approvalId) => void controlActive("reject", { approvalId })}
-						running={activeChatRunning}
-						warmingUp={activeChatWarmingUp}
-						onAdvanced={() => {
-							setSidePanelTab("trace");
-							setSidePanelOpen(true);
-						}}
-						activityMode={preferences.toolActivity.mode}
-						onActivityModeChange={onActivityModeChange}
-						outputsOpen={showSidePanel && sidePanelTab === "outputs"}
-						onToggleOutputs={() => {
-							const next = !(showSidePanel && sidePanelTab === "outputs");
-							setSidePanelTab("outputs");
-							setSidePanelOpen(next);
-						}}
-						showMascot={preferences.appearance.showMascot}
-						session={activeChatSession}
-						historyState={transcriptHistoryBySession[activeChat.id]}
-						onLoadOlder={loadOlderTranscript}
-					/>
-					{visualPaneVisible && openArtifact ? (
-						<>
-							<PaneResizeHandle
-								value={inventoryContainerWidth}
-								minPrimary={showSidePanel ? 680 : 380}
-								minSecondary={260}
-								onChange={(width) => {
-									setInventoryContainerWidth(width);
-									persistLayoutSnapshot({ outputPaneWidth: width });
-								}}
-								ariaLabel="Resize visual pane"
-							/>
-							<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
-						</>
-					) : null}
-					{containerPaneVisible && openContainer ? (
-						<ContainerPane
-							container={openContainer}
-							expanded={containerPaneExpanded}
-							onExpandedChange={setContainerPaneExpanded}
-							onProbe={() => void probeOpenContainer()}
-							onClose={() => void toggleContainer(null)}
-						/>
-					) : null}
-					{showSidePanel ? (
-						<WorkbenchSidePanel
-							activeTabId={sidePanelTab}
-							onTabChange={(tabId) => setSidePanelTab(tabId as "outputs" | "inference" | "trace")}
-							onClose={() => setSidePanelOpen(false)}
-							tabs={[
-								{
-									id: "outputs",
-									label: "Outputs",
-									badge: chatOutputs.count,
-									content: (
-										<OutputsPanel
-											chat={activeChat}
-											openArtifactId={openArtifactId}
-											onOpenArtifact={(id) => {
-												if (showSidePanel && !sidePanelCanSharePane) {
-													setSidePanelOpen(false);
-													if (openArtifactId === id) return;
-												}
-												toggleArtifact(id);
-											}}
-											openContainerId={openContainer?.id ?? null}
-											onOpenContainer={(id) => void toggleContainer(id)}
-											onOpenReport={(reportId) => setView({ kind: "reports", reportId })}
-											onOpenRun={openOwnedRun}
-										/>
-									)
-								},
-								{
-									id: "trace",
-									label: "Advanced",
-									content: <ResponsesTracePanel sessionId={activeChat.id} running={activeChatRunning} />
-								},
-								{
-									id: "diagnostics",
-									label: "Diagnostics",
-									// Only the active tab's content mounts, so the pane's
-									// queries never run behind a closed tab.
-									content: (
-										<DiagnosticsPanel
-											sessionId={activeChat.id}
-											visualId={openArtifact?.visualId ?? openArtifact?.id ?? null}
-											onOpenVisual={(id) => toggleArtifact(id)}
-											onOpenContainer={(id) => void toggleContainer(id)}
-											onOpenOptimizer={() => setView({ kind: "optimizers" })}
-											onOpenTrace={() => setView({ kind: "inventory" })}
-										/>
-									)
-								},
-								...(activeLocalModel
-									? [
-											{
-												id: "inference",
-												label: "Inference",
-												content: (
-													<InferencePanel
-														visible
-														monitor={inferenceMonitor}
-														observedPerformance={
-															persistedPerformanceByTarget.get("local-laguna") ?? null
-														}
-														turnRunning={Boolean(
-															activeChatRunning && activeChatSession?.target.kind === "local"
-														)}
-														warmingUp={activeChatWarmingUp}
-														onOpenSettings={() =>
-															setView({ kind: "settings", section: "inference" })
-														}
-													/>
-												)
-											}
-										]
-									: [])
-							]}
-						/>
-					) : null}
-				</div>
-				);
-				})()
-			) : null}
+			{!chatRoute ? bottomPanel : null}
 
 			{/*
 			 * v0.1 removal contract: the CloudDesk sync/async routes are the

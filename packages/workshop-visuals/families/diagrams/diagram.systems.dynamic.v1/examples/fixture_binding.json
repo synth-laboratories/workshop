@@ -1,0 +1,4 @@
+{
+  "bindings": [],
+  "content": "{\"version\":1,\"title\":\"Logical presentation time\",\"canvas\":{\"width\":800,\"height\":420},\"nodes\":[{\"id\":\"a\",\"x\":60,\"y\":140,\"width\":220,\"height\":70,\"label\":\"Observe\"},{\"id\":\"b\",\"x\":520,\"y\":140,\"width\":220,\"height\":70,\"label\":\"Commit\",\"visible\":false}],\"durationMs\":3000,\"posterTimeMs\":1500,\"reducedMotion\":\"poster\",\"beats\":[{\"id\":\"one\",\"atMs\":0,\"caption\":\"Inspect the evidence\"},{\"id\":\"two\",\"atMs\":1000,\"caption\":\"Commit a shared action\"}],\"timeline\":[{\"atMs\":1000,\"target\":\"b\",\"changes\":{\"visible\":true,\"emphasis\":true}}]}"
+}

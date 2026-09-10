@@ -39,6 +39,9 @@ export function useModelPerformanceLabels(
 	const persistedPerformanceByTarget = useMemo(() => {
 		const chosen = new Map<string, ModelPerformanceSummary>();
 		for (const summary of modelPerformance) {
+			// End-to-end token/time rates include admission and warm-up. They are
+			// latency diagnostics, never generation throughput.
+			if (summary.measurementKind === "end_to_end") continue;
 			if (summary.tpsP50 == null || summary.sampleCount < 1) continue;
 			const targetId = performanceTargetId(summary);
 			if (!targetId) continue;

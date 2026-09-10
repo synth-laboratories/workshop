@@ -1,0 +1,2856 @@
+[
+  {
+    "id": "trajectory-0001",
+    "model": "astra",
+    "seed": 1,
+    "outcome": "success",
+    "reward": 0.811,
+    "rewardBand": "high",
+    "durationMs": 9236,
+    "toolCalls": 20,
+    "steps": 71,
+    "failed": false,
+    "behaviors": [
+      "recovery",
+      "tool_loop",
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0001:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0001:event-2",
+        "step": 7,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0001:event-3",
+        "step": 14,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0001:event-4",
+        "step": 20,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0001:event-5",
+        "step": 26,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0001:event-6",
+        "step": 33,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0001:event-7",
+        "step": 39,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0001:event-8",
+        "step": 46,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0001:event-9",
+        "step": 52,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0001:event-10",
+        "step": 58,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0001:event-11",
+        "step": 65,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0001:event-12",
+        "step": 71,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0002",
+    "model": "sol",
+    "seed": 2,
+    "outcome": "success",
+    "reward": 0.274,
+    "rewardBand": "low",
+    "durationMs": 3385,
+    "toolCalls": 4,
+    "steps": 15,
+    "failed": false,
+    "behaviors": [
+      "direct"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0002:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0002:event-2",
+        "step": 2,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0002:event-3",
+        "step": 4,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0002:event-4",
+        "step": 5,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0002:event-5",
+        "step": 6,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0002:event-6",
+        "step": 7,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0002:event-7",
+        "step": 9,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0002:event-8",
+        "step": 10,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0002:event-9",
+        "step": 11,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0002:event-10",
+        "step": 12,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0002:event-11",
+        "step": 14,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0002:event-12",
+        "step": 15,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0003",
+    "model": "terra",
+    "seed": 3,
+    "outcome": "timeout",
+    "reward": -0.228,
+    "rewardBand": "negative",
+    "durationMs": 6060,
+    "toolCalls": 2,
+    "steps": 44,
+    "failed": true,
+    "behaviors": [
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0003:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0003:event-2",
+        "step": 5,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0003:event-3",
+        "step": 9,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0003:event-4",
+        "step": 13,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0003:event-5",
+        "step": 17,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0003:event-6",
+        "step": 21,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0003:event-7",
+        "step": 24,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0003:event-8",
+        "step": 28,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0003:event-9",
+        "step": 32,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0003:event-10",
+        "step": 36,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0003:event-11",
+        "step": 40,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0003:event-12",
+        "step": 44,
+        "kind": "outcome",
+        "summary": "Finished with timeout"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0004",
+    "model": "luna",
+    "seed": 4,
+    "outcome": "timeout",
+    "reward": 0.155,
+    "rewardBand": "low",
+    "durationMs": 8544,
+    "toolCalls": 6,
+    "steps": 82,
+    "failed": true,
+    "behaviors": [
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0004:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0004:event-2",
+        "step": 8,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0004:event-3",
+        "step": 16,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0004:event-4",
+        "step": 23,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0004:event-5",
+        "step": 30,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0004:event-6",
+        "step": 38,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0004:event-7",
+        "step": 45,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0004:event-8",
+        "step": 53,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0004:event-9",
+        "step": 60,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0004:event-10",
+        "step": 67,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0004:event-11",
+        "step": 75,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0004:event-12",
+        "step": 82,
+        "kind": "outcome",
+        "summary": "Finished with timeout"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0005",
+    "model": "astra",
+    "seed": 5,
+    "outcome": "success",
+    "reward": 0.587,
+    "rewardBand": "medium",
+    "durationMs": 6665,
+    "toolCalls": 15,
+    "steps": 55,
+    "failed": false,
+    "behaviors": [
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0005:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0005:event-2",
+        "step": 6,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0005:event-3",
+        "step": 11,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0005:event-4",
+        "step": 16,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0005:event-5",
+        "step": 21,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0005:event-6",
+        "step": 26,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0005:event-7",
+        "step": 30,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0005:event-8",
+        "step": 35,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0005:event-9",
+        "step": 40,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0005:event-10",
+        "step": 45,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0005:event-11",
+        "step": 50,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0005:event-12",
+        "step": 55,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0006",
+    "model": "sol",
+    "seed": 6,
+    "outcome": "success",
+    "reward": 0.282,
+    "rewardBand": "low",
+    "durationMs": 7655,
+    "toolCalls": 8,
+    "steps": 55,
+    "failed": false,
+    "behaviors": [
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0006:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0006:event-2",
+        "step": 6,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0006:event-3",
+        "step": 11,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0006:event-4",
+        "step": 16,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0006:event-5",
+        "step": 21,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0006:event-6",
+        "step": 26,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0006:event-7",
+        "step": 30,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0006:event-8",
+        "step": 35,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0006:event-9",
+        "step": 40,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0006:event-10",
+        "step": 45,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0006:event-11",
+        "step": 50,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0006:event-12",
+        "step": 55,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0007",
+    "model": "terra",
+    "seed": 7,
+    "outcome": "success",
+    "reward": 0.353,
+    "rewardBand": "medium",
+    "durationMs": 3236,
+    "toolCalls": 1,
+    "steps": 26,
+    "failed": false,
+    "behaviors": [
+      "direct"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0007:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0007:event-2",
+        "step": 3,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0007:event-3",
+        "step": 6,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0007:event-4",
+        "step": 8,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0007:event-5",
+        "step": 10,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0007:event-6",
+        "step": 12,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0007:event-7",
+        "step": 15,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0007:event-8",
+        "step": 17,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0007:event-9",
+        "step": 19,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0007:event-10",
+        "step": 21,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0007:event-11",
+        "step": 24,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0007:event-12",
+        "step": 26,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0008",
+    "model": "luna",
+    "seed": 8,
+    "outcome": "success",
+    "reward": 0.543,
+    "rewardBand": "medium",
+    "durationMs": 7760,
+    "toolCalls": 16,
+    "steps": 52,
+    "failed": false,
+    "behaviors": [
+      "tool_loop"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0008:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0008:event-2",
+        "step": 6,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0008:event-3",
+        "step": 10,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0008:event-4",
+        "step": 15,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0008:event-5",
+        "step": 20,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0008:event-6",
+        "step": 24,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0008:event-7",
+        "step": 29,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0008:event-8",
+        "step": 33,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0008:event-9",
+        "step": 38,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0008:event-10",
+        "step": 43,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0008:event-11",
+        "step": 47,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0008:event-12",
+        "step": 52,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0009",
+    "model": "astra",
+    "seed": 9,
+    "outcome": "failure",
+    "reward": 0.143,
+    "rewardBand": "low",
+    "durationMs": 5752,
+    "toolCalls": 3,
+    "steps": 48,
+    "failed": true,
+    "behaviors": [
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0009:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0009:event-2",
+        "step": 5,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0009:event-3",
+        "step": 10,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0009:event-4",
+        "step": 14,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0009:event-5",
+        "step": 18,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0009:event-6",
+        "step": 22,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0009:event-7",
+        "step": 27,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0009:event-8",
+        "step": 31,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0009:event-9",
+        "step": 35,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0009:event-10",
+        "step": 39,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0009:event-11",
+        "step": 44,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0009:event-12",
+        "step": 48,
+        "kind": "outcome",
+        "summary": "Finished with failure"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0010",
+    "model": "sol",
+    "seed": 10,
+    "outcome": "failure",
+    "reward": -0.082,
+    "rewardBand": "negative",
+    "durationMs": 4000,
+    "toolCalls": 15,
+    "steps": 20,
+    "failed": true,
+    "behaviors": [
+      "abandonment"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0010:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0010:event-2",
+        "step": 3,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0010:event-3",
+        "step": 4,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0010:event-4",
+        "step": 6,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0010:event-5",
+        "step": 8,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0010:event-6",
+        "step": 10,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0010:event-7",
+        "step": 11,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0010:event-8",
+        "step": 13,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0010:event-9",
+        "step": 15,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0010:event-10",
+        "step": 17,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0010:event-11",
+        "step": 18,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0010:event-12",
+        "step": 20,
+        "kind": "outcome",
+        "summary": "Finished with failure"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0011",
+    "model": "terra",
+    "seed": 11,
+    "outcome": "success",
+    "reward": 0.754,
+    "rewardBand": "high",
+    "durationMs": 10804,
+    "toolCalls": 0,
+    "steps": 76,
+    "failed": false,
+    "behaviors": [
+      "direct",
+      "recovery",
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0011:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0011:event-2",
+        "step": 8,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0011:event-3",
+        "step": 15,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0011:event-4",
+        "step": 21,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0011:event-5",
+        "step": 28,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0011:event-6",
+        "step": 35,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0011:event-7",
+        "step": 42,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0011:event-8",
+        "step": 49,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0011:event-9",
+        "step": 56,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0011:event-10",
+        "step": 62,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0011:event-11",
+        "step": 69,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0011:event-12",
+        "step": 76,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0012",
+    "model": "luna",
+    "seed": 12,
+    "outcome": "failure",
+    "reward": -0.279,
+    "rewardBand": "negative",
+    "durationMs": 7020,
+    "toolCalls": 12,
+    "steps": 43,
+    "failed": true,
+    "behaviors": [
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0012:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0012:event-2",
+        "step": 5,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0012:event-3",
+        "step": 9,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0012:event-4",
+        "step": 12,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0012:event-5",
+        "step": 16,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0012:event-6",
+        "step": 20,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0012:event-7",
+        "step": 24,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0012:event-8",
+        "step": 28,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0012:event-9",
+        "step": 32,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0012:event-10",
+        "step": 35,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0012:event-11",
+        "step": 39,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0012:event-12",
+        "step": 43,
+        "kind": "outcome",
+        "summary": "Finished with failure"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0013",
+    "model": "astra",
+    "seed": 13,
+    "outcome": "success",
+    "reward": 0.291,
+    "rewardBand": "low",
+    "durationMs": 5200,
+    "toolCalls": 8,
+    "steps": 28,
+    "failed": false,
+    "behaviors": [
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0013:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0013:event-2",
+        "step": 3,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0013:event-3",
+        "step": 6,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0013:event-4",
+        "step": 8,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0013:event-5",
+        "step": 11,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0013:event-6",
+        "step": 13,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0013:event-7",
+        "step": 16,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0013:event-8",
+        "step": 18,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0013:event-9",
+        "step": 21,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0013:event-10",
+        "step": 23,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0013:event-11",
+        "step": 26,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0013:event-12",
+        "step": 28,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0014",
+    "model": "sol",
+    "seed": 14,
+    "outcome": "success",
+    "reward": 0.866,
+    "rewardBand": "high",
+    "durationMs": 3486,
+    "toolCalls": 9,
+    "steps": 22,
+    "failed": false,
+    "behaviors": [
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0014:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0014:event-2",
+        "step": 3,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0014:event-3",
+        "step": 5,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0014:event-4",
+        "step": 7,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0014:event-5",
+        "step": 9,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0014:event-6",
+        "step": 11,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0014:event-7",
+        "step": 12,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0014:event-8",
+        "step": 14,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0014:event-9",
+        "step": 16,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0014:event-10",
+        "step": 18,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0014:event-11",
+        "step": 20,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0014:event-12",
+        "step": 22,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0015",
+    "model": "terra",
+    "seed": 15,
+    "outcome": "failure",
+    "reward": -0.386,
+    "rewardBand": "negative",
+    "durationMs": 2456,
+    "toolCalls": 20,
+    "steps": 14,
+    "failed": true,
+    "behaviors": [
+      "tool_loop",
+      "abandonment"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0015:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0015:event-2",
+        "step": 2,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0015:event-3",
+        "step": 3,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0015:event-4",
+        "step": 5,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0015:event-5",
+        "step": 6,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0015:event-6",
+        "step": 7,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0015:event-7",
+        "step": 8,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0015:event-8",
+        "step": 9,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0015:event-9",
+        "step": 10,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0015:event-10",
+        "step": 12,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0015:event-11",
+        "step": 13,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0015:event-12",
+        "step": 14,
+        "kind": "outcome",
+        "summary": "Finished with failure"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0016",
+    "model": "luna",
+    "seed": 16,
+    "outcome": "timeout",
+    "reward": -0.499,
+    "rewardBand": "negative",
+    "durationMs": 6664,
+    "toolCalls": 20,
+    "steps": 59,
+    "failed": true,
+    "behaviors": [
+      "tool_loop"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0016:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0016:event-2",
+        "step": 6,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0016:event-3",
+        "step": 12,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0016:event-4",
+        "step": 17,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0016:event-5",
+        "step": 22,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0016:event-6",
+        "step": 27,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0016:event-7",
+        "step": 33,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0016:event-8",
+        "step": 38,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0016:event-9",
+        "step": 43,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0016:event-10",
+        "step": 48,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0016:event-11",
+        "step": 54,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0016:event-12",
+        "step": 59,
+        "kind": "outcome",
+        "summary": "Finished with timeout"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0017",
+    "model": "astra",
+    "seed": 17,
+    "outcome": "success",
+    "reward": 0.847,
+    "rewardBand": "high",
+    "durationMs": 13936,
+    "toolCalls": 16,
+    "steps": 88,
+    "failed": false,
+    "behaviors": [
+      "recovery",
+      "tool_loop",
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0017:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0017:event-2",
+        "step": 9,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0017:event-3",
+        "step": 17,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0017:event-4",
+        "step": 25,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0017:event-5",
+        "step": 33,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0017:event-6",
+        "step": 41,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0017:event-7",
+        "step": 48,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0017:event-8",
+        "step": 56,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0017:event-9",
+        "step": 64,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0017:event-10",
+        "step": 72,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0017:event-11",
+        "step": 80,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0017:event-12",
+        "step": 88,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0018",
+    "model": "sol",
+    "seed": 18,
+    "outcome": "success",
+    "reward": 0.934,
+    "rewardBand": "high",
+    "durationMs": 6168,
+    "toolCalls": 4,
+    "steps": 34,
+    "failed": false,
+    "behaviors": [
+      "direct"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0018:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0018:event-2",
+        "step": 4,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0018:event-3",
+        "step": 7,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0018:event-4",
+        "step": 10,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0018:event-5",
+        "step": 13,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0018:event-6",
+        "step": 16,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0018:event-7",
+        "step": 19,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0018:event-8",
+        "step": 22,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0018:event-9",
+        "step": 25,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0018:event-10",
+        "step": 28,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0018:event-11",
+        "step": 31,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0018:event-12",
+        "step": 34,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0019",
+    "model": "terra",
+    "seed": 19,
+    "outcome": "failure",
+    "reward": -0.213,
+    "rewardBand": "negative",
+    "durationMs": 6292,
+    "toolCalls": 17,
+    "steps": 54,
+    "failed": true,
+    "behaviors": [
+      "tool_loop"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0019:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0019:event-2",
+        "step": 6,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0019:event-3",
+        "step": 11,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0019:event-4",
+        "step": 15,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0019:event-5",
+        "step": 20,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0019:event-6",
+        "step": 25,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0019:event-7",
+        "step": 30,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0019:event-8",
+        "step": 35,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0019:event-9",
+        "step": 40,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0019:event-10",
+        "step": 44,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0019:event-11",
+        "step": 49,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0019:event-12",
+        "step": 54,
+        "kind": "outcome",
+        "summary": "Finished with failure"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0020",
+    "model": "luna",
+    "seed": 20,
+    "outcome": "success",
+    "reward": 0.793,
+    "rewardBand": "high",
+    "durationMs": 4280,
+    "toolCalls": 13,
+    "steps": 40,
+    "failed": false,
+    "behaviors": [
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0020:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0020:event-2",
+        "step": 5,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0020:event-3",
+        "step": 8,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0020:event-4",
+        "step": 12,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0020:event-5",
+        "step": 15,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0020:event-6",
+        "step": 19,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0020:event-7",
+        "step": 22,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0020:event-8",
+        "step": 26,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0020:event-9",
+        "step": 29,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0020:event-10",
+        "step": 33,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0020:event-11",
+        "step": 36,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0020:event-12",
+        "step": 40,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0021",
+    "model": "astra",
+    "seed": 21,
+    "outcome": "success",
+    "reward": 0.603,
+    "rewardBand": "medium",
+    "durationMs": 10153,
+    "toolCalls": 19,
+    "steps": 81,
+    "failed": false,
+    "behaviors": [
+      "recovery",
+      "tool_loop",
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0021:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0021:event-2",
+        "step": 8,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0021:event-3",
+        "step": 16,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0021:event-4",
+        "step": 23,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0021:event-5",
+        "step": 30,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0021:event-6",
+        "step": 37,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0021:event-7",
+        "step": 45,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0021:event-8",
+        "step": 52,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0021:event-9",
+        "step": 59,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0021:event-10",
+        "step": 66,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0021:event-11",
+        "step": 74,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0021:event-12",
+        "step": 81,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0022",
+    "model": "sol",
+    "seed": 22,
+    "outcome": "failure",
+    "reward": -0.346,
+    "rewardBand": "negative",
+    "durationMs": 6200,
+    "toolCalls": 19,
+    "steps": 52,
+    "failed": true,
+    "behaviors": [
+      "tool_loop"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0022:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0022:event-2",
+        "step": 6,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0022:event-3",
+        "step": 10,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0022:event-4",
+        "step": 15,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0022:event-5",
+        "step": 20,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0022:event-6",
+        "step": 24,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0022:event-7",
+        "step": 29,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0022:event-8",
+        "step": 33,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0022:event-9",
+        "step": 38,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0022:event-10",
+        "step": 43,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0022:event-11",
+        "step": 47,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0022:event-12",
+        "step": 52,
+        "kind": "outcome",
+        "summary": "Finished with failure"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0023",
+    "model": "terra",
+    "seed": 23,
+    "outcome": "success",
+    "reward": 0.729,
+    "rewardBand": "high",
+    "durationMs": 5788,
+    "toolCalls": 19,
+    "steps": 36,
+    "failed": false,
+    "behaviors": [
+      "tool_loop"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0023:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0023:event-2",
+        "step": 4,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0023:event-3",
+        "step": 7,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0023:event-4",
+        "step": 11,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0023:event-5",
+        "step": 14,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0023:event-6",
+        "step": 17,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0023:event-7",
+        "step": 20,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0023:event-8",
+        "step": 23,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0023:event-9",
+        "step": 26,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0023:event-10",
+        "step": 30,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0023:event-11",
+        "step": 33,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0023:event-12",
+        "step": 36,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0024",
+    "model": "luna",
+    "seed": 24,
+    "outcome": "success",
+    "reward": 0.46,
+    "rewardBand": "medium",
+    "durationMs": 6040,
+    "toolCalls": 6,
+    "steps": 40,
+    "failed": false,
+    "behaviors": [
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0024:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0024:event-2",
+        "step": 5,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0024:event-3",
+        "step": 8,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0024:event-4",
+        "step": 12,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0024:event-5",
+        "step": 15,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0024:event-6",
+        "step": 19,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0024:event-7",
+        "step": 22,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0024:event-8",
+        "step": 26,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0024:event-9",
+        "step": 29,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0024:event-10",
+        "step": 33,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0024:event-11",
+        "step": 36,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0024:event-12",
+        "step": 40,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0025",
+    "model": "astra",
+    "seed": 25,
+    "outcome": "success",
+    "reward": 0.765,
+    "rewardBand": "high",
+    "durationMs": 6304,
+    "toolCalls": 15,
+    "steps": 34,
+    "failed": false,
+    "behaviors": [
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0025:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0025:event-2",
+        "step": 4,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0025:event-3",
+        "step": 7,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0025:event-4",
+        "step": 10,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0025:event-5",
+        "step": 13,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0025:event-6",
+        "step": 16,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0025:event-7",
+        "step": 19,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0025:event-8",
+        "step": 22,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0025:event-9",
+        "step": 25,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0025:event-10",
+        "step": 28,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0025:event-11",
+        "step": 31,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0025:event-12",
+        "step": 34,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0026",
+    "model": "sol",
+    "seed": 26,
+    "outcome": "success",
+    "reward": 0.373,
+    "rewardBand": "medium",
+    "durationMs": 2584,
+    "toolCalls": 2,
+    "steps": 11,
+    "failed": false,
+    "behaviors": [
+      "direct"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0026:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0026:event-2",
+        "step": 2,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0026:event-3",
+        "step": 3,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0026:event-4",
+        "step": 4,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0026:event-5",
+        "step": 5,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0026:event-6",
+        "step": 6,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0026:event-7",
+        "step": 7,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0026:event-8",
+        "step": 8,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0026:event-9",
+        "step": 9,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0026:event-10",
+        "step": 10,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0026:event-11",
+        "step": 11,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0027",
+    "model": "terra",
+    "seed": 27,
+    "outcome": "success",
+    "reward": 0.81,
+    "rewardBand": "high",
+    "durationMs": 6740,
+    "toolCalls": 14,
+    "steps": 70,
+    "failed": false,
+    "behaviors": [
+      "recovery"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0027:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0027:event-2",
+        "step": 7,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0027:event-3",
+        "step": 14,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0027:event-4",
+        "step": 20,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0027:event-5",
+        "step": 26,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0027:event-6",
+        "step": 32,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0027:event-7",
+        "step": 39,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0027:event-8",
+        "step": 45,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0027:event-9",
+        "step": 51,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0027:event-10",
+        "step": 57,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0027:event-11",
+        "step": 64,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0027:event-12",
+        "step": 70,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0028",
+    "model": "luna",
+    "seed": 28,
+    "outcome": "success",
+    "reward": 0.3,
+    "rewardBand": "low",
+    "durationMs": 6400,
+    "toolCalls": 6,
+    "steps": 54,
+    "failed": false,
+    "behaviors": [
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0028:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0028:event-2",
+        "step": 6,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0028:event-3",
+        "step": 11,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0028:event-4",
+        "step": 15,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0028:event-5",
+        "step": 20,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0028:event-6",
+        "step": 25,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0028:event-7",
+        "step": 30,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0028:event-8",
+        "step": 35,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0028:event-9",
+        "step": 40,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0028:event-10",
+        "step": 44,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0028:event-11",
+        "step": 49,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0028:event-12",
+        "step": 54,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0029",
+    "model": "astra",
+    "seed": 29,
+    "outcome": "success",
+    "reward": 0.846,
+    "rewardBand": "high",
+    "durationMs": 9547,
+    "toolCalls": 19,
+    "steps": 77,
+    "failed": false,
+    "behaviors": [
+      "recovery",
+      "tool_loop",
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0029:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0029:event-2",
+        "step": 8,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0029:event-3",
+        "step": 15,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0029:event-4",
+        "step": 22,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0029:event-5",
+        "step": 29,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0029:event-6",
+        "step": 36,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0029:event-7",
+        "step": 42,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0029:event-8",
+        "step": 49,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0029:event-9",
+        "step": 56,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0029:event-10",
+        "step": 63,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0029:event-11",
+        "step": 70,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0029:event-12",
+        "step": 77,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0030",
+    "model": "sol",
+    "seed": 30,
+    "outcome": "success",
+    "reward": 0.899,
+    "rewardBand": "high",
+    "durationMs": 8776,
+    "toolCalls": 8,
+    "steps": 81,
+    "failed": false,
+    "behaviors": [
+      "recovery",
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0030:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0030:event-2",
+        "step": 8,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0030:event-3",
+        "step": 16,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0030:event-4",
+        "step": 23,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0030:event-5",
+        "step": 30,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0030:event-6",
+        "step": 37,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0030:event-7",
+        "step": 45,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0030:event-8",
+        "step": 52,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0030:event-9",
+        "step": 59,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0030:event-10",
+        "step": 66,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0030:event-11",
+        "step": 74,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0030:event-12",
+        "step": 81,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0031",
+    "model": "terra",
+    "seed": 31,
+    "outcome": "success",
+    "reward": 0.759,
+    "rewardBand": "high",
+    "durationMs": 6250,
+    "toolCalls": 10,
+    "steps": 35,
+    "failed": false,
+    "behaviors": [
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0031:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0031:event-2",
+        "step": 4,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0031:event-3",
+        "step": 7,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0031:event-4",
+        "step": 10,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0031:event-5",
+        "step": 13,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0031:event-6",
+        "step": 16,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0031:event-7",
+        "step": 20,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0031:event-8",
+        "step": 23,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0031:event-9",
+        "step": 26,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0031:event-10",
+        "step": 29,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0031:event-11",
+        "step": 32,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0031:event-12",
+        "step": 35,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  },
+  {
+    "id": "trajectory-0032",
+    "model": "luna",
+    "seed": 32,
+    "outcome": "success",
+    "reward": 0.846,
+    "rewardBand": "high",
+    "durationMs": 4388,
+    "toolCalls": 7,
+    "steps": 22,
+    "failed": false,
+    "behaviors": [
+      "exploratory"
+    ],
+    "events": [
+      {
+        "id": "trajectory-0032:event-1",
+        "step": 1,
+        "kind": "model",
+        "summary": "Decision 1"
+      },
+      {
+        "id": "trajectory-0032:event-2",
+        "step": 3,
+        "kind": "tool_call",
+        "summary": "Tool call 2"
+      },
+      {
+        "id": "trajectory-0032:event-3",
+        "step": 5,
+        "kind": "model",
+        "summary": "Decision 3"
+      },
+      {
+        "id": "trajectory-0032:event-4",
+        "step": 7,
+        "kind": "model",
+        "summary": "Decision 4"
+      },
+      {
+        "id": "trajectory-0032:event-5",
+        "step": 9,
+        "kind": "tool_call",
+        "summary": "Tool call 5"
+      },
+      {
+        "id": "trajectory-0032:event-6",
+        "step": 11,
+        "kind": "model",
+        "summary": "Decision 6"
+      },
+      {
+        "id": "trajectory-0032:event-7",
+        "step": 12,
+        "kind": "model",
+        "summary": "Decision 7"
+      },
+      {
+        "id": "trajectory-0032:event-8",
+        "step": 14,
+        "kind": "tool_call",
+        "summary": "Tool call 8"
+      },
+      {
+        "id": "trajectory-0032:event-9",
+        "step": 16,
+        "kind": "model",
+        "summary": "Decision 9"
+      },
+      {
+        "id": "trajectory-0032:event-10",
+        "step": 18,
+        "kind": "model",
+        "summary": "Decision 10"
+      },
+      {
+        "id": "trajectory-0032:event-11",
+        "step": 20,
+        "kind": "tool_call",
+        "summary": "Tool call 11"
+      },
+      {
+        "id": "trajectory-0032:event-12",
+        "step": 22,
+        "kind": "outcome",
+        "summary": "Finished with success"
+      }
+    ]
+  }
+]

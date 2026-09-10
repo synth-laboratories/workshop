@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+// @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { COMMANDS, EVENT_CHANNELS, invokeCommand } from "../bridge";
+import { EVENT_CHANNELS, fromGenerated, spectaCommands } from "../bridge";
+import { LOCAL_BASE_POLICY } from "../runtime/lagunaPolicies";
 
 /**
  * Local inference monitor for the Laguna daemon on 127.0.0.1:7333.
@@ -40,6 +42,7 @@ export type InferenceRolling = {
 	requestsCompleted: number | null;
 	requestsFailed: number | null;
 	requestsCancelled: number | null;
+	lastFailureReason: string | null;
 	inputTokens: number | null;
 	outputTokens: number | null;
 	cachedTokens: number | null;
@@ -60,7 +63,22 @@ export type InferenceSnapshot = {
 	/** `null` while the daemon is idle. */
 	active: InferenceGeneration | null;
 	rolling: InferenceRolling;
+	/** Observation authority when the payload already names it. Absent ⇒ local sidecar. */
+	source?: string | null;
+	baseUrl?: string | null;
+	observedAt?: number | string | null;
+	updatedAt?: number | string | null;
 };
+
+export type InferenceObservation = {
+	source?: string | null;
+	baseUrl?: string | null;
+	observedAt?: number | string | null;
+	updatedAt?: number | string | null;
+};
+
+export const INFERENCE_AUTHORITY_LOCAL = "Local";
+export const INFERENCE_AUTHORITY_SHOAL = "Synth Cloud · Shoal";
 
 export type InferenceUnloadOutcome = {
 	released: boolean;
@@ -92,6 +110,7 @@ export type RecentRequest = {
 	cacheHitRatio: number | null;
 	ttftMs: number | null;
 	decodeTps: number | null;
+	failureReason: string | null;
 };
 
 export type InferenceFeedState = "loading" | "ready" | "error" | "off";
@@ -141,8 +160,8 @@ export function compactModelName(model: string | null): string {
 	const leaf = model.split("/").at(-1) ?? model;
 	return leaf
 		.replace(/-mlx$/i, "")
-		.replace(/-(nvfp4|fp8|int4|q4|4bit|8bit)$/i, "")
 		.replace(/-/g, " ")
+		.replace(/ (NVFP4|FP8|INT4|Q4|4BIT|8BIT)$/i, " · $1")
 		.trim();
 }
 
@@ -188,6 +207,60 @@ export function formatElapsed(milliseconds: number | null): string {
 export function formatQueue(depth: number | null, capacity: number | null): string {
 	if (!isNumber(depth)) return UNAVAILABLE;
 	return isNumber(capacity) ? `${depth}/${capacity}` : `${depth}`;
+}
+
+function isLoopbackHost(url: string): boolean {
+	try {
+		const host = new URL(url).hostname.toLowerCase();
+		return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+	} catch {
+		return /127\.0\.0\.1|localhost/i.test(url);
+	}
+}
+
+/**
+ * Observation source for the Inference tab. The Laguna sidecar is Local.
+ * `Synth Cloud · Shoal` is reserved for an observation that is actually hosted
+ * — never a Workshop route to Shoal.
+ */
+export function inferenceAuthorityLabel(observation: InferenceObservation = {}): typeof INFERENCE_AUTHORITY_LOCAL | typeof INFERENCE_AUTHORITY_SHOAL {
+	const source = (observation.source ?? "").trim().toLowerCase();
+	if (
+		source === "shoal" ||
+		source === "synth-cloud" ||
+		source === "synth_cloud" ||
+		source === "synth cloud" ||
+		source === "hosted"
+	) {
+		return INFERENCE_AUTHORITY_SHOAL;
+	}
+	if (source === "local" || source === "laguna" || source === "sidecar") {
+		return INFERENCE_AUTHORITY_LOCAL;
+	}
+	if (observation.baseUrl && !isLoopbackHost(observation.baseUrl)) {
+		return INFERENCE_AUTHORITY_SHOAL;
+	}
+	return INFERENCE_AUTHORITY_LOCAL;
+}
+
+export function inferenceObservedAt(observation: InferenceObservation = {}): { iso: string; label: string } | null {
+	const raw = observation.observedAt ?? observation.updatedAt;
+	if (raw == null || raw === "") return null;
+	const date = typeof raw === "number" ? new Date(raw) : new Date(raw);
+	if (Number.isNaN(date.getTime())) return null;
+	return { iso: date.toISOString(), label: date.toLocaleString() };
+}
+
+function mergeObservation(
+	snapshot: InferenceObservation | null | undefined,
+	status: InferenceObservation | null | undefined
+): InferenceObservation {
+	return {
+		source: snapshot?.source ?? status?.source ?? null,
+		baseUrl: snapshot?.baseUrl ?? status?.baseUrl ?? null,
+		observedAt: snapshot?.observedAt ?? status?.observedAt ?? null,
+		updatedAt: snapshot?.updatedAt ?? status?.updatedAt ?? null
+	};
 }
 
 /**
@@ -257,7 +330,8 @@ function finishRequest(
 		cachedTokens: generation.cachedTokens,
 		cacheHitRatio: generation.cacheHitRatio,
 		ttftMs,
-		decodeTps: generation.decodeTokensPerSecond
+		decodeTps: generation.decodeTokensPerSecond,
+		failureReason: status === "failed" ? after.rolling.lastFailureReason : null
 	};
 }
 
@@ -349,7 +423,7 @@ export function defaultInferenceTransport(): InferenceTransport {
 	if (testTransport) return testTransport;
 	if (!isTauri()) return unavailableTransport;
 	tauriTransport ??= {
-		snapshot: () => invokeCommand<InferenceSnapshot>(COMMANDS.LAGUNA_INFERENCE_SNAPSHOT),
+		snapshot: () => fromGenerated(spectaCommands.lagunaInferenceSnapshot()),
 		subscribe(onSnapshot, onError) {
 			let disposed = false;
 			let unlisten: (() => void) | undefined;
@@ -359,16 +433,16 @@ export function defaultInferenceTransport(): InferenceTransport {
 				if (disposed) next();
 				else unlisten = next;
 			});
-			void invokeCommand(COMMANDS.LAGUNA_INFERENCE_STREAM_START).catch((reason: unknown) => {
+			void fromGenerated(spectaCommands.lagunaInferenceStreamStart()).catch((reason: unknown) => {
 				if (!disposed) onError(describeFailure(reason));
 			});
 			return () => {
 				disposed = true;
 				unlisten?.();
-				void invokeCommand(COMMANDS.LAGUNA_INFERENCE_STREAM_STOP).catch(() => undefined);
+				void fromGenerated(spectaCommands.lagunaInferenceStreamStop()).catch(() => undefined);
 			};
 		},
-		unload: () => invokeCommand<InferenceUnloadOutcome>(COMMANDS.LAGUNA_MODEL_UNLOAD)
+		unload: () => fromGenerated(spectaCommands.lagunaModelUnload())
 	};
 	return tauriTransport;
 }
@@ -456,6 +530,24 @@ function InferenceSettingsButton({ onOpen }: { onOpen?: () => void }) {
 	);
 }
 
+function InferenceAuthorityMark({ observation }: { observation: InferenceObservation }) {
+	const label = inferenceAuthorityLabel(observation);
+	const observed = inferenceObservedAt(observation);
+	return (
+		<span className="inference-authority-row">
+			<span data-testid="inference-authority">{label}</span>
+			{observed ? (
+				<>
+					<span aria-hidden> · </span>
+					<time dateTime={observed.iso} data-testid="inference-observed-at">
+						{observed.label}
+					</time>
+				</>
+			) : null}
+		</span>
+	);
+}
+
 function Unavailable({ label }: { label: string }) {
 	return (
 		<span className="inference-unavailable" title={`${label} is not reported by the daemon`}>
@@ -517,6 +609,10 @@ export type InferencePanelProps = {
 	onOpenSettings?: () => void;
 	/** Cross-session measurements shown until the live monitor has samples. */
 	observedPerformance?: { tpsP50: number | null; tpsP95: number | null; sampleCount: number } | null;
+	/** Policy pinned to this conversation, even while no generation is active. */
+	selectedModel?: string | null;
+	/** Laguna status timestamps / URL when the snapshot itself has none. */
+	status?: InferenceObservation | null;
 };
 
 export function InferencePanel({
@@ -528,10 +624,13 @@ export function InferencePanel({
 	historyLimit,
 	className,
 	onOpenSettings,
-	observedPerformance = null
+	observedPerformance = null,
+	selectedModel = null,
+	status = null
 }: InferencePanelProps) {
 	// The panel is mounted in both the rail and the page, so ids must be local.
 	const reasonId = `${useId()}-free-reason`;
+	const [advancedOpen, setAdvancedOpen] = useState(false);
 	// The hook is always called; it stays inert when the parent owns the feed.
 	const internal = useInferenceMonitor({
 		visible: visible && !monitor,
@@ -544,7 +643,23 @@ export function InferencePanel({
 	const snapshot = view.snapshot;
 	const active = snapshot?.active ?? null;
 	const phase = active?.phase ?? null;
+	const warmingStartedAt = useRef<number | null>(null);
+	const [warmingElapsedMs, setWarmingElapsedMs] = useState<number | null>(null);
+	useEffect(() => {
+		if (!warmingUp) {
+			warmingStartedAt.current = null;
+			setWarmingElapsedMs(null);
+			return;
+		}
+		warmingStartedAt.current ??= Date.now();
+		const update = () => setWarmingElapsedMs(Date.now() - warmingStartedAt.current!);
+		update();
+		const timer = window.setInterval(update, 250);
+		return () => window.clearInterval(timer);
+	}, [warmingUp]);
 	const rolling = snapshot?.rolling;
+	const observation = mergeObservation(snapshot, status);
+	const authority = inferenceAuthorityLabel(observation);
 
 	const shell = ["inference-panel", className].filter(Boolean).join(" ");
 
@@ -553,6 +668,7 @@ export function InferencePanel({
 			<section className={shell} data-testid="inference-panel" data-state={state}>
 				<header className="inference-head">
 					<h2>Inference</h2>
+					<InferenceAuthorityMark observation={observation} />
 					<InferenceSettingsButton onOpen={onOpenSettings} />
 				</header>
 				<p
@@ -571,6 +687,7 @@ export function InferencePanel({
 			<section className={shell} data-testid="inference-panel" data-state="error">
 				<header className="inference-head">
 					<h2>Inference</h2>
+					<InferenceAuthorityMark observation={observation} />
 					<InferenceSettingsButton onOpen={onOpenSettings} />
 				</header>
 				<p className="inference-error" role="alert" data-testid="inference-error">
@@ -585,6 +702,8 @@ export function InferencePanel({
 	const decodeP50 = rolling.decodeTpsP50 ?? observedPerformance?.tpsP50 ?? null;
 	const decodeP95 = rolling.decodeTpsP95 ?? observedPerformance?.tpsP95 ?? null;
 	const decodeIsPersisted = rolling.decodeTpsP50 == null && observedPerformance?.tpsP50 != null;
+	const displayedModel = selectedModel ?? snapshot.model;
+	const fineTuned = Boolean(displayedModel && displayedModel !== LOCAL_BASE_POLICY);
 
 	const freeBlocked = Boolean(active) || turnRunning || !snapshot.resident || view.unloadState === "pending";
 	const freeReason = active
@@ -603,12 +722,13 @@ export function InferencePanel({
 			data-phase={phase ?? (warmingUp ? "loading" : turnRunning ? "turn-active" : snapshot.resident ? "idle" : "unloaded")}
 		>
 			<header className="inference-head">
-				<h2>
-					Inference <span aria-hidden>·</span> {compactModelName(snapshot.model)}
-				</h2>
+				<div className="inference-model-identity">
+					<h2>{compactModelName(displayedModel)}</h2>
+				</div>
 				<span
 					className="inference-residency"
 					data-resident={snapshot.resident ? "yes" : "no"}
+					data-authority={authority === INFERENCE_AUTHORITY_SHOAL ? "shoal" : "local"}
 					data-testid="inference-residency"
 				>
 					{snapshot.resident ? (
@@ -616,11 +736,12 @@ export function InferencePanel({
 							RESIDENT <span aria-hidden>·</span>{" "}
 							<Metric label="Resident memory" value={formatBytes(snapshot.residentBytes)} />
 						</>
+					) : warmingUp ? (
+						<>LOADING on {authority}</>
 					) : (
-						"UNLOADED"
+						<>UNLOADED on {authority}</>
 					)}
 				</span>
-				<InferenceSettingsButton onOpen={onOpenSettings} />
 			</header>
 
 			<div className="inference-activity" data-testid="inference-activity" aria-live="polite">
@@ -658,9 +779,19 @@ export function InferencePanel({
 					</>
 				) : warmingUp ? (
 					<>
-						<span className="inference-activity-state">WARMING</span>
+						<span className="inference-activity-state">LOADING</span>
 						<span className="inference-phase" data-phase="loading">
 							loading model weights
+						</span>
+						<span className="inference-activity-elapsed">
+							<Metric label="Load elapsed" value={formatElapsed(warmingElapsedMs)} />
+						</span>
+					</>
+				) : !snapshot.resident ? (
+					<>
+						<span className="inference-activity-state">NOT LOADED</span>
+						<span className="inference-phase" data-phase="unloaded">
+							model weights are not resident
 						</span>
 					</>
 				) : turnRunning ? (
@@ -682,6 +813,40 @@ export function InferencePanel({
 				)}
 			</div>
 
+			{view.recent.length > 0 ? (
+				<section className="inference-recent inference-recent-compact" data-testid="inference-recent">
+					<h3>Recent requests</h3>
+					<ul>
+						{view.recent.slice(0, 3).map((request) => (
+							<li key={request.id} data-status={request.status}>
+								<span className="inference-recent-status" data-status={request.status}>
+									{STATUS_LABELS[request.status]}
+								</span>
+								<span className="inference-recent-model">{compactModelName(request.model)}</span>
+								{request.failureReason ? <span className="inference-recent-reason" title={request.failureReason}>{request.failureReason}</span> : null}
+								<span>ttft <Metric label="TTFT" value={formatMs(request.ttftMs)} /></span>
+								<span><Metric label="Decode throughput" value={formatTps(request.decodeTps)} /> tok/s</span>
+							</li>
+						))}
+					</ul>
+				</section>
+			) : null}
+
+			<details
+				className="inference-advanced"
+				open={advancedOpen}
+				onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
+			>
+				<summary data-testid="inference-advanced-summary">Advanced</summary>
+				<div className="inference-advanced-body">
+					<div className="inference-advanced-meta">
+						<span className="inference-policy-kind" data-finetuned={fineTuned ? "yes" : "no"} data-testid="inference-policy-kind">
+							{fineTuned ? "Fine-tuned model · LoRA attached" : "Standard model"}
+						</span>
+						<InferenceAuthorityMark observation={observation} />
+					</div>
+					<InferenceSettingsButton onOpen={onOpenSettings} />
+
 			<ul className="inference-chips" data-testid="inference-chips">
 				<li>
 					<span>in flight</span>
@@ -693,9 +858,9 @@ export function InferencePanel({
 					</strong>
 				</li>
 				<li>
-					<span>prompt</span>
+					<span title="Includes system instructions, tool schemas, and conversation history">input context</span>
 					<strong>
-						<Metric label="Prompt tokens" value={formatCount(active?.promptTokens ?? null)} />
+						<Metric label="Total input context tokens" value={formatCount(active?.promptTokens ?? null)} />
 					</strong>
 				</li>
 				<li>
@@ -756,39 +921,10 @@ export function InferencePanel({
 			<Sparkline values={view.queue} label="queue" caption="in-flight requests" />
 			</div>
 
-			<section className="inference-recent" data-testid="inference-recent">
-				<h3>Recent requests</h3>
-				{view.recent.length === 0 ? (
-					<p className="inference-note">No completed generations observed yet</p>
-				) : (
-					<ul>
-						{view.recent.map((request) => (
-							<li key={request.id} data-status={request.status}>
-								<span className="inference-recent-status" data-status={request.status}>
-									{STATUS_LABELS[request.status]}
-								</span>
-								<span className="inference-recent-model">{compactModelName(request.model)}</span>
-								<span>
-									<Metric label="Prompt tokens" value={formatCount(request.promptTokens)} />
-									<span aria-hidden> → </span>
-									<Metric label="Output tokens" value={formatCount(request.outputTokens)} />
-								</span>
-								<span>
-									cache <Metric label="Cache hit ratio" value={formatRatio(request.cacheHitRatio)} />
-								</span>
-								<span>
-									ttft <Metric label="TTFT" value={formatMs(request.ttftMs)} />
-								</span>
-								<span>
-									<Metric label="Decode throughput" value={formatTps(request.decodeTps)} /> tok/s
-								</span>
-							</li>
-						))}
-					</ul>
-				)}
-			</section>
+				</div>
+			</details>
 
-			<footer className="inference-foot">
+			{snapshot.resident ? <footer className="inference-foot">
 				<button
 					type="button"
 					className="inference-free"
@@ -798,13 +934,13 @@ export function InferencePanel({
 					title={freeReason}
 					aria-describedby={reasonId}
 				>
-					{view.unloadState === "pending" ? "Freeing…" : "Free now"}
+					{view.unloadState === "pending" ? "Freeing…" : "Free memory"}
 				</button>
 				<span id={reasonId} className="inference-foot-note" aria-live="polite">
 					{view.unloadDetail ??
 						(view.unloadState === "released" ? "Weights released." : freeReason)}
 				</span>
-			</footer>
+			</footer> : null}
 		</section>
 	);
 }

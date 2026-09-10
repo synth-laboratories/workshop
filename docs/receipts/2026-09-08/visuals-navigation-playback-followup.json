@@ -1,0 +1,26 @@
+{
+  "status": "incremental acceptance; release gates remain open",
+  "nativeRecording": {
+    "visualId": "accept-source-pin-2f931a49-d390-4b1e-b7c6-93f7b583e72c",
+    "revision": 2,
+    "recordingId": "f0166d99-51eb-4919-8d6c-b345448f275d",
+    "intervalMs": 75,
+    "forwardAndBackRestored": true
+  },
+  "nativeSwarm": {
+    "visualId": "accept-analysis-swarm_trajectories-v1",
+    "revision": 4,
+    "rootCount": 1000,
+    "humanSuccessCount": 692,
+    "humanNestedRecoveryCount": 352,
+    "checkpointId": "794caf5c-e10e-44d2-a0c1-9e7b3b9b2120",
+    "restartRetainedNavigation": true,
+    "humanBackThenMcpRestoreMatchedEveryControl": true,
+    "restoredStateVersion": 6,
+    "png": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/6c6ac1bf-e4e9-4001-a22b-f5e86cee08cd.png",
+    "pngInspected": true,
+    "paintMutations": 0,
+    "paintVerified": true
+  },
+  "notCertified": ["durable live evidence cuts", "lazy real-run analytics", "all family domain acceptance", "two-pane native acceptance", "clean-build readiness and sealing"]
+}

@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 mod account;
 mod account_cloud;
 pub mod browser;
@@ -15,9 +16,11 @@ pub mod intern_protocol_test_support {
         SyncCreateRequest,
     };
 }
-pub mod campaigns;
+pub mod adapters;
+mod annotations_ipc;
 mod codex;
 mod codex_oauth;
+mod composition;
 mod computer_use;
 pub mod container_capabilities;
 pub mod container_stream;
@@ -29,17 +32,23 @@ pub mod data;
 mod device_auth;
 pub mod diagnostics;
 mod domain;
+mod domains;
 pub mod error;
 #[cfg(feature = "eval-driver")]
 mod eval_driver;
 pub mod experiments;
 mod http;
+pub mod human_annotations;
 mod instance;
 mod intern_api;
 pub mod ipc;
 mod laguna;
+mod laguna_adapters;
 mod limits;
+pub mod lineage;
+mod model_catalog;
 mod optimizers;
+mod platform;
 mod plugins;
 pub mod presentation;
 pub mod recovery;
@@ -56,6 +65,7 @@ mod telemetry;
 mod terminal;
 pub mod trace_ingest;
 pub mod trace_query;
+pub mod trace_research;
 pub mod training_artifacts;
 pub mod training_models;
 mod update_check;
@@ -76,16 +86,23 @@ use data::{
     TraceRecord, UsageEntry,
 };
 use error::AppError;
+use experiments::{
+    ExperimentChildCreateRequest, ExperimentCreateRequest, ExperimentEvidenceAttachRequest,
+    ExperimentFinalizeRequest, ExperimentGroup, ExperimentRelateRequest, ExperimentUpdateRequest,
+    ResearchJournalAppendRequest, ResearchJournalEntry,
+};
 use intern_api::{
     InternControlResult, InternSendResult, InternSessionControlRequest, InternSessionCreateRequest,
     InternSessionSendRequest, InternSessionWire,
 };
 use laguna::{LagunaManager, LagunaModelHit, LagunaStatus};
 use optimizers::{
-    HostedTrainingModelCatalog, OptimizerCreateRequest, OptimizerEventEnvelope,
+    kernel::OptimizerRunViewV2, CheckpointInferRequest, HostedTrainingModelCatalog,
+    OptimizerArtifactPage, OptimizerArtifactRange, OptimizerCreateRequest, OptimizerEventEnvelope,
     OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
     OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunRecord, OptimizerStateSlice,
     SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery, SavedLoraDownload,
+    SavedLoraPatchRequest,
 };
 use plugins::PluginStatus;
 use reports::{
@@ -97,6 +114,7 @@ use reports::{
 };
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 use storage::{
     AppEvent, CoreDiagnostics, ModelPerformanceRepository, ModelPerformanceSummary,
     ModelPerformanceTurnSample,
@@ -108,7 +126,10 @@ use synth_config::{
 use tauri::{Emitter, Manager, RunEvent, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
-use terminal::{TerminalCreateRequest, TerminalEvent, TerminalInfo, TerminalManager};
+use terminal::{
+    NativeTerminalFrame, NativeTerminalMountRequest, TerminalCreateRequest, TerminalEvent,
+    TerminalInfo, TerminalManager,
+};
 use trace_ingest::{TraceBundleIngestRequest, TraceBundleIngestResult};
 use visuals::{
     TemplateMeta, VisualAnnotation, VisualAnnotationCreate, VisualAsset, VisualCreateRequest,
@@ -148,12 +169,11 @@ fn runtime_contracts(
         .ok()
         .flatten()
         .map(|hit| hit.version);
-    let eval = crate::optimizers::eval_runtime::installed_version()
-        .or_else(|| {
-            crate::optimizers::eval_runtime::provision_from_disk()
-                .ok()
-                .map(|manifest| manifest.version)
-        });
+    let eval = crate::optimizers::eval_runtime::installed_version().or_else(|| {
+        crate::optimizers::eval_runtime::provision_from_disk()
+            .ok()
+            .map(|manifest| manifest.version)
+    });
     Ok(ALL
         .iter()
         .map(|entry| {
@@ -179,18 +199,24 @@ fn desktop_image_preview(path: String) -> Result<String, AppError> {
         .extension()
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase)
-        .ok_or_else(|| AppError::message("Screenshot has no supported format"))?;
+        .ok_or_else(|| AppError::untyped("Screenshot has no supported format"))?;
     let mime = match extension.as_str() {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
         "gif" => "image/gif",
-        _ => return Err("Screenshot format is unsupported".into()),
+        _ => {
+            return Err(AppError::invalid_argument(
+                "Screenshot format is unsupported",
+            ))
+        }
     };
     let metadata =
         std::fs::metadata(&path).map_err(|_| AppError::io("Screenshot is unavailable"))?;
     if !metadata.is_file() || metadata.len() > limits::IMAGE_PREVIEW_MAX_BYTES {
-        return Err("Screenshot must be a file smaller than 20 MB".into());
+        return Err(AppError::invalid_argument(
+            "Screenshot must be a file smaller than 20 MB",
+        ));
     }
     let bytes = std::fs::read(path).map_err(|_| AppError::io("Screenshot could not be read"))?;
     Ok(format!(
@@ -508,23 +534,41 @@ async fn hydrate_container(
     let task_family = info
         .as_ref()
         .and_then(|value| {
-            crate::visuals::classify_live_eval_family(value, None)
-                .map(|family| family.as_str().to_string())
-        })
-        .or_else(|| {
-            info.as_ref()
-                .and_then(|value| {
-                    value
-                        .get("env_family")
-                        .or_else(|| value.get("task_family"))
-                        // HealthBench publishes its explicit service family as
-                        // `runtime_family`; preserve that observed contract so
-                        // the selector can find the registered GEPA-v2 pool.
-                        // Do not infer from a caller name, port, or URL.
-                        .or_else(|| value.get("runtime_family"))
-                })
+            value
+                .pointer("/liveEval/benchmarkFamily")
+                .or_else(|| value.pointer("/metadata/liveEval/benchmarkFamily"))
+                .or_else(|| value.get("env_family"))
+                .or_else(|| value.get("task_family"))
+                // HealthBench publishes its explicit service family as
+                // `runtime_family`; preserve that observed contract so the
+                // selector can find the registered GEPA-v2 pool. A declared
+                // benchmarkFamily wins because Harbor is the visual/transport
+                // family, not the benchmark being evaluated.
+                .or_else(|| value.get("runtime_family"))
                 .and_then(|value| value.as_str())
                 .map(str::to_string)
+        })
+        .or_else(|| {
+            info.as_ref().and_then(|value| {
+                crate::visuals::classify_live_eval_family(value, None)
+                    .map(|family| family.as_str().to_string())
+            })
+        })
+        .or_else(|| {
+            // Packaged GEPA services identify their task through the immutable
+            // runtime id rather than an optional top-level `task_family`.
+            // Use that advertised value only; never infer the target from the
+            // user supplied name, URL, or port.
+            info.as_ref()
+                .and_then(|value| value.pointer("/runtime/runtime_id"))
+                .and_then(|value| value.as_str())
+                .and_then(|runtime_id| {
+                    let normalized = runtime_id.to_ascii_lowercase();
+                    ["banking77", "healthbench", "craftax", "alfworld"]
+                        .into_iter()
+                        .find(|family| normalized.contains(family))
+                        .map(str::to_string)
+                })
         })
         .or_else(|| {
             health
@@ -601,6 +645,13 @@ async fn hydrate_container(
             }
         }
     }
+    let live = status == crate::container_capabilities::READY_STATUS
+        && health.get("ok").and_then(|value| value.as_bool()) != Some(false);
+    crate::optimizers::container_lifecycle::stamp_metadata_freshness(
+        &mut metadata,
+        live,
+        &chrono::Utc::now().to_rfc3339(),
+    );
     (
         status,
         health,
@@ -616,7 +667,9 @@ async fn data_containers_register(
     request: ContainerRegisterRequest,
 ) -> Result<ContainerDeployment, AppError> {
     if !(request.base_url.starts_with("http://") || request.base_url.starts_with("https://")) {
-        return Err("container baseUrl must start with http:// or https://".into());
+        return Err(AppError::invalid_argument(
+            "container baseUrl must start with http:// or https://",
+        ));
     }
     let (status, health, metadata, hydrated_family) = hydrate_container(
         &request.base_url,
@@ -633,7 +686,7 @@ async fn data_containers_register(
         .and_then(|value| value.as_str())
         .filter(|error| error.contains("live_frames"))
     {
-        return Err(error.into());
+        return Err(AppError::invalid_argument(error));
     }
     state
         .register_container(request, status, health, metadata, task_family)
@@ -665,6 +718,72 @@ async fn data_containers_probe(
 
 #[tauri::command]
 #[specta::specta]
+async fn data_containers_reconcile(
+    state: State<'_, Arc<CoreRuntime>>,
+    container_id: String,
+    session_id: String,
+) -> Result<ContainerDeployment, AppError> {
+    crate::optimizers::container_lifecycle::reconcile_declaration(
+        state.storage().database(),
+        &session_id,
+        &container_id,
+    )
+    .map_err(AppError::from)?;
+    state
+        .data()
+        .get_container(container_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn data_containers_restart(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    container_id: String,
+    session_id: String,
+) -> Result<ContainerDeployment, AppError> {
+    crate::visuals_ipc::dispatch_container_restart(
+        &format!("/v1/containers/{container_id}/restart"),
+        serde_json::json!({ "sessionRef": session_id }),
+        state.inner(),
+        &app,
+    )
+    .await
+    .map_err(AppError::from)?;
+    state
+        .data()
+        .get_container(container_id)
+        .await
+        .map_err(AppError::from)
+}
+
+// Consumer bridge only: query semantics and storage remain in the existing trace API.
+#[tauri::command]
+#[specta::specta]
+async fn data_trace_research_request(
+    state: State<'_, Arc<CoreRuntime>>,
+    operation: String,
+    arguments_json: String,
+) -> Result<String, AppError> {
+    let path = match operation.as_str() {
+        "window" => "/v1/traces/window",
+        "query" => "/v1/traces/query",
+        "page" => "/v1/traces/page",
+        "snapshot" => "/v1/traces/snapshot",
+        "source" => "/v1/traces/source",
+        "prepare_annotations" => "/v1/traces/prepare_annotations",
+        _ => return Err(AppError::from(anyhow::anyhow!("Unsupported trace research operation"))),
+    };
+    let arguments = serde_json::from_str(&arguments_json).map_err(|e| AppError::from(anyhow::anyhow!(e)))?;
+    let result = crate::visuals_ipc::dispatch("POST", path, arguments, state.inner().as_ref())
+        .await.map_err(AppError::from)?;
+    serde_json::to_string(&result).map_err(|e| AppError::from(anyhow::anyhow!(e)))
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn data_traces_list(
     state: State<'_, Arc<CoreRuntime>>,
 ) -> Result<Vec<TraceRecord>, AppError> {
@@ -681,6 +800,19 @@ async fn data_traces_get(
         .data()
         .get_trace(trace_id)
         .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn data_trace_materialize(
+    state: State<'_, Arc<CoreRuntime>>,
+    container_id: String,
+    rollout_id: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    crate::visuals_ipc::import_container_trace(&state, &container_id, &rollout_id)
+        .await
+        .map(contract::specta::OpaqueJson)
         .map_err(AppError::from)
 }
 
@@ -711,6 +843,101 @@ async fn data_trace_projection_resolve(
         .resolve_trace_projection(trace_digest, projection_kind)
         .await
         .map_err(AppError::from)
+}
+
+/// Read a bounded local annotation projection without exposing the authenticated
+/// loopback Visuals IPC token to the renderer.
+#[tauri::command]
+#[specta::specta]
+async fn analysis_projection_get(
+    state: State<'_, Arc<CoreRuntime>>,
+    kind: String,
+    digest: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .storage()
+        .database()
+        .run_read(move |conn| {
+            crate::session::annotation_projection::projection_payload(conn, &kind, &digest)
+        })
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn analysis_findings_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    trace_digest: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .storage()
+        .database()
+        .run_read(move |conn| {
+            let findings = crate::session::annotation_projection::list_findings_for_trace(
+                conn,
+                &trace_digest,
+            )?;
+            Ok(serde_json::json!({ "findings": findings }))
+        })
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn analysis_campaigns_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    eval_run_id: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .storage()
+        .database()
+        .run_read(move |conn| {
+            let campaigns =
+                crate::session::annotation_projection::list_campaigns_for_eval(conn, &eval_run_id)?;
+            Ok(serde_json::json!({ "campaigns": campaigns }))
+        })
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn analysis_review_record(
+    state: State<'_, Arc<CoreRuntime>>,
+    finding_id: String,
+    evidence_head_digest: String,
+    decision: String,
+    rationale: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let persisted_finding_id = finding_id.clone();
+    let persisted_evidence_head_digest = evidence_head_digest.clone();
+    let persisted_decision = decision.clone();
+    let persisted_rationale = rationale.clone();
+    let review_id = state
+        .storage()
+        .database()
+        .run_transaction(move |conn| {
+            crate::session::annotation_projection::record_local_review(
+                conn,
+                &persisted_finding_id,
+                &persisted_evidence_head_digest,
+                &persisted_decision,
+                "workshop",
+                &persisted_rationale,
+            )
+        })
+        .await
+        .map_err(AppError::from)?;
+    Ok(contract::specta::OpaqueJson(serde_json::json!({
+        "reviewId": review_id,
+        "findingId": finding_id,
+        "decision": decision,
+    })))
 }
 
 #[tauri::command]
@@ -829,10 +1056,11 @@ async fn optimizers_algorithms_list(
 #[specta::specta]
 async fn optimizers_recipes_list(
     state: State<'_, Arc<CoreRuntime>>,
+    session_ref: Option<String>,
 ) -> Result<Vec<contract::specta::OpaqueJson>, AppError> {
     Ok(state
         .optimizers()
-        .list_recipes()
+        .list_recipes_for_session(session_ref.as_deref())
         .into_iter()
         .map(contract::specta::OpaqueJson)
         .collect())
@@ -866,6 +1094,45 @@ async fn optimizers_recipe_start(
     authorize_optimizer_recipe_start(&app, &state, &codex, request).await
 }
 
+fn optimizer_recipe_fixture_env(recipe_id: &str) -> Option<&'static str> {
+    match recipe_id {
+        "sft.craftax.nemotron-nano.tinker.v1" | "sft.banking77.nemotron-lightning.tinker.v1" => {
+            Some("SYNTH_OPTIMIZERS_SFT_FIXTURE")
+        }
+        "cispo.banking77.tinker.v1"
+        | "cispo.hosted.tinker.v1"
+        | "cispo.slime.hosted.v1"
+        | "cispo.banking77.slime.tinker.v1" => Some("SYNTH_OPTIMIZERS_CISPO_FIXTURE"),
+        _ => None,
+    }
+}
+
+fn optimizer_recipe_is_unpaid_fixture(recipe_id: &str) -> bool {
+    optimizer_recipe_fixture_env(recipe_id).is_some_and(|name| {
+        std::env::var(name)
+            .ok()
+            .is_some_and(|value| value.trim() == "1")
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn hosted_fixture_gate_is_limited_to_known_recipe_families() {
+    assert_eq!(
+        optimizer_recipe_fixture_env("sft.banking77.nemotron-lightning.tinker.v1"),
+        Some("SYNTH_OPTIMIZERS_SFT_FIXTURE")
+    );
+    assert_eq!(
+        optimizer_recipe_fixture_env("cispo.banking77.tinker.v1"),
+        Some("SYNTH_OPTIMIZERS_CISPO_FIXTURE")
+    );
+    assert_eq!(optimizer_recipe_fixture_env("gepa.banking77.v1"), None);
+    assert_eq!(
+        optimizer_recipe_fixture_env("cispo.unreviewed.tinker.v1"),
+        None
+    );
+}
+
 pub(crate) async fn authorize_optimizer_recipe_start(
     app: &tauri::AppHandle,
     state: &CoreRuntime,
@@ -876,7 +1143,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     let visual_session_ref = request.session_ref.clone();
     let recipe = state
         .optimizers()
-        .list_recipes()
+        .list_recipes_for_session(request.session_ref.as_deref())
         .into_iter()
         .find(|recipe| recipe.get("id").and_then(Value::as_str) == Some(request.recipe_id.as_str()))
         .ok_or_else(|| {
@@ -885,12 +1152,32 @@ pub(crate) async fn authorize_optimizer_recipe_start(
                 request.recipe_id
             ))
         })?;
-    // Local MLX recipes and the pinned local eval smoke do not incur provider
-    // charges. The click itself is the operator's explicit instruction.
+    // A workspace eval whose provider is explicitly `none` cannot issue a
+    // billable model call. Treat it like the other local no-provider paths:
+    // requiring a PaidCompute/CredentialAccess grant here both misrepresents
+    // the run and deadlocks sessions whose allowlist intentionally names only
+    // real providers. The recipe's rollout/step bounds remain enforced by the
+    // container evaluator.
+    let is_unpaid_workspace_eval = recipe.get("algorithmId").and_then(Value::as_str)
+        == Some("eval")
+        && recipe.get("source").and_then(Value::as_str) == Some("workspace")
+        && recipe.get("semantics").and_then(Value::as_str) == Some("baseline_eval")
+        && recipe
+            .get("credentialInputs")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty);
+    // Local MLX recipes, provider-free workspace evals, and explicitly enabled hosted fixtures do not incur
+    // provider charges. The card click is the operator's explicit instruction,
+    // so requiring an agent-session paid-compute receipt here makes the
+    // zero-cost Desktop acceptance path impossible. Exact recipe ids and the
+    // fixture env gate keep real hosted launches on the approval path below.
     if matches!(
         request.recipe_id.as_str(),
-        "sft.qwen35-0.8b.mlx.v1" | "cispo.banking77.mlx.v1" | "eval.fixture.policy-smoke.v1"
-    ) {
+        "sft.qwen35-2b.mlx.v1" | "cispo.mlx.v1"
+    ) || optimizer_recipe_is_unpaid_fixture(&request.recipe_id)
+        || recipe.get("provider").and_then(Value::as_str) == Some("none")
+        || is_unpaid_workspace_eval
+    {
         let (run, event) = state
             .optimizers()
             .start_recipe(request)
@@ -905,14 +1192,13 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let requesting_agent = session_id
-        .map(|value| format!("Agent session {value}"))
+        .map(|value| if value.starts_with("operator-training-") { "Workshop operator".into() } else { format!("Agent session {value}") })
         .unwrap_or_else(|| "Workshop operator".into());
     let algorithm_id = recipe.get("algorithmId").and_then(Value::as_str);
     let is_local_eval = algorithm_id == Some("eval");
-    let is_container_baseline_eval = matches!(
-        request.recipe_id.as_str(),
-        optimizers::BANKING77_EVAL_BASELINE_RECIPE | optimizers::HEALTHBENCH_EVAL_SMOKE_RECIPE
-    );
+    let is_container_baseline_eval = is_local_eval
+        && recipe.get("source").and_then(Value::as_str) == Some("workspace")
+        && recipe.get("semantics").and_then(Value::as_str) == Some("baseline_eval");
     // Hosted SFT is owned by the public synth-optimizers control plane and
     // does not use the optional local Optimizers sidecar. Requiring that
     // sidecar made an otherwise configured public SFT recipe unreachable.
@@ -922,7 +1208,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .get("limits")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let (max_cost_usd, max_rollouts) = if is_container_baseline_eval {
+    let (mut max_cost_usd, max_rollouts) = if is_container_baseline_eval {
         // These recipes evaluate the policy already pinned by a registered
         // container. They have no candidate set: requiring one here prevents
         // the public MCP route from ever reaching `container_eval::start`.
@@ -936,8 +1222,8 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         )
     } else if is_local_eval {
         let (cost, trials) = {
-            let candidate_set_id = optimizers::resolve_eval_candidate_set(&request)
-                .map_err(AppError::from)?;
+            let candidate_set_id =
+                optimizers::resolve_eval_candidate_set(&request).map_err(AppError::from)?;
             optimizers::paid_compute_bounds(&recipe, Some(candidate_set_id.as_str()))
                 .map_err(AppError::from)?
         };
@@ -958,6 +1244,17 @@ pub(crate) async fn authorize_optimizer_recipe_start(
             .find_map(|key| limits.get(key).and_then(Value::as_u64)),
         )
     };
+    let requested_training_cap = if is_hosted_sft { "/sft/maxCostUsd" } else { "/cispo/maxCostUsd" };
+    if is_hosted_sft || algorithm_id == Some("cispo") {
+        if let Some(value) = request.plan_override.as_ref().and_then(|value| value.pointer(requested_training_cap)) {
+            let cap = value.as_f64().filter(|cap| cap.is_finite() && *cap > 0.0)
+                .ok_or_else(|| AppError::from(anyhow::anyhow!("Training maximum charge must be positive and finite")))?;
+            if max_cost_usd.is_none_or(|ceiling| cap > ceiling) {
+                return Err(AppError::from(anyhow::anyhow!("Training maximum charge exceeds the recipe ceiling")));
+            }
+            max_cost_usd = Some(cap);
+        }
+    }
     let paid_cap = session::approval::PaidComputeCap {
         max_cost_usd_micros: max_cost_usd.map(|value| (value * 1_000_000.0).round() as u64),
         max_rollouts,
@@ -968,30 +1265,82 @@ pub(crate) async fn authorize_optimizer_recipe_start(
             request.recipe_id
         )));
     }
-    let credential_names: Vec<String> = if is_local_eval {
-        recipe
-            .get("credentialInputs")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect()
-    } else {
-        optimizer_recipe_credentials(&request.recipe_id)
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect()
-    };
+    let credential_names = optimizer_recipe_credentials_from_catalog(&recipe, &request.recipe_id);
+    if credential_names.iter().any(|name| name == "OPENAI_API_KEY") {
+        if let Some(secrets) = crate::secrets::live() {
+            let models = recipe
+                .get("models")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|model| {
+                    model
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| model.as_str())
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>();
+            let calls_per_rollout = limits
+                .get("maximumModelCallsPerRollout")
+                .or_else(|| limits.get("maxCallsPerRollout"))
+                .and_then(serde_json::Value::as_u64)
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    AppError::from(anyhow::anyhow!(
+                        "optimizer recipe `{}` has a provider credential but no admitted \
+                         maximumModelCallsPerRollout",
+                        request.recipe_id
+                    ))
+                })?;
+            let admitted_rollouts = max_rollouts.filter(|value| *value > 0).ok_or_else(|| {
+                AppError::from(anyhow::anyhow!(
+                    "optimizer recipe `{}` has a provider credential but no admitted rollout cap",
+                    request.recipe_id
+                ))
+            })?;
+            let admitted_cost_micros = paid_cap
+                .max_cost_usd_micros
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    AppError::from(anyhow::anyhow!(
+                        "optimizer recipe `{}` has a provider credential but no admitted cost cap",
+                        request.recipe_id
+                    ))
+                })?;
+            let total_calls = admitted_rollouts
+                .saturating_mul(calls_per_rollout)
+                .min(u64::from(u32::MAX)) as u32;
+            let policy = optimizers::admission::provider_use_policy_from_bounds(
+                vec!["chat.completions.create".into()],
+                models,
+                Vec::new(),
+                total_calls,
+                admitted_cost_micros,
+                crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
+                None,
+                None,
+            );
+            secrets
+                .preflight_openai_route(&request.recipe_id, policy)
+                .map_err(AppError::from)?;
+        } else {
+            return Err(AppError::from(
+                crate::secrets::lease::CredentialError::new(
+                    crate::secrets::lease::PROXY_NOT_RUNNING,
+                    "proxy",
+                    true,
+                    "Workshop secrets proxy is not running",
+                )
+                .anyhow(),
+            ));
+        }
+    }
     let paid = session::approval::ApprovalKind::PaidCompute {
         operation: "optimizer.recipe.start".into(),
-        parameters: serde_json::json!({
-            "recipeId": request.recipe_id,
-            "algorithmId": recipe.get("algorithmId"),
-            "task": recipe.get("task"),
-            "limits": limits,
-        }),
-        estimated_cost_usd_micros: paid_cap.max_cost_usd_micros,
+        parameters: optimizer_recipe_approval_parameters(&recipe, &request.recipe_id, &limits),
+        // A cap is not an expected provider charge.
+        estimated_cost_usd_micros: None,
         requested_cap: paid_cap.clone(),
         requesting_agent,
         recipe_id: Some(request.recipe_id.clone()),
@@ -1015,8 +1364,13 @@ pub(crate) async fn authorize_optimizer_recipe_start(
                 app,
                 session_id,
                 session::approval::ApprovalKind::CredentialAccess {
+                    consent: session::approval::CredentialConsent::IssueLease,
                     provider: provider.clone(),
                     purpose: format!("run bounded optimizer recipe {}", request.recipe_id),
+                    locator_id: None,
+                    display_path: None,
+                    variable: None,
+                    switch_from_display: None,
                 },
             )
             .await
@@ -1114,39 +1468,161 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     Ok(run)
 }
 
+/// Inline-first evaluation admission. The catalog is intentionally absent:
+/// conversational evaluations arrive as typed constraints, are materialized
+/// from current container authority, and execute only after their immutable
+/// digest is approved.
+pub(crate) async fn authorize_inline_evaluation_start(
+    app: &tauri::AppHandle,
+    state: &CoreRuntime,
+    codex: &CodexManager,
+    request: optimizers::admission::InlineRequest,
+    session_ref: Option<String>,
+    open_visual: bool,
+    idempotency_key: String,
+) -> Result<OptimizerRunRecord, AppError> {
+    let session_id = session_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::invalid_argument("this mutation requires an agent session for approval")
+        })?;
+    let admissible = optimizers::inline_eval::admit_inline(state.optimizers(), request)
+        .await
+        .map_err(AppError::from)?;
+    let admitted_digest = admissible.digest().as_str().to_string();
+    let start_run_id = optimizers::inline_eval::idempotent_run_id(session_id, &idempotency_key);
+    if let Ok(existing) = state.optimizers().get(start_run_id.clone()).await {
+        let expected = admitted_digest.as_str();
+        let actual = existing
+            .summary
+            .get("executionSpecDigest")
+            .and_then(serde_json::Value::as_str);
+        if actual != Some(expected) {
+            return Err(AppError::invalid_argument(format!(
+                "idempotencyKey is already bound to a different evaluation specification (expected {expected}, found {})",
+                actual.unwrap_or("missing digest")
+            )));
+        }
+        return Ok(existing);
+    }
+    let disclosure = admissible.approval_disclosure();
+    let recipe = &admissible.spec().recipe;
+    let max_cost_usd_micros = recipe.resource_limits.hard_total_cost_micros.as_micros();
+    let max_rollouts = recipe.rollout_plan.maximum_rollouts.0.get() as u64;
+    let paid_cap = session::approval::PaidComputeCap {
+        max_cost_usd_micros: Some(max_cost_usd_micros),
+        max_rollouts: Some(max_rollouts),
+    };
+    let requesting_agent = format!("Agent session {session_id}");
+    let provider = recipe.model.provider.as_str().to_string();
+    let model = recipe.model.model_id.as_str().to_string();
+    let paid_approval_id = codex
+        .approvals
+        .authorize_host(
+            app,
+            Some(session_id),
+            session::approval::ApprovalKind::PaidCompute {
+                operation: "optimizer.evaluation.inline.start".into(),
+                parameters: disclosure,
+                estimated_cost_usd_micros: None,
+                requested_cap: paid_cap.clone(),
+                requesting_agent,
+                recipe_id: None,
+                dataset: None,
+                proposer_model: Some(model),
+                evaluator_model: None,
+                timeout_seconds: None,
+                credential_names: vec![format!("{provider}:workshop_secrets_proxy")],
+                preparation_digest: Some(admissible.digest().as_str().to_string()),
+            },
+        )
+        .await
+        .map_err(AppError::from)?;
+
+    let approved = optimizers::inline_eval::bind_approval(admissible, &paid_approval_id)
+        .map_err(AppError::from)?;
+    optimizers::inline_eval::reverify(state.optimizers(), &approved)
+        .await
+        .map_err(AppError::from)?;
+    let execution = optimizers::inline_eval::execute(
+        state.optimizers(),
+        approved,
+        session_ref.clone(),
+        Some(start_run_id.clone()),
+    )
+    .await;
+    let (run, event) = match execution {
+        Ok(started) => started,
+        Err(error) => {
+            // Two identical callers can both be released by the same human
+            // decision. The deterministic row insert is the spend fence; the
+            // loser returns that row instead of turning a safe retry into an
+            // error or dispatching another campaign.
+            if let Ok(existing) = state.optimizers().get(start_run_id).await {
+                if existing
+                    .summary
+                    .get("executionSpecDigest")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(admitted_digest.as_str())
+                {
+                    return Ok(existing);
+                }
+            }
+            return Err(AppError::from(error));
+        }
+    };
+    publish_optimizer_event(app, state, event).await?;
+    let run = state
+        .optimizers()
+        .attach_paid_compute_approval(
+            run.id,
+            &paid_approval_id,
+            paid_cap.max_cost_usd_micros,
+            paid_cap.max_rollouts,
+        )
+        .await
+        .map_err(AppError::from)?;
+    if open_visual {
+        if let Some(visual_id) = run
+            .visual_refs
+            .iter()
+            .find(|reference| reference.kind == "visual")
+            .map(|reference| reference.id.clone())
+        {
+            let (_, event) = state
+                .visuals()
+                .show(visual_id.clone(), session_ref)
+                .await
+                .map_err(AppError::from)?;
+            publish_visual_event(app, state, event).await?;
+            let _ = app.emit(
+                crate::core_runtime::VISUAL_SHOW_CHANNEL,
+                serde_json::json!({
+                    "kind": "visual.show",
+                    "payload": { "visualId": visual_id }
+                }),
+            );
+        }
+    }
+    Ok(run)
+}
+
 /// Re-observe the target contract at workflow admission. A cached healthy bit
 /// is liveness evidence, not permission to reuse an older capability revision.
 /// Only container-backed product recipes need this lane; optimizer campaigns
 /// keep their own service/cookbook admission in Optimizers.
 pub(crate) async fn refresh_optimizer_workflow_containers(
     state: &CoreRuntime,
-    recipe_id: &str,
+    _recipe_id: &str,
 ) -> Result<(), AppError> {
-    let family = match recipe_id {
-        optimizers::BANKING77_EVAL_BASELINE_RECIPE => Some("banking77"),
-        optimizers::HEALTHBENCH_EVAL_SMOKE_RECIPE => Some("healthbench"),
-        _ => None,
-    };
-    let Some(family) = family else {
-        return Ok(());
-    };
     let rows = state
         .data()
         .list_containers()
         .await
         .map_err(AppError::from)?;
     for row in rows {
-        let hinted = row.task_family.as_deref().is_some_and(|value| {
-            let value = value.to_ascii_lowercase();
-            value == family || value.contains(family)
-        }) || row
-            .metadata
-            .to_string()
-            .to_ascii_lowercase()
-            .contains(family);
-        if !hinted {
-            continue;
-        }
         let Some(base_url) = row
             .base_url
             .as_deref()
@@ -1172,9 +1648,7 @@ pub(crate) async fn refresh_optimizer_workflow_containers(
 }
 
 fn optimizer_recipe_credentials(recipe_id: &str) -> &'static [&'static str] {
-    if recipe_id.starts_with("gepa.banking77.") {
-        &["OPENAI_API_KEY"]
-    } else if recipe_id == "sft.craftax.gpt-oss.smoke.v1" {
+    if recipe_id == "sft.craftax.gpt-oss.smoke.v1" {
         &["GROQ_API_KEY", "TINKER_API_KEY"]
     } else if recipe_id == "gelo.craftax.hosted.v1" {
         &["OPTIMIZERS_BETA_SERVICE_TOKEN"]
@@ -1183,8 +1657,84 @@ fn optimizer_recipe_credentials(recipe_id: &str) -> &'static [&'static str] {
         "sft.craftax.nemotron-nano.tinker.v1" | "sft.banking77.nemotron-lightning.tinker.v1"
     ) {
         &["SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN"]
+    } else if recipe_id.starts_with("gepa.") || recipe_id.starts_with("eval.") {
+        &["OPENAI_API_KEY"]
     } else {
         &[]
+    }
+}
+
+fn optimizer_recipe_credentials_from_catalog(recipe: &Value, recipe_id: &str) -> Vec<String> {
+    let declared = recipe
+        .get("credentialInputs")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        });
+    declared.unwrap_or_else(|| {
+        optimizer_recipe_credentials(recipe_id)
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect()
+    })
+}
+
+fn optimizer_recipe_approval_parameters(recipe: &Value, recipe_id: &str, limits: &Value) -> Value {
+    serde_json::json!({
+        "recipeId": recipe_id,
+        "algorithmId": recipe.get("algorithmId"),
+        "task": recipe.get("task"),
+        // Paid-compute policy is provider-scoped. Credential env-var names are
+        // implementation details and are not valid provider identities.
+        "model": {
+            "provider": recipe.get("provider"),
+            "id": recipe.get("model"),
+        },
+        "limits": limits,
+    })
+}
+
+#[cfg(test)]
+mod optimizer_recipe_credential_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_recipe_catalog_overrides_legacy_prefix_default() {
+        let recipe = serde_json::json!({
+            "id": "gepa.openrouter.smoke.v1",
+            "credentialInputs": ["OPENROUTER_API_KEY"]
+        });
+        assert_eq!(
+            optimizer_recipe_credentials_from_catalog(&recipe, "gepa.openrouter.smoke.v1"),
+            vec!["OPENROUTER_API_KEY"]
+        );
+    }
+
+    #[test]
+    fn paid_recipe_approval_carries_the_catalog_provider_identity() {
+        let recipe = serde_json::json!({
+            "algorithmId": "eval",
+            "task": "healthbench",
+            "provider": "openrouter",
+            "model": "meta-llama/llama-3.1-8b-instruct"
+        });
+        let parameters = optimizer_recipe_approval_parameters(
+            &recipe,
+            "eval.healthbench.live_annotated.v1",
+            &serde_json::json!({"maxCostUsd": 2.0}),
+        );
+        assert_eq!(
+            parameters.pointer("/model/provider"),
+            Some(&serde_json::json!("openrouter"))
+        );
+        assert_eq!(
+            parameters.pointer("/model/id"),
+            Some(&serde_json::json!("meta-llama/llama-3.1-8b-instruct"))
+        );
     }
 }
 
@@ -1210,6 +1760,151 @@ async fn optimizers_get(
     state
         .optimizers()
         .get(optimizer_run_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_view_v2(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+) -> Result<OptimizerRunViewV2, AppError> {
+    state
+        .optimizers()
+        .run_view_v2(optimizer_run_id)
+        .await
+        .map_err(AppError::from)
+}
+
+/// One coherent read for a visual's first paint: the durable projection, the
+/// run record the templates still read compatibility fields from, and the
+/// journal tail an evidence reader pages against.
+///
+/// `if_newer_than` makes it conditional. A caller holding projection revision
+/// *n* passes it and is told `unchanged` instead of being handed the same
+/// bytes again — which is what turns a background freshness check into one
+/// indexed column read rather than a full projection load and IPC round trip.
+/// The render receipt for one visual revision, if it has ever rendered.
+///
+/// Read on reopen so a visual can tell "the projection has moved on" (normal)
+/// from "the projection is now older than, or different from, what I already
+/// showed" (a regression that must be reported rather than rendered).
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_visual_render_receipt(
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+    visual_revision: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<Option<crate::optimizers::models::VisualRenderReceipt>, AppError> {
+    state
+        .optimizers()
+        .visual_render_receipt(visual_id, visual_revision.map(|value| value.0).unwrap_or(0))
+        .await
+        .map_err(AppError::from)
+}
+
+/// Read the parts of an evidence window the caller does not already hold.
+///
+/// `held` is the coverage returned by the previous call, sent back verbatim.
+/// The answer is the complement, so re-opening Replay after a restart transfers
+/// only what is genuinely missing rather than the whole journal again.
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_evidence_page(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    window: crate::optimizers::events::EvidenceRange,
+    held: Option<Vec<crate::optimizers::events::EvidenceRange>>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<crate::optimizers::events::EvidencePage, AppError> {
+    state
+        .optimizers()
+        .evidence_page(
+            optimizer_run_id,
+            window,
+            held.unwrap_or_default(),
+            limit.map(|value| value.0),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_view(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    if_newer_than: Option<contract::specta::OpaqueInteger<u64>>,
+) -> Result<crate::optimizers::kernel::OptimizerRunViewEnvelope, AppError> {
+    state
+        .optimizers()
+        .run_view_envelope(optimizer_run_id, if_newer_than.map(|value| value.0))
+        .await
+        .map_err(AppError::from)
+}
+
+/// The bounded run summary: what every live card, dialog, and visual mounts
+/// from. Conditional on `if_newer_than` like `optimizers_run_view`.
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_summary(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    if_newer_than: Option<contract::specta::OpaqueInteger<u64>>,
+) -> Result<crate::optimizers::kernel::OptimizerRunSummaryEnvelope, AppError> {
+    state
+        .optimizers()
+        .run_summary(optimizer_run_id, if_newer_than.map(|value| value.0))
+        .await
+        .map_err(AppError::from)
+}
+
+/// One keyset page of a durable run collection. Every page has an explicit,
+/// clamped limit; there is no "all rows" form.
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_collection(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    collection: crate::optimizers::kernel::RunCollection,
+    query: Option<crate::optimizers::kernel::RunCollectionQuery>,
+) -> Result<crate::optimizers::kernel::RunCollectionPage, AppError> {
+    state
+        .optimizers()
+        .run_collection(optimizer_run_id, collection, query.unwrap_or_default())
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_collection_item(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    collection: crate::optimizers::kernel::RunCollection,
+    item_id: String,
+) -> Result<Option<crate::optimizers::kernel::RunCollectionRow>, AppError> {
+    state
+        .optimizers()
+        .run_collection_item(optimizer_run_id, collection, item_id)
+        .await
+        .map_err(AppError::from)
+}
+
+/// The projection as it stood at `sequence`, folded backend-side from the
+/// nearest reducer checkpoint. The historical scrubber reads this instead of
+/// reducing the journal in the renderer.
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_projection_at(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    sequence: contract::specta::OpaqueInteger<u64>,
+) -> Result<crate::optimizers::kernel::HistoricalProjection, AppError> {
+    state
+        .optimizers()
+        .projection_at(optimizer_run_id, sequence.0)
         .await
         .map_err(AppError::from)
 }
@@ -1264,6 +1959,94 @@ async fn optimizers_events_after(
 
 #[tauri::command]
 #[specta::specta]
+async fn optimizers_artifacts_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    after_sequence: Option<contract::specta::OpaqueInteger<u64>>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<OptimizerArtifactPage, AppError> {
+    state
+        .optimizers()
+        .artifacts_list(
+            optimizer_run_id,
+            after_sequence.map(|value| value.0).unwrap_or(0),
+            limit.map(|value| value.0),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_artifact_read_range(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    artifact_id: String,
+    offset: contract::specta::OpaqueInteger<u64>,
+    length: contract::specta::OpaqueInteger<u64>,
+) -> Result<OptimizerArtifactRange, AppError> {
+    state
+        .optimizers()
+        .artifact_read_range(optimizer_run_id, artifact_id, offset.0, length.0)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_frames_latest(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    after_frame_sequence: Option<contract::specta::OpaqueInteger<u64>>,
+) -> Result<crate::optimizers::OptimizerFrameDelta, AppError> {
+    state
+        .optimizers()
+        .frames_latest(
+            optimizer_run_id,
+            after_frame_sequence.map(|value| value.0).unwrap_or(0),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_frames_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    seed: contract::specta::OpaqueInteger<i64>,
+    before_frame_sequence: Option<contract::specta::OpaqueInteger<u64>>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<Vec<crate::optimizers::OptimizerFrameRef>, AppError> {
+    state
+        .optimizers()
+        .frames_list(
+            optimizer_run_id,
+            seed.0,
+            before_frame_sequence.map(|value| value.0),
+            limit.map(|value| value.0),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_frame_content(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    seed: contract::specta::OpaqueInteger<i64>,
+    frame_sequence: contract::specta::OpaqueInteger<u64>,
+) -> Result<crate::optimizers::OptimizerFrameContent, AppError> {
+    state
+        .optimizers()
+        .frame_content(optimizer_run_id, seed.0, frame_sequence.0)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn optimizers_get_state(
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
@@ -1312,9 +2095,16 @@ async fn optimizers_cancel(
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
 ) -> Result<OptimizerRunRecord, AppError> {
+    // Provenance is attached at the boundary that knows it: this command is
+    // the user's own UI gesture.
+    let request = optimizers::kernel::CancellationRequest::new(
+        optimizers::kernel::CancellationCause::UserRequested,
+        "user:ui",
+        format!("run:{optimizer_run_id}"),
+    );
     let (run, event) = state
         .optimizers()
-        .cancel(optimizer_run_id)
+        .cancel(optimizer_run_id, request)
         .await
         .map_err(AppError::from)?;
     publish_optimizer_event(&app, &state, event).await?;
@@ -1515,6 +2305,73 @@ async fn optimizers_saved_lora_download(
 
 #[tauri::command]
 #[specta::specta]
+async fn optimizers_saved_lora_import(
+    state: State<'_, Arc<CoreRuntime>>,
+    path: String,
+) -> Result<SavedLoraCheckpoint, AppError> {
+    state
+        .optimizers()
+        .import_saved_lora_dir(path)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_checkpoint_infer(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    request: CheckpointInferRequest,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let checkpoint_id = request.checkpoint_id.clone();
+    let family = request.family.clone();
+    state
+        .optimizers()
+        .infer_saved_lora_with_delta(request, move |delta| {
+            let _ = app.emit(
+                crate::contract::events::EventChannel::OPTIMIZER_INFER,
+                serde_json::json!({
+                    "checkpointId": checkpoint_id,
+                    "family": family,
+                    "delta": delta,
+                    "done": false
+                }),
+            );
+        })
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_saved_lora_patch(
+    state: State<'_, Arc<CoreRuntime>>,
+    checkpoint_id: String,
+    patch: SavedLoraPatchRequest,
+) -> Result<SavedLoraCheckpoint, AppError> {
+    state
+        .optimizers()
+        .patch_saved_lora(checkpoint_id, patch)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_saved_lora_publish(
+    state: State<'_, Arc<CoreRuntime>>,
+    checkpoint_id: String,
+) -> Result<SavedLoraCheckpoint, AppError> {
+    state
+        .optimizers()
+        .publish_saved_lora(checkpoint_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn optimizers_training_reconcile(
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
@@ -1529,6 +2386,18 @@ async fn optimizers_training_reconcile(
 
 #[tauri::command]
 #[specta::specta]
+async fn optimizers_container_experiment_action(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    action: String,
+    checkpoint_id: Option<String>,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state.optimizers().container_experiment_action(optimizer_run_id, action, checkpoint_id)
+        .await.map(contract::specta::OpaqueJson).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn plugins_status(
     state: State<'_, Arc<CoreRuntime>>,
     plugin_id: Option<String>,
@@ -1536,6 +2405,7 @@ async fn plugins_status(
     // Validate rather than discard: returning the optimizers status for any id
     // asked about let the caller believe a plugin existed that does not.
     if let Some(plugin_id) = plugin_id.as_deref() {
+        if plugin_id == plugins::jesterky::ID { return Ok(plugins::jesterky::status()); }
         if plugin_id == plugins::types::COMPUTER_USE_PLUGIN_ID {
             let _ = state.computer_use().refresh_grants().await;
             return Ok(state.computer_use().status().await);
@@ -1547,6 +2417,13 @@ async fn plugins_status(
         }
     }
     Ok(state.plugins().status(&state).await)
+}
+
+/// Persist the optional analysis scope. This never launches paid work.
+#[tauri::command]
+#[specta::specta]
+async fn jesterky_analysis_settings(settings: Option<plugins::jesterky::AnalysisSettings>) -> Result<plugins::jesterky::AnalysisSettings, AppError> {
+    plugins::jesterky::analysis_settings(settings).map_err(AppError::from)
 }
 
 /// Human-triggered plugin lifecycle.
@@ -1595,6 +2472,7 @@ async fn plugins_list(state: State<'_, Arc<CoreRuntime>>) -> Result<Vec<PluginSt
     let _ = state.computer_use().refresh_grants().await;
     Ok(vec![
         state.plugins().status(&state).await,
+        plugins::jesterky::status(),
         state.computer_use().status().await,
     ])
 }
@@ -1770,6 +2648,10 @@ async fn plugins_set_release_channel(
     plugin_id: String,
     channel: String,
 ) -> Result<PluginStatus, AppError> {
+    if plugin_id == plugins::jesterky::ID {
+        plugins::PluginRegistry::for_plugin(&plugin_id).set_release_channel(&channel).map_err(AppError::from)?;
+        return Ok(plugins::jesterky::status());
+    }
     if plugin_id != plugins::OPTIMIZERS_PLUGIN_ID {
         return Err(AppError::from(anyhow::anyhow!(
             "unknown plugin_id `{plugin_id}`"
@@ -1811,7 +2693,7 @@ struct DiagnosticReportRequest {
     #[serde(default)]
     visual_id: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     visual_revision: Option<i64>,
     #[serde(default)]
     container_id: Option<String>,
@@ -2133,6 +3015,118 @@ async fn visual_stream_poll(
     }
 }
 
+/// `synth.visual.media.v1` — the host-mediated binary bridge.
+///
+/// The `local_cas` binding decodes a CAS object as JSON, which is the right
+/// thing for a chart spec and useless for a PNG. Rather than teach that binding
+/// about binary — and rather than send an entire timeline of base64 frames into
+/// a pane on every update — a visual asks for one digest at a time and the host
+/// answers only for media the bound run actually produced.
+pub const VISUAL_MEDIA_PROTOCOL: &str = "synth.visual.media.v1";
+
+/// Ceiling on one bridged media response.
+///
+/// A frame is a screen-sized image. Anything larger is a producer defect or a
+/// mis-typed digest, and returning it would put tens of megabytes of base64
+/// through the IPC boundary to render one tile.
+const VISUAL_MEDIA_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Media types a pane is allowed to be handed. An allowlist, not a denylist:
+/// the store also holds trace archives and accessibility trees, and none of
+/// them should ever reach a renderer through an image request.
+const VISUAL_MEDIA_ALLOWED_TYPES: &[&str] = &["application/json", "image/png", "video/mp4"];
+
+#[derive(Clone, Debug, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+struct VisualMediaReadRequest {
+    visual_id: String,
+    /// Workshop's own SHA-256, as it appears in `containerEvent.payload.media`.
+    cas_digest: String,
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visual_media_read(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: VisualMediaReadRequest,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let visual = state
+        .visuals()
+        .get(request.visual_id.clone())
+        .await
+        .map_err(AppError::from)?;
+    // The runs this visual *declares*, plus the run it was minted for. A pane
+    // does not get to name a run: it gets the ones its bindings already say it
+    // is showing.
+    let mut candidates = visuals::declared_optimizer_run_ids(&visual.bindings);
+    if let Some(run_id) = visual.run_id.clone() {
+        if !candidates.contains(&run_id) {
+            candidates.push(run_id);
+        }
+    }
+    if candidates.is_empty() {
+        return Err(AppError::from(anyhow::anyhow!(
+            "visual {} is bound to no optimizer run, so it can be granted no run media",
+            visual.id
+        )));
+    }
+    let optimizers = state.optimizers();
+    let mut granted = None;
+    for run_id in &candidates {
+        match optimizers
+            .granted_run_media(run_id, &request.cas_digest)
+            .await
+        {
+            Ok(Some(found)) => {
+                granted = Some(found);
+                break;
+            }
+            Ok(None) => {}
+            // A malformed digest is the same answer for every candidate run;
+            // reporting it once is clearer than repeating it per run.
+            Err(error) => return Err(AppError::from(error)),
+        }
+    }
+    let Some(granted) = granted else {
+        return Err(AppError::from(anyhow::anyhow!(
+            "media {} was not produced by any run this visual is bound to",
+            request.cas_digest
+        )));
+    };
+    if !VISUAL_MEDIA_ALLOWED_TYPES.contains(&granted.media_type.as_str()) {
+        return Err(AppError::from(anyhow::anyhow!(
+            "media type {} is not servable to a visual",
+            granted.media_type
+        )));
+    }
+    if granted.byte_size > VISUAL_MEDIA_MAX_BYTES {
+        return Err(AppError::from(anyhow::anyhow!(
+            "media {} is {} bytes, over the {VISUAL_MEDIA_MAX_BYTES}-byte bridge ceiling",
+            granted.cas_digest,
+            granted.byte_size
+        )));
+    }
+    // `get_bytes` re-verifies the stored bytes against the digest, so a
+    // corrupted object fails here rather than rendering as a broken tile.
+    let bytes = optimizers
+        .read_media_bytes(&granted)
+        .map_err(AppError::from)?;
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(contract::specta::OpaqueJson(serde_json::json!({
+        "protocol": VISUAL_MEDIA_PROTOCOL,
+        "casDigest": granted.cas_digest,
+        "mediaType": granted.media_type,
+        "byteSize": granted.byte_size,
+        "width": granted.width,
+        "height": granted.height,
+        "rolloutId": granted.rollout_id,
+        "step": granted.step,
+        "optimizerRunId": granted.optimizer_run_id,
+        "dataUrl": format!("data:{};base64,{encoded}", granted.media_type),
+    })))
+}
+
 async fn publish_visual_event(
     app: &tauri::AppHandle,
     core: &CoreRuntime,
@@ -2150,10 +3144,12 @@ fn visuals_templates_list(
     state: State<'_, Arc<CoreRuntime>>,
     genre: Option<String>,
 ) -> Result<Vec<TemplateMeta>, AppError> {
-    state
-        .visuals()
-        .list_templates(genre.as_deref())
-        .map_err(AppError::from)
+    domains::visuals::operations::ListVisualTemplates::execute(
+        state.visuals(),
+        domains::visuals::operations::ListVisualTemplatesRequest { genre },
+    )
+    .map(|result| result.templates)
+    .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -2188,6 +3184,52 @@ async fn visuals_get(
     visual_id: String,
 ) -> Result<VisualRecord, AppError> {
     state.visuals().get(visual_id).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_engine(app: tauri::AppHandle, state: State<'_, Arc<CoreRuntime>>, visual_id: String, request: contract::specta::OpaqueJson) -> Result<contract::specta::OpaqueJson, AppError> {
+    visuals::engine::attach_event_host(app.clone());
+    if request.0["operation"]=="capture.pixels" {
+        return visuals_ipc::capture_visual_session(&app,&visual_id,&request.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from);
+    }
+    state.visuals().engine().request(visual_id, request.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_presentation_get(state: State<'_, Arc<CoreRuntime>>, visual_id: String) -> Result<Option<contract::specta::OpaqueJson>, AppError> {
+    state.visuals().state_store().presentation(visual_id).await.map(|value| value.map(contract::specta::OpaqueJson)).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_presentation_put(state: State<'_, Arc<CoreRuntime>>, visual_id: String, presentation: contract::specta::OpaqueJson) -> Result<contract::specta::OpaqueJson, AppError> {
+    state.visuals().state_store().put_presentation(visual_id, presentation.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_snapshots_list(state: State<'_, Arc<CoreRuntime>>, visual_id: String) -> Result<Vec<contract::specta::OpaqueJson>, AppError> {
+    state.visuals().state_store().snapshots(visual_id).await.map(|values| values.into_iter().map(contract::specta::OpaqueJson).collect()).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_snapshot_put(state: State<'_, Arc<CoreRuntime>>, visual_id: String, snapshot: contract::specta::OpaqueJson) -> Result<contract::specta::OpaqueJson, AppError> {
+    state.visuals().state_store().put_snapshot(visual_id, snapshot.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_recordings_list(state: State<'_, Arc<CoreRuntime>>, visual_id: String) -> Result<Vec<contract::specta::OpaqueJson>, AppError> {
+    state.visuals().state_store().recordings(visual_id).await.map(|values| values.into_iter().map(contract::specta::OpaqueJson).collect()).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_recording_put(state: State<'_, Arc<CoreRuntime>>, visual_id: String, recording: contract::specta::OpaqueJson) -> Result<contract::specta::OpaqueJson, AppError> {
+    state.visuals().state_store().put_recording(visual_id, recording.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -2838,6 +3880,151 @@ async fn reports_experiments_list(
 
 #[tauri::command]
 #[specta::specta]
+async fn experiments_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    query: Option<String>,
+) -> Result<Vec<ExperimentGroup>, AppError> {
+    state
+        .data()
+        .experiments_list(query)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn experiments_get(
+    state: State<'_, Arc<CoreRuntime>>,
+    experiment_id: String,
+) -> Result<Option<ExperimentGroup>, AppError> {
+    state
+        .data()
+        .experiment_get(experiment_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn experiments_attach_evidence(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ExperimentEvidenceAttachRequest,
+) -> Result<ExperimentGroup, AppError> {
+    state
+        .data()
+        .experiment_attach_evidence(request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn experiments_create(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ExperimentCreateRequest,
+) -> Result<ExperimentGroup, AppError> {
+    state
+        .data()
+        .experiment_create(request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn experiments_create_child(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ExperimentChildCreateRequest,
+) -> Result<ExperimentGroup, AppError> {
+    state
+        .data()
+        .experiment_create_child(request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn experiments_relate(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ExperimentRelateRequest,
+) -> Result<ExperimentGroup, AppError> {
+    state
+        .data()
+        .experiment_relate(request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn experiments_activate(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+    experiment_id: String,
+) -> Result<ExperimentGroup, AppError> {
+    state
+        .data()
+        .experiment_activate(session_id, experiment_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn experiments_update(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ExperimentUpdateRequest,
+) -> Result<ExperimentGroup, AppError> {
+    state
+        .data()
+        .experiment_update(request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn experiments_finalize(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ExperimentFinalizeRequest,
+) -> Result<ExperimentGroup, AppError> {
+    state
+        .data()
+        .experiment_finalize(request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn research_log_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    query: Option<String>,
+    experiment_id: Option<String>,
+) -> Result<Vec<ResearchJournalEntry>, AppError> {
+    state
+        .data()
+        .research_log_list(query, experiment_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn research_log_append(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ResearchJournalAppendRequest,
+) -> Result<ResearchJournalEntry, AppError> {
+    state
+        .data()
+        .research_log_append(request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn reports_experiment_upsert(
     state: State<'_, Arc<CoreRuntime>>,
     report_id: String,
@@ -2897,7 +4084,7 @@ async fn reports_share(
     _state: State<'_, Arc<CoreRuntime>>,
     _receipt_digest: String,
 ) -> Result<ReportUpload, AppError> {
-    Err(AppError::message(
+    Err(AppError::untyped(
         "Direct Report sharing is disabled; create and approve a revision-bound visibility request",
     ))
 }
@@ -2912,7 +4099,7 @@ async fn reports_audience_set(
     let backend = synth_config::resolve().map_err(AppError::from)?;
     let api_key = backend
         .api_key
-        .ok_or_else(|| AppError::message("sharing a Report requires a signed-in Synth account"))?;
+        .ok_or_else(|| AppError::untyped("sharing a Report requires a signed-in Synth account"))?;
     state
         .reports()
         .set_audience(publication_id, request, backend.backend_url, api_key)
@@ -2929,7 +4116,7 @@ async fn reports_audience_revoke(
 ) -> Result<ReportAudienceState, AppError> {
     let backend = synth_config::resolve().map_err(AppError::from)?;
     let api_key = backend.api_key.ok_or_else(|| {
-        AppError::message("revoking Report access requires a signed-in Synth account")
+        AppError::untyped("revoking Report access requires a signed-in Synth account")
     })?;
     state
         .reports()
@@ -2945,7 +4132,7 @@ async fn reports_promote(
     _publication_id: String,
     _slug: String,
 ) -> Result<reports::ReportPromotion, AppError> {
-    Err(AppError::message(
+    Err(AppError::untyped(
         "Direct Report promotion is disabled; create and approve a revision-bound public visibility request",
     ))
 }
@@ -3000,24 +4187,52 @@ async fn reports_comment_create(
 
 #[tauri::command]
 #[specta::specta]
-fn synth_config_get() -> Result<BackendSettings, AppError> {
-    synth_config::get().map_err(AppError::from)
+fn synth_config_get(state: State<'_, Arc<CoreRuntime>>) -> Result<BackendSettings, AppError> {
+    // This command is the renderer's explicit configuration refresh boundary.
+    // Re-read approved locator files here so adding a value to the instance
+    // env file does not require restarting Workshop.
+    let _ = state.secrets().load_configured_env_sources();
+    let mut settings = synth_config::get().map_err(AppError::from)?;
+    if let Ok(source) = state.secrets().configured_source("openrouter") {
+        if source.loaded {
+            settings.openrouter_api_key_configured = true;
+            settings.openrouter_api_key_fingerprint = source.fingerprint;
+            settings.openrouter_api_key_source = Some(source.source_kind);
+        }
+    }
+    Ok(settings)
+}
+
+/// The startup-safe catalog path: configuration plus a persisted public
+/// OpenRouter metadata snapshot only. It deliberately never waits for network.
+#[tauri::command]
+#[specta::specta]
+fn model_catalog_get() -> Result<model_catalog::ModelCatalog, AppError> {
+    model_catalog::catalog().map_err(AppError::from)
+}
+
+/// Explicit background follow-up used after the picker has rendered. OpenRouter
+/// metadata is public; no credential is sent to or exposed by this command.
+#[tauri::command]
+#[specta::specta]
+async fn model_catalog_refresh() -> Result<model_catalog::ModelCatalog, AppError> {
+    model_catalog::refresh().await.map_err(AppError::from)
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, specta::Type)]
-#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+#[serde(rename_all = "camelCase")]
 struct ModelPerformanceMetric {
     model_id: String,
     provider: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     sample_count: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     input_tokens: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     cached_input_tokens: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     output_tokens: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     total_tokens: u64,
     output_tps_p50: f64,
     output_tps_p95: f64,
@@ -3028,7 +4243,7 @@ struct ModelPerformanceMetric {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, specta::Type)]
-#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+#[serde(rename_all = "camelCase")]
 struct ModelPerformanceSnapshot {
     window_minutes: u16,
     generated_at: String,
@@ -3043,7 +4258,7 @@ async fn model_performance_get(
     let backend = synth_config::resolve().map_err(AppError::from)?;
     let api_key = backend
         .api_key
-        .ok_or_else(|| AppError::message("Sign in to read Synth Cloud model telemetry"))?;
+        .ok_or_else(|| AppError::untyped("Sign in to read Synth Cloud model telemetry"))?;
     let window_minutes = window_minutes.unwrap_or(60).clamp(1, 1_440);
     let url = format!(
         "{}/api/v1/usage/model-performance?window_minutes={window_minutes}",
@@ -3067,17 +4282,17 @@ async fn model_performance_get(
                 || detail.contains("timed out")
                 || detail.contains("error sending request")
             {
-                AppError::message(
+                AppError::untyped(
                     "Synth Cloud telemetry could not be reached. Check Account → Synth backend URL.",
                 )
             } else {
-                AppError::message(format!("Synth Cloud telemetry request failed: {error}"))
+                AppError::untyped(format!("Synth Cloud telemetry request failed: {error}"))
             }
         })?;
     let status = response.status();
     if !status.is_success() {
         let detail = response.text().await.unwrap_or_default();
-        return Err(AppError::message(format!(
+        return Err(AppError::untyped(format!(
             "Synth Cloud telemetry returned {status}: {}",
             detail.chars().take(240).collect::<String>()
         )));
@@ -3086,7 +4301,7 @@ async fn model_performance_get(
         .json::<ModelPerformanceSnapshot>()
         .await
         .map_err(|error| {
-            AppError::message(format!("Invalid Synth Cloud telemetry response: {error}"))
+            AppError::untyped(format!("Invalid Synth Cloud telemetry response: {error}"))
         })
 }
 
@@ -3115,6 +4330,7 @@ async fn account_begin_sign_in(
     app: tauri::AppHandle,
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
 ) -> Result<device_auth::SignInBegin, AppError> {
+    let _operation = manager.operation.lock().await;
     let origin = device_auth::workshop_origin();
     let begin = manager.begin(&origin).await.map_err(AppError::from)?;
     use tauri_plugin_opener::OpenerExt;
@@ -3212,9 +4428,10 @@ async fn account_poll_sign_in(
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
 ) -> Result<device_auth::SignInPoll, AppError> {
+    let _operation = manager.operation.lock().await;
     let origin = device_auth::workshop_origin();
     let result = manager
-        .poll(&origin, |key| synth_config::store_api_key(key))
+        .poll(&origin, |key, independent| synth_config::store_paired_api_key(key, &origin, independent))
         .await
         .map_err(AppError::from)?;
     if matches!(result, device_auth::SignInPoll::Active) {
@@ -3237,9 +4454,10 @@ async fn account_poll_sign_in(
 
 #[tauri::command]
 #[specta::specta]
-fn account_cancel_sign_in(
+async fn account_cancel_sign_in(
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
 ) -> Result<(), AppError> {
+    let _operation = manager.operation.lock().await;
     manager.cancel();
     Ok(())
 }
@@ -3315,6 +4533,12 @@ async fn account_open_billing(
         )
         .await
         .map_err(AppError::from)?;
+    let current = synth_config::resolve().map_err(AppError::from)?;
+    if current.backend_url != resolved.backend_url || current.api_key != resolved.api_key {
+        return Err(AppError::from(anyhow::anyhow!(
+            "Account changed while opening billing. Try again for the current account."
+        )));
+    }
     let url = account_cloud::validate_billing_url(
         &url,
         &resolved.backend_url,
@@ -3331,9 +4555,21 @@ async fn account_open_billing(
 #[tauri::command]
 #[specta::specta]
 async fn account_sign_out(
+    manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
     core: State<'_, Arc<CoreRuntime>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
 ) -> Result<BackendSettings, AppError> {
+    let _operation = manager.operation.lock().await;
+    let resolved = synth_config::resolve().map_err(AppError::from)?;
+    if let Some(key) = resolved.api_key.as_deref() {
+        if let Some(issuer) = synth_config::paired_key_issuer(key).map_err(AppError::from)? {
+            manager.revoke(&issuer, key).await.map_err(AppError::from)?;
+        }
+    }
+    if synth_config::resolve().map_err(AppError::from)?.api_key != resolved.api_key {
+        return Err(AppError::from(anyhow::anyhow!("account changed during sign-out; retry")));
+    }
+    manager.cancel();
     synth_config::remove_api_key().map_err(AppError::from)?;
     // Cloud facts belong to the signed-out session; local history and the
     // device ledger stay untouched. Optional analytics drop; the install id
@@ -3341,7 +4577,11 @@ async fn account_sign_out(
     cloud.clear_cache();
     if let Some(telemetry) = crate::telemetry::live() {
         if let Err(error) = telemetry.on_sign_out() {
-            eprintln!("synth-desktop: sign-out telemetry wipe failed: {error}");
+            crate::platform::logging::report(
+                "lib",
+                "eprintln",
+                format!("synth-desktop: sign-out telemetry wipe failed: {error}"),
+            );
         }
     }
     core.reload_intern_config().await.map_err(AppError::from)?;
@@ -3412,6 +4652,174 @@ async fn laguna_reload(state: State<'_, Arc<LagunaManager>>) -> Result<LagunaSta
 
 #[tauri::command]
 #[specta::specta]
+async fn laguna_register_policy(
+    core: State<'_, Arc<CoreRuntime>>,
+    state: State<'_, Arc<LagunaManager>>,
+    checkpoint_id: String,
+    model_id: String,
+) -> Result<laguna::LagunaPolicy, AppError> {
+    let checkpoint = core
+        .optimizers()
+        .get_local_lora(checkpoint_id.clone())
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::from(anyhow::anyhow!("adapter is not in the catalog")))?;
+    if !crate::optimizers::local_lora_is_laguna_compatible(&checkpoint) {
+        return Err(AppError::from(anyhow::anyhow!(
+            "this adapter is not Laguna-compatible; Qwen Optimizers LoRAs stay on the catalog Chat Completions / Responses buttons"
+        )));
+    }
+    let path = std::path::PathBuf::from(&checkpoint.storage.key);
+    if !path.is_dir() {
+        return Err(AppError::from(anyhow::anyhow!(
+            "this adapter's bytes are missing at {}",
+            path.display()
+        )));
+    }
+    state
+        .register_policy(&model_id, &path, checkpoint.storage.sha256.as_deref())
+        .await
+        .map_err(AppError::from)
+}
+
+/// What the Settings surface renders for the published finetune.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LagunaAdapterStatus {
+    pub model_id: String,
+    pub title: String,
+    pub digest: String,
+    pub installed: bool,
+    #[specta(type = specta_typescript::Number)]
+    pub download_bytes: u64,
+    pub base_revision: String,
+    /// False when the installed weights are a different revision. The adapter
+    /// is shown either way; only the action is refused.
+    pub base_matches: bool,
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn laguna_adapter_status() -> Result<Vec<LagunaAdapterStatus>, AppError> {
+    Ok(laguna_adapters::ADAPTER_CATALOG
+        .iter()
+        .map(|spec| LagunaAdapterStatus {
+            model_id: spec.model_id.into(),
+            title: spec.title.into(),
+            digest: spec.digest.into(),
+            installed: laguna_adapters::is_installed(spec),
+            download_bytes: spec.download_bytes,
+            base_revision: spec.base_revision.into(),
+            base_matches: spec.base_revision == laguna::installed_base_revision(),
+        })
+        .collect())
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn laguna_adapter_download(
+    app: tauri::AppHandle,
+    core: State<'_, Arc<CoreRuntime>>,
+    state: State<'_, Arc<LagunaManager>>,
+    model_id: String,
+) -> Result<LagunaAdapterStatus, AppError> {
+    let spec = laguna_adapters::adapter_spec(&model_id).map_err(AppError::from)?;
+    // Through the backend, with the account's own credential. No adapter
+    // object is public and Workshop never reaches object storage directly.
+    let client =
+        crate::optimizers::cloud::CloudOptimizerClient::from_config().map_err(AppError::from)?;
+    let emit = |phase: &str, detail: &str, done: u64, total: u64| {
+        let _ = app.emit(
+            crate::contract::events::EventChannel::LAGUNA_DOWNLOAD,
+            serde_json::json!({
+                "phase": phase,
+                "detail": detail,
+                "modelId": spec.model_id,
+                "downloadedBytes": done,
+                "totalBytes": total,
+            }),
+        );
+    };
+
+    emit(
+        "preparing",
+        "Reading the adapter manifest…",
+        0,
+        spec.download_bytes,
+    );
+    let manifest_json = client
+        .adapter_manifest(spec.digest)
+        .await
+        .map_err(AppError::from)?;
+    let manifest =
+        laguna_adapters::parse_manifest(&manifest_json.to_string()).map_err(AppError::from)?;
+    laguna_adapters::check_pinned(&spec, &manifest).map_err(AppError::from)?;
+    laguna_adapters::check_base_revision(&manifest, laguna::installed_base_revision())
+        .map_err(AppError::from)?;
+
+    let total: u64 = manifest.files.iter().map(|file| file.bytes).sum();
+    let mut fetched: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut done = 0u64;
+    for file in &manifest.files {
+        emit(
+            "downloading",
+            &format!("Downloading {}…", file.path),
+            done,
+            total,
+        );
+        let bytes = client
+            .adapter_file(spec.digest, &file.path)
+            .await
+            .map_err(AppError::from)?;
+        done += bytes.len() as u64;
+        fetched.push((file.path.clone(), bytes));
+    }
+    emit("verifying", "Verifying the adapter…", done, total);
+    let staged =
+        laguna_adapters::stage_verified(&spec, &manifest, &fetched).map_err(AppError::from)?;
+
+    // Install through the catalog's own import so a downloaded adapter and a
+    // hand-imported one are the same row, digested by the same code.
+    let imported = core
+        .optimizers()
+        .import_saved_lora_dir(staged.display().to_string())
+        .await
+        .map_err(AppError::from)?;
+    let _ = std::fs::remove_dir_all(&staged);
+    let install = laguna_adapters::install_dir(&manifest.digest);
+    laguna_adapters::write_manifest_beside(&install, &manifest).map_err(AppError::from)?;
+    if imported.checkpoint_id != manifest.digest {
+        return Err(AppError::from(anyhow::anyhow!(
+            "installed adapter is {} but the manifest published {}",
+            imported.checkpoint_id,
+            manifest.digest
+        )));
+    }
+    state
+        .register_policy(spec.model_id, &install, Some(manifest.digest.as_str()))
+        .await
+        .map_err(AppError::from)?;
+    Ok(LagunaAdapterStatus {
+        model_id: spec.model_id.into(),
+        title: spec.title.into(),
+        digest: spec.digest.into(),
+        installed: true,
+        download_bytes: spec.download_bytes,
+        base_revision: spec.base_revision.into(),
+        base_matches: true,
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn laguna_policies(
+    state: State<'_, Arc<LagunaManager>>,
+) -> Result<Vec<laguna::LagunaPolicy>, AppError> {
+    state.policies().await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 fn laguna_models_list(
     state: State<'_, Arc<LagunaManager>>,
 ) -> Result<Vec<LagunaModelHit>, AppError> {
@@ -3469,7 +4877,7 @@ async fn workspace_scope_choose_and_attach(
     proposed_access: WorkspaceAccessMode,
 ) -> Result<Option<ConversationWorkspaceScope>, AppError> {
     if proposed_access == WorkspaceAccessMode::ReadOnly {
-        return Err("Read-only attachments are not yet supported by the macOS Codex sandbox; no access was granted".into());
+        return Err(AppError::untyped("Read-only attachments are not yet supported by the macOS Codex sandbox; no access was granted"));
     }
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
@@ -3634,9 +5042,9 @@ async fn prepare_codex_start(
             let requested =
                 workspace_scope::canonical_directory(&request.workspace).map_err(AppError::from)?;
             if requested.to_string_lossy() != scope.workspace {
-                return Err(
-                    "requested workspace does not match the conversation's persisted scope".into(),
-                );
+                return Err(AppError::untyped(
+                    "requested workspace does not match the conversation's persisted scope",
+                ));
             }
             scope
         }
@@ -3671,18 +5079,27 @@ async fn prepare_codex_provider(
     match codex::provider_class(request.provider_name.as_deref()) {
         codex::ProviderClass::LocalLaguna => {
             let root = runtime::workshop_root().map_err(AppError::from)?;
-            let model = laguna.configured_model_id().map_err(AppError::from)?;
+            // The daemon routes policies by the Responses `model` field. The
+            // renderer carries the selected catalog id in `adapter` so it can
+            // keep the base serving identity separate from policy metadata;
+            // promote that id here instead of silently forcing every turn
+            // back onto the configured base model. The catalog lookup below
+            // remains the authority and rejects unknown policy ids.
+            let model = request
+                .adapter
+                .clone()
+                .unwrap_or(laguna.configured_model_id().map_err(AppError::from)?);
             codex::apply_local_laguna_provider(&mut request, &model);
             request.base_url = laguna
                 .ensure_for_turn(&root)
                 .await
                 .map_err(AppError::from)?
-                .ok_or_else(|| AppError::message("Laguna Responses server is unavailable"))?;
+                .ok_or_else(|| AppError::untyped("Laguna Responses server is unavailable"))?;
             // The Laguna key is this process's loopback service token, not a
             // user credential: the child talks to the local daemon directly
             // and no broker lease is involved.
             request.api_key = laguna.api_key().ok_or_else(|| {
-                AppError::message("Laguna daemon credential is unavailable after ensure")
+                AppError::untyped("Laguna daemon credential is unavailable after ensure")
             })?;
             let catalog = laguna
                 .codex_model_catalog(&request.base_url, &request.api_key)
@@ -3697,7 +5114,8 @@ async fn prepare_codex_provider(
             // the same way the Synth key did; it goes into native custody too.
             // Its origin is also native-owned: renderer input must never decide
             // where that credential is forwarded.
-            codex::apply_openrouter_provider(&mut request, key.as_deref())?;
+            codex::apply_openrouter_provider(&mut request, key.as_deref())
+                .map_err(AppError::untyped)?;
         }
         codex::ProviderClass::SynthCloud => {
             let resolved = synth_config::resolve().map_err(AppError::from)?;
@@ -3706,12 +5124,14 @@ async fn prepare_codex_provider(
             // keep reading `resolved.backend_url` directly. A
             // profile with no configured gateway fails closed here rather
             // than silently reusing the backend URL.
-            let gateway_url = synth_config::require_responses_gateway_url(&resolved)?;
+            let gateway_url = synth_config::require_responses_gateway_url(&resolved)
+                .map_err(AppError::untyped)?;
             codex::apply_synth_cloud_provider(
                 &mut request,
                 &gateway_url,
                 resolved.api_key.as_deref(),
-            )?;
+            )
+            .map_err(AppError::untyped)?;
         }
         codex::ProviderClass::OpenaiCodexOauth => {
             let credential = oauth
@@ -3719,14 +5139,14 @@ async fn prepare_codex_provider(
                 .await
                 .map_err(AppError::from)?
                 .ok_or_else(|| {
-                    AppError::message("Reconnect ChatGPT subscription in Settings → Models")
+                    AppError::untyped("Reconnect ChatGPT subscription in Settings → Models")
                 })?;
             const ALLOWED: &[&str] = &["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"];
             if !ALLOWED
                 .iter()
                 .any(|model| request.model.eq_ignore_ascii_case(model))
             {
-                return Err(AppError::message(
+                return Err(AppError::untyped(
                     "This model is not available through the ChatGPT subscription target",
                 ));
             }
@@ -3817,6 +5237,22 @@ async fn codex_turn_send(
         })?;
     }
     state.send_turn(app, request).await
+}
+
+/// Side-effect-free hosted inference lifecycle read. Credential custody stays
+/// in the native broker; only Shoal's public status projection crosses IPC.
+#[tauri::command]
+#[specta::specta]
+async fn synth_cloud_inference_status(
+    broker: State<'_, Arc<credential_broker::CredentialBroker>>,
+    session_id: String,
+    model: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    broker
+        .hosted_inference_status(&session_id, &model)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -3941,6 +5377,7 @@ async fn codex_approval_resolve(
             message: "This task's local agent is no longer running. Start a new turn to reconnect."
                 .into(),
             detail: format!("{error:?}"),
+            failure: None,
         }),
         Err(error) => Err(AppError::from(error)),
     }
@@ -3979,15 +5416,29 @@ async fn codex_sessions_list(
 #[specta::specta]
 fn codex_default_workspace() -> Result<String, AppError> {
     let configured = synth_config::allowed_workspace_roots().map_err(|error| {
-        AppError::message(format!("Cannot read workspace access settings: {error}"))
+        AppError::untyped(format!("Cannot read workspace access settings: {error}"))
     })?;
     let permissions = synth_config::desktop_permission_settings().map_err(|error| {
-        AppError::message(format!("Cannot read desktop permission settings: {error}"))
+        AppError::untyped(format!("Cannot read desktop permission settings: {error}"))
     })?;
+    // Finder and LaunchServices do not reliably preserve launcher environment.
+    // A named bundle's descriptor is the durable authority for its isolated
+    // instance root, so recover the staged workspace from it when the explicit
+    // launch variable is absent.
+    let launcher_workspace = std::env::var_os("SYNTH_DESKTOP_WORKSPACE")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            crate::instance::identity()
+                .ok()
+                .and_then(|identity| identity.descriptor)
+                .and_then(|descriptor| descriptor.instance_root)
+                .map(|root| root.join("workspace"))
+                .filter(|path| path.is_dir())
+        });
     let path = synth_config::select_default_workspace_path(
         &configured,
         &permissions.sandbox_mode,
-        std::env::var_os("SYNTH_DESKTOP_WORKSPACE").map(std::path::PathBuf::from),
+        launcher_workspace,
         dirs::home_dir(),
         crate::instance::state_root().join("workspaces/default"),
     );
@@ -3997,7 +5448,9 @@ fn codex_default_workspace() -> Result<String, AppError> {
         .canonicalize()
         .map_err(|error| AppError::io(format!("Default workspace is unavailable: {error}")))?;
     if !path.is_dir() {
-        return Err("Default workspace must be a directory".into());
+        return Err(AppError::invalid_argument(
+            "Default workspace must be a directory",
+        ));
     }
     Ok(path.to_string_lossy().into_owned())
 }
@@ -4061,6 +5514,83 @@ fn terminal_resize(
 
 #[tauri::command]
 #[specta::specta]
+async fn terminal_ghostty_mount(
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<TerminalManager>>,
+    request: NativeTerminalMountRequest,
+) -> Result<bool, AppError> {
+    #[cfg(target_os = "macos")]
+    {
+        let manager = state.inner().clone();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        window
+            .with_webview(move |platform| {
+                let result = manager.mount_native(
+                    request.terminal_id.as_str(),
+                    platform.inner().cast(),
+                    &request.frame,
+                    &request.font_family,
+                    request.font_size,
+                );
+                let _ = sender.send(result);
+            })
+            .map_err(|error| AppError::untyped(format!("Cannot mount libghostty: {error}")))?;
+        return receiver
+            .await
+            .map_err(|_| AppError::untyped("libghostty mount was cancelled"))?
+            .map_err(AppError::from);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, state, request);
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+fn terminal_ghostty_set_frame(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+    frame: NativeTerminalFrame,
+) -> Result<(), AppError> {
+    state
+        .set_native_frame(&terminal_id, &frame)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn terminal_ghostty_set_visible(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+    visible: bool,
+) -> Result<(), AppError> {
+    state
+        .set_native_visible(&terminal_id, visible)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn terminal_ghostty_focus(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+) -> Result<(), AppError> {
+    state.focus_native(&terminal_id).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn terminal_ghostty_unmount(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+) -> Result<(), AppError> {
+    state.unmount_native(&terminal_id).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 fn terminal_close(
     state: State<'_, Arc<TerminalManager>>,
     terminal_id: String,
@@ -4072,16 +5602,124 @@ pub fn run() {
     if crate::visuals::mermaid::hidden_mode_requested() {
         std::process::exit(crate::visuals::mermaid::run_hidden_mode());
     }
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(index) = args.iter().position(|arg| arg == "--workshop-data-root") {
+        let requested = args.get(index + 1).map(std::path::PathBuf::from);
+        let actual = crate::instance::data_root();
+        if !requested.as_ref().and_then(|path| path.canonicalize().ok())
+            .zip(actual.canonicalize().ok()).is_some_and(|(requested, actual)| requested == actual) {
+            eprintln!("Workshop runtime instance identity differs from the requested data root");
+            std::process::exit(crate::instance::EXIT_IDENTITY_REFUSED);
+        }
+    }
+    crate::instance::install_boot_identity_and_lock();
+    let mut context = tauri::generate_context!();
+    if std::env::args().any(|arg| arg == "--workshop-runtime") {
+        for window in &mut context.config_mut().app.windows {
+            window.create = false;
+        }
+    }
     let specta = contract::specta::builder();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        fn offer_restart(webview: &tauri::Webview<tauri::Wry>, shown: &AtomicBool) {
+            if shown.swap(true, Ordering::SeqCst) { return; }
+            let app = webview.app_handle().clone();
+            // Attach the prompt to the surviving native window. An unparented
+            // macOS alert can leave the failed main window looking blank.
+            webview.app_handle().dialog()
+                .message("Workshop could not restore this window. Restart Workshop to recover. Restarting interrupts active work; unsaved edits may have been lost.")
+                .parent(&webview.window())
+                .title("Workshop view stopped")
+                .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom("Restart Workshop".into(), "Keep window open".into()))
+                .show(move |restart| { if restart { app.restart(); } });
+        }
+        let crashes = std::sync::Mutex::new(Vec::<std::time::Instant>::new());
+        let offered = Arc::new(AtomicBool::new(false));
+        builder.on_web_content_process_terminate(move |webview| {
+            if webview.label() != "main" { return; }
+            let now = std::time::Instant::now();
+            let attempt = {
+                let mut recent = crashes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                recent.retain(|at| now.duration_since(*at) < std::time::Duration::from_secs(60));
+                let attempt = recent.len();
+                if attempt < 3 { recent.push(now); }
+                attempt
+            };
+            if attempt >= 2 { offer_restart(webview, &offered); return; }
+            let webview = webview.clone();
+            let offered = offered.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                let url = if tauri::is_dev() {
+                    webview.app_handle().config().build.dev_url.clone()
+                        .unwrap_or_else(|| "tauri://localhost".parse().expect("valid app URL"))
+                } else { "tauri://localhost".parse().expect("valid app URL") };
+                if webview.navigate(url).is_err() { offer_restart(&webview, &offered); return; }
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let usable = Arc::new(AtomicBool::new(false));
+                let answered = usable.clone();
+                let _ = webview.eval_with_callback("Boolean(document.getElementById('root')?.children.length)", move |value| {
+                    if value == "true" { answered.store(true, Ordering::SeqCst); }
+                });
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                if !usable.load(Ordering::SeqCst) {
+                    // A terminated WKWebView can accept navigation while remaining blank.
+                    // Replace only the desktop view; the runtime and its stored work survive.
+                    let app = webview.app_handle().clone();
+                    if let Some(window) = app.get_webview_window("main") {
+                        if window.destroy().is_err() { offer_restart(&webview, &offered); return; }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    if let Err(error) = crate::platform::desktop_runtime::control(&app, "attach").await {
+                        crate::platform::logging::report("lib", "renderer_recovery", error.to_string());
+                        return;
+                    }
+                    if let Some(replacement) = app.get_webview_window("main") {
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        let restored = Arc::new(AtomicBool::new(false));
+                        let answered = restored.clone();
+                        let _ = replacement.eval_with_callback("Boolean(document.getElementById('root')?.children.length)", move |value| {
+                            if value == "true" { answered.store(true, Ordering::SeqCst); }
+                        });
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        if !restored.load(Ordering::SeqCst) { offer_restart(replacement.as_ref(), &offered); }
+                    }
+                }
+            });
+        })
+    };
+    builder
         // This must be the first plugin registered. All app state, IPC, and
         // SQLite ownership belongs to the original process.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            for raw in args.iter().filter(|arg| arg.starts_with("synth-workshop://")) {
+                match crate::instance::parse_workshop_deep_link(raw) {
+                    Ok(route) => {
+                        if let Err(error) = app.emit("desktop:deep-link", route) {
+                            crate::platform::logging::report(
+                                "lib",
+                                "deep_link",
+                                format!("could not dispatch Workshop deep link: {error}"),
+                            );
+                        }
+                    }
+                    Err(error) => crate::platform::logging::report(
+                        "lib",
+                        "deep_link",
+                        format!("refused Workshop deep link: {error}"),
+                    ),
+                }
             }
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = crate::platform::desktop_runtime::control(&handle, "attach").await {
+                    crate::platform::logging::report("lib", "desktop_attach", error.to_string());
+                }
+            });
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -4090,11 +5728,11 @@ pub fn run() {
         // behind through the transparent native titlebar. Wait until CSS and the
         // document have loaded so the custom titlebar is present on first reveal.
         .on_page_load(|webview, payload| {
+            if webview.label() == "main" { crate::platform::desktop_runtime::page_ready(matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)); }
             if webview.label() == "main"
                 && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
             {
                 let window = webview.window();
-                let _ = window.maximize();
                 let _ = window.show();
                 // Diagnostics start here, not in setup: the index is a
                 // background convenience and must never sit in front of the
@@ -4108,13 +5746,52 @@ pub fn run() {
         })
         .setup(|app| {
             instance::mark_manifest_running();
+            // A renderer/bootstrap failure must never leave a running process
+            // as an invisible window. Page-load still owns the normal reveal.
+            let watchdog_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                if let Some(window) = watchdog_app.get_webview_window("main") {
+                    if !window.is_visible().unwrap_or(false) {
+                        if let Err(error) = window.eval(
+                            "document.body.innerHTML='<main style=\"font:15px system-ui;padding:32px;color:#1f2937\"><h1>Workshop could not finish loading</h1><p>The renderer did not become ready within 15 seconds. Restart this instance; your runs and artifacts remain saved locally.</p></main>'"
+                        ) {
+                            crate::platform::logging::report(
+                                "lib",
+                                "page_load_watchdog",
+                                format!("could not install page-load failure view: {error}"),
+                            );
+                        }
+                        if let Err(error) = window.show() {
+                            crate::platform::logging::report(
+                                "lib",
+                                "page_load_watchdog",
+                                format!("could not show main window after page-load timeout: {error}"),
+                            );
+                        }
+                        if let Err(error) = watchdog_app.emit(
+                            "desktop:page-load-timeout",
+                            serde_json::json!({
+                                "code": "renderer_page_load_timeout",
+                                "message": "The renderer did not finish loading within 15 seconds."
+                            }),
+                        ) {
+                            crate::platform::logging::report(
+                                "lib",
+                                "page_load_watchdog",
+                                format!("could not emit page-load timeout: {error}"),
+                            );
+                        }
+                    }
+                }
+            });
             // Builds before the credential broker exported provider keys into
             // Codex, which recorded them in its shell snapshots. Scrub what
             // those builds left behind in Desktop's own Codex homes.
             match credential_broker::redact_managed_shell_snapshots(&codex::codex_root()) {
                 Ok(0) => {}
                 Ok(count) => {
-                    eprintln!("redacted provider secrets from {count} Codex shell snapshot(s)")
+                    crate::platform::logging::report("lib", "eprintln", format!("redacted provider secrets from {count} Codex shell snapshot(s)"))
                 }
                 Err(error) => {
                     return Err(std::io::Error::other(format!(
@@ -4136,6 +5813,7 @@ pub fn run() {
             );
             let laguna = Arc::new(LagunaManager::new());
             let optimizer_manager = core.optimizers().manager().clone();
+            let human_annotations = human_annotations::from_core(&core);
             let receipts = Arc::new(credential_broker::ReceiptStore::new());
             let broker = Arc::new(
                 credential_broker::CredentialBroker::start(receipts.clone()).map_err(|error| {
@@ -4143,7 +5821,7 @@ pub fn run() {
                 })?,
             );
             if let Err(error) = core.secrets().start_proxy() {
-                eprintln!("synth-desktop: provider proxy failed to start: {error:#}");
+                crate::platform::logging::report("lib", "eprintln", format!("synth-desktop: provider proxy failed to start: {error:#}"));
             }
             crate::secrets::install_live(core.secrets().clone());
             let telemetry = Arc::new(crate::telemetry::ProductTelemetry::new(
@@ -4151,6 +5829,15 @@ pub fn run() {
             ));
             crate::telemetry::install_live(telemetry.clone());
             crate::telemetry::mark_once("app_first_launch", serde_json::json!({}));
+            // Background sync of consented, sync-eligible telemetry. The
+            // flusher re-checks consent on every pass; without it nothing
+            // leaves the device.
+            let telemetry_flusher = Arc::new(crate::telemetry::flush::Flusher::new(
+                telemetry.store().clone(),
+                Arc::new(crate::telemetry::sink_http::HttpSink::new()),
+            ));
+            app.manage(telemetry_flusher.clone());
+            tauri::async_runtime::spawn(telemetry_flusher.run());
             let approvals = Arc::new(crate::session::approval::ApprovalBroker::new(
                 crate::session::SessionPersistence::from_core(Some(core.clone())),
             ));
@@ -4160,9 +5847,17 @@ pub fn run() {
                 broker.clone(),
                 approvals.clone(),
             ));
+            let acp = Arc::new(session::acp::Manager::new(core.clone(), app.handle().clone(), approvals.clone()));
+            acp.reconcile().map_err(|error| std::io::Error::other(format!("reconcile ACP agents: {error}")))?;
             let supervisor = Arc::new(services::ServiceSupervisor::new());
+            let browser = Arc::new(browser::operations::Manager::default());
+            supervisor.register(browser.clone());
+            app.manage(browser);
+            supervisor.register(acp.clone());
+            app.manage(acp);
             supervisor.register(laguna.clone());
             supervisor.register(optimizer_manager.clone());
+            supervisor.register(Arc::new(optimizers::mlx_runtime::MlxRuntimeService::new()));
             supervisor.register(whisper.clone());
             supervisor.register(core.diagnostics_service().sidecar().clone());
             app.manage(core.clone());
@@ -4180,6 +5875,7 @@ pub fn run() {
             app.manage(telemetry);
             app.manage(laguna.clone());
             app.manage(optimizer_manager.clone());
+            app.manage(human_annotations);
             app.manage(supervisor);
 
             // All committed CoreRuntime events reach Tauri through this single
@@ -4190,6 +5886,8 @@ pub fn run() {
             // when its window unloads, so they cannot fence a turn whose owner
             // died — this sweep can, with or without a window open.
             core.spawn_lease_watchdog();
+            annotations_ipc::spawn_reconciler(core.clone());
+            optimizers::annotation_stage::install_desktop_paid_approver(app.handle().clone());
 
             let mut status_updates = laguna.subscribe();
             let status_handle = app.handle().clone();
@@ -4216,20 +5914,13 @@ pub fn run() {
             let bootstrap_approvals = approvals.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = bootstrap_core.bootstrap(&bootstrap_handle).await {
-                    eprintln!("CoreRuntime bootstrap failed: {error}");
+                    crate::platform::logging::report("lib", "eprintln", format!("CoreRuntime bootstrap failed: {error}"));
                 }
                 if let Err(error) = bootstrap_approvals.expire_restored(&bootstrap_handle).await {
-                    eprintln!("approval restore failed: {error}");
+                    crate::platform::logging::report("lib", "eprintln", format!("approval restore failed: {error}"));
                 }
                 if let Err(error) = bootstrap_core.resume_intern_providers().await {
-                    eprintln!("Intern restart reconciliation failed: {error}");
-                }
-                if let Err(error) = bootstrap_core
-                    .optimizers()
-                    .reconcile_stale_local_runs()
-                    .await
-                {
-                    eprintln!("optimizer restart reconciliation failed: {error}");
+                    crate::platform::logging::report("lib", "eprintln", format!("Intern restart reconciliation failed: {error}"));
                 }
                 // Fallback arm: if the main window never finished loading, the
                 // renderer's own failure still has somewhere to be recorded.
@@ -4242,12 +5933,12 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 match visuals_ipc::spawn(ipc_core, ipc_app, ipc_root).await {
                     Ok(connection) => {
-                        eprintln!(
+                        crate::platform::logging::report_info("visuals_ipc", "runtime_ready", format!(
                             "Visuals IPC listening at {} (token written to {})",
                             connection.url, connection.path
-                        );
+                        ));
                     }
-                    Err(error) => eprintln!("Visuals IPC failed to start: {error}"),
+                    Err(error) => crate::platform::logging::report("lib", "eprintln", format!("Visuals IPC failed to start: {error}")),
                 }
             });
 
@@ -4271,14 +5962,14 @@ pub fn run() {
                     .await
                     {
                         Ok(connection) => {
-                            eprintln!(
+                            crate::platform::logging::report_info("eval_driver", "runtime_ready", format!(
                                 "Eval driver ({}) listening at {} (descriptor {})",
                                 eval_driver::PROTOCOL_VERSION,
                                 connection.url,
                                 connection.path
-                            );
+                            ));
                         }
-                        Err(error) => eprintln!("Eval driver failed to start: {error}"),
+                        Err(error) => crate::platform::logging::report("lib", "eprintln", format!("Eval driver failed to start: {error}")),
                     }
                 });
             }
@@ -4286,9 +5977,15 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(specta.invoke_handler())
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building Synth Desktop")
         .run(|app, event| {
+            // A detached desktop is not a stopped runtime. Explicit exit(0)
+            // (Quit / runtime stop) still drains all managed services below.
+            if let RunEvent::ExitRequested { code: None, api, .. } = &event {
+                api.prevent_exit();
+                return;
+            }
             // macOS may advance from Command-Q to the terminal `Exit` event
             // without giving every plugin observer an `ExitRequested` callback.
             // Draining is idempotent, so cover both phases: a clean request

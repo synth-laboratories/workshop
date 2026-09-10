@@ -38,6 +38,13 @@ export type SemanticEvalHost = {
 	openVisualRecord: (visual: VisualInstanceRecord | VisualRecord) => void;
 	openChat: (chatId: string) => void;
 	setView: (view: MainView) => void;
+	/**
+	 * Refresh sessions created by the native eval driver before selecting one.
+	 * Native Codex sessions are otherwise loaded only at renderer boot, so a
+	 * background QA session created after boot cannot be foregrounded even
+	 * though the driver previously returned `selected: true`.
+	 */
+	refreshNativeSessions?: () => Promise<Session[]>;
 };
 
 const ACTIONS = [
@@ -133,7 +140,10 @@ export function createSemanticEvalApi(host: SemanticEvalHost): SemanticEvalApi {
 				if (typeof sessionId !== "string") {
 					throw new Error("select_session requires sessionId");
 				}
-				const session = host.sessions.find((item) => item.id === sessionId);
+				const sessions = host.refreshNativeSessions
+					? await host.refreshNativeSessions()
+					: host.sessions;
+				const session = sessions.find((item) => item.id === sessionId);
 				if (!session) throw new Error("session not found");
 				if (sessionIsLocalChat(session)) host.openChat(sessionId);
 				else if (sessionIsSync(session)) host.setView({ kind: "sync", sessionId });

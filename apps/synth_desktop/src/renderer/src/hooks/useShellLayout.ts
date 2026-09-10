@@ -1,3 +1,4 @@
+import { runtimeStorage } from "../preferences/runtimeStorage";
 import { useCallback, useEffect, useState } from "react";
 import {
 	getPreferences,
@@ -6,6 +7,10 @@ import {
 	saveLayout,
 	type DesktopPreferences
 } from "../preferences";
+import { restoreFocusIfLost } from "../runtime/restoreFocus";
+import { fitPaneWidth } from "../runtime/layoutGeometry";
+
+export type SidePanelTab = "visual" | "outputs" | "inference" | "trace" | "diagnostics" | "errors" | "review";
 
 export type ShellLayoutState = {
 	sidebarVisible: boolean;
@@ -13,15 +18,17 @@ export type ShellLayoutState = {
 	terminalOpen: boolean;
 	viewportWidth: number;
 	inventoryContainerWidth: number;
+	sidePanelWidth: number;
 	sidePanelOpen: boolean;
-	sidePanelTab: "outputs" | "inference" | "trace";
+	sidePanelTab: SidePanelTab;
 	containerPaneExpanded: boolean;
 	setSidebarVisible: (visible: boolean) => void;
 	setSidebarWidth: (width: number) => void;
 	setTerminalOpen: (open: boolean | ((current: boolean) => boolean)) => void;
 	setInventoryContainerWidth: (width: number) => void;
+	setSidePanelWidth: (width: number) => void;
 	setSidePanelOpen: (open: boolean | ((current: boolean) => boolean)) => void;
-	setSidePanelTab: (tab: "outputs" | "inference" | "trace") => void;
+	setSidePanelTab: (tab: SidePanelTab) => void;
 	setContainerPaneExpanded: (expanded: boolean) => void;
 	persistLayoutSnapshot: (patch: Partial<DesktopPreferences["layout"]["last"]>) => void;
 };
@@ -34,17 +41,36 @@ export function useShellLayout(
 	setPreferences: (next: DesktopPreferences) => void
 ): ShellLayoutState {
 	const [sidePanelOpen, setSidePanelOpen] = useState(() => {
-		if (window.localStorage.getItem("synth.inferenceRailDefaultV2") !== "1") {
-			window.localStorage.setItem("synth.inferenceRailDefaultV2", "1");
-			window.localStorage.setItem("synth.inferenceRailOpen", "1");
+		if (runtimeStorage.getItem("synth.inferenceRailDefaultV2") !== "1") {
+			runtimeStorage.setItem("synth.inferenceRailDefaultV2", "1");
+			runtimeStorage.setItem("synth.inferenceRailOpen", "1");
 			return true;
 		}
-		return window.localStorage.getItem("synth.inferenceRailOpen") !== "0";
+		return runtimeStorage.getItem("synth.inferenceRailOpen") !== "0";
 	});
-	const [sidePanelTab, setSidePanelTab] = useState<"outputs" | "inference" | "trace">("inference");
+	const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>("inference");
+    useEffect(() => {
+        const refresh = () => {
+            setSidePanelOpen(runtimeStorage.getItem("synth.inferenceRailOpen") !== "0");
+            const width = Number(runtimeStorage.getItem("synth.workbenchSidePanelWidth"));
+            if (width > 0) setSidePanelWidthState(width);
+            const layout = loadPreferences().layout.last;
+            setSidebarVisible(layout.sidebarVisible);
+            setSidebarWidth(layout.sidebarWidth);
+            setTerminalOpen(layout.bottomPanelVisible);
+            setInventoryContainerWidth(layout.outputPaneWidth);
+        };
+        window.addEventListener("workshop:state-changed", refresh);
+        return () => window.removeEventListener("workshop:state-changed", refresh);
+    }, []);
 	const [inventoryContainerWidth, setInventoryContainerWidth] = useState(
 		() => loadPreferences().layout.last.outputPaneWidth
 	);
+	const [sidePanelWidth, setSidePanelWidthState] = useState(() => {
+		const raw = runtimeStorage.getItem("synth.workbenchSidePanelWidth");
+		const stored = raw === null ? Number.NaN : Number(raw);
+		return Number.isFinite(stored) ? stored : 420;
+	});
 	const [terminalOpen, setTerminalOpen] = useState(
 		() => loadPreferences().layout.last.bottomPanelVisible
 	);
@@ -56,11 +82,54 @@ export function useShellLayout(
 		() => loadPreferences().layout.last.sidebarWidth
 	);
 	const [containerPaneExpanded, setContainerPaneExpanded] = useState(false);
+	const fitInventoryWidth = useCallback((width: number) => fitPaneWidth({
+		requested: width,
+		viewportWidth,
+		sidebarVisible,
+		sidebarWidth,
+		minPrimary: 260,
+		minPane: 280,
+		maxPane: 2400
+	}), [sidebarVisible, sidebarWidth, viewportWidth]);
+	const fitSidePanelWidth = useCallback((width: number) => fitPaneWidth({
+		requested: width,
+		viewportWidth,
+		sidebarVisible,
+		sidebarWidth,
+		minPrimary: 380,
+		minPane: 320,
+		maxPane: 720,
+		maxShare: 0.46
+	}), [sidebarVisible, sidebarWidth, viewportWidth]);
+	const setSidePanelWidth = useCallback((width: number) => {
+		const next = fitSidePanelWidth(width);
+		setSidePanelWidthState(next);
+		runtimeStorage.setItem("synth.workbenchSidePanelWidth", String(next));
+	}, [fitSidePanelWidth]);
 
 	useEffect(() => {
 		const onResize = () => setViewportWidth(window.innerWidth);
 		window.addEventListener("resize", onResize);
 		return () => window.removeEventListener("resize", onResize);
+	}, []);
+
+	useEffect(() => {
+		setInventoryContainerWidth((current) => fitInventoryWidth(current));
+		setSidePanelWidthState((current) => fitSidePanelWidth(current));
+	}, [fitInventoryWidth, fitSidePanelWidth]);
+
+	useEffect(() => {
+		const root = document.documentElement;
+		const media = window.matchMedia("(max-width: 860px)");
+		const syncCompactWorkbench = () => {
+			root.classList.toggle("compact-workbench", media.matches);
+		};
+		syncCompactWorkbench();
+		media.addEventListener("change", syncCompactWorkbench);
+		return () => {
+			media.removeEventListener("change", syncCompactWorkbench);
+			root.classList.remove("compact-workbench");
+		};
 	}, []);
 
 	const persistLayoutSnapshot = useCallback(
@@ -76,14 +145,19 @@ export function useShellLayout(
 				next.bottomPanelVisible === current.bottomPanelVisible &&
 				next.bottomPanelHeight === current.bottomPanelHeight &&
 				next.selectedConversationId === current.selectedConversationId &&
-				next.selectedOutputTab === current.selectedOutputTab;
+				next.selectedOutputTab === current.selectedOutputTab &&
+				next.optimizers.selectedRunId === current.optimizers.selectedRunId;
 			if ("sidebarVisible" in patch) setSidebarVisible(next.sidebarVisible);
 			if ("sidebarWidth" in patch) setSidebarWidth(next.sidebarWidth);
 			if ("outputPaneWidth" in patch) setInventoryContainerWidth(next.outputPaneWidth);
-			if ("bottomPanelVisible" in patch) setTerminalOpen(next.bottomPanelVisible);
+			if ("bottomPanelVisible" in patch) {
+				const hiding = terminalOpen && !next.bottomPanelVisible;
+				setTerminalOpen(next.bottomPanelVisible);
+				if (hiding) restoreFocusIfLost('[data-testid="toggle-terminal"]');
+			}
 			if (!unchanged) setPreferences(saveLayout(next));
 		},
-		[setPreferences]
+		[setPreferences, terminalOpen]
 	);
 
 	return {
@@ -92,6 +166,7 @@ export function useShellLayout(
 		terminalOpen,
 		viewportWidth,
 		inventoryContainerWidth,
+		sidePanelWidth,
 		sidePanelOpen,
 		sidePanelTab,
 		containerPaneExpanded,
@@ -99,6 +174,7 @@ export function useShellLayout(
 		setSidebarWidth,
 		setTerminalOpen,
 		setInventoryContainerWidth,
+		setSidePanelWidth,
 		setSidePanelOpen,
 		setSidePanelTab,
 		setContainerPaneExpanded,

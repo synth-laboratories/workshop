@@ -1,5 +1,44 @@
 # v0.7 test report
 
+## v0.7.4 release rows (2026-08-22) — authoritative for the shipped build
+
+Frozen Workshop commit `937a316fcb85e8371faf2bd6f57aceadc4cc1873`, tree `8df5a3e58046fd7fc689580de5000a0ec813e0d4`,
+clean worktree. Containers `e1df8c6ac5629cb11d5bc01bbebc7ffcee0cacbf`. MLX runtime `5d6db14330babcff170d2afbb8535de2138385a9`.
+Machine: macOS (Darwin 25.4.0), Apple silicon (arm64).
+
+| Repo | SHA | Command (exact) | Passed | Failed | Skipped/ignored | Notes |
+|---|---|---|---|---|---|---|
+| workshop | 937a316f | `cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml` | 1305 | 0 | 8 ignored | exit 0 |
+| workshop | 937a316f | `npm run typecheck` | clean | 0 | — | `tsc --noEmit`, exit 0 |
+| workshop | 937a316f | `npm run test:playwright --workspace @synth/synth-desktop` | 251 | 0 | 2 skipped | exit 0; 253 total |
+| workshop | 937a316f | `node --test apps/synth_desktop/tests/run_progress_{provider_access,adapters,gepa_verdict}.test.mjs` | 36 | 0 | 0 | covers the two cherry-picked run-card fixes |
+| workshop | 937a316f | `npm run build --workspace @synth/synth-desktop` (with `SYNTH_MLX_RL_PROJECT_ROOT` set) | — | 0 | — | produced the released bundle; exit 0 |
+| containers | e1df8c6 | `.venv/bin/python -m pytest tests -q` | 489 | 0 | 10 skipped | exit 0; 81.62s |
+
+Artifact verification on the same bytes: ZIP and DMG both extracted/mounted, `codesign --verify --deep --strict`
+passed, CDHash `a81e3ad2045f1050a05e166b99c33a5fac075974` identical across both round trips, both reported
+`CFBundleShortVersionString` `0.7.4`, and the embedded MLX wheelhouse manifest reported source revision
+`5d6db143…` with lock SHA-256 `7f14b704…`.
+
+### Fixed during this release pass
+
+`feat: select exact training workload in Workshop` (`dbfff064`) shipped a fail-closed launch gate without
+updating its specs, so two `training-workspace.spec.ts` cases were failing on the candidate. They asserted a
+launch with no workload selected, which the new contract correctly refuses. Commit `937a316f` binds those
+specs to the new contract and adds a case that covers the fail-closed path itself. No product change was
+required and none was made.
+
+### Not run for v0.7.4
+
+Lengthy workload training E2E (ALFWorld, Craftax, HealthBench/hosted CISPO, Harvey/OpenRouter, full Banking77
+GEPA and SFT → CISPO replays) and the packaged Computer Use / lifecycle matrix were deferred by release-owner
+direction. `desktop-ui-gates.sh` (Bombadil) was not run for this patch; its Chromiumoxide watchdog failures at
+v0.7.3 were harness-side and no product property violation was reported then. None of these count as passes.
+
+---
+
+## v0.7.0-era rows (historical)
+
 Rows written by the Workshop stack integrator at the end of the v0.7 merge train (2026-08-20). Every row is a command that ran on a named SHA with counts; a compile-only pass, a skipped suite, or a count without a command is not a row.
 
 ## Row format

@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "synth.acceptance.visual-performance.v1",
+  "acceptance": "V5",
+  "status": "passed",
+  "generatedAt": "2026-08-31T15:16:12.657Z",
+  "workload": {
+    "lanes": 10,
+    "envelopes": 100000,
+    "policyDeltas": 10000,
+    "frameRefs": 1000,
+    "timestampSpanMinutes": 60
+  },
+  "measurements": {
+    "baselineHeapBytes": 15540740,
+    "finalHeapBytes": 153206264,
+    "heapDeltaBytes": 137665524,
+    "longTaskCount": 146,
+    "maxLongTaskMs": 596,
+    "totalLongTaskMs": 29710,
+    "scrubMs": 1.1000000005587935,
+    "domElements": 861,
+    "traceButtons": 3,
+    "laneButtons": 10,
+    "selectedLaneDurableEnvelopes": 10000
+  },
+  "thresholds": {
+    "maxHeapDeltaBytes": 268435456,
+    "maxLongTaskMs": 1250,
+    "maxScrubMs": 750,
+    "maxTraceButtons": 100,
+    "expectedLaneButtons": 10
+  },
+  "notes": [
+    "Measured through Chromium CDP after forced GC while the real live.craftax.v1 pane retained the evidence.",
+    "PerformanceObserver longtask entries cover sustained SSE ingest, projection, React commit, and scrub.",
+    "Token deltas and frame references remain durable evidence but do not each create a DOM control."
+  ]
+}

@@ -1,0 +1,27 @@
+id = "eval.deepswe.annotated.v1"
+algorithm = "eval"
+container = "harbor-deepswe"
+provider = "openai"
+model = "codex_agentic"
+locality = "container"
+train_seeds = [0]
+
+[bounds]
+# Workshop product cap is 2.45; deterministic post_rollout is $0.
+max_cost_usd = 2.00
+max_total_rollouts = 1
+
+[annotation]
+annotators = [
+  "deepswe.command_facts",
+  "deepswe.file_reads",
+  "deepswe.patch_facts",
+  "deepswe.test_outcomes",
+  "deepswe.verifier_status",
+  "deepswe.episode_integrity",
+  "deepswe.milestone_progress",
+]
+label = "post_rollout"
+
+[annotation.throughput]
+deterministic = 4

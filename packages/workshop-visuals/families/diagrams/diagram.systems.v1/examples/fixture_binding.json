@@ -1,0 +1,4 @@
+{
+  "bindings": [],
+  "content": "{\"version\":1,\"title\":\"Shared visual session\",\"canvas\":{\"width\":800,\"height\":420},\"nodes\":[{\"id\":\"human\",\"x\":30,\"y\":120,\"width\":180,\"height\":60,\"label\":\"Human\"},{\"id\":\"engine\",\"x\":310,\"y\":120,\"width\":180,\"height\":60,\"label\":\"Visual engine\"},{\"id\":\"ai\",\"x\":590,\"y\":120,\"width\":180,\"height\":60,\"label\":\"AI\"}],\"edges\":[{\"from\":\"human\",\"to\":\"engine\",\"label\":\"interaction\"},{\"from\":\"ai\",\"to\":\"engine\",\"label\":\"MCP\"}]}"
+}

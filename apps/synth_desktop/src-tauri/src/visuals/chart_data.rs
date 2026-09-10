@@ -27,8 +27,9 @@ pub const MAX_GROUPS: usize = 5_000;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DataSource {
-    /// A slot name on this visual's canonical bindings envelope.
-    pub slot: String,
+    /// Canonical bind-point name. `slot` is the one-release alias.
+    #[serde(alias = "slot")]
+    pub input: String,
     /// Dotted path into the resolved document; `steps`, `visual.items`,
     /// `rollouts.0.actions`. Omitted means the document itself.
     #[serde(default)]
@@ -256,8 +257,8 @@ pub fn table(document: &Value, source: &DataSource) -> Result<Vec<Row>> {
     let selected = match source.path.as_deref() {
         Some(path) => pluck(document, path).with_context(|| {
             format!(
-                "slot {} has no value at path {path}; the document's top-level keys are {}",
-                source.slot,
+                "input {} has no value at path {path}; the document's top-level keys are {}",
+                source.input,
                 top_level_keys(document)
             )
         })?,
@@ -265,8 +266,8 @@ pub fn table(document: &Value, source: &DataSource) -> Result<Vec<Row>> {
     };
     let mut rows = rows_from(selected).with_context(|| {
         format!(
-            "slot {}{} must resolve to an array of objects",
-            source.slot,
+            "input {}{} must resolve to an array of objects",
+            source.input,
             source
                 .path
                 .as_deref()
@@ -275,14 +276,14 @@ pub fn table(document: &Value, source: &DataSource) -> Result<Vec<Row>> {
         )
     })?;
     if rows.len() > MAX_ROWS {
-        bail!("slot {} resolved {} rows, above the {MAX_ROWS} ceiling; add a filter or limit transform", source.slot, rows.len());
+        bail!("input {} resolved {} rows, above the {MAX_ROWS} ceiling; add a filter or limit transform", source.input, rows.len());
     }
     for op in &source.transform {
         rows = apply(rows, op)?;
         if rows.len() > MAX_ROWS {
             bail!(
-                "a transform on slot {} produced {} rows, above the {MAX_ROWS} ceiling",
-                source.slot,
+                "a transform on input {} produced {} rows, above the {MAX_ROWS} ceiling",
+                source.input,
                 rows.len()
             );
         }
@@ -864,7 +865,7 @@ pub fn required_slots(spec: &ChartSpec) -> BTreeMap<String, Option<String>> {
     let mut out = BTreeMap::new();
     for panel in &spec.panels {
         if let Some(source) = panel_source(panel) {
-            out.entry(source.slot.clone())
+            out.entry(source.input.clone())
                 .or_insert_with(|| source.projection.clone());
         }
     }
@@ -892,15 +893,15 @@ pub fn resolve(spec: &ChartSpec, documents: &BTreeMap<String, Value>) -> Result<
         let Some(source) = panel_source(panel).cloned() else {
             continue;
         };
-        let document = documents.get(&source.slot).ok_or_else(|| {
+        let document = documents.get(&source.input).ok_or_else(|| {
             anyhow::anyhow!(
-                "panel reads slot {} but the visual has no binding on that slot",
-                source.slot
+                "panel reads input {} but the visual has no binding on that input",
+                source.input
             )
         })?;
         let rows = table(document, &source)?;
         derive_panel(panel, &rows)
-            .with_context(|| format!("deriving a panel from slot {}", source.slot))?;
+            .with_context(|| format!("deriving a panel from input {}", source.input))?;
     }
     Ok(resolved)
 }

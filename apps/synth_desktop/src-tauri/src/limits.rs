@@ -26,12 +26,20 @@ pub const VISUALS_IPC_HOP_TIMEOUT: Duration = Duration::from_secs(3);
 /// Longer visuals IPC hop (rollout / dataset pulls).
 pub const VISUALS_IPC_ROLL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Annotation IPC hops: an estimate or a campaign submit is bounded work (the container
+/// enqueues and returns 202); execution is polled, never awaited on the hop.
+pub const ANNOTATION_IPC_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// End-to-end live policy rollout budget. Containers may make several
 /// sequential provider calls (each with its own bounded timeout) while the
 /// subscribed visual continues to receive partial trace and frame events.
 /// This must not reuse the short dataset/engine hop timeout or a successful
 /// paid rollout will be reported to the MCP caller as a transport failure.
-pub const CONTAINER_POLICY_ROLLOUT_TIMEOUT: Duration = Duration::from_secs(900);
+// NanoHorizon may retry a transient provider limit up to 17 times with a
+// declared bounded backoff. Keep the host request alive through the run
+// capability's one-hour authority window; call and spend ceilings still fail
+// closed independently.
+pub const CONTAINER_POLICY_ROLLOUT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// Account snapshot HTTP budget.
 pub const ACCOUNT_CLOUD_TIMEOUT: Duration = Duration::from_secs(12);

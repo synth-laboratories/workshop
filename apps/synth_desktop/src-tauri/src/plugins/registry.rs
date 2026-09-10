@@ -83,6 +83,7 @@ impl PluginRegistry {
     pub fn catalog_entry(plugin_id: &str, version: Option<&str>) -> Result<CatalogEntry> {
         match plugin_id {
             OPTIMIZERS_PLUGIN_ID => Self::optimizers_catalog_entry(version),
+            super::jesterky::ID => super::jesterky::catalog(version, OFFICIAL_RELEASE_CHANNEL),
             other => bail!("no catalog is registered for plugin `{other}`"),
         }
     }
@@ -116,6 +117,7 @@ impl PluginRegistry {
 
     pub fn selected_catalog_entry(&self, version: Option<&str>) -> Result<CatalogEntry> {
         let selected = self.release_channel();
+        if self.plugin_id == super::jesterky::ID { return super::jesterky::catalog(version, &selected); }
         let version = version.unwrap_or_else(|| match selected.as_str() {
             DEV_RELEASE_CHANNEL => DEV_SIDECAR_VERSION,
             _ => OFFICIAL_SIDECAR_VERSION,
@@ -273,10 +275,21 @@ mod tests {
     }
 
     #[test]
+    fn laguna_is_not_a_catalog_plugin() {
+        let error = PluginRegistry::catalog_entry("laguna", None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("no catalog is registered for plugin `laguna`"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn the_optimizers_catalog_still_carries_its_own_payload() {
         let entry = PluginRegistry::catalog_entry(OPTIMIZERS_PLUGIN_ID, None).unwrap();
         assert_eq!(entry.plugin_id, OPTIMIZERS_PLUGIN_ID);
-        let CatalogPayload::Optimizers { algorithms, .. } = entry.payload;
+        let CatalogPayload::Optimizers { algorithms, .. } = entry.payload else { panic!("expected optimizer payload") };
         assert!(!algorithms.is_empty());
     }
 }

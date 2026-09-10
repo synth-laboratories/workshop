@@ -1,9 +1,6 @@
 /**
- * Boundary channel + command name constants (Wave 2 interim).
- * Keep in sync with `src-tauri/src/contract/{events,commands}.rs`.
- * Specta seed bindings: `src/renderer/src/generated/protocol.ts` (grow via
- * `contract::specta::collect_commands!`); hand `COMMANDS` remains until cutover.
- * Drift: `scripts/check-desktop-contract-drift.sh` (via conform-desktop.sh).
+ * Boundary event channel constants.
+ * Command names live in `src/renderer/src/generated/protocol.ts` (`commands.*`).
  */
 
 export const EVENT_CHANNELS = {
@@ -22,7 +19,8 @@ export const EVENT_CHANNELS = {
 	TRAINING_MODELS_DOWNLOAD: "training-models:download",
 	WHISPER_RUNTIME: "whisper:runtime",
 	WHISPER_DOWNLOAD: "whisper:download",
-	OPTIMIZER_STATUS: "optimizer:status"
+	OPTIMIZER_STATUS: "optimizer:status",
+	OPTIMIZER_INFER: "optimizer:infer"
 } as const;
 
 export type EventChannelName = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -89,6 +87,10 @@ export const COMMANDS = {
 	WORKSPACE_SCOPE_DENY_REQUEST: "workspace_scope_deny_request",
 	LAGUNA_GET_STATUS: "laguna_get_status",
 	LAGUNA_RELOAD: "laguna_reload",
+	LAGUNA_REGISTER_POLICY: "laguna_register_policy",
+	LAGUNA_POLICIES: "laguna_policies",
+	LAGUNA_ADAPTER_STATUS: "laguna_adapter_status",
+	LAGUNA_ADAPTER_DOWNLOAD: "laguna_adapter_download",
 	LAGUNA_MODELS_LIST: "laguna_models_list",
 	LAGUNA_MODEL_DOWNLOAD: "laguna_model_download",
 	LAGUNA_MODEL_UNLOAD: "laguna_model_unload",
@@ -103,6 +105,8 @@ export const COMMANDS = {
 	TRAINING_ARTIFACTS_LIST: "training_artifacts_list",
 	TRAINING_ARTIFACTS_GET: "training_artifacts_get",
 	TRAINING_ARTIFACTS_LAUNCH_INFERENCE: "training_artifacts_launch_inference",
+	TRAINING_ARTIFACTS_EXPORT: "training_artifacts_export",
+	TRAINING_ARTIFACTS_DELETE: "training_artifacts_delete",
 	WHISPER_RUNTIME_STATUS: "whisper_runtime_status",
 	WHISPER_RUNTIME_WARM: "whisper_runtime_warm",
 	WHISPER_MODELS_LIST: "whisper_models_list",
@@ -121,6 +125,8 @@ export const COMMANDS = {
 	DATA_CONTAINERS_GET: "data_containers_get",
 	DATA_CONTAINERS_REGISTER: "data_containers_register",
 	DATA_CONTAINERS_PROBE: "data_containers_probe",
+	DATA_CONTAINERS_RECONCILE: "data_containers_reconcile",
+	DATA_CONTAINERS_RESTART: "data_containers_restart",
 	DATA_TRACES_LIST: "data_traces_list",
 	DATA_TRACES_GET: "data_traces_get",
 	DATA_TRACES_INGEST: "data_traces_ingest",
@@ -218,8 +224,13 @@ export const COMMANDS = {
 	OPTIMIZERS_RUN_OUTPUTS: "optimizers_run_outputs",
 	OPTIMIZERS_TRAINING_MODELS: "optimizers_training_models",
 	OPTIMIZERS_SAVED_LORA_ARCHIVE: "optimizers_saved_lora_archive",
-	OPTIMIZERS_SAVED_LORA_DOWNLOAD: "optimizers_saved_lora_download",
-	OPTIMIZERS_TRAINING_RECONCILE: "optimizers_training_reconcile",
+		OPTIMIZERS_SAVED_LORA_DOWNLOAD: "optimizers_saved_lora_download",
+		OPTIMIZERS_SAVED_LORA_IMPORT: "optimizers_saved_lora_import",
+		OPTIMIZERS_CHECKPOINT_INFER: "optimizers_checkpoint_infer",
+		OPTIMIZERS_SAVED_LORA_PATCH: "optimizers_saved_lora_patch",
+		OPTIMIZERS_SAVED_LORA_PUBLISH: "optimizers_saved_lora_publish",
+		OPTIMIZERS_TRAINING_RECONCILE: "optimizers_training_reconcile",
+		OPTIMIZERS_CONTAINER_EXPERIMENT_ACTION: "optimizers_container_experiment_action",
 	PLUGINS_STATUS: "plugins_status",
 	PLUGINS_LIST: "plugins_list",
 	COMPUTER_USE_STATUS: "computer_use_status",

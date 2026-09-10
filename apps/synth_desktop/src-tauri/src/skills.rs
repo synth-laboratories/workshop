@@ -23,6 +23,8 @@ struct BundledSkill {
 }
 
 const BUNDLED_SKILLS: &[BundledSkill] = &[
+    BundledSkill { id:"use-synth-traces", content:include_str!("../../skills/use-synth-traces/SKILL.md") },
+    BundledSkill { id:"use-synth-jesterky", content:include_str!("../../skills/use-synth-jesterky/SKILL.md") },
     BundledSkill {
         id: "use-synth-containers",
         content: include_str!("../../skills/use-synth-containers/SKILL.md"),
@@ -67,6 +69,26 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         id: "author-synth-diagrams",
         content: include_str!("../../skills/author-synth-diagrams/SKILL.md"),
     },
+    BundledSkill {
+        id: "trace-v5-annotate",
+        content: include_str!("../../skills/trace-v5-annotate/SKILL.md"),
+    },
+    BundledSkill {
+        id: "trace-v5-verify",
+        content: include_str!("../../skills/trace-v5-verify/SKILL.md"),
+    },
+    BundledSkill {
+        id: "craftax-trace-analysis",
+        content: include_str!("../../skills/craftax-trace-analysis/SKILL.md"),
+    },
+    BundledSkill {
+        id: "annotation-review",
+        content: include_str!("../../skills/annotation-review/SKILL.md"),
+    },
+    BundledSkill {
+        id: "use-human-annotations",
+        content: include_str!("../../skills/use-human-annotations/SKILL.md"),
+    },
 ];
 
 pub(crate) fn bundled_skill_content(id: &str) -> Option<&'static str> {
@@ -96,6 +118,7 @@ fn frontmatter_field(content: &str, key: &str) -> Option<String> {
 pub fn list_skills() -> Vec<SkillHit> {
     BUNDLED_SKILLS
         .iter()
+        .filter(|skill| skill.id != "use-synth-jesterky" || crate::plugins::jesterky::available())
         .map(|skill| SkillHit {
             id: skill.id.into(),
             name: frontmatter_field(skill.content, "name").unwrap_or_else(|| skill.id.into()),
@@ -150,7 +173,11 @@ mod tests {
     #[test]
     fn parses_name_and_description_from_every_bundled_skill() {
         let hits = list_skills();
-        assert_eq!(hits.len(), BUNDLED_SKILLS.len());
+        let expected = BUNDLED_SKILLS
+            .iter()
+            .filter(|skill| skill.id != "use-synth-jesterky" || crate::plugins::jesterky::available())
+            .count();
+        assert_eq!(hits.len(), expected);
         for hit in &hits {
             assert!(!hit.name.is_empty(), "{} missing a name", hit.id);
             assert!(
@@ -159,5 +186,16 @@ mod tests {
                 hit.id
             );
         }
+    }
+
+    #[test]
+    fn advertises_human_annotations_to_workshop_and_agents() {
+        let hit = list_skills()
+            .into_iter()
+            .find(|skill| skill.id == "use-human-annotations")
+            .expect("human annotation skill should be bundled");
+        assert_eq!(hit.name, "use-human-annotations");
+        assert!(hit.description.contains("durable human review tasks"));
+        assert!(hit.description.contains("audio commentary"));
     }
 }

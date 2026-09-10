@@ -140,6 +140,9 @@ impl PluginService {
             .get("plugin_id")
             .and_then(Value::as_str)
             .unwrap_or(OPTIMIZERS_PLUGIN_ID);
+        if plugin_id == super::jesterky::ID {
+            return self.manage_jesterky(broker, app, session_id, operation, arguments).await;
+        }
         if plugin_id != OPTIMIZERS_PLUGIN_ID {
             bail!("unknown plugin_id `{plugin_id}`");
         }
@@ -150,16 +153,39 @@ impl PluginService {
         match operation {
             "list" => {
                 let status = self.status(core).await;
-                Ok(json!({ "plugins": [status] }))
+                Ok(json!({ "plugins": [status, super::jesterky::status()] }))
             }
             "status" => Ok(serde_json::to_value(self.status(core).await)?),
             "capabilities" => self.capabilities(core).await,
-            "enable" | "disable" | "install" | "start" | "stop" | "update" | "remove" => {
+            "enable" | "disable" | "install" | "start" | "restart" | "stop" | "update"
+            | "remove" => {
                 self.mutate(core, broker, app, session_id, operation, version.as_deref())
                     .await
             }
             other => bail!("unknown plugin operation `{other}`"),
         }
+    }
+
+    async fn manage_jesterky<R: tauri::Runtime>(&self, broker: &ApprovalBroker, app: &AppHandle<R>, session: Option<&str>, action: &str, arguments: &Value) -> Result<Value> {
+        use super::jesterky;
+        match action {
+            "list" => return Ok(json!({"plugins":[jesterky::status()]})),
+            "status" => return Ok(serde_json::to_value(jesterky::status())?),
+            "capabilities" => return jesterky::capabilities(),
+            "enable"|"disable"|"install"|"update"|"start"|"restart"|"stop"|"remove" => {},
+            _ => bail!("unknown plugin operation {action}"),
+        }
+        let registry=PluginRegistry::for_plugin(jesterky::ID);
+        let catalog=registry.selected_catalog_entry(arguments.get("version").and_then(Value::as_str))?;
+        let before=jesterky::status();
+        let retention="Retains source traces, annotations, query snapshots, analysis receipts, and visuals. Runtime changes apply to future invocations.";
+        let approval=self.authorize(broker,app,session,plugin_kind(action,&catalog,0,before.digest,retention),0).await?;
+        if approval.rejected{return Ok(json!({"result":"approval_rejected","pluginId":jesterky::ID,"approvalReceiptId":approval.approval_id}));}
+        let started_at=Utc::now().to_rfc3339();
+        let outcome=jesterky::execute(action).await;
+        let status=jesterky::status();
+        let receipt=registry.record_receipt(PluginActionReceipt{schema_version:PLUGIN_ACTION_RECEIPT_SCHEMA.into(),receipt_id:format!("plugin_action_{}",Uuid::new_v4().simple()),plugin_id:jesterky::ID.into(),action:action.into(),version:Some(catalog.version),digest:status.digest.clone(),approval_receipt_id:Some(approval.approval_id),started_at,finished_at:Utc::now().to_rfc3339(),result:if outcome.is_ok(){"ok"}else{"error"}.into(),retained_data:retention.into(),status:Some(status),error:outcome.as_ref().err().map(|e|redact_secrets(&e.to_string()))})?;
+        outcome?;Ok(serde_json::to_value(receipt)?)
     }
 
     async fn mutate<R: tauri::Runtime>(
@@ -252,6 +278,16 @@ impl PluginService {
                 Ok(())
             }
             "install" | "update" => {
+                // `update` is also the repair path for an installed version.
+                // Stop first even when the catalog version is unchanged;
+                // otherwise `start` can adopt the still-healthy old process and
+                // the newly materialized runtime never actually takes effect.
+                if action == "update" {
+                    let status = manager.status().await;
+                    if matches!(status.phase.as_str(), "ready" | "degraded" | "starting") {
+                        manager.stop().await?;
+                    }
+                }
                 manager
                     .set_status_phase("downloading", Some("Downloading optimizer distribution…"))
                     .await;
@@ -279,6 +315,7 @@ impl PluginService {
                             .set_status_phase("starting", Some("Starting optimizer sidecar…"))
                             .await;
                         manager.start().await?;
+                        core.optimizers().restore_hosted_sft_mirrors().await;
                         Ok(())
                     }
                     Err(error) => {
@@ -291,6 +328,13 @@ impl PluginService {
             }
             "start" => {
                 manager.start().await?;
+                core.optimizers().restore_hosted_sft_mirrors().await;
+                Ok(())
+            }
+            "restart" => {
+                manager.stop().await?;
+                manager.start().await?;
+                core.optimizers().restore_hosted_sft_mirrors().await;
                 Ok(())
             }
             "stop" => {
@@ -330,6 +374,17 @@ impl PluginService {
                 rejected: false,
             });
         }
+        if let Some(session_id) = session_id.map(str::trim).filter(|value| !value.is_empty()) {
+            if let Some((approval_id, decision)) = broker
+                .try_auto_authorize_paid_compute(app, session_id, &kind)
+                .await?
+            {
+                return Ok(Authorization {
+                    approval_id,
+                    rejected: matches!(decision, ApprovalDecision::Reject),
+                });
+            }
+        }
         let session_id = session_id
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -366,6 +421,7 @@ impl PluginService {
         preparation_digest: &str,
         max_cost_usd: f64,
         max_rollouts: u64,
+        provider: &str,
         proposer_model: &str,
         timeout_seconds: u64,
     ) -> Result<Authorization> {
@@ -374,6 +430,7 @@ impl PluginService {
             preparation_digest,
             max_cost_usd,
             max_rollouts,
+            provider,
             proposer_model,
             timeout_seconds,
         );
@@ -407,7 +464,7 @@ fn refuse_plugin_mutation(
         return Ok(());
     }
     match action {
-        "stop" | "remove" | "install" | "update" => {
+        "stop" | "restart" | "remove" | "install" | "update" => {
             bail!("refusing to {action} Optimizers while {active_runs} run(s) are active");
         }
         "start" if installed_version.is_some_and(|installed| installed != target_version) => {
@@ -473,11 +530,12 @@ mod tests {
             "disable",
             "install",
             "start",
+            "restart",
             "stop",
             "update",
             "remove",
         ];
-        let mcp_schema = include_str!("../bin/synth_plugins_mcp.rs");
+        let mcp_schema = include_str!("../adapters/mcp/operations/plugins.rs");
         for operation in advertised {
             assert!(
                 mcp_schema.contains(&format!("\"{operation}\"")),
@@ -492,6 +550,7 @@ mod tests {
         refuse_plugin_mutation("remove", 1, Some("0.2.12"), "0.2.12").unwrap_err();
         refuse_plugin_mutation("install", 1, Some("0.2.12"), "0.2.14").unwrap_err();
         refuse_plugin_mutation("update", 3, Some("0.2.12"), "0.2.14").unwrap_err();
+        refuse_plugin_mutation("restart", 3, Some("0.2.12"), "0.2.12").unwrap_err();
         let start = refuse_plugin_mutation("start", 1, Some("0.2.12"), "0.2.14").unwrap_err();
         assert!(start.to_string().contains("0.2.14"));
         assert!(start.to_string().contains("0.2.12"));

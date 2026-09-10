@@ -41,6 +41,7 @@ ROLLING_FIELDS = {
     "requestsCompleted",
     "requestsFailed",
     "requestsCancelled",
+    "lastFailureReason",
     "inputTokens",
     "outputTokens",
     "cachedTokens",
@@ -140,6 +141,57 @@ class GenerationTimingTests(unittest.TestCase):
         timing = self._timing(first_token_at=102.5, last_token_at=102.501)
         self.assertIsNone(timing.decode_tokens_per_second())
 
+    def test_decode_progress_tracks_source_tokens_without_display_text(self) -> None:
+        """Structured/tool turns still expose speed before a text delta exists."""
+        timing = self._timing(
+            first_token_at=None,
+            last_token_at=None,
+            output_tokens=0,
+            measured_decode_tps=None,
+        )
+
+        timing.record_decode_progress(
+            sampled_at=103.0,
+            output_tokens=2,
+            prompt_tokens=1_200,
+            cached_tokens=200,
+            measured_decode_tps=47.1254,
+        )
+
+        self.assertEqual(timing.phase, "decode")
+        self.assertEqual(timing.first_token_at, 103.0)
+        self.assertEqual(timing.last_token_at, 103.0)
+        self.assertEqual(timing.output_tokens, 2)
+        self.assertEqual(timing.prompt_tokens, 1_200)
+        self.assertEqual(timing.cached_tokens, 200)
+        self.assertEqual(timing.decode_tokens_per_second(), 47.125)
+
+    def test_decode_progress_preserves_per_token_policy_samples(self) -> None:
+        timing = self._timing(
+            first_token_at=None,
+            last_token_at=None,
+            output_tokens=0,
+            measured_decode_tps=None,
+            decode_latencies=[],
+        )
+        timing.record_decode_progress(
+            sampled_at=103.0,
+            output_tokens=1,
+            prompt_tokens=100,
+            cached_tokens=0,
+            measured_decode_tps=None,
+        )
+        timing.record_decode_progress(
+            sampled_at=103.2,
+            output_tokens=5,
+            prompt_tokens=100,
+            cached_tokens=0,
+            measured_decode_tps=None,
+        )
+        self.assertEqual(len(timing.decode_latencies), 4)
+        for latency in timing.decode_latencies:
+            self.assertAlmostEqual(latency, 0.05)
+
     def test_cache_hit_ratio(self) -> None:
         self.assertEqual(self._timing().cache_hit_ratio(), 0.2)
         self.assertEqual(self._timing(prompt_tokens=0).cache_hit_ratio(), 0.0)
@@ -200,12 +252,13 @@ class RollingAggregateTests(unittest.TestCase):
 
     def test_failures_do_not_pollute_token_totals(self) -> None:
         telemetry = InferenceTelemetry()
-        telemetry.record_failed()
+        telemetry.record_failed(RuntimeError("The model selected unknown tool 'container_list' with argument keys []."))
         telemetry.record_cancelled()
         snapshot = telemetry.snapshot()
         self.assertEqual(snapshot["inputTokens"], 0)
         self.assertEqual(snapshot["outputTokens"], 0)
         self.assertEqual(snapshot["requestsCompleted"], 0)
+        self.assertEqual(snapshot["lastFailureReason"], "Unknown tool: container_list")
 
 
 class InferenceEndpointTests(unittest.TestCase):

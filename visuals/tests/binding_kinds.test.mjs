@@ -16,7 +16,9 @@ const ADVERTISED = [
   "live_sse",
   "fixture",
   "optimizer_run",
-  "query_snapshot"
+  "query_snapshot",
+  "annotation_evidence_head",
+  "verifier_result_v2"
 ];
 
 function templateFor(kind) {
@@ -56,6 +58,14 @@ test("every advertised binding kind is exercised by bindTemplateSlots", async ()
     async loadOptimizerRun(source) {
       assert.equal(source, "opt_1");
       return { from: "optimizer_run" };
+    },
+    async loadAnnotationEvidenceHead(source) {
+      assert.equal(source, "sha256:evidence");
+      return { from: "annotation_evidence_head" };
+    },
+    async loadVerifierResult(source) {
+      assert.equal(source, "sha256:verifier");
+      return { from: "verifier_result_v2" };
     }
   };
 
@@ -67,6 +77,8 @@ test("every advertised binding kind is exercised by bindTemplateSlots", async ()
     query_snapshot: { kind: "query_snapshot", source: "snap_1" },
     run_ref: { kind: "run_ref", source: "run_1" },
     optimizer_run: { kind: "optimizer_run", source: "opt_1" },
+    annotation_evidence_head: { kind: "annotation_evidence_head", source: "sha256:evidence" },
+    verifier_result_v2: { kind: "verifier_result_v2", source: "sha256:verifier" },
     live_sse: {
       kind: "live_sse",
       source: "http://127.0.0.1:8098/rollouts/r1/stream",

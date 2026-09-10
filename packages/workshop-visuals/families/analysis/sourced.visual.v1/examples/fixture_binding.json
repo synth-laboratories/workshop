@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "synth.visual-bindings.v1",
+  "slots": [
+    {
+      "slot": "stream",
+      "kind": "inline",
+      "schema": "synth.visual.live_eval_events.v1",
+      "data": {
+        "events": [
+          {
+            "ts": "2026-08-26T16:00:00.000Z",
+            "run_id": "sourced_fixture_run",
+            "kind": "stream.subscribed",
+            "sequence": null,
+            "payload": {
+              "stream.id": "stream_sourced_fixture",
+              "ready": true
+            }
+          },
+          {
+            "ts": "2026-08-26T16:00:02.000Z",
+            "run_id": "sourced_fixture_run",
+            "kind": "rollout.finished",
+            "sequence": 2,
+            "payload": {
+              "marker": "SOURCED-REWARD-3.1",
+              "reward": 3.1
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "content": "import React from \"react\";\nimport {useVisualState} from \"@synth/visuals-react\";\nexport default function Shell(){const [step,setStep]=useVisualState(\"authored.step\",0,{minimum:0,maximum:8});return <section><h2>Authored logical time</h2><p>Explicit acceptance fixture</p><input aria-label=\"Authored step\" type=\"range\" min={0} max={8} value={step} onChange={event=>setStep(Number(event.target.value))}/><output>Step {step}</output></section>}"
+}

@@ -292,6 +292,11 @@ export function projectEval(input: AdapterInput, projected: ProjectedState): Run
 	};
 
 	const warnings = [...base.warnings, ...failureWarnings(state)];
+	if (terminal && tally.queued > 0) {
+		warnings.unshift(
+			`This campaign is ${failed ? "failed" : "finished"}, but ${tally.queued} ${tally.queued === 1 ? "trial is" : "trials are"} still queued.`
+		);
+	}
 	if (workEvidence.state !== "present" && workEvidence.reason) {
 		warnings.unshift(
 			workEvidence.diagnostic

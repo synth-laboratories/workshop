@@ -159,6 +159,7 @@ async function stubCloudAccount(page: import("@playwright/test").Page, options: 
 				};
 			}
 		};
+		(window as unknown as { __cloudSummary: typeof summary }).__cloudSummary = summary;
 		window.synthAccount = {
 			beginSignIn: async () => ({ verificationUri: "https://example.test", expiresAtEpochS: 0 }),
 			pollSignIn: async () => ({ status: "active" as const }),
@@ -238,9 +239,9 @@ test("the device dashboard labels billing authority per provider and model", asy
 	await page.getByTestId("account-open-usage").click();
 	const device = page.getByTestId("usage-sheet-device");
 
-	// Totals keep settled and estimated money in separate labeled rows.
+	// Totals show settled money only; estimates never appear as usage cost.
 	await expect(device.getByTestId("usage-total-billed")).toHaveText("$0.42");
-	await expect(device.getByTestId("usage-total-estimated")).toHaveText("$0.07");
+	await expect(device.getByTestId("usage-total-estimated")).toHaveCount(0);
 	await expect(device.getByTestId("usage-total-cached")).toContainText("80,000");
 	await expect(device.getByTestId("usage-total-cached")).toContainText("47% hit");
 
@@ -251,14 +252,14 @@ test("the device dashboard labels billing authority per provider and model", asy
 	await expect(luna).toContainText("cached 80,000 (67%)");
 	const lunaPerf = luna.getByTestId("usage-model-openrouter-openai-gpt-5-6-luna-perf");
 	await expect(lunaPerf).toContainText("decode 25 tok/s (p95 40 tok/s)");
-	await expect(lunaPerf).toContainText("end-to-end 18 tok/s");
+	await expect(lunaPerf).not.toContainText("end-to-end");
 	await expect(lunaPerf).toContainText("TTFT 800 ms (p95 2.0 s)");
 	await expect(lunaPerf).toContainText("12 samples");
 
 	// Unsettled money is clearly an estimate, and unreported cache telemetry
 	// reads unavailable — never zero.
 	const lagunaS = device.getByTestId("usage-model-openrouter-poolside-laguna-s-2-1");
-	await expect(lagunaS.getByTestId("usage-model-openrouter-poolside-laguna-s-2-1-cost")).toHaveText("$0.07 estimated");
+	await expect(lagunaS.getByTestId("usage-model-openrouter-poolside-laguna-s-2-1-cost")).toHaveText("Cost unavailable");
 	await expect(lagunaS).toContainText("cached unavailable");
 
 	// Local runs carry no provider charge and never render $0.00.
@@ -427,17 +428,18 @@ test("an exhausted allowance blocks the cloud model and offers upgrade; local st
 	await expect(page.getByTestId("account-primary-action")).toContainText("Upgrade");
 	await page.keyboard.press("Escape");
 
-	await page.getByTestId("model-picker").click();
-	await page.getByTestId("model-access-api").click();
-	await expect(page.getByTestId("model-option-allowance-blocked").first()).toContainText("allowance is used up");
-	await expect(page.getByTestId("model-option-allowance-blocked")).toHaveCount(2);
+	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-api").click();
+	await expect(page.getByTestId("composer-model-allowance-blocked").first()).toContainText("allowance is used up");
+	// Every hosted Synth Cloud model is blocked; local models remain available.
+	await expect(page.getByTestId("composer-model-allowance-blocked")).toHaveCount(4);
 	// The local target is untouched by a cloud billing state.
-	await page.getByTestId("model-access-back").click();
-	await page.getByTestId("model-access-local").click();
-	await expect(page.getByTestId("model-option-local-laguna")).toBeVisible();
-	await page.getByTestId("model-access-back").click();
-	await page.getByTestId("model-access-api").click();
-	await page.getByTestId("model-resolve-synth-billing").first().click();
+	await page.getByTestId("composer-model-access-back").click();
+	await page.getByTestId("composer-model-access-local").click();
+	await expect(page.getByTestId("composer-model-option-local-laguna")).toBeVisible();
+	await page.getByTestId("composer-model-access-back").click();
+	await page.getByTestId("composer-model-access-api").click();
+	await page.getByTestId("composer-model-resolve-synth-billing").first().click();
 	await expect(page.getByTestId("usage-sheet")).toBeVisible();
 	await expect(page.getByTestId("usage-sheet-blocked")).toContainText("allowance is used up");
 	await expect(page.getByTestId("usage-sheet-quota-exhausted")).toContainText("Hosted quota is exhausted");
@@ -536,4 +538,124 @@ test("a failed hosted reconciliation does not invent a total", async ({ page }) 
 	await page.getByTestId("account-menu-trigger").click();
 	await page.getByTestId("account-open-usage").click();
 	await expect(page.getByTestId("usage-sheet-reconciliation-failed")).toContainText("could not be reconciled");
+});
+
+
+test("checkout reconciliation survives reload and waits for delayed provider state", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", tier: "free", remainingUsd: 0, usedUsd: 0 });
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-primary-action").click();
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1"))).not.toBeNull();
+	await page.reload();
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1"))).not.toBeNull();
+	await page.evaluate(() => {
+		const summary = (window as unknown as { __cloudSummary: { plan: { tier: string; name: string } } }).__cloudSummary;
+		summary.plan.tier = "starter";
+		summary.plan.name = "Starter";
+	});
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1")), { timeout: 12_000 }).toBeNull();
+});
+
+for (const change of ["organization", "backend", "signout"] as const) {
+	test(`pending checkout is invalidated on ${change} change`, async ({ page }) => {
+		await stubCloudAccount(page, { state: "active", tier: "free", remainingUsd: 0, usedUsd: 0 });
+		await page.getByTestId("account-menu-trigger").click();
+		await page.getByTestId("account-primary-action").click();
+		await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1"))).not.toBeNull();
+		await page.evaluate((kind) => {
+			const summary = (window as any).__cloudSummary;
+			if (kind === "organization") summary.organization = { id: "org_2", displayName: "Other org", role: "owner" };
+			if (kind === "backend") summary.environment = "dev";
+			if (kind === "signout") summary.signedIn = false;
+			window.dispatchEvent(new CustomEvent("synth:account-changed", { detail: { apiKeyConfigured: kind !== "signout" } }));
+		}, change);
+		await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1"))).toBeNull();
+	});
+}
+
+test("scheduled cancellation labels access boundary instead of renewal", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", tier: "starter", remainingUsd: 20, usedUsd: 0 });
+	await page.evaluate(() => {
+		const summary = (window as any).__cloudSummary;
+		summary.plan.renewsAt = "2026-10-08T12:00:00+00:00";
+		summary.plan.cancelAtPeriodEnd = true;
+		window.dispatchEvent(new Event("focus"));
+	});
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("open-account-settings").click();
+	await expect(page.getByTestId("account-page-period-end").locator("..")).toContainText("Access until");
+	await expect(page.getByTestId("account-page-period-end").locator("..")).not.toContainText("Renews");
+});
+
+test("late billing completion cannot announce checkout for a signed-out identity", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", tier: "free", remainingUsd: 0, usedUsd: 0 });
+	await page.evaluate(() => {
+		window.synthAccount!.openBilling = () => new Promise(resolve => {
+			(window as any).__finishOldCheckout = () => resolve("https://checkout.stripe.com/old-account");
+		});
+	});
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-primary-action").click();
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1"))).not.toBeNull();
+	await page.evaluate(() => {
+		(window as any).__cloudSummary.signedIn = false;
+		window.dispatchEvent(new CustomEvent("synth:account-changed", { detail: { apiKeyConfigured: false } }));
+	});
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.billing-return.v1"))).toBeNull();
+	await page.evaluate(() => (window as any).__finishOldCheckout());
+	await expect(page.getByText("Finish your upgrade in the browser", { exact: true })).toHaveCount(0);
+});
+
+test("late credential reads cannot restore the signed-out fingerprint", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", tier: "starter", remainingUsd: 20, usedUsd: 0 });
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("open-account-settings").click();
+	await page.evaluate(async () => {
+		const old = { ...await window.synthConfig!.get(), apiKeyFingerprint: "old-key-fingerprint" };
+		const releases: Array<() => void> = [];
+		(window as any).__releaseOldConfig = () => releases.forEach(release => release());
+		(window as any).__newConfig = { ...old, apiKeyConfigured: false, apiKeyFingerprint: null };
+		window.synthConfig!.get = () => new Promise(resolve => releases.push(() => resolve(old)));
+		window.dispatchEvent(new CustomEvent("synth:account-changed", { detail: { apiKeyConfigured: true } }));
+	});
+	await page.evaluate(() => {
+		window.synthConfig!.get = async () => (window as any).__newConfig;
+		(window as any).__cloudSummary.signedIn = false;
+		window.dispatchEvent(new CustomEvent("synth:account-changed", { detail: { apiKeyConfigured: false } }));
+	});
+	await expect(page.getByTestId("account-sign-in").getByRole("button", { name: /Sign in/ })).toBeVisible();
+	await page.evaluate(() => (window as any).__releaseOldConfig());
+	await expect(page.getByTestId("settings-account")).not.toContainText("old-key-fingerprint");
+	await expect(page.getByTestId("account-sign-in").getByRole("button", { name: /Sign in/ })).toBeVisible();
+});
+
+test("account switch clears the previous sign-out confirmation", async ({ page }) => {
+    await stubCloudAccount(page, { state: "active", tier: "free", remainingUsd: 10, usedUsd: 0 });
+    await page.getByTestId("account-menu-trigger").click();
+    await page.getByTestId("open-account-settings").click();
+    await page.evaluate(async () => {
+        const settings = await window.synthConfig!.get();
+        window.synthAccount!.signOut = async () => ({ ...settings, apiKeyConfigured: false });
+    });
+    await page.getByTestId("account-sign-out").click();
+    await expect(page.getByTestId("account-sign-in-note")).toContainText("Signed out");
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent("synth:account-changed", { detail: { apiKeyConfigured: true } })));
+    await expect(page.getByTestId("account-sign-in-note")).toHaveCount(0);
+});
+
+test("late browser-pairing start is ignored after backend change", async ({ page }) => {
+    await stubCloudAccount(page, { state: "active", tier: "free", remainingUsd: 10, usedUsd: 0 });
+    await page.getByTestId("account-menu-trigger").click();
+    await page.getByTestId("open-account-settings").click();
+    await page.evaluate(() => {
+        window.synthAccount!.beginSignIn = () => new Promise(resolve => {
+            (window as any).__finishOldPairing = () => resolve({ verificationUri: "https://example.test/old", deviceCode: "old" } as any);
+        });
+    });
+    await page.getByTestId("sign-in-begin").click();
+    await page.evaluate(() => {
+        window.dispatchEvent(new CustomEvent("synth:account-changed", { detail: { apiKeyConfigured: true } }));
+        (window as any).__finishOldPairing();
+    });
+    await expect(page.getByTestId("sign-in-cancel")).toHaveCount(0);
 });

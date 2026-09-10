@@ -25,13 +25,16 @@ use crate::session::approval::{
     HostDecisionResolver,
 };
 use crate::storage::content_store::ContentStore;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
+
+#[path = "retry_gate.rs"]
+mod retry_gate;
 
 /// A computer-use approval must not sit forever, but it also must not expire
 /// while the screen is locked — the lock guard suspends expiry, so this is the
@@ -45,6 +48,7 @@ pub struct ComputerUseService {
 
 #[derive(Default)]
 struct Inner {
+    launch_retry: retry_gate::RetryGate,
     sessions: HashMap<String, ComputerUseSession>,
     recorders: HashMap<String, TrajectoryRecorder>,
     client: Option<HelperClient>,
@@ -126,14 +130,37 @@ impl ComputerUseService {
     pub async fn refresh_grants(&self) -> Result<()> {
         let mut inner = self.inner.lock().await;
         self.ensure_client(&mut inner).await?;
-        let client = inner
+        let probe = json!({ "operation": "probe" });
+        let first = inner
             .client
             .as_mut()
-            .ok_or_else(|| anyhow!("helper is not running"))?;
-        let reported = client
-            .call_tool("computer_use_permissions", json!({ "operation": "probe" }))
-            .await?;
+            .ok_or_else(|| anyhow!("helper is not running"))?
+            .call_tool("computer_use_permissions", probe.clone())
+            .await;
+        let reported = match first {
+            Ok(reported) => reported,
+            Err(first_error) => {
+                // TCC grants can change while Desktop is open. If the helper
+                // exited or its stdio channel went stale, one failed refresh
+                // must not leave the UI permanently displaying the cached
+                // pre-grant result.
+                if let Some(client) = inner.client.take() {
+                    client.shutdown().await;
+                }
+                self.ensure_client(&mut inner).await.with_context(|| {
+                    format!("restart computer-use helper after failed permission probe: {first_error:#}")
+                })?;
+                inner
+                    .client
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("helper is not running after restart"))?
+                    .call_tool("computer_use_permissions", probe)
+                    .await
+                    .context("probe computer-use permissions after helper restart")?
+            }
+        };
         inner.grants = read_grants(&reported);
+        inner.detail = None;
         Ok(())
     }
 
@@ -142,7 +169,28 @@ impl ComputerUseService {
         if inner.client.is_some() {
             return Ok(());
         }
+        if !inner.launch_retry.admit(std::time::Instant::now()) {
+            bail!(
+                "computer-use helper launch is cooling down; retry after 30 seconds: {}",
+                inner.detail.as_deref().unwrap_or("previous launch attempt")
+            );
+        }
+        let result = self.launch_verified_client(inner).await;
+        if let Err(error) = &result {
+            inner.identity = None;
+            inner.grants.clear();
+            inner.detail = Some(format!("{error:#}"));
+        }
+        result
+    }
+
+    async fn launch_verified_client(&self, inner: &mut Inner) -> Result<()> {
         let bundle = helper::helper_bundle_path();
+        // Status polling must not invoke codesign on Workshop when there is
+        // nothing to launch. Full signature verification still runs below.
+        if !bundle.exists() {
+            bail!("no helper is installed at {}", bundle.display());
+        }
         let team = helper::expected_team_id();
         // A development build without a team id configured is allowed to run
         // unnotarized; a build with one is not. That keeps the loose path
@@ -425,6 +473,7 @@ impl ComputerUseService {
                 id: approval_id,
                 scope: None,
             },
+            ApprovalDecision::Credential { .. } => Authorization::Rejected,
         })
     }
 

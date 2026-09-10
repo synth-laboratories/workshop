@@ -1,0 +1,56 @@
+{
+  "scope": "isolated native v0.10 visuals acceptance; not release certification",
+  "instanceRoot": "/tmp/workshop-visuals-native-Pjo0DW",
+  "providerCalls": 0,
+  "recordedCollection": {
+    "visualId": "accept-analysis-swarm_trajectories-v1-recorded_run_binding",
+    "revision": 2,
+    "sourceCut": "collection-v1:30:30",
+    "count": 4,
+    "recordingId": "2df689b6-313f-41ca-999f-acf71b3e235d",
+    "metadataOnlyPage": true,
+    "lazyDetail": true,
+    "restoredFilterHistoryAndSelection": true,
+    "selectedCapture": "8ebd3f1d-2bbc-4dcf-b130-138358ccbe75.png",
+    "restoredCapture": "146fbc47-737c-4ecd-b373-ceaaff14055b.png"
+  },
+  "mirroredClock": {
+    "visualId": "accept-craftax-rollout_scrub-v1",
+    "revision": 3,
+    "recordingId": "2e2c82aa-e67a-4f23-8491-7337d8bfc738",
+    "humanStartedPrimaryAndPausedSecondary": true,
+    "events": 21,
+    "configuredTickMs": 450,
+    "minimumObservedTickMs": 455,
+    "consecutiveFrames": true,
+    "capture": "301a31ab-a610-4bd2-94b9-7d391b4076a7.png"
+  },
+  "managedHtml": {
+    "visualId": "accept-managed-5f36727c-4a3e-416d-a78c-194052101a2c",
+    "revision": 1,
+    "networklessImportedPackage": true,
+    "retainedPayload": true,
+    "sandboxStepSequence": [0, 3, 0],
+    "captures": [
+      "7cd16a8c-5b29-4b7d-8664-f394d6a327b3.png",
+      "6ba6bef1-7230-4a52-83f7-1d6543654a11.png",
+      "b06c94e4-ab9a-4320-8017-5114b7358efb.png"
+    ],
+    "realCasFrameStreamAccepted": false
+  },
+  "historicalCursorCaptureAndReplayPassed": [
+    "live.annotated_rollouts.v1",
+    "live.craftax.v1",
+    "live.harbor_eval.v1",
+    "optimizer.gepa.candidate.v1",
+    "optimizer.gepa.frontier.v1",
+    "optimizer.sft.live.v1",
+    "optimizer.cispo.live.v1"
+  ],
+  "releaseCertified": false,
+  "limitations": [
+    "Mixed worktree is not a clean committed renderer build.",
+    "Generic 40-family capture sweep does not prove every populated domain case.",
+    "Real CAS frame streams and remaining native nested-research cases still require acceptance."
+  ]
+}

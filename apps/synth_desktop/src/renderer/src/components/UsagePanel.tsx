@@ -14,6 +14,7 @@ import {
 	providerLabel,
 	providerRollup,
 	seriesSlots,
+	spendCopy,
 	spendUsd,
 	usd
 } from "../runtime/usageDashboard";
@@ -288,7 +289,7 @@ function Segmented<T extends string>({
 
 export function UsagePanel() {
 	const [usageWindow, setUsageWindow] = useState<UsageWindow>("30d");
-	const [metric, setMetric] = useState<"cost" | "tokens">("cost");
+	const [metric, setMetric] = useState<"cost" | "tokens">("tokens");
 	const [grouping, setGrouping] = useState<"model" | "day">("model");
 	const [summary, setSummary] = useState<UsageSummary | null>(null);
 	const [failed, setFailed] = useState(false);
@@ -331,7 +332,7 @@ export function UsagePanel() {
 	const totals = summary?.totals ?? null;
 	const totalSpend = totals ? spendUsd(totals) : null;
 	const totalBilled = totals?.billedCostUsd ?? null;
-	const totalEstimated = totals?.estimatedCostUsd ?? null;
+	const totalEstimated = totals?.costSource === "synth_cloud" ? totals.estimatedCostUsd : null;
 	const activeDays = new Set((summary?.days ?? []).map((point) => point.day)).size;
 
 	return (
@@ -378,18 +379,20 @@ export function UsagePanel() {
 				<>
 					<div className="usage-hero">
 						<section className="usage-hero-spend" data-testid="usage-hero">
-							<span className="usage-eyebrow">Device spend</span>
+							<span className="usage-eyebrow">{totalSpend == null ? "Observed usage" : "Device spend"}</span>
 							<strong className="usage-hero-value" data-testid="usage-hero-value">
-								{usd(totalSpend)}
+								{totalSpend == null ? compactTokens(totals.totalTokens) : usd(totalSpend)}
 							</strong>
 							<p className="usage-hero-note" data-testid="usage-hero-note">
 								{totalSpend == null
-									? "No request in this window carried a price."
+									? "tokens · cost unavailable because these requests carried no price"
 									: totalBilled != null && totalEstimated != null
-										? `${usd(totalBilled)} settled · ${usd(totalEstimated)} estimated at list rates`
+										? `${usd(totalBilled)} settled · ${usd(totalEstimated)} estimated by Backend`
 										: totalBilled != null
 											? `${usd(totalBilled)} settled with the provider`
-											: `Estimated at list rates — nothing has settled yet`}
+											: totalEstimated != null
+												? `${usd(totalEstimated)} estimated by Backend · not settled`
+												: "Cost unavailable — Backend reported no estimate or actual receipt."}
 							</p>
 
 							<div className="usage-provider-bars" data-testid="usage-provider-bars">
@@ -407,9 +410,9 @@ export function UsagePanel() {
 													<i className={`usage-swatch usage-series-${slots.get(roll.provider) ?? OTHER_SLOT}`} />
 													{roll.label}
 												</span>
-												<strong>
-													{roll.spendUsd == null ? "No charge" : usd(roll.spendUsd)}
-												</strong>
+											<strong>
+												{spendCopy(roll.spendUsd, roll.provider)}
+											</strong>
 											</div>
 											{/* A provider with no charge has no share to draw; an
 											    empty track would read as "spent zero" rather
@@ -423,9 +426,11 @@ export function UsagePanel() {
 												</div>
 											)}
 											<span className="usage-provider-meta">
-												{roll.spendUsd == null
+											{roll.spendUsd == null
+												? roll.provider === "local-laguna"
 													? "On-device · no provider charge"
-													: `${percent(roll.share)} of spend`}
+													: "Cost unavailable"
+												: `${percent(roll.share)} of spend`}
 												{" · "}
 												{compactTokens(roll.totalTokens)} tokens
 											</span>
@@ -638,7 +643,7 @@ function BreakdownTable({
 								<span className="usage-table-provider">{providerLabel(row.provider)}</span>
 							</th>
 							<td className="usage-num">
-								{row.spendUsd == null ? "No charge" : usd(row.spendUsd)}
+								{spendCopy(row.spendUsd, row.provider)}
 							</td>
 							<td className="usage-num usage-faint">
 								{total > 0 && row.spendUsd != null ? percent(row.spendUsd / total) : "—"}

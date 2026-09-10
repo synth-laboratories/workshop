@@ -1,13 +1,15 @@
-//! Tauri invoke command names. Keep in sync with
-//! `src/renderer/src/bridge/protocolConstants.ts`.
+//! Tauri invoke command names.
 //!
 //! Names match `#[tauri::command]` / `generate_handler!` identifiers.
-//! Drift: `scripts/check-desktop-contract-drift.sh`.
+//! TypeScript call sites use specta-generated `commands.*` in
+//! `src/renderer/src/generated/protocol.ts`. `export_specta_protocol_bindings`
+//! diff-checks that file.
 
 /// Const map of bridge-facing command names.
 pub struct Commands;
 
 impl Commands {
+    pub const DATA_TRACE_RESEARCH_REQUEST: &'static str = "data_trace_research_request";
     pub const CORE_DIAGNOSTICS: &'static str = "core_diagnostics";
     pub const CORE_EVENTS_AFTER: &'static str = "core_events_after";
     pub const CORE_SESSION_EVENTS_AFTER: &'static str = "core_session_events_after";
@@ -45,6 +47,8 @@ impl Commands {
     pub const CODEX_OAUTH_CANCEL: &'static str = "codex_oauth_cancel";
     pub const SYNTH_CONFIG_GET: &'static str = "synth_config_get";
     pub const SYNTH_CONFIG_UPDATE: &'static str = "synth_config_update";
+    pub const MODEL_CATALOG_GET: &'static str = "model_catalog_get";
+    pub const MODEL_CATALOG_REFRESH: &'static str = "model_catalog_refresh";
     pub const MODEL_MULTI_AGENT_LIST: &'static str = "model_multi_agent_list";
     pub const MODEL_MULTI_AGENT_UPDATE: &'static str = "model_multi_agent_update";
     pub const WORKSPACE_ACCESS_GET: &'static str = "workspace_access_get";
@@ -59,6 +63,10 @@ impl Commands {
     pub const WORKSPACE_SCOPE_DENY_REQUEST: &'static str = "workspace_scope_deny_request";
     pub const LAGUNA_GET_STATUS: &'static str = "laguna_get_status";
     pub const LAGUNA_RELOAD: &'static str = "laguna_reload";
+    pub const LAGUNA_REGISTER_POLICY: &'static str = "laguna_register_policy";
+    pub const LAGUNA_POLICIES: &'static str = "laguna_policies";
+    pub const LAGUNA_ADAPTER_STATUS: &'static str = "laguna_adapter_status";
+    pub const LAGUNA_ADAPTER_DOWNLOAD: &'static str = "laguna_adapter_download";
     pub const LAGUNA_MODELS_LIST: &'static str = "laguna_models_list";
     pub const LAGUNA_MODEL_DOWNLOAD: &'static str = "laguna_model_download";
     pub const LAGUNA_MODEL_UNLOAD: &'static str = "laguna_model_unload";
@@ -72,7 +80,10 @@ impl Commands {
     pub const TRAINING_MODELS_DELETE: &'static str = "training_models_delete";
     pub const TRAINING_ARTIFACTS_LIST: &'static str = "training_artifacts_list";
     pub const TRAINING_ARTIFACTS_GET: &'static str = "training_artifacts_get";
-    pub const TRAINING_ARTIFACTS_LAUNCH_INFERENCE: &'static str = "training_artifacts_launch_inference";
+    pub const TRAINING_ARTIFACTS_LAUNCH_INFERENCE: &'static str =
+        "training_artifacts_launch_inference";
+    pub const TRAINING_ARTIFACTS_EXPORT: &'static str = "training_artifacts_export";
+    pub const TRAINING_ARTIFACTS_DELETE: &'static str = "training_artifacts_delete";
     pub const WHISPER_RUNTIME_STATUS: &'static str = "whisper_runtime_status";
     pub const WHISPER_RUNTIME_WARM: &'static str = "whisper_runtime_warm";
     pub const WHISPER_MODELS_LIST: &'static str = "whisper_models_list";
@@ -86,11 +97,18 @@ impl Commands {
     pub const TERMINAL_SNAPSHOT: &'static str = "terminal_snapshot";
     pub const TERMINAL_WRITE: &'static str = "terminal_write";
     pub const TERMINAL_RESIZE: &'static str = "terminal_resize";
+    pub const TERMINAL_GHOSTTY_MOUNT: &'static str = "terminal_ghostty_mount";
+    pub const TERMINAL_GHOSTTY_SET_FRAME: &'static str = "terminal_ghostty_set_frame";
+    pub const TERMINAL_GHOSTTY_SET_VISIBLE: &'static str = "terminal_ghostty_set_visible";
+    pub const TERMINAL_GHOSTTY_FOCUS: &'static str = "terminal_ghostty_focus";
+    pub const TERMINAL_GHOSTTY_UNMOUNT: &'static str = "terminal_ghostty_unmount";
     pub const TERMINAL_CLOSE: &'static str = "terminal_close";
     pub const DATA_CONTAINERS_LIST: &'static str = "data_containers_list";
     pub const DATA_CONTAINERS_GET: &'static str = "data_containers_get";
     pub const DATA_CONTAINERS_REGISTER: &'static str = "data_containers_register";
     pub const DATA_CONTAINERS_PROBE: &'static str = "data_containers_probe";
+    pub const DATA_CONTAINERS_RECONCILE: &'static str = "data_containers_reconcile";
+    pub const DATA_CONTAINERS_RESTART: &'static str = "data_containers_restart";
     pub const DATA_TRACES_LIST: &'static str = "data_traces_list";
     pub const DATA_TRACES_GET: &'static str = "data_traces_get";
     pub const DATA_TRACES_INGEST: &'static str = "data_traces_ingest";
@@ -171,9 +189,19 @@ impl Commands {
     pub const OPTIMIZERS_STAGE_EVAL_CANDIDATES: &'static str = "optimizers_stage_eval_candidates";
     pub const OPTIMIZERS_LIST: &'static str = "optimizers_list";
     pub const OPTIMIZERS_GET: &'static str = "optimizers_get";
+    pub const OPTIMIZERS_RUN_VIEW_V2: &'static str = "optimizers_run_view_v2";
+    pub const OPTIMIZERS_RUN_VIEW: &'static str = "optimizers_run_view";
+    pub const OPTIMIZERS_EVIDENCE_PAGE: &'static str = "optimizers_evidence_page";
+    pub const OPTIMIZERS_RUN_SUMMARY: &'static str = "optimizers_run_summary";
+    pub const OPTIMIZERS_RUN_COLLECTION: &'static str = "optimizers_run_collection";
+    pub const OPTIMIZERS_RUN_COLLECTION_ITEM: &'static str = "optimizers_run_collection_item";
+    pub const OPTIMIZERS_PROJECTION_AT: &'static str = "optimizers_projection_at";
+    pub const OPTIMIZERS_VISUAL_RENDER_RECEIPT: &'static str = "optimizers_visual_render_receipt";
     pub const OPTIMIZERS_CREATE: &'static str = "optimizers_create";
     pub const OPTIMIZERS_REFRESH: &'static str = "optimizers_refresh";
     pub const OPTIMIZERS_EVENTS_AFTER: &'static str = "optimizers_events_after";
+    pub const OPTIMIZERS_ARTIFACTS_LIST: &'static str = "optimizers_artifacts_list";
+    pub const OPTIMIZERS_ARTIFACT_READ_RANGE: &'static str = "optimizers_artifact_read_range";
     pub const OPTIMIZERS_GET_STATE: &'static str = "optimizers_get_state";
     pub const OPTIMIZERS_GET_STATE_BATCH: &'static str = "optimizers_get_state_batch";
     pub const OPTIMIZERS_CANCEL: &'static str = "optimizers_cancel";
@@ -189,6 +217,10 @@ impl Commands {
     pub const OPTIMIZERS_TRAINING_MODELS: &'static str = "optimizers_training_models";
     pub const OPTIMIZERS_SAVED_LORA_ARCHIVE: &'static str = "optimizers_saved_lora_archive";
     pub const OPTIMIZERS_SAVED_LORA_DOWNLOAD: &'static str = "optimizers_saved_lora_download";
+    pub const OPTIMIZERS_SAVED_LORA_IMPORT: &'static str = "optimizers_saved_lora_import";
+    pub const OPTIMIZERS_CHECKPOINT_INFER: &'static str = "optimizers_checkpoint_infer";
+    pub const OPTIMIZERS_SAVED_LORA_PATCH: &'static str = "optimizers_saved_lora_patch";
+    pub const OPTIMIZERS_SAVED_LORA_PUBLISH: &'static str = "optimizers_saved_lora_publish";
     pub const OPTIMIZERS_TRAINING_RECONCILE: &'static str = "optimizers_training_reconcile";
     pub const PLUGINS_STATUS: &'static str = "plugins_status";
     pub const PLUGINS_LIST: &'static str = "plugins_list";
@@ -200,10 +232,12 @@ impl Commands {
     pub const BROWSER_RUNTIME_STATUS: &'static str = "browser_runtime_status";
     pub const BROWSER_POLICY_ALLOW_ORIGIN: &'static str = "browser_policy_allow_origin";
     pub const BROWSER_POLICY_REVOKE_ORIGIN: &'static str = "browser_policy_revoke_origin";
+    pub const JESTERKY_ANALYSIS_SETTINGS: &'static str = "jesterky_analysis_settings";
     pub const PLUGINS_MANAGE: &'static str = "plugins_manage";
     pub const PLUGINS_SET_RELEASE_CHANNEL: &'static str = "plugins_set_release_channel";
     pub const VISUAL_SUBSCRIPTION_READY: &'static str = "visual_subscription_ready";
     pub const VISUAL_STREAM_POLL: &'static str = "visual_stream_poll";
+    pub const VISUAL_MEDIA_READ: &'static str = "visual_media_read";
     pub const DIAGNOSTICS_REPORT: &'static str = "diagnostics_report";
     pub const DIAGNOSTICS_STATUS: &'static str = "diagnostics_status";
     pub const DIAGNOSTICS_QUERY: &'static str = "diagnostics_query";
@@ -229,6 +263,12 @@ impl Commands {
     pub const MIGRATION_APPLY: &'static str = "migration_apply";
     pub const MIGRATION_CANCEL: &'static str = "migration_cancel";
     pub const SECRETS_LIST: &'static str = "secrets_list";
+    pub const SECRETS_WORKSPACE_ROOTS_LIST: &'static str = "secrets_workspace_roots_list";
+    pub const SECRETS_BINDINGS_LIST: &'static str = "secrets_bindings_list";
+    pub const SECRETS_LOCATORS_LIST: &'static str = "secrets_locators_list";
+    pub const SECRETS_LOCATOR_REMEMBER_EXTERNAL: &'static str = "secrets_locator_remember_external";
+    pub const SECRETS_LOCATOR_REGISTER: &'static str = "secrets_locator_register";
+    pub const SECRETS_LOCATOR_FORGET: &'static str = "secrets_locator_forget";
     pub const SECRETS_CREATE: &'static str = "secrets_create";
     pub const SECRETS_REPLACE: &'static str = "secrets_replace";
     pub const SECRETS_DELETE: &'static str = "secrets_delete";

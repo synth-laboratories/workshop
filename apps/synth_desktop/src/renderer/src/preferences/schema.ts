@@ -1,12 +1,13 @@
 /**
  * Canonical desktop UI preferences (Poolside polish pass).
  *
- * One durable source: `synth.preferences.v1` in localStorage, normalized on every
+ * One durable source: `synth.preferences.v1` in runtime storage (localStorage in browser preview), normalized on every
  * read. Legacy keys migrate in once and are left in place for older readers.
  */
 
 export const PREFERENCES_STORAGE_KEY = "synth.preferences.v1";
-export const PREFERENCES_SCHEMA_VERSION = 5 as const;
+export const PREFERENCES_SCHEMA_VERSION = 6 as const;
+export const DEFAULT_VISIBLE_PLUGIN_IDS = ["visuals", "experiments", "environment-qa", "inventory", "inference"] as const;
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ToolActivityMode = "detailed" | "grouped" | "compact";
@@ -32,6 +33,9 @@ export type LayoutSnapshot = {
 	bottomPanelHeight: number;
 	selectedConversationId: string | null;
 	selectedOutputTab: string | null;
+	optimizers: {
+		selectedRunId: string | null;
+	};
 };
 
 export type ConversationMeta = {
@@ -72,6 +76,9 @@ export type DesktopPreferences = {
 		/** Per-model local summarization thresholds. */
 		autoCompactTokenLimits: AutoCompactTokenLimits;
 	};
+	navigation: {
+		visiblePluginIds: string[];
+	};
 	layout: {
 		last: LayoutSnapshot;
 		default: LayoutSnapshot;
@@ -90,12 +97,13 @@ export const DEFAULT_LAYOUT: LayoutSnapshot = {
 	sidebarVisible: true,
 	sidebarWidth: 260,
 	outputPaneVisible: false,
-	outputPaneWidth: 420,
-	visualsListWidth: 560,
+	outputPaneWidth: 720,
+	visualsListWidth: 320,
 	bottomPanelVisible: false,
 	bottomPanelHeight: 220,
 	selectedConversationId: null,
-	selectedOutputTab: null
+	selectedOutputTab: null,
+	optimizers: { selectedRunId: null }
 };
 
 export const DEFAULT_PREFERENCES: DesktopPreferences = {
@@ -117,6 +125,9 @@ export const DEFAULT_PREFERENCES: DesktopPreferences = {
 	},
 	agentContext: {
 		autoCompactTokenLimits: { ...DEFAULT_AUTO_COMPACT_TOKEN_LIMITS }
+	},
+	navigation: {
+		visiblePluginIds: [...DEFAULT_VISIBLE_PLUGIN_IDS]
 	},
 	layout: {
 		last: { ...DEFAULT_LAYOUT },
@@ -171,13 +182,19 @@ export function normalizeLayoutSnapshot(
 	const minSidebar = 180;
 	const maxSidebar = Math.max(minSidebar, Math.min(420, viewportWidth - 480));
 	const minOutput = 280;
-	const maxOutput = Math.max(minOutput, Math.min(720, viewportWidth - 520));
-	const minVisualsList = 280;
+	// A visual can consume nearly the full workbench. The live splitter still
+	// preserves a narrow primary rail, but persisted widths must not re-clamp a
+	// wide visual to the historical 720px ceiling.
+	const maxOutput = Math.max(minOutput, Math.min(2400, viewportWidth - 160));
+	const minVisualsList = 240;
 	// Preserve the desktop preference while compact layouts are stacked; the
 	// live separator clamps against its actual parent content box.
-	const maxVisualsList = 960;
+	const maxVisualsList = 420;
 	const minBottom = 120;
 	const maxBottom = Math.max(minBottom, Math.min(480, viewportHeight - 280));
+	const optimizers = source.optimizers && typeof source.optimizers === "object"
+		? source.optimizers as Record<string, unknown>
+		: {};
 	return {
 		sidebarVisible: source.sidebarVisible !== false,
 		sidebarWidth: clampNumber(source.sidebarWidth, minSidebar, maxSidebar, DEFAULT_LAYOUT.sidebarWidth),
@@ -187,7 +204,10 @@ export function normalizeLayoutSnapshot(
 		bottomPanelVisible: source.bottomPanelVisible === true,
 		bottomPanelHeight: clampNumber(source.bottomPanelHeight, minBottom, maxBottom, DEFAULT_LAYOUT.bottomPanelHeight),
 		selectedConversationId: typeof source.selectedConversationId === "string" ? source.selectedConversationId : null,
-		selectedOutputTab: typeof source.selectedOutputTab === "string" ? source.selectedOutputTab : null
+		selectedOutputTab: typeof source.selectedOutputTab === "string" ? source.selectedOutputTab : null,
+		optimizers: {
+			selectedRunId: typeof optimizers.selectedRunId === "string" ? optimizers.selectedRunId : null
+		}
 	};
 }
 
@@ -290,6 +310,12 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 	const legacyPermissions = legacyPermissionConfig(approvalMode);
 	const approvalPolicy = APPROVAL_POLICIES.has(source.approvalPolicy as ApprovalPolicyPreference) ? source.approvalPolicy as ApprovalPolicyPreference : legacyPermissions.approvalPolicy;
 	const sandboxMode = SANDBOX_MODES.has(source.sandboxMode as SandboxModePreference) ? source.sandboxMode as SandboxModePreference : legacyPermissions.sandboxMode;
+	const navigation = source.navigation && typeof source.navigation === "object"
+		? source.navigation as Record<string, unknown>
+		: {};
+	const visiblePluginIds = Array.isArray(navigation.visiblePluginIds)
+		? [...new Set(navigation.visiblePluginIds.filter((id): id is string => typeof id === "string" && id.trim() !== ""))]
+		: [...DEFAULT_VISIBLE_PLUGIN_IDS];
 
 	return {
 		schemaVersion: PREFERENCES_SCHEMA_VERSION,
@@ -327,6 +353,7 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 				)
 			}
 		},
+		navigation: { visiblePluginIds },
 		layout: {
 			last: normalizeLayoutSnapshot(layout.last),
 			default: normalizeLayoutSnapshot(layout.default)
@@ -350,6 +377,17 @@ export function migrateLegacyPreferences(storage: Storage): DesktopPreferences {
 		parsed = null;
 	}
 	const base = normalizePreferences(parsed);
+	const parsedVersion = parsed && typeof parsed === "object"
+		? Number((parsed as Record<string, unknown>).schemaVersion)
+		: 0;
+	// Version 5 shipped a 420px output-pane default. Give untouched installs the
+	// roomier visual default while preserving every explicitly resized width.
+	if (parsedVersion > 0 && parsedVersion < 6
+		&& base.layout.last.outputPaneWidth === 420
+		&& base.layout.default.outputPaneWidth === 420) {
+		base.layout.last.outputPaneWidth = 720;
+		base.layout.default.outputPaneWidth = 720;
+	}
 
 	const approval = storage.getItem("synth.approvalMode");
 	if (APPROVAL_MODES.has(approval as string) && (!parsed || typeof parsed !== "object")) {
@@ -365,7 +403,7 @@ export function migrateLegacyPreferences(storage: Storage): DesktopPreferences {
 
 	const inventoryWidth = Number(storage.getItem("synth.inventoryContainerPaneWidth"));
 	if (Number.isFinite(inventoryWidth) && inventoryWidth >= 280 && (!parsed || typeof parsed !== "object")) {
-		base.layout.last.outputPaneWidth = clampNumber(inventoryWidth, 280, 720, base.layout.last.outputPaneWidth);
+		base.layout.last.outputPaneWidth = clampNumber(inventoryWidth, 280, 2400, base.layout.last.outputPaneWidth);
 		base.layout.default.outputPaneWidth = base.layout.last.outputPaneWidth;
 	}
 
@@ -378,7 +416,7 @@ export function migrateLegacyPreferences(storage: Storage): DesktopPreferences {
 	const hasCanonicalVisualsWidth = parsedLast && typeof parsedLast === "object"
 		&& "visualsListWidth" in (parsedLast as Record<string, unknown>);
 	if (!hasCanonicalVisualsWidth && Number.isFinite(legacyVisualsListWidth) && legacyVisualsListWidth > 0) {
-		base.layout.last.visualsListWidth = clampNumber(legacyVisualsListWidth, 280, 960, base.layout.last.visualsListWidth);
+		base.layout.last.visualsListWidth = clampNumber(legacyVisualsListWidth, 240, 420, base.layout.last.visualsListWidth);
 		base.layout.default.visualsListWidth = base.layout.last.visualsListWidth;
 	}
 

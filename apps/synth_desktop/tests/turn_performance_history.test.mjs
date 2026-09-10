@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { turnPerformanceLabels } from "../src/renderer/src/hooks/useTurnPerformanceLabels.ts";
+import { codexEventToRuntime, coreEventToRuntime } from "../src/renderer/src/runtime/nativeCodex.ts";
 
 const at = (seconds) => new Date(Date.UTC(2026, 0, 1, 0, 0, seconds)).toISOString();
 const event = (sequence, seconds, eventKind, payload = {}) => ({ sequence, createdAt: at(seconds), eventKind, payload });
@@ -70,12 +71,27 @@ test("a measurement without a rate says so and names nothing else", () => {
 	assert.doesNotMatch(labels.byMessageId.msg_2.generation, /71|tok\/s/);
 });
 
-test("a message with no measurement at all is unavailable, not estimated", () => {
+test("full response output usage is labelled as a generation estimate", () => {
+	const { chat, events } = fixture();
+	const estimated = events.map((entry) => entry.sequence === 7
+		? measured(7, 10, "msg_2", {
+			tokenCountSource: "provider_response_output_usage",
+			tps: 55.91,
+			exactTokensAfterFirstSample: 895,
+			durationMs: 16_008.2
+		})
+		: entry);
+	const label = turnPerformanceLabels(chat, estimated).byMessageId.msg_2;
+	assert.equal(label.generation, "Observed generation estimate: 55.9 tok/s");
+	assert.match(label.detail, /Exact full response output over the complete model-output interval/);
+	assert.match(label.detail, /excludes TTFT and tool execution; includes reasoning output and time/);
+});
+
+test("provider token totals never become acceptance-to-completion TPS", () => {
 	const chat = { id: "s", title: "none", messages: [
 		{ id: "u", role: "user", body: "go", at: at(0) },
 		{ id: "msg_a", role: "assistant", body: "answer", at: at(2) }
 	] };
-	// Plenty of deltas and turn-level usage: neither is a segment measurement.
 	const events = [
 		event(1, 1, "turn/accepted"),
 		event(2, 2, "message.delta", { delta: "a", messageId: "msg_a" }),
@@ -86,6 +102,47 @@ test("a message with no measurement at all is unavailable, not estimated", () =>
 	const labels = turnPerformanceLabels(chat, events);
 	assert.equal(labels.byMessageId.msg_a.generation, "Generation speed unavailable");
 	assert.equal(labels.byMessageId.msg_a.detail, null);
+});
+
+test("Core event timestamps survive Codex adaptation", () => {
+	const createdAt = at(7);
+	const runtime = codexEventToRuntime({ sessionId: "s", method: "turn/completed", params: {}, createdAt }, 3);
+	assert.equal(runtime.createdAt, createdAt);
+});
+
+test("a hosted model never falls back to a persisted end-to-end rate", () => {
+	const chat = { id: "hosted", title: "hosted", messages: [
+		{ id: "u", role: "user", body: "go", at: at(0) },
+		{ id: "msg_hosted", role: "assistant", body: "answer", at: at(2) }
+	] };
+	const events = [event(1, 1, "turn/accepted"), event(2, 4, "turn/completed")];
+	const samples = [{
+		runId: "turn-hosted",
+		measurementKind: "end_to_end",
+		startedAtMs: Date.parse(at(1)),
+		completedAtMs: Date.parse(at(4)),
+		outputTps: 24.75
+	}];
+	const label = turnPerformanceLabels(chat, events, false, samples).byMessageId.msg_hosted;
+	assert.equal(label.generation, "Generation speed unavailable");
+	assert.equal(label.detail, null);
+});
+
+test("a persisted end-to-end rate stays hidden while UI activity lingers", () => {
+	const chat = { id: "hosted", title: "hosted", messages: [
+		{ id: "u", role: "user", body: "go", at: at(0) },
+		{ id: "msg_hosted", role: "assistant", body: "answer", at: at(2) }
+	] };
+	const events = [event(1, 1, "turn/accepted"), event(2, 4, "turn/completed")];
+	const samples = [{
+		runId: "turn-hosted",
+		measurementKind: "end_to_end",
+		startedAtMs: Date.parse(at(1)),
+		completedAtMs: Date.parse(at(4)),
+		outputTps: 24.75
+	}];
+	const label = turnPerformanceLabels(chat, events, true, samples).byMessageId.msg_hosted;
+	assert.equal(label.generation, "Generation speed unavailable");
 });
 
 test("an interrupted segment is labelled partial rather than presented as a headline", () => {
@@ -127,7 +184,7 @@ test("the advanced detail exposes the audit fields behind a displayed value", ()
 	const { chat, events } = fixture();
 	const detail = turnPerformanceLabels(chat, events).byMessageId.msg_2.detail;
 	for (const field of [
-		/Client-observed text delivery; excludes tools and reasoning/,
+		/Client-observed text delivery; excludes TTFT and tools/,
 		/kind observed_stream_segment/,
 		/tokens 60/,
 		/duration 1\.20s/,
@@ -174,4 +231,38 @@ test("a long transcript projection remains bounded for startup and scrolling", (
 	const started = performance.now();
 	turnPerformanceLabels({ id: "large", title: "large", messages }, events);
 	assert.ok(performance.now() - started < 500, "temporal projection regressed transcript startup");
+});
+
+
+test("provider completed envelopes preserve cancellation in replay", () => {
+ for (const status of ["interrupted", "cancelled", "canceled"]) {
+  const result = codexEventToRuntime({sessionId: "s", method: "turn/completed", params: {
+   turn: {id: "stopped-turn", status}
+  }, createdAt: at(3)}, 4);
+  assert.equal(result.eventKind, "run.cancelled");
+ }
+});
+
+
+test("cancelled response duration never says Worked", () => {
+ const chat = {id: "s", title: "cancelled", messages: [
+  {id: "u", role: "user", body: "count", at: at(0)},
+  {id: "a", role: "assistant", body: "1", at: at(1)}
+ ]};
+ for (const kind of ["run.cancelled", "turn/interrupted"]) {
+  const labels = turnPerformanceLabels(chat, [event(1, 0, "turn/accepted"), event(2, 3, kind)]);
+  assert.equal(labels.byMessageId.a.worked, "Stopped after 3s");
+ }
+});
+
+
+test("durable cancellation replay retains the original event timestamp", () => {
+ const original = at(7);
+ const row = {sessionId: "s", sessionSequence: 42, kind: "turn/interrupted",
+  payload: {turnId: "t", reason: "operator_cancelled"}, createdAt: original, source: "codex"};
+ for (let replay = 0; replay < 3; replay++) {
+  const projected = coreEventToRuntime(row);
+  assert.equal(projected.createdAt, original);
+  assert.equal(projected.eventKind, "run.cancelled");
+ }
 });

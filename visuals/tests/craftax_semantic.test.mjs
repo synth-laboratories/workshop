@@ -126,6 +126,22 @@ test("replay moments are not environment steps", () => {
   );
 });
 
+test("completed step facts are summed across rollout lanes without counting step-zero snapshots", () => {
+  const completed = [65, 66, 85, 56, 31].flatMap((count, laneIndex) =>
+    Array.from({ length: count }, (_, step) => ({
+      ...envelope("span.step.closed", step + 1, { step }),
+      run_id: `rollout-${laneIndex}`,
+      lane: `rollout-${laneIndex}`,
+    }))
+  );
+  const observations = [65, 66, 85, 56, 31].map((count, laneIndex) => ({
+    ...envelope("observation", count + 2, { step: count }),
+    run_id: `rollout-${laneIndex}`,
+    lane: `rollout-${laneIndex}`,
+  }));
+  assert.equal(environmentStepCount([...completed, ...observations]), 303);
+});
+
 test("a scoped lane filter isolates rollouts sharing one stream", () => {
   const mine = policyHeavyRollout({ deltaCount: 5 });
   const foreign = [

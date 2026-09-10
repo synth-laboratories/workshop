@@ -2,12 +2,14 @@ use super::chart_data;
 use super::charts;
 use super::mermaid::{self, Theme};
 use super::models::{
-    canonicalize_bindings, BindingsForm, RendererKind, VisualCreateRequest, VisualQuery,
-    VisualRecord, VisualRevision, VisualStatus, VisualUpdateRequest, VISUAL_SCHEMA_VERSION,
+    binding_descriptors, canonicalize_bindings, descriptor_input_name, BindingsForm, RendererKind,
+    VisualCreateRequest, VisualQuery, VisualRecord, VisualRevision, VisualStatus,
+    VisualUpdateRequest, VISUAL_SCHEMA_VERSION,
 };
 use super::renditions::{self, VisualAsset, VisualRendition};
+use super::sourced;
 use super::systems::{self, SystemsKind};
-use super::templates::{resolve_template, TemplateMeta};
+use super::templates::{certification_renderer_digest, resolve_template, TemplateMeta};
 use crate::storage::{ContentStore, Database, EventAppend, EventJournal, EventSource};
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine as _;
@@ -48,6 +50,14 @@ impl VisualRegistry {
 
     pub(crate) fn content(&self) -> &ContentStore {
         &self.content
+    }
+
+    pub fn state_store(&self) -> super::VisualStateStore {
+        super::VisualStateStore::new(self.db.clone())
+    }
+
+    pub fn engine(&self) -> super::engine::VisualEngine {
+        super::engine::VisualEngine::new(self.db.clone())
     }
 
     /// Wire the optimizer service in after both exist. Idempotent.
@@ -115,11 +125,15 @@ impl VisualRegistry {
         if !form.is_upgrade() {
             return;
         }
-        eprintln!(
-            "synth-desktop: upgraded {} visual bindings for {visual_id} rev {revision} \
+        crate::platform::logging::report(
+            "visuals",
+            "eprintln",
+            format!(
+                "synth-desktop: upgraded {} visual bindings for {visual_id} rev {revision} \
              (template {template_id}, slots {upgraded_slots:?}); writers must send {}",
-            form.as_str(),
-            super::models::VISUAL_BINDINGS_SCHEMA_VERSION
+                form.as_str(),
+                super::models::VISUAL_BINDINGS_SCHEMA_VERSION
+            ),
         );
         let Some(service) = self.diagnostics.get() else {
             return;
@@ -144,18 +158,72 @@ impl VisualRegistry {
         input.details.insert("form".into(), json!(form.as_str()));
         // Slot names come from a template contract, not from free text, so the
         // cardinality here is bounded by the template's declared slots.
-        input.details.insert("slots".into(), json!(upgraded_slots));
+        input.details.insert("inputs".into(), json!(upgraded_slots));
         service.emit(input);
     }
 
     pub async fn list(&self, query: VisualQuery) -> Result<Vec<VisualRecord>> {
         let db = self.db.clone();
-        db.run(move |conn| list_visuals(conn, &query)).await
+        let records = db.run(move |conn| list_visuals(conn, &query)).await?;
+        let mut refreshed = Vec::with_capacity(records.len());
+        for record in records {
+            refreshed.push(self.refresh_certification(record).await?);
+        }
+        Ok(refreshed)
     }
 
     pub async fn get(&self, id: String) -> Result<VisualRecord> {
         let db = self.db.clone();
-        db.run(move |conn| load_visual(conn, &id)).await
+        let record = db.run(move |conn| load_visual(conn, &id)).await?;
+        self.refresh_certification(record).await
+    }
+
+    /// Return the complete identity of the pixels that may be certified for
+    /// the current revision. Reviews and readiness receipts both carry this
+    /// value; any later content, binding, template, source, build, or binary
+    /// change therefore makes the old certification stale.
+    pub async fn certification_identity(&self, id: String) -> Result<Value> {
+        let db = self.db.clone();
+        let (record, revision) = db
+            .run(move |conn| {
+                let record = load_visual(conn, &id)?;
+                let revision = load_revision(conn, &id, record.current_revision)?;
+                Ok((record, revision))
+            })
+            .await?;
+        let template = resolve_template(&record.template_id)?;
+        Ok(certification_identity_value(&record, &revision, &template))
+    }
+
+    async fn refresh_certification(&self, mut record: VisualRecord) -> Result<VisualRecord> {
+        let gate_is_ready = record
+            .metadata
+            .pointer("/qualityGate/ready")
+            .and_then(Value::as_bool)
+            == Some(true);
+        if !gate_is_ready {
+            return Ok(record);
+        }
+        let current = self.certification_identity(record.id.clone()).await?;
+        let certified = record
+            .metadata
+            .pointer("/qualityGate/certificationIdentity")
+            .cloned();
+        if certified.as_ref() == Some(&current) {
+            return Ok(record);
+        }
+        let reasons = certification_stale_reasons(certified.as_ref(), &current);
+        if let Some(gate) = record
+            .metadata
+            .get_mut("qualityGate")
+            .and_then(Value::as_object_mut)
+        {
+            gate.insert("ready".into(), json!(false));
+            gate.insert("state".into(), json!("stale"));
+            gate.insert("staleReasons".into(), json!(reasons));
+            gate.insert("currentCertificationIdentity".into(), current);
+        }
+        Ok(record)
     }
 
     pub async fn revisions(&self, id: String) -> Result<Vec<VisualRevision>> {
@@ -164,6 +232,15 @@ impl VisualRegistry {
     }
 
     pub async fn create(&self, request: VisualCreateRequest) -> Result<(VisualRecord, Value)> {
+        self.create_with_owner(request, false).await
+    }
+
+    pub async fn create_shared(&self, request: VisualCreateRequest) -> Result<(VisualRecord, Value)> {
+        anyhow::ensure!(request.session_id.is_none(), "shared visuals cannot have a chat owner");
+        self.create_with_owner(request, true).await
+    }
+
+    async fn create_with_owner(&self, request: VisualCreateRequest, shared: bool) -> Result<(VisualRecord, Value)> {
         let template = resolve_template(&request.template_id)?;
         let title = request
             .title
@@ -179,9 +256,52 @@ impl VisualRegistry {
         let bindings_form = canonical.form.clone();
         let upgraded_slots = canonical.upgraded_slots.clone();
         let bindings = canonical.value;
-        let is_mermaid = mermaid::is_mermaid_template(&template.id);
-        let systems_kind = systems::template_kind(&template.id);
-        let is_chart = charts::is_chart_template(&template.id);
+        validate_optimizer_run_bindings(&bindings)?;
+        let declared_renderer = template
+            .renderer_kind
+            .as_deref()
+            .map(|kind| {
+                RendererKind::try_parse(kind).ok_or_else(|| {
+                    anyhow!("template {} declares unknown rendererKind {kind:?}", template.id)
+                })
+            })
+            .transpose()?;
+        let is_mermaid = declared_renderer == Some(RendererKind::Mermaid);
+        let systems_kind = match declared_renderer.as_ref() {
+            Some(RendererKind::Systems) => Some(SystemsKind::Static),
+            Some(RendererKind::SystemsDynamic) => Some(SystemsKind::Dynamic),
+            _ => None,
+        };
+        let is_chart = declared_renderer == Some(RendererKind::Chart);
+        let is_sourced = declared_renderer == Some(RendererKind::Tsx);
+        let is_managed_html =
+            template.source_kind.as_deref() == Some("managed") && template.renderer_path.is_some();
+        // Imported HTML is immutable package source. Accepting caller content
+        // here would make a reviewed import indistinguishable from arbitrary
+        // HTML authored at create time.
+        if is_managed_html
+            && request
+                .content
+                .as_deref()
+                .is_some_and(|content| !content.trim().is_empty())
+        {
+            bail!(
+                "{} is a managed HTML template; create it without content",
+                template.id
+            );
+        }
+        let managed_html_content = if is_managed_html {
+            let path = template
+                .renderer_path
+                .as_deref()
+                .expect("managed HTML renderer path");
+            Some(
+                std::fs::read_to_string(path)
+                    .with_context(|| format!("read managed renderer {path}"))?,
+            )
+        } else {
+            None
+        };
         if is_mermaid {
             let source = request
                 .content
@@ -211,17 +331,26 @@ impl VisualRegistry {
                 .ok_or_else(|| anyhow!("{} requires content", template.id))?;
             charts::validate_source(source)?;
         }
+        if is_sourced {
+            let source = request
+                .content
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow!("{} requires content", template.id))?;
+            if source.len() > sourced::MAX_SOURCE_BYTES {
+                bail!(
+                    "{} exceeds {} bytes",
+                    template.id,
+                    sourced::MAX_SOURCE_BYTES
+                );
+            }
+        }
         let status = request.status.unwrap_or(VisualStatus::Draft);
-        let renderer_kind = if is_mermaid {
-            RendererKind::Mermaid
-        } else if systems_kind == Some(SystemsKind::Static) {
-            RendererKind::Systems
-        } else if systems_kind == Some(SystemsKind::Dynamic) {
-            RendererKind::SystemsDynamic
-        } else if is_chart {
-            RendererKind::Chart
+        let renderer_kind = if is_managed_html {
+            RendererKind::Html
         } else {
-            request.renderer_kind.unwrap_or(RendererKind::Template)
+            declared_renderer.or(request.renderer_kind).unwrap_or(RendererKind::Template)
         };
         let mut metadata = request.metadata.unwrap_or_else(|| json!({}));
         if is_mermaid {
@@ -264,7 +393,27 @@ impl VisualRegistry {
                 object.insert("specSchema".into(), json!(charts::SCHEMA_VERSION));
             }
         }
-        let content_digest = if let Some(content) = request.content.as_ref() {
+        if is_sourced {
+            if let Some(object) = metadata.as_object_mut() {
+                object
+                    .entry("presentation")
+                    .or_insert_with(|| json!("pane"));
+                object.insert("mediaType".into(), json!(sourced::MEDIA_TYPE_SOURCE));
+                object.insert("visualKind".into(), json!(sourced::KIND));
+                object.insert("protocolId".into(), json!(sourced::PROTOCOL_ID));
+            }
+        }
+        if is_managed_html {
+            if let Some(object) = metadata.as_object_mut() {
+                object
+                    .entry("presentation")
+                    .or_insert_with(|| json!("pane"));
+                object.insert("mediaType".into(), json!("text/html"));
+                object.insert("managedTemplate".into(), json!(true));
+            }
+        }
+        let canonical_content = managed_html_content.as_ref().or(request.content.as_ref());
+        let content_digest = if let Some(content) = canonical_content {
             Some(self.content.put_bytes("blobs", content.as_bytes())?)
         } else {
             None
@@ -276,11 +425,13 @@ impl VisualRegistry {
             id: id.clone(),
             current_revision: 1,
             title: title.clone(),
+            display_name: visual_display_name(&metadata, &title),
             template_id: template.id.clone(),
             status,
             renderer_kind,
             bindings: bindings.clone(),
             session_id: request.session_id.clone(),
+            workspace_id: None,
             message_id: request.message_id.clone(),
             run_id: request.run_id.clone(),
             trace_id: request.trace_id.clone(),
@@ -295,11 +446,16 @@ impl VisualRegistry {
         };
 
         let db = self.db.clone();
-        let inserted = record.clone();
+        let mut inserted = record.clone();
         let (record, event) = db
             .run_transaction(move |conn| {
                 if let Some(session_id) = inserted.session_id.as_ref() {
                     ensure_session(conn, session_id)?;
+                }
+                if shared {
+                    inserted.workspace_id = Some(conn.query_row(
+                        "SELECT id FROM workshop_workspaces WHERE local_instance = 1", [], |row| row.get(0)
+                    )?);
                 }
                 insert_visual(conn, &inserted)?;
                 insert_revision(
@@ -330,7 +486,10 @@ impl VisualRegistry {
                             "visualId": inserted.id,
                             "revision": inserted.current_revision,
                             "title": inserted.title,
+                            "displayName": inserted.display_name,
+                            "updatedAt": inserted.updated_at,
                             "templateId": inserted.template_id,
+                            "workspaceId": inserted.workspace_id,
                             "status": inserted.status.as_str(),
                         }),
                         remote_sequence: None,
@@ -349,15 +508,15 @@ impl VisualRegistry {
             &bindings_form,
             &upgraded_slots,
         );
-        if mermaid::is_mermaid_template(&record.template_id) {
+        if record.renderer_kind == RendererKind::Mermaid {
             let rendered = self.render_mermaid(&record.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
         }
-        if systems::template_kind(&record.template_id).is_some() {
+        if matches!(record.renderer_kind, RendererKind::Systems | RendererKind::SystemsDynamic) {
             let rendered = self.render_systems(&record.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
         }
-        if charts::is_chart_template(&record.template_id) {
+        if record.renderer_kind == RendererKind::Chart {
             let rendered = self.render_chart(&record.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
         }
@@ -369,19 +528,41 @@ impl VisualRegistry {
         id: String,
         request: VisualUpdateRequest,
     ) -> Result<(VisualRecord, Value)> {
+        self.update_at_revision(id, request, None).await
+    }
+
+    pub async fn update_at_revision(
+        &self,
+        id: String,
+        request: VisualUpdateRequest,
+        expected_revision: Option<i64>,
+    ) -> Result<(VisualRecord, Value)> {
         validate_visual_id(&id)?;
+        let existing = self.get(id.clone()).await?;
         let content_changed = request.content.is_some();
         let bindings_changed = request.bindings.is_some();
         if let Some(source) = request.content.as_deref() {
-            let existing = self.get(id.clone()).await?;
-            if mermaid::is_mermaid_template(&existing.template_id) {
+            if existing.renderer_kind == RendererKind::Mermaid {
                 mermaid::validate_source(source)?;
             }
-            if let Some(kind) = systems::template_kind(&existing.template_id) {
+            if let Some(kind) = match existing.renderer_kind { RendererKind::Systems => Some(SystemsKind::Static), RendererKind::SystemsDynamic => Some(SystemsKind::Dynamic), _ => None } {
                 systems::validate_source(source, kind)?;
             }
-            if charts::is_chart_template(&existing.template_id) {
+            if existing.renderer_kind == RendererKind::Chart {
                 charts::validate_source(source)?;
+            }
+            if existing.renderer_kind == RendererKind::Tsx {
+                let trimmed = source.trim();
+                if trimmed.is_empty() {
+                    bail!("{} requires content", existing.template_id);
+                }
+                if trimmed.len() > sourced::MAX_SOURCE_BYTES {
+                    bail!(
+                        "{} exceeds {} bytes",
+                        existing.template_id,
+                        sourced::MAX_SOURCE_BYTES
+                    );
+                }
             }
         }
         // Canonicalise before anything reads the bindings. The mermaid and
@@ -397,20 +578,25 @@ impl VisualRegistry {
             request.bindings = Some(canonical.value);
         }
         if let Some(bindings) = request.bindings.as_ref() {
-            let existing = self.get(id.clone()).await?;
-            if mermaid::is_mermaid_template(&existing.template_id) {
+            if existing.renderer_kind == RendererKind::Mermaid {
                 refuse_mermaid_stream_slot(bindings)?;
             }
-            if systems::template_kind(&existing.template_id).is_some() {
+            if matches!(existing.renderer_kind, RendererKind::Systems | RendererKind::SystemsDynamic) {
                 refuse_mermaid_stream_slot(bindings)?;
             }
         }
+        let effective_bindings = request.bindings.as_ref().unwrap_or(&existing.bindings);
+        validate_optimizer_run_bindings(effective_bindings)?;
         let db = self.db.clone();
         let content = self.content.clone();
         let (updated, event) = db
             .run_transaction(move |conn| {
                 let mut current = load_visual(conn, &id)?;
-                let mut bumped = false;
+                if let Some(expected) = expected_revision {
+                    anyhow::ensure!(current.current_revision == expected,
+                        "visual_revision_conflict: expected {expected}, current {}", current.current_revision);
+                }
+                let mut bumped = expected_revision.is_some();
                 let bump = request.bump_revision.unwrap_or(true);
                 if let Some(title) = request.title {
                     current.title = title;
@@ -434,6 +620,7 @@ impl VisualRegistry {
                     current.metadata = metadata;
                     bumped = true;
                 }
+                current.display_name = visual_display_name(&current.metadata, &current.title);
                 let mut new_bindings = None;
                 if let Some(bindings) = request.bindings {
                     // Already canonical: `update` canonicalises before the
@@ -482,6 +669,8 @@ impl VisualRegistry {
                             "visualId": current.id,
                             "revision": current.current_revision,
                             "title": current.title,
+                            "displayName": current.display_name,
+                            "updatedAt": current.updated_at,
                             "status": current.status.as_str(),
                         }),
                         remote_sequence: None,
@@ -500,15 +689,15 @@ impl VisualRegistry {
             &bindings_form,
             &upgraded_slots,
         );
-        if content_changed && mermaid::is_mermaid_template(&updated.template_id) {
+        if content_changed && updated.renderer_kind == RendererKind::Mermaid {
             let rendered = self.render_mermaid(&updated.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
         }
-        if content_changed && systems::template_kind(&updated.template_id).is_some() {
+        if content_changed && matches!(updated.renderer_kind, RendererKind::Systems | RendererKind::SystemsDynamic) {
             let rendered = self.render_systems(&updated.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
         }
-        if (content_changed || bindings_changed) && charts::is_chart_template(&updated.template_id)
+        if (content_changed || bindings_changed) && updated.renderer_kind == RendererKind::Chart
         {
             let rendered = self.render_chart(&updated.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
@@ -518,7 +707,12 @@ impl VisualRegistry {
 
     pub async fn save(&self, id: String, tsx: Option<String>) -> Result<(VisualRecord, Value)> {
         let current = self.get(id.clone()).await?;
-        let body = tsx.unwrap_or_else(|| default_tsx_stub(&current));
+        let body = if current.renderer_kind == RendererKind::Tsx {
+            tsx.filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| anyhow!("{} requires content", current.template_id))?
+        } else {
+            tsx.unwrap_or_else(|| default_tsx_stub(&current))
+        };
         let digest = self.content.put_bytes("blobs", body.as_bytes())?;
         let mut metadata = current.metadata.clone();
         if let Some(object) = metadata.as_object_mut() {
@@ -553,7 +747,8 @@ impl VisualRegistry {
         session_id: Option<String>,
     ) -> Result<(VisualRecord, Value)> {
         let source = self.get(id.clone()).await?;
-        self.create(VisualCreateRequest {
+        let shared = source.workspace_id.is_some() && session_id.is_none();
+        self.create_with_owner(VisualCreateRequest {
             template_id: source.template_id,
             title: Some(title.unwrap_or_else(|| format!("{} (fork)", source.title))),
             bindings: Some(source.bindings),
@@ -576,7 +771,7 @@ impl VisualRegistry {
                 "forkedFrom": source.id,
                 "forkedRevision": source.current_revision,
             })),
-        })
+        }, shared)
         .await
     }
 
@@ -628,12 +823,21 @@ impl VisualRegistry {
                     "visualId": record.id,
                     "revision": record.current_revision,
                     "title": record.title,
+                    "displayName": record.display_name,
+                    "updatedAt": record.updated_at,
                     "templateId": record.template_id,
+                    "bindings": record.bindings,
+                    "metadata": record.metadata,
+                    "status": record.status.as_str(),
+                    "runId": record.run_id,
+                    "traceId": record.trace_id,
+                    "messageId": record.message_id,
                     // Who *owns* this visual, which is not who opened it. The
                     // registry is instance-global: without this, a chat that
                     // displayed another chat's visual could not be told apart
                     // from the chat that authored it.
                     "ownerSessionId": record.session_id,
+                    "ownerWorkspaceId": record.workspace_id,
                     "openVisualId": record.id,
                 }),
                 remote_sequence: None,
@@ -661,18 +865,26 @@ impl VisualRegistry {
         resolve_template(template_id)
     }
 
+    pub fn import_template(&self, source_path: &str) -> Result<TemplateMeta> {
+        super::templates::import_managed_template(source_path)
+    }
+
     pub async fn mermaid_source(&self, id: String) -> Result<VisualAsset> {
         self.visual_source(id).await
     }
 
     pub async fn visual_source(&self, id: String) -> Result<VisualAsset> {
         let visual = self.get(id).await?;
-        let media_type = if mermaid::is_mermaid_template(&visual.template_id) {
+        let media_type = if visual.renderer_kind == RendererKind::Mermaid {
             mermaid::MEDIA_TYPE_SOURCE
-        } else if systems::template_kind(&visual.template_id).is_some() {
+        } else if matches!(visual.renderer_kind, RendererKind::Systems | RendererKind::SystemsDynamic) {
             systems::MEDIA_TYPE_SOURCE
-        } else if charts::is_chart_template(&visual.template_id) {
+        } else if visual.renderer_kind == RendererKind::Chart {
             charts::MEDIA_TYPE_SOURCE
+        } else if visual.renderer_kind == RendererKind::Tsx {
+            sourced::MEDIA_TYPE_SOURCE
+        } else if visual.renderer_kind == RendererKind::Html {
+            "text/html"
         } else {
             bail!(
                 "visual {} does not expose canonical renderer source",
@@ -724,9 +936,9 @@ impl VisualRegistry {
         size_class: Option<String>,
     ) -> Result<VisualAsset> {
         let visual = self.get(id.clone()).await?;
-        let systems_kind = systems::template_kind(&visual.template_id);
-        let is_chart = charts::is_chart_template(&visual.template_id);
-        if !mermaid::is_mermaid_template(&visual.template_id) && systems_kind.is_none() && !is_chart
+        let systems_kind = match visual.renderer_kind { RendererKind::Systems => Some(SystemsKind::Static), RendererKind::SystemsDynamic => Some(SystemsKind::Dynamic), _ => None };
+        let is_chart = visual.renderer_kind == RendererKind::Chart;
+        if visual.renderer_kind != RendererKind::Mermaid && systems_kind.is_none() && !is_chart
         {
             bail!("visual {} has no SVG rendition renderer", visual.id);
         }
@@ -837,11 +1049,11 @@ impl VisualRegistry {
 
     pub async fn render_visual(&self, id: &str) -> Result<VisualRecord> {
         let visual = self.get(id.to_string()).await?;
-        if mermaid::is_mermaid_template(&visual.template_id) {
+        if visual.renderer_kind == RendererKind::Mermaid {
             self.render_mermaid(id).await
-        } else if systems::template_kind(&visual.template_id).is_some() {
+        } else if matches!(visual.renderer_kind, RendererKind::Systems | RendererKind::SystemsDynamic) {
             self.render_systems(id).await
-        } else if charts::is_chart_template(&visual.template_id) {
+        } else if visual.renderer_kind == RendererKind::Chart {
             self.render_chart(id).await
         } else {
             // Native rendering is for deterministic source-to-SVG templates.
@@ -863,7 +1075,7 @@ impl VisualRegistry {
 
     pub async fn render_mermaid(&self, id: &str) -> Result<VisualRecord> {
         let visual = self.get(id.to_string()).await?;
-        if !mermaid::is_mermaid_template(&visual.template_id) {
+        if visual.renderer_kind != RendererKind::Mermaid {
             bail!("visual {id} is not a mermaid diagram");
         }
         let digest = visual
@@ -911,8 +1123,11 @@ impl VisualRegistry {
 
     pub async fn render_systems(&self, id: &str) -> Result<VisualRecord> {
         let visual = self.get(id.to_string()).await?;
-        let kind = systems::template_kind(&visual.template_id)
-            .ok_or_else(|| anyhow!("visual {id} is not a systems diagram"))?;
+        let kind = match visual.renderer_kind {
+            RendererKind::Systems => SystemsKind::Static,
+            RendererKind::SystemsDynamic => SystemsKind::Dynamic,
+            _ => bail!("visual {id} is not a systems diagram"),
+        };
         let digest = visual
             .content_digest
             .clone()
@@ -942,8 +1157,8 @@ impl VisualRegistry {
 
     /// Resolve the evidence a chart's `from` blocks name.
     ///
-    /// One document per slot: a chart is a still image of one thing per slot,
-    /// and two bindings on one slot leave no way to say which one the picture
+    /// One document per input: a chart is a still image of one thing per input,
+    /// and two bindings on one input leave no way to say which one the picture
     /// came from. Kinds that only exist while something is running — a live
     /// stream — are refused here rather than sampled arbitrarily.
     async fn chart_documents(
@@ -951,28 +1166,23 @@ impl VisualRegistry {
         visual: &VisualRecord,
         wanted: &std::collections::BTreeMap<String, Option<String>>,
     ) -> Result<(std::collections::BTreeMap<String, Value>, Value)> {
-        let slots = visual
-            .bindings
-            .get("slots")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let slots = binding_descriptors(&visual.bindings).unwrap_or_default();
         let mut documents = std::collections::BTreeMap::new();
         let mut provenance = serde_json::Map::new();
         for (slot, projection) in wanted {
             let matching: Vec<&Value> = slots
                 .iter()
                 .filter(|descriptor| {
-                    descriptor.get("slot").and_then(Value::as_str) == Some(slot.as_str())
+                    descriptor_input_name(descriptor).ok().as_deref() == Some(slot.as_str())
                 })
                 .collect();
             let descriptor = match matching.len() {
                 0 => bail!(
-                    "panel reads slot {slot}, which has no binding; bind it with visual_bind_data_source"
+                    "panel reads input {slot}, which has no binding; bind it with visual_bind_data_source"
                 ),
                 1 => matching[0],
                 count => bail!(
-                    "slot {slot} has {count} bindings; a chart reads one document per slot"
+                    "input {slot} has {count} bindings; a chart reads one document per input"
                 ),
             };
             let kind = descriptor
@@ -986,13 +1196,13 @@ impl VisualRegistry {
                     let document = descriptor
                         .get("data")
                         .cloned()
-                        .ok_or_else(|| anyhow!("inline slot {slot} carries no data"))?;
+                        .ok_or_else(|| anyhow!("inline input {slot} carries no data"))?;
                     receipt["digest"] = json!(digest_json(&document));
                     document
                 }
                 "fixture" => {
                     let path = source
-                        .ok_or_else(|| anyhow!("fixture slot {slot} needs a source path"))?;
+                        .ok_or_else(|| anyhow!("fixture input {slot} needs a source path"))?;
                     let (document, digest) = read_visual_fixture(path)?;
                     receipt["source"] = json!(path);
                     // A fixture is a file on disk, so its path is not identity.
@@ -1002,7 +1212,7 @@ impl VisualRegistry {
                 }
                 "local_cas" => {
                     let digest = source
-                        .ok_or_else(|| anyhow!("local_cas slot {slot} needs a blob digest"))?;
+                        .ok_or_else(|| anyhow!("local_cas input {slot} needs a blob digest"))?;
                     let bytes = self.content.get_bytes("blobs", digest)?;
                     receipt["digest"] = json!(digest);
                     serde_json::from_slice(&bytes)
@@ -1010,7 +1220,7 @@ impl VisualRegistry {
                 }
                 "trace_v5" => {
                     let trace = source
-                        .ok_or_else(|| anyhow!("trace_v5 slot {slot} needs a trace digest"))?;
+                        .ok_or_else(|| anyhow!("trace_v5 input {slot} needs a trace digest"))?;
                     let kind = projection
                         .clone()
                         .unwrap_or_else(|| CHART_DEFAULT_PROJECTION.to_string());
@@ -1028,7 +1238,7 @@ impl VisualRegistry {
                 }
                 "query_snapshot" => {
                     let snapshot_id = source
-                        .ok_or_else(|| anyhow!("query_snapshot slot {slot} needs a snapshot id"))?;
+                        .ok_or_else(|| anyhow!("query_snapshot input {slot} needs a snapshot id"))?;
                     let snapshot = crate::data::DataStore::new(
                         self.db.clone(),
                         self.content.clone(),
@@ -1041,9 +1251,9 @@ impl VisualRegistry {
                 }
                 "optimizer_run" => {
                     let run_id = source
-                        .ok_or_else(|| anyhow!("optimizer_run slot {slot} needs a run id"))?;
+                        .ok_or_else(|| anyhow!("optimizer_run input {slot} needs a run id"))?;
                     let service = self.optimizer_runs.get().ok_or_else(|| {
-                        anyhow!("this runtime has no optimizer service attached, so slot {slot} cannot be read")
+                        anyhow!("this runtime has no optimizer service attached, so input {slot} cannot be read")
                     })?;
                     // The typed result points at the per-trial ledger
                     // (`evidenceRefs.records`) rather than carrying it, and a
@@ -1068,7 +1278,7 @@ impl VisualRegistry {
                     document
                 }
                 other => bail!(
-                    "slot {slot} is bound as {other}, which a chart cannot read; supported kinds are inline, fixture, local_cas, trace_v5, query_snapshot, optimizer_run"
+                    "input {slot} is bound as {other}, which a chart cannot read; supported kinds are inline, fixture, local_cas, trace_v5, query_snapshot, optimizer_run"
                 ),
             };
             provenance.insert(slot.clone(), receipt);
@@ -1079,7 +1289,7 @@ impl VisualRegistry {
 
     pub async fn render_chart(&self, id: &str) -> Result<VisualRecord> {
         let visual = self.get(id.to_string()).await?;
-        if !charts::is_chart_template(&visual.template_id) {
+        if visual.renderer_kind != RendererKind::Chart {
             bail!("visual {id} is not a chart");
         }
         let digest = visual
@@ -1470,13 +1680,29 @@ impl VisualRegistry {
     }
 }
 
+/// One visual may declare at most one optimizer authority. The generic
+/// `VisualRecord.run_id` belongs to the separate `runs` domain, so optimizer
+/// identity remains in this typed binding and is never copied into that FK.
+fn validate_optimizer_run_bindings(bindings: &Value) -> Result<()> {
+    let declared = super::models::declared_optimizer_run_ids(bindings)
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    if declared.len() > 1 {
+        bail!(
+            "visual declares conflicting optimizer_run bindings: {}",
+            declared.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    Ok(())
+}
+
 fn refuse_mermaid_stream_slot(bindings: &Value) -> Result<()> {
-    let Some(slots) = bindings.get("slots").and_then(Value::as_array) else {
+    let Ok(slots) = binding_descriptors(bindings) else {
         return Ok(());
     };
     for slot in slots {
-        if slot.get("slot").and_then(Value::as_str) == Some("stream") {
-            bail!("diagram.mermaid.v1 must not bind slot stream");
+        if descriptor_input_name(&slot).ok().as_deref() == Some("stream") {
+            bail!("diagram.mermaid.v1 must not bind input stream");
         }
     }
     Ok(())
@@ -1725,13 +1951,26 @@ fn load_selected_visual(conn: &Connection, session_id: &str) -> Result<Option<St
         .map(|visual| visual.id))
 }
 
+fn visual_display_name(metadata: &Value, title: &str) -> Option<String> {
+    metadata
+        .get("displayName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(64).collect())
+        .or_else(|| {
+            let fallback = title.trim();
+            (!fallback.is_empty()).then(|| fallback.chars().take(64).collect())
+        })
+}
+
 fn insert_visual(conn: &Connection, visual: &VisualRecord) -> Result<()> {
     conn.execute(
         "INSERT INTO visuals(
             id, current_revision, title, template_id, status, renderer_kind, bindings_json,
             session_id, message_id, run_id, trace_id, parent_visual_id, source_agent_id,
-            source_model, content_digest, preview_digest, metadata_json, created_at, updated_at
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+            source_model, content_digest, preview_digest, metadata_json, created_at, updated_at, workspace_id
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
         params![
             visual.id,
             visual.current_revision,
@@ -1752,6 +1991,7 @@ fn insert_visual(conn: &Connection, visual: &VisualRecord) -> Result<()> {
             visual.metadata.to_string(),
             visual.created_at,
             visual.updated_at,
+            visual.workspace_id,
         ],
     )
     .context("insert visual")?;
@@ -1830,24 +2070,103 @@ fn insert_revision(conn: &Connection, revision: &VisualRevision) -> Result<()> {
     Ok(())
 }
 
+fn load_revision(conn: &Connection, visual_id: &str, revision: i64) -> Result<VisualRevision> {
+    conn.query_row(
+        "SELECT visual_id, revision, template_id, renderer_kind, content_digest, bindings_digest,
+                bindings_json, preview_digest, author_agent_id, parent_revision, created_at
+         FROM visual_revisions WHERE visual_id = ?1 AND revision = ?2",
+        params![visual_id, revision],
+        |row| {
+            Ok(VisualRevision {
+                visual_id: row.get(0)?,
+                revision: row.get(1)?,
+                template_id: row.get(2)?,
+                renderer_kind: RendererKind::parse(&row.get::<_, String>(3)?),
+                content_digest: row.get(4)?,
+                bindings_digest: row.get(5)?,
+                bindings: row
+                    .get::<_, Option<String>>(6)?
+                    .and_then(|raw| serde_json::from_str(&raw).ok()),
+                preview_digest: row.get(7)?,
+                author_agent_id: row.get(8)?,
+                parent_revision: row.get(9)?,
+                created_at: row.get(10)?,
+            })
+        },
+    )
+    .optional()?
+    .ok_or_else(|| anyhow!("visual revision not found: {visual_id}@{revision}"))
+}
+
+pub(super) fn certification_identity_value(
+    visual: &VisualRecord,
+    revision: &VisualRevision,
+    template: &TemplateMeta,
+) -> Value {
+    let diagnostics = crate::instance::diagnostics();
+    json!({
+        "schemaVersion": "synth.visual-certification-identity.v1",
+        "visualId": visual.id,
+        "revision": revision.revision,
+        "templateId": template.id,
+        "templateDigest": template.template_digest,
+        "rendererKind": revision.renderer_kind.as_str(),
+        "rendererDigest": certification_renderer_digest(template, &diagnostics.source_revision),
+        "sourceRevision": diagnostics.source_revision,
+        "buildRevision": diagnostics.build_revision,
+        "executableDigest": diagnostics.executable_digest,
+        "bindingsDigest": revision.bindings_digest,
+        "contentDigest": revision.content_digest,
+    })
+}
+
+fn certification_stale_reasons(certified: Option<&Value>, current: &Value) -> Vec<String> {
+    let Some(certified) = certified else {
+        return vec!["legacy_certification_missing_identity".into()];
+    };
+    const FIELDS: &[(&str, &str)] = &[
+        ("revision", "visual_revision_changed"),
+        ("templateDigest", "template_changed"),
+        ("rendererDigest", "renderer_changed"),
+        ("bindingsDigest", "bindings_changed"),
+        ("contentDigest", "content_changed"),
+        ("executableDigest", "executable_changed"),
+    ];
+    let mut reasons = Vec::new();
+    for (field, reason) in FIELDS {
+        if certified.get(*field) != current.get(*field) {
+            reasons.push((*reason).to_string());
+        }
+    }
+    if reasons.is_empty() {
+        reasons.push("certification_identity_changed".into());
+    }
+    reasons
+}
+
 fn load_visual(conn: &Connection, id: &str) -> Result<VisualRecord> {
     conn.query_row(
         "SELECT id, current_revision, title, template_id, status, renderer_kind, bindings_json,
                 session_id, message_id, run_id, trace_id, parent_visual_id, source_agent_id,
-                source_model, content_digest, preview_digest, metadata_json, created_at, updated_at
+                source_model, content_digest, preview_digest, metadata_json, created_at, updated_at, workspace_id
          FROM visuals WHERE id = ?1",
         params![id],
         |row| {
+            let title: String = row.get(2)?;
+            let metadata: Value =
+                serde_json::from_str(&row.get::<_, String>(16)?).unwrap_or(json!({}));
             Ok(VisualRecord {
                 schema_version: VISUAL_SCHEMA_VERSION.to_string(),
                 id: row.get(0)?,
                 current_revision: row.get(1)?,
-                title: row.get(2)?,
+                display_name: visual_display_name(&metadata, &title),
+                title,
                 template_id: row.get(3)?,
                 status: VisualStatus::parse(&row.get::<_, String>(4)?),
                 renderer_kind: RendererKind::parse(&row.get::<_, String>(5)?),
                 bindings: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or(json!({})),
                 session_id: row.get(7)?,
+                workspace_id: row.get(19)?,
                 message_id: row.get(8)?,
                 run_id: row.get(9)?,
                 trace_id: row.get(10)?,
@@ -1856,7 +2175,7 @@ fn load_visual(conn: &Connection, id: &str) -> Result<VisualRecord> {
                 source_model: row.get(13)?,
                 content_digest: row.get(14)?,
                 preview_digest: row.get(15)?,
-                metadata: serde_json::from_str(&row.get::<_, String>(16)?).unwrap_or(json!({})),
+                metadata,
                 created_at: row.get(17)?,
                 updated_at: row.get(18)?,
             })
@@ -1877,7 +2196,7 @@ fn list_visuals(conn: &Connection, query: &VisualQuery) -> Result<Vec<VisualReco
     let mut sql = String::from(
         "SELECT id, current_revision, title, template_id, status, renderer_kind, bindings_json,
                 session_id, message_id, run_id, trace_id, parent_visual_id, source_agent_id,
-                source_model, content_digest, preview_digest, metadata_json, created_at, updated_at
+                source_model, content_digest, preview_digest, metadata_json, created_at, updated_at, workspace_id
          FROM visuals WHERE 1 = 1",
     );
     let mut binds: Vec<String> = Vec::new();
@@ -1908,16 +2227,20 @@ fn list_visuals(conn: &Connection, query: &VisualQuery) -> Result<Vec<VisualReco
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(binds.iter()), |row| {
+        let title: String = row.get(2)?;
+        let metadata: Value = serde_json::from_str(&row.get::<_, String>(16)?).unwrap_or(json!({}));
         Ok(VisualRecord {
             schema_version: VISUAL_SCHEMA_VERSION.to_string(),
             id: row.get(0)?,
             current_revision: row.get(1)?,
-            title: row.get(2)?,
+            display_name: visual_display_name(&metadata, &title),
+            title,
             template_id: row.get(3)?,
             status: VisualStatus::parse(&row.get::<_, String>(4)?),
             renderer_kind: RendererKind::parse(&row.get::<_, String>(5)?),
             bindings: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or(json!({})),
             session_id: row.get(7)?,
+            workspace_id: row.get(19)?,
             message_id: row.get(8)?,
             run_id: row.get(9)?,
             trace_id: row.get(10)?,
@@ -1926,7 +2249,7 @@ fn list_visuals(conn: &Connection, query: &VisualQuery) -> Result<Vec<VisualReco
             source_model: row.get(13)?,
             content_digest: row.get(14)?,
             preview_digest: row.get(15)?,
-            metadata: serde_json::from_str(&row.get::<_, String>(16)?).unwrap_or(json!({})),
+            metadata,
             created_at: row.get(17)?,
             updated_at: row.get(18)?,
         })
@@ -1973,8 +2296,46 @@ mod tests {
     use crate::storage::Storage;
     use tempfile::tempdir;
 
+    #[test]
+    fn certification_identity_reports_the_specific_stale_layer() {
+        let current = json!({
+            "revision": 4,
+            "templateDigest": "sha256:new-template",
+            "rendererDigest": "sha256:renderer",
+            "bindingsDigest": "sha256:bindings",
+            "contentDigest": "sha256:content",
+            "executableDigest": "sha256:binary"
+        });
+        let mut certified = current.clone();
+        certified["templateDigest"] = json!("sha256:old-template");
+        assert_eq!(
+            certification_stale_reasons(Some(&certified), &current),
+            vec!["template_changed"]
+        );
+        assert_eq!(
+            certification_stale_reasons(None, &current),
+            vec!["legacy_certification_missing_identity"]
+        );
+    }
+
+    #[test]
+    fn display_name_prefers_agent_label_and_falls_back_to_title() {
+        assert_eq!(
+            visual_display_name(
+                &json!({"displayName": "  Reward by Seed  "}),
+                "Technical title"
+            )
+            .as_deref(),
+            Some("Reward by Seed")
+        );
+        assert_eq!(
+            visual_display_name(&json!({}), "Technical title").as_deref(),
+            Some("Technical title")
+        );
+    }
+
     /// A template these tests can create without canonical source. Mermaid,
-    /// systems, and chart templates all refuse a contentless create by
+    /// systems, chart, and sourced templates all refuse a contentless create by
     /// contract, so picking one here would test the guard, not the registry.
     fn non_mermaid_template(registry: &VisualRegistry) -> Option<String> {
         registry.list_templates(None).ok().and_then(|templates| {
@@ -1983,6 +2344,23 @@ mod tests {
                 .find(|template| !crate::visuals::requires_canonical_source(&template.id))
                 .map(|template| template.id)
         })
+    }
+
+    #[test]
+    fn conflicting_optimizer_bindings_are_refused_without_overloading_run_id() {
+        let bindings = json!({
+            "schemaVersion": crate::visuals::VISUAL_BINDINGS_SCHEMA_VERSION,
+            "inputs": [{
+                "input": "optimizer_run",
+                "kind": "optimizer_run",
+                "source": "opt_eval_1",
+            }, {
+                "input": "comparison_run",
+                "kind": "optimizer_run",
+                "source": "opt_eval_2",
+            }]
+        });
+        assert!(validate_optimizer_run_bindings(&bindings).is_err());
     }
 
     #[tokio::test]
@@ -2670,6 +3048,82 @@ mod tests {
         assert_eq!(dynamic.metadata["beatCount"], 2);
         let source = registry.visual_source(dynamic.id).await.unwrap();
         assert_eq!(source.media_type, systems::MEDIA_TYPE_SOURCE);
+    }
+
+    #[tokio::test]
+    async fn sourced_create_requires_content_and_exposes_source() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let registry = VisualRegistry::new(
+            storage.database().clone(),
+            EventJournal::new(storage.database().clone()),
+            ContentStore::new(storage.content_root()),
+        );
+        if registry.get_template(sourced::TEMPLATE_ID).is_err() {
+            return;
+        }
+        let missing = registry
+            .create(VisualCreateRequest {
+                template_id: sourced::TEMPLATE_ID.into(),
+                title: Some("Custom pane".into()),
+                bindings: Some(json!({})),
+                id: Some("vis_sourced_missing".into()),
+                status: None,
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: None,
+                source_model: None,
+                content: None,
+                metadata: None,
+            })
+            .await;
+        assert!(
+            missing.is_err(),
+            "sourced create must fail closed without content"
+        );
+
+        let source = r#"import { VisualChrome } from "@synth/visuals/chrome";
+export default function Shell({ title }) {
+  return <VisualChrome title={title ?? "Custom"} testId="visual-sourced">ok</VisualChrome>;
+}
+"#;
+        let (created, _) = registry
+            .create(VisualCreateRequest {
+                template_id: sourced::TEMPLATE_ID.into(),
+                title: Some("Custom pane".into()),
+                bindings: Some(json!({})),
+                id: Some("vis_sourced_ok".into()),
+                status: Some(VisualStatus::Live),
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: Some("mcp".into()),
+                source_model: None,
+                content: Some(source.into()),
+                metadata: Some(json!({"presentation": "pane"})),
+            })
+            .await
+            .unwrap();
+        assert_eq!(created.renderer_kind, RendererKind::Tsx);
+        assert!(created.content_digest.is_some());
+        assert_eq!(created.metadata["visualKind"], sourced::KIND);
+        assert_eq!(created.metadata["protocolId"], sourced::PROTOCOL_ID);
+        let asset = registry.visual_source(created.id.clone()).await.unwrap();
+        assert_eq!(asset.media_type, sourced::MEDIA_TYPE_SOURCE);
+        let decoded = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(asset.base64)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(decoded.contains("visual-sourced"));
     }
 
     #[tokio::test]

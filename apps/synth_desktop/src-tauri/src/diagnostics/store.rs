@@ -44,6 +44,10 @@ impl DiagnosticStore {
         Self { db, journal }
     }
 
+    pub(crate) fn database(&self) -> &Arc<Database> {
+        &self.db
+    }
+
     /// Persist a batch of diagnostics in one transaction.
     ///
     /// Correlation identities stay in the payload and are deliberately *not*

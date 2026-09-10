@@ -6,17 +6,19 @@ import type {
 	Session,
 	VisualInstanceRecord
 } from "@synth/runtime-protocol";
+import { LOCAL_BASE_POLICY } from "./lagunaPolicies";
+import { optimizerRunIdFromBindings } from "./visualBindings";
+import { previewVariantForTemplate } from "./templatePresentation";
 import {
-	OPENROUTER_LAGUNA_S_MODEL,
-	OPENROUTER_LUNA_MODEL,
-	OPENROUTER_MUSE_SPARK_MODEL,
-	OPENROUTER_GEMINI_FLASH_MODEL,
 	CHATGPT_LUNA_MODEL,
 	CHATGPT_SOL_MODEL,
 	CHATGPT_TERRA_MODEL,
 	SYNTH_CLOUD_LAGUNA_S_MODEL,
+	SYNTH_CLOUD_LAGUNA_XS_B200_MODEL,
+	SYNTH_CLOUD_LAGUNA_XS_H100_MODEL,
 	SYNTH_CLOUD_MUSE_SPARK_MODEL,
 	type ActivityEvent,
+	parseArtifactRefStatus,
 	type ArtifactRef,
 	type AsyncInternPin,
 	type AsyncPhase,
@@ -30,6 +32,13 @@ import {
 } from "../types/landing";
 import { assertLocalActivityPlacementInvariant } from "./activityPlacementInvariant";
 import { modelCapabilitiesForExecutionTarget } from "./modelCapabilities";
+import {
+	modelCatalogEntry,
+	modelCatalogEntryForModel,
+	rememberHistoricalOpenRouterTarget,
+	targetOptionForId,
+	unknownOpenRouterTargetId
+} from "./modelCatalog";
 
 /** Transcript divider copy for `thread/compacted` events. */
 export function contextCompactionLabel(source: string): string {
@@ -72,8 +81,28 @@ function tokenTotalFromPayload(payload: Record<string, unknown>): number | undef
 	return undefined;
 }
 
-export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
-	const adapter = null;
+export function targetIdToExecutionTarget(targetId: string, adapter: string | null = null): ExecutionTarget {
+	const remoteAdapter = null;
+	const catalogTarget = modelCatalogEntry(targetId);
+	if (catalogTarget?.provider === "openrouter") {
+		return {
+			kind: "remote",
+			provider: "openrouter",
+			model: catalogTarget.modelId,
+			adapter: remoteAdapter,
+			targetId: catalogTarget.targetId
+		};
+	}
+	const retainedTarget = targetOptionForId(targetId);
+	if (retainedTarget?.group === "remote" && retainedTarget.modelId) {
+		return {
+			kind: "remote",
+			provider: "openrouter",
+			model: retainedTarget.modelId,
+			adapter: remoteAdapter,
+			targetId
+		};
+	}
 
 	switch (targetId) {
 		case "chatgpt-luna":
@@ -83,48 +112,31 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 				kind: "remote",
 				provider: "openai-codex-oauth",
 				model: targetId === "chatgpt-sol" ? CHATGPT_SOL_MODEL : targetId === "chatgpt-terra" ? CHATGPT_TERRA_MODEL : CHATGPT_LUNA_MODEL,
-				adapter
-			};
-		case "openrouter-luna":
-			return {
-				kind: "remote",
-				provider: "openrouter",
-				model: OPENROUTER_LUNA_MODEL,
-				adapter
-			};
-		case "openrouter-laguna-s":
-		case "openrouter-poolside":
-			return {
-				kind: "remote",
-				provider: "openrouter",
-				model: OPENROUTER_LAGUNA_S_MODEL,
-				adapter
-			};
-		case "openrouter-muse-spark":
-			return {
-				kind: "remote",
-				provider: "openrouter",
-				model: OPENROUTER_MUSE_SPARK_MODEL,
-				adapter
-			};
-		case "openrouter-gemini-flash":
-			return {
-				kind: "remote",
-				provider: "openrouter",
-				model: OPENROUTER_GEMINI_FLASH_MODEL,
-				adapter
+				adapter: remoteAdapter
 			};
 		case "synth-cloud-laguna-s":
 			return {
 				kind: "cloud",
 				model: SYNTH_CLOUD_LAGUNA_S_MODEL,
-				adapter
+				adapter: remoteAdapter
+			};
+		case "synth-cloud-laguna-xs-b200":
+			return {
+				kind: "cloud",
+				model: SYNTH_CLOUD_LAGUNA_XS_B200_MODEL,
+				adapter: remoteAdapter
+			};
+		case "synth-cloud-laguna-xs-h100":
+			return {
+				kind: "cloud",
+				model: SYNTH_CLOUD_LAGUNA_XS_H100_MODEL,
+				adapter: remoteAdapter
 			};
 		case "synth-cloud-muse-spark":
 			return {
 				kind: "cloud",
 				model: SYNTH_CLOUD_MUSE_SPARK_MODEL,
-				adapter
+				adapter: remoteAdapter
 			};
 		case "intern-sync":
 			return { kind: "intern", mode: "sync" };
@@ -134,8 +146,8 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 		default:
 			return {
 				kind: "local",
-				model: "laguna-xs-2.1",
-				adapter
+				model: adapter ?? LOCAL_BASE_POLICY,
+				adapter: null
 			};
 	}
 }
@@ -146,6 +158,8 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 		return target.mode === "async" ? "intern-async" : "intern-sync";
 	}
 	if (target.kind === "cloud") {
+		if (target.model === SYNTH_CLOUD_LAGUNA_XS_B200_MODEL) return "synth-cloud-laguna-xs-b200";
+		if (target.model === SYNTH_CLOUD_LAGUNA_XS_H100_MODEL) return "synth-cloud-laguna-xs-h100";
 		return target.model === SYNTH_CLOUD_MUSE_SPARK_MODEL
 			? "synth-cloud-muse-spark"
 			: "synth-cloud-laguna-s";
@@ -153,12 +167,15 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 	if (target.provider === "openai-codex-oauth") {
 		return target.model === CHATGPT_SOL_MODEL ? "chatgpt-sol" : target.model === CHATGPT_TERRA_MODEL ? "chatgpt-terra" : "chatgpt-luna";
 	}
-	if (target.model === OPENROUTER_LUNA_MODEL || target.model.includes("kimi")) {
-		return "openrouter-luna";
+	if (target.targetId) {
+		if (!modelCatalogEntry(target.targetId)) rememberHistoricalOpenRouterTarget(target, target.targetId);
+		return target.targetId;
 	}
-	if (target.model === OPENROUTER_MUSE_SPARK_MODEL) return "openrouter-muse-spark";
-	if (target.model === OPENROUTER_GEMINI_FLASH_MODEL) return "openrouter-gemini-flash";
-	return "openrouter-laguna-s";
+	const catalogMatch = modelCatalogEntryForModel(target.model);
+	if (catalogMatch) return catalogMatch.targetId;
+	const unknown = unknownOpenRouterTargetId(target.model);
+	rememberHistoricalOpenRouterTarget(target, unknown);
+	return unknown;
 }
 
 export function sessionIsLocalChat(session: Session): boolean {
@@ -207,10 +224,26 @@ function mapAsyncPhase(status: Session["status"], events: RuntimeEvent[] = []): 
 	}
 }
 
+/** Select one thread from the shared journal without mixing sibling lifecycles.
+ * Child views retain at most 600 events and never create a second event store.
+ */
+export function conversationThreadEvents(events: RuntimeEvent[], threadId: string | null, includeUnscoped = false): RuntimeEvent[] {
+	if (!threadId) return [];
+	const selected: RuntimeEvent[] = [];
+	for (let index = events.length - 1; index >= 0 && selected.length < 600; index -= 1) {
+		const event = events[index]!;
+		const id = eventThreadId(event.payload ?? {}, eventItem(event));
+		if (id === threadId || (includeUnscoped && !id)) selected.push(event);
+	}
+	return selected.reverse();
+}
+
 export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 	const byId = new Map<string, ChatMessage>();
 	const order: string[] = [];
 	const subagentIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
+	const scopedThreadIds = new Set(events.map((event) => eventThreadId(event.payload ?? {}, eventItem(event))).filter(Boolean));
+	const isSingleThreadProjection = scopedThreadIds.size === 1;
 	let activeAssistantId: string | null = null;
 	let producedAssistantForTurn = false;
 	let compactedDuringTurn = false;
@@ -223,7 +256,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 		// letting those terminal events reach the parent would manufacture
 		// "provider ended" messages and reset the parent's streaming state.
 		const sourceThreadId = eventThreadId(payload, eventItem(event));
-		if (sourceThreadId && subagentIds.has(sourceThreadId)) continue;
+		if (!isSingleThreadProjection && sourceThreadId && subagentIds.has(sourceThreadId)) continue;
 		if (event.eventKind === "run.started") {
 			activeAssistantId = null;
 			producedAssistantForTurn = false;
@@ -394,6 +427,17 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 			// must not manufacture a contradictory "no response" message.
 			if (terminalSeenForTurn) continue;
 			terminalSeenForTurn = true;
+			const userCancelled = event.eventKind === "run.cancelled"
+				&& (payload.reason === "operator_cancelled" || payload.cancelledBy === "user");
+			if (userCancelled) {
+				const message = "You stopped this response.";
+				const previous = order.length ? byId.get(order[order.length - 1]) : undefined;
+				if (previous?.role !== "system" || previous.body !== message) {
+					const id = `terminal-${event.sequence}`;
+					order.push(id);
+					byId.set(id, { id, role: "system", body: message, at: event.createdAt });
+				}
+			}
 			// A typed final agent item can be the terminal run payload when the
 			// app-server closes immediately after its final answer. Preserve that
 			// authoritative content as an assistant message before deciding that
@@ -407,7 +451,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 					producedAssistantForTurn = true;
 				}
 			}
-			if (!producedAssistantForTurn && !compactedDuringTurn) {
+			if (!userCancelled && !producedAssistantForTurn && !compactedDuringTurn) {
 				const detail = terminalTurnDetail(event.payload ?? {});
 				const providerLimitMessage = providerLimitMessageFor(event.payload ?? {});
 				const failureDetail = detail ? `: ${detail.replace(/[.!?]+$/, "")}.` : ".";
@@ -468,31 +512,85 @@ function providerLimitMessageFor(payload: Record<string, unknown>): string | und
 	const error = turn.error && typeof turn.error === "object"
 		? turn.error as Record<string, unknown>
 		: payload.error && typeof payload.error === "object" ? payload.error as Record<string, unknown> : undefined;
-	const code = typeof error?.codexErrorInfo === "string" ? error.codexErrorInfo.toLowerCase() : "";
+	const code = [error?.codexErrorInfo, error?.code, turn.code, payload.code]
+		.find((value): value is string => typeof value === "string")
+		?.toLowerCase() ?? "";
 	const rawMessage = typeof error?.message === "string" ? error.message.trim() : "";
 	const message = rawMessage.toLowerCase();
-	const provider = typeof payload.provider === "string" ? payload.provider.toLowerCase() : "";
-	if (code === "usagelimitexceeded" || message.includes("hit your usage limit")) {
+	const explicitProvider = [
+		error?.provider,
+		error?.providerId,
+		turn.provider,
+		turn.providerId,
+		payload.provider,
+		payload.providerId,
+		objectValue(payload.target)?.provider,
+		objectValue(payload.modelIdentity)?.provider,
+		objectValue(payload.credentialChain)?.provider
+	].find((value): value is string => typeof value === "string" && value.trim().length > 0);
+	let provider = explicitProvider?.trim().toLowerCase() ?? "";
+	if (!provider && (code.startsWith("codex_oauth_") || code === "usagelimitexceeded")) {
+		provider = "openai-codex-oauth";
+	} else if (!provider && message.includes("openrouter")) {
+		provider = "openrouter";
+	} else if (!provider && (message.includes("synth cloud") || message.includes("synth allowance"))) {
+		provider = "synth-cloud";
+	}
+	const providerPrefix = `Provider: ${providerLimitLabel(provider)}.`;
+	if (/\b401\b|unauthorized|invalid[_ ]api[_ ]key|missing authentication header/.test(message)) {
+		return `${providerPrefix} Your credentials were rejected. Update the provider API key or sign in again, then resend your message. Your message is preserved in this conversation.`;
+	}
+	if (
+		code === "usagelimitexceeded" || code === "codex_oauth_usage_limit" ||
+		message.includes("hit your usage limit")
+	) {
 		const reset = /try again at\s+(.+?)(?:\.+)?$/i.exec(rawMessage)?.[1]?.trim();
 		return reset
-			? `Your ChatGPT usage limit has been reached. You are still signed in; use another model or try again at ${reset}.`
-			: "Your ChatGPT usage limit has been reached. You are still signed in; use another model or try again after your limit resets.";
+			? `${providerPrefix} Your usage limit has been reached. You are still signed in; use another model or try again at ${reset}.`
+			: `${providerPrefix} Your usage limit has been reached. You are still signed in; use another model or try again after your limit resets.`;
 	}
 	if (
 		provider === "openrouter" ||
 		message.includes("openrouter") ||
 		/(insufficient[_ ](?:credits|funds)|credit balance|no credits|payment required)/.test(message)
 	) {
-		return "Your OpenRouter credits are unavailable or exhausted. Add credits or choose another model, then retry.";
+		const prefix = `Provider: ${providerLimitLabel(provider || "openrouter")}.`;
+		return `${prefix} Credits are unavailable or exhausted. Add credits or choose another model, then retry.`;
 	}
 	if (
 		provider === "synth" || provider === "synth-cloud" ||
 		message.includes("synth cloud") || message.includes("synth allowance") ||
 		/(allowance (?:is )?(?:used up|exhausted)|billing (?:needs attention|limit))/.test(message)
 	) {
-		return "Your Synth Cloud allowance is unavailable. Manage billing or choose a local/API-key model, then retry.";
+		const prefix = `Provider: ${providerLimitLabel(provider || "synth-cloud")}.`;
+		return `${prefix} Your allowance is unavailable. Manage billing or choose a local/API-key model, then retry.`;
 	}
 	return undefined;
+}
+
+function providerLimitLabel(provider: string): string {
+	switch (provider.toLowerCase()) {
+		case "openai-codex-oauth":
+		case "chatgpt":
+		case "codex":
+			return "ChatGPT Codex";
+		case "openai":
+			return "OpenAI";
+		case "openrouter":
+			return "OpenRouter";
+		case "synth":
+		case "synth-cloud":
+			return "Synth Cloud";
+		case "google":
+		case "gemini":
+			return "Gemini";
+		case "":
+			return "Unknown";
+		default:
+			return provider
+				.replace(/[-_]+/g, " ")
+				.replace(/\b\w/g, (character) => character.toUpperCase());
+	}
 }
 
 export function eventsToActivity(
@@ -765,7 +863,7 @@ function mcpToolActivity(
 		"synth_visuals.visual_create": ["template_id", "title"],
 		"synth_visuals.visual_create_from_template": ["template_id", "title"],
 		"synth_visuals.visual_update": ["visual_id", "instance_id", "title", "status"],
-		"synth_visuals.visual_bind_data_source": ["visual_id", "instance_id", "slot"],
+		"synth_visuals.visual_bind_data_source": ["visual_id", "instance_id", "input", "slot"],
 		"synth_visuals.visual_save": ["visual_id", "instance_id"],
 		"synth_visuals.visual_save_tsx": ["visual_id", "instance_id"],
 		"synth_visuals.visual_fork": ["visual_id", "instance_id", "title"],
@@ -1185,6 +1283,9 @@ export function eventsToLocalActivity(
 	options?: { enforcePlacementInvariant?: boolean }
 ): Record<string, LocalActivityLine[]> {
 	const assistantIds = messages.filter((message) => message.role === "assistant").map((message) => message.id);
+	const childThreadIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
+	const scopedThreadIds = new Set(events.map((event) => eventThreadId(event.payload ?? {}, eventItem(event))).filter(Boolean));
+	const isSingleThreadProjection = scopedThreadIds.size === 1;
 	const lastContentSequenceByMessageId = new Map<string, number>();
 	const approvalKey = (event: RuntimeEvent): string | undefined => {
 		const payload = event.payload ?? {};
@@ -1343,6 +1444,7 @@ export function eventsToLocalActivity(
 			}
 			continue;
 		}
+		if (!isSingleThreadProjection && threadId && childThreadIds.has(threadId)) continue;
 		const explicit = typeof payload.messageId === "string" ? payload.messageId : null;
 		const messageText = event.eventKind.startsWith("message.")
 			? (typeof payload.delta === "string" ? payload.delta
@@ -1398,7 +1500,21 @@ export function eventsToLocalActivity(
 		if (event.eventKind === "run.completed" || event.eventKind === "run.failed" || event.eventKind === "run.cancelled") {
 			const key = runIdentity(payload) ?? activeRunKey;
 			if (key && completedRunKeys.has(key)) continue;
+			// A turn without an assistant answer projects a terminal system message.
+			// Seal its pending activity there so the next reply cannot inherit a
+			// previous turn's failure duration or tool activity.
+			const terminalMessageId = `terminal-${event.sequence}`;
+			if (current === "__active__" && messages.some((message) => message.id === terminalMessageId)) {
+				(byMessage[terminalMessageId] ??= []).push(...(byMessage.__active__ ?? []));
+				delete byMessage.__active__;
+				current = terminalMessageId;
+			}
 			const actions = actionCountLabel(runActions);
+			if (event.eventKind === "run.cancelled") {
+				for (const line of shownToolLines.values()) {
+					if (line.toolStatus === "running") line.toolStatus = "cancelled";
+				}
+			}
 			const outcome = event.eventKind === "run.completed" ? "Worked" : event.eventKind === "run.failed" ? "Stopped with an error after" : "Stopped after";
 			(byMessage[current] ??= []).unshift({
 				id: `run-summary-${event.sequence}`,
@@ -1514,23 +1630,61 @@ export function eventsToLocalActivity(
 			continue;
 		}
 		if (!event.eventKind.startsWith("approval.")) continue;
+		// Policy-effective is durable configuration state, not conversation
+		// activity. Keep it in the journal/Advanced view and let the composer’s
+		// permissions control present the active policy.
+		if (event.eventKind === "approval.policy.effective") continue;
+		// A successful conversation-budget auto-approval is likewise control-plane
+		// bookkeeping, not something the user said or must act on. Repeated eval
+		// calls can produce dozens of these receipts; keep them in Advanced and the
+		// durable journal instead of turning the transcript into a spend ledger.
+		if (event.eventKind === "approval.granted"
+			&& payload.kind === "paid_compute"
+			&& payload.policyAuto === true
+			&& payload.approvalPolicy === "conversation_paid_compute_budget") continue;
 		const path = typeof payload.path === "string" ? payload.path : undefined;
 		const approvalKind = typeof payload.kind === "string" ? payload.kind : "permission";
-		const label = event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? "Paid compute approval"
-			: event.eventKind === "approval.requested" && approvalKind === "credential_access" ? "Credential access"
-				: event.eventKind === "approval.requested" && approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
-			: event.eventKind === "approval.requested" && approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
-			: event.eventKind === "approval.requested" && approvalKind === "computer_use"
-				? (payload.hazard === true ? "Confirm this action" : "Allow app control")
-			: event.eventKind === "approval.requested" ? "Approval requested"
-			: event.eventKind === "approval.granted" ? "Approval granted"
-				: event.eventKind === "approval.rejected" ? "Approval rejected"
-					: event.eventKind === "approval.expired" ? "Approval expired" : "Approval updated";
+		const approvalSubject = approvalKind === "paid_compute" ? "Paid compute"
+			: approvalKind === "credential_access" ? "Credential access"
+				: approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
+					: approvalKind === "container_lifecycle" ? "Container replacement"
+					: approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
+						: approvalKind === "computer_use" ? "App control"
+							: approvalKind === "project_source" ? "Project source"
+								: "Permission";
+		let label: string | undefined;
+		switch (event.eventKind) {
+			case "approval.requested":
+				label = approvalKind === "paid_compute" ? "Paid compute approval"
+					: approvalKind === "credential_access" ? "Credential access"
+						: approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
+							: approvalKind === "container_lifecycle" ? "Replace container workload"
+							: approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
+								: approvalKind === "computer_use"
+									? (payload.hazard === true ? "Confirm this action" : "Allow app control")
+									: "Approval requested";
+				break;
+			case "approval.granted":
+				label = `${approvalSubject} granted`;
+				break;
+			case "approval.rejected":
+				label = `${approvalSubject} rejected`;
+				break;
+			case "approval.expired":
+				label = `${approvalSubject} expired`;
+				break;
+			default:
+				// Unknown approval events stay inspectable in Advanced without
+				// being mislabeled as user-visible approval activity.
+				continue;
+		}
 		const command = typeof payload.command === "string" ? payload.command : undefined;
 		const typedDetail = approvalKind === "credential_access"
 			? [payload.provider, payload.purpose].filter((value): value is string => typeof value === "string").join(" · ")
 			: approvalKind === "sidecar_lifecycle"
 				? [payload.sidecar, payload.action].filter((value): value is string => typeof value === "string").join(" · ")
+				: approvalKind === "container_lifecycle"
+					? [payload.containerId, payload.declarationId, payload.action, payload.effect].filter((value): value is string => typeof value === "string").join(" · ")
 				: undefined;
 		// G6: a hazard card must show what the action will actually do —
 		// recipient, text, destination — not just which app it touches.
@@ -1586,7 +1740,7 @@ export function eventsToLocalActivity(
 			approvalId: event.eventKind === "approval.requested"
 				? approvalKey(event) ?? `approval-${event.sequence}`
 				: undefined,
-			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "computer_use"
+			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "container_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "computer_use"
 				? approvalKind : "permission",
 			approvalPayload: event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? {
 				operation: typeof payload.operation === "string" ? payload.operation : undefined,
@@ -1596,6 +1750,14 @@ export function eventsToLocalActivity(
 					? payload.requestedCap as { maxCostUsdMicros?: number; maxRollouts?: number }
 					: undefined,
 				requestingAgent: typeof payload.requestingAgent === "string" ? payload.requestingAgent : undefined
+			} : event.eventKind === "approval.requested" && approvalKind === "credential_access" ? {
+				provider: typeof payload.provider === "string" ? payload.provider : undefined,
+				purpose: typeof payload.purpose === "string" ? payload.purpose : undefined,
+				consent: payload.consent === "remember_locator" || payload.consent === "register_source" || payload.consent === "issue_lease" ? payload.consent : undefined,
+				locatorId: typeof payload.locatorId === "string" ? payload.locatorId : undefined,
+				displayPath: typeof payload.displayPath === "string" ? payload.displayPath : undefined,
+				variable: typeof payload.variable === "string" ? payload.variable : undefined,
+				switchFromDisplay: typeof payload.switchFromDisplay === "string" ? payload.switchFromDisplay : undefined
 			} : undefined,
 			alwaysAllowSupported: event.eventKind === "approval.requested" && payload.alwaysSupported === true,
 			detail,
@@ -1688,34 +1850,22 @@ function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 	if (!id || !templateId) return undefined;
 	const title = stringField(visual, "title") ?? "Visual";
 	const metadata = objectValue(visual.metadata);
-	const durableStatus = stringField(visual, "status");
-	const reviewReceipts = metadata && Array.isArray(metadata.reviews) ? metadata.reviews.length : 0;
-	const status: ArtifactRef["status"] = durableStatus === "failed"
-		? "failed"
-		: durableStatus === "live" || durableStatus === "saved"
-			? "ready"
-			: reviewReceipts > 0
-				? "review"
-				: "draft";
 	return {
 		id,
 		kind: "report",
 		title,
+		displayName: stringField(visual, "displayName", "display_name") ?? title,
+		updatedAt: stringField(visual, "updatedAt", "updated_at") ?? event.createdAt,
 		summary: stringField(metadata ?? {}, "summary"),
 		messageId: stringField(visual, "messageId", "message_id"),
 		shownByAgent: true,
 		templateId,
 		visualId: id,
 		bindings: objectValue(visual.bindings),
+		runId: optimizerRunIdFromBindings(visual.bindings) ?? stringField(visual, "runId", "run_id"),
 		metadata,
-		status,
-		preview: {
-			variant: templateId.includes("scrub") || templateId.includes("rollout")
-				? "craftax_frame"
-				: templateId.includes("craftax") || templateId.includes("eval_matrix")
-					? "craftax_pareto"
-					: "generic"
-		}
+		status: parseArtifactRefStatus(stringField(visual, "status")),
+		preview: { variant: previewVariantForTemplate(templateId) }
 	};
 }
 
@@ -1754,10 +1904,24 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 				? payload.templateId
 				: artifacts.get(id)?.templateId;
 		const prior = artifacts.get(id);
+		const metadata = objectValue(payload.metadata) ?? prior?.metadata;
+		const ownerSessionId = stringField(payload, "ownerSessionId", "owner_session_id") ?? prior?.ownerSessionId;
+		const runId = optimizerRunIdFromBindings(payload.bindings ?? prior?.bindings)
+			?? stringField(payload, "runId", "run_id")
+			?? event.runId
+			?? prior?.runId;
 		artifacts.set(id, {
 			id,
 			kind: "report",
 			title: typeof payload.title === "string" ? payload.title : prior?.title ?? title,
+			displayName:
+				typeof payload.displayName === "string"
+					? payload.displayName
+					: stringField(metadata ?? {}, "displayName", "display_name")
+						?? prior?.displayName
+						?? (typeof payload.title === "string" ? payload.title : title),
+			updatedAt:
+				typeof payload.updatedAt === "string" ? payload.updatedAt : event.createdAt ?? prior?.updatedAt,
 			summary:
 				typeof payload.summary === "string" ? payload.summary : prior?.summary,
 			messageId:
@@ -1765,10 +1929,19 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			shownByAgent: true,
 			templateId,
 			visualId: id,
+			revision: typeof payload.revision === "number" && Number.isFinite(payload.revision)
+				? payload.revision
+				: prior?.revision,
+			metadata,
+			ownerSessionId,
+			sessionId: ownerSessionId ?? prior?.sessionId,
+			runId: runId ?? undefined,
+			traceId: stringField(payload, "traceId", "trace_id") ?? prior?.traceId,
 			bindings:
 				payload.bindings && typeof payload.bindings === "object"
 					? (payload.bindings as Record<string, unknown>)
 					: prior?.bindings,
+			status: parseArtifactRefStatus(payload.status ?? prior?.status),
 			preview: {
 				variant: templateId?.includes("scrub") ? "craftax_frame" : "generic"
 			}
@@ -1820,14 +1993,9 @@ export function visualRecordToArtifact(visual: VisualInstanceRecord): ArtifactRe
 		visualId: visual.id,
 		rendererKind: typeof visual.metadata?.rendererKind === "string" ? visual.metadata.rendererKind : undefined,
 		bindings: visual.bindings,
+		status: parseArtifactRefStatus(visual.metadata?.status),
 		preview: {
-			variant:
-				visual.templateId.includes("scrub") || visual.templateId.includes("rollout")
-					? "craftax_frame"
-					: visual.templateId.includes("craftax") ||
-						  visual.templateId.includes("eval_matrix")
-						? "craftax_pareto"
-						: "generic"
+			variant: previewVariantForTemplate(visual.templateId)
 		}
 	};
 }

@@ -290,7 +290,7 @@ impl SessionPersistence {
             "session",
             "session.transition.rejected",
             crate::diagnostics::codes::SESSION_TRANSITION_REJECTED,
-            format!("the durable session could not move to {}", status.as_str()),
+            format!("the saved session could not move to {}", status.as_str()),
         )
         .retryable(false);
         input.correlation.session_id = Some(session_id.to_owned());
@@ -360,6 +360,28 @@ impl SessionPersistence {
         session_id: &str,
         reason: &str,
     ) -> Result<Option<AppEvent>> {
+        self.terminalize_active_run(session_id, RunStatus::Interrupted, reason)
+            .await
+    }
+
+    /// Operator Stop is a deliberate cancellation, not a crash interruption.
+    /// Keeping the two terminal states distinct lets replay say who stopped the
+    /// work and makes the session immediately ready for the next turn.
+    pub async fn cancel_active_run(
+        &self,
+        session_id: &str,
+        reason: &str,
+    ) -> Result<Option<AppEvent>> {
+        self.terminalize_active_run(session_id, RunStatus::Cancelled, reason)
+            .await
+    }
+
+    async fn terminalize_active_run(
+        &self,
+        session_id: &str,
+        terminal_status: RunStatus,
+        reason: &str,
+    ) -> Result<Option<AppEvent>> {
         let Self::Core(core) = self else {
             return Ok(None);
         };
@@ -396,7 +418,7 @@ impl SessionPersistence {
             .runs()
             .transition(
                 run_id.clone(),
-                RunStatus::Interrupted,
+                terminal_status,
                 Some(serde_json::json!({ "reason": reason })),
                 EventSource::Codex,
             )

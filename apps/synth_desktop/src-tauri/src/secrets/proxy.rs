@@ -11,6 +11,7 @@ use std::convert::Infallible;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Syntactic stand-in for SDKs that require `OPENAI_API_KEY`. Not a credential.
 pub const API_KEY_SENTINEL: &str = "workshop-proxy";
@@ -18,7 +19,9 @@ pub const API_KEY_SENTINEL: &str = "workshop-proxy";
 use super::audit::{self, SecretAuditEvent};
 use super::backend::SecretBackend;
 use super::capability::{self, CapabilityStore, MeasuredUsage};
-use super::providers::{self, inject_auth, parse_usage, request_effort, request_model, route_for};
+use super::providers::{
+    self, inject_auth, parse_sse_usage, parse_usage, request_effort, request_model, route_for,
+};
 use super::vault;
 use crate::ipc::constant_time_eq;
 use crate::storage::Database;
@@ -34,6 +37,7 @@ pub struct ProviderProxy {
 pub struct ProxyState {
     pub db: Arc<Database>,
     pub backend: Arc<dyn SecretBackend>,
+    pub env_sources: Arc<super::lease::EnvSourceStore>,
     pub capabilities: Arc<CapabilityStore>,
 }
 
@@ -101,7 +105,11 @@ fn spawn_tcp_proxy(listener: std::net::TcpListener, state: Arc<ProxyState>) {
         let listener = match tokio::net::TcpListener::from_std(listener) {
             Ok(listener) => listener,
             Err(error) => {
-                eprintln!("synth-desktop: adopt provider proxy listener: {error:#}");
+                crate::platform::logging::report(
+                    "secrets",
+                    "eprintln",
+                    format!("synth-desktop: adopt provider proxy listener: {error:#}"),
+                );
                 return;
             }
         };
@@ -115,7 +123,11 @@ fn spawn_tcp_proxy(listener: std::net::TcpListener, state: Arc<ProxyState>) {
         )
         .await
         {
-            eprintln!("synth-desktop: provider proxy stopped serving: {error:#}");
+            crate::platform::logging::report(
+                "secrets",
+                "eprintln",
+                format!("synth-desktop: provider proxy stopped serving: {error:#}"),
+            );
         }
     });
 }
@@ -126,7 +138,11 @@ fn spawn_unix_proxy(listener: std::os::unix::net::UnixListener, state: Arc<Proxy
         let listener = match tokio::net::UnixListener::from_std(listener) {
             Ok(listener) => listener,
             Err(error) => {
-                eprintln!("synth-desktop: adopt provider proxy unix listener: {error:#}");
+                crate::platform::logging::report(
+                    "secrets",
+                    "eprintln",
+                    format!("synth-desktop: adopt provider proxy unix listener: {error:#}"),
+                );
                 return;
             }
         };
@@ -136,7 +152,11 @@ fn spawn_unix_proxy(listener: std::os::unix::net::UnixListener, state: Arc<Proxy
         })
         .await
         {
-            eprintln!("synth-desktop: provider proxy unix socket stopped serving: {error:#}");
+            crate::platform::logging::report(
+                "secrets",
+                "eprintln",
+                format!("synth-desktop: provider proxy unix socket stopped serving: {error:#}"),
+            );
         }
     });
 }
@@ -230,6 +250,44 @@ fn bind_unix_listener(path: &Path) -> Result<std::os::unix::net::UnixListener> {
 pub const RELAY_ORIGIN_HEADER: &str = "x-workshop-proxy-origin";
 pub const RELAY_ORIGIN_PROXY: &str = "proxy";
 pub const RELAY_ORIGIN_UPSTREAM: &str = "upstream";
+const OPENROUTER_GENERATION_URL: &str = "https://openrouter.ai/api/v1/generation";
+
+/// OpenRouter documents generation lookup as the authoritative fallback when
+/// inline accounting is not yet present. A short bounded poll closes the
+/// receipt before Workshop debits the capability; it never guesses cost from
+/// token tariffs and never changes the bytes returned to the worker.
+async fn reconcile_openrouter_generation(
+    http: &reqwest::Client,
+    secret: &super::backend::SecretBytes,
+    response_id: &str,
+) -> Option<MeasuredUsage> {
+    let key = secret.as_utf8().ok()?;
+    for delay_ms in [0, 100, 250, 500, 1_000] {
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        let Ok(response) = http
+            .get(OPENROUTER_GENERATION_URL)
+            .query(&[("id", response_id)])
+            .bearer_auth(key)
+            .send()
+            .await
+        else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(body) = response.json::<Value>().await else {
+            continue;
+        };
+        let usage = providers::parse_openrouter_generation_usage(&body);
+        if usage.cost_usd.is_some() {
+            return Some(usage);
+        }
+    }
+    None
+}
 
 /// Secret-free classification of a transport failure. `reqwest::Error`'s
 /// `Display` embeds the request URL — which carries the capability handle — so
@@ -335,6 +393,13 @@ fn sanitize_upstream_body(status: reqwest::StatusCode, bytes: Bytes) -> Bytes {
     )))
 }
 
+fn decode_json_response(content_type: &str, bytes: &[u8]) -> Option<Value> {
+    if content_type.contains("text/event-stream") {
+        return None;
+    }
+    serde_json::from_slice(bytes).ok()
+}
+
 fn bearer(request: &Request<Incoming>) -> Option<String> {
     request
         .headers()
@@ -424,6 +489,7 @@ fn is_forbidden_header(name: &str) -> bool {
             | "trailer"
             | "transfer-encoding"
             | "upgrade"
+            | "accept-encoding"
             | "content-length"
     ) || name.eq_ignore_ascii_case(RELAY_ORIGIN_HEADER)
 }
@@ -551,7 +617,12 @@ async fn handle(
     }
 
     let secret = match state.db.with_conn(|conn| {
-        vault::resolve_for_proxy(conn, state.backend.as_ref(), &reserved.secret_id)
+        vault::resolve_for_proxy(
+            conn,
+            state.backend.as_ref(),
+            Some(state.env_sources.as_ref()),
+            &reserved.secret_id,
+        )
     }) {
         Ok(secret) => secret,
         Err(error) => {
@@ -575,6 +646,9 @@ async fn handle(
         }
         outbound = outbound.header(name.as_str(), value.as_bytes());
     }
+    // Keep the exact response bytes inspectable for usage accounting. The
+    // downstream SDK must not be the only process that can decompress them.
+    outbound = outbound.header(reqwest::header::ACCEPT_ENCODING, "identity");
     outbound = match inject_auth(outbound, route, &secret) {
         Ok(builder) => builder,
         Err(error) => {
@@ -585,8 +659,6 @@ async fn handle(
             ))
         }
     };
-    drop(secret);
-
     let upstream = match outbound.send().await {
         Ok(response) => response,
         Err(error) => {
@@ -633,41 +705,81 @@ async fn handle(
         }
     };
     let bytes = sanitize_upstream_body(status, bytes);
-    let usage = if content_type.contains("json") {
-        serde_json::from_slice::<Value>(&bytes)
-            .ok()
-            .map(|body| parse_usage(&body))
-            .unwrap_or(MeasuredUsage {
-                calls: 1,
-                input_tokens: 0,
-                output_tokens: 0,
-                cost_usd: 0.0,
-            })
+    // OpenRouter's OpenAI-compatible endpoint can return a valid JSON body
+    // with a non-JSON content type. The workload can still decode that body,
+    // so accounting must inspect the bytes too or Workshop records the call
+    // while silently losing its tokens and generation id.
+    let response_body = decode_json_response(&content_type, &bytes);
+    let (sse_response_id, sse_usage) = if content_type.contains("text/event-stream") {
+        let (id, usage) = parse_sse_usage(&bytes);
+        (id, Some(usage))
+    } else {
+        (None, None)
+    };
+    let provider_response_id = response_body
+        .as_ref()
+        .and_then(providers::response_id)
+        .map(str::to_owned)
+        .or(sse_response_id);
+    let mut usage = if let Some(body) = response_body.as_ref() {
+        parse_usage(body)
+    } else if let Some(usage) = sse_usage {
+        usage
     } else {
         MeasuredUsage {
             calls: 1,
             input_tokens: 0,
             output_tokens: 0,
-            cost_usd: 0.0,
+            cost_usd: None,
         }
     };
-    if let Ok(live) = state.capabilities.debit_usage(&handle, &usage) {
-        let _ = state.db.with_conn(|conn| {
-            capability::persist_usage(conn, &live)?;
-            let mut event = SecretAuditEvent::new("run", &live.run_id, "provider.use", "allowed");
-            event.secret_id = Some(live.secret_id.clone());
-            event.provider = Some(live.provider.clone());
-            event.operation = Some(route.operation.into());
-            event.model = model.clone();
-            event.capability_id = Some(live.id.clone());
-            event.usage = Some(serde_json::json!({
-                "calls": usage.calls,
-                "input_tokens": usage.input_tokens,
-                "output_tokens": usage.output_tokens,
-                "cost_usd": usage.cost_usd,
-            }));
-            audit::append(conn, &event)
-        });
+    let mut cost_reconciled = false;
+    if status.is_success() && route.provider == "openrouter" && usage.cost_usd.is_none() {
+        if let Some(response_id) = provider_response_id.as_deref() {
+            if let Some(reconciled) =
+                reconcile_openrouter_generation(&http, &secret, response_id).await
+            {
+                if usage.input_tokens == 0 {
+                    usage.input_tokens = reconciled.input_tokens;
+                }
+                if usage.output_tokens == 0 {
+                    usage.output_tokens = reconciled.output_tokens;
+                }
+                usage.cost_usd = reconciled.cost_usd;
+                cost_reconciled = usage.cost_usd.is_some();
+            }
+        }
+    }
+    drop(secret);
+    if status.is_success() {
+        if let Ok(live) = state.capabilities.debit_usage(&handle, &usage) {
+            let _ = state.db.with_conn(|conn| {
+                capability::persist_usage(conn, &live)?;
+                let mut event =
+                    SecretAuditEvent::new("run", &live.run_id, "provider.use", "allowed");
+                event.secret_id = Some(live.secret_id.clone());
+                event.provider = Some(live.provider.clone());
+                event.operation = Some(route.operation.into());
+                event.model = model.clone();
+                event.capability_id = Some(live.id.clone());
+                event.usage = Some(serde_json::json!({
+                    "calls": usage.calls,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    // A successful provider call always consumes input
+                    // tokens. Zero therefore means "the response carried no
+                    // usage object we could read", which is unknown, not
+                    // free. Say which one it is instead of letting a later
+                    // ledger present the gap as a measured zero.
+                    "tokens_complete": usage.input_tokens > 0 || usage.output_tokens > 0,
+                    "cost_usd": usage.cost_usd,
+                    "cost_complete": usage.cost_usd.is_some(),
+                    "cost_reconciled": cost_reconciled,
+                    "provider_response_id": provider_response_id,
+                }));
+                audit::append(conn, &event)
+            });
+        }
     }
 
     if !status.is_success() {
@@ -718,7 +830,7 @@ fn capability_self(state: &ProxyState, request: &Request<Incoming>) -> Response<
         "status": live.status,
         "usedCalls": live.used_calls,
         "maxCalls": live.max_calls,
-        "usedCostUsd": live.used_cost_usd_micros as f64 / 1_000_000.0,
+        "usedCostUsd": live.used_cost_usd_micros.map(|micros| micros as f64 / 1_000_000.0),
         "maxCostUsd": live.max_cost_usd_micros as f64 / 1_000_000.0,
     })
     .to_string();
@@ -803,6 +915,10 @@ impl WorkloadEnv {
             ("OPENAI_API_KEY".into(), API_KEY_SENTINEL.to_owned()),
             ("WORKSHOP_RUN_ID".into(), self.workshop_run_id.clone()),
             ("WORKSHOP_CAPABILITY".into(), self.capability_handle.clone()),
+            (
+                "WORKSHOP_CREDENTIAL_MODE".into(),
+                super::lease::CREDENTIAL_MODE_WORKSHOP_PROXY.into(),
+            ),
         ];
         if let Some(file) = &self.capability_file {
             pairs.push(("WORKSHOP_CAPABILITY_FILE".into(), file.clone()));
@@ -818,6 +934,7 @@ impl WorkloadEnv {
         }
         if let Some(url) = &self.container_openai_base_url {
             pairs.push(("WORKSHOP_OPENAI_BASE_URL".into(), url.clone()));
+            pairs.push(("WORKSHOP_INFERENCE_URL".into(), url.clone()));
         }
         if let Some(socket) = &self.proxy_socket {
             pairs.push(("WORKSHOP_PROXY_SOCKET".into(), socket.clone()));
@@ -860,6 +977,7 @@ mod tests {
     fn relay_origin_header_is_never_forwarded() {
         assert!(is_forbidden_header(RELAY_ORIGIN_HEADER));
         assert!(is_forbidden_header("X-Workshop-Proxy-Origin"));
+        assert!(is_forbidden_header("accept-encoding"));
     }
 
     /// A timeout, an unreachable host, and an unreadable body are three
@@ -910,5 +1028,17 @@ mod tests {
         ] {
             assert_eq!(providers::sanitize_error_message(code), code);
         }
+    }
+
+    #[test]
+    fn json_usage_is_decoded_even_when_upstream_mislabels_content_type() {
+        let body = br#"{"id":"gen-1","usage":{"prompt_tokens":12,"completion_tokens":4}}"#;
+        let decoded = decode_json_response("text/plain; charset=utf-8", body)
+            .expect("valid provider JSON must remain accountable");
+        let usage = parse_usage(&decoded);
+        assert_eq!(providers::response_id(&decoded), Some("gen-1"));
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 4);
+        assert!(decode_json_response("text/event-stream", body).is_none());
     }
 }

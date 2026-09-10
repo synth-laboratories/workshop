@@ -15,6 +15,71 @@ const DEFAULT_MODEL: &str = "gpt-5.6-luna";
 const DEFAULT_MODEL_EFFORT: &str = "xhigh";
 const DEFAULT_MODEL_PROVIDERS: &[&str] = &["chatgpt", "openrouter"];
 
+/// A deliberately narrow, instance-local OpenRouter target declaration.  This
+/// is configuration, not a provider adapter: it cannot carry credentials,
+/// headers, URLs, prompts, prices, or arbitrary generation-body fields.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OpenRouterModelConfig {
+    pub id: String,
+    pub model: String,
+    #[serde(default = "default_openrouter_model_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub routing: Option<OpenRouterRoutingConfig>,
+    #[serde(default)]
+    pub ui: Option<OpenRouterModelUiConfig>,
+}
+
+fn default_openrouter_model_enabled() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OpenRouterRoutingConfig {
+    #[serde(default)]
+    pub allow_fallbacks: Option<bool>,
+    #[serde(default)]
+    pub require_parameters: Option<bool>,
+    #[serde(default)]
+    pub data_collection: Option<OpenRouterDataCollection>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum OpenRouterDataCollection {
+    Allow,
+    Deny,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OpenRouterModelUiConfig {
+    #[serde(default)]
+    pub reasoning_control: Option<OpenRouterReasoningControl>,
+    #[serde(default)]
+    pub default_reasoning: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum OpenRouterReasoningControl {
+    None,
+    Binary,
+    Effort,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OpenRouterModelConfigSet {
+    pub models: Vec<OpenRouterModelConfig>,
+    /// Errors are scoped to a config path so one invalid entry cannot remove
+    /// source-owned targets or valid neighboring entries.
+    pub diagnostics: Vec<String>,
+}
+
 /// Checked-in backend endpoint defaults for the explicit workshop lane
 /// profile names, layered on top of the legacy `prod`/`staging`/`local`
 /// fallback `resolve()` already had. `[intern.endpoints].<profile>` in
@@ -129,12 +194,71 @@ pub struct WorkspaceAccessUpdate {
     pub allowed_roots: Vec<String>,
 }
 
+/// User-owned paid-compute auto-approval, stored only in Workshop config.
+///
+/// Amounts travel as decimal USD strings (at most six fractional digits). The
+/// host converts them to integer USD micros so authorization never sees
+/// floating-point money.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PaidComputeAutoApprovalSettings {
+    pub enabled: bool,
+    pub max_request_usd: String,
+    pub max_conversation_usd: String,
+    pub providers: Vec<String>,
+}
+
+impl PaidComputeAutoApprovalSettings {
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            max_request_usd: "0.10".into(),
+            max_conversation_usd: "10.00".into(),
+            providers: Vec::new(),
+        }
+    }
+
+    /// Fail closed: malformed amounts or providers never become a policy.
+    pub fn policy(&self) -> Result<PaidComputeAutoApprovalPolicy> {
+        Ok(PaidComputeAutoApprovalPolicy {
+            enabled: self.enabled,
+            max_request_usd_micros: parse_usd_micros(&self.max_request_usd)?,
+            max_conversation_usd_micros: parse_usd_micros(&self.max_conversation_usd)?,
+            providers: normalize_paid_compute_providers(&self.providers)?,
+        })
+    }
+}
+
+/// Integer-micros form sealed onto a session at start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaidComputeAutoApprovalPolicy {
+    pub enabled: bool,
+    pub max_request_usd_micros: u64,
+    pub max_conversation_usd_micros: u64,
+    pub providers: Vec<String>,
+}
+
+impl PaidComputeAutoApprovalPolicy {
+    pub fn disabled() -> Self {
+        PaidComputeAutoApprovalSettings::disabled()
+            .policy()
+            .expect("default paid-compute settings are well-formed")
+    }
+
+    pub fn allows_provider(&self, provider: &str) -> bool {
+        normalize_provider(provider)
+            .ok()
+            .is_some_and(|normalized| self.providers.iter().any(|allowed| allowed == &normalized))
+    }
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopPermissionSettings {
     pub config_path: String,
     pub approval_policy: String,
     pub sandbox_mode: String,
+    pub paid_compute: PaidComputeAutoApprovalSettings,
 }
 
 #[derive(Clone, Debug, Deserialize, specta::Type)]
@@ -142,6 +266,8 @@ pub struct DesktopPermissionSettings {
 pub struct DesktopPermissionUpdate {
     pub approval_policy: String,
     pub sandbox_mode: String,
+    #[serde(default)]
+    pub paid_compute: Option<PaidComputeAutoApprovalSettings>,
 }
 
 const MODEL_MULTI_AGENT_PRESETS: &[(&str, &str, MultiAgentVersion)] = &[
@@ -374,6 +500,10 @@ pub fn update(request: BackendSettingsUpdate) -> Result<BackendSettings> {
 /// Persist a Synth API key obtained by device pairing or the write-only manual
 /// setup field into the configured 0600 env file, without returning the key.
 pub fn store_api_key(secret: &str) -> Result<()> {
+    store_api_key_with_receipt(secret, None)
+}
+
+fn store_api_key_with_receipt(secret: &str, receipt: Option<&str>) -> Result<()> {
     let secret = secret.trim();
     if secret.is_empty() {
         return Err(anyhow!("pairing returned an empty API key"));
@@ -390,7 +520,45 @@ pub fn store_api_key(secret: &str) -> Result<()> {
         .and_then(toml::Value::as_str)
         .unwrap_or(DEFAULT_API_KEY_ENV)
         .to_owned();
-    write_env_secret(&resolved.env_file, &api_key_env, secret)
+    write_env_values(
+        &resolved.env_file,
+        &[
+            (&api_key_env, Some(secret)),
+            (DEVICE_PAIR_RECEIPT_ENV, receipt),
+        ],
+    )
+}
+
+const DEVICE_PAIR_RECEIPT_ENV: &str = "SYNTH_DEVICE_PAIR_RECEIPT";
+
+/// Store provenance only for servers that explicitly issue independent device keys.
+pub fn store_paired_api_key(secret: &str, origin: &str, independent: bool) -> Result<()> {
+    let receipt = independent.then(|| {
+        serde_json::json!({
+            "issuer": origin,
+            "key_sha256": format!("{:x}", Sha256::digest(secret.trim().as_bytes())),
+        })
+        .to_string()
+    });
+    store_api_key_with_receipt(secret, receipt.as_deref())
+}
+
+/// A receipt must match the current credential; manual/legacy keys are local-only.
+pub fn paired_key_issuer(key: &str) -> Result<Option<String>> {
+    let resolved = resolve()?;
+    let Some(receipt) = read_env_value(&resolved.env_file, DEVICE_PAIR_RECEIPT_ENV) else {
+        return Ok(None);
+    };
+    receipt_issuer(&receipt, key)
+}
+
+fn receipt_issuer(receipt: &str, key: &str) -> Result<Option<String>> {
+    let receipt: serde_json::Value =
+        serde_json::from_str(&receipt).context("invalid device pairing receipt")?;
+    if receipt["key_sha256"].as_str() != Some(&format!("{:x}", Sha256::digest(key.as_bytes()))) {
+        return Ok(None);
+    }
+    Ok(receipt["issuer"].as_str().map(str::to_owned))
 }
 
 /// Removes the desktop-managed Synth API key from the private env file.
@@ -413,7 +581,8 @@ pub fn remove_api_key() -> Result<()> {
             "the API key comes from the process environment; remove {api_key_env} from the launching environment to sign out"
         ));
     }
-    remove_env_secret(&resolved.env_file, api_key_env)
+    remove_env_secret(&resolved.env_file, api_key_env)?;
+    remove_env_secret(&resolved.env_file, DEVICE_PAIR_RECEIPT_ENV)
 }
 
 pub fn openrouter_api_key() -> Result<Option<String>> {
@@ -491,18 +660,23 @@ pub(crate) fn select_default_workspace_path(
     home: Option<std::path::PathBuf>,
     isolated_default: std::path::PathBuf,
 ) -> std::path::PathBuf {
+    // Named and packaged instances explicitly provide an isolated launcher
+    // workspace. Keep that boundary authoritative even with full-system
+    // permissions so workspace-local manifests (containers, recipes, and
+    // experiments) resolve where the release runner staged them.
+    if let Some(workspace) = launcher_workspace {
+        return workspace;
+    }
     if let Some(root) = allowed_roots.first() {
         return root.into();
     }
     // `danger-full-access` is a machine-wide access promise. Keep an explicit
-    // attached root authoritative, but do not strand an otherwise unrestricted
-    // task in the named instance's empty workspace. Starting at the user's home
-    // makes normal repository discovery possible while Codex's sandbox setting
-    // remains the actual access boundary.
+    // attached root or launcher workspace authoritative. For ordinary launches
+    // without either, starting at home preserves repository discovery.
     if sandbox_mode == "danger-full-access" {
-        return home.or(launcher_workspace).unwrap_or(isolated_default);
+        return home.unwrap_or(isolated_default);
     }
-    launcher_workspace.unwrap_or(isolated_default)
+    isolated_default
 }
 
 pub fn update_workspace_access(request: WorkspaceAccessUpdate) -> Result<WorkspaceAccessSettings> {
@@ -582,6 +756,25 @@ pub(crate) mod test_machine_permissions {
             config_path: "test://machine-permissions".into(),
             approval_policy: approval_policy.into(),
             sandbox_mode: sandbox_mode.into(),
+            paid_compute: super::PaidComputeAutoApprovalSettings::disabled(),
+        });
+        Guard { _serial: serial }
+    }
+
+    pub(crate) fn install_with_paid_compute(
+        approval_policy: &str,
+        sandbox_mode: &str,
+        paid_compute: super::PaidComputeAutoApprovalSettings,
+    ) -> Guard {
+        let serial = SERIAL
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *OVERRIDE.write().expect("machine override lock") = Some(DesktopPermissionSettings {
+            config_path: "test://machine-permissions".into(),
+            approval_policy: approval_policy.into(),
+            sandbox_mode: sandbox_mode.into(),
+            paid_compute,
         });
         Guard { _serial: serial }
     }
@@ -597,7 +790,13 @@ fn desktop_permission_settings_at(path: &Path) -> Result<DesktopPermissionSettin
     desktop_permission_settings_with_fallback(path, None)
 }
 
-fn permission_values(document: &toml::Value) -> (Option<String>, Option<String>) {
+fn permission_values(
+    document: &toml::Value,
+) -> Result<(
+    Option<String>,
+    Option<String>,
+    Option<PaidComputeAutoApprovalSettings>,
+)> {
     let permissions = document
         .get("desktop")
         .and_then(|value| value.get("permissions"));
@@ -613,7 +812,11 @@ fn permission_values(document: &toml::Value) -> (Option<String>, Option<String>)
         .and_then(toml::Value::as_str)
         .filter(|value| is_sandbox_mode(value))
         .map(str::to_owned);
-    (approval_policy, sandbox_mode)
+    let paid_compute = match permissions.and_then(|value| value.get("paid_compute")) {
+        Some(value) => Some(parse_paid_compute_table(value)?),
+        None => None,
+    };
+    Ok((approval_policy, sandbox_mode, paid_compute))
 }
 
 fn desktop_permission_settings_with_fallback(
@@ -621,10 +824,10 @@ fn desktop_permission_settings_with_fallback(
     fallback: Option<&Path>,
 ) -> Result<DesktopPermissionSettings> {
     let document = read_toml(path)?;
-    let (approval_policy, sandbox_mode) = permission_values(&document);
-    let (fallback_approval, fallback_sandbox) = match fallback {
-        Some(fallback_path) => permission_values(&read_toml(fallback_path)?),
-        None => (None, None),
+    let (approval_policy, sandbox_mode, paid_compute) = permission_values(&document)?;
+    let (fallback_approval, fallback_sandbox, fallback_paid) = match fallback {
+        Some(fallback_path) => permission_values(&read_toml(fallback_path)?)?,
+        None => (None, None, None),
     };
     Ok(DesktopPermissionSettings {
         config_path: path.display().to_string(),
@@ -634,6 +837,9 @@ fn desktop_permission_settings_with_fallback(
         sandbox_mode: sandbox_mode
             .or(fallback_sandbox)
             .unwrap_or_else(|| "workspace-write".into()),
+        paid_compute: paid_compute
+            .or(fallback_paid)
+            .unwrap_or_else(PaidComputeAutoApprovalSettings::disabled),
     })
 }
 
@@ -669,6 +875,30 @@ fn update_desktop_permissions_at(
         "sandbox_mode".into(),
         toml::Value::String(request.sandbox_mode),
     );
+    if let Some(paid_compute) = request.paid_compute {
+        let policy = paid_compute.policy()?;
+        let mut table = toml::value::Table::new();
+        table.insert("auto_approve".into(), toml::Value::Boolean(policy.enabled));
+        table.insert(
+            "max_request_usd".into(),
+            toml::Value::String(format_usd_micros(policy.max_request_usd_micros)),
+        );
+        table.insert(
+            "max_conversation_usd".into(),
+            toml::Value::String(format_usd_micros(policy.max_conversation_usd_micros)),
+        );
+        table.insert(
+            "providers".into(),
+            toml::Value::Array(
+                policy
+                    .providers
+                    .into_iter()
+                    .map(toml::Value::String)
+                    .collect(),
+            ),
+        );
+        permissions.insert("paid_compute".into(), toml::Value::Table(table));
+    }
     write_toml(path, &document)?;
     desktop_permission_settings_at(path)
 }
@@ -682,6 +912,126 @@ fn is_sandbox_mode(value: &str) -> bool {
         value,
         "read-only" | "workspace-write" | "danger-full-access"
     )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaidComputeToml {
+    auto_approve: bool,
+    max_request_usd: String,
+    max_conversation_usd: String,
+    providers: Vec<String>,
+}
+
+fn parse_paid_compute_table(value: &toml::Value) -> Result<PaidComputeAutoApprovalSettings> {
+    let parsed: PaidComputeToml = value
+        .clone()
+        .try_into()
+        .map_err(|error| anyhow!("malformed [desktop.permissions.paid_compute]: {error}"))?;
+    let settings = PaidComputeAutoApprovalSettings {
+        enabled: parsed.auto_approve,
+        max_request_usd: parsed.max_request_usd,
+        max_conversation_usd: parsed.max_conversation_usd,
+        providers: parsed.providers,
+    };
+    settings.policy()?;
+    Ok(settings)
+}
+
+/// Decimal USD string → integer micros. Rejects sign, exponent, and more than
+/// six fractional digits so authorization never sees a float.
+pub(crate) fn parse_usd_micros(value: &str) -> Result<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("USD amount must not be empty"));
+    }
+    if trimmed.starts_with('+') || trimmed.starts_with('-') {
+        return Err(anyhow!("USD amount must not be signed: {value}"));
+    }
+    if trimmed.contains(['e', 'E']) {
+        return Err(anyhow!(
+            "USD amount must not use exponent notation: {value}"
+        ));
+    }
+    let (whole, frac) = match trimmed.split_once('.') {
+        Some((whole, frac)) => (whole, frac),
+        None => (trimmed, ""),
+    };
+    if whole.is_empty() || !whole.chars().all(|c| c.is_ascii_digit()) {
+        return Err(anyhow!("USD amount is not a decimal string: {value}"));
+    }
+    if !frac.chars().all(|c| c.is_ascii_digit()) {
+        return Err(anyhow!("USD amount is not a decimal string: {value}"));
+    }
+    if frac.len() > 6 {
+        return Err(anyhow!(
+            "USD amount may have at most six fractional digits: {value}"
+        ));
+    }
+    let whole_micros = whole
+        .parse::<u64>()
+        .map_err(|_| anyhow!("USD amount is out of range: {value}"))?
+        .checked_mul(1_000_000)
+        .ok_or_else(|| anyhow!("USD amount is out of range: {value}"))?;
+    let frac_micros = if frac.is_empty() {
+        0
+    } else {
+        let mut padded = frac.to_string();
+        while padded.len() < 6 {
+            padded.push('0');
+        }
+        padded
+            .parse::<u64>()
+            .map_err(|_| anyhow!("USD amount is out of range: {value}"))?
+    };
+    whole_micros
+        .checked_add(frac_micros)
+        .ok_or_else(|| anyhow!("USD amount is out of range: {value}"))
+}
+
+pub(crate) fn format_usd_micros(micros: u64) -> String {
+    let dollars = micros / 1_000_000;
+    let rem = micros % 1_000_000;
+    if rem == 0 {
+        format!("{dollars}.00")
+    } else if rem % 10_000 == 0 {
+        format!("{dollars}.{:02}", rem / 10_000)
+    } else {
+        let frac = format!("{rem:06}");
+        format!("{dollars}.{}", frac.trim_end_matches('0'))
+    }
+}
+
+pub(crate) fn normalize_provider(value: &str) -> Result<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(anyhow!("paid-compute provider must not be empty"));
+    }
+    if !normalized
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase())
+        || !normalized
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
+        return Err(anyhow!(
+            "paid-compute provider `{value}` is not a normalized identifier"
+        ));
+    }
+    Ok(normalized)
+}
+
+fn normalize_paid_compute_providers(providers: &[String]) -> Result<Vec<String>> {
+    let mut normalized = Vec::new();
+    for provider in providers {
+        let value = normalize_provider(provider)?;
+        if normalized.iter().any(|existing| existing == &value) {
+            return Err(anyhow!("duplicate paid-compute provider `{value}`"));
+        }
+        normalized.push(value);
+    }
+    Ok(normalized)
 }
 
 pub fn model_multi_agent_settings() -> Result<Vec<ModelMultiAgentSetting>> {
@@ -900,10 +1250,136 @@ pub fn require_responses_gateway_url(resolved: &ResolvedBackend) -> Result<Strin
 }
 
 fn config_path() -> PathBuf {
+    // A bundled instance descriptor owns the complete runtime identity,
+    // including its state/config root. Ignore login-session environment left
+    // behind by another Workshop instance; otherwise a Finder/LaunchServices
+    // launch can silently load another instance's config and credential file.
+    if crate::instance::identity()
+        .ok()
+        .and_then(|identity| identity.descriptor)
+        .is_some()
+    {
+        return crate::instance::state_root().join("config.toml");
+    }
     env::var_os("SYNTH_DESKTOP_CONFIG")
         .or_else(|| env::var_os("SYNTH_INTERN_CONFIG"))
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::instance::state_root().join("config.toml"))
+}
+
+/// Parse only `[[models.openrouter]]` from the existing TOML document.  The
+/// rest of config.toml remains independently owned, so a malformed custom
+/// target never blocks built-ins or unrelated settings from loading.
+pub(crate) fn openrouter_model_configs() -> Result<OpenRouterModelConfigSet> {
+    let path = config_path();
+    let document = read_toml(&path)?;
+    let Some(models) = document.get("models").and_then(toml::Value::as_table) else {
+        return Ok(OpenRouterModelConfigSet::default());
+    };
+    let Some(entries) = models.get("openrouter") else {
+        return Ok(OpenRouterModelConfigSet::default());
+    };
+    let Some(entries) = entries.as_array() else {
+        return Ok(OpenRouterModelConfigSet {
+            models: Vec::new(),
+            diagnostics: vec![format!(
+                "{}: models.openrouter must be an array of tables",
+                path.display()
+            )],
+        });
+    };
+
+    let mut result = OpenRouterModelConfigSet::default();
+    let mut seen_ids = std::collections::HashSet::new();
+    for (index, raw) in entries.iter().enumerate() {
+        let location = format!(
+            "{}: [[models.openrouter]] entry {}",
+            path.display(),
+            index + 1
+        );
+        let entry = match raw.clone().try_into::<OpenRouterModelConfig>() {
+            Ok(entry) => entry,
+            Err(error) => {
+                result.diagnostics.push(format!("{location}: {error}"));
+                continue;
+            }
+        };
+        if let Err(error) = validate_openrouter_model_config(&entry) {
+            result.diagnostics.push(format!("{location}: {error}"));
+            continue;
+        }
+        if !seen_ids.insert(entry.id.clone()) {
+            result.diagnostics.push(format!(
+                "{location}: duplicate OpenRouter target id `{}`",
+                entry.id
+            ));
+            continue;
+        }
+        result.models.push(entry);
+    }
+    Ok(result)
+}
+
+fn validate_openrouter_model_config(entry: &OpenRouterModelConfig) -> Result<()> {
+    if entry.id.is_empty()
+        || !entry.id.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '_' | '-')
+        })
+    {
+        return Err(anyhow!(
+            "id must use lowercase ASCII letters, digits, `_`, or `-`"
+        ));
+    }
+    if !is_openrouter_model_slug(&entry.model) {
+        return Err(anyhow!(
+            "model must be an exact OpenRouter slug such as `vendor/model` or `@preset/name`"
+        ));
+    }
+    if entry
+        .display_name
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty() || value.chars().count() > 120)
+    {
+        return Err(anyhow!(
+            "display_name must be 1–120 visible characters when set"
+        ));
+    }
+    if let Some(ui) = &entry.ui {
+        if ui.default_reasoning.as_deref().is_some_and(|value| {
+            !matches!(value, "none" | "low" | "medium" | "high" | "xhigh" | "max")
+        }) {
+            return Err(anyhow!(
+                "ui.default_reasoning must be one of none, low, medium, high, xhigh, max"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_openrouter_model_slug(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 240 || value.contains(char::is_whitespace) {
+        return false;
+    }
+    if let Some(name) = value.strip_prefix("@preset/") {
+        return !name.is_empty()
+            && name.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '/' | '-' | '_' | '.')
+            });
+    }
+    let body = value;
+    let mut pieces = body.split('/');
+    let first = pieces.next().unwrap_or_default();
+    let second = pieces.next().unwrap_or_default();
+    // Ordinary model slugs are exactly vendor/model.
+    if first.is_empty() || second.is_empty() || pieces.next().is_some() {
+        return false;
+    }
+    value.chars().all(|character| {
+        character.is_ascii_alphanumeric() || matches!(character, '@' | '/' | '-' | '_' | '.')
+    })
 }
 
 fn read_toml(path: &Path) -> Result<toml::Value> {
@@ -924,6 +1400,73 @@ fn write_toml(path: &Path, document: &toml::Value) -> Result<()> {
     }
     fs::write(path, toml::to_string_pretty(document)?)?;
     Ok(())
+}
+
+/// Rewrite the non-authoritative, human-readable credential locator export.
+/// SQLite remains the only input to boot and runtime lookup.
+pub(crate) fn rewrite_credential_locator_export(
+    locators: &[crate::secrets::CredentialLocatorSummary],
+) -> Result<()> {
+    let path = config_path();
+    let mut document = read_toml(&path)?;
+    let root = document
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
+    let desktop = root
+        .entry("desktop")
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("[desktop] must be a TOML table"))?;
+    let entries = locators
+        .iter()
+        .map(|locator| {
+            let mut entry = toml::map::Map::new();
+            entry.insert("id".into(), toml::Value::String(locator.id.clone()));
+            entry.insert(
+                "kind".into(),
+                toml::Value::String(locator.kind.as_str().into()),
+            );
+            if let Some(reference) = locator.workspace_root_ref.as_ref() {
+                entry.insert(
+                    "workspace_root_ref".into(),
+                    toml::Value::String(reference.clone()),
+                );
+            }
+            if let Some(relative) = locator.relative_path.as_ref() {
+                entry.insert(
+                    "relative_path".into(),
+                    toml::Value::String(relative.clone()),
+                );
+            }
+            if matches!(
+                locator.kind,
+                crate::secrets::CredentialLocatorKind::ExternalEnvFile
+            ) && locator.display_path.starts_with("~/")
+            {
+                entry.insert(
+                    "external_path".into(),
+                    toml::Value::String(locator.display_path.clone()),
+                );
+            }
+            entry.insert("format".into(), toml::Value::String(locator.format.clone()));
+            entry.insert(
+                "provider".into(),
+                toml::Value::String(locator.provider.clone()),
+            );
+            entry.insert(
+                "variable".into(),
+                toml::Value::String(locator.variable.clone()),
+            );
+            entry.insert("label".into(), toml::Value::String(locator.label.clone()));
+            entry.insert(
+                "state".into(),
+                toml::Value::String(locator.state.as_str().into()),
+            );
+            toml::Value::Table(entry)
+        })
+        .collect::<Vec<_>>();
+    desktop.insert("credential_locators".into(), toml::Value::Array(entries));
+    write_toml(&path, &document)
 }
 
 fn resolve_secret(key: &str, env_file: &Path) -> (Option<String>, Option<String>) {
@@ -998,6 +1541,38 @@ fn read_env_value(path: &Path, key: &str) -> Option<String> {
             (name.trim() == key).then(|| value.trim().trim_matches(['\'', '"']).to_owned())
         })
         .filter(|value| !value.is_empty())
+}
+
+// Commit credential and provenance together so a failed write cannot orphan
+// a newly paired key or turn it into an untracked manual credential.
+fn write_env_values(path: &Path, values: &[(&str, Option<&str>)]) -> Result<()> {
+    let parent = path.parent().context("credential file has no parent")?;
+    fs::create_dir_all(parent)?;
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let mut lines: Vec<String> = contents
+        .lines()
+        .filter(|line| {
+            let line = line.trim().strip_prefix("export ").unwrap_or(line.trim());
+            !line
+                .split_once('=')
+                .is_some_and(|(key, _)| values.iter().any(|(name, _)| *name == key.trim()))
+        })
+        .map(str::to_owned)
+        .collect();
+    for (name, value) in values {
+        if let Some(value) = value {
+            lines.push(format!("{name}={value}"));
+        }
+    }
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    writeln!(temp, "{}", lines.join("\n"))?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 fn write_env_secret(path: &Path, key: &str, secret: &str) -> Result<()> {
@@ -1171,6 +1746,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn configurable_openrouter_model_accepts_minimal_ox_alpha_entry() {
+        let entry: OpenRouterModelConfig = toml::from_str(
+            r#"
+id = "ox-alpha"
+model = "stealth/ox-alpha"
+enabled = true
+"#,
+        )
+        .unwrap();
+        validate_openrouter_model_config(&entry).unwrap();
+        assert_eq!(entry.id, "ox-alpha");
+        assert_eq!(entry.model, "stealth/ox-alpha");
+        assert!(entry.enabled);
+    }
+
+    #[test]
+    fn configurable_openrouter_model_rejects_unknown_and_unsafe_fields() {
+        let unknown = toml::from_str::<OpenRouterModelConfig>(
+            "id = \"ox-alpha\"\nmodel = \"stealth/ox-alpha\"\napi_key = \"never\"\n",
+        );
+        assert!(unknown.is_err());
+
+        let invalid: OpenRouterModelConfig =
+            toml::from_str("id = \"Ox Alpha\"\nmodel = \"https://example.invalid/model\"\n")
+                .unwrap();
+        assert!(validate_openrouter_model_config(&invalid).is_err());
+    }
+
+    #[test]
     fn materializes_luna_xhigh_default_without_overwriting_operator_choice() {
         let mut document = toml::Value::Table(Default::default());
         assert!(ensure_default_model_config(&mut document));
@@ -1341,7 +1945,7 @@ operations = { "rollouts.prepare" = false }
     }
 
     #[test]
-    fn full_system_access_starts_at_home_without_an_explicit_workspace() {
+    fn launcher_workspace_wins_under_full_system_access() {
         let selected = select_default_workspace_path(
             &[],
             "danger-full-access",
@@ -1349,11 +1953,11 @@ operations = { "rollouts.prepare" = false }
             Some(PathBuf::from("/Users/example")),
             PathBuf::from("/isolated/default"),
         );
-        assert_eq!(selected, PathBuf::from("/Users/example"));
+        assert_eq!(selected, PathBuf::from("/isolated/instance/workspace"));
     }
 
     #[test]
-    fn explicit_workspace_still_wins_under_full_system_access() {
+    fn named_instance_workspace_wins_over_machine_allowed_roots() {
         let selected = select_default_workspace_path(
             &["/Users/example/Documents/GitHub/containers".into()],
             "danger-full-access",
@@ -1361,10 +1965,7 @@ operations = { "rollouts.prepare" = false }
             Some(PathBuf::from("/Users/example")),
             PathBuf::from("/isolated/default"),
         );
-        assert_eq!(
-            selected,
-            PathBuf::from("/Users/example/Documents/GitHub/containers")
-        );
+        assert_eq!(selected, PathBuf::from("/isolated/instance/workspace"));
     }
 
     #[test]
@@ -1376,11 +1977,17 @@ operations = { "rollouts.prepare" = false }
         let defaults = desktop_permission_settings_at(&path).unwrap();
         assert_eq!(defaults.approval_policy, "untrusted");
         assert_eq!(defaults.sandbox_mode, "workspace-write");
+        assert_eq!(defaults.paid_compute.max_conversation_usd, "10.00");
+        assert_eq!(
+            defaults.paid_compute,
+            PaidComputeAutoApprovalSettings::disabled()
+        );
         let stored = update_desktop_permissions_at(
             &path,
             DesktopPermissionUpdate {
                 approval_policy: "never".into(),
                 sandbox_mode: "danger-full-access".into(),
+                paid_compute: None,
             },
         )
         .unwrap();
@@ -1435,10 +2042,122 @@ operations = { "rollouts.prepare" = false }
             DesktopPermissionUpdate {
                 approval_policy: "YOLO".into(),
                 sandbox_mode: "danger-full-access".into(),
+                paid_compute: None,
             },
         );
         assert!(result.is_err());
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn parse_usd_micros_rejects_sign_exponent_and_over_precision() {
+        assert_eq!(parse_usd_micros("0.10").unwrap(), 100_000);
+        assert_eq!(parse_usd_micros("1").unwrap(), 1_000_000);
+        assert_eq!(parse_usd_micros("0.000001").unwrap(), 1);
+        assert_eq!(parse_usd_micros("0.018").unwrap(), 18_000);
+        assert_eq!(format_usd_micros(100_000), "0.10");
+        assert_eq!(format_usd_micros(250_000), "0.25");
+        assert_eq!(format_usd_micros(60_000), "0.06");
+        assert_eq!(format_usd_micros(18_000), "0.018");
+        assert_eq!(format_usd_micros(1_000_000), "1.00");
+        assert!(parse_usd_micros("-0.10").is_err());
+        assert!(parse_usd_micros("+0.10").is_err());
+        assert!(parse_usd_micros("1e-1").is_err());
+        assert!(parse_usd_micros("0.1234567").is_err());
+        assert!(parse_usd_micros("").is_err());
+        assert!(parse_usd_micros("abc").is_err());
+    }
+
+    #[test]
+    fn paid_compute_settings_fail_closed_on_malformed_toml() {
+        let root = env::temp_dir().join(format!("synth-paid-compute-{}", uuid::Uuid::new_v4()));
+        let path = root.join("config.toml");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            &path,
+            "[desktop.permissions.paid_compute]\nauto_approve = true\nmax_request_usd = \"0.10\"\n",
+        )
+        .unwrap();
+        let error = desktop_permission_settings_at(&path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("paid_compute"), "{error}");
+
+        fs::write(
+            &path,
+            "[desktop.permissions.paid_compute]\nauto_approve = true\nmax_request_usd = \"0.1234567\"\nmax_conversation_usd = \"1.00\"\nproviders = [\"openrouter\"]\n",
+        )
+        .unwrap();
+        assert!(desktop_permission_settings_at(&path).is_err());
+
+        fs::write(
+            &path,
+            "[desktop.permissions.paid_compute]\nauto_approve = true\nmax_request_usd = \"-0.10\"\nmax_conversation_usd = \"1.00\"\nproviders = [\"openrouter\"]\n",
+        )
+        .unwrap();
+        assert!(desktop_permission_settings_at(&path).is_err());
+
+        fs::write(
+            &path,
+            "[desktop.permissions.paid_compute]\nauto_approve = true\nmax_request_usd = \"0.10\"\nmax_conversation_usd = \"1.00\"\nproviders = [\"OpenRouter\"]\nunknown = true\n",
+        )
+        .unwrap();
+        assert!(desktop_permission_settings_at(&path).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn paid_compute_settings_round_trip_and_normalize_providers() {
+        let root = env::temp_dir().join(format!("synth-paid-compute-{}", uuid::Uuid::new_v4()));
+        let path = root.join("config.toml");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&path, "[intern]\nprofile = \"staging\"\n").unwrap();
+        let stored = update_desktop_permissions_at(
+            &path,
+            DesktopPermissionUpdate {
+                approval_policy: "untrusted".into(),
+                sandbox_mode: "workspace-write".into(),
+                paid_compute: Some(PaidComputeAutoApprovalSettings {
+                    enabled: true,
+                    max_request_usd: "0.10".into(),
+                    max_conversation_usd: "1.00".into(),
+                    providers: vec!["OpenRouter".into()],
+                }),
+            },
+        )
+        .unwrap();
+        assert!(stored.paid_compute.enabled);
+        assert_eq!(stored.paid_compute.max_request_usd, "0.10");
+        assert_eq!(stored.paid_compute.max_conversation_usd, "1.00");
+        assert_eq!(stored.paid_compute.providers, vec!["openrouter"]);
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("[desktop.permissions.paid_compute]"));
+        assert!(contents.contains("auto_approve = true"));
+        assert!(contents.contains("profile = \"staging\""));
+        let policy = stored.paid_compute.policy().unwrap();
+        assert_eq!(policy.max_request_usd_micros, 100_000);
+        assert_eq!(policy.max_conversation_usd_micros, 1_000_000);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn isolated_desktop_inherits_canonical_paid_compute_policy() {
+        let root = env::temp_dir().join(format!("synth-paid-inherit-{}", uuid::Uuid::new_v4()));
+        let isolated = root.join("instance/config.toml");
+        let canonical = root.join("canonical/config.toml");
+        fs::create_dir_all(isolated.parent().unwrap()).unwrap();
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        fs::write(&isolated, "[intern]\nprofile = \"local\"\n").unwrap();
+        fs::write(
+            &canonical,
+            "[desktop.permissions.paid_compute]\nauto_approve = true\nmax_request_usd = \"0.10\"\nmax_conversation_usd = \"0.25\"\nproviders = [\"openrouter\"]\n",
+        )
+        .unwrap();
+        let inherited =
+            desktop_permission_settings_with_fallback(&isolated, Some(&canonical)).unwrap();
+        assert!(inherited.paid_compute.enabled);
+        assert_eq!(inherited.paid_compute.max_conversation_usd, "0.25");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1649,5 +2368,52 @@ operations = { "rollouts.prepare" = false }
         );
         assert_eq!(parse_multi_agent_version("v1"), Some(MultiAgentVersion::V1));
         assert_eq!(parse_multi_agent_version("V2"), Some(MultiAgentVersion::V2));
+    }
+}
+
+#[cfg(test)]
+mod device_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn persisted_receipt_matches_only_the_paired_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.env");
+        let receipt = serde_json::json!({"issuer": "http://localhost:41216", "key_sha256": format!("{:x}", Sha256::digest(b"paired"))}).to_string();
+        write_env_values(
+            &path,
+            &[
+                ("SYNTH_API_KEY", Some("paired")),
+                (DEVICE_PAIR_RECEIPT_ENV, Some(&receipt)),
+            ],
+        )
+        .unwrap();
+        let reopened = read_env_value(&path, DEVICE_PAIR_RECEIPT_ENV).unwrap();
+        assert_eq!(
+            receipt_issuer(&reopened, "paired").unwrap().as_deref(),
+            Some("http://localhost:41216")
+        );
+        assert_eq!(receipt_issuer(&reopened, "manual").unwrap(), None);
+        write_env_values(
+            &path,
+            &[
+                ("SYNTH_API_KEY", Some("manual")),
+                (DEVICE_PAIR_RECEIPT_ENV, None),
+            ],
+        )
+        .unwrap();
+        assert!(read_env_value(&path, DEVICE_PAIR_RECEIPT_ENV).is_none());
+        assert_eq!(
+            read_env_value(&path, "SYNTH_API_KEY").as_deref(),
+            Some("manual")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 }

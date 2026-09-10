@@ -7,6 +7,10 @@ import test from "node:test";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const familiesDir = join(root, "families");
 
+function declaredInputs(meta) {
+  return meta.inputs ?? meta.slots ?? [];
+}
+
 function discoverTemplates(directory = familiesDir, found = new Map()) {
   for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     const path = join(directory, entry.name);
@@ -26,23 +30,28 @@ function discoverTemplates(directory = familiesDir, found = new Map()) {
 }
 
 const EXPECTED_IDS = [
+  "analysis.annotation_workbench.v1",
   "analysis.chart.v1",
+  "analysis.swarm_trajectories.v1",
   "analysis.visual.v1",
   "annotation.overlay.v1",
   "blank.canvas.v1",
+  "compose.visual.v1",
   "craftax.eval_matrix.v1",
   "craftax.rollout_scrub.v1",
+  "craftax.trace_workbench.v1",
   "diagram.mermaid.v1",
   "diagram.systems.dynamic.v1",
   "diagram.systems.v1",
   "experiment.overview.v1",
+  "live.annotated_rollouts.v1",
   "live.container_rollouts.v1",
   "live.craftax.v1",
-  "live.digbench.v1",
   "live.eval_stream.v1",
   "live.harbor_eval.v1",
   "live.intern_acceptance.v1",
   "model.compare.v1",
+  "optimizer.cispo.live.v1",
   "optimizer.eval.live.v1",
   "optimizer.gepa.candidate.v1",
   "optimizer.gepa.evaluations.v1",
@@ -57,8 +66,10 @@ const EXPECTED_IDS = [
   "optimizer.sft.rollouts.v1",
   "posttrain.rollout_viewer.v1",
   "reward.breakdown.v1",
+  "sourced.visual.v1",
   "trace.catalog.v1",
   "trace.rollout_inspector.v1",
+  "trace.workbench.v1",
 ];
 
 test("visuals package exposes the registered templates", () => {
@@ -72,17 +83,94 @@ test("visuals package exposes the registered templates", () => {
     if (!id.startsWith("diagram.") && meta.rendererKind !== "chart") {
       assert.ok(existsSync(join(path, "shell.tsx")));
     }
-    if (
-      id === "live.harbor_eval.v1" ||
-      id === "live.container_rollouts.v1" ||
-      id === "live.eval_stream.v1" ||
-      id === "live.craftax.v1" ||
-      id === "live.digbench.v1"
-    ) {
-      assert.deepEqual(meta.slots.map((slot) => slot.name), ["stream"]);
+    if (id === "live.container_rollouts.v1") {
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream"]);
+    }
+    if (id === "live.harbor_eval.v1") {
+      // The stream is the live transport; the experiment snapshot is what the
+      // template renders once the producer has sealed and closed that stream.
+      // Neither can be required: an open run has no snapshot yet and a
+      // reopened terminal run has no stream left to join.
+      assert.deepEqual(
+        declaredInputs(meta).map((slot) => slot.name),
+        ["stream", "experiment", "optimizer_run"]
+      );
+      assert.equal(declaredInputs(meta)[1].schema, "synth.experiment.overview.v1");
+      assert.ok(declaredInputs(meta).every((slot) => slot.required !== true));
+    }
+    if (id === "live.annotated_rollouts.v1") {
+      // The superset viewer folds each rollout's stream with its annotation
+      // sibling; both are declared per rollout on the one multi-stream input.
+      // The optional optimizer_run input carries the authoritative eval
+      // runtime configuration (container, policy, provider, model pins).
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream", "optimizer_run"]);
+      assert.equal(meta.inputs[0].multiple, true);
+      assert.equal(meta.inputs[1].required, false);
+      assert.equal(meta.observationContract.readiness.requireTerminal, false);
+    }
+    if (id === "live.craftax.v1") {
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream", "optimizer_run"]);
+      assert.equal(meta.inputs[0].required, true);
+      assert.equal(meta.inputs[1].required, false);
+    }
+    if (id === "live.eval_stream.v1") {
+      assert.equal(meta.slots, undefined);
+      assert.deepEqual((meta.inputs ?? []).map((input) => input.name), ["stream"]);
+      assert.equal(meta.inputs[0].required, true);
+      assert.ok(!(meta.inputs ?? []).some((input) => input.name === "optimizer_run"));
+      assert.deepEqual(
+        (meta.components ?? []).map((row) => row.id).sort(),
+        ["detail_modal.v1", "event_stream.v1", "metrics.v1", "scrubber.v1"]
+      );
+    }
+    if (id === "analysis.annotation_workbench.v1") {
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["evidence", "trace", "rubric"]);
+      assert.equal(declaredInputs(meta)[0].required, true);
+      assert.equal(declaredInputs(meta)[1].required, false);
+      assert.equal(declaredInputs(meta)[2].required, false);
+      assert.ok(declaredInputs(meta)[0].accepts.includes("annotation_evidence_head"));
+      assert.ok(declaredInputs(meta)[2].accepts.includes("verifier_result_v2"));
+      assert.equal(meta.genre, "analysis");
+    }
+    if (id === "trace.workbench.v1") {
+      // The family-agnostic workstation reads a run like the Craftax one, but
+      // must not demand rendered frames: liveFrames-unsupported and post_hoc
+      // families can never satisfy a minimum-frame readiness requirement.
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["optimizer_run"]);
+      assert.equal(meta.observationContract.readiness.minimumRenderedFrameCount, undefined);
+      assert.equal(meta.observationContract.readiness.minimumRolloutCount, 1);
+    }
+    if (id === "craftax.trace_workbench.v1") {
+      // The workstation replays one container-eval run's relayed trials. It
+      // reads the run, not a stream: the frames it shows are host-stored media
+      // referenced from that run's events, not bodies fetched from a URL.
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["optimizer_run"]);
+      assert.deepEqual(declaredInputs(meta)[0].accepts, ["optimizer_run"]);
+      assert.equal(declaredInputs(meta)[0].required, true);
+    }
+    if (id === "compose.visual.v1") {
+      const declared = declaredInputs(meta);
+      assert.deepEqual(declared.map((slot) => slot.name), ["spec", "stream", "optimizer_run"]);
+      assert.equal(declared[0].required, true);
+      assert.equal(declared[1].required, false);
+      assert.equal(declared[2].required, false);
+      assert.deepEqual(
+        (meta.components ?? []).map((row) => row.id).sort(),
+        ["candidate_inspector.v1", "detail_modal.v1", "event_stream.v1", "metrics.v1", "scrubber.v1"]
+      );
+    }
+    if (id === "sourced.visual.v1") {
+      const declared = declaredInputs(meta);
+      assert.deepEqual(declared.map((slot) => slot.name), ["stream"]);
+      assert.equal(declared[0].required, false);
+      assert.equal(meta.rendererKind, "tsx");
+      assert.deepEqual(
+        (meta.components ?? []).map((row) => row.id).sort(),
+        ["detail_modal.v1", "event_stream.v1"]
+      );
     }
     if (id.startsWith("optimizer.")) {
-      const slotNames = meta.slots.map((slot) => slot.name);
+      const slotNames = declaredInputs(meta).map((slot) => slot.name);
       assert.deepEqual(slotNames, ["optimizer_run"]);
       assert.ok(!slotNames.includes("live"), `${id} must not bind slot live`);
       assert.ok(!slotNames.includes("jobs"), `${id} must not bind slot jobs`);
@@ -94,9 +182,9 @@ test("visuals package exposes the registered templates", () => {
   assert.equal(mermaid.id, "diagram.mermaid.v1");
   assert.equal(mermaid.genre, "diagram");
   assert.equal(mermaid.rendererKind, "mermaid");
-  assert.equal(mermaid.slots.length, 0);
+  assert.equal(declaredInputs(mermaid).length, 0);
   assert.ok(!existsSync(join(mermaidPath, "shell.tsx")));
-  assert.ok(!existsSync(join(mermaidPath, "examples")));
+  assert.ok(existsSync(join(mermaidPath, "examples", "fixture_binding.json")));
   for (const [id, rendererKind] of [
     ["diagram.systems.v1", "systems"],
     ["diagram.systems.dynamic.v1", "systems-dynamic"],
@@ -105,7 +193,7 @@ test("visuals package exposes the registered templates", () => {
     assert.equal(meta.id, id);
     assert.equal(meta.genre, "diagram");
     assert.equal(meta.rendererKind, rendererKind);
-    assert.deepEqual(meta.slots, []);
+    assert.deepEqual(declaredInputs(meta), []);
     assert.ok(!existsSync(join(path, "shell.tsx")));
   }
 });
@@ -140,6 +228,9 @@ test("fixtures exist for matrix/rollout/live", () => {
     "reward_breakdown.json",
     "model_compare.json",
     "annotation_markers.json",
+    "annotation_workbench_craftax.json",
+    "annotation_workbench_deepswe.json",
+    "annotation_workbench_rogue_deo.json",
   ]) {
     assert.ok(existsSync(join(root, "fixtures", name)), name);
   }
@@ -159,4 +250,7 @@ test("MCP tools schema lists agent entrypoints", () => {
   ]) {
     assert.ok(names.includes(required), required);
   }
+  assert.ok(!names.includes("visual_list_components"));
+  assert.ok(!names.includes("list_components"));
+  assert.ok(!names.includes("reports_promote"));
 });

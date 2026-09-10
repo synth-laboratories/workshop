@@ -32,6 +32,12 @@ pub struct TraceBundleIngestRequest {
     pub source_kind: Option<String>,
     pub title: Option<String>,
     pub source_uri: Option<String>,
+    /// Immutable registry id of the container that sealed this trace, when the
+    /// importer knows it (container-driven imports do; a bare file import does
+    /// not). Persisted on `traces.container_id` so paid annotation can name the
+    /// owning container on the approval card. Never a URL.
+    #[serde(default)]
+    pub container_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, specta::Type)]
@@ -245,15 +251,43 @@ pub(crate) fn resolve_trace_cli() -> Result<PathBuf> {
     if let Some(home) = dirs::home_dir() {
         candidates.push(registered_trace_cli(&home));
     }
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .ok_or_else(|| {
-            anyhow!(
-                "synth-containers {} is not registered; run ./scripts/register-local-dev-build.sh in the Containers checkout",
-                synth_containers_version()
-            )
-        })
+    let mut rejected = Vec::new();
+    for candidate in candidates {
+        if !candidate.is_file() {
+            rejected.push(format!("{}: missing", candidate.display()));
+            continue;
+        }
+        match std::process::Command::new(&candidate)
+            .arg("version")
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let actual = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                if actual == synth_containers_version() {
+                    return Ok(candidate);
+                }
+                rejected.push(format!(
+                    "{}: version mismatch (expected {}, got {})",
+                    candidate.display(),
+                    synth_containers_version(),
+                    actual
+                ));
+            }
+            Ok(output) => rejected.push(format!(
+                "{}: version probe failed ({})",
+                candidate.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+            Err(error) => {
+                rejected.push(format!("{}: cannot execute ({error})", candidate.display()))
+            }
+        }
+    }
+    Err(anyhow!(
+        "synth-containers {} has no executable registered trace authority; run ./scripts/register-local-dev-build.sh in the Containers checkout; candidates: {}",
+        synth_containers_version(),
+        rejected.join("; ")
+    ))
 }
 
 fn registered_trace_cli(home: &Path) -> PathBuf {
@@ -414,7 +448,7 @@ mod tests {
                 .join(synth_containers_version())
                 .join("current/.venv/bin/synth-trace")
         );
-        assert_eq!(synth_containers_version(), "0.4.0.20260730");
+        assert_eq!(synth_containers_version(), "0.4.3");
     }
 
     /// The Containers platform seal spells its stream identity as the flat key

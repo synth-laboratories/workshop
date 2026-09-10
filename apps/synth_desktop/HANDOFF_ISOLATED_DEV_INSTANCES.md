@@ -185,11 +185,11 @@ can both mutate that service's session count. For interference-free rollouts,
 launch one Craftax service per instance:
 
 ```bash
-cd ~/Documents/GitHub/gamebench/tasks/craftax-singleplayer
+cd ~/Documents/GitHub/evals/containers/images/craftax-gamebench-rust
 
-# Separate terminals
-python3 scripts/run_service.py --lane rust --port 18098  # alpha
-python3 scripts/run_service.py --lane rust --port 18099  # beta
+# Separate terminals (each façade owns its own ephemeral gold port)
+PYTHONPATH=. python -m craftax_gold --port 18098  # alpha
+PYTHONPATH=. python -m craftax_gold --port 18099  # beta
 ```
 
 Attach `http://127.0.0.1:18098` only in `alpha` and `:18099` only in `beta`.

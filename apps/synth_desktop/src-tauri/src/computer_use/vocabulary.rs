@@ -45,6 +45,9 @@ pub enum SelectionType {
 #[serde(tag = "verb", rename_all = "snake_case")]
 pub enum Action {
     ListApps,
+    Launch {
+        app: String,
+    },
     GetAppState {
         app: String,
         /// Force a full tree instead of a diff against the previous read.
@@ -161,6 +164,7 @@ impl Action {
     pub fn verb(&self) -> &'static str {
         match self {
             Self::ListApps => "list_apps",
+            Self::Launch { .. } => "launch",
             Self::GetAppState { .. } => "get_app_state",
             Self::GetAppOutline { .. } => "get_app_outline",
             Self::FindElements { .. } => "find_elements",
@@ -180,7 +184,8 @@ impl Action {
     pub fn app(&self) -> Option<&str> {
         match self {
             Self::ListApps => None,
-            Self::GetAppState { app, .. }
+            Self::Launch { app }
+            | Self::GetAppState { app, .. }
             | Self::GetAppOutline { app, .. }
             | Self::FindElements { app, .. }
             | Self::GetSubtree { app, .. }
@@ -322,7 +327,8 @@ impl Action {
     pub fn approval_payload(&self) -> Value {
         match self {
             Self::ListApps => json!({}),
-            Self::GetAppState { app, .. }
+            Self::Launch { app }
+            | Self::GetAppState { app, .. }
             | Self::GetAppOutline { app, .. }
             | Self::FindElements { app, .. }
             | Self::GetSubtree { app, .. } => json!({ "app": app }),
@@ -382,8 +388,9 @@ impl Action {
 /// Every verb, in the order §5 lists them. The MCP schema and the skill are
 /// both generated from this, so a verb cannot be advertised in one and missing
 /// from the other.
-pub const ACTION_VERBS: [&str; 13] = [
+pub const ACTION_VERBS: [&str; 14] = [
     "list_apps",
+    "launch",
     "get_app_state",
     "get_app_outline",
     "find_elements",
@@ -410,6 +417,7 @@ mod tests {
     fn every_verb_round_trips_and_is_declared() {
         let actions = [
             json!({"verb":"list_apps"}),
+            json!({"verb":"launch","app":"com.apple.mail"}),
             json!({"verb":"get_app_state","app":"com.apple.mail"}),
             json!({"verb":"get_app_outline","app":"com.apple.mail"}),
             json!({"verb":"find_elements","app":"com.apple.mail","role":"AXButton"}),
@@ -478,6 +486,9 @@ mod tests {
     #[test]
     fn reads_are_separated_from_writes() {
         assert!(parse(json!({"verb":"list_apps"})).unwrap().is_read_only());
+        assert!(!parse(json!({"verb":"launch","app":"a"}))
+            .unwrap()
+            .is_read_only());
         assert!(parse(json!({"verb":"get_app_state","app":"a"}))
             .unwrap()
             .is_read_only());

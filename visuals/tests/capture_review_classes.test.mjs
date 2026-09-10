@@ -24,12 +24,13 @@ function loadTemplate(id) {
     "live.craftax.v1": "families/first_class_example_containers/live.craftax.v1/template.json",
     "optimizer.eval.live.v1": "families/optimizers/eval/optimizer.eval.live.v1/template.json",
     "optimizer.sft.live.v1": "families/optimizers/sft/optimizer.sft.live.v1/template.json",
+    "optimizer.cispo.live.v1": "families/optimizers/cispo/optimizer.cispo.live.v1/template.json",
     "diagram.mermaid.v1": "families/diagrams/diagram.mermaid.v1/template.json"
   };
   return JSON.parse(readFileSync(join(root, relatives[id]), "utf8"));
 }
 
-test("GEPA, Trace inspector, Craftax, eval, and SFT declare truthful observation contracts", () => {
+test("GEPA, Trace inspector, Craftax, eval, SFT, and CISPO declare truthful observation contracts", () => {
   for (const id of CAPTURE_REVIEW_PRODUCT_CLASSES) {
     const template = loadTemplate(id);
     assert.equal(template.id, id);
@@ -53,6 +54,10 @@ test("product class fixtures bind without unresolved slots", async () => {
     {
       id: "optimizer.sft.live.v1",
       binding: { slot: "optimizer_run", kind: "inline", data: { from: "sft", events: [{ kind: "train.step" }] } }
+    },
+    {
+      id: "optimizer.cispo.live.v1",
+      binding: { slot: "optimizer_run", kind: "inline", data: { from: "cispo", events: [{ kind: "train.step" }] } }
     },
     {
       id: "optimizer.eval.live.v1",

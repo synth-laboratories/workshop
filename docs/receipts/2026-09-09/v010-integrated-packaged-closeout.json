@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "workshop.v010-integrated-packaged-closeout.v1",
+  "recordedAt": "2026-09-09T19:04:04Z",
+  "sourceBranch": "codex/v010-complete",
+  "sourceCommit": "d54f1d876166",
+  "appVersion": "0.10.0",
+  "instance": "v010-complete",
+  "bundleId": "com.synth.desktop.v010.dev.v010-complete",
+  "executableDigest": "sha256:422e21538b8957a59206d25c4ff56d80075e9132935b465aaf96070da1644541",
+  "rendererDigest": "sha256:0e1de34cb5a0f088620bf2cf6c1bd25f999d7e6e3f544e4fc8f48aa9cbee4a28",
+  "releaseDmg": {
+    "path": "apps/synth_desktop/src-tauri/target/release/bundle/dmg/Synth Workshop_0.10.0_aarch64.dmg",
+    "sha256": "97157d690ae93752466dbb7c1df7d23ccd303696415b854c12873eabde69449e"
+  },
+  "embeddedRuntimePins": {
+    "synthContainers": {
+      "version": "0.4.2.dev20260908",
+      "sourceCommit": "be173da"
+    },
+    "synthOptimizers": {
+      "version": "0.2.21",
+      "sourceCommit": "137fe713fc485687d9176ea4d50cddeba2f5fb44"
+    },
+    "synthMlxRl": {
+      "version": "0.6.0",
+      "sourceCommit": "5d6db14330babcff170d2afbb8535de2138385a9"
+    },
+    "browser": {
+      "node": "24.18.0",
+      "chromium": "151.0.7922.34",
+      "playwrightRevision": "1234"
+    }
+  },
+  "packagedSmoke": {
+    "visualId": "accept-managed-542f80f8-69c7-4e7c-a677-265b2feee028",
+    "revision": 1,
+    "humanAction": "Next logical step advanced committed state from 0 to 1",
+    "captureBeforeFile": "25ec712f-495d-4da7-a6d1-c772a4680345.png",
+    "captureAfterFile": "7357bde6-f36f-4770-aa8a-e3b4c0d162f3.png",
+    "captureRestoredFile": "516d0a69-8e04-471d-ab0e-b291e7d51998.png",
+    "wideReviewSha256": "sha256:8c28dfedb8e91840a6077e8d25527d551cb724849adec837a9c887859e6c111f",
+    "compactReviewSha256": "sha256:a00918fcb04b1f8f6f790999bc33b9c9472e1e85f5ddc71b0aa40a2bdf15c3ce",
+    "ready": true,
+    "sealReceiptDigest": "424beec9628beaed5f59f19623bd5fc8d65d3e0d6374aef672c257adae0ff9f4",
+    "artifactBundleSchema": "synth.artifact-bundle.v1",
+    "artifactBundleBytes": 20812
+  },
+  "publication": {
+    "status": "held",
+    "reason": "No push, merge, production signing, notarization, deployment, package publication, or paid run was authorized by the existing handoffs."
+  }
+}

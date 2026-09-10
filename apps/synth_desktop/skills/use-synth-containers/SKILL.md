@@ -21,6 +21,11 @@ named operations directly; do not use shell or scan ports as a fallback.
    engine is not a policy and proves no model was in the loop.
 5. Register a container only when the user or workspace gives an explicit URL.
    Use `container_register`; never infer a localhost port.
+6. An already-running, healthy registered target can be evaluated by its exact
+   container ID through ordinary optimizer admission. A workspace launch
+   declaration is required for `container_ensure`/`container_reconcile`, not for
+   using an externally registered target. Do not reconcile it just to make it
+   eligible; let the requested workflow validate its fresh capabilities.
 
 ## Select by capability, not by liveness
 
@@ -78,6 +83,33 @@ For a live policy eval, follow `run-live-container-evals`: prepare, bind the
 declared stream on a task-family visual, then `container_start_prepared_rollout`
 with an explicit `policy_ref` (`harness` + `config`). The coding agent names
 the pin; the host does not default `luna_med`.
+
+After `container_prepare_rollout`, do not guess the compact visuals schema and
+do not call `list_templates`. Create and bind the advertised live visual in one
+call using the exact `templateId` from `container_probe.metadata.liveEval` and
+the exact `visual_binding` returned by preparation:
+
+```js
+const created = await tools.mcp__synth_visuals__visual_manage({
+  operation: "create_with_bind",
+  arguments: {
+    template_id: probe.container.metadata.liveEval.templateId,
+    title: rolloutId,
+    display_name: "Craftax Live Rollout",
+    input: "stream",
+    kind: prepared.visual_binding.kind,
+    source: prepared.visual_binding.source,
+    poll_url: prepared.visual_binding.poll_url,
+    schema: prepared.visual_binding.schema
+  }
+});
+```
+
+Use the returned visual ID for `show`, readiness review, and
+`container_start_prepared_rollout`. A `visual_manage` create request with
+`kind` in place of `template_id` is invalid; never retry it with speculative
+fields. If the atomic call fails, report its exact error instead of spending
+the turn exploring unrelated visual templates.
 
 Use only the normalized Containers contract: plural rollout routes,
 `snake_case` wire fields, and descriptor-nested transport URLs. Never consume

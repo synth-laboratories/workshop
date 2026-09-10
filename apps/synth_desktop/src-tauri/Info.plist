@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Synth uses the microphone only when you choose local voice dictation.</string>
+  <key>AXManualAccessibility</key>
+  <true/>
 </dict>
 </plist>

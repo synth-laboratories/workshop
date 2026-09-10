@@ -18,10 +18,57 @@
 //! replay, or an error. Nothing is silently skipped.
 
 use anyhow::{bail, Result};
-use serde_json::{Map, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 
 use super::models::{OptimizerEventEnvelope, OPTIMIZER_EVENT_SCHEMA_VERSION};
+
+fn strip_frame_body(container: &mut Map<String, Value>) {
+    if let Some(frame) = container.get_mut("frame").and_then(Value::as_object_mut) {
+        frame.remove("data_url");
+        frame.remove("dataUrl");
+    }
+}
+
+fn mutable_container_event(
+    event: &mut OptimizerEventEnvelope,
+    raw: bool,
+) -> Option<&mut Map<String, Value>> {
+    if raw {
+        let object = event.raw.as_object_mut()?;
+        let value = if object.contains_key("container_event") {
+            object.get_mut("container_event")
+        } else {
+            object.get_mut("containerEvent")
+        }?;
+        value.as_object_mut()
+    } else {
+        let value = if event.delta.contains_key("container_event") {
+            event.delta.get_mut("container_event")
+        } else {
+            // COMPAT_CONTAINER_EVENT_CAMEL_CASE_THROUGH: legacy read only;
+            // remove after the release following 2026-08.
+            event.delta.get_mut("containerEvent")
+        }?;
+        value.as_object_mut()
+    }
+}
+
+/// Event subscriptions carry telemetry only. Native frame bodies have their
+/// own cursor and content APIs; allowing even one base64 PNG per event page to
+/// enter the shared run store makes memory grow with the number of pages and
+/// surfaces. Legacy rows may still contain inline bodies, so strip them here.
+pub fn strip_frame_bodies_for_ipc(events: &mut [OptimizerEventEnvelope]) {
+    for event in events.iter_mut() {
+        if let Some(container) = mutable_container_event(event, true) {
+            strip_frame_body(container);
+        }
+        if let Some(container) = mutable_container_event(event, false) {
+            strip_frame_body(container);
+        }
+    }
+}
 
 /// Event content, without identity or order.
 ///
@@ -108,6 +155,17 @@ impl OptimizerEventDraft {
     pub fn occurred_at(mut self, occurred_at: impl Into<String>) -> Self {
         self.occurred_at = Some(occurred_at.into());
         self
+    }
+
+    /// Producer timestamp when there is one; seal time when there is not.
+    /// Relayed events carry the container's `ts`, which is the moment the
+    /// environment actually observed the fact rather than the moment Workshop
+    /// got around to reading it.
+    pub fn occurred_at_opt(self, occurred_at: Option<&str>) -> Self {
+        match occurred_at.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(value) => self.occurred_at(value),
+            None => self,
+        }
     }
 
     pub fn idempotency_key(mut self, key: impl Into<String>) -> Self {
@@ -278,10 +336,181 @@ fn validate_shape(run_id: &str, event: &OptimizerEventEnvelope) -> Result<()> {
     Ok(())
 }
 
+/// An inclusive span of durable event sequences.
+///
+/// Evidence is browsed, not streamed. A reader that opens Replay at the end of
+/// a run and then scrolls back holds two disjoint spans, not a prefix — so the
+/// unit of both request and answer is a range, and `from > to` is empty rather
+/// than an error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidenceRange {
+    #[specta(type = specta_typescript::Number)]
+    pub from: u64,
+    #[specta(type = specta_typescript::Number)]
+    pub to: u64,
+}
+
+impl EvidenceRange {
+    pub fn new(from: u64, to: u64) -> Self {
+        Self { from, to }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.from > self.to
+    }
+}
+
+/// One answer to "everything in this window except what I already hold".
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidencePage {
+    pub events: Vec<OptimizerEventEnvelope>,
+    /// The span this page actually covers. `None` when the window was already
+    /// fully held, which is the "nothing to send" answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<EvidenceRange>,
+    /// Held spans plus this page, normalized. The caller stores it verbatim
+    /// and sends it back on the next request; it never has to reconstruct
+    /// what it has from what it displayed.
+    pub coverage: Vec<EvidenceRange>,
+    /// Whether `coverage` now spans the whole requested window.
+    pub complete: bool,
+    /// The run's durable tail, so a reader knows what "the end" is without a
+    /// second call.
+    #[specta(type = specta_typescript::Number)]
+    pub tail_cursor: u64,
+}
+
+/// Sort and coalesce spans, merging touching ones (`1..3` and `4..6` become
+/// `1..6`) so coverage is canonical rather than however it was accumulated.
+pub fn normalize_ranges(ranges: &[EvidenceRange]) -> Vec<EvidenceRange> {
+    let mut sorted: Vec<EvidenceRange> = ranges.iter().copied().filter(|r| !r.is_empty()).collect();
+    sorted.sort_by_key(|range| (range.from, range.to));
+    let mut merged: Vec<EvidenceRange> = Vec::with_capacity(sorted.len());
+    for range in sorted {
+        match merged.last_mut() {
+            // `saturating_add` matters at the top of the range: `to + 1`
+            // would otherwise wrap and stop merging adjacent spans.
+            Some(last) if range.from <= last.to.saturating_add(1) => {
+                last.to = last.to.max(range.to);
+            }
+            _ => merged.push(range),
+        }
+    }
+    merged
+}
+
+/// The parts of `window` not covered by `held`, in order.
+///
+/// This is the whole point of the range protocol: a cursor can only express
+/// "after N", so a reader holding a hole in the middle either re-fetches
+/// everything or silently keeps the hole. The complement expresses "besides
+/// what I have" exactly.
+pub fn complement(window: EvidenceRange, held: &[EvidenceRange]) -> Vec<EvidenceRange> {
+    if window.is_empty() {
+        return Vec::new();
+    }
+    let mut gaps = Vec::new();
+    let mut cursor = window.from;
+    for range in normalize_ranges(held) {
+        if range.to < cursor {
+            continue;
+        }
+        if range.from > window.to {
+            break;
+        }
+        if range.from > cursor {
+            gaps.push(EvidenceRange::new(cursor, range.from - 1));
+        }
+        // `range.to + 1` is the next uncovered sequence. At `u64::MAX` there
+        // is no such sequence, and saturating instead of overflowing would
+        // silently report the last event as still missing — forever.
+        let Some(next) = range.to.checked_add(1) else {
+            return gaps;
+        };
+        cursor = cursor.max(next);
+        if cursor > window.to {
+            return gaps;
+        }
+    }
+    if cursor <= window.to {
+        gaps.push(EvidenceRange::new(cursor, window.to));
+    }
+    gaps
+}
+
 #[cfg(test)]
 mod tests {
+
+    use super::{complement, normalize_ranges, EvidenceRange};
+
+    fn r(from: u64, to: u64) -> EvidenceRange {
+        EvidenceRange::new(from, to)
+    }
+
+    #[test]
+    fn coverage_coalesces_touching_and_overlapping_spans() {
+        assert_eq!(
+            normalize_ranges(&[r(4, 6), r(1, 3)]),
+            vec![r(1, 6)],
+            "adjacent spans are one span; leaving them apart would make the \
+             caller re-request a boundary event forever"
+        );
+        assert_eq!(normalize_ranges(&[r(1, 5), r(3, 9)]), vec![r(1, 9)]);
+        assert_eq!(
+            normalize_ranges(&[r(1, 2), r(9, 9)]),
+            vec![r(1, 2), r(9, 9)]
+        );
+        assert_eq!(
+            normalize_ranges(&[r(5, 1)]),
+            vec![],
+            "an inverted span is empty"
+        );
+    }
+
+    #[test]
+    fn the_complement_is_everything_besides_what_is_held() {
+        // The case a cursor cannot express: a reader that opened Replay at the
+        // end and then scrolled back holds two disjoint spans. "After the
+        // highest" fetches nothing and keeps the hole; the complement asks for
+        // exactly the hole.
+        assert_eq!(
+            complement(r(1, 2259), &[r(1, 500), r(2000, 2259)]),
+            vec![r(501, 1999)]
+        );
+        assert_eq!(complement(r(1, 100), &[]), vec![r(1, 100)]);
+        assert_eq!(
+            complement(r(1, 100), &[r(1, 100)]),
+            vec![],
+            "nothing to send"
+        );
+        assert_eq!(
+            complement(r(1, 100), &[r(200, 300)]),
+            vec![r(1, 100)],
+            "coverage outside the window does not cover it"
+        );
+        assert_eq!(
+            complement(r(10, 20), &[r(1, 14), r(18, 40)]),
+            vec![r(15, 17)],
+            "held spans are clipped to the window"
+        );
+        assert_eq!(
+            complement(r(1, 30), &[r(5, 9), r(15, 19)]),
+            vec![r(1, 4), r(10, 14), r(20, 30)],
+            "every hole is reported, in order"
+        );
+    }
+
+    #[test]
+    fn a_span_at_the_top_of_the_range_does_not_wrap() {
+        // `to + 1` on u64::MAX is the kind of thing that turns a coverage
+        // check into an infinite refetch loop.
+        let top = r(u64::MAX - 1, u64::MAX);
+        assert_eq!(normalize_ranges(&[top]), vec![top]);
+        assert_eq!(complement(top, &[top]), vec![]);
+    }
     use super::*;
-    use serde_json::json;
 
     fn envelope(seq: u64, event_type: &str, event_id: Option<&str>) -> OptimizerEventEnvelope {
         OptimizerEventEnvelope {
@@ -447,5 +676,36 @@ mod tests {
         assert_eq!(sealed.event_id.as_deref(), Some("run_1:terminal"));
         assert_eq!(sealed.sequence_number, 12);
         assert_eq!(sealed.occurred_at, "2026-08-17T21:36:57+00:00");
+    }
+
+    #[test]
+    fn ipc_page_never_carries_png_bodies() {
+        fn framed(seq: u64, seed: i64, body: &str) -> OptimizerEventEnvelope {
+            let mut event = envelope(seq, "eval.trial.event", Some(&format!("run_1:{seq}")));
+            event.delta.insert(
+                "containerEvent".into(),
+                json!({
+                    "event": "rollout.step", "seed": seed,
+                    "frame": {"data_url": body, "width": 768}
+                }),
+            );
+            event.raw = json!({"container_event": {
+                "event": "rollout.step", "seed": seed,
+                "frame": {"data_url": body, "sha256": format!("sha-{seq}")}
+            }});
+            event
+        }
+        let prefix = "data:image/png;base64,";
+        let mut page = vec![
+            framed(1, 91001, &format!("{prefix}old")),
+            framed(2, 91002, &format!("{prefix}other")),
+            framed(3, 91001, &format!("{prefix}latest")),
+        ];
+        strip_frame_bodies_for_ipc(&mut page);
+        assert!(serde_json::to_string(&page[0]).unwrap().contains("width"));
+        assert!(page
+            .iter()
+            .all(|event| !serde_json::to_string(event).unwrap().contains(prefix)));
+        assert!(page.iter().all(|event| event.item.is_none()));
     }
 }

@@ -5,21 +5,24 @@ use super::models::{
 };
 use super::sidecar_training::{
     local_sft_config, optional_jsonl, spawn_watch_worker, training_create_request,
-    SidecarTrainingClient, LOCAL_MLX_SFT_RECIPE, PLACEMENT_TRAINING_SFT_LOCAL,
+    SidecarTrainingClient, LOCAL_MLX_SFT_RECIPE, LOCAL_SFT_LEARNING_RATE,
+    PLACEMENT_TRAINING_SFT_LOCAL,
 };
 use super::OptimizerService;
-use anyhow::Result;
+use anyhow::{bail, Result};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::PathBuf;
 
 pub const QWEN_MLX_SFT_RECIPE: &str = LOCAL_MLX_SFT_RECIPE;
-const BASE_MODEL: &str = "Qwen/Qwen3.5-0.8B";
+const BASE_MODEL: &str = "Qwen/Qwen3.5-2B";
 const MAX_STEPS: u64 = 4;
 const CHECKPOINT_EVERY: u64 = 2;
 const LORA_RANK: u64 = 8;
 const LORA_ALPHA: f64 = 16.0;
-const MAX_SEQ_LENGTH: u64 = 4096;
+const MAX_SEQ_LENGTH: u64 = super::mlx_runtime::LOCAL_TRAINING_MAX_SEQ_LENGTH;
 
 pub fn recipe_catalog() -> Value {
     let (dataset, evaluation, dataset_source) = resolve_local_sft_datasets();
@@ -32,15 +35,12 @@ pub fn recipe_catalog() -> Value {
     if !model_ready {
         reasons.push("Download the training model in Settings → Models → On-device training.");
     }
-    if dataset.is_none() || evaluation.is_none() {
-        reasons.push("Train/eval JSONL is missing (cookbook or SYNTH_MLX_SFT_*_JSONL).");
-    }
-    let available = apple_silicon && model_ready && dataset.is_some() && evaluation.is_some();
+    let available = apple_silicon && model_ready;
     json!({
         "id": QWEN_MLX_SFT_RECIPE,
-        "title": "This Mac · Qwen 3.5 0.8B MLX LoRA SFT",
+        "title": "This Mac · Qwen 3.5 2B MLX LoRA SFT",
         "algorithmId": "sft",
-        "task": "local-qwen",
+        "task": Value::Null,
         "placement": PLACEMENT_TRAINING_SFT_LOCAL,
         "availability": if available { "available" } else { "unavailable" },
         "availabilityReason": if available { Value::Null } else { json!(reasons.join(" ")) },
@@ -59,7 +59,7 @@ pub fn recipe_catalog() -> Value {
             "costNotice": "Local Apple Silicon MLX compute; no hosted provider charges."
         },
         "credentialInputs": [],
-        "prerequisites": ["Optimizers sidecar", "cookbook or SYNTH_MLX_SFT_*_JSONL"]
+        "prerequisites": ["Optimizers sidecar", "ready container advertising SFT JSONL or SYNTH_MLX_SFT_*_JSONL"]
     })
 }
 
@@ -67,26 +67,56 @@ pub async fn start(
     service: &OptimizerService,
     request: OptimizerRecipeRunRequest,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
+    validate_generation_learning_rate(LOCAL_SFT_LEARNING_RATE)?;
     super::mlx_runtime::require_training_model()?;
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_mlx_qwen_{}", &suffix[..12]);
-    let (dataset, evaluation, _) = resolve_local_sft_datasets();
+    // An explicit Workshop container is an identity/provenance binding, not a
+    // hint. Never let ambient SYNTH_MLX_SFT_* paths silently substitute a
+    // different workload after the user selected a concrete container.
+    let (dataset, evaluation, bind) = if has_explicit_container(&request) {
+        let bind =
+            super::container_training::bind(service, request.container_id.as_deref()).await?;
+        let (train, eval) = super::container_training::materialize_sft_jsonl(&bind).await?;
+        (train, eval, Some(bind))
+    } else {
+        let env_datasets = resolve_local_sft_datasets();
+        if let (Some(train), Some(eval)) = (env_datasets.0, env_datasets.1) {
+            (train, eval, None)
+        } else {
+            let bind = super::container_training::bind(service, None).await?;
+            let (train, eval) = super::container_training::materialize_sft_jsonl(&bind).await?;
+            (train, eval, Some(bind))
+        }
+    };
+    if !dataset.is_file() || !evaluation.is_file() {
+        bail!("local MLX SFT requires train and eval JSONL from the bound container or SYNTH_MLX_SFT_*_JSONL");
+    }
+    let config = local_sft_config(
+        &run_id,
+        Some(dataset.as_path()),
+        Some(evaluation.as_path()),
+        bind.as_ref(),
+    );
     let mut input_refs = Vec::new();
-    if let Some(path) = dataset.as_ref() {
-        input_refs.push(dataset_ref(path, "train", "Local Qwen SFT dataset"));
-    }
-    if let Some(path) = evaluation.as_ref() {
-        input_refs.push(dataset_ref(
-            path,
-            "heldout_evaluation",
-            "Fixed held-out Qwen evaluation dataset",
-        ));
-    }
+    input_refs.push(dataset_ref(
+        &dataset,
+        "train",
+        "Local Qwen SFT dataset",
+        bind.as_ref(),
+    )?);
+    input_refs.push(dataset_ref(
+        &evaluation,
+        "heldout_evaluation",
+        "Fixed held-out Qwen evaluation dataset",
+        bind.as_ref(),
+    )?);
+    input_refs.push(config_ref(&config));
     let create = training_create_request(
         &run_id,
         "sft",
-        "qwen35-0.8b-mlx-lora-v1",
-        "Local Qwen 3.5 0.8B LoRA SFT on Apple Silicon MLX",
+        "qwen35-2b-mlx-lora-v1",
+        "Local Qwen 3.5 2B LoRA SFT on Apple Silicon MLX",
         "local",
         QWEN_MLX_SFT_RECIPE,
         &request,
@@ -106,19 +136,63 @@ pub async fn start(
         request,
         create,
         PLACEMENT_TRAINING_SFT_LOCAL,
-        local_sft_config(&run_id, dataset.as_deref(), evaluation.as_deref()),
+        config,
     )
     .await
 }
 
-fn dataset_ref(path: &PathBuf, role: &str, title: &str) -> OptimizerResourceRef {
-    OptimizerResourceRef {
+fn has_explicit_container(request: &OptimizerRecipeRunRequest) -> bool {
+    request
+        .container_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn validate_generation_learning_rate(learning_rate: f64) -> Result<()> {
+    if learning_rate > 0.0001 {
+        bail!(
+            "local MLX SFT generation gate rejected learning_rate={learning_rate}: values above 1e-4 can collapse the adapter to EOS"
+        );
+    }
+    Ok(())
+}
+
+fn dataset_ref(
+    path: &PathBuf,
+    role: &str,
+    title: &str,
+    bind: Option<&super::container_training::ContainerTrainingBind>,
+) -> Result<OptimizerResourceRef> {
+    let bytes = fs::read(path)?;
+    Ok(OptimizerResourceRef {
         kind: "dataset".into(),
         id: path.display().to_string(),
-        digest: None,
+        digest: Some(format!("sha256:{:x}", Sha256::digest(&bytes))),
         role: Some(role.into()),
         title: Some(title.into()),
-        metadata: json!({}),
+        metadata: bind.map_or_else(
+            || json!({"source": "operator_environment"}),
+            |bind| {
+                json!({
+                    "source": "workshop_container",
+                    "containerId": bind.container_id,
+                    "taskId": bind.task_id,
+                    "baseUrl": bind.base_url,
+                })
+            },
+        ),
+    })
+}
+
+fn config_ref(config: &Value) -> OptimizerResourceRef {
+    let canonical = serde_json::to_vec(config).expect("training config is JSON");
+    OptimizerResourceRef {
+        kind: "training_configuration".into(),
+        id: QWEN_MLX_SFT_RECIPE.into(),
+        digest: Some(format!("sha256:{:x}", Sha256::digest(canonical))),
+        role: Some("resolved_configuration".into()),
+        title: Some("Resolved local MLX SFT configuration".into()),
+        metadata: json!({"schemaVersion": "synth-mlx-rl.training-config.v1"}),
     }
 }
 
@@ -130,43 +204,15 @@ pub fn resolve_local_sft_datasets() -> (Option<PathBuf>, Option<PathBuf>, &'stat
     ) {
         return (Some(train), Some(eval), "env");
     }
-    if let Some(dir) = cookbook_sft_dir() {
-        let train = dir.join("train.jsonl");
-        let eval = dir.join("eval.jsonl");
-        if train.is_file() && eval.is_file() {
-            return (Some(train), Some(eval), "cookbook");
-        }
-    }
     (None, None, "missing")
 }
 
-fn cookbook_sft_dir() -> Option<PathBuf> {
-    if let Ok(raw) = std::env::var("SYNTH_MLX_SFT_COOKBOOK") {
-        let path = PathBuf::from(raw.trim());
-        if path.is_dir() {
-            return Some(path);
-        }
-    }
-    let rel = Path::new("cookbooks/optimizers/sft/qwen35_mlx");
-    let mut candidates = Vec::new();
-    candidates.push(crate::instance::data_root().join(rel));
-    candidates.push(crate::instance::state_root().join(rel));
-    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        candidates.push(
-            PathBuf::from(manifest)
-                .join("generated-resources")
-                .join(rel),
-        );
-    }
-    candidates
-        .into_iter()
-        .find(|path| path.join("train.jsonl").is_file() && path.join("eval.jsonl").is_file())
-}
-
 pub async fn reconcile(service: &OptimizerService, run_id: &str) -> Result<OptimizerRunRecord> {
-    let cursor = service
-        .get(run_id.into())
-        .await?
+    let current = service.get(run_id.into()).await?;
+    if super::sidecar_training::reconcile_persisted_sft(service, run_id, &current.summary).await? {
+        return service.get(run_id.into()).await;
+    }
+    let cursor = current
         .summary
         .get("trainingCursor")
         .and_then(Value::as_u64)
@@ -219,10 +265,7 @@ mod tests {
 
     #[test]
     fn production_source_does_not_dial_mlx_loopback() {
-        let production = include_str!("mlx_sft.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
+        let production = &crate::optimizers::production_source(include_str!("mlx_sft.rs"));
         assert!(!production.contains(&["127.0.0.1:", "8787"].concat()));
         assert!(!production.contains("SYNTH_MLX_RL_URL"));
         assert!(production.contains("PLACEMENT_TRAINING_SFT_LOCAL"));
@@ -242,16 +285,69 @@ mod tests {
     }
 
     #[test]
-    fn recipe_card_fails_closed_without_a_real_dataset() {
+    fn recipe_card_is_listed_without_a_prebound_dataset() {
         let recipe = recipe_catalog();
         assert_eq!(recipe["id"], QWEN_MLX_SFT_RECIPE);
-        assert!(!recipe["preflight"]["dataset"].as_bool().unwrap());
-        assert_eq!(recipe["preflight"]["datasetSource"], "missing");
         assert!(recipe["prerequisites"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item.as_str().unwrap().contains("cookbook")));
+            .any(|item| item.as_str().unwrap().contains("container")));
+    }
+
+    #[test]
+    fn generation_gate_accepts_safe_1e_5_and_rejects_unsafe_1e_3() {
+        assert!(validate_generation_learning_rate(1e-5).is_ok());
+        let error = validate_generation_learning_rate(1e-3)
+            .expect_err("unsafe learning rate must fail closed")
+            .to_string();
+        assert!(error.contains("generation gate rejected"));
+        assert!(error.contains("collapse the adapter to EOS"));
+    }
+
+    #[test]
+    fn explicit_container_is_a_strict_dataset_binding() {
+        let request = recipe_request(Some("ctr_alfworld"));
+        assert!(has_explicit_container(&request));
+
+        let ambient_only = recipe_request(Some("   "));
+        assert!(!has_explicit_container(&ambient_only));
+    }
+
+    #[test]
+    fn dataset_and_config_refs_are_digest_bound() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("train.jsonl");
+        fs::write(&path, b"{\"messages\":[]}\n").unwrap();
+        let path = PathBuf::from(path);
+        let reference = dataset_ref(&path, "train", "dataset", None).unwrap();
+        assert_eq!(
+            reference.digest.as_deref(),
+            Some("sha256:967f89089aeadc7e90a8ecac9d3c9aca28ee83f59003525afa418983f5afd4b3")
+        );
+        assert_eq!(reference.metadata["source"], "operator_environment");
+
+        let config = json!({"b": 2, "a": 1});
+        let reference = config_ref(&config);
+        assert_eq!(
+            reference.digest.as_deref(),
+            Some("sha256:43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777")
+        );
+    }
+
+    fn recipe_request(container_id: Option<&str>) -> OptimizerRecipeRunRequest {
+        OptimizerRecipeRunRequest {
+            training_artifact_id: None,
+            recipe_id: QWEN_MLX_SFT_RECIPE.into(),
+            session_ref: None,
+            open_visual: Some(false),
+            base_model: None,
+            dataset_shard: None,
+            candidate_set_id: None,
+            container_id: container_id.map(str::to_string),
+            plan_override: None,
+            search: None,
+        }
     }
 
     #[tokio::test]
@@ -281,19 +377,21 @@ mod tests {
         let (run, _) = start(
             &service,
             OptimizerRecipeRunRequest {
-				training_artifact_id: None,
+                training_artifact_id: None,
                 recipe_id: QWEN_MLX_SFT_RECIPE.into(),
                 session_ref: Some("sess_training_e2e".into()),
                 open_visual: Some(false),
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                container_id: None,
+                plan_override: None,
                 search: None,
             },
         )
         .await
         .unwrap();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1800);
         let terminal = loop {
             let current = service.get(run.id.clone()).await.unwrap();
             if matches!(
@@ -304,19 +402,19 @@ mod tests {
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "local SFT sidecar fixture timed out at {}",
+                "local SFT timed out at {}",
                 current.status
             );
-            sleep(Duration::from_millis(50)).await;
+            sleep(Duration::from_secs(2)).await;
         };
-        assert_eq!(terminal.status, "completed");
+        assert_eq!(terminal.status, "completed", "{:?}", terminal.summary);
         let events = service
             .events_after(run.id.clone(), 0, Some(500))
             .await
             .unwrap();
         assert!(events
             .iter()
-            .any(|event| event.event_type == "sft.heldout_evaluation.completed"));
+            .any(|event| event.event_type == "training.evaluation.completed"));
         assert!(events
             .iter()
             .any(|event| event.event_type == "sft.checkpoint.ready"));
@@ -326,12 +424,15 @@ mod tests {
         let client = SidecarTrainingClient::from_manager(service.manager())
             .await
             .unwrap();
-        let chat = client.chat(&run.id, "hello from checkpoint").await.unwrap();
-        assert!(chat["reply"]
-            .as_str()
-            .unwrap()
-            .contains("hello from checkpoint"));
-        let _ = client.resume(&run.id).await.unwrap();
+        let chat = client
+            .chat(&run.id, "Classify: I want to check my balance.")
+            .await
+            .unwrap();
+        let reply = chat["reply"].as_str().unwrap_or("");
+        assert!(
+            !reply.trim().is_empty(),
+            "checkpoint chat returned empty reply: {chat}"
+        );
         let _ = service.manager().stop().await;
     }
 }

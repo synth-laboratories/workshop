@@ -1,6 +1,6 @@
 [package]
 name = "synth-desktop"
-version = "0.7.0"
+version = "0.10.0"
 description = "Synth Workshop Tauri host"
 edition = "2021"
 default-run = "synth-desktop"
@@ -15,12 +15,14 @@ crate-type = ["rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+tempfile = "3"
 anyhow = "1"
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 dirs = "6"
 futures-util = "0.3"
+tokio-tungstenite = "0.30"
 fs2 = "0.4"
 # The credential proxy: a loopback Responses endpoint that holds the Synth key
 # so `codex app-server` never receives it. All three already build as reqwest
@@ -36,15 +38,17 @@ portable-pty = "0.9"
 png = "0.17"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
+schemars = "0.8.22"
 sha2 = "0.10"
 # Wave 2 boundary codegen (tauri-specta). Pin RC versions together — specta
 # RCs are not semver-stable across minor bumps.
 specta = { version = "=2.0.0-rc.25", features = ["derive", "serde_json"] }
 specta-typescript = "0.0.12"
 toml = "0.8"
+toml_edit = "=0.20.2"
 tauri = { version = "2", features = ["specta"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
@@ -97,6 +101,10 @@ objc2-web-kit = { version = "0.3", default-features = false, features = [
 eval-driver = []
 
 [[bin]]
+name = "workshop"
+path = "src/bin/workshop.rs"
+
+[[bin]]
 name = "synth-visuals-mcp"
 path = "src/bin/synth_visuals_mcp.rs"
 
@@ -111,6 +119,10 @@ path = "src/bin/synth_optimizers_mcp.rs"
 [[bin]]
 name = "synth-plugins-mcp"
 path = "src/bin/synth_plugins_mcp.rs"
+
+[[bin]]
+name = "synth-display-mcp"
+path = "src/bin/synth_display_mcp.rs"
 
 [[bin]]
 name = "synth-computer-use-mcp"
@@ -129,6 +141,14 @@ name = "synth-traces-mcp"
 path = "src/bin/synth_traces_mcp.rs"
 
 [[bin]]
+name = "synth-annotations-mcp"
+path = "src/bin/synth_annotations_mcp.rs"
+
+[[bin]]
+name = "synth-human-annotations-mcp"
+path = "src/bin/synth_human_annotations_mcp.rs"
+
+[[bin]]
 name = "synth-diagnostics-mcp"
 path = "src/bin/synth_diagnostics_mcp.rs"
 
@@ -138,10 +158,13 @@ path = "src/bin/synth_secrets_mcp.rs"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
-tempfile = "3"
 
 # Local installs rebuild the whole app crate for any one-line change; release
 # incremental turns that ~35s codegen pass into a few seconds. Cargo applies
 # incremental only to workspace crates, so registry deps stay sccache-cached.
 [profile.release]
 incremental = true
+
+[[bin]]
+name = "synth-jesterky-mcp"
+path = "src/bin/synth_jesterky_mcp.rs"

@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "workshop.visuals-certification.v1",
+  "recordedAt": "2026-09-09T17:51:24.570554+00:00",
+  "sourceRevision": "f8cbecbf1849",
+  "sourceBranch": "codex/v0.10.0-visuals-release",
+  "dirty": false,
+  "visualId": "accept-diagram-mermaid-v1",
+  "revision": 6,
+  "markedReady": true,
+  "buildIdentityValidated": true,
+  "reviews": [
+    {
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      },
+      "checks": {
+        "focalDensity": true,
+        "noOverflow": true,
+        "noTextCollisions": true,
+        "primarySurfaceVisible": true,
+        "rendered": true,
+        "screenshotInspected": true
+      },
+      "screenshotSha256": "sha256:7a168b407d0df02cb6639c5efc3b2db0ec280a3f6ab0589b6777c1729df7fdad",
+      "findings": []
+    },
+    {
+      "viewport": {
+        "height": 760,
+        "width": 760
+      },
+      "checks": {
+        "focalDensity": true,
+        "noOverflow": true,
+        "noTextCollisions": true,
+        "primarySurfaceVisible": true,
+        "rendered": true,
+        "screenshotInspected": true
+      },
+      "screenshotSha256": "sha256:01a7395c729541622a175ab0a88fe8bcda0508868c9128ff70d218319e3a3aec",
+      "findings": []
+    }
+  ],
+  "notRun": [
+    "visual_seal export",
+    "packaged release-profile app smoke"
+  ]
+}

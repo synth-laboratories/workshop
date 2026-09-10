@@ -181,12 +181,19 @@ pub fn stage_training_artifact(
         .map(Path::new)
         .ok_or_else(|| anyhow!("training artifact {} has no adapter path", artifact.id))?;
     let origin = origin.canonicalize().with_context(|| {
-        format!("training artifact {} path is missing: {}", artifact.id, origin.display())
+        format!(
+            "training artifact {} path is missing: {}",
+            artifact.id,
+            origin.display()
+        )
     })?;
     let state = crate::instance::state_root();
     let data = crate::instance::data_root();
     if !(origin.starts_with(&state) || origin.starts_with(&data)) {
-        bail!("training artifact {} path escapes the instance roots", artifact.id);
+        bail!(
+            "training artifact {} path escapes the instance roots",
+            artifact.id
+        );
     }
 
     let set_id = format!(
@@ -208,7 +215,7 @@ pub fn stage_training_artifact(
     if !staging.join("policy.json").is_file() {
         let digest = format!(
             "sha256:{:x}",
-            Sha256::digest(b"synth.workshop.v07.qwen35-0.8b.thinking-off")
+            Sha256::digest(b"synth.workshop.v08.qwen35-2b.thinking-off")
         );
         let policy = json!({
             "schema_version": "eval.mlx-lora-policy.v1",
@@ -218,7 +225,10 @@ pub fn stage_training_artifact(
             "thinking_mode": "off",
             "rank": 8,
         });
-        fs::write(staging.join("policy.json"), serde_json::to_vec_pretty(&policy)?)?;
+        fs::write(
+            staging.join("policy.json"),
+            serde_json::to_vec_pretty(&policy)?,
+        )?;
     }
     let digest = digest_tree(&staging)?;
     let hex = digest.trim_start_matches("sha256:").to_string();
@@ -406,15 +416,8 @@ mod tests {
 
     #[test]
     fn staging_a_training_artifact_retains_identity() {
-        let isolated = std::env::temp_dir().join(format!(
-            "synth-desktop-eval-artifact-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
-        let _ = fs::remove_dir_all(&isolated);
-        fs::create_dir_all(&isolated).unwrap();
-        let previous = std::env::var_os(crate::instance::DATA_ROOT_ENV);
-        std::env::set_var(crate::instance::DATA_ROOT_ENV, &isolated);
-        let adapter = isolated.join("adapter");
+        let isolated = crate::instance::IsolatedDataRoot::new("eval-artifact");
+        let adapter = isolated.path.join("adapter");
         fs::create_dir_all(&adapter).unwrap();
         fs::write(adapter.join("adapter_config.json"), b"{\"rank\":8}").unwrap();
         fs::write(adapter.join("adapters.safetensors"), b"lora-weights").unwrap();
@@ -435,14 +438,18 @@ mod tests {
             created_at: "1".into(),
         };
         let staged = stage_training_artifact(&artifact).unwrap();
-        assert_eq!(staged["candidates"][0]["metadata"]["parent_optimizer_run_id"], "run-9");
-        assert_eq!(staged["candidates"][0]["metadata"]["base_model_id"], artifact.base_model_id);
-        assert_eq!(staged["candidates"][0]["metadata"]["config_digest"], "sha256:config");
+        assert_eq!(
+            staged["candidates"][0]["metadata"]["parent_optimizer_run_id"],
+            "run-9"
+        );
+        assert_eq!(
+            staged["candidates"][0]["metadata"]["base_model_id"],
+            artifact.base_model_id
+        );
+        assert_eq!(
+            staged["candidates"][0]["metadata"]["config_digest"],
+            "sha256:config"
+        );
         assert_eq!(staged["candidates"][0]["kind"], "mlx-lora.v1");
-        match previous {
-            Some(value) => std::env::set_var(crate::instance::DATA_ROOT_ENV, value),
-            None => std::env::remove_var(crate::instance::DATA_ROOT_ENV),
-        }
-        let _ = fs::remove_dir_all(isolated);
     }
 }

@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, sync::Arc, time::Duration};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
@@ -40,7 +40,9 @@ pub const PROTOCOL_VERSION: &str = "synth.eval-driver.v1";
 const OPENROUTER_CHAT_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 #[allow(dead_code)]
 const DEFAULT_POLICY_ACTIONS: &[&str] = &["do", "left", "do", "up", "do", "right", "do", "down"];
-const LIVE_EVAL_SLOT: &str = "stream";
+const LIVE_EVAL_INPUT: &str = "stream";
+#[allow(dead_code)]
+const LIVE_EVAL_SLOT: &str = LIVE_EVAL_INPUT;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +57,53 @@ pub struct EvalDriverConnection {
 
 pub fn connection_path(root: &std::path::Path) -> PathBuf {
     root.join("eval-driver.json")
+}
+
+/// Pid a live `/health` body names, if the instance diagnostics are present.
+pub fn health_process_id(body: &Value) -> Option<u32> {
+    body.get("instance")
+        .and_then(|instance| instance.get("processId"))
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+}
+
+/// Refuse to replace a descriptor whose `/health` still answers for a
+/// different process. A missing file or a dead peer is not a holder.
+async fn refuse_overwrite_if_peer_alive(path: &std::path::Path) -> Result<()> {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return Ok(());
+    };
+    let Ok(existing) = serde_json::from_str::<EvalDriverConnection>(&raw) else {
+        return Ok(());
+    };
+    let Some(peer_pid) = probe_peer_health_pid(&existing).await else {
+        return Ok(());
+    };
+    let mine = std::process::id();
+    if peer_pid != mine {
+        bail!(
+            "eval_driver_busy pid={peer_pid} — refusing to overwrite a live descriptor at {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+async fn probe_peer_health_pid(existing: &EvalDriverConnection) -> Option<u32> {
+    let url = format!("{}/health", existing.url.trim_end_matches('/'));
+    let client = crate::http::http_client_with_timeout(Duration::from_millis(400));
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", existing.token))
+        .header("x-synth-eval-driver", PROTOCOL_VERSION)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body: Value = response.json().await.ok()?;
+    health_process_id(&body)
 }
 
 /// Runtime opt-in on top of the `eval-driver` compile-time feature: production
@@ -91,6 +140,7 @@ pub async fn spawn(deps: EvalDriverDeps, root: PathBuf) -> Result<EvalDriverConn
     };
     fs::create_dir_all(&root)?;
     let connection_file = connection_path(&root);
+    refuse_overwrite_if_peer_alive(&connection_file).await?;
     fs::write(&connection_file, serde_json::to_string_pretty(&connection)?)?;
     #[cfg(unix)]
     {
@@ -113,14 +163,18 @@ pub async fn spawn(deps: EvalDriverDeps, root: PathBuf) -> Result<EvalDriverConn
         )
         .await;
         if let Err(error) = result {
-            eprintln!("synth-desktop: eval driver stopped: {error:#}");
+            crate::platform::logging::report(
+                "eval_driver",
+                "eprintln",
+                format!("synth-desktop: eval driver stopped: {error:#}"),
+            );
         }
     });
     Ok(connection)
 }
 
 fn patch_instance_manifest(connection: &EvalDriverConnection) {
-    let Some(path) = std::env::var_os(crate::instance::MANIFEST_ENV).map(PathBuf::from) else {
+    let Some(path) = crate::instance::manifest_path() else {
         return;
     };
     let Ok(raw) = fs::read_to_string(&path) else {
@@ -159,11 +213,10 @@ async fn route_request(
                 &error,
             ) =>
         {
-            JsonHttpResponse {
-                status: StatusCode::CONFLICT,
-                body: crate::container_capabilities::preflight_error_body(&error),
-                extra_headers: Vec::new(),
-            }
+            JsonHttpResponse::with_status(
+                StatusCode::CONFLICT,
+                crate::container_capabilities::preflight_error_body(&error),
+            )
         }
         Err(error) if crate::error::error_is::<crate::error::ProtocolMismatch>(&error) => {
             JsonHttpResponse::error(StatusCode::UPGRADE_REQUIRED, error.to_string())
@@ -264,6 +317,13 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
         })),
         ("POST", "/v1/sessions") | ("POST", "/v1/create_session") => {
             create_session(deps, body).await
+        }
+        ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/select") => {
+            let session_id = path
+                .trim_start_matches("/v1/sessions/")
+                .trim_end_matches("/select")
+                .trim_end_matches('/');
+            select_session(deps, session_id)
         }
         ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/messages") => {
             let session_id = path
@@ -444,6 +504,27 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
     }
 }
 
+fn session_selection_script(session_id: &str) -> Result<String> {
+    if session_id.trim().is_empty() || session_id.contains('/') {
+        bail!("select_session requires one session id");
+    }
+    let session_id = serde_json::to_string(session_id)?;
+    Ok(format!(
+        "window.__synthEval?.invoke('select_session',{{sessionId:{session_id}}});"
+    ))
+}
+
+fn select_session(deps: &EvalDriverDeps, session_id: &str) -> Result<Value> {
+    let window = deps
+        .app
+        .get_webview_window("main")
+        .context("select_session requires the main Desktop window")?;
+    window
+        .eval(session_selection_script(session_id)?)
+        .context("select the QA session in the renderer")?;
+    Ok(json!({"selected": true, "sessionId": session_id}))
+}
+
 fn session_approval_route(path: &str) -> Option<(String, String)> {
     let rest = path.strip_prefix("/v1/sessions/")?;
     let (session_id, tail) = rest.split_once("/approvals/")?;
@@ -601,6 +682,18 @@ async fn laguna_status(laguna: &LagunaManager) -> Result<Value> {
 
 async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -> Result<Value> {
     let visual = core.visuals().get(visual_id.to_string()).await?;
+    let quality_gate = visual
+        .metadata
+        .get("qualityGate")
+        .filter(|gate| gate.get("ready").and_then(Value::as_bool) == Some(true))
+        .context("VisualsBench export requires a fresh ready certification")?;
+    let certification_identity = quality_gate
+        .get("certificationIdentity")
+        .context("VisualsBench export requires a content-bound certification identity")?;
+    let certified = quality_gate
+        .get("certifiedBy")
+        .and_then(Value::as_array)
+        .context("VisualsBench export requires immutable certification receipts")?;
     let mut revisions = core.visuals().revisions(visual_id.to_string()).await?;
     revisions.sort_by_key(|row| row.revision);
     let current_revision = revisions
@@ -651,30 +744,28 @@ async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let captures = reviews
+    let captures = certified
         .iter()
-        .filter(|review| {
-            review.get("revision").and_then(Value::as_i64) == Some(visual.current_revision)
-        })
-        .filter_map(|review| {
-            let viewport = review.get("viewport")?;
-            let width = viewport.get("width")?.as_u64()?;
-            let height = viewport.get("height")?.as_u64()?;
+        .map(|receipt| -> Result<Option<Value>> {
+            let width = receipt.get("viewportWidth").and_then(Value::as_u64).context("certification receipt missing viewport width")?;
+            let height = receipt.get("viewportHeight").and_then(Value::as_u64).context("certification receipt missing viewport height")?;
             let requested = requested_viewports.iter().find(|candidate| {
                 candidate.get("width").and_then(Value::as_u64) == Some(width)
                     && candidate.get("height").and_then(Value::as_u64) == Some(height)
             });
             if !requested_viewports.is_empty() && requested.is_none() {
-                return None;
+                return Ok(None);
             }
-            let screenshot_path = review.get("screenshotPath")?.as_str()?;
-            let bytes = fs::read(screenshot_path).ok();
-            let screenshot_sha256 = bytes
-                .as_deref()
-                .map(hex_sha256)
-                .unwrap_or_default();
-            let checks = review.get("checks").cloned().unwrap_or_else(|| json!({}));
-            Some(json!({
+            let screenshot_path = receipt.get("screenshotPath").and_then(Value::as_str).context("certification receipt missing screenshot path")?;
+            let expected_sha256 = receipt.get("screenshotSha256").and_then(Value::as_str).context("certification receipt missing screenshot digest")?;
+            let bytes = fs::read(screenshot_path).with_context(|| format!("read certified screenshot {screenshot_path}"))?;
+            let screenshot_sha256 = format!("sha256:{}", hex_sha256(&bytes));
+            if screenshot_sha256 != expected_sha256 {
+                anyhow::bail!("certified screenshot bytes changed after review: {screenshot_path}");
+            }
+            let review = reviews.iter().find(|review| review.get("screenshotPath").and_then(Value::as_str) == Some(screenshot_path));
+            let checks = review.and_then(|row| row.get("checks")).cloned().unwrap_or_else(|| json!({}));
+            Ok(Some(json!({
                 "viewport": {
                     "width": width,
                     "height": height,
@@ -687,18 +778,26 @@ async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -
                     "noHorizontalOverflow": checks.get("noOverflow").cloned().unwrap_or(Value::Null),
                     "falsifiedMissing": checks.get("falsifiedMissing").cloned().unwrap_or(Value::Bool(false)),
                 },
-                "inspected": bytes.is_some() && checks.get("screenshotInspected").and_then(Value::as_bool) == Some(true),
-            }))
+                "certificationIdentity": certification_identity,
+                "inspected": checks.get("screenshotInspected").and_then(Value::as_bool) == Some(true),
+            })))
         })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
         .collect::<Vec<_>>();
     let annotation_ids = active_annotations
         .iter()
         .map(|row| Value::String(row.id.clone()))
         .collect::<Vec<_>>();
     let trace_digest = visual.trace_id.clone();
+    let human_reference_results = crate::human_annotations::from_core(core)
+        .submitted_for_subject("visual_revision".into(), visual_id.to_owned())
+        .await?;
     Ok(json!({
         "schemaVersion": "synth.visualsbench-export.v1",
         "sourceRevision": crate::instance::diagnostics().source_revision,
+        "certificationIdentity": certification_identity,
         "visual": {
             "id": visual.id,
             "revision": visual.current_revision,
@@ -715,6 +814,7 @@ async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -
         })).collect::<Vec<_>>(),
         "journal": journal,
         "annotations": active_annotations,
+        "humanReferenceResults": human_reference_results,
         "overlayDigest": overlay_digest,
         "nextTurnContext": {
             "visualId": visual_id,
@@ -770,6 +870,10 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
             .to_string(),
         api_key: String::new(),
         model,
+        target_id: body
+            .get("targetId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         provider_name: Some(provider_name),
         provider_title: body
             .get("providerTitle")
@@ -791,6 +895,7 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
         multi_agent_version: None,
         auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
         writable_roots: Vec::new(),
+        adapter: None,
         local_model_catalog: None,
         broker_credential: false,
     };
@@ -906,6 +1011,10 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
             .to_string(),
         api_key: String::new(),
         model,
+        target_id: body
+            .get("targetId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         provider_name: Some(provider_name),
         provider_title: None,
         provider_env_key: None,
@@ -920,6 +1029,7 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
         multi_agent_version: None,
         auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
         writable_roots: Vec::new(),
+        adapter: None,
         local_model_catalog: None,
         broker_credential: false,
     };
@@ -932,8 +1042,10 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
                 start,
                 prompt,
                 effort,
+                ui_context: None,
                 compact_before_model_switch: false,
                 client_message_id: None,
+                recovery_mode: false,
             },
         )
         .await
@@ -1230,6 +1342,11 @@ async fn ingest_trace_bundle(core: &CoreRuntime, body: Value) -> Result<Value> {
             .or_else(|| body.get("source_uri"))
             .and_then(Value::as_str)
             .map(str::to_string),
+        container_id: body
+            .get("containerId")
+            .or_else(|| body.get("container_id"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
     };
     let (result, event) = core.data().ingest_trace_bundle(request).await?;
     core.broadcast_committed(event);
@@ -1437,12 +1554,7 @@ async fn run_policy_rollout(
         .and_then(Value::as_str)
         .unwrap_or("medium")
         .to_string();
-    let timeout_s = body
-        .get("timeoutS")
-        .or_else(|| body.get("timeout_per_rollout_s"))
-        .and_then(Value::as_u64)
-        .unwrap_or(600)
-        .clamp(30, 3600);
+    let timeout_s = policy_rollout_timeout_seconds(&body);
     let telemetry = body.get("telemetry").cloned().unwrap_or(json!({
         "enabled": true,
         "transport": "sse",
@@ -1464,7 +1576,7 @@ async fn run_policy_rollout(
 
     let seed = seed_from_task_instance(&task_instance_id)?;
     // A1: open the family visual before prepare so the pane exists before any
-    // paid call. After prepare, rebind slot `stream` to the declared SSE URL
+    // paid call. After prepare, rebind input `stream` to the declared SSE URL
     // (never guess `/events`) and wait for `stream.subscribed` before start.
     let supplied_visual_id = body
         .get("visualId")
@@ -1508,7 +1620,11 @@ async fn run_policy_rollout(
         .and_then(Value::as_str)
         .map(str::to_owned)
         .unwrap_or_else(|| format!("roll_{}", Uuid::new_v4().simple()));
-    let prepare_body = json!({ "rollout_id": rollout_id, "telemetry": telemetry });
+    let mut preparation = body.clone();
+    preparation["task_instance_id"] = json!(task_instance_id);
+    let prepare_body = crate::container_stream::prepared_rollout_request(
+        &preparation, &rollout_id, telemetry.clone(),
+    )?;
     let mut prepare_response = client
         .post(format!("{base}/rollouts/prepare"))
         .json(&prepare_body)
@@ -1767,6 +1883,14 @@ async fn run_policy_rollout(
             "calls": calls,
         }
     }))
+}
+
+fn policy_rollout_timeout_seconds(body: &Value) -> u64 {
+    body.get("timeoutS")
+        .or_else(|| body.get("timeout_per_rollout_s"))
+        .and_then(Value::as_u64)
+        .unwrap_or(crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT.as_secs())
+        .clamp(30, 3600)
 }
 
 fn is_aggregate_projection(body: &Value) -> Result<bool> {
@@ -2318,16 +2442,17 @@ fn seed_from_task_instance(task_instance_id: &str) -> Result<i64> {
 
 fn require_stream_slot(body: &Value) -> Result<&'static str> {
     let requested = body
-        .get("slot")
+        .get("input")
+        .or_else(|| body.get("slot"))
         .or_else(|| body.get("streamSlot"))
         .or_else(|| body.get("stream_slot"))
         .and_then(Value::as_str)
-        .unwrap_or(LIVE_EVAL_SLOT);
+        .unwrap_or(LIVE_EVAL_INPUT);
     assert_live_eval_slot(requested)?;
-    if requested != LIVE_EVAL_SLOT {
-        bail!("eval driver visual-attached rollouts bind slot \"{LIVE_EVAL_SLOT}\", not \"{requested}\"");
+    if requested != LIVE_EVAL_INPUT {
+        bail!("eval driver visual-attached rollouts bind input \"{LIVE_EVAL_INPUT}\", not \"{requested}\"");
     }
-    Ok(LIVE_EVAL_SLOT)
+    Ok(LIVE_EVAL_INPUT)
 }
 
 /// Pin 10 Craftax lanes (seeds 0–9) for Containers HTTP. Does not call a paid policy.
@@ -2386,6 +2511,88 @@ mod tests {
     #[test]
     fn protocol_version_is_stable() {
         assert_eq!(PROTOCOL_VERSION, "synth.eval-driver.v1");
+    }
+
+    #[test]
+    fn a_health_body_names_the_holders_pid() {
+        assert_eq!(
+            health_process_id(&json!({"ok": true, "instance": {"processId": 4321}})),
+            Some(4321)
+        );
+        assert_eq!(health_process_id(&json!({"ok": true})), None);
+        assert_eq!(
+            health_process_id(&json!({"instance": {"processId": "1"}})),
+            None
+        );
+    }
+
+    #[test]
+    fn a_dead_peer_descriptor_does_not_block_a_fresh_driver() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = connection_path(dir.path());
+        fs::write(
+            &path,
+            serde_json::to_vec(&EvalDriverConnection {
+                schema_version: PROTOCOL_VERSION.into(),
+                url: "http://127.0.0.1:1".into(),
+                token: "synth_eval_dead".into(),
+                path: path.display().to_string(),
+                instance_name: Some("alpha".into()),
+                source_revision: "test".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(refuse_overwrite_if_peer_alive(&path))
+            .expect("a descriptor whose /health cannot answer is not a live peer");
+    }
+
+    #[test]
+    fn a_live_peer_descriptor_is_not_overwritten() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                use std::io::Write as _;
+                let mut incoming = [0u8; 1024];
+                let _ = std::io::Read::read(&mut stream, &mut incoming);
+                let body = r#"{"ok":true,"instance":{"processId":1}}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let path = connection_path(dir.path());
+        fs::write(
+            &path,
+            serde_json::to_vec(&EvalDriverConnection {
+                schema_version: PROTOCOL_VERSION.into(),
+                url: format!("http://{addr}"),
+                token: "synth_eval_peer".into(),
+                path: path.display().to_string(),
+                instance_name: Some("alpha".into()),
+                source_revision: "test".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(refuse_overwrite_if_peer_alive(&path))
+            .expect_err("a /health with another pid must refuse");
+        let message = format!("{error:#}");
+        assert!(message.contains("eval_driver_busy pid=1"), "{message}");
     }
 
     #[test]
@@ -2459,6 +2666,7 @@ mod tests {
             thread_id: "thread-1".into(),
             workspace: "/tmp/workspace".into(),
             model: "openai/gpt-5.6-luna".into(),
+            target_id: None,
             provider_name: "openrouter".into(),
             provider_title: "OpenRouter Responses".into(),
             base_url: "http://127.0.0.1:12345/v1".into(),
@@ -2469,6 +2677,7 @@ mod tests {
             presentation_summary: None,
             approval_policy: "never".into(),
             sandbox: "workspace-write".into(),
+            adapter: None,
             recovery: None,
         };
         let binding = eval_provider_binding(&record);
@@ -2525,10 +2734,11 @@ mod tests {
                 .unwrap();
         assert_eq!(absolute, "http://127.0.0.1:8098/rollouts/r1/stream");
         let bindings = live_sse_bindings(&absolute);
-        assert_eq!(bindings["slots"][0]["kind"], "live_sse");
-        assert_eq!(bindings["slots"][0]["slot"], "stream");
+        assert!(bindings.get("slots").is_none());
+        assert_eq!(bindings["inputs"][0]["kind"], "live_sse");
+        assert_eq!(bindings["inputs"][0]["input"], "stream");
         assert_eq!(
-            bindings["slots"][0]["source"],
+            bindings["inputs"][0]["source"],
             "http://127.0.0.1:8098/rollouts/r1/stream"
         );
         assert!(declared_sse_url(&json!({
@@ -2548,6 +2758,15 @@ mod tests {
         .unwrap();
         assert_eq!(pin["harness"], "react");
         assert_eq!(pin["config"], "caller_config");
+    }
+
+    #[test]
+    fn policy_rollout_timeout_defaults_to_long_running_container_budget() {
+        assert_eq!(
+            policy_rollout_timeout_seconds(&json!({})),
+            crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT.as_secs()
+        );
+        assert_eq!(policy_rollout_timeout_seconds(&json!({"timeoutS": 90})), 90);
     }
 
     #[test]
@@ -2762,6 +2981,17 @@ mod tests {
             &json!({"from": "created", "to": "running"})
         ));
         assert!(is_terminal_event("run.completed", &json!({})));
+    }
+
+    #[test]
+    fn session_selection_script_uses_a_json_literal() {
+        let script = session_selection_script("vq_test-1").unwrap();
+        assert_eq!(
+            script,
+            "window.__synthEval?.invoke('select_session',{sessionId:\"vq_test-1\"});"
+        );
+        assert!(session_selection_script("").is_err());
+        assert!(session_selection_script("nested/session").is_err());
     }
 
     #[test]

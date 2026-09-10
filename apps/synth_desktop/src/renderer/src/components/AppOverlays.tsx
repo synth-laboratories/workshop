@@ -3,6 +3,7 @@ import type { AccountViewModel } from "../runtime/accountView";
 import type { SynthAccountSummary } from "../bridge";
 import { ConversationSearch } from "./ConversationSearch";
 import { UsageSheet } from "./UsageSheet";
+import { ZoomHud } from "./ZoomHud";
 
 export type AppOverlaysProps = {
 	searchOpen: boolean;
@@ -58,6 +59,8 @@ export function AppOverlays({
 					{toast}
 				</div>
 			) : null}
+
+			<ZoomHud />
 		</>
 	);
 }

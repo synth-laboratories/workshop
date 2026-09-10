@@ -1,0 +1,44 @@
+{
+  "schema_version": "synth.training-proof.v1",
+  "algorithm": "cispo",
+  "implementation_version": "cispo.slime.v1",
+  "job_id": "cispo_hosted_cb015736757f",
+  "base_model": "openai/gpt-oss-20b",
+  "parent_job_id": "sft_banking77_nanoclassify_reference_ba558ab3",
+  "state_checkpoint": "tinker://63f8ae78-3367-5999-afff-32079b3179f0:train:0/weights/optimizers-training-tinkerreq_653db5320a1493c612ce2b8f",
+  "sampler_checkpoint": "tinker://63f8ae78-3367-5999-afff-32079b3179f0:train:0/sampler_weights/optimizers-inference-tinkerreq_66ad3e7a2a0724c8300e45af",
+  "checkpoint_id": "training-50-080c08509b7a",
+  "inference_checkpoint_id": "inference-50-16636b4216b2",
+  "digest": "sha256:8636b582907ecc80e9911ce37a1356e60b754b4fa3744428a16816636b4216b2",
+  "updates": 50,
+  "rollout_groups": 150,
+  "rollout_trajectories": 9600,
+  "selection": {
+    "examples": 400,
+    "baseline_accuracy": 0.8325,
+    "accuracy": 0.87,
+    "uplift": 0.0375,
+    "ci_low": 0.015,
+    "ci_high": 0.0625,
+    "verdict": "material_uplift"
+  },
+  "heldout": {
+    "examples": 400,
+    "baseline_accuracy": 0.8525,
+    "accuracy": 0.8675,
+    "uplift": 0.015,
+    "ci_low": -0.0075,
+    "ci_high": 0.04,
+    "mcnemar_exact_p": 0.28627872467041016,
+    "verdict": "inconclusive",
+    "heldout_locked": true
+  },
+  "workshop": {
+    "status": "completed",
+    "terminal_cursor": 3642,
+    "visual_id": "vis_a6a117bc8b934d6e9678a9e6a57ec369",
+    "template_id": "optimizer.cispo.live.v1",
+    "template_digest": "dbdc55c5d62ca410d43b1a44dbb2767d17fe9a043429a2a85a70e089d4502e35",
+    "evidence_completeness": "complete"
+  }
+}

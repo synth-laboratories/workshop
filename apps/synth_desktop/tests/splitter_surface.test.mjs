@@ -9,10 +9,18 @@ const read = (path) => readFileSync(join(root, path), "utf8");
 
 test("shared pane separator exposes bounded keyboard and pointer behavior", () => {
 	const handle = read("components/PaneResizeHandle.tsx");
-	for (const contract of ["ResizeObserver", "aria-valuemin", "aria-valuemax", "aria-valuenow", "ArrowLeft", "ArrowRight", "event.shiftKey", "onPointerCancel", "onLostPointerCapture", "window.addEventListener(\"blur\"", "releasePointerCapture", "onDoubleClick"]) {
+	for (const contract of ["ResizeObserver", "aria-valuemin", "aria-valuemax", "aria-valuenow", "ArrowLeft", "ArrowRight", "event.shiftKey", "onPointerCancel", "onLostPointerCapture", "window.addEventListener(\"blur\"", "releasePointerCapture", "settleAfterLayout", "onDoubleClick"]) {
 		assert.ok(handle.includes(contract), contract);
 	}
 	assert.match(handle, /parent\.getBoundingClientRect\(\)/);
+	assert.match(handle, /PANE_KEYBOARD_STEP_PX = 40/);
+	assert.match(handle, /key === "Home"/);
+	assert.match(handle, /key === "End"/);
+	assert.match(handle, /namedPaneElement/);
+	assert.doesNotMatch(
+		handle,
+		/direction === "sidebar" \|\| direction === "primary"[\s\S]*ArrowLeft \? delta/
+	);
 });
 
 test("Visuals library has an independently persisted list-to-preview separator", () => {
@@ -29,7 +37,9 @@ test("both splitters stack against their actual content containers", () => {
 	assert.match(css, /container-name: main-workbench/);
 	assert.match(css, /container-name: visuals-library/);
 	assert.match(css, /@container main-workbench \(max-width: 900px\)/);
-  assert.match(css, /@container visuals-library \(max-width: 800px\)/);
+	// The split survives to the width where the preview loses its 420px minimum,
+	// not to the width where the list loses a comfortable 320px.
+	assert.match(css, /@container visuals-library \(max-width: 700px\)/);
 	assert.match(css, /\.workbench\.with-visual > \.pane-resize-handle[\s\S]*display: none/);
 	assert.match(css, /\.visuals-layout > \.primary-resize-handle \{ display: none; \}/);
 });

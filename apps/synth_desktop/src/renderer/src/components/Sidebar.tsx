@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { type LandingState } from "../types/landing";
 import { ModelDownloadBar } from "./ModelDownloadBar";
 import { LocalModelResidency } from "./LocalModelResidency";
-import type { LagunaStatus } from "../bridge";
+import { WhisperResidency } from "./WhisperResidency";
+import type { LagunaStatus, WhisperRuntimeStatus } from "../bridge";
 import { type AccountViewModel } from "../runtime/accountView";
 import { ConversationContextMenu } from "./GeneralPreferencesSettings";
 import { PaneResizeHandle } from "./PaneResizeHandle";
@@ -31,12 +32,18 @@ type CodexUsageSnapshot = {
 
 type Props = {
 	state: LandingState;
+	appVersion: string;
 	lagunaStatus?: LagunaStatus | null;
+	whisperStatus?: WhisperRuntimeStatus | null;
 	activeChatId?: string | null;
 	inventoryActive?: boolean;
+	inferenceActive?: boolean;
 	visualsActive?: boolean;
 	reportsActive?: boolean;
+	experimentsActive?: boolean;
 	optimizersActive?: boolean;
+	jesterkyActive?: boolean;
+	environmentQaActive?: boolean;
 	computerUseActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
 	/**
@@ -52,10 +59,16 @@ type Props = {
 	onNewConversation: () => void;
 	onOpenChat: (id: string) => void;
 	onOpenInventory: () => void;
+	onOpenInference: () => void;
 	onOpenVisuals: () => void;
 	onOpenReports: () => void;
+	onOpenExperiments: () => void;
 	onOpenOptimizers: () => void;
+	onOpenJesterky?: () => void;
+	onOpenEnvironmentQa?: () => void;
 	onOpenComputerUse: () => void;
+	onOpenPlugins: () => void;
+	visiblePluginIds?: readonly string[];
 	onSearch: () => void;
 	onSettings: () => void;
 	/** Canonical registry listing, owned by the app controller. */
@@ -195,6 +208,15 @@ function IconOptimizers() {
 	);
 }
 
+function IconInference() {
+	return (
+		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="2.2" y="2.2" width="11.6" height="11.6" rx="2.2" stroke="currentColor" strokeWidth="1.2" />
+			<path d="M4.5 8h1.4l1-2.4L8.5 11l1.2-3h1.8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+		</svg>
+	);
+}
+
 /** A pointer over a window: the plugin drives another app's interface. */
 function IconComputerUse(): ReactElement {
 	return (
@@ -209,19 +231,29 @@ function IconComputerUse(): ReactElement {
 const PLUGIN_NAV_ICONS: Record<PluginNavEntry["id"], () => ReactElement> = {
 	visuals: IconVisuals,
 	reports: IconReports,
+	experiments: IconOptimizers,
 	optimizers: IconOptimizers,
+	jesterky: IconOptimizers,
+	"environment-qa": IconReports,
 	inventory: IconInventory,
+	inference: IconInference,
 	"computer-use": IconComputerUse
 };
 
 export function Sidebar({
 	state,
+	appVersion,
 	lagunaStatus = null,
+	whisperStatus = null,
 	activeChatId = null,
 	inventoryActive = false,
+	inferenceActive = false,
 	visualsActive = false,
 	reportsActive = false,
+	experimentsActive = false,
 	optimizersActive = false,
+	jesterkyActive = false,
+	environmentQaActive = false,
 	computerUseActive = false,
 	workingChatIds = new Set<string>(),
 	chatPresence = {},
@@ -232,10 +264,16 @@ export function Sidebar({
 	onNewConversation,
 	onOpenChat,
 	onOpenInventory,
+	onOpenInference,
 	onOpenVisuals,
 	onOpenReports,
+	onOpenExperiments,
 	onOpenOptimizers,
+	onOpenJesterky = () => {},
+	onOpenEnvironmentQa = () => {},
 	onOpenComputerUse,
+	onOpenPlugins,
+	visiblePluginIds = [],
 	onSearch,
 	onSettings,
 	pluginStatuses = null,
@@ -341,17 +379,26 @@ export function Sidebar({
 	const pluginRowActive: Record<PluginNavEntry["id"], boolean> = {
 		visuals: visualsActive,
 		reports: reportsActive,
+		experiments: experimentsActive,
 		optimizers: optimizersActive,
+		jesterky: jesterkyActive,
+		"environment-qa": environmentQaActive,
 		inventory: inventoryActive,
+		inference: inferenceActive,
 		"computer-use": computerUseActive
 	};
 	const pluginRowOpen: Record<PluginNavEntry["id"], () => void> = {
 		visuals: onOpenVisuals,
 		reports: onOpenReports,
+		experiments: onOpenExperiments,
 		optimizers: onOpenOptimizers,
+		jesterky: onOpenJesterky,
+		"environment-qa": onOpenEnvironmentQa,
 		inventory: onOpenInventory,
+		inference: onOpenInference,
 		"computer-use": onOpenComputerUse
 	};
+	const visiblePlugins = new Set(visiblePluginIds);
 
 	if (!sidebarVisible) return null;
 
@@ -558,7 +605,7 @@ export function Sidebar({
 				 */}
 
 				{/*
-				 * ── Plugins ──
+				 * ── Integrations ──
 				 * One section for every capability the user can open. Built-in
 				 * surfaces and managed plugins share the shelf; only managed
 				 * rows carry lifecycle status, and a managed row is never
@@ -570,17 +617,19 @@ export function Sidebar({
 						<button
 							type="button"
 							className="section-header-label"
-							onClick={() => setPluginsOpen((v) => !v)}
+							onClick={onOpenPlugins}
 							aria-expanded={pluginsOpen}
 							aria-controls="sidebar-plugins"
 						>
-							Plugins
+							Integrations
+						</button>
+						<button type="button" className="section-action" aria-label={pluginsOpen ? "Collapse integrations" : "Expand integrations"} onClick={() => setPluginsOpen((value) => !value)}>
 							<SectionChevron open={pluginsOpen} />
 						</button>
 					</div>
 					{pluginsOpen ? (
 						<div id="sidebar-plugins" className="section-list" data-testid="plugins-nav">
-							{PLUGIN_NAV.map((entry) => {
+							{PLUGIN_NAV.filter((entry) => entry.id === "environment-qa" || visiblePlugins.has(entry.id)).map((entry) => {
 								const Icon = PLUGIN_NAV_ICONS[entry.id];
 								const active = pluginRowActive[entry.id];
 								const presentation = entry.kind === "managed" && entry.pluginId
@@ -619,6 +668,7 @@ export function Sidebar({
 			</div>
 
 			<div className="sidebar-footer">
+				<WhisperResidency status={whisperStatus ?? null} />
 				<LocalModelResidency status={lagunaStatus} onFreeMemory={onFreeLocalMemory} />
 				<ModelDownloadBar state={state} onPauseToggle={onPauseToggle} />
 				<div className="account-footer" ref={accountMenuRef}>
@@ -740,6 +790,14 @@ export function Sidebar({
 						<span className="account-help" aria-hidden>?</span>
 					</button>
 				</div>
+				<span
+					className="sidebar-version"
+					data-testid="app-version"
+					aria-label={`Synth Desktop version ${appVersion}`}
+					title={`Synth Desktop v${appVersion}`}
+				>
+					v{appVersion}
+				</span>
 			</div>
 			{onSidebarWidthChange ? (
 				<PaneResizeHandle

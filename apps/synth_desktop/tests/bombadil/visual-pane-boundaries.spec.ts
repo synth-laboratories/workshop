@@ -39,7 +39,7 @@ export const open_visual_and_resize_its_boundary = actions(() => {
 	if (!boundary.current.pageVisible && boundary.current.openLibraryPoint) return [{ Click: { name: "Open Visuals library", point: boundary.current.openLibraryPoint } }];
 	if (!boundary.current.splitterVisible && boundary.current.openVisualPoint) return [{ Click: { name: "Open visual side pane", point: boundary.current.openVisualPoint } }];
 	if (boundary.current.splitterPoint && boundary.current.splitterValue === 420) {
-		return [{ Click: { name: "Focus visual pane splitter", point: boundary.current.splitterPoint } }, { PressKey: { code: 37 } }, { PressKey: { code: 37 } }];
+		return [{ Click: { name: "Focus visual pane splitter", point: boundary.current.splitterPoint } }, { PressKey: { code: 39 } }, { PressKey: { code: 39 } }];
 	}
 	return [{ SetViewport: { width: 1172, height: 768 } }];
 });

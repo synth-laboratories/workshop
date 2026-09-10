@@ -50,7 +50,10 @@ function playwrightChromeBinary() {
 }
 function ensureChromeOnPath() {
 	const systemChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-	const bin = existsSync(systemChrome) ? systemChrome : playwrightChromeBinary();
+	const requestedChrome = process.env.BOMBADIL_CHROME;
+	const bin = requestedChrome && existsSync(requestedChrome)
+		? requestedChrome
+		: existsSync(systemChrome) ? systemChrome : playwrightChromeBinary();
 	if (!bin) return;
 	process.env.CHROME = bin;
 	const shimDir = join(runtimeHome, "chrome-bin");
@@ -75,6 +78,7 @@ const outputPath = process.env.BOMBADIL_OUTPUT_PATH
 const includeCuaAnalysisVisual = specificationPath.endsWith("launch-debt.spec.ts")
 	|| specificationPath.endsWith("visual-library-layout.spec.ts")
 	|| specificationPath.endsWith("visual-pane-boundaries.spec.ts");
+const includeAnnotationVisual = specificationPath.endsWith("annotation-visual-layout.spec.ts");
 const includeBlankWorkedTurn = specificationPath.endsWith("empty-completed-turn.spec.ts")
 	|| specificationPath.endsWith("empty-outputs.spec.ts")
 	|| specificationPath.endsWith("inference-state-honesty.spec.ts")
@@ -92,6 +96,9 @@ const includeApprovalCard = specificationPath.endsWith("approval-card.spec.ts");
 const includeGroupedVisualEvidence = specificationPath.endsWith("grouped-visual-evidence.spec.ts");
 const includeChartPane = specificationPath.endsWith("chart-pane.spec.ts");
 const includeMinimumWidthReplay = specificationPath.endsWith("minimum-width-replay.spec.ts");
+const includeSidePanelComposerDrag = specificationPath.endsWith("side-panel-composer-drag.spec.ts");
+const includeSidePanelSeam = specificationPath.endsWith("side-panel-seam.spec.ts");
+const includeSettingsPolish = specificationPath.endsWith("settings-polish.spec.ts");
 // Five seconds covers every directed/eventual horizon in layout.spec.ts. Longer
 // runs intermittently wedge the current Chromiumoxide transport after the
 // properties have already been exercised, turning a clean trace into a harness
@@ -99,15 +106,22 @@ const includeMinimumWidthReplay = specificationPath.endsWith("minimum-width-repl
 const timeLimit = process.env.BOMBADIL_TIME_LIMIT
 	|| (includeComposerToolbar
 		? "45s"
+		: includeSidePanelComposerDrag
+		? "15s"
 		: includeMinimumWidthReplay
 		? "20s"
-		: includeBlankWorkedTurn || includeTerminalPolish || includeVisualContracts || includeChatgptBranding || includeApprovalCard || includeGroupedVisualEvidence || includeChartPane
+		: includeBlankWorkedTurn || includeTerminalPolish || includeVisualContracts || includeChatgptBranding || includeApprovalCard || includeGroupedVisualEvidence || includeChartPane || includeSettingsPolish
 		? "10s"
 		: "5s");
 const timeLimitMatch = /^(\d+(?:\.\d+)?)(ms|s|m)$/.exec(timeLimit);
 if (!timeLimitMatch) throw new Error(`Unsupported BOMBADIL_TIME_LIMIT: ${timeLimit}`);
 const timeLimitMs = Number(timeLimitMatch[1]) * ({ ms: 1, s: 1_000, m: 60_000 })[timeLimitMatch[2]];
 const watchdogMs = timeLimitMs + 35_000;
+const viewportWidth = Number.parseInt(process.env.BOMBADIL_VIEWPORT_WIDTH ?? "1280", 10);
+const viewportHeight = Number.parseInt(process.env.BOMBADIL_VIEWPORT_HEIGHT ?? "840", 10);
+if (!Number.isFinite(viewportWidth) || viewportWidth < 320 || !Number.isFinite(viewportHeight) || viewportHeight < 320) {
+	throw new Error(`Unsupported Bombadil viewport: ${viewportWidth}x${viewportHeight}`);
+}
 const contentTypes = {
 	".css": "text/css",
 	".html": "text/html",
@@ -120,6 +134,7 @@ const contentTypes = {
 let runtimeProcess;
 let bombadilProcess;
 let connection;
+let alignmentSessionId;
 
 async function waitForConnection() {
 	const deadline = Date.now() + 15_000;
@@ -153,6 +168,7 @@ async function seedVisualAlignmentFixture() {
 	});
 	if (!sessionResponse.ok) throw new Error(`Could not seed Bombadil alignment session (${sessionResponse.status})`);
 	const session = await sessionResponse.json();
+	alignmentSessionId = session.id;
 	const visualResponse = await fetch(`${connection.url}/v1/visuals`, {
 		method: "POST",
 		headers,
@@ -645,9 +661,32 @@ window.synthTerminal = {
 
 function browserBridgeScript() {
 	return `<script>
+window.__bombadilBootErrors = [];
+window.addEventListener("error", (event) => window.__bombadilBootErrors.push(String(event.error?.stack || event.message)));
+window.addEventListener("unhandledrejection", (event) => window.__bombadilBootErrors.push(String(event.reason?.stack || event.reason)));
+${includeSidePanelComposerDrag || includeSidePanelSeam ? `
+try {
+  const key = "synth.preferences.v1";
+  const current = JSON.parse(localStorage.getItem(key) || "{}");
+  const layout = current.layout || {};
+  const last = layout.last || {};
+  localStorage.setItem(key, JSON.stringify({
+    ...current,
+    schemaVersion: 3,
+    layout: {
+      ...layout,
+      last: { ...last, sidebarVisible: true, selectedConversationId: ${JSON.stringify(alignmentSessionId)} }
+    }
+  }));
+} catch (error) {
+  console.warn("bombadil side-panel fixture selection failed", error);
+}
+` : ""}
 window.synthDesktop = {
   platform: "test",
   chooseWorkspaceDirectory: async () => null,
+  chooseImageFiles: async () => [],
+  getInstances: async () => [],
   getInstanceDiagnostics: async () => ({
     mode: "development", name: "bombadil", displayName: "Synth Desktop · bombadil",
     appVersion: "0.1.0", sourceRevision: "bombadil", buildRevision: "bombadil",
@@ -722,6 +761,8 @@ ${includeTraceCatalogLayout ? `window.synthInventory = {
   getContainer: async () => { throw new Error("fixture has no containers"); },
   registerContainer: async () => { throw new Error("not used"); },
   probeContainer: async () => { throw new Error("not used"); },
+  reconcileContainer: async () => { throw new Error("not used"); },
+  restartContainer: async () => { throw new Error("not used"); },
   listTraces: async () => [{
     id: "trace-bombadil-containment", digest: "sha256:bombadil-containment-fixture",
     title: "Bombadil Trace V5 viewport containment fixture", source: "import",
@@ -747,7 +788,10 @@ const cuaAnalysisVisual = {
     { type: "metrics", items: [{ label: "Visual schemas before", value: "13" }, { label: "Advertised tools after", value: "1" }] },
     { type: "note", text: "Compact visual operations load only when needed." }
   ] } },
-  sessionId: null, messageId: null, runId: null, traceId: null, parentVisualId: null,
+  sessionId: "session_373954a2-4f5b-48b7-a088-e9c2b1024627", messageId: null,
+  runId: "gepa_gepa_banking77_workspace_v1_f7902156",
+  traceId: "trace_6fcb4183b7ad4ac8a8a804b5ec3e1c77",
+  parentVisualId: null,
   sourceAgentId: "laguna", sourceModel: "laguna-xs-2.1", contentDigest: null, previewDigest: null,
   metadata: {}, createdAt: "2026-08-09T13:24:48.000Z", updatedAt: "2026-08-09T13:24:48.000Z"
 };
@@ -756,6 +800,14 @@ const cuaLongTitleVisual = {
   id: "laguna-prompt-trim-long-title",
   title: "SFT · Banking77 intent SFT · hosted Tinker · banking77_classify checkpoint campaigns with a deliberately taller wrapped title",
   updatedAt: "2026-08-09T13:25:48.000Z"
+};
+const annotationVisual = {
+  ...cuaAnalysisVisual,
+  id: "annotation-visual-layout",
+  title: "Craftax annotation evidence with long sealed trace digests",
+  templateId: "analysis.annotation_workbench.v1",
+  bindings: {},
+  updatedAt: "2026-09-01T18:00:00.000Z"
 };
 const groupedCraftaxVisual = {
   schemaVersion: "synth.desktop-visual.v1", id: "vis_w1_craftax", currentRevision: 1,
@@ -779,13 +831,13 @@ const chartPaneVisual = {
   metadata: { renderStatus: "ready", visualKind: "chart", rendererVersion: "workshop-charts-svg.1" }
 };
 const chartPaneSvgBase64 = "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2MjAiIGhlaWdodD0iNTE4IiB2aWV3Qm94PSIwIDAgNjIwIDUxOCIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlIGRlc2MiPjx0aXRsZSBpZD0idGl0bGUiPkNyYWZ0YXggcm9sbG91dDwvdGl0bGU+PGRlc2MgaWQ9ImRlc2MiPm1ldHJpY3MsIHNlcmllczwvZGVzYz48ZGVmcz48cGF0dGVybiBpZD0iYWJzZW50IiB3aWR0aD0iNiIgaGVpZ2h0PSI2IiBwYXR0ZXJuVW5pdHM9InVzZXJTcGFjZU9uVXNlIiBwYXR0ZXJuVHJhbnNmb3JtPSJyb3RhdGUoNDUpIj48cmVjdCB3aWR0aD0iNiIgaGVpZ2h0PSI2IiBmaWxsPSIjRTRFN0VDIi8+PGxpbmUgeDE9IjAiIHkxPSIwIiB4Mj0iMCIgeTI9IjYiIHN0cm9rZT0iI0U4RUFFRSIgc3Ryb2tlLXdpZHRoPSIyIi8+PC9wYXR0ZXJuPjwvZGVmcz48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjRkZGRkZGIi8+PGcgZm9udC1mYW1pbHk9IidJQk0gUGxleCBTYW5zJyxzeXN0ZW0tdWksLWFwcGxlLXN5c3RlbSwnU2Vnb2UgVUknLHNhbnMtc2VyaWYiPjx0ZXh0IHg9IjI2IiB5PSI0NiIgdGV4dC1hbmNob3I9InN0YXJ0IiBmaWxsPSIjMUExRDIzIiBmb250LXNpemU9IjE4IiBmb250LXdlaWdodD0iNjAwIj5DcmFmdGF4IHJvbGxvdXQ8L3RleHQ+PHRleHQgeD0iMjYiIHk9IjY1IiB0ZXh0LWFuY2hvcj0ic3RhcnQiIGZpbGw9IiM1QzY1NzMiIGZvbnQtc2l6ZT0iMTIiIGZvbnQtd2VpZ2h0PSI0MDAiPmJvbWJhZGlsIHBhbmUgZml4dHVyZTwvdGV4dD48cmVjdCB4PSIyNiIgeT0iODAiIHdpZHRoPSI1NjgiIGhlaWdodD0iODgiIHJ4PSIxMCIgZmlsbD0iI0Y2RjdGOSIgc3Ryb2tlPSIjRThFQUVFIi8+PHJlY3QgeD0iNDAiIHk9Ijk0IiB3aWR0aD0iMTczLjMzMyIgaGVpZ2h0PSI2MCIgcng9IjgiIGZpbGw9IiNGRkZGRkYiIHN0cm9rZT0iI0U4RUFFRSIvPjx0ZXh0IHg9IjUxIiB5PSIxMTIiIHRleHQtYW5jaG9yPSJzdGFydCIgZmlsbD0iIzY4NzE4MCIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjQwMCI+dHVybnM8L3RleHQ+PHRleHQgeD0iNTEiIHk9IjEzMyIgdGV4dC1hbmNob3I9InN0YXJ0IiBmaWxsPSIjMUExRDIzIiBmb250LXNpemU9IjE3IiBmb250LXdlaWdodD0iNjAwIj44PC90ZXh0PjxyZWN0IHg9IjIyMy4zMzMiIHk9Ijk0IiB3aWR0aD0iMTczLjMzMyIgaGVpZ2h0PSI2MCIgcng9IjgiIGZpbGw9IiNGRkZGRkYiIHN0cm9rZT0iI0U4RUFFRSIvPjx0ZXh0IHg9IjIzNC4zMzMiIHk9IjExMiIgdGV4dC1hbmNob3I9InN0YXJ0IiBmaWxsPSIjNjg3MTgwIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNDAwIj50b3RhbCByZXdhcmQ8L3RleHQ+PHRleHQgeD0iMjM0LjMzMyIgeT0iMTMzIiB0ZXh0LWFuY2hvcj0ic3RhcnQiIGZpbGw9IiMxQTFEMjMiIGZvbnQtc2l6ZT0iMTciIGZvbnQtd2VpZ2h0PSI2MDAiPjQuMjA8L3RleHQ+PHJlY3QgeD0iNDA2LjY2NyIgeT0iOTQiIHdpZHRoPSIxNzMuMzMzIiBoZWlnaHQ9IjYwIiByeD0iOCIgZmlsbD0iI0ZGRkZGRiIgc3Ryb2tlPSIjRThFQUVFIi8+PHRleHQgeD0iNDE3LjY2NyIgeT0iMTEyIiB0ZXh0LWFuY2hvcj0ic3RhcnQiIGZpbGw9IiM2ODcxODAiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtd2VpZ2h0PSI0MDAiPm1hbmE8L3RleHQ+PHRleHQgeD0iNDE3LjY2NyIgeT0iMTMzIiB0ZXh0LWFuY2hvcj0ic3RhcnQiIGZpbGw9IiMxQTFEMjMiIGZvbnQtc2l6ZT0iMTciIGZvbnQtd2VpZ2h0PSI2MDAiPuKAlDwvdGV4dD48cmVjdCB4PSIyNiIgeT0iMTg4IiB3aWR0aD0iNTY4IiBoZWlnaHQ9IjMwNCIgcng9IjEwIiBmaWxsPSIjRjZGN0Y5IiBzdHJva2U9IiNFOEVBRUUiLz48dGV4dCB4PSI0MCIgeT0iMjE2IiB0ZXh0LWFuY2hvcj0ic3RhcnQiIGZpbGw9IiMxQTFEMjMiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2MDAiPkN1bXVsYXRpdmUgcmV3YXJkPC90ZXh0PjxsaW5lIHgxPSI5OCIgeTE9IjQzOCIgeDI9IjU2NCIgeTI9IjQzOCIgc3Ryb2tlPSIjRUVGMEYzIi8+PHRleHQgeD0iOTAiIHk9IjQ0MS41IiB0ZXh0LWFuY2hvcj0iZW5kIiBmaWxsPSIjNjg3MTgwIiBmb250LXNpemU9IjEwIiBmb250LXdlaWdodD0iNDAwIj4wPC90ZXh0PjxsaW5lIHgxPSI5OCIgeTE9IjM5NiIgeDI9IjU2NCIgeTI9IjM5NiIgc3Ryb2tlPSIjRUVGMEYzIi8+PHRleHQgeD0iOTAiIHk9IjM5OS41IiB0ZXh0LWFuY2hvcj0iZW5kIiBmaWxsPSIjNjg3MTgwIiBmb250LXNpemU9IjEwIiBmb250LXdlaWdodD0iNDAwIj4xPC90ZXh0PjxsaW5lIHgxPSI5OCIgeTE9IjM1NCIgeDI9IjU2NCIgeTI9IjM1NCIgc3Ryb2tlPSIjRUVGMEYzIi8+PHRleHQgeD0iOTAiIHk9IjM1Ny41IiB0ZXh0LWFuY2hvcj0iZW5kIiBmaWxsPSIjNjg3MTgwIiBmb250LXNpemU9IjEwIiBmb250LXdlaWdodD0iNDAwIj4yPC90ZXh0PjxsaW5lIHgxPSI5OCIgeTE9IjMxMiIgeDI9IjU2NCIgeTI9IjMxMiIgc3Ryb2tlPSIjRUVGMEYzIi8+PHRleHQgeD0iOTAiIHk9IjMxNS41IiB0ZXh0LWFuY2hvcj0iZW5kIiBmaWxsPSIjNjg3MTgwIiBmb250LXNpemU9IjEwIiBmb250LXdlaWdodD0iNDAwIj4zPC90ZXh0PjxsaW5lIHgxPSI5OCIgeTE9IjI3MCIgeDI9IjU2NCIgeTI9IjI3MCIgc3Ryb2tlPSIjRUVGMEYzIi8+PHRleHQgeD0iOTAiIHk9IjI3My41IiB0ZXh0LWFuY2hvcj0iZW5kIiBmaWxsPSIjNjg3MTgwIiBmb250LXNpemU9IjEwIiBmb250LXdlaWdodD0iNDAwIj40PC90ZXh0PjxsaW5lIHgxPSI5OCIgeTE9IjIyOCIgeDI9IjU2NCIgeTI9IjIyOCIgc3Ryb2tlPSIjRUVGMEYzIi8+PHRleHQgeD0iOTAiIHk9IjIzMS41IiB0ZXh0LWFuY2hvcj0iZW5kIiBmaWxsPSIjNjg3MTgwIiBmb250LXNpemU9IjEwIiBmb250LXdlaWdodD0iNDAwIj41PC90ZXh0PjxsaW5lIHgxPSI5OCIgeTE9IjQzOCIgeDI9IjU2NCIgeTI9IjQzOCIgc3Ryb2tlPSIjRThFQUVFIi8+PHRleHQgeD0iOTgiIHk9IjQ1MyIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iIzY4NzE4MCIgZm9udC1zaXplPSIxMCIgZm9udC13ZWlnaHQ9IjQwMCI+MDwvdGV4dD48dGV4dCB4PSIyMTQuNSIgeT0iNDUzIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmaWxsPSIjNjg3MTgwIiBmb250LXNpemU9IjEwIiBmb250LXdlaWdodD0iNDAwIj4yPC90ZXh0Pjx0ZXh0IHg9IjMzMSIgeT0iNDUzIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmaWxsPSIjNjg3MTgwIiBmb250LXNpemU9IjEwIiBmb250LXdlaWdodD0iNDAwIj40PC90ZXh0Pjx0ZXh0IHg9IjQ0Ny41IiB5PSI0NTMiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiM2ODcxODAiIGZvbnQtc2l6ZT0iMTAiIGZvbnQtd2VpZ2h0PSI0MDAiPjY8L3RleHQ+PHRleHQgeD0iNTY0IiB5PSI0NTMiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiM2ODcxODAiIGZvbnQtc2l6ZT0iMTAiIGZvbnQtd2VpZ2h0PSI0MDAiPjg8L3RleHQ+PHRleHQgeD0iMzMxIiB5PSI0NjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiM1QzY1NzMiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtd2VpZ2h0PSI0MDAiPnR1cm48L3RleHQ+PGcgdHJhbnNmb3JtPSJyb3RhdGUoLTkwIDU0IDMzMykiPjx0ZXh0IHg9IjU0IiB5PSIzMzMiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiM1QzY1NzMiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtd2VpZ2h0PSI0MDAiPnJld2FyZDwvdGV4dD48L2c+PHBhdGggZD0iTTk4IDQzOCBMMjE0LjUgMzkxLjggTDMzMSAzNDUuNiBMNTA1Ljc1IDI2MS42IEw1MDUuNzUgNDM4IEw5OCA0MzggWiIgZmlsbD0iI0I5NDcxMiIgZmlsbC1vcGFjaXR5PSIwLjE2IiBzdHJva2U9Im5vbmUiLz48cGF0aCBkPSJNOTggNDM4IEwyMTQuNSAzOTEuOCBMMzMxIDM0NS42IEw1MDUuNzUgMjYxLjYgIiBmaWxsPSJub25lIiBzdHJva2U9IiNCOTQ3MTIiIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48Y2lyY2xlIGN4PSI5OCIgY3k9IjQzOCIgcj0iMi42IiBmaWxsPSIjQjk0NzEyIi8+PGNpcmNsZSBjeD0iMjE0LjUiIGN5PSIzOTEuOCIgcj0iMi42IiBmaWxsPSIjQjk0NzEyIi8+PGNpcmNsZSBjeD0iMzMxIiBjeT0iMzQ1LjYiIHI9IjIuNiIgZmlsbD0iI0I5NDcxMiIvPjxjaXJjbGUgY3g9IjUwNS43NSIgY3k9IjI2MS42IiByPSIyLjYiIGZpbGw9IiNCOTQ3MTIiLz48L2c+PC9zdmc+";
-const fixtureVisuals = ${includeCuaAnalysisVisual ? "[cuaAnalysisVisual, cuaLongTitleVisual]" : includeChartPane ? "[chartPaneVisual]" : includeGroupedVisualEvidence ? "[groupedCraftaxVisual]" : "[]"};
+const fixtureVisuals = ${includeAnnotationVisual ? "[annotationVisual]" : includeCuaAnalysisVisual ? "[cuaAnalysisVisual, cuaLongTitleVisual]" : includeChartPane ? "[chartPaneVisual]" : includeGroupedVisualEvidence ? "[groupedCraftaxVisual]" : "[]"};
 window.synthVisuals = {
   listTemplates: async () => [{ id: ${includeGroupedVisualEvidence ? `"live.craftax.v1"` : `"analysis.visual.v1"`}, title: ${includeGroupedVisualEvidence ? `"Craftax live eval"` : `"Agent-authored analysis"`}, genre: ${includeGroupedVisualEvidence ? `"live"` : `"analysis"`} }],
   getTemplate: async () => ({ id: ${includeGroupedVisualEvidence ? `"live.craftax.v1"` : `"analysis.visual.v1"`}, title: ${includeGroupedVisualEvidence ? `"Craftax live eval"` : `"Agent-authored analysis"`} }),
-  list: async () => fixtureVisuals, get: async (visualId) => fixtureVisuals.find((visual) => visual.id === visualId) || ${includeChartPane ? "chartPaneVisual" : includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, revisions: async () => [],
-  create: async () => ${includeChartPane ? "chartPaneVisual" : includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, update: async () => ${includeChartPane ? "chartPaneVisual" : includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, save: async () => ${includeChartPane ? "chartPaneVisual" : includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"},
-  fork: async () => ${includeChartPane ? "chartPaneVisual" : includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, archive: async () => ${includeChartPane ? "chartPaneVisual" : includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, show: async () => ${includeChartPane ? "chartPaneVisual" : includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"},
+  list: async () => fixtureVisuals, get: async (visualId) => fixtureVisuals.find((visual) => visual.id === visualId) || ${includeAnnotationVisual ? "annotationVisual" : includeChartPane ? "chartPaneVisual" : includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, revisions: async () => [],
+  create: async () => ${includeAnnotationVisual ? "annotationVisual" : includeChartPane ? "chartPaneVisual" : includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, update: async () => ${includeAnnotationVisual ? "annotationVisual" : includeChartPane ? "chartPaneVisual" : includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, save: async () => ${includeAnnotationVisual ? "annotationVisual" : includeChartPane ? "chartPaneVisual" : includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"},
+  fork: async () => ${includeAnnotationVisual ? "annotationVisual" : includeChartPane ? "chartPaneVisual" : includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, archive: async () => ${includeAnnotationVisual ? "annotationVisual" : includeChartPane ? "chartPaneVisual" : includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, show: async () => ${includeAnnotationVisual ? "annotationVisual" : includeChartPane ? "chartPaneVisual" : includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"},
   onEvent: () => () => {}, onShow: () => () => {},
   content: async () => ({ base64: btoa(unescape(encodeURIComponent(JSON.stringify({ version: 1, title: "Craftax rollout", panels: [] })))), mediaType: "application/vnd.synth.chart-spec+json" }),
   rendition: async () => ({ base64: chartPaneSvgBase64, mediaType: "image/svg+xml", format: "svg", theme: "light", sizeClass: "pane" })
@@ -917,8 +969,8 @@ try {
 		origin,
 		specificationPath,
 		...(remoteDebugger ? [] : ["--headless"]),
-		"--width", "1280",
-		"--height", "840",
+		"--width", String(viewportWidth),
+		"--height", String(viewportHeight),
 		"--chrome-grant-permissions", "",
 		"--instrument-javascript", "",
 		"--time-limit", timeLimit,
@@ -937,7 +989,36 @@ try {
 			resolvePromise(value ?? 1);
 		});
 	});
-	if (code !== 0) process.exitCode = code;
+	if (code !== 0) {
+		process.exitCode = code;
+	} else if (includeSidePanelComposerDrag) {
+		const tracePath = resolve(outputPath, "trace.jsonl");
+		const trace = await readFile(tracePath, "utf8");
+		const states = trace
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line));
+		const geometries = states.flatMap((state) =>
+			(state.snapshots ?? [])
+				.filter((snapshot) => snapshot.name === "geometry")
+				.map((snapshot) => snapshot.value)
+		);
+		const sawWide = geometries.some((value) => value?.panelWide === true);
+		const sawNarrow = geometries.some((value) => value?.panelNarrow === true);
+		const sawCollapsed = geometries.some((value) => value?.transcriptCollapsed === true);
+		const restoredAfterCollapse = geometries.some((value, index) =>
+			value?.transcriptCollapsed === false
+			&& geometries.slice(0, index).some((prior) => prior?.transcriptCollapsed === true)
+		);
+		const sawDrag = states.some((state) => JSON.stringify(state.action ?? null).includes("MouseDrag"));
+		if (!sawWide || !sawNarrow || !sawCollapsed || !restoredAfterCollapse || !sawDrag) {
+			throw new Error(
+				`Bombadil drag coverage incomplete: states=${states.length}, `
+				+ `mouseDrag=${sawDrag}, wide=${sawWide}, narrow=${sawNarrow}, `
+				+ `collapsed=${sawCollapsed}, restored=${restoredAfterCollapse}`
+			);
+		}
+	}
 } finally {
 	if (bombadilProcess?.pid && !bombadilProcess.killed) {
 		try { process.kill(-bombadilProcess.pid, "SIGTERM"); } catch { /* exited */ }

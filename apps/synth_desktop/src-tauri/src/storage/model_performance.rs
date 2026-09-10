@@ -59,7 +59,7 @@ pub struct ModelPerformanceSummary {
     pub provider: String,
     pub model_id: String,
     pub measurement_kind: MeasurementKind,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub sample_count: usize,
     pub tps_p50: Option<f64>,
     pub tps_p95: Option<f64>,
@@ -75,9 +75,9 @@ pub struct ModelPerformanceSummary {
 pub struct ModelPerformanceTurnSample {
     pub run_id: Option<String>,
     pub measurement_kind: MeasurementKind,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub started_at_ms: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub completed_at_ms: i64,
     pub output_tps: f64,
 }
@@ -117,7 +117,7 @@ struct Aggregate {
 }
 
 fn summaries(conn: &Connection) -> Result<Vec<ModelPerformanceSummary>> {
-    let mut statement = conn.prepare("SELECT provider,model_id,measurement_kind,completed_at_ms,ttft_ms,observed_output_tps,end_to_end_output_tps FROM usage_records WHERE status='completed' AND output_tokens IS NOT NULL AND output_tokens>0 ORDER BY completed_at_ms")?;
+    let mut statement = conn.prepare("SELECT provider,model_id,measurement_kind,completed_at_ms,ttft_ms,observed_output_tps FROM usage_records WHERE status='completed' AND output_tokens IS NOT NULL AND output_tokens>0 AND observed_output_tps IS NOT NULL AND observed_output_tps>0 ORDER BY completed_at_ms")?;
     let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -126,12 +126,11 @@ fn summaries(conn: &Connection) -> Result<Vec<ModelPerformanceSummary>> {
             row.get::<_, i64>(3)?,
             row.get::<_, Option<f64>>(4)?,
             row.get::<_, Option<f64>>(5)?,
-            row.get::<_, Option<f64>>(6)?,
         ))
     })?;
     let mut groups: BTreeMap<(String, String, MeasurementKind), Aggregate> = BTreeMap::new();
     for row in rows {
-        let (provider, model, kind, completed, ttft, observed, e2e) = row?;
+        let (provider, model, kind, completed, ttft, observed) = row?;
         let a = groups
             .entry((provider, model, MeasurementKind::parse(&kind)))
             .or_default();
@@ -139,7 +138,7 @@ fn summaries(conn: &Connection) -> Result<Vec<ModelPerformanceSummary>> {
         if let Some(v) = finite_positive(ttft) {
             a.ttft.push(v)
         }
-        if let Some(v) = finite_positive(observed.or(e2e)) {
+        if let Some(v) = finite_positive(observed) {
             a.tps.push(v)
         }
     }
@@ -169,10 +168,12 @@ fn summaries(conn: &Connection) -> Result<Vec<ModelPerformanceSummary>> {
 
 fn turn_samples(conn: &Connection, session_id: &str) -> Result<Vec<ModelPerformanceTurnSample>> {
     let mut statement = conn.prepare(
-        "SELECT run_id,measurement_kind,started_at_ms,completed_at_ms,observed_output_tps
+        "SELECT run_id,measurement_kind,started_at_ms,completed_at_ms,
+                observed_output_tps
          FROM usage_records
          WHERE session_id=?1 AND output_tokens IS NOT NULL AND output_tokens>0
-           AND observed_output_tps IS NOT NULL AND observed_output_tps>0
+           AND observed_output_tps IS NOT NULL
+           AND observed_output_tps>0
          ORDER BY started_at_ms,completed_at_ms",
     )?;
     let rows = statement.query_map([session_id], |row| {
@@ -303,11 +304,13 @@ mod tests {
         let mut second = record("two", 29.0);
         second.session_id = Some("session-b".into());
         w.record(second).await.unwrap();
-        let mut end_to_end_only = record("tool-gap", 0.1);
+        let mut end_to_end_only = record("hosted-settled", 0.1);
         end_to_end_only.session_id = Some("session-a".into());
         end_to_end_only.measurement_kind = MeasurementKind::EndToEnd;
         end_to_end_only.observed_output_tps = None;
-        end_to_end_only.end_to_end_output_tps = Some(0.1);
+        end_to_end_only.end_to_end_output_tps = Some(12.5);
+        end_to_end_only.started_at_ms = 3_000;
+        end_to_end_only.completed_at_ms = 4_000;
         w.record(end_to_end_only).await.unwrap();
 
         let rows = ModelPerformanceRepository::new(s.database().clone())
@@ -317,5 +320,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].run_id.as_deref(), Some("turn-a"));
         assert_eq!(rows[0].output_tps, 11.0);
+        // Acceptance-to-completion rates include warm-up and are latency, not
+        // generation throughput. They must never reach the TPS UI.
     }
 }

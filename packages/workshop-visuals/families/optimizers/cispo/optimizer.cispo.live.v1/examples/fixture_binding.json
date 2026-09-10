@@ -1,0 +1,9 @@
+{
+  "bindings": [
+    {
+      "slot": "optimizer_run",
+      "kind": "fixture",
+      "source": "families/optimizers/cispo/optimizer.cispo.live.v1/examples/events.json"
+    }
+  ]
+}

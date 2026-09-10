@@ -28,7 +28,215 @@ import type {
 	OptimizerAlgorithmInfo,
 	OptimizerRunRecord
 } from "@synth/runtime-protocol";
-import type { InstanceDiagnostics } from "../generated/protocol";
+import type { PresentationState, VisualRecording, VisualSnapshot } from "@synth/visuals-protocol";
+export type { OptimizerAlgorithmInfo, OptimizerRunRecord };
+import type {
+	AnalysisSettings as JesterkyAnalysisSettings,
+	ArtifactMutationReceipt,
+	BeginResult,
+	BrowserRuntimeStatus,
+	CapabilitySummary,
+	CodexSessionInfo,
+	CodexTurnFailure,
+	ComputerUseSnapshot,
+	ContextFile,
+	ContextSkill,
+	ContextSnapshot,
+	ConversationWorkspaceScope,
+	CredentialBindingSummary,
+	CredentialLocatorSummary,
+	CookbookContext,
+	DesktopPermissionSettings,
+	ExperimentRecord,
+	ExperimentStatus,
+	InstanceDiagnostics,
+	HumanAnnotationSessionView,
+	HostedTrainingModel,
+	HostedTrainingModelCatalog,
+	LagunaAdapterStatus,
+	LagunaModelHit,
+	LagunaPolicy,
+	LagunaStatus,
+	MaskedImportCandidate,
+	McpContextGroup,
+	MlxRuntimeStatus,
+	ModelPerformanceSummary,
+	ModelPerformanceTurnSample,
+	ModelMultiAgentSetting,
+	ModelCatalog,
+	MultiAgentVersion,
+	PendingGrantSummary,
+	PluginPermission,
+	PluginStatus,
+	RegisteredInstance,
+	ReportAudience,
+	ReportAudienceState,
+	ReportBlock,
+	ReportClaim,
+	ReportComment,
+	ReportLimitation,
+	ReportPromotion,
+	ReportRecord,
+	ReportRevision,
+	ReportRevisionCompare,
+	ReportSeal,
+	ReportSealBundle,
+	ReportSource,
+	ReportStatus,
+	ReportUpload,
+	ReportValidationFinding,
+	ReportValidationResult,
+	ReportVisibilityRequest,
+	ResearchLogEntry,
+	OptimizerRunOutputs,
+	EvidencePage,
+	EvidenceRange,
+	VisualRenderReceipt,
+	OptimizerRunViewEnvelope,
+	OptimizerRunViewV2,
+	OptimizerRunSummary,
+	OptimizerRunSummaryEnvelope,
+	RunCollection,
+	RunCollectionFilter,
+	RunCollectionQuery,
+	RunCollectionPage,
+	RunCollectionRow,
+	HistoricalProjection,
+	OptimizerFrameContent,
+	OptimizerFrameDelta,
+	OptimizerFrameRef,
+	SavedLoraCheckpoint,
+	SavedLoraCheckpointPage,
+	SavedLoraDownload,
+	SavedLoraRunPage,
+	SecretAuditEvent,
+	SecretSummary,
+	SecretsInbox,
+	SkillHit,
+	Status,
+	TariffCard,
+	TemplateMeta,
+	NativeTerminalFrame,
+	NativeTerminalMountRequest,
+	TerminalCreateRequest,
+	TerminalEvent,
+	TerminalInfo,
+	TrainingArtifact,
+	TrainingModelHit,
+	UpdateStatus,
+	VisualAnnotation,
+	VisualSeal,
+	VisualSealBundle,
+	VisualUpload,
+	WhisperModelHit,
+	WhisperRuntimeStatus,
+	WorkspaceAccessMode,
+	WorkspaceAccessSettings,
+	WorkspaceAttachment,
+	WorkspaceGrantRequest,
+	WorkspaceRootSummary
+} from "../generated/protocol";
+export type { RegisteredInstance };
+
+export type {
+	ArtifactMutationReceipt,
+	BrowserRuntimeStatus,
+	CodexSessionInfo,
+	CodexTurnFailure,
+	ComputerUseSnapshot,
+	ContextFile,
+	ContextSkill,
+	ContextSnapshot,
+	ConversationWorkspaceScope,
+	CredentialBindingSummary,
+	CredentialLocatorSummary,
+	CookbookContext,
+	DesktopPermissionSettings,
+	ExperimentRecord,
+	ExperimentStatus,
+	HostedTrainingModel,
+	HostedTrainingModelCatalog,
+	LagunaAdapterStatus,
+	LagunaModelHit,
+	LagunaPolicy,
+	LagunaStatus,
+	MaskedImportCandidate,
+	McpContextGroup,
+	MlxRuntimeStatus,
+	ModelPerformanceSummary,
+	ModelPerformanceTurnSample,
+	ModelMultiAgentSetting,
+	ModelCatalog,
+	MultiAgentVersion,
+	PendingGrantSummary,
+	PluginPermission,
+	PluginStatus,
+	ReportAudience,
+	ReportAudienceState,
+	ReportBlock,
+	ReportClaim,
+	ReportComment,
+	ReportLimitation,
+	ReportPromotion,
+	ReportRecord,
+	ReportRevision,
+	ReportRevisionCompare,
+	ReportSeal,
+	ReportSealBundle,
+	ReportSource,
+	ReportStatus,
+	ReportUpload,
+	ReportValidationFinding,
+	ReportValidationResult,
+	ReportVisibilityRequest,
+	ResearchLogEntry,
+	OptimizerRunOutputs,
+	EvidencePage,
+	EvidenceRange,
+	VisualRenderReceipt,
+	OptimizerRunViewEnvelope,
+	OptimizerRunViewV2,
+	OptimizerRunSummary,
+	OptimizerRunSummaryEnvelope,
+	RunCollection,
+	RunCollectionFilter,
+	RunCollectionQuery,
+	RunCollectionPage,
+	RunCollectionRow,
+	HistoricalProjection,
+	OptimizerFrameContent,
+	OptimizerFrameDelta,
+	OptimizerFrameRef,
+	SavedLoraCheckpoint,
+	SavedLoraCheckpointPage,
+	SavedLoraDownload,
+	SavedLoraRunPage,
+	SecretAuditEvent,
+	SecretSummary,
+	SecretsInbox,
+	SkillHit,
+	TariffCard,
+	NativeTerminalFrame,
+	NativeTerminalMountRequest,
+	TerminalCreateRequest,
+	TerminalEvent,
+	TerminalInfo,
+	TrainingArtifact,
+	TrainingModelHit,
+	UpdateStatus,
+	VisualAnnotation,
+	VisualSeal,
+	VisualSealBundle,
+	VisualUpload,
+	WhisperModelHit,
+	WhisperRuntimeStatus,
+	WorkspaceAccessMode,
+	WorkspaceAccessSettings,
+	WorkspaceAttachment,
+	WorkspaceGrantRequest,
+	WorkspaceRootSummary
+};
+
 
 export type RequestOptions = {
 	method?: "GET" | "POST" | "DELETE";
@@ -59,6 +267,16 @@ export type RuntimeBridge = {
 	): Promise<EventSubscription>;
 };
 
+/** Annotation projections have a narrow native bridge; generic runtime HTTP is
+ * intentionally browser-only so its authenticated loopback capability never
+ * reaches a Desktop renderer. */
+export type AnalysisBridge = {
+	projection(kind: string, digest: string): Promise<unknown>;
+	findings(traceDigest: string): Promise<{ findings: unknown[] }>;
+	campaigns(evalRunId: string): Promise<{ campaigns: unknown[] }>;
+	review(input: { findingId: string; evidenceHeadDigest: string; decision: string; rationale: string }): Promise<unknown>;
+};
+
 export type LagunaPhase =
 	| "unknown"
 	| "starting"
@@ -67,31 +285,6 @@ export type LagunaPhase =
 	| "unloaded"
 	| "error"
 	| "unavailable";
-
-export type LagunaStatus = {
-	phase: LagunaPhase;
-	baseUrl: string | null;
-	backend: string | null;
-	loadedModel: string | null;
-	detail: string | null;
-	memoryBytes: number | null;
-	idleSeconds?: number | null;
-	idleUnloadAfterSeconds?: number | null;
-	lastUsedAt?: number | null;
-	freeAt?: number | null;
-	updatedAt: number;
-};
-
-export type LagunaModelHit = {
-	path: string;
-	modelsRoot: string;
-	modelId: string;
-	shardCount: number;
-	totalBytes: number;
-	selected: boolean;
-	runtimeReady: boolean;
-	companionBytes: number;
-};
 
 export type LagunaDownloadProgress = {
 	modelId: string;
@@ -110,18 +303,18 @@ export type LagunaBridge = {
 	chooseModelDirectory(): Promise<string | null>;
 	setModelDirectory(path: string): Promise<LagunaModelHit>;
 	clearModelDirectory(): Promise<void>;
+	/** Selectable policies with whatever decode speed has been measured. */
+	policies?(): Promise<LagunaPolicy[]>;
+	/** Register a Laguna-compatible LoRA under a model id. Registration is not
+	 *  selection: which policy a turn uses is decided by that turn's model. */
+	registerPolicy?(checkpointId: string, modelId: string): Promise<LagunaPolicy>;
+	/** The Synth-published finetune, installed or not. */
+	adapterStatus?(): Promise<LagunaAdapterStatus[]>;
+	/** Download, verify, install, and register the published finetune. */
+	adapterDownload?(modelId: string): Promise<LagunaAdapterStatus>;
 	downloadModel(modelId: string): Promise<LagunaModelHit>;
 	deleteModel(modelId: string): Promise<void>;
 	onDownloadProgress?(listener: (progress: LagunaDownloadProgress) => void): () => void;
-};
-
-export type TrainingModelHit = {
-	path: string;
-	modelsRoot: string;
-	modelId: string;
-	revision: string;
-	shardCount: number;
-	totalBytes: number;
 };
 
 export type TrainingModelDownloadProgress = {
@@ -134,26 +327,11 @@ export type TrainingModelDownloadProgress = {
 
 export type TrainingModelsBridge = {
 	listModels(): Promise<TrainingModelHit[]>;
+	runtimeStatus(): Promise<MlxRuntimeStatus>;
+	installRuntime(confirm: boolean): Promise<MlxRuntimeStatus>;
 	downloadModel(modelId: string): Promise<TrainingModelHit>;
 	deleteModel(modelId: string): Promise<void>;
 	onDownloadProgress(listener: (progress: TrainingModelDownloadProgress) => void): () => void;
-};
-
-export type TrainingArtifact = {
-	schemaVersion: string;
-	id: string;
-	adapterKind: string;
-	baseModelId: string;
-	producingRunId: string;
-	producingAlgorithm: string;
-	datasetDigest?: string | null;
-	configDigest?: string | null;
-	digest?: string | null;
-	path?: string | null;
-	sizeBytes?: number | null;
-	integrity: string;
-	compatibleInference: string[];
-	createdAt: string;
 };
 
 export type TrainingArtifactsBridge = {
@@ -168,19 +346,8 @@ export type TrainingArtifactsBridge = {
 		configDigest?: string | null;
 		digest?: string | null;
 	}>;
-};
-
-export type WhisperModelHit = {
-	id: string;
-	title: string;
-	description?: string | null;
-	recommended: boolean;
-	multilingual: boolean;
-	downloadBytes: number;
-	installedBytes?: number | null;
-	path?: string | null;
-	selected: boolean;
-	modelsRoot: string;
+	export?(request: { id: string; destination: string; expectedDigest?: string; confirm: boolean }): Promise<ArtifactMutationReceipt>;
+	delete?(request: { id: string; confirm: boolean }): Promise<ArtifactMutationReceipt>;
 };
 
 export type WhisperDownloadProgress = {
@@ -189,16 +356,6 @@ export type WhisperDownloadProgress = {
 	detail: string;
 	downloadedBytes?: number;
 	totalBytes?: number;
-};
-
-export type WhisperRuntimeStatus = {
-	phase: string;
-	loadedModel: string | null;
-	idleSeconds: number | null;
-	idleUnloadAfterSeconds: number;
-	lastUsedAt: number | null;
-	freeAt: number | null;
-	updatedAt: number;
 };
 
 export type WhisperBridge = {
@@ -219,21 +376,10 @@ export type WhisperBridge = {
 	transcribeAudio?(base64: string, mimeType: string): Promise<string>;
 };
 
-export type SkillHit = {
-	id: string;
-	name: string;
-	description: string;
-};
-
 export type SkillsBridge = {
 	list(): Promise<SkillHit[]>;
 };
 
-export type ContextFile = { path: string; content: string; state: "bundled" | "absent" | "empty" | "overriding"; editable: boolean; version?: string | null };
-export type ContextSkill = { id: string; name: string; description: string; source: "bundled" | "cookbook" | "yours"; enabled: boolean; editable: boolean; content: string; path?: string | null };
-export type McpContextGroup = { id: string; label: string; enabled: boolean; servers: string[]; enabledTools: Record<string, string[]> };
-export type CookbookContext = { enabled: boolean; installed: boolean; phase: string; pin?: string | null; digest?: string | null; path?: string | null; lastFetch?: string | null; detail?: string | null };
-export type ContextSnapshot = { workshopAgents: ContextFile; workspaceAgents: ContextFile; cookbooks: CookbookContext; skills: ContextSkill[]; mcpGroups: McpContextGroup[] };
 export type ContextBridge = {
 	snapshot(workspace: string): Promise<ContextSnapshot>;
 	updateWorkspaceAgents(workspace: string, content: string): Promise<ContextSnapshot>;
@@ -265,27 +411,12 @@ export type SynthBackendSettings = {
 	};
 };
 
-export type MultiAgentVersion = "none" | "v1" | "v2";
-export type ModelMultiAgentSetting = {
-	modelId: string;
-	displayName: string;
-	preset: MultiAgentVersion;
-	effective: MultiAgentVersion;
-	overridden: boolean;
-};
-
-export type WorkspaceAccessSettings = {
-	allowedRoots: string[];
-};
-
-export type DesktopPermissionSettings = {
-	configPath: string;
-	approvalPolicy: "untrusted" | "on-request" | "never";
-	sandboxMode: "read-only" | "workspace-write" | "danger-full-access";
-};
-
 export type SynthConfigBridge = {
 	get(): Promise<SynthBackendSettings>;
+	/** Rust-owned model projection; this never parses config.toml in the renderer. */
+	modelCatalog(): Promise<ModelCatalog>;
+	/** Explicit bounded refresh of OpenRouter's public, credential-free metadata. */
+	refreshModelCatalog(): Promise<ModelCatalog>;
 	update(request: {
 		profile: string;
 		backendUrl: string;
@@ -310,6 +441,7 @@ export type SynthConfigBridge = {
 	updateDesktopPermissions(request: {
 		approvalPolicy: DesktopPermissionSettings["approvalPolicy"];
 		sandboxMode: DesktopPermissionSettings["sandboxMode"];
+		paidCompute?: DesktopPermissionSettings["paidCompute"];
 	}): Promise<DesktopPermissionSettings>;
 };
 
@@ -319,6 +451,7 @@ export type CodexSessionStart = {
 	baseUrl: string;
 	apiKey?: string;
 	model: string;
+	targetId?: string | null;
 	providerName: string;
 	providerTitle: string;
 	providerEnvKey: string;
@@ -328,15 +461,17 @@ export type CodexSessionStart = {
 	threadId?: string;
 	multiAgentVersion?: MultiAgentVersion;
 	autoCompactTokenLimit: number;
+	/** This Mac Laguna catalog id. Null loads the base Laguna XS weights. */
+	adapter?: string | null;
 };
 
-export type CodexSessionInfo = { sessionId: string; threadId: string; turnId?: string | null };
 export type ComposerImageAttachment = { path: string; name: string; previewUrl: string };
 export type PersistedCodexSession = {
 	sessionId: string;
 	threadId: string;
 	workspace: string;
 	model: string;
+	targetId?: string | null;
 	providerName: string;
 	providerTitle: string;
 	baseUrl: string;
@@ -347,18 +482,14 @@ export type PersistedCodexSession = {
 	sandbox: string;
 	presentationEmotion?: string | null;
 	presentationSummary?: string | null;
+	/** This Mac Laguna catalog id. Null is the base model. */
+	adapter?: string | null;
 	/** Set when a previous process died holding this chat's turn. */
 	recovery?: RecoveryNotice | null;
 };
-export type CodexEvent = { sessionId: string; method: string; params: Record<string, unknown> };
+export type CodexEvent = { sessionId: string; method: string; params: Record<string, unknown>; createdAt?: string };
 /** Typed rejection payload of `codex_turn_send`. */
-export type CodexTurnFailure = {
-	code: "codex_session_detached" | "codex_turn_start_failed" | "codex_provider_unavailable" | string;
-	message: string;
-	sessionId: string;
-	/** Developer detail. Debug logs only — never a user-facing surface. */
-	detail: string;
-};
+
 export type CodexBridge = {
 	defaultWorkspace(): Promise<string>;
 	list(): Promise<PersistedCodexSession[]>;
@@ -367,7 +498,7 @@ export type CodexBridge = {
 		sessionId: string,
 		prompt: string,
 		effort?: string,
-		options?: { clientMessageId?: string }
+		options?: { clientMessageId?: string; uiContext?: string }
 	): Promise<CodexSessionInfo>;
 	/**
 	 * Atomic attach-or-resume plus turn start. Optional because browser demo
@@ -383,7 +514,7 @@ export type CodexBridge = {
 		request: CodexSessionStart,
 		prompt: string,
 		effort?: string,
-		options?: { compactBeforeModelSwitch?: boolean; clientMessageId?: string }
+		options?: { compactBeforeModelSwitch?: boolean; clientMessageId?: string; recoveryMode?: boolean; uiContext?: string }
 	): Promise<CodexSessionInfo>;
 	interrupt(sessionId: string): Promise<void>;
 	/** Atomically attaches/resumes a Codex thread and starts ad-hoc compaction. */
@@ -394,7 +525,7 @@ export type CodexBridge = {
 	listThreadItems?(sessionId: string, threadId: string, cursor?: string, limit?: number): Promise<unknown>;
 	/** Mid-turn user input via Codex `turn/steer`. Optional on browser fixtures without a native runtime. */
 	steerTurn?(sessionId: string, text: string): Promise<void>;
-	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject"): Promise<void>;
+	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject" | "remember-locator" | "register-source"): Promise<void>;
 	close(sessionId: string): Promise<void>;
 	onEvent(listener: (event: CodexEvent) => void): () => void;
 };
@@ -423,32 +554,16 @@ export type InventoryBridge = {
 	getContainer(containerId: string): Promise<ContainerDeployment>;
 	registerContainer(request: { name?: string; baseUrl: string; location?: "local" | string; taskFamily?: string; metadata?: Record<string, unknown> }): Promise<ContainerDeployment>;
 	probeContainer(containerId: string): Promise<ContainerDeployment>;
+	reconcileContainer(containerId: string, sessionId: string): Promise<ContainerDeployment>;
+	restartContainer(containerId: string, sessionId: string): Promise<ContainerDeployment>;
 	listTraces(): Promise<TraceV5Record[]>;
 	getTrace(traceId: string): Promise<TraceV5Record>;
+	materializeContainerTrace(containerId: string, rolloutId: string): Promise<{ inspectable?: boolean; note?: string; traces?: Array<{ traceId?: string }> }>;
 	chooseTraceInput(): Promise<string | null>;
 	ingestTraceBundle(request: TraceBundleIngestRequest): Promise<TraceBundleIngestResult>;
 	resolveTraceProjection(traceDigest: string, projectionKind?: string): Promise<ResolvedTraceProjection>;
 	listUsage(limit?: number): Promise<UsageLedgerEntry[]>;
 	counts(): Promise<InventoryCounts>;
-};
-
-export type ModelPerformanceSummary = {
-	provider: string;
-	modelId: string;
-	measurementKind: "decode" | "observed_stream" | "end_to_end" | "provider_reported";
-	sampleCount: number;
-	tpsP50: number | null;
-	tpsP95: number | null;
-	ttftP50Ms: number | null;
-	lastObservedAt: string;
-};
-
-export type ModelPerformanceTurnSample = {
-	runId: string | null;
-	measurementKind: ModelPerformanceSummary["measurementKind"];
-	startedAtMs: number;
-	completedAtMs: number;
-	outputTps: number;
 };
 
 export type ModelPerformanceBridge = {
@@ -463,14 +578,6 @@ export type UsageBridge = {
 
 /** One provider price card, served from the native tariff catalog — the same
  * numbers the cost estimator prices with. */
-export type TariffCard = {
-	provider: string;
-	modelId: string;
-	inputUsdPerM: number;
-	outputUsdPerM: number;
-	cachedInputUsdPerM: number | null;
-	cacheWriteUsdPerM: number | null;
-};
 
 export type TariffsBridge = {
 	catalog(): Promise<TariffCard[]>;
@@ -478,80 +585,42 @@ export type TariffsBridge = {
 
 /** Passive release check: version facts only. The download action always
  * opens the fixed public download page. */
-export type UpdateStatus = {
-	currentVersion: string;
-	channel: string;
-	latestVersion: string | null;
-	updateAvailable: boolean;
-};
 
 export type UpdatesBridge = {
 	status(): Promise<UpdateStatus>;
 	openDownload(): Promise<void>;
 };
 
-export type VisualTemplateMeta = {
-	id: string;
-	title: string;
-	genre?: string | null;
-	version?: string | null;
-	description?: string | null;
-	path?: string | null;
-	shellPath?: string | null;
-	exampleBinding?: Record<string, unknown> | null;
-	slots?: unknown[] | null;
-	bindingSchema?: unknown[] | null;
+
+
+export type HumanAnnotationsBridge = {
+	preview(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	create(request: Record<string, unknown>): Promise<{ taskId: string; sessionId: string; taskDigest: string; state: string; created: boolean }>;
+	open(sessionId: string): Promise<HumanAnnotationSessionView>;
+	show(sessionId: string): Promise<HumanAnnotationSessionView>;
+	setAnswer(request: Record<string, unknown>): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	clearAnswer(sessionId: string, expectedRevision: number, questionId: string): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	createComment(request: Record<string, unknown>): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	audioBegin(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	audioAppend(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	audioFinish(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	audioRead(sessionId: string, attachmentId: string): Promise<{ attachmentId: string; mediaType: string; base64Data: string }>;
+	audioTranscribe(request: Record<string, unknown>): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	correctTranscript(request: Record<string, unknown>): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	submit(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	list(query?: Record<string, unknown>): Promise<Array<Record<string, unknown>>>;
+	status(id: string): Promise<Record<string, unknown>>;
+	cancel(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	exportResult(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	supersede(request: Record<string, unknown>): Promise<{ taskId: string; sessionId: string; taskDigest: string; state: string; created: boolean }>;
+	campaignCreate(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	campaignStatus(campaignId: string): Promise<Record<string, unknown>>;
+	campaignClose(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	campaignAdjudicate(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	onShow(listener: (sessionId: string) => void): () => void;
 };
 
-export type VisualAnnotation = {
-	id: string;
-	visualId: string;
-	visualRevision: number;
-	sourceDigest?: string | null;
-	selector: Record<string, unknown>;
-	kind: "note" | "bug" | "highlight" | "reward" | "acceptance";
-	body?: string | null;
-	metadata: Record<string, unknown>;
-	authorId: string;
-	supersedesId?: string | null;
-	tombstoned: boolean;
-	createdAt: string;
-	updatedAt: string;
-};
-
-export type VisualSeal = {
-	receiptDigest: string;
-	visualId: string;
-	visualRevision: number;
-	artifactId: string;
-	schemaVersion: "synth.artifact-bundle.v1";
-	compilerName: string;
-	compilerVersion: string;
-	runtimeDigest: string;
-	indexDigest: string;
-	dataDigest: string;
-	receiptSizeBytes: number;
-	totalSizeBytes: number;
-	createdAt: string;
-};
-
-export type VisualSealBundle = {
-	seal: VisualSeal;
-	indexHtml: string;
-	data: Record<string, unknown>;
-	receipt: Record<string, unknown>;
-};
-
-export type VisualUpload = {
-	receiptDigest: string;
-	collectionId?: string | null;
-	publicationId?: string | null;
-	publicationRevision?: number | null;
-	state: "prepared" | "uploading" | "finalizing" | "committed" | "failed";
-	committedUrl?: string | null;
-	error?: string | null;
-	updatedAt: string;
-};
+export type VisualTemplateMeta = TemplateMeta;
 
 export type VisualsBridge = {
 	listTemplates(genre?: string | null): Promise<VisualTemplateMeta[]>;
@@ -565,6 +634,14 @@ export type VisualsBridge = {
 		offset?: number;
 	}): Promise<VisualRecord[]>;
 	get(visualId: string): Promise<VisualRecord>;
+	engine?(visualId: string, request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	onEngineChanged?(callback: (identity: { visualId: string; revision: number; viewKey: string }) => void): () => void;
+	presentation(visualId: string): Promise<PresentationState | null>;
+	putPresentation(visualId: string, presentation: PresentationState & { expectedStateVersion: number }): Promise<PresentationState>;
+	snapshots(visualId: string): Promise<VisualSnapshot[]>;
+	putSnapshot(visualId: string, snapshot: VisualSnapshot): Promise<VisualSnapshot>;
+	recordings(visualId: string): Promise<VisualRecording[]>;
+	putRecording(visualId: string, recording: VisualRecording): Promise<VisualRecording>;
 	reportObservation(observation: {
 		schemaVersion: "synth.rendered-visual-observation.v1";
 		visualId: string;
@@ -636,6 +713,24 @@ export type VisualsBridge = {
 	}>;
 	render(visualId: string): Promise<VisualRecord>;
 	pollStream(request: { visualId: string; pollUrl: string; after: number; limit: number }): Promise<unknown>;
+	/**
+	 * `synth.visual.media.v1` — one bounded binary object by CAS digest.
+	 *
+	 * The host answers only for media produced by a run this visual is bound
+	 * to, so a pane cannot read the store by asking for arbitrary digests.
+	 */
+	readMedia(request: { visualId: string; casDigest: string }): Promise<{
+		protocol: string;
+		casDigest: string;
+		mediaType: string;
+		byteSize: number;
+		width: number | null;
+		height: number | null;
+		rolloutId: string | null;
+		step: number | null;
+		optimizerRunId: string;
+		dataUrl: string;
+	}>;
 	onEvent(listener: (event: AppEvent) => void, onAttached?: () => void): () => void;
 	onShow(listener: (event: AppEvent) => void): () => void;
 };
@@ -643,41 +738,13 @@ export type VisualsBridge = {
 /** `PluginPermission` from src-tauri/src/plugins/types.rs. */
 export type PluginPermissionState = "granted" | "denied" | "not_determined" | "not_applicable";
 
-export type PluginPermission = {
-	id: string;
-	/** What macOS calls this in System Settings. */
-	label: string;
-	state: PluginPermissionState;
-	settingsUrl?: string | null;
-	detail?: string | null;
-};
-
-export type PluginStatus = {
-	schemaVersion: string;
-	pluginId: string;
-	enabled: boolean;
-	phase: string;
-	installedVersion?: string | null;
-	selectedVersion?: string | null;
-	releaseChannel: "official" | "dev";
-	catalogVersion: string;
-	digest?: string | null;
-	service: { phase: string; startedAt?: string | null; activeRuns: number };
-	capabilitiesDigest?: string | null;
-	algorithms: string[];
-	templates: string[];
-	/** Omitted entirely for plugins that need no OS grants. */
-	permissions?: PluginPermission[];
-	lastActionReceiptId?: string | null;
-	detail?: string | null;
-};
-
 /** Mirrors the operations `PluginService::manage` accepts. */
 export type PluginLifecycleOperation =
 	| "enable"
 	| "disable"
 	| "install"
 	| "start"
+	| "restart"
 	| "stop"
 	| "update"
 	| "remove";
@@ -708,11 +775,6 @@ export type ComputerUseRemovalReport = {
 	allowlistEntriesRemoved: number;
 };
 
-export type ComputerUseSnapshot = {
-	status: PluginStatus;
-	allowedApps: string[];
-};
-
 /**
  * Computer Use is human-only: there is no agent path to any of these. The
  * agent's MCP surface offers status and nothing else.
@@ -725,20 +787,6 @@ export type ComputerUseBridge = {
 	openSettings(permissionId: string): Promise<void>;
 };
 
-export type BrowserRuntimeStatus = {
-	phase: "ready" | "not_ready";
-	detail: string;
-	backendPresent: boolean;
-	nodePresent: boolean;
-	playwrightPresent: boolean;
-	chromiumPresent: boolean;
-	nodeVersion?: string | null;
-	backendPath: string;
-	profileRoot: string;
-	allowedOrigins: string[];
-	defaultLocalOrigins: string[];
-};
-
 /** Human-only browser setup. Agent tools can consume policy but cannot mutate it. */
 export type BrowserAdminBridge = {
 	status(): Promise<BrowserRuntimeStatus>;
@@ -746,10 +794,13 @@ export type BrowserAdminBridge = {
 	revokeOrigin(origin: string): Promise<BrowserRuntimeStatus>;
 };
 
+export type { JesterkyAnalysisSettings };
+
 export type PluginsBridge = {
+	jesterkyAnalysisSettings?(settings?: JesterkyAnalysisSettings): Promise<JesterkyAnalysisSettings>;
 	status(pluginId?: string | null): Promise<PluginStatus>;
 	list(): Promise<PluginStatus[]>;
-	setReleaseChannel(pluginId: "optimizers", channel: "official" | "dev"): Promise<PluginStatus>;
+	setReleaseChannel(pluginId: "optimizers" | "jesterky", channel: "official" | "dev"): Promise<PluginStatus>;
 	/**
 	 * Human-triggered lifecycle. Approval policy, active-run guards, retention
 	 * classes, and receipts are enforced natively — the renderer never decides
@@ -767,231 +818,9 @@ export type PluginsBridge = {
 	onStatusChanged?(listener: () => void): () => void;
 };
 
-export type ReportStatus = "draft" | "sealed";
 export type ReportReferenceMode = "live" | "pinned";
 export type ReportAccessState = "available" | "redacted" | "forbidden" | "missing";
 export type ReportIntegrityState = "verified" | "digest_mismatch" | "unresolved" | "unsupported" | "source_changed";
-export type ExperimentStatus =
-	| "planned"
-	| "running"
-	| "completed"
-	| "failed"
-	| "aborted"
-	| "superseded"
-	| "excluded";
-
-export type ReportBlock = {
-	blockId: string;
-	kind: string;
-	anchor: string;
-	title?: string | null;
-	payload: Record<string, unknown>;
-	sourceRevision?: string | null;
-	sourceDigest?: string | null;
-	referenceMode?: ReportReferenceMode;
-	accessState: ReportAccessState;
-	integrityState: ReportIntegrityState;
-};
-
-export type ReportSource = {
-	sourceId: string;
-	resourceKind: string;
-	resourceId: string;
-	resourceRevision?: string | null;
-	resourceDigest?: string | null;
-	referenceMode?: ReportReferenceMode;
-	relation: string;
-	accessState: ReportAccessState;
-	integrityState: ReportIntegrityState;
-};
-
-export type ReportClaim = {
-	claimId: string;
-	statement: string;
-	status: "true" | "false" | "needs_more_analysis" | "unresolved";
-	confidence?: "low" | "medium" | "high" | "overwhelming";
-	why?: string;
-	evidenceRefs: string[];
-};
-
-export type ReportValidationFinding = {
-	code: string;
-	severity: "error" | "warning" | "info";
-	blockId?: string | null;
-	claimId?: string | null;
-	message: string;
-	remediation?: string | null;
-};
-
-export type ReportValidationResult = {
-	reportId: string;
-	revision: number;
-	sealable: boolean;
-	findings: ReportValidationFinding[];
-};
-
-export type ReportLimitation = {
-	limitationId: string;
-	body: string;
-};
-
-export type ReportRecord = {
-	schemaVersion: string;
-	id: string;
-	projectRef?: string | null;
-	currentRevision: number;
-	title: string;
-	summary?: string | null;
-	authors: string[];
-	status: ReportStatus;
-	createdBy: string;
-	createdAt: string;
-	updatedAt: string;
-	archivedAt?: string | null;
-};
-
-export type ReportRevision = {
-	schemaVersion: string;
-	reportId: string;
-	revision: number;
-	title: string;
-	summary?: string | null;
-	authors: string[];
-	status: ReportStatus;
-	blocks: ReportBlock[];
-	sources: ReportSource[];
-	claims: ReportClaim[];
-	limitations: ReportLimitation[];
-	contentDigest?: string | null;
-	compilerName?: string | null;
-	compilerVersion?: string | null;
-	createdBy: string;
-	createdAt: string;
-};
-
-export type ExperimentRecord = {
-	experimentId: string;
-	reportId?: string | null;
-	revision?: number | null;
-	title: string;
-	hypothesis?: string | null;
-	status: ExperimentStatus;
-	protocolDigest?: string | null;
-	arms: unknown;
-	runs: unknown;
-	results: unknown;
-	evaluatorRefs: unknown;
-	traceCollectionRefs: unknown;
-	claimRefs: unknown;
-	researchLogRefs: unknown;
-	limitations: unknown;
-	createdAt: string;
-	createdBy: string;
-};
-
-export type ResearchLogEntry = {
-	entryId: string;
-	reportId?: string | null;
-	sequence: number;
-	occurredAt: string;
-	recordedAt: string;
-	author: string;
-	actorKind: "human" | "agent" | string;
-	entryKind: string;
-	title: string;
-	body: string;
-	tags: string[];
-	links: unknown;
-	claimEffect?: string | null;
-	supersedesEntryId?: string | null;
-	sourceDigest?: string | null;
-};
-
-export type ReportSeal = {
-	receiptDigest: string;
-	reportId: string;
-	reportRevision: number;
-	schemaVersion: string;
-	compilerName: string;
-	compilerVersion: string;
-	runtimeDigest: string;
-	indexDigest: string;
-	dataDigest: string;
-	receiptSizeBytes: number;
-	totalSizeBytes: number;
-	createdAt: string;
-};
-
-export type ReportSealBundle = {
-	seal: ReportSeal;
-	indexHtml: string;
-	data: Record<string, unknown>;
-	receipt: Record<string, unknown>;
-};
-
-export type ReportRevisionCompare = {
-	left: ReportSealBundle;
-	right: ReportSealBundle;
-	sameDigest: boolean;
-};
-
-export type ReportUpload = {
-	receiptDigest: string;
-	collectionId?: string | null;
-	publicationId?: string | null;
-	publicationRevision?: number | null;
-	state: "prepared" | "uploading" | "finalizing" | "committed" | "failed";
-	committedUrl?: string | null;
-	error?: string | null;
-	updatedAt: string;
-};
-
-export type ReportPromotion = {
-	publicationId: string;
-	slug: string;
-	status: "published" | "unpublished";
-	publicUrl: string;
-};
-
-export type ReportAudience =
-	| { kind: "private" }
-	| { kind: "workspace"; workspaceId: string }
-	| { kind: "members"; memberIds: string[] };
-
-export type ReportAudienceState = {
-	publicationId: string;
-	audience: ReportAudience;
-	status: "active" | "revoked";
-};
-
-export type ReportVisibilityRequest = {
-	requestId: string;
-	reportId: string;
-	reportRevision: number;
-	receiptDigest: string;
-	target: "private" | "public" | "unpublished";
-	slug?: string | null;
-	reason?: string | null;
-	requestedBy: string;
-	status: "pending" | "approved" | "denied" | "executed" | "failed" | "expired";
-	decisionBy?: string | null;
-	error?: string | null;
-	createdAt: string;
-	updatedAt: string;
-	expiresAt: string;
-};
-
-export type ReportComment = {
-	commentId: string;
-	reportId: string;
-	reportRevision: number;
-	receiptDigest?: string | null;
-	publicationId?: string | null;
-	anchor?: string | null;
-	body: string;
-	authorId: string;
-	createdAt: string;
-};
 
 export type ReportsBridge = {
 	list(query?: { status?: string; search?: string; limit?: number; includeArchived?: boolean }): Promise<ReportRecord[]>;
@@ -1066,6 +895,7 @@ export type ReportsBridge = {
 		claimRefs?: unknown;
 		researchLogRefs?: unknown;
 		limitations?: unknown;
+		experimentGroupId?: string;
 	}): Promise<ExperimentRecord>;
 	listLog(reportId: string): Promise<ResearchLogEntry[]>;
 	appendLog(reportId: string, request: {
@@ -1088,144 +918,53 @@ export type OptimizerRecipeInfo = {
 	title: string;
 	algorithmId: string;
 	task?: string;
+	source?: string;
+	semantics?: string;
 	availability: string;
 	availabilityReason?: string | null;
 	description?: string;
+	/** Producer-declared caps. Real keys are e.g. `trials`; nothing writes
+	 * screening/confirmation seed lists here. */
 	limits?: Record<string, unknown>;
+	/** Producer-declared spend ceiling, e.g. `{ max_usd: 0.30 }`. */
+	budget?: Record<string, unknown>;
+	/** Pinned model list, e.g. `[{ id: "gpt-5.6-luna" }]`. */
+	models?: Array<Record<string, unknown>>;
 	prerequisites?: string[];
+	/** Admission facts projected by `eval_recipes.rs::project_eval_recipe_state`.
+	 * Absent (not false) when a producer predates the projection. */
+	recipeDiscovered?: boolean;
+	executionSupported?: boolean;
+	targetPresent?: boolean;
+	targetDigestMatches?: boolean;
+	targetAdmitted?: boolean;
+	/** Structured admission failure, parsed from `availabilityReason` when that
+	 * string carries JSON. */
+	admissionError?: unknown;
+	executionKind?: string;
 };
 
-export type SavedLoraCheckpoint = {
-	schemaVersion: "saved_lora_checkpoint.v1";
+export type OptimizerInferDelta = {
 	checkpointId: string;
-	orgId: string;
-	ownerUserId?: string | null;
-	visibility: "private" | "org";
-	name: string;
-	description: string;
-	provider: "tinker" | "river" | "synth" | "imported";
-	checkpointKind: "inference" | "training";
-	providerCheckpointReference?: string | null;
-	runId?: string | null;
-	attemptId?: string | null;
-	sourceCheckpointId?: string | null;
-	optimizerAlgorithm?: "sft" | "cispo" | "ppo" | null;
-	baseModel: string;
-	loraRank?: number | null;
-	step?: number | null;
-	status: "uploading" | "ready" | "failed" | "archived";
-	storage: {
-		backend: "wasabi" | "minio";
-		bucket: string;
-		key: string;
-		version?: string | null;
-		etag?: string | null;
-		sha256?: string | null;
-		sizeBytes?: number | null;
-		contentType: string;
-	};
-	lineage: {
-		optimizerAlgorithm?: "sft" | "cispo" | "ppo" | null;
-		runId?: string | null;
-		attemptId?: string | null;
-		sourceCheckpointId?: string | null;
-		providerCheckpointReference?: string | null;
-	};
-	tags: string[];
-	metadata: Record<string, unknown>;
-	createdAt?: string | null;
-	updatedAt?: string | null;
-	archivedAt?: string | null;
-};
-
-export type SavedLoraCheckpointPage = {
-	schemaVersion: "saved_lora_checkpoint.page.v1";
-	items: SavedLoraCheckpoint[];
-	total: number;
-	limit: number;
-	offset: number;
-};
-
-export type SavedLoraRunPage = {
-	schemaVersion: "saved_lora_checkpoint.run_page.v1";
-	run: {
-		runId: string;
-		attemptId?: string | null;
-		optimizerAlgorithm: string;
-		status: string;
-	};
-	items: SavedLoraCheckpoint[];
-	counts: { total: number; inference: number; training: number };
-	total: number;
-	limit: number;
-	offset: number;
-};
-
-export type OptimizerRunOutputs = {
-	schemaVersion: "optimizer.run_outputs.v1";
-	run: {
-		runId: string;
-		attemptId?: string | null;
-		optimizerAlgorithm: string;
-		status: string;
-	};
-	result?: Record<string, unknown> | null;
-	artifacts: Array<{
-		artifactId: string;
-		runId: string;
-		artifactName: string;
-		contentType?: string | null;
-		sizeBytes: number;
-		sha256?: string | null;
-		storageBackend: string;
-		uri: string;
-		downloadPath: string;
-		metadata: Record<string, unknown>;
-		createdAt?: string | null;
-		updatedAt?: string | null;
-	}>;
-	modelCheckpoints: SavedLoraCheckpoint[];
-	counts: { artifacts: number; modelCheckpoints: number };
-};
-
-export type SavedLoraDownload = {
-	checkpointId: string;
-	url: string;
-	expiresIn: number;
-	contentType: string;
-	sizeBytes?: number | null;
-	sha256?: string | null;
-};
-
-export type HostedTrainingModel = {
-	modelId: string;
-	label: string;
-	provider: string;
-	providerRevision: string;
-	architecture: string;
-	maxContextLength: number;
-	rank: { default?: number; minimum?: number; maximum?: number };
-	algorithms: Record<string, { status?: string; block_reason?: string; note?: string }>;
-};
-
-export type HostedTrainingModelCatalog = {
-	schemaVersion: "hosted_training_model_catalog.v1";
-	catalogRevision: string;
-	livePreflightRequired: boolean;
-	models: HostedTrainingModel[];
-	total: number;
+	family: string;
+	delta: string;
+	done: boolean;
 };
 
 export type OptimizersBridge = {
 	listAlgorithms(): Promise<OptimizerAlgorithmInfo[]>;
-	listRecipes(): Promise<OptimizerRecipeInfo[]>;
+	listRecipes(sessionRef?: string): Promise<OptimizerRecipeInfo[]>;
 	startRecipe(request: {
 		recipeId: string;
+        /** Frozen container experiment specification for feature-gated CISPO recipes. */
+        planOverride?: Record<string, unknown>;
 		sessionRef?: string;
 		openVisual?: boolean;
 		baseModel?: string;
 		/** Required by `eval.*` recipes unless `trainingArtifactId` is set. */
 		candidateSetId?: string;
+		/** Registered-container identity for workspace baseline evals. */
+		containerId?: string;
 		/** Managed training adapter. Eval stages it and retains identity in the receipt. */
 		trainingArtifactId?: string;
 	}): Promise<OptimizerRunRecord>;
@@ -1250,6 +989,35 @@ export type OptimizersBridge = {
 		offset?: number;
 	}): Promise<OptimizerRunRecord[]>;
 	get(optimizerRunId: string): Promise<OptimizerRunRecord>;
+	runViewV2(optimizerRunId: string): Promise<OptimizerRunViewV2>;
+	/**
+	 * One coherent read for first paint: the kernel projection, the run record
+	 * the templates still read compatibility fields from, and the durable
+	 * journal tail. Pass `ifNewerThan` with a projection revision already held
+	 * to get `unchanged` back instead of the same bytes again.
+	 */
+	runView(optimizerRunId: string, ifNewerThan?: number | null): Promise<OptimizerRunViewEnvelope>;
+	/**
+	 * The bounded, algorithm-neutral run summary — the only read an ordinary
+	 * mount performs. Conditional on `ifNewerThan` like `runView`.
+	 */
+	runSummary(optimizerRunId: string, ifNewerThan?: number | null): Promise<OptimizerRunSummaryEnvelope>;
+	/** One keyset page of a durable collection. The limit is always explicit. */
+	runCollection(optimizerRunId: string, collection: RunCollection, query: RunCollectionQuery): Promise<RunCollectionPage>;
+	/** One row's durable detail — a candidate's content, one evaluation. */
+	runCollectionItem(optimizerRunId: string, collection: RunCollection, itemId: string): Promise<RunCollectionRow | null>;
+	/** The projection at `sequence`, folded backend-side from a checkpoint. */
+	projectionAt(optimizerRunId: string, sequence: number): Promise<HistoricalProjection>;
+	/**
+	 * Everything in `window` the caller does not already hold. `held` is the
+	 * coverage from the previous answer, sent back verbatim.
+	 */
+	evidencePage(
+		optimizerRunId: string,
+		window: EvidenceRange,
+		held?: EvidenceRange[] | null,
+		limit?: number | null
+	): Promise<EvidencePage>;
 	create(request: {
 		algorithmId: string;
 		algorithmVersion?: string;
@@ -1265,6 +1033,9 @@ export type OptimizersBridge = {
 	}): Promise<OptimizerRunRecord>;
 	refresh(optimizerRunId: string): Promise<OptimizerRunRecord>;
 	eventsAfter(optimizerRunId: string, afterSeq?: number, limit?: number): Promise<unknown[]>;
+	framesLatest(optimizerRunId: string, afterFrameSequence?: number): Promise<OptimizerFrameDelta>;
+	framesList(optimizerRunId: string, seed: number, beforeFrameSequence?: number, limit?: number): Promise<OptimizerFrameRef[]>;
+	frameContent(optimizerRunId: string, seed: number, frameSequence: number): Promise<OptimizerFrameContent>;
 	getState(optimizerRunId: string, sliceId: string, atSeq?: number): Promise<unknown>;
 	getStateBatch(optimizerRunId: string, slices?: string[], atSeq?: number): Promise<unknown[]>;
 	cancel(optimizerRunId: string): Promise<OptimizerRunRecord>;
@@ -1274,9 +1045,10 @@ export type OptimizersBridge = {
 	importLocal(request: { path: string; sessionRef?: string; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	reconcileCloud(request: { optimizerRunId: string; afterSeq?: number; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	listCloud(query?: { algorithm?: string; status?: string; limit?: number }): Promise<unknown[]>;
-	searchSavedLoras(query?: {
+	searchSavedLoras?(query?: {
 		search?: string;
 		scope?: "all" | "mine" | "org";
+		placement?: "all" | "this_mac" | "hosted";
 		provider?: string;
 		checkpointKind?: string;
 		baseModel?: string;
@@ -1294,6 +1066,12 @@ export type OptimizersBridge = {
 	hostedTrainingModels(): Promise<HostedTrainingModelCatalog>;
 	archiveSavedLora(checkpointId: string): Promise<SavedLoraCheckpoint>;
 	savedLoraDownload(checkpointId: string): Promise<SavedLoraDownload>;
+	importSavedLora(path: string): Promise<SavedLoraCheckpoint>;
+	patchSavedLora?(checkpointId: string, patch: { name?: string; description?: string; tags?: string[] }): Promise<SavedLoraCheckpoint>;
+	publishSavedLora?(checkpointId: string): Promise<SavedLoraCheckpoint>;
+	inferCheckpoint(request: { checkpointId: string; family: "chat_completions" | "responses"; body: Record<string, unknown> }): Promise<unknown>;
+	onInferDelta?(listener: (event: OptimizerInferDelta) => void): () => void;
+	containerExperimentAction(optimizerRunId: string, action: "recover" | "start" | "verify_checkpoint", checkpointId?: string): Promise<unknown>;
 	reconcileTraining(optimizerRunId: string): Promise<{
 		schemaVersion: "workshop.training_snapshot.v1";
 		runId: string;
@@ -1306,7 +1084,23 @@ export type OptimizersBridge = {
 		replayedThrough: number;
 		subscribedFrom: number;
 		templateDigest?: string;
+		/** Visual revision this render belongs to. */
+		visualRevision?: number | null;
+		/** Durable projection revision the render was produced from. */
+		projectionRevision?: number | null;
+		/** Digest of that projection, so identical revisions with different
+		 *  content are detectable. */
+		dataDigest?: string;
 	}): Promise<unknown>;
+	/**
+	 * Proof that this visual revision has rendered before, if it has. Read on
+	 * reopen to tell a normal revision advance from evidence that has gone
+	 * backwards under a visual that already showed something newer.
+	 */
+	visualRenderReceipt?(
+		visualId: string,
+		visualRevision?: number | null
+	): Promise<VisualRenderReceipt | null>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
 };
 
@@ -1340,9 +1134,6 @@ export type TrainingProjection = {
 	attempt_history: unknown[];
 };
 
-export type TerminalInfo = { id: string; workspaceId: string; cwd: string; shell: string; title: string; status: "running" | "exited" | "failed"; createdAt: number; exitCode?: number | null };
-export type TerminalEvent = { terminalId: string; sequence: number; kind: "output" | "exit" | "error"; dataBase64?: string | null; exitCode?: number | null; message?: string | null };
-export type TerminalCreateRequest = { workspaceId: string; workspaceRoot: string; cwd?: string; cols?: number; rows?: number };
 export type TerminalBridge = {
 	available: boolean;
 	create(request: TerminalCreateRequest): Promise<TerminalInfo>;
@@ -1350,14 +1141,15 @@ export type TerminalBridge = {
 	snapshot(terminalId: string, afterSequence?: number): Promise<TerminalEvent[]>;
 	write(terminalId: string, data: string): Promise<void>;
 	resize(terminalId: string, cols: number, rows: number): Promise<void>;
+	mountNative(request: NativeTerminalMountRequest): Promise<boolean>;
+	setNativeFrame(terminalId: string, frame: NativeTerminalFrame): Promise<void>;
+	setNativeVisible(terminalId: string, visible: boolean): Promise<void>;
+	focusNative(terminalId: string): Promise<void>;
+	unmountNative(terminalId: string): Promise<void>;
 	close(terminalId: string): Promise<void>;
 	onEvent(listener: (event: TerminalEvent) => void): () => void;
 };
 
-export type WorkspaceAccessMode = "read_only" | "read_write";
-export type WorkspaceAttachment = { path: string; access: WorkspaceAccessMode; source: "user_picker" | "recent_folder" | "agent_request" | "migrated_default"; createdAt: string };
-export type ConversationWorkspaceScope = { sessionId: string; workspace: string; attachments: WorkspaceAttachment[]; revision: number; boundRevision: number; bindingStatus: "pending" | "active" | "failed"; bindingError?: string | null };
-export type WorkspaceGrantRequest = { id: string; sessionId: string; path: string; access: WorkspaceAccessMode; reason: string; status: "pending" | "approved" | "denied"; createdAt: string; resolvedAt?: string | null };
 export type WorkspaceScopeBridge = {
 	get(sessionId: string): Promise<ConversationWorkspaceScope | null>;
 	chooseAndAttach(sessionId: string, access: WorkspaceAccessMode): Promise<ConversationWorkspaceScope | null>;
@@ -1378,11 +1170,13 @@ export type SemanticEvalApi = {
 
 export type SynthSignInBegin = {
 	verificationUri: string;
+	userCode?: string | null;
+	intervalS?: number;
 	expiresAtEpochS: number;
 };
 
 export type SynthSignInPoll =
-	| { status: "pending" }
+	| { status: "pending"; retryInS?: number }
 	| { status: "active" }
 	| { status: "expired"; reason: string };
 
@@ -1410,11 +1204,20 @@ export type SynthAccountPlan = {
 	state?: string;
 	/** False when the backend reports no dollar allowance: show no dollars. */
 	metered?: boolean;
+	effectivePriceUsd?: number;
+	billingInterval?: string;
+	grantKind?: "subscription" | "trial" | "promotion" | "admin" | "none";
+	entitlementState?: "pending" | "active" | "exhausted" | "expired" | "revoked";
+	entitlementStartsAt?: string;
+	entitlementExpiresAt?: string;
+	campaignId?: string;
+	claimState?: "eligible" | "claimed" | "unavailable";
 	monthlyAllowanceUsd?: number;
 	usedUsd?: number;
 	remainingUsd?: number;
 	resetsAt?: string;
 	renewsAt?: string;
+	cancelAtPeriodEnd?: boolean;
 	source?: SynthAccountSource;
 };
 
@@ -1490,33 +1293,45 @@ export type SynthAccountBridge = {
 	openBilling?(action: SynthBillingAction, tier?: string): Promise<string>;
 };
 
+export type TelemetryConsentState =
+	| { state: "unset" }
+	| { state: "granted"; version: string; at: string }
+	| { state: "declined"; version: string; at: string };
+
 export type ProductTelemetryPolicy = {
 	dictionaryVersion: string;
 	collectionPolicyVersion: string;
 	optionalEnabled: boolean;
-	consentVersion: string;
+	consent: TelemetryConsentState;
+	/** The consent ask is due: never answered, or answered under an older policy. */
+	needsAsk: boolean;
+	/** Sync-eligible events may currently leave the device. */
+	syncAllowed: boolean;
+	lastSyncAt: string | null;
+};
+
+export type ProductTelemetryEvent = {
+	eventId: string;
+	name: string;
+	at: string;
+	sensitivity: string;
+	properties: unknown;
 };
 
 export type ProductTelemetryBridge = {
 	getPolicy(): Promise<ProductTelemetryPolicy>;
 	setOptOut(optOut: boolean): Promise<ProductTelemetryPolicy>;
+	/** First-run consent answer; granted also makes sync eligible. */
+	setConsent(granted: boolean): Promise<ProductTelemetryPolicy>;
+	/** Transparency view: recent locally stored events, exactly as they would sync. */
+	recent(limit: number): Promise<ProductTelemetryEvent[]>;
+	/** Manual flush; resolves to the number of events shipped (0 without consent). */
+	flushNow(): Promise<number>;
 };
 
-export type CodexOauthBegin = {
-	authorizeUrl: string;
-	mode: "auto" | "manual";
-};
+export type CodexOauthBegin = BeginResult;
 
-export type CodexOauthStatus = {
-	state: "disconnected" | "authenticating" | "ready" | "expiring" | "expired" | "refresh_failed";
-	action: "connect" | "wait" | "none" | "reauthenticate" | "retry";
-	canUseModels: boolean;
-	guidance: string;
-	configured: boolean;
-	accountHint?: string | null;
-	lastRefresh?: string | null;
-	expiresAt?: string | null;
-};
+export type CodexOauthStatus = Status;
 
 export type CodexOauthBridge = {
 	begin(): Promise<CodexOauthBegin>;
@@ -1527,60 +1342,7 @@ export type CodexOauthBridge = {
 	cancel(): Promise<void>;
 };
 
-export type SecretSummary = {
-	id: string;
-	alias: string;
-	provider: string;
-	scope: string;
-	status: string;
-	backend: string;
-	displaySuffix?: string | null;
-	createdAt: string;
-	lastValidatedAt?: string | null;
-	allowedRecipes: string[];
-};
-
-export type SecretCapabilitySummary = {
-	id: string;
-	secretId: string;
-	runId: string;
-	recipeId: string;
-	provider: string;
-	status: string;
-	maxCalls: number;
-	usedCalls: number;
-	maxCostUsd: number;
-	usedCostUsd: number;
-	usedInputTokens: number;
-	usedOutputTokens: number;
-	expiresAt: string;
-	displaySuffix?: string | null;
-};
-
-export type SecretAuditEvent = {
-	schema: string;
-	eventId: string;
-	at: string;
-	actorKind: string;
-	actorId: string;
-	action: string;
-	secretId?: string | null;
-	provider?: string | null;
-	operation?: string | null;
-	model?: string | null;
-	decision: string;
-	capabilityId?: string | null;
-	usage?: unknown;
-	detail?: string | null;
-};
-
-export type MaskedImportCandidate = {
-	variable: string;
-	provider?: string | null;
-	masked: string;
-	classification: string;
-	selected: boolean;
-};
+export type SecretCapabilitySummary = CapabilitySummary;
 
 export type SecretImportPreview = {
 	requestId: string;
@@ -1592,25 +1354,13 @@ export type SecretImportPreview = {
 	cleanupDiff?: string | null;
 };
 
-export type PendingGrantSummary = {
-	requestId: string;
-	secretId: string;
-	alias?: string | null;
-	provider?: string | null;
-	runId: string;
-	recipeId: string;
-	models: string[];
-	maxCalls: number;
-	maxCostUsd: number;
-};
-
-export type SecretsInbox = {
-	imports: SecretImportPreview[];
-	grants: PendingGrantSummary[];
-	proxy: { origin?: string | null; running: boolean };
-};
-
 export type SecretsBridge = {
+	workspaceRoots(): Promise<WorkspaceRootSummary[]>;
+	bindings(): Promise<CredentialBindingSummary[]>;
+	locators(): Promise<CredentialLocatorSummary[]>;
+	rememberExternal(pickerPath: string, provider: string, variable: string, label?: string): Promise<CredentialLocatorSummary>;
+	registerLocator(locatorId: string): Promise<CredentialLocatorSummary>;
+	forgetLocator(locatorId: string): Promise<void>;
 	list(provider?: string, scope?: string): Promise<SecretSummary[]>;
 	create(request: { alias: string; provider: string; scope?: string; value: string }): Promise<SecretSummary>;
 	replace(secretId: string, value: string): Promise<SecretSummary>;
@@ -1626,3 +1376,5 @@ export type SecretsBridge = {
 	grantUse(secretId: string, runId: string, recipeId: string, rememberRecipe: boolean, requestId?: string): Promise<unknown>;
 	denyUse(secretId: string): Promise<unknown>;
 };
+
+export type { HumanAnnotationSessionView };

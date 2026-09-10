@@ -122,7 +122,7 @@ async function recordOnce(page: Page): Promise<void> {
 test("clicking the mic warms Whisper while recording begins", async ({ page }) => {
 	await installVoiceFixture(page);
 	await page.getByTestId("composer-mic").click();
-	await expect(page.getByTestId("composer-whisper-status")).toContainText(/Whisper ready|Warming Whisper/);
+	await expect(page.getByTestId("whisper-residency")).toContainText(/Ready|Loading model/);
 	expect(await page.evaluate(() => (window as any).__voice.calls.map((call: any) => call.name))).toEqual(["warm"]);
 });
 
@@ -183,15 +183,15 @@ test("runtime phases render warming, transcribing, ready, and unloaded states", 
 	await installVoiceFixture(page);
 	for (const [phase, label] of [["warming", "Warming Whisper"], ["transcribing", "Transcribing"], ["ready", "releases after 15 min idle"]] as const) {
 		await page.evaluate((next) => (window as any).__voice.emit({ phase: next, loadedModel: "large-v3-turbo", idleUnloadAfterSeconds: 900, updatedAt: Date.now() }), phase);
-		await expect(page.getByTestId("composer-whisper-status")).toContainText(label);
+		await expect(page.getByTestId("whisper-residency")).toContainText(label === "Warming Whisper" ? "Loading model" : label === "releases after 15 min idle" ? "Ready" : label);
 	}
 	await page.evaluate(() => (window as any).__voice.emit({ phase: "unloaded", loadedModel: null, idleUnloadAfterSeconds: 900, updatedAt: Date.now() }));
-	await expect(page.getByTestId("composer-whisper-status")).toHaveCount(0);
+	await expect(page.getByTestId("whisper-residency")).toHaveCount(0);
 });
 
 test("ready status communicates the same 15-minute idle policy as Laguna", async ({ page }) => {
 	await installVoiceFixture(page, { initialPhase: "ready" });
-	await expect(page.getByTestId("composer-whisper-status")).toHaveText(/Whisper ready · releases after 15 min idle/);
+	await expect(page.getByTestId("whisper-residency")).toContainText(/Ready · releases after 15 min idle/);
 });
 
 test("missing model routes directly to Voice settings and never requests the microphone", async ({ page }) => {

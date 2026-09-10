@@ -31,8 +31,8 @@ test("Laguna XS presents minimal and max thinking without changing transport val
 	assert.equal(reasoning?.defaultValue, "high");
 });
 
-test("remote Muse Spark exposes OpenRouter reasoning and multimodal capabilities", () => {
-	const capability = modelCapabilitiesForTarget("openrouter-muse-spark");
+test("Synth Cloud Muse Spark exposes reasoning and multimodal capabilities", () => {
+	const capability = modelCapabilitiesForTarget("synth-cloud-muse-spark");
 	const reasoning = capability?.knobs.find((knob) => knob.id === "reasoning");
 	assert.deepEqual(capability?.target, { kind: "remote", models: ["meta/muse-spark-1.2"] });
 	assert.equal(capability?.maxContextTokens, 1_048_576);
@@ -40,9 +40,7 @@ test("remote Muse Spark exposes OpenRouter reasoning and multimodal capabilities
 	assert.deepEqual(reasoning?.options.map((option) => option.transportValue), ["low", "medium", "high", "xhigh"]);
 });
 
-test("Luna defaults to XHigh for ChatGPT and OpenRouter", () => {
-	for (const target of ["chatgpt-luna", "openrouter-luna"]) {
-		const reasoning = modelCapabilitiesForTarget(target)?.knobs.find((knob) => knob.id === "reasoning");
-		assert.equal(reasoning?.defaultValue, "xhigh");
-	}
+test("Luna defaults to XHigh for ChatGPT", () => {
+	const reasoning = modelCapabilitiesForTarget("chatgpt-luna")?.knobs.find((knob) => knob.id === "reasoning");
+	assert.equal(reasoning?.defaultValue, "xhigh");
 });

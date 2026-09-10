@@ -40,6 +40,15 @@ pub const EVENTS_SEMANTIC: &str = "events.semantic";
 pub const FRAMES_REPLAY: &str = "frames.replay";
 pub const CHECKPOINT_RESTORE: &str = "checkpoint.restore";
 pub const ROLLOUTS_FORK: &str = "rollouts.fork";
+/// Observe-only live annotation: a digest-pinned protocol tails the rollout
+/// stream inside the container and publishes provisional findings on a sibling
+/// stream the rollout descriptor declares. Advertised, never inferred.
+pub const ANNOTATION_LIVE: &str = "annotation.live";
+pub const ANNOTATION_PROTOCOL_PUT: &str = "annotation.protocol.put";
+/// Advertised flags outside the closed live-eval operation set. They are
+/// recorded verbatim so a recipe can require them; they do not take part in
+/// `complete`, so an older container is not marked incomplete for lacking one.
+const ADVERTISED_FLAGS: [&str; 2] = [ANNOTATION_LIVE, ANNOTATION_PROTOCOL_PUT];
 
 /// Registry metadata key holding the computed projection. Host-owned: the
 /// hydration writer always overwrites it, so a caller-supplied value can never
@@ -430,6 +439,10 @@ fn parse_normalized_block(block: &Value, source: CapabilitySource) -> ContainerC
         for (name, value) in operations {
             if let Some(operation) = ContainerOperation::parse(name) {
                 capabilities.set(operation, CapabilityState::from_advertised(value));
+            } else if ADVERTISED_FLAGS.contains(&name.as_str()) {
+                capabilities
+                    .operations
+                    .insert(name.clone(), CapabilityState::from_advertised(value));
             }
         }
     }
@@ -1133,6 +1146,7 @@ mod tests {
             pool_id: None,
             task_family: Some("craftax".into()),
             last_rollout_id: None,
+            current_failure_id: None,
             health: json!({"ok": status == READY_STATUS}),
             metadata,
             created_at: NOW.into(),
@@ -1382,6 +1396,24 @@ mod tests {
         assert!(error.retryable);
         assert!(error.remediation.contains("container_probe"));
         assert_eq!(error.base_url.as_deref(), Some("http://127.0.0.1:8104"));
+    }
+
+    #[test]
+    fn cached_catalog_does_not_satisfy_live_readiness_when_unhealthy() {
+        let mut metadata = hydrated(Some(&normalized_info()), now());
+        metadata["taskCatalog"] = json!({"tasks": [{"id": "a"}, {"id": "b"}]});
+        metadata["taskCatalogFreshness"] = json!({
+            "kind": "cached",
+            "observedAt": NOW,
+            "reason": null
+        });
+        metadata["info"]["capabilities"] = json!({
+            "protocol": LIVE_EVAL_PROTOCOL,
+            "operations": {"rollouts.prepare": true}
+        });
+        let record = container("unhealthy", metadata);
+        let error = preflight_prepare(&record, &prepare_request(), now()).unwrap_err();
+        assert_eq!(error.code, CODE_UNHEALTHY);
     }
 
     #[test]

@@ -21,8 +21,74 @@ test("projects multiple calls with ranges, step links, authority, and honest evi
   assert.equal(projection.calls[1].reasoning.state, "redacted");
   assert.equal(projection.calls[0].toolResults.state, "not_applicable");
   assert.equal(projection.calls[1].toolResults.state, "visible");
+  assert.equal(projection.calls[0].outcome, "completed");
+  assert.deepEqual(projection.calls[0].closure, {
+    outcome: "completed",
+    reason: "producer_completed",
+    source: "span.policy.closed",
+    sourceSequence: 4
+  });
   assert.equal(projection.callIdByEnvironmentStep.get(3), projection.calls[1].id);
   assert.equal(callForSequence(projection.calls, 11)?.id, projection.calls[1].id);
+});
+
+test("maps every frame in a multi-action batch to the call that produced it", () => {
+  const events = [
+    event("observation", 1, { readout: { env_steps: 0, observation_text: "spawn" } }),
+    event("span.policy.opened", 2, { call_number: 1 }),
+    event("span.policy.data", 3, { reasoning: "first batch" }),
+    event("span.policy.closed", 4)
+  ];
+  let sequence = 5;
+  for (let step = 1; step <= 6; step += 1) {
+    events.push(event("frame", sequence++, { step }));
+    events.push(event("span.step.closed", sequence++, { step }));
+  }
+  events.push(event("span.policy.opened", sequence++, { call_number: 2 }));
+  events.push(event("span.policy.data", sequence++, { reasoning: "second batch" }));
+  events.push(event("span.policy.closed", sequence++));
+  const secondFrameSequences = new Map();
+  for (let step = 7; step <= 15; step += 1) {
+    secondFrameSequences.set(step, sequence);
+    events.push(event("frame", sequence++, { step }));
+    events.push(event("span.step.closed", sequence++, { step }));
+  }
+
+  const projection = projectAgentTurns(events);
+  assert.deepEqual(
+    projection.calls.map((call) => [call.environmentStepStart, call.environmentStepEnd]),
+    [[1, 6], [7, 15]]
+  );
+  assert.equal(projection.callIdByEnvironmentStep.get(0), projection.calls[0].id);
+  assert.equal(projection.callIdByEnvironmentStep.get(6), projection.calls[0].id);
+  assert.equal(projection.callIdByEnvironmentStep.get(14), projection.calls[1].id);
+  assert.equal(callForSequence(projection.calls, secondFrameSequences.get(14))?.id, projection.calls[1].id);
+});
+
+test("a parent terminal deterministically aborts an unresolved policy call", () => {
+  const projection = projectAgentTurns([
+    event("span.policy.opened", 1, { call: { provider: "openai", model: "codex" } }),
+    event("span.policy.data", 2, { delta: true, channel: "content", text: "partial" }),
+    event("eval.run.terminal", 3, { kind: "failed" })
+  ]);
+  assert.equal(projection.calls.length, 1);
+  assert.equal(projection.calls[0].outcome, "aborted");
+  assert.deepEqual(projection.calls[0].closure, {
+    outcome: "aborted",
+    reason: "parent_terminal_before_policy_close",
+    source: "eval.run.terminal",
+    sourceSequence: 3
+  });
+  assert.notEqual(projection.calls[0].output.state, "pending");
+});
+
+test("producer terminal outcomes stay inside the closed call enum", () => {
+  const projection = projectAgentTurns([
+    event("span.policy.opened", 1),
+    event("span.policy.closed", 2, { outcome: "timed_out" })
+  ]);
+  assert.equal(projection.calls[0].outcome, "timed_out");
+  assert.equal(projection.calls[0].closure.reason, "producer_timed_out");
 });
 
 test("focus chooses a policy call and selection survives incremental completion and reload", () => {
@@ -37,4 +103,28 @@ test("focus chooses a policy call and selection survives incremental completion 
 test("non-Craftax Trace V5 evidence projects without environment-specific behavior", () => {
   const projection = projectAgentTurns([event("observation", 1, { readout: { observation_text: "SQL schema" } }), event("span.policy.opened", 2, { call: { provider: "anthropic", model: "claude" } }), event("span.policy.data", 3, { channel: "summary", assistant: "SELECT 1" }), event("span.policy.closed", 4)]);
   assert.equal(projection.calls[0].input.value, "SQL schema"); assert.equal(projection.calls[0].output.value, "SELECT 1");
+});
+
+test("NanoHorizon OpenTelemetry fields preserve model, reasoning, and tool calls separately", () => {
+  const projection = projectAgentTurns([
+    event("observation", 1, { step: 65, readout: { observation_text: "near a tree" } }),
+    event("span.policy.opened", 2, { call: 10, harness: "nanohorizon" }),
+    event("span.policy.data", 3, {
+      "gen_ai.request.model": "z-ai/glm-5.3-flash",
+      assistant: {
+        content: null,
+        reasoning_content: "Gather one more wood.",
+        tool_calls: [{ function: { name: "craftax_interact", arguments: '{"actions":["do"]}' } }]
+      },
+      usage: { total_tokens: 42 }
+    }),
+    event("span.policy.closed", 4),
+    event("span.step.closed", 5, { step: 65 })
+  ]);
+  const call = projection.calls[0];
+  assert.equal(call.model, "z-ai/glm-5.3-flash");
+  assert.deepEqual(call.reasoning, { state: "visible", value: "Gather one more wood." });
+  assert.equal(call.output.state, "not_emitted");
+  assert.equal(call.toolCalls.state, "visible");
+  assert.equal(call.toolCalls.value[0].function.name, "craftax_interact");
 });

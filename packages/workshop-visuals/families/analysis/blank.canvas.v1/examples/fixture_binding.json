@@ -1,0 +1,9 @@
+{
+  "bindings": [
+    {
+      "slot": "document",
+      "kind": "fixture",
+      "source": "families/analysis/blank.canvas.v1/examples/document.json"
+    }
+  ]
+}

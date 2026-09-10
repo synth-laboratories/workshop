@@ -1,6 +1,6 @@
 //! Desktop-owned Eval runtime pin.
 //!
-//! Eval is not a second Python distribution. It consumes the same 0.2.15
+//! Eval is not a second Python distribution. It consumes the same pinned
 //! `synth-optimizers` install GEPA uses, but it has its own manifest, digest,
 //! and About row so a missing pin is visible instead of resolving from a
 //! developer `.venv`.
@@ -72,7 +72,10 @@ pub fn load_manifest() -> Result<Option<EvalRuntimeManifest>> {
 }
 
 pub fn installed_version() -> Option<String> {
-    load_manifest().ok().flatten().map(|manifest| manifest.version)
+    load_manifest()
+        .ok()
+        .flatten()
+        .map(|manifest| manifest.version)
 }
 
 pub fn provisioned_python() -> Option<PathBuf> {
@@ -84,9 +87,7 @@ pub fn provisioned_python() -> Option<PathBuf> {
         .filter(|path| path.is_file())
 }
 
-pub fn provision_from_sidecar(
-    sidecar: &OptimizerSidecarVersion,
-) -> Result<EvalRuntimeManifest> {
+pub fn provision_from_sidecar(sidecar: &OptimizerSidecarVersion) -> Result<EvalRuntimeManifest> {
     sidecar_to_manifest(sidecar).and_then(write_manifest)
 }
 
@@ -149,9 +150,7 @@ fn sidecar_to_manifest(sidecar: &OptimizerSidecarVersion) -> Result<EvalRuntimeM
         package: EVAL.package.into(),
         version: sidecar.version.clone(),
         digest: sidecar.digest.clone(),
-        python: python
-            .as_ref()
-            .map(|path| path.display().to_string()),
+        python: python.as_ref().map(|path| path.display().to_string()),
         sidecar_path: sidecar.path.clone(),
         provisioned_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     })
@@ -185,11 +184,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pinned_eval_runtime_is_managed_at_0_2_15() {
+    fn pinned_eval_runtime_is_managed_at_0_2_19() {
         assert!(EVAL.provisioned_by_desktop);
-        assert_eq!(EVAL.official, "0.2.15");
-        assert_eq!(EVAL.min_supported, "0.2.15");
-        assert!(EVAL.meets_floor("0.2.15"));
+        assert_eq!(EVAL.official, "0.2.22");
+        assert_eq!(EVAL.min_supported, "0.2.20");
+        assert!(EVAL.meets_floor("0.2.20"));
         assert!(!EVAL.meets_floor("0.2.14"));
     }
 
@@ -201,11 +200,11 @@ mod tests {
         let python = runtime.join("python3");
         fs::write(&python, b"#!/bin/sh\nexit 0\n").unwrap();
         let sidecar = OptimizerSidecarVersion {
-            version: "0.2.15".into(),
+            version: EVAL.dev.into(),
             digest: "abc123".into(),
             signature: "sig".into(),
             algorithm_id: "gepa".into(),
-            algorithm_version: "synth-optimizers-0.2.15".into(),
+            algorithm_version: format!("synth-optimizers-{}", EVAL.dev),
             recipe_schema_version: "gepa.recipe.v1".into(),
             selected: true,
             path: root.path().display().to_string(),
@@ -215,12 +214,9 @@ mod tests {
         let python = runtime.join("python3");
         fs::write(&python, b"#!/bin/sh\nexit 0\n").unwrap();
         let manifest = sidecar_to_manifest(&sidecar).unwrap();
-        assert_eq!(manifest.version, "0.2.15");
+        assert_eq!(manifest.version, EVAL.dev);
         assert_eq!(manifest.digest, "abc123");
-        assert_eq!(
-            manifest.python.as_deref(),
-            Some(python.to_str().unwrap())
-        );
+        assert_eq!(manifest.python.as_deref(), Some(python.to_str().unwrap()));
         manifest.validate().unwrap();
     }
 

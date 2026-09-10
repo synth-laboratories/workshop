@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 pub const VISUAL_SCHEMA_VERSION: &str = "synth.desktop-visual.v1";
 pub const VISUAL_BINDINGS_SCHEMA_VERSION: &str = "synth.visual-bindings.v1";
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum VisualStatus {
     Draft,
@@ -36,7 +36,7 @@ impl VisualStatus {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum RendererKind {
     Template,
@@ -62,48 +62,63 @@ impl RendererKind {
     }
 
     pub fn parse(value: &str) -> Self {
+        Self::try_parse(value).unwrap_or(Self::Template)
+    }
+
+    /// Parse an authored renderer declaration without silently converting a
+    /// typo into the generic template renderer. `parse` remains permissive for
+    /// historical database rows written before renderer registration existed.
+    pub fn try_parse(value: &str) -> Option<Self> {
         match value {
-            "tsx" => Self::Tsx,
-            "html" => Self::Html,
-            "mermaid" => Self::Mermaid,
-            "systems" => Self::Systems,
-            "systems-dynamic" => Self::SystemsDynamic,
-            "chart" => Self::Chart,
-            _ => Self::Template,
+            "template" => Some(Self::Template),
+            "tsx" => Some(Self::Tsx),
+            "html" => Some(Self::Html),
+            "mermaid" => Some(Self::Mermaid),
+            "systems" => Some(Self::Systems),
+            "systems-dynamic" => Some(Self::SystemsDynamic),
+            "chart" => Some(Self::Chart),
+            _ => None,
         }
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VisualRecord {
     pub schema_version: String,
     pub id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub current_revision: i64,
     pub title: String,
+    /// Short, human-readable label chosen by the authoring agent. The full
+    /// title remains the descriptive/technical fallback for older visuals.
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub template_id: String,
     pub status: VisualStatus,
     pub renderer_kind: RendererKind,
     #[specta(type = specta_typescript::Unknown)]
     pub bindings: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub session_id: Option<String>,
+    /// Durable owner for visuals authored in the shared local workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
     pub message_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub trace_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub parent_visual_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub source_agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub source_model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub content_digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub preview_digest: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
@@ -115,23 +130,23 @@ pub struct VisualRecord {
 #[serde(rename_all = "camelCase")]
 pub struct VisualRevision {
     pub visual_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub revision: i64,
     pub template_id: String,
     pub renderer_kind: RendererKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub content_digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub bindings_digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub bindings: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub preview_digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub author_agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(type = specta_typescript::Unknown)]
+    #[serde(default)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub parent_revision: Option<i64>,
     pub created_at: String,
 }
@@ -141,7 +156,7 @@ pub struct VisualRevision {
 pub struct VisualAnnotation {
     pub id: String,
     pub visual_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub visual_revision: i64,
     pub source_digest: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
@@ -160,7 +175,7 @@ pub struct VisualAnnotation {
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct VisualAnnotationCreate {
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub visual_revision: i64,
     pub source_digest: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
@@ -178,7 +193,7 @@ pub struct VisualAnnotationCreate {
 pub struct VisualSeal {
     pub receipt_digest: String,
     pub visual_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub visual_revision: i64,
     pub artifact_id: String,
     pub schema_version: String,
@@ -187,9 +202,9 @@ pub struct VisualSeal {
     pub runtime_digest: String,
     pub index_digest: String,
     pub data_digest: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub receipt_size_bytes: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub total_size_bytes: i64,
     pub created_at: String,
 }
@@ -211,7 +226,7 @@ pub struct VisualUpload {
     pub receipt_digest: String,
     pub collection_id: Option<String>,
     pub publication_id: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub publication_revision: Option<i64>,
     pub state: String,
     pub committed_url: Option<String>,
@@ -266,9 +281,9 @@ pub struct VisualQuery {
     pub session_id: Option<String>,
     pub template_id: Option<String>,
     pub search: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub limit: Option<i64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub offset: Option<i64>,
 }
 
@@ -286,6 +301,8 @@ pub const VISUAL_BINDING_KINDS: &[&str] = &[
     "fixture",
     "optimizer_run",
     "query_snapshot",
+    "annotation_evidence_head",
+    "verifier_result_v2",
 ];
 
 /// How an authored bindings value reached the canonical envelope.
@@ -325,14 +342,77 @@ pub struct CanonicalBindings {
     pub upgraded_slots: Vec<String>,
 }
 
+/// Canonical bind-point name. `input` is the wire field; `slot` still binds
+/// on stored envelopes. Both present and unequal fails closed.
+pub fn descriptor_input_name(descriptor: &Value) -> anyhow::Result<String> {
+    let object = descriptor
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("visual binding descriptors must be objects"))?;
+    let input = object.get("input").and_then(Value::as_str);
+    let slot = object.get("slot").and_then(Value::as_str);
+    match (input, slot) {
+        (Some(a), Some(b)) if a == b => Ok(a.to_string()),
+        (Some(_), Some(_)) => {
+            anyhow::bail!("visual binding input and slot disagree; send one name")
+        }
+        (Some(a), None) | (None, Some(a)) => Ok(a.to_string()),
+        (None, None) => anyhow::bail!("visual binding requires an input name"),
+    }
+}
+
+pub fn stamp_binding_input(descriptor: &mut Value, name: &str) {
+    if let Some(object) = descriptor.as_object_mut() {
+        object.insert("input".into(), json!(name));
+        object.remove("slot");
+    }
+}
+
+fn stamp_descriptors(items: &[Value]) -> anyhow::Result<Vec<Value>> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let mut descriptor = item.clone();
+        let name = descriptor_input_name(&descriptor)?;
+        stamp_binding_input(&mut descriptor, &name);
+        out.push(descriptor);
+    }
+    Ok(out)
+}
+
+/// Envelope array: canonical `inputs`; `slots` still binds on stored envelopes.
+pub fn binding_descriptors(bindings: &Value) -> anyhow::Result<Vec<Value>> {
+    let object = bindings
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("visual bindings must be a JSON object"))?;
+    envelope_arrays(object)
+}
+
+fn envelope_arrays(object: &serde_json::Map<String, Value>) -> anyhow::Result<Vec<Value>> {
+    let inputs = object.get("inputs").and_then(Value::as_array);
+    let slots = object.get("slots").and_then(Value::as_array);
+    match (inputs, slots) {
+        (None, None) => {
+            anyhow::bail!("canonical visual bindings require an inputs array")
+        }
+        (Some(a), None) | (None, Some(a)) => stamp_descriptors(a),
+        (Some(a), Some(b)) => {
+            let left = stamp_descriptors(a)?;
+            let right = stamp_descriptors(b)?;
+            if left != right {
+                anyhow::bail!("visual bindings inputs and slots disagree; send one array");
+            }
+            Ok(left)
+        }
+    }
+}
+
 /// Decide whether one authored value is a binding descriptor rather than
-/// inline slot data.
+/// inline input data.
 ///
 /// This is a **heuristic** and it is deliberately the only one: a legacy prop
 /// bag and a slot-keyed descriptor map are both bare JSON objects, so the shape
 /// alone has to tell them apart. A value counts as a descriptor when it names a
 /// `kind` from `VISUAL_BINDING_KINDS` *and* carries at least one field only a
-/// descriptor has (`slot`, `source`, `data`, `poll_url`). Inline chart data such
+/// descriptor has (`input`, `slot`, `source`, `data`, `poll_url`). Inline chart data such
 /// as `{"kind": "bar"}` therefore stays inline data.
 ///
 /// It exists because writers were allowed to persist un-canonical bindings for
@@ -348,7 +428,7 @@ fn is_binding_descriptor(value: &Value) -> bool {
     if !VISUAL_BINDING_KINDS.contains(&kind) {
         return false;
     }
-    ["slot", "source", "data", "poll_url"]
+    ["input", "slot", "source", "data", "poll_url"]
         .iter()
         .any(|field| object.contains_key(*field))
 }
@@ -383,13 +463,10 @@ pub fn canonicalize_bindings(bindings: &Value) -> anyhow::Result<CanonicalBindin
                 VISUAL_BINDINGS_SCHEMA_VERSION
             );
         }
-        let slots = object
-            .get("slots")
-            .and_then(Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("canonical visual bindings require a slots array"))?;
-        validate_slots(slots)?;
+        let descriptors = envelope_arrays(object)?;
+        validate_bindings(&descriptors)?;
         return Ok(CanonicalBindings {
-            value: bindings.clone(),
+            value: canonical_envelope(descriptors),
             form: BindingsForm::Canonical,
             upgraded_slots: Vec::new(),
         });
@@ -420,7 +497,7 @@ pub fn canonicalize_bindings(bindings: &Value) -> anyhow::Result<CanonicalBindin
         super::live_eval::assert_live_eval_slot(name)?;
         upgraded_slots.push(name.clone());
         if form == BindingsForm::UpgradedPropBag {
-            slots.push(json!({"slot": name, "kind": "inline", "data": value}));
+            slots.push(json!({"input": name, "kind": "inline", "data": value}));
             continue;
         }
         // A slot map that mixes descriptors and raw data cannot be read either
@@ -429,7 +506,7 @@ pub fn canonicalize_bindings(bindings: &Value) -> anyhow::Result<CanonicalBindin
         if !is_descriptor_entry(value) {
             anyhow::bail!(
                 "visual binding slot {name:?} mixes descriptors and inline data; \
-                 send {VISUAL_BINDINGS_SCHEMA_VERSION} bindings with an explicit slots array"
+                 send {VISUAL_BINDINGS_SCHEMA_VERSION} bindings with an explicit inputs array"
             );
         }
         let descriptors = match value {
@@ -438,15 +515,13 @@ pub fn canonicalize_bindings(bindings: &Value) -> anyhow::Result<CanonicalBindin
         };
         for descriptor in descriptors {
             let mut descriptor = descriptor;
-            if let Some(entry) = descriptor.as_object_mut() {
-                // The slot key is authoritative: a descriptor filed under
-                // "stream" is a stream binding whatever its own field claims.
-                entry.insert("slot".into(), json!(name));
-            }
+            // The map key is authoritative: a descriptor filed under
+            // "stream" is a stream binding whatever its own field claims.
+            stamp_binding_input(&mut descriptor, name);
             slots.push(descriptor);
         }
     }
-    validate_slots(&slots)?;
+    validate_bindings(&slots)?;
     Ok(CanonicalBindings {
         value: canonical_envelope(slots),
         form,
@@ -455,36 +530,36 @@ pub fn canonicalize_bindings(bindings: &Value) -> anyhow::Result<CanonicalBindin
 }
 
 fn canonical_envelope(slots: Vec<Value>) -> Value {
+    let stamped = stamp_descriptors(&slots).unwrap_or(slots);
     json!({
         "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
-        "slots": slots,
+        "inputs": stamped,
     })
 }
 
-fn validate_slots(slots: &[Value]) -> anyhow::Result<()> {
+fn validate_bindings(slots: &[Value]) -> anyhow::Result<()> {
     for slot in slots {
-        let slot = slot
-            .as_object()
-            .ok_or_else(|| anyhow::anyhow!("visual binding slots must be objects"))?;
-        let slot_name = slot
-            .get("slot")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("visual binding slot requires a slot name"))?;
-        super::live_eval::assert_live_eval_slot(slot_name)?;
+        let slot_name = descriptor_input_name(slot)?;
+        super::live_eval::assert_live_eval_slot(&slot_name)?;
         let kind = slot.get("kind").and_then(Value::as_str).unwrap_or_default();
         if !VISUAL_BINDING_KINDS.contains(&kind) {
             anyhow::bail!("unsupported visual binding kind: {kind}");
         }
-        if kind == "inline" && !slot.contains_key("data") {
+        if kind == "inline"
+            && !slot
+                .as_object()
+                .is_some_and(|object| object.contains_key("data"))
+        {
             anyhow::bail!(
                 "{}",
                 json!({
                     "code": "visual_binding_invalid",
+                    "input": slot_name,
                     "slot": slot_name,
                     "kind": "inline",
                     "expected_source_kind": "inline",
                     "missing_field": "data",
-                    "remediation": "Inline bindings require a data object for this slot."
+                    "remediation": "Inline bindings require a data object for this input."
                 })
             );
         }
@@ -493,6 +568,7 @@ fn validate_slots(slots: &[Value]) -> anyhow::Result<()> {
                 "{}",
                 json!({
                     "code": "visual_binding_invalid",
+                    "input": slot_name,
                     "slot": slot_name,
                     "kind": kind,
                     "expected_source_kind": kind,
@@ -521,7 +597,8 @@ pub fn declared_poll_urls(bindings: &Value) -> Vec<String> {
     };
     canonical
         .value
-        .get("slots")
+        .get("inputs")
+        .or_else(|| canonical.value.get("slots"))
         .and_then(Value::as_array)
         .map(|slots| {
             slots
@@ -529,6 +606,36 @@ pub fn declared_poll_urls(bindings: &Value) -> Vec<String> {
                 .filter(|slot| slot.get("kind").and_then(Value::as_str) == Some("live_sse"))
                 .filter_map(|slot| {
                     slot.get("poll_url")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The optimizer runs this visual actually declares, in binding order.
+///
+/// The media bridge needs to know which run a visual may read frames from, and
+/// "the run it happens to be showing" is not something a renderer gets to
+/// assert. This reads the same canonical bindings the rest of the host reads,
+/// so a visual bound to no run is granted nothing rather than defaulting to
+/// whichever run last wrote to it.
+pub fn declared_optimizer_run_ids(bindings: &Value) -> Vec<String> {
+    let Ok(canonical) = canonicalize_bindings(bindings) else {
+        return Vec::new();
+    };
+    canonical
+        .value
+        .get("inputs")
+        .or_else(|| canonical.value.get("slots"))
+        .and_then(Value::as_array)
+        .map(|slots| {
+            slots
+                .iter()
+                .filter(|slot| slot.get("kind").and_then(Value::as_str) == Some("optimizer_run"))
+                .filter_map(|slot| {
+                    slot.get("source")
                         .and_then(Value::as_str)
                         .map(str::to_string)
                 })
@@ -621,11 +728,14 @@ mod tests {
             canonical.value["schemaVersion"],
             json!(VISUAL_BINDINGS_SCHEMA_VERSION)
         );
-        let slots = canonical.value["slots"].as_array().unwrap();
-        assert_eq!(slots.len(), 10);
-        assert!(slots
-            .iter()
-            .all(|slot| slot["slot"] == json!("stream") && slot["kind"] == json!("live_sse")));
+        assert!(canonical.value.get("slots").is_none());
+        let inputs = canonical.value["inputs"].as_array().unwrap();
+        assert_eq!(inputs.len(), 10);
+        assert!(inputs.iter().all(|slot| {
+            slot["input"] == json!("stream")
+                && slot.get("slot").is_none()
+                && slot["kind"] == json!("live_sse")
+        }));
         assert_eq!(declared_poll_urls(&authored).len(), 10);
     }
 
@@ -642,7 +752,8 @@ mod tests {
         let canonical = canonicalize_bindings(&authored).unwrap();
 
         assert_eq!(canonical.form, BindingsForm::UpgradedSlotMap);
-        assert_eq!(canonical.value["slots"].as_array().unwrap().len(), 10);
+        assert_eq!(canonical.value["inputs"].as_array().unwrap().len(), 10);
+        assert!(canonical.value.get("slots").is_none());
         assert_eq!(declared_poll_urls(&authored).len(), 10);
         // Every declared poll authority is distinct: one cursor per rollout.
         let urls = declared_poll_urls(&authored);
@@ -664,19 +775,21 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(canonical.form, BindingsForm::UpgradedSlotMap);
-        assert_eq!(canonical.value["slots"][0]["slot"], json!("stream"));
+        assert_eq!(canonical.value["inputs"][0]["input"], json!("stream"));
+        assert!(canonical.value["inputs"][0].get("slot").is_none());
+        assert!(canonical.value.get("slots").is_none());
     }
 
     #[test]
     fn wraps_a_legacy_prop_bag_as_inline_slots() {
         let canonical = canonicalize_bindings(&json!({"matrix": [1, 2], "title": "x"})).unwrap();
         assert_eq!(canonical.form, BindingsForm::UpgradedPropBag);
-        let slots = canonical.value["slots"].as_array().unwrap();
-        assert_eq!(slots.len(), 2);
-        assert!(slots.iter().all(|slot| slot["kind"] == json!("inline")));
-        assert!(slots
+        let inputs = canonical.value["inputs"].as_array().unwrap();
+        assert_eq!(inputs.len(), 2);
+        assert!(inputs.iter().all(|slot| slot["kind"] == json!("inline")));
+        assert!(inputs
             .iter()
-            .any(|slot| slot["slot"] == json!("matrix") && slot["data"] == json!([1, 2])));
+            .any(|slot| slot["input"] == json!("matrix") && slot["data"] == json!([1, 2])));
     }
 
     #[test]
@@ -685,7 +798,7 @@ mod tests {
         // spec with a `kind` field would be reinterpreted as a transport.
         let canonical = canonicalize_bindings(&json!({"chart": {"kind": "bar"}})).unwrap();
         assert_eq!(canonical.form, BindingsForm::UpgradedPropBag);
-        assert_eq!(canonical.value["slots"][0]["kind"], json!("inline"));
+        assert_eq!(canonical.value["inputs"][0]["kind"], json!("inline"));
     }
 
     #[test]
@@ -710,7 +823,49 @@ mod tests {
     fn empty_bindings_are_canonical_not_an_upgrade() {
         let canonical = canonicalize_bindings(&json!({})).unwrap();
         assert_eq!(canonical.form, BindingsForm::Canonical);
-        assert_eq!(canonical.value["slots"], json!([]));
+        assert_eq!(canonical.value["inputs"], json!([]));
+        assert!(canonical.value.get("slots").is_none());
+    }
+
+    #[test]
+    fn old_slots_only_envelope_still_canonicalizes() {
+        let canonical = canonicalize_bindings(&json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "slots": [{"slot": "matrix", "kind": "inline", "data": []}]
+        }))
+        .unwrap();
+        assert_eq!(canonical.form, BindingsForm::Canonical);
+        assert_eq!(canonical.value["inputs"][0]["input"], json!("matrix"));
+        assert!(canonical.value["inputs"][0].get("slot").is_none());
+        assert!(canonical.value.get("slots").is_none());
+    }
+
+    #[test]
+    fn dual_reads_input_without_emitting_slot() {
+        let canonical = canonicalize_bindings(&json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "inputs": [{"input": "stream", "kind": "live_sse", "source": "http://127.0.0.1:8114/rollouts/r1/stream"}]
+        }))
+        .unwrap();
+        assert_eq!(canonical.form, BindingsForm::Canonical);
+        assert_eq!(canonical.value["inputs"][0]["input"], json!("stream"));
+        assert!(canonical.value["inputs"][0].get("slot").is_none());
+        assert!(canonical.value.get("slots").is_none());
+    }
+
+    #[test]
+    fn refuses_when_input_and_slot_disagree() {
+        assert!(canonicalize_bindings(&json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "slots": [{"input": "stream", "slot": "spec", "kind": "inline", "data": {}}]
+        }))
+        .is_err());
+        assert!(canonicalize_bindings(&json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "inputs": [{"input": "stream", "kind": "inline", "data": {}}],
+            "slots": [{"slot": "spec", "kind": "inline", "data": {}}]
+        }))
+        .is_err());
     }
 
     #[test]

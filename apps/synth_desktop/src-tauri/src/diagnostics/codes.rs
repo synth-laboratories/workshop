@@ -53,6 +53,20 @@ pub const MCP_REQUEST_FAILED: &str = "mcp_request_failed";
 // Optimizers.
 pub const OPTIMIZER_SIDECAR_UNAVAILABLE: &str = "optimizer_sidecar_unavailable";
 pub const OPTIMIZER_WORKER_FAILED: &str = "optimizer_worker_failed";
+pub const OPTIMIZER_RUNTIME_STALE: &str = "optimizer_runtime_stale";
+pub const OPTIMIZER_RUNTIME_UNHEALTHY: &str = "optimizer_runtime_unhealthy";
+pub const CREDENTIAL_SOURCE_UNCONFIGURED: &str = "credential_source_unconfigured";
+pub const CREDENTIAL_VALUE_MISSING: &str = "credential_value_missing";
+pub const CREDENTIAL_VALUE_UNLOADED: &str = "credential_value_unloaded";
+pub const PROXY_NOT_RUNNING: &str = "proxy_not_running";
+pub const PROXY_ROUTE_UNBOUND: &str = "proxy_route_unbound";
+pub const PROXY_CONTAINER_UNREACHABLE: &str = "proxy_container_unreachable";
+pub const CAPABILITY_DENIED: &str = "capability_denied";
+pub const CAPABILITY_EXPIRED: &str = "capability_expired";
+pub const PROVIDER_AUTH_REJECTED: &str = "provider_auth_rejected";
+pub const PROVIDER_RATE_LIMITED: &str = "provider_rate_limited";
+pub const PROVIDER_UNAVAILABLE: &str = "provider_unavailable";
+pub const MANAGED_BYOK_REJECTED: &str = "managed_byok_rejected";
 
 // Providers and sessions.
 pub const PROVIDER_DISCONNECTED: &str = "provider_disconnected";
@@ -68,6 +82,20 @@ const RANKS: &[(&str, u8)] = &[
     (CONTAINER_CAPABILITY_REJECTED, RANK_INFRASTRUCTURE),
     (CONTAINER_HEALTH_FAILED, RANK_INFRASTRUCTURE),
     (OPTIMIZER_SIDECAR_UNAVAILABLE, RANK_INFRASTRUCTURE),
+    (OPTIMIZER_RUNTIME_STALE, RANK_INFRASTRUCTURE),
+    (OPTIMIZER_RUNTIME_UNHEALTHY, RANK_INFRASTRUCTURE),
+    (CREDENTIAL_SOURCE_UNCONFIGURED, RANK_INFRASTRUCTURE),
+    (CREDENTIAL_VALUE_MISSING, RANK_INFRASTRUCTURE),
+    (CREDENTIAL_VALUE_UNLOADED, RANK_INFRASTRUCTURE),
+    (PROXY_NOT_RUNNING, RANK_INFRASTRUCTURE),
+    (MANAGED_BYOK_REJECTED, RANK_CONTRACT),
+    (PROXY_ROUTE_UNBOUND, RANK_CONTRACT),
+    (PROXY_CONTAINER_UNREACHABLE, RANK_TRANSPORT),
+    (CAPABILITY_DENIED, RANK_CONTRACT),
+    (CAPABILITY_EXPIRED, RANK_CONTRACT),
+    (PROVIDER_AUTH_REJECTED, RANK_TRANSPORT),
+    (PROVIDER_RATE_LIMITED, RANK_TRANSPORT),
+    (PROVIDER_UNAVAILABLE, RANK_TRANSPORT),
     (DIAGNOSTICS_INDEX_DEGRADED, RANK_INFRASTRUCTURE),
     (CONTAINER_ROLLOUT_FAILED, RANK_TRANSPORT),
     (STREAM_SUBSCRIBE_TIMEOUT, RANK_TRANSPORT),
@@ -147,7 +175,7 @@ const REMEDIATIONS: &[(&str, &str)] = &[
     ),
     (
         STREAM_INTERRUPTED,
-        "The live stream dropped while durable polling continued. Results are not lost — reconnect the stream, or read the rollout's terminal record instead of the live feed.",
+        "The live stream dropped while background polling continued. Results are not lost — reconnect the stream, or read the rollout's terminal record instead of the live feed.",
     ),
     (
         STREAM_SUBSCRIBE_TIMEOUT,
@@ -155,7 +183,7 @@ const REMEDIATIONS: &[(&str, &str)] = &[
     ),
     (
         STREAM_REPLAY_GAP,
-        "The replayed history has a hole in its sequence. Reload the stream from a durable snapshot rather than patching over the gap; a partial history is not evidence.",
+        "The replayed history has a hole in its sequence. Reload the stream from a saved snapshot rather than patching over the gap; a partial history is not evidence.",
     ),
     (
         CONTAINER_CAPABILITY_REJECTED,
@@ -178,12 +206,68 @@ const REMEDIATIONS: &[(&str, &str)] = &[
         "The optimizer sidecar is not running or not installed. Start or install it from the Optimizers pane before starting a run.",
     ),
     (
+        OPTIMIZER_RUNTIME_STALE,
+        "The optimizer runtime no longer matches its recorded installation. Reinstall the pinned optimizer version, then retry only after its digest and health probe agree.",
+    ),
+    (
+        OPTIMIZER_RUNTIME_UNHEALTHY,
+        "The pinned optimizer runtime failed its health probe. Inspect its bounded diagnostic, repair or reinstall that exact version, and confirm health before starting paid work.",
+    ),
+    (
+        CREDENTIAL_SOURCE_UNCONFIGURED,
+        "No approved credential source is configured for this provider. Configure the project-local environment source, then request a new Workshop proxy capability.",
+    ),
+    (
+        CREDENTIAL_VALUE_MISSING,
+        "The configured credential variable has no usable value. Add it to the authorized project-local environment file, restart the proxy, and request a fresh capability.",
+    ),
+    (
+        CREDENTIAL_VALUE_UNLOADED,
+        "The credential exists but is not loaded into the active non-Keychain source. Reload the authorized environment configuration and issue a new proxy capability.",
+    ),
+    (
+        PROXY_NOT_RUNNING,
+        "The Workshop provider proxy is not running. Start the instance proxy and wait for its health check before launching the container or optimizer workload.",
+    ),
+    (
+        PROXY_ROUTE_UNBOUND,
+        "The capability does not include the requested provider route. Issue a new least-privilege capability for this provider and model, then retry through that route.",
+    ),
+    (
+        PROXY_CONTAINER_UNREACHABLE,
+        "The container cannot reach the Workshop proxy address. Verify the container-local proxy origin and network bridge, then rerun preflight before spending begins.",
+    ),
+    (
+        CAPABILITY_DENIED,
+        "The requested provider capability was denied. Review the declared provider, model, call ceiling, and cost ceiling, then submit a correctly scoped request.",
+    ),
+    (
+        CAPABILITY_EXPIRED,
+        "The provider capability expired before the workload completed. Request a fresh bounded capability and restart only the unfinished operation.",
+    ),
+    (
+        PROVIDER_AUTH_REJECTED,
+        "The upstream provider rejected authentication. Validate the authorized project-local credential without exposing it, then rotate the proxy capability and retry.",
+    ),
+    (
+        PROVIDER_RATE_LIMITED,
+        "The upstream provider rate-limited the request. Respect the reported retry window and resume within the existing workload bounds rather than widening them.",
+    ),
+    (
+        PROVIDER_UNAVAILABLE,
+        "The upstream provider is unavailable. Confirm proxy health and provider status, then retry the same bounded request when the upstream service recovers.",
+    ),
+    (
+        MANAGED_BYOK_REJECTED,
+        "This managed recipe does not accept bring-your-own credentials. Select its managed provider route or use a workspace-owned recipe that explicitly declares BYOK support.",
+    ),
+    (
         OPTIMIZER_WORKER_FAILED,
         "An optimizer worker exited before its run completed. The run's own bounded diagnostic evidence is correlated by optimizer_run_id.",
     ),
     (
         PROVIDER_DISCONNECTED,
-        "The local agent connection dropped. The turn's durable journal is intact; reconnect and resume rather than restarting the task.",
+        "The local agent connection dropped. The turn's recorded history is intact; reconnect and resume rather than restarting the task.",
     ),
     (
         PROVIDER_STALLED,
@@ -191,11 +275,11 @@ const REMEDIATIONS: &[(&str, &str)] = &[
     ),
     (
         SESSION_TRANSITION_REJECTED,
-        "The durable session refused a lifecycle edge, so storage and the running app now disagree. The requested status and the refusing cause are in the details; reconcile the session before starting another turn.",
+        "The saved session refused a lifecycle edge, so storage and the running app now disagree. The requested status and the refusing cause are in the details; reconcile the session before starting another turn.",
     ),
     (
         TURN_NOT_RECORDED,
-        "The provider turn started but could not be given a durable run. The upstream turn was interrupted and no partial run was left behind; the correlated session diagnostic names the underlying storage cause.",
+        "The provider turn started but could not be given a recorded run. The upstream turn was interrupted and no partial run was left behind; the correlated session diagnostic names the underlying storage cause.",
     ),
     (
         DIAGNOSTICS_QUEUE_SATURATED,

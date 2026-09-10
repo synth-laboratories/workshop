@@ -6,22 +6,30 @@
 
 mod audit;
 mod backend;
-mod capability;
+#[cfg(test)]
+pub(crate) use backend::MemoryBackend;
+pub(crate) mod capability;
 mod fingerprint;
 mod importer;
+pub(crate) use importer::parse_dotenv;
+pub mod lease;
+mod locator;
+mod path_gate;
 mod providers;
 mod proxy;
 mod vault;
 
 use anyhow::{anyhow, bail, Result};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
+use serde_json::json;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::error::AppError;
 use crate::storage::Database;
-use tauri::State;
+use tauri::{Manager, State};
 
 use audit::SecretAuditEvent;
 use backend::{default_backend, SecretBackend, SecretBytes};
@@ -32,6 +40,17 @@ use proxy::{ProviderProxy, ProxyState, WorkloadEnv};
 use vault::SecretSummary;
 
 pub use capability::ProviderUsePolicy as SecretsUsePolicy;
+pub(crate) use capability::{ProviderUsageCapability, ProviderUsageReceipt};
+#[allow(unused_imports)]
+pub use lease::{
+    CredentialLease, CredentialReadinessReceipt, CredentialSourceDescriptor, OptimizerRuntimeLease,
+    CONTRACT as CREDENTIAL_CONTRACT, CREDENTIAL_MODE_WORKSHOP_PROXY,
+};
+pub use locator::{
+    CredentialBindingSummary, CredentialLocatorKind, CredentialLocatorState,
+    CredentialLocatorSummary,
+};
+pub use path_gate::WorkspaceRootSummary;
 pub use proxy::API_KEY_SENTINEL;
 
 static LIVE: OnceLock<Arc<SecretsService>> = OnceLock::new();
@@ -57,15 +76,12 @@ pub(crate) fn install_test_live_openai() {
             storage.database().clone(),
             Arc::new(backend::MemoryBackend::new()),
         ));
+        let env_file = path.join(".env");
+        std::fs::write(&env_file, "OPENAI_API_KEY=sk-test-healthbench-not-real\n")
+            .expect("seed test env");
         service
-            .create(
-                "Personal OpenAI",
-                "openai",
-                "personal/development/providers",
-                "sk-test-healthbench-not-real",
-                "test",
-            )
-            .expect("seed openai secret");
+            .load_one_env_source("openai", "OPENAI_API_KEY", &env_file)
+            .expect("load configured openai env source");
         let _ = service.start_proxy();
         install_live(service);
     });
@@ -84,7 +100,11 @@ pub fn redact_live(text: &str) -> String {
 pub fn revoke_run_best_effort(run_id: &str) {
     if let Some(secrets) = live() {
         if let Err(error) = secrets.revoke_run(run_id) {
-            eprintln!("synth-desktop: revoke secrets for {run_id}: {error:#}");
+            crate::platform::logging::report(
+                "secrets",
+                "eprintln",
+                format!("synth-desktop: revoke secrets for {run_id}: {error:#}"),
+            );
         }
     }
 }
@@ -100,13 +120,17 @@ impl Drop for RevokeRunOnDrop {
 
 #[derive(Clone)]
 pub struct SecretsService {
-    db: Arc<Database>,
-    backend: Arc<dyn SecretBackend>,
+    pub(crate) db: Arc<Database>,
+    pub(crate) backend: Arc<dyn SecretBackend>,
+    pub(crate) env_sources: Arc<lease::EnvSourceStore>,
     capabilities: Arc<CapabilityStore>,
     pending_imports: Arc<Mutex<HashMap<String, PendingImport>>>,
     pending_grants: Arc<Mutex<HashMap<String, PendingGrant>>>,
-    redaction: Arc<RedactionIndex>,
+    pending_source_consents: Arc<Mutex<HashSet<String>>>,
+    pub(crate) redaction: Arc<RedactionIndex>,
     proxy: Arc<Mutex<Option<Arc<ProviderProxy>>>>,
+    pub(crate) readiness: Arc<Mutex<HashMap<String, lease::CredentialReadinessReceipt>>>,
+    pub(crate) chains: Arc<Mutex<HashMap<String, serde_json::Value>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -187,11 +211,15 @@ impl SecretsService {
         Self {
             db,
             backend,
+            env_sources: Arc::new(lease::EnvSourceStore::new()),
             capabilities: Arc::new(CapabilityStore::new()),
             pending_imports: Arc::new(Mutex::new(HashMap::new())),
             pending_grants: Arc::new(Mutex::new(HashMap::new())),
+            pending_source_consents: Arc::new(Mutex::new(HashSet::new())),
             redaction: Arc::new(RedactionIndex::new()),
             proxy: Arc::new(Mutex::new(None)),
+            readiness: Arc::new(Mutex::new(HashMap::new())),
+            chains: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -203,6 +231,7 @@ impl SecretsService {
         let state = Arc::new(ProxyState {
             db: self.db.clone(),
             backend: self.backend.clone(),
+            env_sources: self.env_sources.clone(),
             capabilities: self.capabilities.clone(),
         });
         let proxy = Arc::new(ProviderProxy::start(state)?);
@@ -225,6 +254,481 @@ impl SecretsService {
             .expect("provider proxy")
             .as_ref()
             .and_then(|proxy| proxy.socket_path().map(PathBuf::from))
+    }
+
+    fn allowed_workspace_paths(&self) -> Vec<PathBuf> {
+        crate::synth_config::allowed_workspace_roots()
+            .unwrap_or_default()
+            .into_iter()
+            .map(PathBuf::from)
+            .collect()
+    }
+
+    pub fn workspace_roots(&self) -> Vec<WorkspaceRootSummary> {
+        path_gate::summarize_workspace_roots(&self.allowed_workspace_paths())
+    }
+
+    pub fn locators(&self, include_external: bool) -> Result<Vec<CredentialLocatorSummary>> {
+        let loaded = self.env_sources.keys();
+        self.db
+            .with_conn(|conn| locator::list(conn, &loaded, include_external))
+    }
+
+    pub fn bindings(&self) -> Result<Vec<CredentialBindingSummary>> {
+        let loaded = self.env_sources.keys();
+        self.db.with_conn(|conn| locator::bindings(conn, &loaded))
+    }
+
+    fn rewrite_locator_export(&self) {
+        let result = self
+            .locators(true)
+            .and_then(|rows| crate::synth_config::rewrite_credential_locator_export(&rows));
+        if let Err(error) = result {
+            crate::platform::logging::report(
+                "secrets",
+                "credential_locator_export_failed",
+                format!(
+                    "credential locator SQLite commit succeeded but TOML export failed: {error:#}"
+                ),
+            );
+        }
+    }
+
+    fn validate_locator_identity(provider: &str, variable: &str) -> Result<()> {
+        if provider.trim().is_empty() || !path_gate::is_valid_env_variable(variable.trim()) {
+            return Err(AppError::invalid_argument(
+                "provider and a valid environment variable are required",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    pub fn remember_workspace_locator_pending(
+        &self,
+        workspace_root_ref: &str,
+        relative_path: &str,
+        provider: &str,
+        variable: &str,
+        label: &str,
+    ) -> Result<CredentialLocatorSummary> {
+        Self::validate_locator_identity(provider, variable)?;
+        let gated = path_gate::gate_workspace_file(
+            &self.allowed_workspace_paths(),
+            workspace_root_ref,
+            relative_path,
+        )?;
+        let id = self.db.transaction(|conn| {
+            locator::insert_workspace_pending(conn, &gated, provider, variable, label)
+                .map(|record| record.id)
+        })?;
+        self.rewrite_locator_export();
+        self.locators(false)?
+            .into_iter()
+            .find(|row| row.id == id)
+            .ok_or_else(|| anyhow!("credential locator missing after remember"))
+    }
+
+    pub fn remember_external_locator(
+        &self,
+        picker_path: &Path,
+        provider: &str,
+        variable: &str,
+        label: &str,
+    ) -> Result<CredentialLocatorSummary> {
+        Self::validate_locator_identity(provider, variable)?;
+        let id = self.db.transaction(|conn| {
+            locator::insert_external_observed(conn, picker_path, provider, variable, label)
+                .map(|record| record.id)
+        })?;
+        self.rewrite_locator_export();
+        self.locators(true)?
+            .into_iter()
+            .find(|row| row.id == id)
+            .ok_or_else(|| anyhow!("credential locator missing after remember"))
+    }
+
+    pub fn settle_remembered_locator(&self, locator_id: &str) -> Result<()> {
+        self.db.transaction(|conn| {
+            let record = locator::get(conn, locator_id)?
+                .ok_or_else(|| anyhow!("credential locator {locator_id} was not found"))?;
+            if record.state == CredentialLocatorState::ApprovalPending {
+                locator::transition(conn, locator_id, CredentialLocatorState::Observed)?;
+            }
+            Ok(())
+        })?;
+        self.rewrite_locator_export();
+        Ok(())
+    }
+
+    /// Returns true when this was an already-remembered locator that must be
+    /// restored to Observed if the Register card is rejected.
+    pub fn prepare_register_approval(&self, locator_id: &str) -> Result<bool> {
+        self.db.transaction(|conn| {
+            let record = locator::get(conn, locator_id)?
+                .ok_or_else(|| anyhow!("credential locator {locator_id} was not found"))?;
+            match record.state {
+                CredentialLocatorState::ApprovalPending => Ok(false),
+                CredentialLocatorState::Observed => {
+                    let pending: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM credential_locators
+                         WHERE state IN ('proposed','approval_pending')",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    if pending >= locator::MAX_PENDING_LOCATORS {
+                        return Err(lease::CredentialError::new(
+                            lease::CREDENTIAL_LOCATOR_LIMIT,
+                            "locator",
+                            false,
+                            "credential locator pending-consent limit reached",
+                        )
+                        .anyhow());
+                    }
+                    locator::transition(conn, locator_id, CredentialLocatorState::ApprovalPending)?;
+                    Ok(true)
+                }
+                CredentialLocatorState::Missing => Err(lease::CredentialError::new(
+                    lease::CREDENTIAL_LOCATOR_NOT_REGULAR_FILE,
+                    "locator",
+                    false,
+                    "missing credential location cannot be registered",
+                )
+                .anyhow()),
+                CredentialLocatorState::WorkspaceAuthorityRevoked => {
+                    Err(lease::CredentialError::new(
+                        lease::CREDENTIAL_LOCATOR_UNAPPROVED_WORKSPACE,
+                        "locator",
+                        false,
+                        "workspace authority for this credential location was revoked",
+                    )
+                    .anyhow())
+                }
+                _ => Err(anyhow!(
+                    "credential locator is not available for registration"
+                )),
+            }
+        })
+    }
+
+    pub fn deny_pending_locator(&self, locator_id: &str) -> Result<()> {
+        self.db
+            .transaction(|conn| locator::remove(conn, locator_id).map(|_| ()))?;
+        self.rewrite_locator_export();
+        Ok(())
+    }
+
+    pub fn begin_source_consent(&self, provider: &str, variable: &str) -> Result<()> {
+        let key = format!(
+            "{}:{}",
+            provider.trim().to_ascii_lowercase(),
+            variable.trim()
+        );
+        let mut pending = self
+            .pending_source_consents
+            .lock()
+            .expect("pending source consents");
+        if pending.contains(&key) {
+            return Err(lease::CredentialError::new(
+                lease::CREDENTIAL_SOURCE_CONSENT_PENDING,
+                "locator",
+                true,
+                "a credential source decision is already pending for this provider",
+            )
+            .anyhow());
+        }
+        if pending.len() >= locator::MAX_PENDING_LOCATORS as usize {
+            return Err(lease::CredentialError::new(
+                lease::CREDENTIAL_LOCATOR_LIMIT,
+                "locator",
+                false,
+                "credential source pending-consent limit reached",
+            )
+            .anyhow());
+        }
+        pending.insert(key);
+        Ok(())
+    }
+
+    pub fn end_source_consent(&self, provider: &str, variable: &str) {
+        let key = format!(
+            "{}:{}",
+            provider.trim().to_ascii_lowercase(),
+            variable.trim()
+        );
+        self.pending_source_consents
+            .lock()
+            .expect("pending source consents")
+            .remove(&key);
+    }
+
+    pub fn register_locator(&self, locator_id: &str) -> Result<CredentialLocatorSummary> {
+        let record = self
+            .db
+            .with_conn(|conn| locator::get(conn, locator_id))?
+            .ok_or_else(|| anyhow!("credential locator {locator_id} was not found"))?;
+        match record.state {
+            CredentialLocatorState::Observed | CredentialLocatorState::ApprovalPending => {}
+            CredentialLocatorState::WorkspaceAuthorityRevoked => {
+                return Err(lease::CredentialError::new(
+                    lease::CREDENTIAL_LOCATOR_UNAPPROVED_WORKSPACE,
+                    "locator",
+                    false,
+                    "This folder is allowed again. Forget and remember to restore.",
+                )
+                .anyhow());
+            }
+            CredentialLocatorState::Missing => {
+                return Err(lease::CredentialError::new(
+                    lease::CREDENTIAL_LOCATOR_NOT_REGULAR_FILE,
+                    "locator",
+                    false,
+                    "missing credential location cannot be registered",
+                )
+                .anyhow());
+            }
+            _ => {
+                return Err(anyhow!(
+                    "credential locator is not available for registration"
+                ))
+            }
+        }
+        let path = match locator::resolve_path(&record, &self.allowed_workspace_paths()) {
+            Ok(path) => path,
+            Err(error) => {
+                let revoked = error
+                    .chain()
+                    .filter_map(|cause| cause.downcast_ref::<lease::CredentialError>())
+                    .any(|failure| failure.code == lease::CREDENTIAL_LOCATOR_UNAPPROVED_WORKSPACE);
+                self.db.with_conn(|conn| {
+                    locator::set_observation_state(
+                        conn,
+                        &record.id,
+                        if revoked {
+                            CredentialLocatorState::WorkspaceAuthorityRevoked
+                        } else {
+                            CredentialLocatorState::Missing
+                        },
+                    )
+                })?;
+                self.rewrite_locator_export();
+                return Err(error);
+            }
+        };
+        let value = lease::read_env_file_value(&path, &record.variable).ok_or_else(|| {
+            lease::CredentialError::new(
+                lease::CREDENTIAL_VALUE_MISSING,
+                "locator",
+                false,
+                format!("{} is missing or empty", record.variable),
+            )
+            .anyhow()
+        })?;
+        let bytes = SecretBytes::from_utf8(&value);
+        let digest = fingerprint::fingerprint(&bytes);
+        let (source_id, backend_ref, displaced) = self.db.transaction(|conn| {
+            let displaced = locator::preferred_source(conn, &record.provider, &record.variable)?;
+            let source_id = lease::upsert_env_source_descriptor(
+                conn,
+                &record.provider,
+                &record.variable,
+                &path,
+                Some(&record.id),
+                Some(&digest),
+                true,
+            )?;
+            locator::mark_preferred(conn, &source_id, &record.provider, &record.variable)?;
+            locator::set_observation_state(conn, &record.id, CredentialLocatorState::Observed)?;
+            let backend_ref: String = conn.query_row(
+                "SELECT backend_ref FROM secret_refs WHERE id=?1",
+                [&source_id],
+                |row| row.get(0),
+            )?;
+            Ok((source_id, backend_ref, displaced))
+        })?;
+
+        if let Some((old_source_id, old_locator_id)) = displaced {
+            if old_source_id != source_id {
+                if let Some(old) = self
+                    .db
+                    .with_conn(|conn| vault::record(conn, &old_source_id))?
+                {
+                    self.env_sources.remove(&old.backend_ref);
+                }
+                self.capabilities.revoke_secret(&old_source_id);
+                let _ = self.db.with_conn(|conn| {
+                    let old_locator = locator::get(conn, &old_locator_id)?;
+                    if old_locator.is_some_and(|old| {
+                        old.state == CredentialLocatorState::Observed
+                            && old.kind != CredentialLocatorKind::InstanceEnvFile
+                    }) {
+                        let _ = locator::transition(
+                            conn,
+                            &old_locator_id,
+                            CredentialLocatorState::Superseded,
+                        );
+                    }
+                    Ok(())
+                });
+            }
+        }
+        self.env_sources.put(&backend_ref, &bytes);
+        self.redaction.register(&bytes);
+        self.rewrite_locator_export();
+        self.locators(true)?
+            .into_iter()
+            .find(|row| row.id == locator_id)
+            .ok_or_else(|| anyhow!("credential locator missing after registration"))
+    }
+
+    pub fn forget_locator(&self, locator_id: &str) -> Result<()> {
+        let record = self
+            .db
+            .with_conn(|conn| locator::get(conn, locator_id))?
+            .ok_or_else(|| anyhow!("credential locator {locator_id} was not found"))?;
+        let sources = self.db.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT id,backend_ref,preferred FROM secret_refs WHERE locator_id=?1")?;
+            let rows = stmt.query_map([locator_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)? != 0,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(Into::into)
+        })?;
+        let was_preferred = sources.iter().any(|(_, _, preferred)| *preferred);
+        for (source_id, backend_ref, preferred) in &sources {
+            if *preferred {
+                self.env_sources.remove(backend_ref);
+            }
+            self.capabilities.revoke_secret(source_id);
+        }
+        let fallback = self.db.transaction(|conn| {
+            locator::remove(conn, locator_id)?;
+            if was_preferred {
+                if let Some(source_id) =
+                    locator::preferred_instance_source(conn, &record.provider, &record.variable)?
+                {
+                    locator::mark_preferred(conn, &source_id, &record.provider, &record.variable)?;
+                    let locator_id = conn.query_row(
+                        "SELECT locator_id FROM secret_refs WHERE id=?1",
+                        [&source_id],
+                        |row| row.get::<_, String>(0),
+                    )?;
+                    return Ok(Some(locator_id));
+                }
+            }
+            Ok(None)
+        })?;
+        if let Some(fallback) = fallback {
+            let _ = self.load_registered_locator(&fallback, true);
+        }
+        self.rewrite_locator_export();
+        Ok(())
+    }
+
+    pub fn remove_locator_source(&self, locator_id: &str) -> Result<()> {
+        let record = self
+            .db
+            .with_conn(|conn| locator::get(conn, locator_id))?
+            .ok_or_else(|| anyhow!("credential locator {locator_id} was not found"))?;
+        let (sources, fallback) = self.db.transaction(|conn| {
+            let sources = {
+                let mut stmt = conn.prepare(
+                    "SELECT id,backend_ref,preferred FROM secret_refs WHERE locator_id=?1",
+                )?;
+                let rows = stmt.query_map([locator_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)? != 0,
+                    ))
+                })?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            let was_preferred = sources.iter().any(|(_, _, preferred)| *preferred);
+            conn.execute("DELETE FROM secret_refs WHERE locator_id=?1", [locator_id])?;
+            locator::set_observation_state(conn, locator_id, CredentialLocatorState::Observed)?;
+            let fallback = if was_preferred {
+                if let Some(source_id) =
+                    locator::preferred_instance_source(conn, &record.provider, &record.variable)?
+                {
+                    locator::mark_preferred(conn, &source_id, &record.provider, &record.variable)?;
+                    Some(conn.query_row(
+                        "SELECT locator_id FROM secret_refs WHERE id=?1",
+                        [&source_id],
+                        |row| row.get::<_, String>(0),
+                    )?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            Ok((sources, fallback))
+        })?;
+        for (source_id, backend_ref, preferred) in sources {
+            if preferred {
+                self.env_sources.remove(&backend_ref);
+            }
+            self.capabilities.revoke_secret(&source_id);
+        }
+        if let Some(fallback) = fallback {
+            let _ = self.load_registered_locator(&fallback, true);
+        }
+        self.rewrite_locator_export();
+        Ok(())
+    }
+
+    pub fn source_for_locator(&self, locator_id: &str) -> Result<String> {
+        let source = self
+            .db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT id,preferred FROM secret_refs WHERE locator_id=?1
+                     ORDER BY updated_at DESC LIMIT 1",
+                    [locator_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
+                )
+                .optional()
+                .map_err(Into::into)
+            })?
+            .ok_or_else(|| {
+                lease::CredentialError::new(
+                    lease::CREDENTIAL_SOURCE_UNCONFIGURED,
+                    "locator",
+                    false,
+                    "credential location has not been registered",
+                )
+                .anyhow()
+            })?;
+        if !source.1 {
+            return Err(lease::CredentialError::new(
+                lease::CREDENTIAL_VALUE_UNLOADED,
+                "locator",
+                false,
+                "credential source is registered but is not the loaded preferred source",
+            )
+            .anyhow());
+        }
+        let source_id = source.0;
+        let record = self
+            .db
+            .with_conn(|conn| vault::record(conn, &source_id))?
+            .ok_or_else(|| anyhow!("credential source {source_id} was not found"))?;
+        if !self.env_sources.contains(&record.backend_ref) {
+            return Err(lease::CredentialError::new(
+                lease::CREDENTIAL_VALUE_UNLOADED,
+                "locator",
+                false,
+                "credential source is registered but not loaded",
+            )
+            .anyhow());
+        }
+        Ok(source_id)
     }
 
     pub fn redact(&self, text: &str) -> String {
@@ -280,9 +784,14 @@ impl SecretsService {
     }
 
     pub fn test(&self, id: &str, actor: &str) -> Result<SecretSummary> {
-        let secret = self
-            .db
-            .with_conn(|conn| vault::resolve_for_proxy(conn, self.backend.as_ref(), id))?;
+        let secret = self.db.with_conn(|conn| {
+            vault::resolve_for_proxy(
+                conn,
+                self.backend.as_ref(),
+                Some(self.env_sources.as_ref()),
+                id,
+            )
+        })?;
         let valid = !secret.as_bytes().is_empty();
         let status = if valid { "valid" } else { "invalid" };
         drop(secret);
@@ -301,7 +810,9 @@ impl SecretsService {
         policy: ProviderUsePolicy,
         actor: &str,
     ) -> Result<UseRequestResult> {
-        if let Some(live) = self.capabilities.find_active(secret_id, run_id) {
+        self.persist_expired_capabilities()?;
+        if let Some(live) = self.capabilities.find_reusable(secret_id, run_id) {
+            ensure_capability_covers(&live, &policy)?;
             return self.live_result(live);
         }
         let always = self
@@ -312,10 +823,11 @@ impl SecretsService {
         }
         {
             let pending = self.pending_grants.lock().expect("pending grants");
-            if let Some((request_id, _)) = pending
+            if let Some((request_id, pending_grant)) = pending
                 .iter()
                 .find(|(_, grant)| grant.secret_id == secret_id && grant.run_id == run_id)
             {
+                ensure_policy_covers(&pending_grant.policy, &policy, None)?;
                 return Ok(UseRequestResult {
                     status: "approval_required".into(),
                     request_id: Some(request_id.clone()),
@@ -357,6 +869,11 @@ impl SecretsService {
         actor: &str,
         remember_recipe: bool,
     ) -> Result<UseRequestResult> {
+        self.persist_expired_capabilities()?;
+        if let Some(live) = self.capabilities.find_reusable(secret_id, run_id) {
+            ensure_capability_covers(&live, &policy)?;
+            return self.live_result(live);
+        }
         let _ = self.start_proxy();
         let record = self
             .db
@@ -380,6 +897,19 @@ impl SecretsService {
         Ok(self.issued_result(issued, &record.display_suffix))
     }
 
+    fn persist_expired_capabilities(&self) -> Result<()> {
+        let expired = self.capabilities.expire_stale();
+        if expired.is_empty() {
+            return Ok(());
+        }
+        self.db.transaction(|conn| {
+            for live in &expired {
+                capability::persist_status(conn, live)?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn grant_pending(
         &self,
         request_id: &str,
@@ -400,6 +930,24 @@ impl SecretsService {
             actor,
             remember_recipe,
         )
+    }
+
+    pub fn deny_pending(&self, request_id: &str, actor: &str) -> Result<()> {
+        let pending = self
+            .pending_grants
+            .lock()
+            .expect("pending grants")
+            .remove(request_id)
+            .ok_or_else(|| anyhow!("grant request {request_id} is not pending"))?;
+        self.db.with_conn(|conn| {
+            let mut event = SecretAuditEvent::new("user", actor, "capability.deny", "denied");
+            event.secret_id = Some(pending.secret_id);
+            event.detail = Some(format!(
+                "run={} recipe={}",
+                pending.run_id, pending.recipe_id
+            ));
+            audit::append(conn, &event)
+        })
     }
 
     fn issued_result(&self, mut issued: IssuedCapability, suffix: &str) -> UseRequestResult {
@@ -558,7 +1106,24 @@ impl SecretsService {
             .transaction(|conn| capability::revoke(conn, &self.capabilities, capability_id, actor))
     }
 
-    pub fn revoke_run(&self, run_id: &str) -> Result<()> {
+    pub fn capability_run_id(&self, capability_id: &str) -> Result<Option<String>> {
+        self.db
+            .with_conn(|conn| capability::run_id_for_capability(conn, capability_id))
+    }
+
+    /// Durable, non-secret provider usage for internal optimizer settlement.
+    /// Unlike the settings list, this includes exhausted and revoked rows.
+    pub(crate) fn provider_usage_receipt(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<ProviderUsageReceipt>> {
+        self.db
+            .with_conn(|conn| capability::provider_usage_receipt(conn, run_id))
+    }
+
+    /// Revoke every live capability for `run_id`, returning the revoked
+    /// capability ids so the caller can journal them.
+    pub fn revoke_run(&self, run_id: &str) -> Result<Vec<String>> {
         self.db
             .transaction(|conn| capability::revoke_run(conn, &self.capabilities, run_id))
     }
@@ -612,13 +1177,37 @@ impl SecretsService {
             if !selected.is_empty() && !selected.iter().any(|name| name == &entry.variable) {
                 continue;
             }
-            let summary = self.create(
-                &entry.alias,
-                &entry.provider,
-                &pending.destination_scope,
-                entry.value.as_utf8().unwrap_or(""),
-                actor,
-            )?;
+            let backend_ref = lease::env_backend_ref(&entry.provider, &entry.variable);
+            self.env_sources.put(&backend_ref, &entry.value);
+            self.redaction.register(&entry.value);
+            let fingerprint = fingerprint::fingerprint(&entry.value);
+            let id = self.db.with_conn(|conn| {
+                lease::upsert_env_source_descriptor(
+                    conn,
+                    &entry.provider,
+                    &entry.variable,
+                    &pending.source_path,
+                    None,
+                    Some(&fingerprint),
+                    true,
+                )
+            })?;
+            let summary =
+                self.db
+                    .with_conn(|conn| vault::get(conn, &id))?
+                    .unwrap_or(SecretSummary {
+                        id: id.clone(),
+                        alias: entry.alias.clone(),
+                        provider: entry.provider.clone(),
+                        scope: "project/config/env".into(),
+                        status: "valid".into(),
+                        backend: lease::BACKEND_CONFIGURED_ENV.into(),
+                        display_suffix: Some(fingerprint::mask_suffix(&entry.suffix)),
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                        last_validated_at: Some(chrono::Utc::now().to_rfc3339()),
+                        allowed_recipes: Vec::new(),
+                    });
+            let _ = actor;
             aliases.insert(entry.variable.clone(), summary.id.clone());
             imported.push(summary);
         }
@@ -636,107 +1225,12 @@ impl SecretsService {
         policy: ProviderUsePolicy,
         actor: &str,
     ) -> Result<WorkloadEnv> {
-        let record = self
-            .db
-            .with_conn(|conn| vault::find_by_provider(conn, provider))?
-            .ok_or_else(|| {
-                anyhow!(
-                    "{}",
-                    serde_json::json!({
-                        "code": "missing_credential",
-                        "contract": "workshop.secrets_proxy",
-                        "retryable": false,
-                        "message": format!("no {provider} credential is stored in Workshop; add a connection in Settings → Secrets"),
-                    })
-                )
-            })?;
-        let granted = self
-            .grant_use(&record.id, run_id, recipe_id, policy, actor, false)
-            .map_err(|error| {
-                anyhow!(
-                    "{}",
-                    serde_json::json!({
-                        "code": "secrets_proxy_denied",
-                        "contract": "workshop.secrets_proxy",
-                        "retryable": false,
-                        "message": format!("could not issue a run-scoped {provider} capability: {error}"),
-                    })
-                )
-            })?;
-        let origin = granted
-            .proxy_origin
-            .clone()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                anyhow!(
-                    "{}",
-                    serde_json::json!({
-                        "code": "secrets_proxy_unavailable",
-                        "contract": "workshop.secrets_proxy",
-                        "retryable": true,
-                        "message": "the Workshop provider proxy is not running",
-                    })
-                )
-            })?;
-        let handle = granted.handle.clone().ok_or_else(|| {
-            anyhow!(
-                "{}",
-                serde_json::json!({
-                    "code": "secrets_proxy_denied",
-                    "contract": "workshop.secrets_proxy",
-                    "retryable": false,
-                    "message": "capability handle missing",
-                })
-            )
-        })?;
-        let openai_compatible_provider =
-            matches!(provider, "openai" | "openrouter" | "tinker" | "groq");
-        let openai_base_url = if openai_compatible_provider {
-            Some(proxy::capability_base_url(&origin, &handle, &provider))
-        } else {
-            None
-        };
-        let anthropic_base_url = if provider == "anthropic" {
-            Some(proxy::capability_base_url(&origin, &handle, "anthropic"))
-        } else {
-            None
-        };
-        let container_origin = proxy::rewrite_origin_for_containers(&origin);
-        let (openai_route, container_openai_base_url, container_openai_route) =
-            if openai_compatible_provider {
-                (
-                    Some(proxy::capability_chat_completions_url(
-                        &origin, &handle, &provider,
-                    )),
-                    Some(proxy::capability_base_url(
-                        &container_origin,
-                        &handle,
-                        &provider,
-                    )),
-                    Some(proxy::capability_chat_completions_url(
-                        &container_origin,
-                        &handle,
-                        &provider,
-                    )),
-                )
-            } else {
-                (None, None, None)
-            };
-        let mut env = WorkloadEnv {
-            openai_base_url,
-            anthropic_base_url,
-            openai_api_key: API_KEY_SENTINEL.to_owned(),
-            capability_handle: handle,
-            capability_file: None,
-            workshop_run_id: run_id.into(),
-            capability_id: granted.capability_id.unwrap_or_default(),
-            openai_route,
-            container_openai_base_url,
-            container_openai_route,
-            proxy_socket: self
-                .proxy_socket_path()
+        let lease = self.issue_lease(provider, run_id, recipe_id, policy, actor)?;
+        let mut env = lease.to_workload_env(
+            None,
+            self.proxy_socket_path()
                 .map(|path| path.display().to_string()),
-        };
+        );
         let cap_dir = self
             .db
             .path()
@@ -745,15 +1239,163 @@ impl SecretsService {
             .join("capabilities")
             .join(run_id);
         let _ = env.write_capability_file(&cap_dir);
-        if openai_compatible_provider {
+        if matches!(provider, "openai" | "openrouter" | "tinker" | "groq") {
             let _ = env.provider_routes()?;
         }
         Ok(env)
     }
 }
 
+fn ensure_capability_covers(
+    live: &capability::LiveCapability,
+    requested: &ProviderUsePolicy,
+) -> Result<()> {
+    if live.covers(requested) {
+        return Ok(());
+    }
+    ensure_policy_covers(
+        &ProviderUsePolicy {
+            operations: live.operations.clone(),
+            models: live.models.clone(),
+            reasoning_efforts: live.reasoning_efforts.clone(),
+            max_calls: live.max_calls,
+            max_input_tokens: live.max_input_tokens,
+            max_output_tokens: live.max_output_tokens,
+            max_cost_usd: live.max_cost_usd_micros as f64 / 1_000_000.0,
+            lifetime_seconds: 0,
+        },
+        requested,
+        Some(&live.id),
+    )
+}
+
+fn ensure_policy_covers(
+    granted: &ProviderUsePolicy,
+    requested: &ProviderUsePolicy,
+    capability_id: Option<&str>,
+) -> Result<()> {
+    let list_covers = |available: &[String], needed: &[String]| {
+        available.is_empty()
+            || needed.iter().all(|item| {
+                available
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(item))
+            })
+    };
+    if list_covers(&granted.operations, &requested.operations)
+        && list_covers(&granted.models, &requested.models)
+        && list_covers(&granted.reasoning_efforts, &requested.reasoning_efforts)
+        && granted.max_calls >= requested.max_calls
+        && granted.max_input_tokens >= requested.max_input_tokens
+        && granted.max_output_tokens >= requested.max_output_tokens
+        && granted.max_cost_usd + f64::EPSILON >= requested.max_cost_usd
+    {
+        return Ok(());
+    }
+    bail!(
+        "{}",
+        json!({
+            "code": "capability_underscoped",
+            "contract": "workshop.secrets_proxy",
+            "retryable": false,
+            "message": "an existing run capability does not cover the admitted execution envelope",
+            "capabilityId": capability_id,
+            "granted": {
+                "operations": granted.operations,
+                "models": granted.models,
+                "reasoningEfforts": granted.reasoning_efforts,
+                "maxCalls": granted.max_calls,
+                "maxInputTokens": granted.max_input_tokens,
+                "maxOutputTokens": granted.max_output_tokens,
+                "maxCostUsd": granted.max_cost_usd,
+            },
+            "required": {
+                "operations": requested.operations,
+                "models": requested.models,
+                "reasoningEfforts": requested.reasoning_efforts,
+                "maxCalls": requested.max_calls,
+                "maxInputTokens": requested.max_input_tokens,
+                "maxOutputTokens": requested.max_output_tokens,
+                "maxCostUsd": requested.max_cost_usd,
+            },
+        })
+    )
+}
+
 fn service(state: &State<'_, Arc<SecretsService>>) -> Result<Arc<SecretsService>, AppError> {
     Ok(state.inner().clone())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn secrets_workspace_roots_list(
+    state: State<'_, Arc<SecretsService>>,
+) -> Result<Vec<WorkspaceRootSummary>, AppError> {
+    Ok(service(&state)?.workspace_roots())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn secrets_bindings_list(
+    state: State<'_, Arc<SecretsService>>,
+) -> Result<Vec<CredentialBindingSummary>, AppError> {
+    service(&state)?.bindings().map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn secrets_locators_list(
+    state: State<'_, Arc<SecretsService>>,
+) -> Result<Vec<CredentialLocatorSummary>, AppError> {
+    service(&state)?.locators(true).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn secrets_locator_remember_external(
+    state: State<'_, Arc<SecretsService>>,
+    picker_path: String,
+    provider: String,
+    variable: String,
+    label: Option<String>,
+) -> Result<CredentialLocatorSummary, AppError> {
+    service(&state)?
+        .remember_external_locator(
+            Path::new(&picker_path),
+            &provider,
+            &variable,
+            label.as_deref().unwrap_or(&provider),
+        )
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn secrets_locator_register(
+    state: State<'_, Arc<SecretsService>>,
+    locator_id: String,
+) -> Result<CredentialLocatorSummary, AppError> {
+    service(&state)?
+        .register_locator(&locator_id)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn secrets_locator_forget(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<SecretsService>>,
+    locator_id: String,
+) -> Result<(), AppError> {
+    let codex = app.state::<Arc<crate::codex::CodexManager>>();
+    codex
+        .approvals
+        .expire_credential_locator(&app, &locator_id, "credential_locator_forgotten")
+        .await
+        .map_err(AppError::from)?;
+    service(&state)?
+        .forget_locator(&locator_id)
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -908,13 +1550,34 @@ pub fn secrets_capabilities_list(
 
 #[tauri::command]
 #[specta::specta]
-pub fn secrets_revoke_capability(
+pub async fn secrets_revoke_capability(
     state: State<'_, Arc<SecretsService>>,
+    core: State<'_, Arc<crate::core_runtime::CoreRuntime>>,
     capability_id: String,
 ) -> Result<(), AppError> {
-    service(&state)?
+    let secrets = service(&state)?;
+    let run_id = secrets
+        .capability_run_id(&capability_id)
+        .map_err(AppError::from)?;
+    secrets
         .revoke_capability(&capability_id, "settings")
-        .map_err(AppError::from)
+        .map_err(AppError::from)?;
+    if let Some(run_id) = run_id {
+        let request = crate::optimizers::kernel::CancellationRequest::new(
+            crate::optimizers::kernel::CancellationCause::CredentialRevoked,
+            "user:settings",
+            format!("run:{run_id}"),
+        );
+        // The reverse edge is best-effort only for already-terminal runs: a
+        // manual capability revocation must otherwise become the typed cause
+        // of cancellation instead of a cascade of anonymous 401s.
+        match core.optimizers().cancel(run_id, request).await {
+            Ok(_) => {}
+            Err(error) if error.to_string().contains("sealed") => {}
+            Err(error) => return Err(AppError::from(error)),
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Deserialize, specta::Type)]
@@ -1010,11 +1673,7 @@ fn allowed_import_roots() -> Vec<PathBuf> {
 }
 
 pub(crate) fn import_roots() -> Vec<PathBuf> {
-    let mut roots = vec![crate::instance::data_root()];
-    if let Ok(home) = std::env::var("HOME") {
-        roots.push(PathBuf::from(home));
-    }
-    roots
+    vec![crate::instance::data_root()]
 }
 
 #[cfg(test)]
@@ -1031,6 +1690,369 @@ mod tests {
             Arc::new(backend::MemoryBackend::new()),
         );
         (dir, service)
+    }
+
+    fn capability_source(service: &SecretsService, path: &Path) -> String {
+        service
+            .db
+            .transaction(|conn| {
+                lease::upsert_env_source_descriptor(
+                    conn,
+                    "openrouter",
+                    "OPENROUTER_API_KEY",
+                    path,
+                    None,
+                    None,
+                    false,
+                )
+            })
+            .unwrap()
+    }
+
+    fn issue_test_capability(
+        service: &SecretsService,
+        source_id: &str,
+        run_id: &str,
+        max_calls: u32,
+    ) -> capability::IssuedCapability {
+        let policy = ProviderUsePolicy {
+            max_calls,
+            ..ProviderUsePolicy::default()
+        };
+        service
+            .db
+            .transaction(|conn| {
+                capability::issue(
+                    conn,
+                    &service.capabilities,
+                    source_id,
+                    run_id,
+                    "nanohorizon.craftax.eval.v1",
+                    "openrouter",
+                    &policy,
+                    "test",
+                )
+            })
+            .unwrap()
+    }
+
+    fn debit_test_capability(
+        service: &SecretsService,
+        issued: &capability::IssuedCapability,
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_usd: Option<f64>,
+    ) -> capability::LiveCapability {
+        service.capabilities.reserve_call(&issued.handle).unwrap();
+        let live = service
+            .capabilities
+            .debit_usage(
+                &issued.handle,
+                &capability::MeasuredUsage {
+                    calls: 1,
+                    input_tokens,
+                    output_tokens,
+                    cost_usd,
+                },
+            )
+            .unwrap();
+        service
+            .db
+            .with_conn(|conn| capability::persist_usage(conn, &live))
+            .unwrap();
+        live
+    }
+
+    #[test]
+    fn provider_usage_receipt_includes_active_exhausted_and_revoked_rows() {
+        let (dir, service) = service();
+        let source_id = capability_source(&service, &dir.path().join("not-read.env"));
+        let run_id = "run_all_capability_statuses";
+
+        let active = issue_test_capability(&service, &source_id, run_id, 5);
+        let active_live = debit_test_capability(&service, &active, 10, 1, Some(0.001234));
+        assert_eq!(active_live.status, "active");
+
+        let exhausted = issue_test_capability(&service, &source_id, run_id, 1);
+        let exhausted_live = debit_test_capability(&service, &exhausted, 20, 2, Some(0.002));
+        assert_eq!(exhausted_live.status, "exhausted");
+
+        let revoked = issue_test_capability(&service, &source_id, run_id, 5);
+        debit_test_capability(&service, &revoked, 30, 3, Some(0.003));
+        service
+            .revoke_capability(&revoked.id, "test")
+            .expect("revoke active capability");
+
+        let receipt = service
+            .provider_usage_receipt(run_id)
+            .unwrap()
+            .expect("provider usage receipt");
+        assert_eq!(receipt.calls, 3);
+        assert_eq!(receipt.input_tokens, 60);
+        assert_eq!(receipt.output_tokens, 6);
+        assert_eq!(receipt.cost_usd, Some(0.006234));
+        let statuses = receipt
+            .capabilities
+            .iter()
+            .map(|capability| capability.status.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(statuses, HashSet::from(["active", "exhausted", "revoked"]));
+        assert!(receipt.digest.starts_with("sha256:"));
+        assert_eq!(receipt.digest.len(), 71);
+        assert_eq!(
+            receipt,
+            service.provider_usage_receipt(run_id).unwrap().unwrap(),
+            "the canonical receipt is stable across reads"
+        );
+        let encoded = serde_json::to_string(&receipt).unwrap();
+        assert!(!encoded.contains(&source_id));
+        assert!(!encoded.contains("wcap_"));
+    }
+
+    #[test]
+    fn provider_usage_receipt_poisoned_cost_stays_unknown() {
+        let (dir, service) = service();
+        let source_id = capability_source(&service, &dir.path().join("not-read.env"));
+        let run_id = "run_unknown_capability_cost";
+        let known = issue_test_capability(&service, &source_id, run_id, 5);
+        let unknown = issue_test_capability(&service, &source_id, run_id, 5);
+        debit_test_capability(&service, &known, 40, 4, Some(0.004));
+        debit_test_capability(&service, &unknown, 50, 5, None);
+
+        let receipt = service
+            .provider_usage_receipt(run_id)
+            .unwrap()
+            .expect("provider usage receipt");
+        assert_eq!(receipt.calls, 2);
+        assert_eq!(receipt.input_tokens, 90);
+        assert_eq!(receipt.output_tokens, 9);
+        assert_eq!(receipt.cost_usd, None);
+        assert_eq!(receipt.capabilities.len(), 2);
+    }
+
+    fn locator_service(label: &str) -> (crate::instance::IsolatedDataRoot, SecretsService) {
+        let root = crate::instance::IsolatedDataRoot::new(label);
+        let storage = Storage::open(root.path.join("storage")).unwrap();
+        let service = SecretsService::with_backend(
+            storage.database().clone(),
+            Arc::new(backend::MemoryBackend::new()),
+        );
+        (root, service)
+    }
+
+    #[test]
+    fn remembered_locator_does_not_enter_ram_until_registered() {
+        let (root, service) = locator_service("locator-remember-register");
+        let env_file = root.path.join("provider.env");
+        std::fs::write(&env_file, "OPENAI_API_KEY=sk-locator-not-real\n").unwrap();
+
+        let locator = service
+            .remember_external_locator(&env_file, "openai", "OPENAI_API_KEY", "Project OpenAI")
+            .unwrap();
+        assert!(service.env_sources.keys().is_empty());
+        assert!(locator.source_id.is_none());
+
+        assert!(service.prepare_register_approval(&locator.id).unwrap());
+        service.settle_remembered_locator(&locator.id).unwrap();
+        assert!(service.env_sources.keys().is_empty());
+        assert!(service
+            .locators(true)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == locator.id)
+            .unwrap()
+            .source_id
+            .is_none());
+
+        assert!(service.prepare_register_approval(&locator.id).unwrap());
+        let registered = service.register_locator(&locator.id).unwrap();
+        assert!(registered.loaded);
+        assert!(registered.preferred);
+        assert_eq!(
+            service.env_sources.keys(),
+            vec![lease::env_backend_ref("openai", "OPENAI_API_KEY")]
+        );
+    }
+
+    #[test]
+    fn empty_locator_value_writes_no_source_license_or_ram_value() {
+        let (root, service) = locator_service("locator-empty-value");
+        let env_file = root.path.join("empty.env");
+        std::fs::write(&env_file, "OPENAI_API_KEY=\n").unwrap();
+        let locator = service
+            .remember_external_locator(&env_file, "openai", "OPENAI_API_KEY", "Empty OpenAI")
+            .unwrap();
+
+        let error = service.register_locator(&locator.id).unwrap_err();
+        assert!(error.to_string().contains(lease::CREDENTIAL_VALUE_MISSING));
+        assert!(service.env_sources.keys().is_empty());
+        assert!(service
+            .locators(true)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == locator.id)
+            .unwrap()
+            .source_id
+            .is_none());
+    }
+
+    #[test]
+    fn source_consent_is_serialized_per_pair_and_globally_capped() {
+        let (_dir, service) = service();
+        service.begin_source_consent("openai", "KEY_ONE").unwrap();
+        let duplicate = service
+            .begin_source_consent("openai", "KEY_ONE")
+            .unwrap_err();
+        assert!(duplicate
+            .to_string()
+            .contains(lease::CREDENTIAL_SOURCE_CONSENT_PENDING));
+        service.begin_source_consent("openai", "KEY_TWO").unwrap();
+        service.begin_source_consent("openai", "KEY_THREE").unwrap();
+        service.begin_source_consent("openai", "KEY_FOUR").unwrap();
+        let over_limit = service
+            .begin_source_consent("openai", "KEY_FIVE")
+            .unwrap_err();
+        assert!(over_limit
+            .to_string()
+            .contains(lease::CREDENTIAL_LOCATOR_LIMIT));
+    }
+
+    #[test]
+    fn removing_a_source_license_keeps_the_remembered_location() {
+        let (root, service) = locator_service("locator-source-remove");
+        let env_file = root.path.join("provider.env");
+        std::fs::write(&env_file, "OPENAI_API_KEY=sk-remove-not-real\n").unwrap();
+        let locator = service
+            .remember_external_locator(&env_file, "openai", "OPENAI_API_KEY", "Project OpenAI")
+            .unwrap();
+        service.register_locator(&locator.id).unwrap();
+
+        service.remove_locator_source(&locator.id).unwrap();
+        let remembered = service
+            .locators(true)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == locator.id)
+            .unwrap();
+        assert_eq!(remembered.state, CredentialLocatorState::Observed);
+        assert!(!remembered.registered);
+        assert!(!remembered.loaded);
+        assert!(service.env_sources.keys().is_empty());
+    }
+
+    #[test]
+    fn changed_fingerprint_unloads_registered_locator() {
+        let (root, service) = locator_service("locator-fingerprint-change");
+        let env_file = root.path.join("changing.env");
+        std::fs::write(&env_file, "OPENAI_API_KEY=sk-first-not-real\n").unwrap();
+        let locator = service
+            .remember_external_locator(&env_file, "openai", "OPENAI_API_KEY", "Changing OpenAI")
+            .unwrap();
+        service.register_locator(&locator.id).unwrap();
+        std::fs::write(&env_file, "OPENAI_API_KEY=sk-second-not-real\n").unwrap();
+
+        let error = service
+            .load_registered_locator(&locator.id, false)
+            .unwrap_err();
+        assert!(error.to_string().contains(lease::CREDENTIAL_VALUE_UNLOADED));
+        assert!(service.env_sources.keys().is_empty());
+        let row = service
+            .locators(true)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == locator.id)
+            .unwrap();
+        assert!(!row.loaded);
+        assert_eq!(row.source_state.as_deref(), Some("fingerprint_changed"));
+    }
+
+    #[test]
+    fn switching_sources_revokes_old_caps_and_forget_restores_instance() {
+        let (root, service) = locator_service("locator-switch-fallback");
+        let instance_file = root.path.join("instance.env");
+        std::fs::write(&instance_file, "OPENAI_API_KEY=sk-instance-not-real\n").unwrap();
+        let instance_bytes = SecretBytes::from_utf8("sk-instance-not-real");
+        let instance_digest = fingerprint::fingerprint(&instance_bytes);
+        let (instance_locator_id, instance_source_id) = service
+            .db
+            .transaction(|conn| {
+                let instance = locator::upsert_instance(
+                    conn,
+                    &instance_file,
+                    "openai",
+                    "OPENAI_API_KEY",
+                    "Workshop instance OpenAI",
+                )?;
+                let source_id = lease::upsert_env_source_descriptor(
+                    conn,
+                    "openai",
+                    "OPENAI_API_KEY",
+                    &instance_file,
+                    Some(&instance.id),
+                    Some(&instance_digest),
+                    true,
+                )?;
+                locator::mark_preferred(conn, &source_id, "openai", "OPENAI_API_KEY")?;
+                Ok((instance.id, source_id))
+            })
+            .unwrap();
+        service
+            .load_registered_locator(&instance_locator_id, true)
+            .unwrap();
+
+        let first_file = root.path.join("first.env");
+        std::fs::write(&first_file, "OPENAI_API_KEY=sk-first-external-not-real\n").unwrap();
+        let first = service
+            .remember_external_locator(&first_file, "openai", "OPENAI_API_KEY", "First external")
+            .unwrap();
+        let first = service.register_locator(&first.id).unwrap();
+        let first_source_id = first.source_id.clone().unwrap();
+        let issued = service
+            .db
+            .with_conn(|conn| {
+                capability::issue(
+                    conn,
+                    service.capabilities.as_ref(),
+                    &first_source_id,
+                    "run-switch",
+                    "recipe-switch",
+                    "openai",
+                    &ProviderUsePolicy::default(),
+                    "test",
+                )
+            })
+            .unwrap();
+        assert!(service
+            .capabilities
+            .find_active(&first_source_id, "run-switch")
+            .is_some());
+
+        let second_file = root.path.join("second.env");
+        std::fs::write(&second_file, "OPENAI_API_KEY=sk-second-external-not-real\n").unwrap();
+        let second = service
+            .remember_external_locator(&second_file, "openai", "OPENAI_API_KEY", "Second external")
+            .unwrap();
+        service.register_locator(&second.id).unwrap();
+        assert!(service
+            .capabilities
+            .find_active(&first_source_id, "run-switch")
+            .is_none());
+        assert!(service.capabilities.reserve_call(&issued.handle).is_err());
+
+        service.forget_locator(&second.id).unwrap();
+        assert_eq!(
+            service.source_for_locator(&instance_locator_id).unwrap(),
+            instance_source_id
+        );
+        assert!(
+            service
+                .locators(true)
+                .unwrap()
+                .into_iter()
+                .find(|row| row.id == instance_locator_id)
+                .unwrap()
+                .loaded
+        );
     }
 
     #[test]
@@ -1228,6 +2250,110 @@ mod tests {
         assert_eq!(again.handle, granted.handle);
         let inbox = service.inbox().unwrap();
         assert!(inbox.grants.is_empty());
+    }
+
+    #[test]
+    fn active_capability_reuse_rejects_an_underscoped_grant() {
+        let (_dir, service) = service();
+        let created = service
+            .create(
+                "Project OpenRouter",
+                "openrouter",
+                "project/config/env",
+                "sk-not-real-underscope",
+                "test",
+            )
+            .unwrap();
+        let narrow = ProviderUsePolicy {
+            max_calls: 40,
+            max_cost_usd: 0.60,
+            ..ProviderUsePolicy::default()
+        };
+        service
+            .grant_use(&created.id, "run-envelope", "recipe", narrow, "test", false)
+            .unwrap();
+        let required = ProviderUsePolicy {
+            max_calls: 50,
+            max_cost_usd: 2.45,
+            models: vec!["z-ai/glm-5.3-flash".into()],
+            ..ProviderUsePolicy::default()
+        };
+        let error = service
+            .request_use(&created.id, "run-envelope", "recipe", required, "agent")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("capability_underscoped"), "{error}");
+        assert!(error.contains("\"maxCalls\":40"), "{error}");
+        assert!(error.contains("\"maxCalls\":50"), "{error}");
+        assert!(error.contains("2.45"), "{error}");
+    }
+
+    #[test]
+    fn revoking_a_run_capability_preserves_the_file_backed_source() {
+        let (root, service) = locator_service("locator-capability-revoke");
+        let env_file = root.path.join("provider.env");
+        std::fs::write(&env_file, "OPENROUTER_API_KEY=sk-revoke-not-real\n").unwrap();
+        let locator = service
+            .remember_external_locator(
+                &env_file,
+                "openrouter",
+                "OPENROUTER_API_KEY",
+                "Project OpenRouter",
+            )
+            .unwrap();
+        service.register_locator(&locator.id).unwrap();
+        let source_id = service.source_for_locator(&locator.id).unwrap();
+        let granted = service
+            .grant_use(
+                &source_id,
+                "run-revoke-only",
+                "recipe",
+                ProviderUsePolicy::default(),
+                "test",
+                false,
+            )
+            .unwrap();
+        let revoked_handle = granted.handle.clone().unwrap();
+        service
+            .revoke_capability(granted.capability_id.as_deref().unwrap(), "test")
+            .unwrap();
+
+        let denied = service
+            .capabilities
+            .reserve_call(&revoked_handle)
+            .unwrap_err()
+            .to_string();
+        assert!(denied.contains("revoked"), "{denied}");
+        assert!(service
+            .capabilities
+            .find_active(&source_id, "run-revoke-only")
+            .is_none());
+        let source = service
+            .locators(true)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == locator.id)
+            .unwrap();
+        assert!(
+            source.registered,
+            "capability revoke must not unregister source"
+        );
+        assert!(
+            source.loaded,
+            "capability revoke must not unload source material"
+        );
+
+        let fresh = service
+            .grant_use(
+                &source_id,
+                "run-after-revoke",
+                "recipe",
+                ProviderUsePolicy::default(),
+                "test",
+                false,
+            )
+            .unwrap();
+        assert_eq!(fresh.status, "granted");
     }
 
     #[tokio::test]
@@ -1475,15 +2601,10 @@ mod tests {
 
     #[test]
     fn workload_env_is_sentinel_not_provider_key() {
-        let (_dir, service) = service();
+        let (dir, service) = service();
+        let env_file = dir.path().join(".env");
         service
-            .create(
-                "Personal OpenAI",
-                "openai",
-                "personal/development/providers",
-                "sk-proj-NEVERINENV",
-                "test",
-            )
+            .load_test_env_source("openai", "OPENAI_API_KEY", "sk-proj-NEVERINENV", &env_file)
             .unwrap();
         let env = service
             .workload_env(
@@ -1659,7 +2780,7 @@ mod tests {
             max_output_tokens: 10_000,
             used_output_tokens: 0,
             max_cost_usd_micros: 1_000_000,
-            used_cost_usd_micros: 0,
+            used_cost_usd_micros: Some(0),
             status: "granted".into(),
             expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
         };
@@ -1703,5 +2824,318 @@ mod tests {
             "http://host.docker.internal:18451/cap/wcap_abc12345/v1/providers/openai/chat/completions"
         );
         assert!(!route.contains("api.openai.com"));
+    }
+
+    #[test]
+    fn vault_rows_are_not_a_fallback_for_code_workflows() {
+        let (_dir, service) = service();
+        service
+            .create(
+                "Personal OpenAI",
+                "openai",
+                "personal/development/providers",
+                "sk-vault-must-not-authorize",
+                "test",
+            )
+            .unwrap();
+        let error = service
+            .workload_env(
+                "openai",
+                "run_vault",
+                "gepa.craftax.smoke.v1",
+                ProviderUsePolicy::default(),
+                "test",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("credential_value_missing")
+                || error.contains("credential_value_unloaded"),
+            "vault secret must not authorize a code workflow: {error}"
+        );
+        assert!(!error.contains("sk-vault"));
+    }
+
+    #[test]
+    fn stale_memory_descriptor_is_not_a_live_connection() {
+        let (dir, service) = service();
+        let env_file = dir.path().join(".env");
+        service
+            .load_test_env_source("openai", "OPENAI_API_KEY", "sk-live-then-gone", &env_file)
+            .unwrap();
+        service.env_sources.clear();
+        let error = service
+            .issue_lease(
+                "openai",
+                "run_stale",
+                "eval.craftax.llm-policy.smoke.v1",
+                ProviderUsePolicy::default(),
+                "test",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("credential_value_unloaded")
+                || error.contains("credential_value_missing"),
+            "unloaded descriptor must not look valid: {error}"
+        );
+    }
+
+    #[test]
+    fn managed_recipe_cannot_select_byok() {
+        let error = lease::reject_managed_byok("gepa.craftax.smoke.v1", Some("byok"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("managed_byok_rejected"));
+    }
+
+    #[test]
+    fn lease_compiler_never_emits_the_real_key() {
+        let (dir, service) = service();
+        let env_file = dir.path().join(".env");
+        service
+            .load_test_env_source(
+                "openai",
+                "OPENAI_API_KEY",
+                "sk-real-must-not-leak",
+                &env_file,
+            )
+            .unwrap();
+        let lease = service
+            .issue_lease(
+                "openai",
+                "run_compile",
+                "gepa.craftax.smoke.v1",
+                ProviderUsePolicy::default(),
+                "test",
+            )
+            .unwrap();
+        lease.assert_managed_proxy().unwrap();
+        assert_eq!(lease.credential_mode, lease::CREDENTIAL_MODE_WORKSHOP_PROXY);
+        assert_eq!(lease.api_key_sentinel, API_KEY_SENTINEL);
+        let dump = format!(
+            "{:?}{:?}{:?}",
+            lease.compile_host_env(),
+            lease.compile_container_env(),
+            lease.compile_eval_manifest_patch()
+        );
+        assert!(!dump.contains("sk-real-must-not-leak"));
+        assert!(dump.contains(API_KEY_SENTINEL));
+        assert!(lease.inference_url.contains("host.docker.internal"));
+        assert!(!lease.inference_url.contains("api.openai.com"));
+    }
+
+    #[test]
+    fn default_backend_never_opens_keychain() {
+        assert_eq!(backend::default_backend().backend_name(), "memory");
+    }
+
+    #[test]
+    fn classify_upstream_status_is_typed() {
+        assert_eq!(
+            lease::classify_upstream_status(401),
+            lease::PROVIDER_AUTH_REJECTED
+        );
+        assert_eq!(
+            lease::classify_upstream_status(429),
+            lease::PROVIDER_RATE_LIMITED
+        );
+        assert_eq!(
+            lease::classify_upstream_status(503),
+            lease::PROVIDER_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn restart_does_not_restore_in_memory_leases() {
+        let (dir, service) = service();
+        let env_file = dir.path().join(".env");
+        service
+            .load_test_env_source("openai", "OPENAI_API_KEY", "sk-restart", &env_file)
+            .unwrap();
+        let lease = service
+            .issue_lease(
+                "openai",
+                "run_restart",
+                "eval.craftax.llm-policy.smoke.v1",
+                ProviderUsePolicy::default(),
+                "test",
+            )
+            .unwrap();
+        let restarted = SecretsService::with_backend(
+            service.db.clone(),
+            Arc::new(backend::MemoryBackend::new()),
+        );
+        assert!(restarted
+            .env_sources
+            .get(&lease::env_backend_ref("openai", "OPENAI_API_KEY"))
+            .is_none());
+        let error = restarted
+            .issue_lease(
+                "openai",
+                "run_restart_2",
+                "eval.craftax.llm-policy.smoke.v1",
+                ProviderUsePolicy::default(),
+                "test",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("credential_value_unloaded")
+                || error.contains("credential_value_missing"),
+            "restarted process must not reuse the old in-memory lease: {error}"
+        );
+        let _ = lease;
+    }
+
+    #[test]
+    fn preflight_probes_host_and_container_route() {
+        let (dir, service) = service();
+        let env_file = dir.path().join(".env");
+        service
+            .load_test_env_source("openai", "OPENAI_API_KEY", "sk-preflight", &env_file)
+            .unwrap();
+        let receipt = service
+            .preflight_openai_route(
+                "eval.craftax.llm-policy.smoke.v1",
+                ProviderUsePolicy::default(),
+            )
+            .unwrap();
+        assert!(receipt.proxy_reachable);
+        assert!(receipt.container_reachable);
+        assert!(receipt.capability_policy_verified);
+        assert!(receipt.lease_digest.is_some());
+        assert!(!format!("{receipt:?}").contains("sk-preflight"));
+    }
+
+    #[test]
+    fn issue_lease_records_a_receipt_chain_without_the_key() {
+        let (dir, service) = service();
+        let env_file = dir.path().join(".env");
+        service
+            .load_test_env_source("openai", "OPENAI_API_KEY", "sk-chain-secret", &env_file)
+            .unwrap();
+        let lease = service
+            .issue_lease(
+                "openai",
+                "run_chain",
+                "eval.craftax.llm-policy.smoke.v1",
+                ProviderUsePolicy::default(),
+                "test",
+            )
+            .unwrap();
+        let chain = service.chain_for_run("run_chain").expect("chain recorded");
+        let dump = chain.to_string();
+        assert!(!dump.contains("sk-chain-secret"));
+        assert!(!dump.contains(&lease.capability_handle));
+        assert_eq!(chain["leaseDigest"], json!(lease.digest()));
+        assert_eq!(chain["capabilityStatus"], json!("granted"));
+        assert_eq!(chain["capabilityRevoked"], json!(false));
+        let sealed = service
+            .seal_run_chain("run_chain")
+            .unwrap()
+            .expect("sealed chain");
+        assert_eq!(sealed["capabilityRevoked"], json!(true));
+        assert_eq!(sealed["capabilityStatus"], json!("revoked"));
+        assert!(sealed
+            .get("revokedAt")
+            .and_then(|value| value.as_str())
+            .is_some());
+    }
+
+    #[test]
+    fn exhausted_capability_remains_authoritative_when_run_chain_is_sealed() {
+        let (dir, service) = service();
+        let source_id = service
+            .db
+            .transaction(|conn| {
+                lease::upsert_env_source_descriptor(
+                    conn,
+                    "openai",
+                    "OPENAI_API_KEY",
+                    &dir.path().join("not-loaded.env"),
+                    None,
+                    None,
+                    false,
+                )
+            })
+            .unwrap();
+        let policy = ProviderUsePolicy {
+            max_calls: 1,
+            ..ProviderUsePolicy::default()
+        };
+        let issued = service
+            .db
+            .transaction(|conn| {
+                capability::issue(
+                    conn,
+                    &service.capabilities,
+                    &source_id,
+                    "run_exhausted_chain",
+                    "eval.craftax.llm-policy.smoke.v1",
+                    "openai",
+                    &policy,
+                    "test",
+                )
+            })
+            .unwrap();
+        let reserved = service
+            .capabilities
+            .reserve_call(&issued.handle)
+            .expect("reserve the only allowed call");
+        let exhausted = service
+            .capabilities
+            .debit_usage(
+                &issued.handle,
+                &capability::MeasuredUsage {
+                    calls: 1,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cost_usd: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(reserved.used_calls, 1);
+        assert_eq!(exhausted.status, "exhausted");
+        service
+            .db
+            .with_conn(|conn| capability::persist_usage(conn, &exhausted))
+            .unwrap();
+        let mut stale_revoked_copy = exhausted.clone();
+        stale_revoked_copy.status = capability::CapabilityStatus::Revoked.as_str().into();
+        service
+            .db
+            .with_conn(|conn| capability::persist_usage(conn, &stale_revoked_copy))
+            .unwrap();
+        service.chains.lock().unwrap().insert(
+            "run_exhausted_chain".into(),
+            json!({
+                "schemaVersion": lease::CHAIN_SCHEMA,
+                "capabilityId": issued.id,
+                "capabilityStatus": "granted",
+                "revokedAt": null,
+                "capabilityRevoked": false,
+            }),
+        );
+
+        let sealed = service
+            .seal_run_chain("run_exhausted_chain")
+            .unwrap()
+            .expect("sealed chain");
+        let lifecycle = service
+            .durable_capability_lifecycle(&issued.id)
+            .unwrap()
+            .expect("durable lifecycle");
+
+        assert_eq!(lifecycle.status, capability::CapabilityStatus::Exhausted);
+        assert_eq!(lifecycle.revoked_at, None);
+        assert_eq!(sealed["capabilityStatus"], json!("exhausted"));
+        assert_eq!(sealed["capabilityRevoked"], json!(false));
+        assert_eq!(sealed["revokedAt"], json!(null));
+        assert_eq!(
+            service.capabilities.lookup(&issued.handle).unwrap().status,
+            "exhausted",
+            "run sealing must not copy revoked over an exhausted live capability"
+        );
     }
 }

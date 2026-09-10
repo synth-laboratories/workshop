@@ -5,7 +5,8 @@
 // no system dialogs. Dependency-free by design: global fetch only.
 //
 // Usage:
-//   workshop-qa-driver.mjs [--descriptor <path>] [--prompt <text>|--prompt-file <path>]
+//   workshop-qa-driver.mjs [--descriptor <path>] [--workspace <path>]
+//                          [--prompt <text>|--prompt-file <path>]
 //                          [--workflow banking77-smoke] [--model <id>]
 //                          [--timeout-ms <n>] [--export <path>]
 //
@@ -146,6 +147,7 @@ function parseArgs(argv) {
       return argv[i];
     };
     if (flag === "--descriptor") args.descriptor = next();
+    else if (flag === "--workspace") args.workspace = next();
     else if (flag === "--prompt") args.prompt = next();
     else if (flag === "--prompt-file") args.prompt = readFileSync(next(), "utf8");
     else if (flag === "--workflow") args.workflow = next();
@@ -214,7 +216,10 @@ async function main() {
   receipt.preflight = await call(descriptor, "GET", "/v1/preflight");
 
   const sessionId = `qa_${Date.now().toString(36)}`;
-  await call(descriptor, "POST", "/v1/sessions", { sessionId });
+  await call(descriptor, "POST", "/v1/sessions", {
+    sessionId,
+    ...(args.workspace ? { workspace: args.workspace } : {}),
+  });
   receipt.sessionId = sessionId;
 
   const message = { body: prompt };

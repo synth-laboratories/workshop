@@ -1,16 +1,19 @@
+import { runtimeStorage } from "../preferences/runtimeStorage";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { apiProviderForTarget, EXECUTION_TARGETS, LAUNCH_PICKER_TARGETS, MODEL_ACCESS_LABEL, MODEL_ACCESS_ORDER, modelAccessForTarget, TARGET_GROUP_LABEL } from "../types/landing";
+import { apiProviderForTarget, EXECUTION_TARGETS, isOpenRouterTargetId, LAUNCH_PICKER_TARGETS, MODEL_ACCESS_LABEL, MODEL_ACCESS_ORDER, modelAccessForTarget, TARGET_GROUP_LABEL } from "../types/landing";
+import { targetOptionForId } from "../runtime/modelCatalog";
 import type { ExecutionTargetOption, LandingState, ModelAccessKind } from "../types/landing";
+import { ManderPresence } from "./mander";
 import { SynthLogo } from "./SynthLogo";
-import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
+import type { LagunaPolicy } from "../bridge/types";
+import { policyLabel } from "../runtime/lagunaPolicies";
+import { ComposerLayoutHost } from "./ComposerLayout";
+import { bridges } from "../runtime/desktopBridge";
 
 type Props = {
+	showMascot?: boolean;
 	state: LandingState;
-	selectedTargetId: string;
-	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
-	onConfigureModels?: () => void;
-	onResolveBilling?: () => void;
 };
 
 export function ModelPicker({
@@ -22,7 +25,10 @@ export function ModelPicker({
 	onSelectTarget,
 	onConfigureAccount,
 	onConfigureModels,
-	onResolveBilling
+	onResolveBilling,
+	lagunaPolicies = [],
+	selectedLagunaPolicyId = null,
+	onSelectLagunaPolicy
 }: {
 	selectedTargetId: string;
 	apiKeyConfigured?: boolean;
@@ -34,11 +40,20 @@ export function ModelPicker({
 	onConfigureAccount?: () => void;
 	onConfigureModels?: () => void;
 	onResolveBilling?: () => void;
+	lagunaPolicies?: LagunaPolicy[];
+	selectedLagunaPolicyId?: string | null;
+	onSelectLagunaPolicy?: (modelId: string | null) => void;
 }) {
 	const [open, setOpen] = useState(false);
 	const [activeAccess, setActiveAccess] = useState<ModelAccessKind | null>(null);
 	const ref = useRef<HTMLDivElement>(null);
-	const selected = EXECUTION_TARGETS.find((t) => t.id === selectedTargetId) ?? EXECUTION_TARGETS[0];
+	const selected = targetOptionForId(selectedTargetId) ?? EXECUTION_TARGETS[0];
+	const selectedLagunaPolicy = lagunaPolicies.find((policy) =>
+		policy.isBase ? selectedLagunaPolicyId === null : policy.modelId === selectedLagunaPolicyId
+	);
+	const selectedLabel = selectedTargetId === "local-laguna" && selectedLagunaPolicy
+		? policyLabel(selectedLagunaPolicy)
+		: selected.label;
 	// The dropdown must stay inside the viewport with an 8px inset, never cover
 	// the composer, and flip above the trigger when the space below is tighter
 	// than the space above. Content taller than the slot scrolls internally.
@@ -113,11 +128,7 @@ export function ModelPicker({
 				aria-controls="model-dropdown"
 				aria-haspopup="listbox"
 			>
-				<ProviderMark
-					kind={providerMarkForTarget(selectedTargetId)}
-					className={`model-pill-logo model-pill-logo-${providerMarkForTarget(selectedTargetId)}`}
-				/>
-				<span className="model-pill-label">{selected.label}</span>
+				<span className="model-pill-label">{selectedLabel}</span>
 				<svg className="model-pill-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden>
 					<path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" fill="none" />
 				</svg>
@@ -164,14 +175,48 @@ export function ModelPicker({
 							<div key={group} className="model-dropdown-group">
 								<div className="model-dropdown-group-label">{activeAccess === "api" ? apiProviderForTarget(items[0]) : TARGET_GROUP_LABEL[group]}</div>
 								{items.map((target: ExecutionTargetOption) => {
+									if (target.id === "local-laguna" && lagunaPolicies.length) {
+										return lagunaPolicies.map((policy) => {
+											const policyId = policy.isBase ? null : policy.modelId;
+											const selectedHere = selectedTargetId === target.id && selectedLagunaPolicyId === policyId;
+											return (
+												<button
+													key={policy.modelId}
+													type="button"
+													role="option"
+													aria-selected={selectedHere}
+													data-testid={`model-option-local-laguna-${policy.isBase ? "base" : policy.modelId}`}
+													className={`model-option${selectedHere ? " selected" : ""}`}
+													onClick={() => {
+														onSelectTarget(target.id);
+														onSelectLagunaPolicy?.(policyId);
+														setOpen(false);
+													}}
+												>
+													<span className="model-option-label">{policyLabel(policy)}</span>
+													<span className="model-option-desc">{policy.isBase ? "Base model · This Mac" : "Fine-tuned model · This Mac"}</span>
+												</button>
+											);
+										});
+									}
 									const needsSynthKey =
 										target.id.startsWith("synth-cloud-") && apiKeyConfigured !== true;
 									const needsOpenRouterKey =
-										target.id.startsWith("openrouter-") && openrouterApiKeyConfigured !== true;
+										isOpenRouterTargetId(target.id) && openrouterApiKeyConfigured !== true;
 									const needsCodexOauth =
 										target.id.startsWith("chatgpt-") && codexOauthConfigured !== true;
 									const allowanceBlocked =
 										target.id.startsWith("synth-cloud-") && !needsSynthKey && Boolean(cloudBlockedReason);
+									if (target.selectable === false) {
+										return (
+											<div key={target.id} className="model-option is-disabled" data-testid={`model-option-${target.id}`}>
+												<span className="model-option-copy" role="option" aria-selected={false} aria-disabled="true">
+													<span className="model-option-label">{target.label}</span>
+													<span className="model-option-desc">{target.diagnostic ?? target.availability ?? "Unavailable"}</span>
+												</span>
+											</div>
+										);
+									}
 									if (allowanceBlocked) {
 										return (
 											<div
@@ -261,40 +306,49 @@ export function ModelPicker({
 }
 
 export function LandingPage({
+	showMascot = false,
 	state,
-	selectedTargetId,
-	onSelectTarget,
 	onConfigureAccount,
-	onConfigureModels,
-	onResolveBilling
 }: Props) {
 	const [accountChoiceMade, setAccountChoiceMade] = useState(
-		() => window.localStorage.getItem("synth.accountChoiceMade") === "1"
+		() => runtimeStorage.getItem("synth.accountChoiceMade") === "1"
 	);
+    useEffect(() => {
+        const refresh = () => setAccountChoiceMade(runtimeStorage.getItem("synth.accountChoiceMade") === "1");
+        window.addEventListener("workshop:state-changed", refresh);
+        return () => window.removeEventListener("workshop:state-changed", refresh);
+    }, []);
+	// The consent ask is host-owned state, not localStorage: it shows whenever
+	// the host says a choice (under the current collection policy) is missing,
+	// and a policy bump re-asks. Until answered, telemetry stays local-only.
+	const [consentAskDue, setConsentAskDue] = useState(false);
+	const [consentSaving, setConsentSaving] = useState(false);
+	const [consentError, setConsentError] = useState<string | null>(null);
+	useEffect(() => {
+		void bridges.telemetry
+			?.getPolicy()
+			.then((policy) => setConsentAskDue(policy.needsAsk))
+			.catch(() => setConsentAskDue(false));
+	}, []);
+	const answerConsent = (granted: boolean) => {
+		setConsentSaving(true);
+		setConsentError(null);
+		void bridges.telemetry?.setConsent(granted)
+			.then((policy) => setConsentAskDue(policy.needsAsk))
+			.catch(() => setConsentError("Could not save your choice. Please try again."))
+			.finally(() => setConsentSaving(false));
+	};
 	return (
 		<div className="landing" data-testid="landing-page">
 			<div className="landing-hero">
 				<div className="synth-logo-wrap">
 					<SynthLogo className="synth-logo" />
 				</div>
-				<div className="landing-title-row">
-					<p className="landing-title">Start a new conversation using</p>
-					<ModelPicker
-						selectedTargetId={selectedTargetId}
-						apiKeyConfigured={state.apiKeyConfigured}
-						openrouterApiKeyConfigured={state.openrouterApiKeyConfigured}
-						codexOauthConfigured={state.codexOauthConfigured}
-						cloudBlockedReason={state.cloudBlockedReason}
-						onSelectTarget={onSelectTarget}
-						onConfigureAccount={onConfigureAccount}
-						onConfigureModels={onConfigureModels}
-						onResolveBilling={onResolveBilling}
-					/>
-				</div>
+				<h1 className="landing-title">Start a new conversation with Workshop</h1>
 				{!state.apiKeyConfigured && !accountChoiceMade ? (
 					<div className="quick-actions" data-testid="first-run-account-choice">
 						<button type="button" className="quick-card" onClick={() => {
-							window.localStorage.setItem("synth.accountChoiceMade", "1");
+							runtimeStorage.setItem("synth.accountChoiceMade", "1");
 							setAccountChoiceMade(true);
 						}}>
 							<span><strong>Continue locally</strong><small>No account required</small></span>
@@ -304,7 +358,39 @@ export function LandingPage({
 						</button>
 					</div>
 				) : null}
+				{consentAskDue ? (
+					<div className="landing-consent" data-testid="telemetry-consent-ask">
+						<span>
+							Share usage stats? Counts and outcomes only — never prompts,
+							files, or keys. These may be associated with your signed-in account.
+							Change anytime in Settings → Privacy.
+						</span>
+						<div className="landing-consent-actions">
+							<button
+								type="button"
+								className="settings-secondary-btn"
+								data-testid="telemetry-consent-allow"
+								disabled={consentSaving}
+								onClick={() => answerConsent(true)}
+							>
+								Allow
+							</button>
+							<button
+								type="button"
+								className="settings-secondary-btn"
+								data-testid="telemetry-consent-decline"
+								disabled={consentSaving}
+								onClick={() => answerConsent(false)}
+							>
+								No thanks
+							</button>
+							{consentError ? <span role="alert">{consentError}</span> : null}
+						</div>
+					</div>
+				) : null}
 			</div>
+			{showMascot ? <ManderPresence chat={{id: "landing", title: "New conversation", messages: []}} running={false} /> : null}
+			<ComposerLayoutHost />
 		</div>
 	);
 }

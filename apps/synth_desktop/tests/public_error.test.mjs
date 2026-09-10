@@ -24,6 +24,12 @@ test("an AppError renders its message, never [object Object]", () => {
 	assert.match(rendered, /invalid_argument/);
 });
 
+test("a surfaced message with code internal does not grow an (internal) suffix", () => {
+	const rendered = publicError({ code: "internal", message: "private artifact URL is invalid" });
+	assert.equal(rendered.includes("(internal)"), false);
+	assert.match(rendered, /private artifact URL is invalid/);
+});
+
 test("developer detail alone never becomes the user-facing message", () => {
 	const rendered = publicError({ code: "internal", detail: "thread 'main' panicked at src/lib.rs:42" });
 	assert.equal(rendered.includes("panicked"), false);
@@ -40,6 +46,42 @@ test("a capability refusal keeps its code, remediation and retryability", () => 
 	assert.equal(projected.code, "container_capability_rejected");
 	assert.equal(projected.retryable, false);
 	assert.match(projected.remediation, /normalized pool/);
+});
+
+test("a typed Shoal cold-start response becomes an actionable warming state", () => {
+	const projected = toPublicError({
+		error: {
+			code: "inference_target_not_ready",
+			message: "cold target missed its deadline",
+			retryable: true,
+			warm_operation_id: "op-redacted"
+		}
+	});
+	assert.equal(projected.message, "The hosted model is warming up.");
+	assert.equal(projected.retryable, true);
+	assert.match(projected.remediation, /Retry in a moment/);
+});
+
+test("a Shoal capacity response distinguishes cloud scheduling from model warmup", () => {
+	const projected = toPublicError({
+		detail: {
+			error: {
+				code: "inference_provider_capacity_pending",
+				message: "provider pending",
+				retryable: true,
+				state: "provider_start_pending",
+				source: "cloud",
+				warm_operation_id: "warm-123",
+				elapsed_ms: 30125
+			}
+		}
+	});
+	assert.equal(projected.message, "Waiting for Synth Cloud GPU capacity.");
+	assert.equal(projected.state, "provider_start_pending");
+	assert.equal(projected.source, "cloud");
+	assert.equal(projected.warmOperationId, "warm-123");
+	assert.equal(projected.elapsedMs, 30125);
+	assert.match(projected.remediation, /same warm operation continues/);
 });
 
 test("secrets in boundary text are redacted", () => {

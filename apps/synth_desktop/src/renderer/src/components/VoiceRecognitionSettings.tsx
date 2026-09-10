@@ -21,6 +21,8 @@ const STATIC_CATALOG: WhisperModelHit[] = [
 		multilingual: true,
 		downloadBytes: 75 * 1024 ** 2,
 		selected: false,
+		installedBytes: 0,
+		path: null,
 		modelsRoot: DEFAULT_MODELS_ROOT
 	},
 	{
@@ -31,6 +33,8 @@ const STATIC_CATALOG: WhisperModelHit[] = [
 		multilingual: true,
 		downloadBytes: 142 * 1024 ** 2,
 		selected: false,
+		installedBytes: 0,
+		path: null,
 		modelsRoot: DEFAULT_MODELS_ROOT
 	},
 	{
@@ -41,6 +45,8 @@ const STATIC_CATALOG: WhisperModelHit[] = [
 		multilingual: true,
 		downloadBytes: 466 * 1024 ** 2,
 		selected: false,
+		installedBytes: 0,
+		path: null,
 		modelsRoot: DEFAULT_MODELS_ROOT
 	},
 	{
@@ -51,6 +57,8 @@ const STATIC_CATALOG: WhisperModelHit[] = [
 		multilingual: true,
 		downloadBytes: 1620 * 1024 ** 2,
 		selected: false,
+		installedBytes: 0,
+		path: null,
 		modelsRoot: DEFAULT_MODELS_ROOT
 	}
 ];

@@ -79,6 +79,80 @@ test("divergent messageIds for the same prompt still yield two bubbles (ownershi
 	assert.equal(user.length, 2);
 });
 
+test("approval policy state and unknown approval events stay out of conversation activity", () => {
+	const activity = eventsToLocalActivity([
+		event({
+			sequence: 1,
+			eventKind: "approval.policy.effective",
+			payload: { approvalPolicy: "never", sandbox: "danger-full-access" }
+		}),
+		event({
+			sequence: 2,
+			eventKind: "approval.future-state",
+			payload: { detail: "new backend state" }
+		})
+	], []);
+
+	assert.deepEqual(activity, {});
+});
+
+test("recognized approval lifecycle events retain explicit Synth labels", () => {
+	const activity = eventsToLocalActivity([
+		event({
+			sequence: 1,
+			eventKind: "approval.granted",
+			payload: { approvalId: "approval-1" }
+		})
+	], []);
+
+	assert.equal(activity.__active__?.[0]?.label, "Permission granted");
+
+	const paid = eventsToLocalActivity([
+		event({ sequence: 2, eventKind: "approval.granted", payload: { approvalId: "approval-2", kind: "paid_compute" } })
+	], []);
+	assert.equal(paid.__active__?.[0]?.label, "Paid compute granted");
+});
+
+test("conversation paid-compute auto-approval stays in the journal, not chat", () => {
+	const activity = eventsToLocalActivity([
+		event({
+			sequence: 4,
+			eventKind: "approval.granted",
+			payload: {
+				approvalId: "approval-auto-1",
+				kind: "paid_compute",
+				policyAuto: true,
+				approvalPolicy: "conversation_paid_compute_budget",
+				reservedUsdMicros: 60_000,
+				settledSpendUsdMicros: 0,
+				remainingUsdMicros: 190_000,
+				conversationCapUsdMicros: 250_000,
+				cap: { maxCostUsdMicros: 60_000, maxRollouts: 8 }
+			}
+		})
+	], []);
+	assert.deepEqual(activity, {});
+});
+
+test("ineligible paid-compute requests still project a blocking modal card", () => {
+	const activity = eventsToLocalActivity([
+		event({
+			sequence: 5,
+			eventKind: "approval.requested",
+			payload: {
+				approvalId: "approval-modal",
+				kind: "paid_compute",
+				operation: "optimizer.evaluation.inline.start",
+				requestedCap: { maxCostUsdMicros: 200_000 }
+			}
+		})
+	], []);
+	const line = activity.__active__?.[0];
+	assert.equal(line?.approvalId, "approval-modal");
+	assert.equal(line?.approvalKind, "paid_compute");
+	assert.equal(line?.label, "Paid compute approval");
+});
+
 test("duplicate provider failures render once and hide raw provider payloads", () => {
 	const rawFailure = JSON.stringify({
 		error: {
@@ -98,6 +172,38 @@ test("duplicate provider failures render once and hide raw provider payloads", (
 		"The provider could not produce a response: The provider rejected a request ending with a model turn. Try again."
 	);
 	assert.equal(system[0].body.includes("metadata"), false);
+});
+
+test("usage-limit failures always identify their provider", () => {
+	const cases = [
+		{
+			payload: { error: { codexErrorInfo: "usageLimitExceeded", message: "You hit your usage limit. Try again at 4:00 PM." } },
+			expected: "Provider: ChatGPT Codex. Your usage limit has been reached. You are still signed in; use another model or try again at 4:00 PM."
+		},
+		{
+			payload: { turn: { providerId: "openrouter", error: { codexErrorInfo: "usageLimitExceeded", message: "You hit your usage limit" } } },
+			expected: "Provider: OpenRouter. Your usage limit has been reached. You are still signed in; use another model or try again after your limit resets."
+		},
+		{
+			payload: { provider: "openrouter", error: { message: "insufficient credits" } },
+			expected: "Provider: OpenRouter. Credits are unavailable or exhausted. Add credits or choose another model, then retry."
+		},
+		{
+			payload: { modelIdentity: { provider: "synth-cloud" }, error: { message: "allowance exhausted" } },
+			expected: "Provider: Synth Cloud. Your allowance is unavailable. Manage billing or choose a local/API-key model, then retry."
+		},
+		{
+			payload: { error: { message: "payment required" } },
+			expected: "Provider: OpenRouter. Credits are unavailable or exhausted. Add credits or choose another model, then retry."
+		}
+	];
+
+	for (const [index, fixture] of cases.entries()) {
+		const messages = eventsToMessages([
+			event({ sequence: index + 1, eventKind: "run.failed", payload: fixture.payload })
+		]);
+		assert.equal(messages.at(-1)?.body, fixture.expected);
+	}
 });
 
 test("duplicate turn terminals after an assistant answer do not synthesize a false empty response", () => {
@@ -123,6 +229,46 @@ test("duplicate turn terminals after an assistant answer do not synthesize a fal
 			{ role: "assistant", body: "WORKSHOP_CUA_LAGUNA_OK" }
 		]
 	);
+});
+
+test("operator Stop is explicit, deduped, and a follow-up resumes normally", () => {
+	const events = [
+		event({ sequence: 1, eventKind: "message.created", payload: { messageId: "user-stop", role: "user", content: "start the long tool" } }),
+		event({ sequence: 2, eventKind: "run.started", payload: { runId: "turn-stop" } }),
+		event({ sequence: 3, eventKind: "message.completed", payload: { messageId: "partial-stop", role: "assistant", content: "I started the tool." } }),
+		event({ sequence: 4, eventKind: "run.cancelled", payload: { runId: "turn-stop", reason: "operator_cancelled", cancelledBy: "user" } }),
+		// Provider and durable projections may both deliver the same terminal.
+		event({ sequence: 5, eventKind: "run.cancelled", payload: { runId: "turn-stop", reason: "operator_cancelled", cancelledBy: "user" } }),
+		event({ sequence: 6, eventKind: "message.created", payload: { messageId: "user-resume", role: "user", content: "continue without that tool" } }),
+		event({ sequence: 7, eventKind: "run.started", payload: { runId: "turn-resume" } }),
+		event({ sequence: 8, eventKind: "message.completed", payload: { messageId: "answer-resume", role: "assistant", content: "Continued cleanly." } }),
+		event({ sequence: 9, eventKind: "run.completed", payload: { runId: "turn-resume" } })
+	];
+	assert.deepEqual(
+		eventsToMessages(events).map(({ role, body }) => ({ role, body })),
+		[
+			{ role: "user", body: "start the long tool" },
+			{ role: "assistant", body: "I started the tool." },
+			{ role: "system", body: "You stopped this response." },
+			{ role: "user", body: "continue without that tool" },
+			{ role: "assistant", body: "Continued cleanly." }
+		]
+	);
+});
+
+test("operator Stop marks an in-flight transcript tool cancelled", () => {
+	const activity = eventsToLocalActivity([
+		event({ sequence: 1, eventKind: "run.started", payload: { runId: "turn-stop" } }),
+		event({
+			sequence: 2,
+			eventKind: "item/started",
+			payload: { item: { type: "commandExecution", id: "cmd-stop", command: "long-running-command" } }
+		}),
+		event({ sequence: 3, eventKind: "run.cancelled", payload: { runId: "turn-stop", reason: "operator_cancelled", cancelledBy: "user" } })
+	], []);
+	const command = Object.values(activity).flat().find((line) => line.kind === "command");
+	assert.equal(command.toolStatus, "cancelled");
+	assert.equal(Object.values(activity).flat().filter((line) => line.kind === "run_summary").length, 1);
 });
 
 test("replayed terminal envelopes do not duplicate or age a run summary", () => {
@@ -187,4 +333,30 @@ test("visual tool operations project as lifecycle milestones", () => {
 	assert.equal(line.kind, "visual_lifecycle");
 	assert.equal(line.visualStage, "draft");
 	assert.equal(line.label, "Visual draft created");
+});
+
+ test("authentication rejection gives credential remediation without leaking the proxy URL", () => {
+ const messages = eventsToMessages([
+  event({sequence: 1, eventKind: "run.started"}),
+  event({sequence: 2, eventKind: "run.failed", payload: {provider: "openrouter", error: {message: "unexpected status 401 Unauthorized: Missing Authentication header, url: http://127.0.0.1:58328/api/v1/responses, cf-ray: private-request"}}})
+ ]);
+ const system = messages.find(message => message.role === "system");
+ assert.match(system.body, /Update the provider API key or sign in again/);
+ assert.doesNotMatch(system.body, /127\.0\.0\.1|cf-ray|credits|Try again/);
+ });
+
+
+test("a retry answer does not inherit the preceding failed turn summary", () => {
+ const events = [
+  event({sequence: 1, payload: {role: "user", messageId: "u1", content: "first"}}),
+  event({sequence: 2, eventKind: "run.started", payload: {runId: "r1"}}),
+  event({sequence: 3, eventKind: "run.failed", payload: {runId: "r1", error: {message: "401 Unauthorized"}}, createdAt: "2026-08-12T00:00:07.000Z"}),
+  event({sequence: 4, payload: {role: "user", messageId: "u2", content: "retry"}, createdAt: "2026-08-12T00:00:08.000Z"}),
+  event({sequence: 5, eventKind: "run.started", payload: {runId: "r2"}, createdAt: "2026-08-12T00:00:08.000Z"}),
+  event({sequence: 6, payload: {role: "assistant", messageId: "a2", content: "Recovered"}, createdAt: "2026-08-12T00:00:09.000Z"}),
+  event({sequence: 7, eventKind: "run.completed", payload: {runId: "r2"}, createdAt: "2026-08-12T00:00:09.000Z"})
+ ];
+ const activity = eventsToLocalActivity(events, eventsToMessages(events));
+ assert.match(activity["terminal-3"].find(line => line.kind === "run_summary").label, /Stopped with an error after 7s/);
+ assert.deepEqual(activity.a2.filter(line => line.kind === "run_summary").map(line => line.label), ["Worked 1s"]);
 });

@@ -67,6 +67,30 @@ test("showing an already-created visual preserves its durable bindings", () => {
 	});
 });
 
+test("a current optimizer workstation keeps bindings and run identity in Outputs", () => {
+	const [artifact] = eventsToArtifacts([{
+		...runtimeEvent(1, "visual.show", {
+			visualId: "visual_trace_workstation",
+			title: "Craftax · trace workstation",
+			templateId: "craftax.trace_workbench.v1",
+			ownerSessionId: "session_current",
+			revision: 3,
+			status: "live",
+			bindings: {
+				schemaVersion: "synth.visual-bindings.v1",
+				inputs: [{ input: "optimizer_run", kind: "optimizer_run", source: "opt_eval_1" }]
+			}
+		}),
+		runId: "generic_run_that_must_not_win"
+	}]);
+
+	assert.equal(artifact.id, "visual_trace_workstation");
+	assert.equal(artifact.runId, "opt_eval_1");
+	assert.equal(artifact.revision, 3);
+	assert.equal(artifact.status, "live");
+	assert.equal(artifact.bindings.inputs[0].source, "opt_eval_1");
+});
+
 const toolEvent = (sequence, tool, args, visual, sessionId = "session_current") => ({
 	schemaVersion: "synth.desktop-runtime-event.v1",
 	sessionId,
@@ -220,4 +244,67 @@ test("an open pane clears when the artifact is not in this chat", () => {
 	const artifacts = [{ id: "visual_own", title: "Own", templateId: "live.craftax.v1" }];
 	assert.equal(openArtifactIdForChat("visual_own", artifacts), "visual_own");
 	assert.equal(openArtifactIdForChat("visual_foreign", artifacts), null);
+});
+
+test("tool results copy durable VisualStatus instead of mapping live to ready", () => {
+	const [artifact] = eventsToArtifacts([
+		toolEvent(1, "visual_manage", { operation: "create", arguments: { template_id: "live.craftax.v1" } }, {
+			id: "visual_live_1",
+			templateId: "live.craftax.v1",
+			title: "Live Craftax",
+			sessionId: "session_current",
+			status: "live",
+			metadata: { reviews: [{ id: "rev_1" }] }
+		})
+	]);
+	assert.equal(artifact.status, "live");
+});
+
+test("review receipts do not invent a review status on ArtifactRef", () => {
+	const [artifact] = eventsToArtifacts([
+		toolEvent(1, "visual_manage", { operation: "create", arguments: { template_id: "blank.canvas.v1" } }, {
+			id: "visual_draft_reviewed",
+			templateId: "blank.canvas.v1",
+			title: "Draft with reviews",
+			sessionId: "session_current",
+			status: "draft",
+			metadata: { reviews: [{ id: "rev_1" }, { id: "rev_2" }] }
+		})
+	]);
+	assert.equal(artifact.status, "draft");
+});
+
+test("saved and failed VisualStatus survive tool-result projection", () => {
+	const [saved] = eventsToArtifacts([
+		toolEvent(1, "visual_manage", { operation: "create", arguments: { template_id: "blank.canvas.v1" } }, {
+			id: "visual_saved_1",
+			templateId: "blank.canvas.v1",
+			title: "Saved visual",
+			sessionId: "session_current",
+			status: "saved"
+		})
+	]);
+	const [failed] = eventsToArtifacts([
+		toolEvent(1, "visual_manage", { operation: "create", arguments: { template_id: "blank.canvas.v1" } }, {
+			id: "visual_failed_1",
+			templateId: "blank.canvas.v1",
+			title: "Failed visual",
+			sessionId: "session_current",
+			status: "failed"
+		})
+	]);
+	assert.equal(saved.status, "saved");
+	assert.equal(failed.status, "failed");
+});
+
+test("visual.created copies payload status onto the viewer pointer", () => {
+	const [artifact] = eventsToArtifacts([
+		runtimeEvent(1, "visual.created", {
+			visualId: "visual_gepa_live",
+			title: "GEPA live",
+			templateId: "optimizer.gepa.live.v1",
+			status: "live"
+		})
+	]);
+	assert.equal(artifact.status, "live");
 });

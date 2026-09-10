@@ -1,0 +1,9 @@
+{
+  "bindings": [
+    {
+      "slot": "stream",
+      "kind": "fixture",
+      "source": "fixtures/live_annotated_rollouts_craftax.json"
+    }
+  ]
+}

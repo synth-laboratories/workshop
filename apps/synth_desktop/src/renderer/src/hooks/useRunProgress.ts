@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridges } from "../runtime/desktopBridge";
 import { publicError } from "../runtime/publicError";
 import { projectRunProgress } from "../runtime/runProgress/project";
+import { providerAccessFromSecrets } from "../runtime/runProgress/providerAccess";
 import {
 	resolveOwnedRun,
 	subscribeToRun,
@@ -31,6 +32,7 @@ import {
 	recordSubscribed
 } from "../runtime/runProgress/telemetry";
 import type { RunControlIntent, RunProgressProjection } from "../runtime/runProgress/types";
+import { coveredMetric } from "../runtime/runProgress/usage";
 
 const CLOCK_INTERVAL_MS = 1_000;
 
@@ -69,7 +71,7 @@ export function useRunProgress(runId: string, sessionRef?: string): RunProgressS
 			recordSubscribed(runId, run.algorithmId, Date.now());
 			unsubscribe = subscribeToRun(runId, (next) => {
 				if (!cancelled) setSnapshot(next);
-			});
+			}, { evidence: "projection" });
 		});
 		return () => {
 			cancelled = true;
@@ -90,74 +92,18 @@ export function useRunProgress(runId: string, sessionRef?: string): RunProgressS
 		const secrets = bridges.secrets;
 		if (!secrets) return;
 		let cancelled = false;
-		const algorithmId = snapshot?.run?.algorithmId;
 		const load = async () => {
 			try {
 				const [caps, inbox] = await Promise.all([secrets.capabilities(), secrets.pending()]);
 				if (cancelled) return;
 				const match = caps.find((cap) => cap.runId === runId);
-				if (match) {
-					const status = match.status === "exhausted"
-						? "exhausted"
-						: match.status === "expired"
-							? "expired"
-							: inbox.proxy.running
-								? "healthy"
-								: "proxy_down";
-					setProviderAccess({
-						provider: match.provider,
-						status,
-						suffix: match.displaySuffix ?? undefined,
-						usedCalls: match.usedCalls,
-						maxCalls: match.maxCalls,
-						usedCostUsd: match.usedCostUsd,
-						maxCostUsd: match.maxCostUsd,
-						note: status === "proxy_down"
-							? "Provider proxy is not running."
-							: status === "exhausted"
-								? "Call or spend ceiling reached."
-								: "Via Workshop proxy"
-					});
-					return;
-				}
 				const grant = inbox.grants.find((item) => item.runId === runId);
-				if (grant) {
-					setProviderAccess({
-						provider: grant.provider ?? "openai",
-						status: "approval_required",
-						usedCalls: 0,
-						maxCalls: grant.maxCalls,
-						usedCostUsd: 0,
-						maxCostUsd: grant.maxCostUsd,
-						note: "Allow this in Settings → Secrets"
-					});
-					return;
-				}
-				if (!inbox.proxy.running) {
-					setProviderAccess({
-						provider: "openai",
-						status: "proxy_down",
-						usedCalls: 0,
-						maxCalls: 0,
-						usedCostUsd: 0,
-						maxCostUsd: 0,
-						note: "Provider proxy is not running."
-					});
-					return;
-				}
-				if (algorithmId !== "gepa" && algorithmId !== "eval") {
-					setProviderAccess(undefined);
-					return;
-				}
-				setProviderAccess({
-					provider: "openai",
-					status: "missing",
-					usedCalls: 0,
-					maxCalls: 0,
-					usedCostUsd: 0,
-					maxCostUsd: 0,
-					note: "Add an OpenAI connection in Settings → Secrets"
-				});
+				setProviderAccess(providerAccessFromSecrets({
+					terminal,
+					capability: match,
+					grant,
+					proxyRunning: inbox.proxy.running
+				}));
 			} catch {
 				/* Secrets are optional on this surface. */
 			}
@@ -175,7 +121,10 @@ export function useRunProgress(runId: string, sessionRef?: string): RunProgressS
 	const projection = useMemo(() => {
 		const next = snapshot ? projectRunProgress(snapshot, clock) : null;
 		if (!next || !providerAccess) return next;
-		return { ...next, providerAccess };
+		const proxyCost = next.usage.costUsd.value == null && providerAccess.usedCostUsd != null
+			? coveredMetric(providerAccess.usedCostUsd, "proxy", 1, 1)
+			: next.usage.costUsd;
+		return { ...next, usage: { ...next.usage, costUsd: proxyCost }, providerAccess };
 	}, [snapshot, clock, providerAccess]);
 
 	// One measurement per published snapshot, not per clock tick: a 1s elapsed

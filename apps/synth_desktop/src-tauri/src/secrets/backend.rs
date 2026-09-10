@@ -137,10 +137,7 @@ pub struct OsKeychainBackend {
 
 impl OsKeychainBackend {
     pub fn new() -> Self {
-        let instance = std::env::var(crate::instance::INSTANCE_ENV)
-            .ok()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "canonical".into());
+        let instance = crate::instance::instance_id();
         let service = format!("synth-desktop.secrets.{instance}");
         Self { service }
     }
@@ -276,10 +273,10 @@ impl SecretBackend for CachedBackend {
 }
 
 pub fn default_backend() -> Arc<dyn SecretBackend> {
-    if cfg!(test) || std::env::var("SYNTH_DESKTOP_SECRETS_MEMORY").as_deref() == Ok("1") {
-        return Arc::new(MemoryBackend::new());
-    }
-    CachedBackend::wrap(Arc::new(OsKeychainBackend::new()))
+    // Code and optimizer workflows load provider keys from the config-declared
+    // `.env` into process memory. Keychain is not a fallback and is never
+    // opened on this path.
+    Arc::new(MemoryBackend::new())
 }
 
 #[cfg(test)]

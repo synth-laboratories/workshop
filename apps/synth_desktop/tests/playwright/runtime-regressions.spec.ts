@@ -1,5 +1,7 @@
+import { openOutputs } from "./v02-helpers";
 import type { Page } from "@playwright/test";
 import { expect, test } from "./browser.fixture";
+import { BROWSER_MODEL_CATALOG } from "../../src/renderer/src/runtime/modelCatalog";
 
 async function openSettings(page: Page) {
 	await page.getByTestId("account-menu-trigger").click();
@@ -36,7 +38,12 @@ async function installLagunaFixture(page: Page, phase: LagunaPhase): Promise<voi
 				selectedPath = path;
 				return hits()[0];
 			},
-			clearModelDirectory: async () => undefined
+			clearModelDirectory: async () => undefined,
+			policies: async () => [
+				{ modelId: "synth/Laguna-XS-2.1-sft-banking", title: "Banking77 SFT", isBase: false, digest: "sha256:banking", tokensPerSecondP10: null, deltaVsBasePct: null, deltaIsResolvable: false, tokenSamples: 0 },
+				{ modelId: "poolside/Laguna-XS-2.1-NVFP4-mlx", title: "Base", isBase: true, digest: null, tokensPerSecondP10: null, deltaVsBasePct: null, deltaIsResolvable: false, tokenSamples: 0 },
+				{ modelId: "synth/Laguna-XS-2.1-sft-math", title: "MATH SFT", isBase: false, digest: "sha256:math", tokensPerSecondP10: null, deltaVsBasePct: null, deltaIsResolvable: false, tokenSamples: 0 }
+			]
 		};
 	}, phase);
 	await page.reload();
@@ -44,7 +51,7 @@ async function installLagunaFixture(page: Page, phase: LagunaPhase): Promise<voi
 }
 
 async function installConfiguredOpenRouter(page: Page): Promise<void> {
-	await page.addInitScript(() => {
+	await page.addInitScript((catalog) => {
 		window.synthConfig = {
 			get: async () => ({
 				configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
@@ -52,12 +59,14 @@ async function installConfiguredOpenRouter(page: Page): Promise<void> {
 				apiKeyConfigured: false, workerKeyConfigured: false,
 				openrouterApiKeyConfigured: true
 			}),
+			modelCatalog: async () => catalog,
+			refreshModelCatalog: async () => catalog,
 			update: async () => { throw new Error("unused"); },
 			listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
 			updateWorkspaceAccess: async () => ({ allowedRoots: [] })
 		};
-	});
+	}, BROWSER_MODEL_CATALOG);
 }
 
 test("native Laguna readiness overrides missing legacy runtime health", async ({ page }) => {
@@ -66,6 +75,16 @@ test("native Laguna readiness overrides missing legacy runtime health", async ({
 	await expect(page.getByTestId("composer-input")).toBeEnabled();
 	await expect(page.getByTestId("composer-input")).toHaveAttribute("placeholder", "Ask Laguna something…");
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName(/Laguna XS 2\.1/);
+	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-local").click();
+	const localModels = page.getByTestId("composer-model-menu").getByRole("option");
+	await expect(localModels).toHaveCount(3);
+	await expect(localModels.nth(0)).toContainText("Laguna XS 2.1");
+	await expect(localModels.nth(0)).toContainText("Original model");
+	await expect(localModels.nth(1)).toContainText("Banking77 SFT");
+	await expect(localModels.nth(1)).toContainText("SFT variant");
+	await expect(localModels.nth(2)).toContainText("MATH SFT");
+	await page.getByTestId("composer-model").click();
 	await expect(page.getByTestId("composer-model")).not.toHaveAccessibleName(/offline|starting/i);
 	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
 });
@@ -320,9 +339,10 @@ test("Settings identifies the exact running desktop build", async ({ page }) => 
 });
 
 test("Models lists only credentialed remote providers with pricing", async ({ page }) => {
-	await page.addInitScript(() => {
+	await page.addInitScript((catalog) => {
 		window.synthConfig = {
 			get: async () => ({ configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod", backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY", apiKeyConfigured: true, workerKeyConfigured: false, openrouterApiKeyConfigured: true }),
+			modelCatalog: async () => catalog, refreshModelCatalog: async () => catalog,
 			update: async () => { throw new Error("unused"); }, listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }), updateWorkspaceAccess: async () => ({ allowedRoots: [] })
 		};
@@ -334,7 +354,7 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 				{ provider: "openrouter", modelId: "google/gemini-3.7-flash", inputUsdPerM: 0.375, outputUsdPerM: 1.875, cachedInputUsdPerM: 0.0375, cacheWriteUsdPerM: 0.02085 }
 			]
 		};
-	});
+	}, BROWSER_MODEL_CATALOG);
 	await page.reload();
 	await openSettings(page);
 	await page.getByRole("button", { name: "Models" }).click();
@@ -349,7 +369,7 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 	await expect(models.getByTestId("authorized-model-openrouter-gemini-flash")).toContainText("$1.875");
 	await expect(models.getByTestId("authorized-model-synth-cloud-laguna-s")).toContainText("Plan");
 	const marks = models.locator(".authorized-model-mark");
-	await expect(marks).toHaveCount(6);
+	await expect(marks).toHaveCount(8);
 	const markBoxes = await marks.evaluateAll((elements) => elements.map((element) => {
 		const box = element.getBoundingClientRect();
 		return { width: box.width, height: box.height, centerX: box.left + box.width / 2 };
@@ -365,7 +385,7 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 			return { fontSize: Number.parseFloat(style.fontSize), family: style.fontFamily };
 		})
 	);
-	expect(slugStyles).toHaveLength(6);
+	expect(slugStyles).toHaveLength(8);
 	for (const style of slugStyles) {
 		expect(style.fontSize, "model slugs stay subordinate to provider labels").toBeLessThanOrEqual(10);
 		expect(style.family).toMatch(/SFMono|Menlo|Monaco|Consolas|monospace/i);
@@ -452,7 +472,7 @@ test("Settings can force and reset a model multi-agent preset", async ({ page })
 	]);
 });
 
-test("V1 collaboration events drive the first-class Subagents visual without treating idle as done", async ({ page }) => {
+test("V1 child events open the shared conversation transcript without treating idle as done", async ({ page }) => {
 	await page.addInitScript(() => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
 		let listener: ((event: Event) => void) | undefined;
@@ -491,21 +511,33 @@ test("V1 collaboration events drive the first-class Subagents visual without tre
 		send("thread/status/changed", { threadId: "child-thread", status: { type: "active" } });
 	});
 
-	const visual = page.getByTestId("visual-subagents");
-	await expect(visual).toBeVisible();
-	await expect(visual).toContainText("Working · 1");
-	await expect(visual).toContainText("Review migration safety");
-	await expect(page.getByText("Review migration safety started")).toBeVisible();
+	const delegation = page.getByText("Review migration safety started");
+	await expect(delegation).toBeVisible();
+	await delegation.click();
+	await page.getByTestId("subagent-row-child-thread").click();
+	const child = page.getByTestId("subagent-conversation");
+	await expect(child).toBeVisible();
+	await expect(child.getByTestId("chat-transcript")).toBeVisible();
+	await expect(child.getByTestId("subagent-status")).toHaveText("Working");
+	await expect(child).toContainText("Review migration safety. Check the runtime boundary.");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitCodexEvent: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexEvent;
 		emit({ sessionId: "subagent-session", method: "agentMessage/completed", params: { threadId: "child-thread", messageId: "child-message", content: "Migration boundary is safe." } });
+		emit({ sessionId: "subagent-session", method: "item/completed", params: { threadId: "child-thread", item: {
+			id: "child-tool", type: "mcpToolCall", server: "synth_visuals", tool: "visual_manage", status: "completed",
+			arguments: { operation: "create", arguments: { count: 0, nested: { safe: true } } },
+			result: { structuredContent: { visual: { id: "child-visual", templateId: "diagram.mermaid.v1", title: "Child map" } } }
+		} } });
 		emit({ sessionId: "subagent-session", method: "thread/status/changed", params: { threadId: "child-thread", status: { type: "idle" } } });
 	});
 
-	await expect(visual).toContainText("Working · 1");
-	await expect(visual).toContainText("Completed · 0");
-	await expect(page.getByTestId("chat-transcript")).not.toContainText("Migration boundary is safe.");
+	await expect(child).toContainText("Migration boundary is safe.");
+	await expect(child.getByTestId("subagent-status")).toHaveText("Working");
+	await expect(child).toContainText("Visual draft created");
+	await expect(child).toContainText("operation create");
+	await expect(page.getByTestId("chat-transcript").first()).not.toContainText("Visual draft created");
+	await expect(child).not.toContainText("[object Object]");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitCodexEvent: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexEvent;
@@ -515,13 +547,13 @@ test("V1 collaboration events drive the first-class Subagents visual without tre
 		} } });
 	});
 
-	await expect(visual).toContainText("Working · 0");
-	await expect(visual).toContainText("Completed · 1");
-	await expect(visual).toContainText("Migration boundary is safe.");
-	await expect(page.getByTestId("chat-transcript")).not.toContainText("Migration boundary is safe.");
+	await expect(child.getByTestId("subagent-status")).toHaveText("Completed");
+	await page.getByTestId("subagents-back").click();
+	await expect(page.getByTestId("subagent-conversation")).toHaveCount(0);
+	await expect(page.getByTestId("chat-transcript")).toContainText("Review migration safety started");
 });
 
-test("V2 subAgentActivity and child turn lifecycle drive the same first-class Subagents visual", async ({ page }) => {
+test("V2 child lifecycle uses the same transcript route and isolates sibling output", async ({ page }) => {
 	await page.addInitScript(() => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
 		let listener: ((event: Event) => void) | undefined;
@@ -553,30 +585,27 @@ test("V2 subAgentActivity and child turn lifecycle drive the same first-class Su
 		send("turn/started", { threadId: "child-v2-thread", turn: { id: "child-v2-turn-1" } });
 	});
 
-	const visual = page.getByTestId("visual-subagents");
-	await expect(visual).toBeVisible();
-	await expect(visual).toContainText("Working · 1");
-	await expect(visual).toContainText("Readme Location");
-	await expect(visual.getByText("Working", { exact: true })).toBeVisible();
-	await expect(page.getByText("Readme Location started")).toBeVisible();
+	await page.getByText("Readme Location started").click();
+	await page.getByTestId("subagent-row-child-v2-thread").click();
+	const child = page.getByTestId("subagent-conversation");
+	await expect(child).toBeVisible();
+	await expect(child.getByTestId("chat-transcript")).toBeVisible();
+	await expect(child.getByTestId("subagent-status")).toHaveText("Working");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitCodexV2Event: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexV2Event;
 		emit({ sessionId: "subagent-v2-session", method: "agentMessage/completed", params: { threadId: "child-v2-thread", messageId: "child-v2-message", content: "README location confirmed." } });
 		emit({ sessionId: "subagent-v2-session", method: "thread/status/changed", params: { threadId: "child-v2-thread", status: { type: "idle" } } });
 	});
-	await expect(visual).toContainText("Working · 1");
-	await expect(visual).toContainText("Completed · 0");
-	await expect(page.getByTestId("chat-transcript")).not.toContainText("README location confirmed.");
+	await expect(child).toContainText("README location confirmed.");
+	await expect(child.getByTestId("subagent-status")).toHaveText("Working");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitCodexV2Event: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexV2Event;
 		emit({ sessionId: "subagent-v2-session", method: "turn/completed", params: { threadId: "child-v2-thread", turn: { status: "completed", lastAgentMessage: "README location confirmed." } } });
 	});
-	await expect(visual).toContainText("Working · 0");
-	await expect(visual).toContainText("Completed · 1");
-	await expect(visual).toContainText("README location confirmed.");
-	await expect(page.getByTestId("chat-transcript")).not.toContainText("The provider ended the turn without a response");
+	await expect(child.getByTestId("subagent-status")).toHaveText("Completed");
+	await expect(child).not.toContainText("The provider ended the turn without a response");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitCodexV2Event: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexV2Event;
@@ -591,17 +620,15 @@ test("V2 subAgentActivity and child turn lifecycle drive the same first-class Su
 			id: "wait-v2", type: "collabAgentToolCall", tool: "wait", status: "completed", receiverThreadIds: [], agentsStates: {}
 		} } });
 	});
-	await expect(visual).toContainText("Completed · 2");
-	await expect(visual).toContainText("Runtime audit complete.");
+	await expect(child).not.toContainText("Runtime audit complete.");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitCodexV2Event: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexV2Event;
 		emit({ sessionId: "subagent-v2-session", method: "turn/started", params: { threadId: "child-v2-thread", turn: { id: "child-v2-turn-2" } } });
 		emit({ sessionId: "subagent-v2-session", method: "turn/failed", params: { threadId: "child-v2-thread", error: { message: "Agent exceeded its task budget." } } });
 	});
-	await expect(visual).toContainText("Needs attention · 1");
-	await expect(visual).toContainText("Agent exceeded its task budget.");
-	await expect(page.getByTestId("chat-transcript")).not.toContainText("The provider could not produce a response");
+	await expect(child.getByTestId("subagent-status")).toHaveText("Failed");
+	await expect(child).toContainText("Agent exceeded its task budget.");
 });
 
 test("two V2 children overlap in wall-clock and keep a dedicated Subagents rail", async ({ page }) => {
@@ -646,8 +673,9 @@ test("two V2 children overlap in wall-clock and keep a dedicated Subagents rail"
 		send("turn/started", { threadId: "child-overlap-b", turn: { id: "turn-b" } });
 	});
 	await expect(page.getByTestId("visual-subagents")).toBeVisible();
-	await page.getByTestId("resource-shelf-trigger").click();
+	await (await openOutputs(page)).click();
 	await expect(page.getByTestId("subagents-rail")).toBeVisible();
+	await page.getByTestId("visuals-icon-codex-subagents").click();
 	await expect(page.getByTestId("visual-subagents")).toContainText("Working · 2");
 	await page.waitForTimeout(1500);
 	await page.evaluate(() => {
@@ -863,7 +891,7 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 		threadId: "local-thread"
 	});
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ sessionId: string; prompt: string; effort?: string }> }).__providerTurns.at(-1))).toMatchObject({ sessionId: "bound-local", prompt: "hello Luna", effort: "high" });
-	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.reasoningEffort"))).toBe("high");
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.models.openrouter-luna.reasoning"))).toBe("high");
 
 	await page.getByTestId("composer-model").click();
 	await page.getByTestId("composer-model-access-api").click();
@@ -1004,7 +1032,7 @@ test("resident model disappears immediately when Laguna reports automatic unload
 	await expect(page.getByText(/Frees automatically in now/i)).toHaveCount(0);
 });
 
-test("a cold local turn says Warming up until model residency is reported", async ({ page }) => {
+test("a cold local turn says it is waiting on local until model residency is reported", async ({ page }) => {
 	await page.addInitScript(() => {
 		const testWindow = window as typeof window & {
 			synthLaguna?: unknown;
@@ -1046,7 +1074,8 @@ test("a cold local turn says Warming up until model residency is reported", asyn
 	await page.reload();
 	await page.getByTestId("local-chat-cold-session").click();
 	await page.evaluate(() => (window as typeof window & { __emitColdTurn: () => void }).__emitColdTurn());
-	await expect(page.getByTestId("model-working")).toContainText("Warming up…");
+	await expect(page.getByTestId("model-working")).toContainText("Loading…");
+	await expect(page.getByTestId("model-working")).toHaveAttribute("data-waiting-on", "local");
 	await expect(page.getByTestId("model-working")).not.toContainText("Working…");
 	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
 });
@@ -1231,7 +1260,11 @@ test("native Codex deltas form one readable message with working and stop state"
 	await expect(page.getByTestId("workbench-side-panel")).toBeHidden();
 	await page.getByTestId("toggle-inference-rail").click();
 	await expect(page.getByTestId("workbench-side-panel")).toBeVisible();
-	const inferenceGeometry = await page.getByTestId("inference-panel").evaluate((panel) => {
+	// Composer clearance is deliberately published by a coalesced animation
+	// frame after the workbench grid mutates. Visibility can become true before
+	// that frame, so assert the settled geometry rather than sampling the one
+	// transient frame in which the reopened rail and old dock offsets coexist.
+	await expect.poll(() => page.getByTestId("inference-panel").evaluate((panel) => {
 		const rail = panel.parentElement!.getBoundingClientRect();
 		const panelRect = panel.getBoundingClientRect();
 		const composer = document.querySelector<HTMLElement>("[data-testid=composer]")!.getBoundingClientRect();
@@ -1241,8 +1274,7 @@ test("native Codex deltas form one readable message with working and stop state"
 			composerClearsRail: composer.right <= rail.left + 1,
 			overflow: document.documentElement.scrollWidth > window.innerWidth + 1
 		};
-	});
-	expect(inferenceGeometry).toEqual({ contained: true, hasInset: true, composerClearsRail: true, overflow: false });
+	})).toEqual({ contained: true, hasInset: true, composerClearsRail: true, overflow: false });
 });
 
 test("closed-model reasoning renders only a provider summary disclosure", async ({ page }) => {
@@ -1369,8 +1401,7 @@ test("model-switch compaction renders above the continued turn's tool calls", as
 	});
 	await installLagunaFixture(page, "ready");
 	await page.getByTestId("local-chat-switch-compact-session").click();
-	await page.getByTestId("activity-mode-menu-trigger").click();
-	await page.getByTestId("activity-mode-option-detailed").click();
+	await page.evaluate(async () => { const {updatePreferences} = await import("/src/preferences"); updatePreferences(current => ({...current, toolActivity: {mode: "detailed"}})); });
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitSwitchCompactCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitSwitchCompactCodex;
 		const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "switch-compact-session", method, params });
@@ -1433,7 +1464,18 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 			baseUrl: "http://127.0.0.1:8098", taskFamily: "craftax-singleplayer",
 			lastRolloutId: "rollout-latest", health: { payload: { sessions: 2 } },
 			metadata: {
-				info: { lane: "rust", capabilities: ["rollout", "checkpoint", "task_catalog", "task_info"], action_names: ["noop", "left", "right", "do"] },
+				taskCatalogFreshness: { kind: "live", observedAt: "2026-08-09T10:00:00Z" },
+				interfaceFreshness: { kind: "live", observedAt: "2026-08-09T10:00:00Z" },
+				info: {
+					lane: "rust",
+					capabilities: {
+						protocol: "synth.container.live-eval.v1",
+						rollout_modes: ["blocking"],
+						policy_refs: [{ namespace: "nanohorizon", name: "glm-5.3-flash" }],
+						metadata: { retained: true }
+					},
+					action_names: ["noop", "left", "right", "do"]
+				},
 				taskCatalog: {
 					tasks: [{ task_id: "manual", name: "Craftax single-player", description: "Explore and survive.", default: true }],
 					instances: [
@@ -1447,9 +1489,34 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 			},
 			createdAt: "2026-08-09T10:00:00Z", updatedAt: "2026-08-09T10:00:00Z"
 		};
+		let probeCount = 0;
 		testWindow.synthInventory = {
 			getContainer: async () => craftax,
-			probeContainer: async () => craftax
+			probeContainer: async () => {
+				probeCount += 1;
+				if (probeCount === 1) return {
+					...craftax,
+					metadata: {
+						...craftax.metadata,
+						taskCatalog: {
+							...craftax.metadata.taskCatalog,
+							instances: [
+								...craftax.metadata.taskCatalog.instances,
+								{ task_instance_id: "craftax:test:3", task_id: "manual", split: "test", metadata: { output_label: "mine_stone", seed: 3 } }
+							]
+						}
+					}
+				};
+				return {
+					...craftax,
+					metadata: {
+						...craftax.metadata,
+						taskCatalog: { schema_version: "synth.container.task-catalog.v999", tasks: {}, instances: [] }
+					}
+				};
+			},
+			reconcileContainer: async () => craftax,
+			restartContainer: async () => craftax
 		};
 		testWindow.synthCodex = {
 			defaultWorkspace: async () => "/workspaces/default",
@@ -1471,8 +1538,7 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	});
 	await installLagunaFixture(page, "ready");
 	await page.getByTestId("local-chat-tool-session").click();
-	await page.getByTestId("activity-mode-menu-trigger").click();
-	await page.getByTestId("activity-mode-option-detailed").click();
+	await page.evaluate(async () => { const {updatePreferences} = await import("/src/preferences"); updatePreferences(current => ({...current, toolActivity: {mode: "detailed"}})); });
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitToolCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitToolCodex;
@@ -1489,21 +1555,23 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(transcript).not.toContainText("MUST_NOT_RENDER");
 	const containerOpen = transcript.getByTestId("tool-container-open-craftax-local");
 	await expect(containerOpen).toBeVisible();
-	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs");
-	const toolbarGeometry = await transcript.getByTestId("transcript-toolbar").evaluate((toolbar) => {
-		const activity = toolbar.querySelector<HTMLElement>("[data-testid=activity-mode-menu-trigger]")!.getBoundingClientRect();
-		const outputs = toolbar.querySelector<HTMLElement>("[data-testid=resource-shelf-trigger]")!.getBoundingClientRect();
-		const bounds = toolbar.getBoundingClientRect();
-		return { separated: activity.right + 4 <= outputs.left, contained: activity.top >= bounds.top && outputs.bottom <= bounds.bottom };
-	});
-	expect(toolbarGeometry).toEqual({ separated: true, contained: true });
+	await expect((await openOutputs(page))).toContainText("Outputs");
+	const outputsPanel = page.getByTestId("workbench-side-panel");
+	await expect(outputsPanel.getByRole("tab", {name: "Outputs", exact: true})).toHaveAttribute("aria-selected", "true");
+	await expect(page.getByTestId("resource-shelf")).toBeVisible();
+	await page.getByTestId("toggle-inference-rail").click();
 	await expect(page.getByTestId("resource-shelf")).toHaveCount(0);
 	await containerOpen.click();
 	const containerPane = page.getByTestId("container-pane");
 	await expect(containerPane).toBeVisible();
 	await expect(containerPane).toContainText("Craftax Rust");
 	await expect(containerPane).toContainText("craftax-singleplayer");
-	await expect(containerPane).toContainText("2 active sessions");
+	await expect(containerPane).toContainText("2 sessions");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("protocol");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("rollout_modes:blocking");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("policy_refs:1");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("metadata");
+	await expect(containerPane).not.toContainText("[object Object]");
 	await expect(containerPane.getByRole("button", { name: /Craftax single-player/ })).toBeVisible();
 	await expect(containerPane).toContainText("Advance through the technology tree.");
 	await expect(containerPane).toContainText("achievements_unlocked");
@@ -1525,6 +1593,12 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(containerPane).toContainText("collect_wood");
 	await containerPane.getByTestId("container-pane-expand").click();
 	await expect(page.locator(".workbench")).toHaveClass(/container-expanded/);
+	await containerPane.getByRole("button", { name: "Refresh", exact: true }).click();
+	await expect(containerPane).toContainText("1 of 3 instances");
+	await expect(containerPane.locator(".container-facts")).toContainText("Definitions1");
+	await expect(containerPane.locator(".container-facts")).toContainText("Instances3 live");
+	await containerPane.getByRole("button", { name: "Refresh", exact: true }).click();
+	await expect(containerPane.getByRole("alert")).toContainText("Task metadata error: invalid task catalog: unsupported schema_version");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitToolCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitToolCodex;
@@ -1562,7 +1636,7 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(transcript.getByText("Completed", { exact: true })).toHaveCount(2);
 	await expect(transcript.getByText("Needs attention", { exact: true })).toBeVisible();
 	await expect(transcript).toContainText("template id craftax.rollout.v1 · title Craftax rollout · 2ms");
-	await transcript.getByTestId("resource-shelf-trigger").click();
+	await (await openOutputs(page)).click();
 	const resourceShelf = page.getByTestId("resource-shelf");
 	await expect(resourceShelf).toContainText("Containers");
 	await expect(resourceShelf).toContainText("Visuals");
@@ -1575,8 +1649,7 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(visualPane).toBeVisible();
 	await expect(visualPane).toContainText("Reward comparison");
 	await expect(visualPane.getByTestId("visual-craftax-eval-matrix")).toBeVisible();
-	await page.getByTestId("activity-mode-menu-trigger").click();
-	await page.getByTestId("activity-mode-option-grouped").click();
+	await page.evaluate(async () => { const {updatePreferences} = await import("/src/preferences"); updatePreferences(current => ({...current, toolActivity: {mode: "grouped"}})); });
 	const groupedActions = transcript.locator(".activity-group").first();
 	await groupedActions.locator(".activity-group-toggle").click();
 	await expect(groupedActions.locator(".activity-group-step")).toHaveCount(4);
@@ -1614,7 +1687,9 @@ test("approval modes configure new native sessions and pending requests resolve 
 			startTurn: async (sessionId: string) => ({ sessionId, threadId: "thread-approval", turnId: "turn-approval" }),
 			interrupt: async () => undefined,
 			resolveApproval: async (sessionId: string, approvalId: string, decision: string) => {
+				if (approvalId === "approval-paid-already") throw new Error(`approval is no longer pending: ${approvalId}`);
 				decisions.push({ sessionId, approvalId, decision });
+				if (approvalId === "approval-paid-1") return;
 				listener?.({ sessionId, method: decision === "reject" ? "approval.rejected" : "approval.granted", params: { approvalId, decision } });
 			},
 			close: async () => undefined,
@@ -1681,12 +1756,59 @@ test("approval modes configure new native sessions and pending requests resolve 
 	await expect(modal).toContainText("$2.45");
 	await expect(modal).toContainText("240");
 	await expect(page.locator(".approval-card")).toHaveCount(0);
-	await modal.getByRole("button", { name: "Approve with cap" }).click();
+	await modal.getByRole("button", { name: "Approve", exact: true }).click();
 	await expect(modal).toBeHidden();
 	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
 		{ sessionId, approvalId: "approval-1", decision: "once" },
 		{ sessionId, approvalId: "approval-paid-1", decision: "once" }
 	]);
+
+	await page.evaluate((id) => {
+		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
+			sessionId: id,
+			method: "approval.requested",
+			params: {
+				approvalId: "approval-credential-1",
+				kind: "credential_access",
+				provider: "openrouter",
+				purpose: "Issue a run-scoped Workshop proxy capability for recipe inline, run run-1; operations=chat.completions.create; maxCalls=50; maxCostUsd=2.45",
+				alwaysSupported: false
+			}
+		});
+	}, sessionId);
+	const credentialModal = page.getByTestId("credential-access-approval-modal");
+	await expect(credentialModal).toBeVisible();
+	await expect(credentialModal).toContainText("openrouter");
+	await expect(credentialModal).toContainText("Call cap50");
+	await expect(credentialModal).toContainText("Cost cap$2.45");
+	await expect(credentialModal.locator("dd").first()).toHaveCSS("color", "rgb(244, 246, 248)");
+	await expect(credentialModal).toContainText("never the credential value");
+	await credentialModal.getByRole("button", { name: "Allow once" }).click();
+	await expect(credentialModal).toBeHidden();
+	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
+		{ sessionId, approvalId: "approval-1", decision: "once" },
+		{ sessionId, approvalId: "approval-paid-1", decision: "once" },
+		{ sessionId, approvalId: "approval-credential-1", decision: "once" }
+	]);
+
+	await page.evaluate((id) => {
+		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
+			sessionId: id,
+			method: "approval.requested",
+			params: {
+				approvalId: "approval-paid-already",
+				kind: "paid_compute",
+				operation: "optimizer.evaluation.inline.start",
+				requestedCap: { maxCostUsdMicros: 2450000, maxRollouts: 5 },
+				parameters: { rolloutCount: 5 },
+				alwaysSupported: false
+			}
+		});
+	}, sessionId);
+	await expect(modal).toBeVisible();
+	await modal.getByRole("button", { name: "Approve", exact: true }).click();
+	await expect(modal).toBeHidden();
+	await expect(page.getByText(/approval is no longer pending/i)).toHaveCount(0);
 });
 
 test("paid compute Reject writes a durable decision and restart expiry closes the modal", async ({ page }) => {
@@ -1824,6 +1946,7 @@ test("a recent folder can create and attach to a conversation from the landing c
 	});
 	await installLagunaFixture(page, "ready");
 
+	await page.getByTestId("composer-add-menu-trigger").click();
 	await page.getByTestId("composer-slash-btn").click();
 	await page.getByTestId("slash-command-item-workspace").click();
 	const addFolder = page.getByTestId("workspace-scope-menu").getByRole("menuitem", { name: "Add folder…" });
@@ -1833,5 +1956,8 @@ test("a recent folder can create and attach to a conversation from the landing c
 	await recentFolder.click();
 
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __workspacePickerSession: () => string }).__workspacePickerSession())).not.toBe("");
+	await page.getByTestId("composer-add-menu-trigger").click();
+	await page.getByTestId("composer-slash-btn").click();
+	await page.getByTestId("slash-command-item-workspace").click();
 	await expect(page.getByTestId("workspace-attachment")).toContainText("GitHub");
 });

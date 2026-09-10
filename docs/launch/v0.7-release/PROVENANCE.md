@@ -1,4 +1,39 @@
-# v0.7 provenance (template — fill from `PROVENANCE.json` when the bytes exist)
+# v0.7 provenance
+
+## v0.7.4 desktop artifact — measured (2026-08-22)
+
+**Authoritative for the shipped build.** No `TBD` in this section; every value below was measured on
+the released bytes. The v0.7.0 table further down is historical planning material and still carries
+`TBD` placeholders — it is not a claim about anything shipped.
+
+| Repo | Commit | Tree | Notes |
+|---|---|---|---|
+| `workshop` | `937a316fcb85e8371faf2bd6f57aceadc4cc1873` | `8df5a3e58046fd7fc689580de5000a0ec813e0d4` | tag `v0.7.4`; clean at freeze |
+| `containers` | `e1df8c6ac5629cb11d5bc01bbebc7ffcee0cacbf` | `8809da8a335714b837c321c339d03dd9bf7eee1a` | clean; suite 489 passed / 10 skipped |
+| `synth-mlx-rl` | `5d6db14330babcff170d2afbb8535de2138385a9` | — | 0.6.0; embedded wheelhouse, lock SHA-256 `7f14b704…` |
+| `frontend` | release catalog commit for the `0.7.4` line | — | publishes the artifact URLs and checksums below |
+
+- Bundle identifier: `com.synth.desktop`
+- Packaged version: `0.7.4`
+- App CDHash: `a81e3ad2045f1050a05e166b99c33a5fac075974` (unchanged across ZIP and DMG round trips)
+- Main executable SHA-256: `608e6c68f77f326caf1f565ee1cbf14ea1a0ab8d12d1e1db82e54579eaca29ae`
+- ZIP: `Synth-Workshop-v0.7.4-macOS-arm64-UNNOTARIZED.zip`, bytes `121985840`,
+  SHA-256 `782ea3d25323cb7deb08f95d943d7078c18bebdcc7575e95dea14099a9b64e1c`
+- DMG: `Synth-Workshop-v0.7.4-macOS-arm64-UNNOTARIZED.dmg`, bytes `126277366`,
+  SHA-256 `ab1fbf03eebbeb0bf816e474bc645d9ff54a527c08ddb30c0d1f628c319c913d`
+- Signing: **ad-hoc**, no Team identifier. Notarized: **no**. Stapled: **no**.
+- Packaged cookbooks: none (`stage-packaged-cookbooks.sh` is a no-op in this candidate).
+- Public URLs under `https://www.usesynth.ai/releases/v0.7.4/`.
+
+No `PROVENANCE.json` was produced by `scripts/release-artifact.sh record`, because that command
+requires the Keychain-dependent `stage`/`notarize` steps to have run first. This section is the
+provenance record for v0.7.4.
+
+---
+
+## v0.7.0 planning table (historical, contains TBD)
+
+
 
 The package provenance record uses schema `synth.desktop-release-provenance.v1` and is written by `scripts/release-artifact.sh record` (official) or `candidate-record` (ad-hoc candidate). Every field below was recorded for v0.6.0 (Codex `2026-08-19/im/outputs/workshop-v0.6-release-receipt.md`); v0.7 records the same set plus the optimizers wheel and Eval runtime pin. Placeholders are `TBD`; never write a hex string that was not measured.
 

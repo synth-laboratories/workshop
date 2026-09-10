@@ -132,5 +132,5 @@ test("[v0.2] stopped turns show terminal approval history instead of dead button
 	await expect(page.getByTestId("model-working")).toHaveCount(0);
 	await expect(page.locator(".approval-card")).toHaveCount(0);
 	await expect(page.getByRole("button", { name: "Approve once" })).toHaveCount(0);
-	await expect(page.getByText("Approval expired", { exact: true })).toBeVisible();
+	await expect(page.getByText("Permission expired", { exact: true })).toBeVisible();
 });

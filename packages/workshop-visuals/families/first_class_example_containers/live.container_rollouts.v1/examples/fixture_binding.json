@@ -1,0 +1,9 @@
+{
+  "bindings": [
+    {
+      "slot": "stream",
+      "kind": "fixture",
+      "source": "fixtures/live_container_rollout_events.json"
+    }
+  ]
+}

@@ -15,6 +15,11 @@ The product move is: one durable eval/trace log per rollout, one optimizer log p
 > daemon into passing live receipts. See
 > [`MODERN_OPTIMIZER_STACK_STATUS_2026-08-12.md`](./MODERN_OPTIMIZER_STACK_STATUS_2026-08-12.md)
 > for the reconciled code/proof state.
+>
+> **Implementation amendment (2026-08-26).** Workshop live-eval families are
+> Craftax and Harbor only. Digbench is not a current family; `digbench_mock`
+> classifies as unclassified. Historical diagrams below still mention A8 /
+> `live.digbench.v1` as the 2026-08-12 baseline.
 
 ---
 
@@ -174,7 +179,6 @@ Templates (same reducer, different kinds):
 | --- | --- | --- |
 | Craftax | `live.craftax.v1` | first paid policy call |
 | Harbor | `live.harbor_eval.v1` | trial start |
-| dig.bench | `live.digbench.v1` | `start_session` (token starts there) |
 | GEPA | `optimizer.gepa.*.v1` | first mutating search step |
 | GELO | `optimizer.run.v1` + `go-ex` overlay | first mutating proposal/evaluation step |
 | SFT | `optimizer.sft.*.v1` | training start (A6) |
@@ -424,10 +428,9 @@ The AFTER diagrams are the target. **Core code** closes the edges that can be cl
 | --- | --- | --- |
 | Visual-first Craftax HTTP | One bind clock: register → visual on slot `stream` → declared poll until `stream.subscribed` → start; 10-lane pins seeds 0–9 without a paid call; spool reopen | A1 FAIL 4/10 on `a1clean` (Desktop drop); A5 PASS 8/8 on seed 0 |
 | Harbor in-app | Same clock; `live.harbor_eval.v1` before trial start; pins `luna_med` + `sol_med`; `live_frames=native` fails register | Docker packaged GameBench trial (A2). Live alpine `docker run` hung on this OrbStack |
-| dig.bench Desktop | Same clock; `live.digbench.v1` before `start_session`; basic ReAct + agentic Codex+MCP pins; no frames; token refused in log | Public game + token (A8). Headless mock only — no `DIGBENCH_API_TOKEN` |
 | Two GEPA parent | Manager-spawned two `algorithm_id: "gepa"` workers + distinct spools; G1 disk producer emits `proposer.delta` and child `resource-ref` | A3 FAIL: IPC ingest 404 (`~/.gepa/index.jsonl` race) |
 | Tinker SFT parent | `algorithm_id: "sft"` mocks queue with `accelerator_busy` and attach checkpoint `synth.resource-ref.v1`; OpenAI FT refused | A4 FAIL two trainers at once; A6 PARTIAL null `/reward` |
 | Failure motion | Cursor/409/digest already in-process | Kill SSE/container; paid exactly-once |
-| Agent operator | Skills refuse guessed `/events`; visual first; Harbor/dig.bench pins named; stop on tool fail | Fresh-workspace Sol run (W1–W3) |
+| Agent operator | Skills refuse guessed `/events`; visual first; Harbor pins named; stop on tool fail | Fresh-workspace Sol run (W1–W3) |
 
 Do not claim the right-hand column from the left-hand column.

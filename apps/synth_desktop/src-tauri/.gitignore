@@ -1,2 +1,4 @@
 /target/
 /gen/
+/generated-frameworks/
+/ghostty-host/.build/

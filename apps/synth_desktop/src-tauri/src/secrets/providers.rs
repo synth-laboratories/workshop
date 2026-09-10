@@ -50,6 +50,14 @@ pub const ROUTES: &[ProviderRoute] = &[
         auth: AuthStyle::Bearer,
     },
     ProviderRoute {
+        provider: "openrouter",
+        operation: "responses.create",
+        method: "POST",
+        local_path: "/v1/providers/openrouter/responses",
+        upstream_url: "https://openrouter.ai/api/v1/responses",
+        auth: AuthStyle::Bearer,
+    },
+    ProviderRoute {
         provider: "openai",
         operation: "chat.completions.create",
         method: "POST",
@@ -120,8 +128,24 @@ pub fn request_effort(body: &Value) -> Option<&str> {
         .or_else(|| body.get("reasoning_effort").and_then(Value::as_str))
 }
 
+/// Locate the usage object on an OpenAI-compatible body.
+///
+/// Chat Completions puts it at the top level. The Responses API puts it there
+/// too on a non-streaming reply, but nests it under `response` on the
+/// streaming lifecycle events (`response.completed`) that Codex's
+/// `wire_api = "responses"` lane actually returns. Reading only the top level
+/// records the call and its generation id while silently losing every token.
+fn usage_object(body: &Value) -> Value {
+    for pointer in ["/usage", "/response/usage"] {
+        if let Some(usage) = body.pointer(pointer).filter(|value| value.is_object()) {
+            return usage.clone();
+        }
+    }
+    Value::Null
+}
+
 pub fn parse_usage(body: &Value) -> MeasuredUsage {
-    let usage = body.get("usage").cloned().unwrap_or(Value::Null);
+    let usage = usage_object(body);
     let int = |keys: &[&str]| {
         keys.iter()
             .find_map(|key| usage.get(*key).and_then(Value::as_u64))
@@ -129,43 +153,92 @@ pub fn parse_usage(body: &Value) -> MeasuredUsage {
     };
     let input = int(&["prompt_tokens", "input_tokens"]);
     let output = int(&["completion_tokens", "output_tokens"]);
-    let cost = ["cost", "cost_usd"]
+    let cost_usd = ["cost", "cost_usd"]
         .iter()
         .find_map(|key| usage.get(*key).and_then(Value::as_f64))
-        .or_else(|| {
-            let model = body.get("model").and_then(Value::as_str).unwrap_or("");
-            let at = chrono::Utc::now().timestamp_millis();
-            crate::tariffs::estimate_cost_usd(
-                "openai",
-                model,
-                at,
-                crate::tariffs::BillableTokens {
-                    input_tokens: Some(input as i64),
-                    cached_input_tokens: None,
-                    cache_write_tokens: None,
-                    output_tokens: Some(output as i64),
-                },
-            )
-            .or_else(|| {
-                crate::tariffs::estimate_cost_usd(
-                    "openrouter",
-                    model,
-                    at,
-                    crate::tariffs::BillableTokens {
-                        input_tokens: Some(input as i64),
-                        cached_input_tokens: None,
-                        cache_write_tokens: None,
-                        output_tokens: Some(output as i64),
-                    },
-                )
-            })
-        })
-        .unwrap_or(0.0);
+        .filter(|cost| cost.is_finite() && *cost >= 0.0);
     MeasuredUsage {
         calls: 1,
         input_tokens: input,
         output_tokens: output,
-        cost_usd: cost,
+        cost_usd,
+    }
+}
+
+/// Recover response identity and inline usage from an OpenAI-compatible SSE
+/// response. The proxy buffers provider bodies before relaying them, so it can
+/// account for the final `stream_options.include_usage` chunk without changing
+/// a byte of the worker-visible stream.
+pub fn parse_sse_usage(bytes: &[u8]) -> (Option<String>, MeasuredUsage) {
+    let text = String::from_utf8_lossy(bytes);
+    let mut response_id = None;
+    let mut measured = MeasuredUsage {
+        calls: 1,
+        input_tokens: 0,
+        output_tokens: 0,
+        cost_usd: None,
+    };
+    for line in text.lines() {
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let Ok(chunk) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        if response_id.is_none() {
+            response_id = response_id_for_owned(&chunk);
+        }
+        // Chat Completions reports usage on the final chunk; the Responses
+        // API reports it inside `response` on `response.completed`. Both are
+        // the same accounting record and neither may be dropped.
+        if usage_object(&chunk).is_object() {
+            let usage = parse_usage(&chunk);
+            measured.input_tokens = usage.input_tokens;
+            measured.output_tokens = usage.output_tokens;
+            measured.cost_usd = usage.cost_usd;
+        }
+    }
+    (response_id, measured)
+}
+
+fn response_id_for_owned(body: &Value) -> Option<String> {
+    response_id(body).map(str::to_owned)
+}
+
+/// Stable provider response identity retained for asynchronous accounting.
+/// OpenRouter returns the generation id on the top-level chat response; the
+/// Responses API carries the same identity inside `response`.
+pub(crate) fn response_id(body: &Value) -> Option<&str> {
+    body.get("id")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("response")?.get("id")?.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+/// Parse OpenRouter's authoritative `/generation` accounting response. This
+/// endpoint is the documented fallback when the generation id is available
+/// but the inline response has not yet populated its `usage` object.
+pub(crate) fn parse_openrouter_generation_usage(body: &Value) -> MeasuredUsage {
+    let data = body.get("data").unwrap_or(body);
+    let integer = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| data.get(*key).and_then(Value::as_u64))
+            .unwrap_or(0)
+    };
+    let cost_usd = ["total_cost", "usage"]
+        .iter()
+        .find_map(|key| data.get(*key).and_then(Value::as_f64))
+        .filter(|cost| cost.is_finite() && *cost >= 0.0);
+    MeasuredUsage {
+        calls: 1,
+        input_tokens: integer(&["tokens_prompt", "native_tokens_prompt"]),
+        output_tokens: integer(&["tokens_completion", "native_tokens_completion"]),
+        cost_usd,
     }
 }
 
@@ -239,7 +312,7 @@ mod tests {
     fn bearer_auth_is_injected_for_openrouter() {
         let route = route_for("POST", "/v1/providers/openrouter/chat/completions").unwrap();
         let request = inject_auth(
-            reqwest::Client::new().post(route.upstream_url),
+            crate::http::http_client().post(route.upstream_url),
             route,
             &SecretBytes::from_utf8("test-provider-key"),
         )
@@ -250,5 +323,103 @@ mod tests {
             request.headers().get("authorization").unwrap(),
             "Bearer test-provider-key"
         );
+    }
+
+    #[test]
+    fn usage_without_provider_cost_remains_unpriced() {
+        let usage = parse_usage(&serde_json::json!({
+            "model": "openai/gpt-5.6-luna",
+            "usage": {"prompt_tokens": 12, "completion_tokens": 8}
+        }));
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 8);
+        assert_eq!(usage.cost_usd, None);
+    }
+
+    #[test]
+    fn exact_provider_cost_is_preserved() {
+        let usage = parse_usage(&serde_json::json!({
+            "usage": {"input_tokens": 12, "output_tokens": 8, "cost": 0.0042}
+        }));
+        assert_eq!(usage.cost_usd, Some(0.0042));
+    }
+
+    #[test]
+    fn response_identity_survives_both_openai_compatible_shapes() {
+        assert_eq!(
+            response_id(&serde_json::json!({"id": "gen-top"})),
+            Some("gen-top")
+        );
+        assert_eq!(
+            response_id(&serde_json::json!({"response": {"id": "resp-nested"}})),
+            Some("resp-nested")
+        );
+        assert_eq!(response_id(&serde_json::json!({"id": "  "})), None);
+    }
+
+    #[test]
+    fn openrouter_generation_metadata_recovers_exact_cost_and_tokens() {
+        let usage = parse_openrouter_generation_usage(&serde_json::json!({
+            "data": {
+                "tokens_prompt": 1479,
+                "tokens_completion": 83,
+                "native_tokens_prompt": 1400,
+                "native_tokens_completion": 80,
+                "total_cost": 0.0003107,
+                "usage": 0.9
+            }
+        }));
+        assert_eq!(usage.input_tokens, 1479);
+        assert_eq!(usage.output_tokens, 83);
+        assert_eq!(usage.cost_usd, Some(0.0003107));
+    }
+
+    #[test]
+    fn responses_api_usage_is_accounted_from_the_nested_response_object() {
+        // Codex's `wire_api = "responses"` lane returns usage under
+        // `response`, never at the top level. The 2026-09-03 DeepSWE sample
+        // recorded 36 provider calls with 0/0 tokens because only the top
+        // level was read.
+        let usage = parse_usage(&serde_json::json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp-nested",
+                "usage": {"input_tokens": 4211, "output_tokens": 190, "cost": 0.0091}
+            }
+        }));
+        assert_eq!(usage.input_tokens, 4211);
+        assert_eq!(usage.output_tokens, 190);
+        assert_eq!(usage.cost_usd, Some(0.0091));
+    }
+
+    #[test]
+    fn responses_api_sse_usage_and_response_id_are_accounted() {
+        let body = concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-stream\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-stream\",\"usage\":{\"input_tokens\":4211,\"output_tokens\":190,\"cost\":0.0091}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (id, usage) = parse_sse_usage(body.as_bytes());
+        assert_eq!(id.as_deref(), Some("resp-stream"));
+        assert_eq!(usage.calls, 1);
+        assert_eq!(usage.input_tokens, 4211);
+        assert_eq!(usage.output_tokens, 190);
+        assert_eq!(usage.cost_usd, Some(0.0091));
+    }
+
+    #[test]
+    fn sse_final_usage_and_response_id_are_accounted() {
+        let body = concat!(
+            "data: {\"id\":\"gen-stream\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+            "data: {\"id\":\"gen-stream\",\"choices\":[],\"usage\":{\"prompt_tokens\":1479,\"completion_tokens\":83,\"cost\":0.0003107}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (id, usage) = parse_sse_usage(body.as_bytes());
+        assert_eq!(id.as_deref(), Some("gen-stream"));
+        assert_eq!(usage.calls, 1);
+        assert_eq!(usage.input_tokens, 1479);
+        assert_eq!(usage.output_tokens, 83);
+        assert_eq!(usage.cost_usd, Some(0.0003107));
     }
 }

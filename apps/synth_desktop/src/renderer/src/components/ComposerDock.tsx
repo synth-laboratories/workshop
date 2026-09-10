@@ -26,6 +26,9 @@ import type { ModelKnobTransportValue } from "../runtime/modelCapabilities";
 import type { FailedSend } from "../runtime/codexTurn";
 import type { MainView } from "../routes";
 import { Composer } from "./Composer";
+import type { LagunaPolicy } from "../bridge/types";
+import { createPortal } from "react-dom";
+import { useComposerLayoutHost } from "./ComposerLayout";
 
 export type ComposerDockProps = {
 	show: boolean;
@@ -53,13 +56,16 @@ export type ComposerDockProps = {
 	retryFailedSend: () => void;
 	/** Set when a previous Workshop process died holding this chat's turn. */
 	recoveryNotice?: RecoveryNotice | null;
-	onRestartRecovered?: (sessionId: string) => void;
+	onResumeRecovered?: (sessionId: string) => void;
 	defaultWorkspace: string | null;
 	workspaceScope: ConversationWorkspaceScope | null;
 	setWorkspaceScope: (scope: ConversationWorkspaceScope | null) => void;
 	composerSkills: Array<{ id: string; name: string; description: string }>;
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
+	lagunaAdapters: LagunaPolicy[];
+	selectedLagunaAdapterId: string | null;
+	onSelectLagunaAdapter: (checkpointId: string | null) => void;
 	onComposerSend: (text: string) => void | Promise<void>;
 	sendToSession: (sessionId: string, text: string) => Promise<boolean>;
 	createConversation: (targetId?: string) => Promise<Session>;
@@ -115,13 +121,16 @@ export function ComposerDock({
 	failedSend,
 	retryFailedSend,
 	recoveryNotice,
-	onRestartRecovered,
+	onResumeRecovered,
 	defaultWorkspace,
 	workspaceScope,
 	setWorkspaceScope,
 	composerSkills,
 	selectedTargetId,
 	onSelectTarget,
+	lagunaAdapters,
+	selectedLagunaAdapterId,
+	onSelectLagunaAdapter,
 	onComposerSend,
 	sendToSession,
 	createConversation,
@@ -133,9 +142,10 @@ export function ComposerDock({
 	setUsageSheetOpen,
 	onStopActiveTurn
 }: ComposerDockProps) {
-	if (!show) return null;
+	const host = useComposerLayoutHost();
+	if (!show || !host) return null;
 
-	return (
+	return createPortal(
 		<Composer
 			state={state}
 			sentMessages={activeChat?.messages
@@ -143,6 +153,11 @@ export function ComposerDock({
 				.map((message) => message.body) ?? []}
 			onSend={(text) => void onComposerSend(text)}
 			onSelectTarget={onSelectTarget}
+			lagunaAdapter={{
+				adapters: lagunaAdapters,
+				selectedId: selectedLagunaAdapterId,
+				onSelect: onSelectLagunaAdapter
+			}}
 			permissions={{
 				approvalPolicy,
 				sandboxMode,
@@ -208,9 +223,9 @@ export function ComposerDock({
 					: recoveryNotice && activeChat?.id
 						? {
 							message: recoveryMessage(recoveryNotice),
-							actionLabel: "Restart",
-							onRetry: recoveryNotice.restartable && recoveryNotice.lastUserMessage?.text
-								? () => onRestartRecovered?.(activeChat.id)
+							actionLabel: "Resume",
+							onRetry: recoveryNotice.restartable
+								? () => onResumeRecovered?.(activeChat.id)
 								: undefined
 						}
 						: null,
@@ -257,5 +272,7 @@ export function ComposerDock({
 				onOpenVoiceSettings: () => setView({ kind: "settings", section: "voice" })
 			}}
 		/>
+		,
+		host
 	);
 }

@@ -54,14 +54,16 @@ test("W2 revised evidence review is rendered and legible wide and compact", asyn
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId(`visuals-card-${visual.id}`).getByRole("button", { name: "Open" }).click();
+	await page.getByTestId(`visuals-card-${visual.id}`).click();
+	await page.getByRole("button", {name: "Expand", exact: true}).click();
+	await expect(page.locator(".toast")).toHaveCount(0);
+	await expect(page.getByRole("button", {name: "Show library", exact: true})).toHaveAttribute("aria-pressed", "true");
 	mkdirSync(PROOF_DIR, { recursive: true });
 
 	for (const state of [{ name: "wide", width: 1280, height: 900 }, { name: "compact", width: 768, height: 1024 }]) {
 		await page.setViewportSize({ width: state.width, height: state.height });
-		if (state.name === "compact") await page.getByTestId("toggle-visual-expand").click();
 		await page.waitForTimeout(250);
-		const summary = page.getByTestId("visual-pane").getByTestId("trace-evidence-summary");
+		const summary = page.getByTestId("visuals-preview").getByTestId("trace-evidence-summary");
 		await expect(summary).toBeVisible();
 		await expect(summary).toContainText("2/2 decisive · digest bound");
 		await expect(summary).toContainText("Policy pin verified");
@@ -69,12 +71,11 @@ test("W2 revised evidence review is rendered and legible wide and compact", asyn
 		const geometry = await page.evaluate(() => ({
 			scrollWidth: document.documentElement.scrollWidth,
 			clientWidth: document.documentElement.clientWidth,
-			summary: document.querySelector('[data-testid="visual-pane"] [data-testid="trace-evidence-summary"]')?.getBoundingClientRect().toJSON()
+			summary: document.querySelector('[data-testid="visuals-preview"] [data-testid="trace-evidence-summary"]')?.getBoundingClientRect().toJSON()
 		}));
 		expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
 		expect(geometry.summary?.left).toBeGreaterThanOrEqual(0);
 		expect(geometry.summary?.right).toBeLessThanOrEqual(state.width + 1);
 		await page.screenshot({ path: resolve(PROOF_DIR, `${state.name}-${state.width}x${state.height}.png`), fullPage: true });
-		if (state.name === "compact") await page.getByTestId("toggle-visual-expand").click();
 	}
 });

@@ -225,6 +225,29 @@ class NeutralCoreContractTests(unittest.TestCase):
         self.assertEqual(assistant["reasoning_content"], "Inspect before editing.")
         self.assertEqual(assistant["tool_calls"][0]["function"]["name"], "read_file")
 
+    def test_namespaced_tool_history_reuses_the_model_visible_name(self) -> None:
+        messages = items_to_messages(
+            {},
+            [
+                {
+                    "type": "function_call",
+                    "call_id": "call_container_list",
+                    "name": "container_list",
+                    "namespace": "mcp__synth_containers",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_container_list",
+                    "output": '{"containers":[]}',
+                },
+            ],
+        )
+        self.assertEqual(
+            messages[0]["tool_calls"][0]["function"]["name"],
+            "mcp__synth_containers__container_list",
+        )
+
     def test_prompt_cache_key_is_a_neutral_field(self) -> None:
         """The backend reads the dataclass field, not a Responses request dict."""
         turn = compile_messages(

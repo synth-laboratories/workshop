@@ -226,6 +226,26 @@ impl WhisperManager {
         result
     }
 
+    /// Transcribe bytes that another trusted subsystem has already persisted.
+    /// The caller remains responsible for retaining the authoritative source
+    /// bytes; Whisper only receives a short-lived local copy.
+    pub(crate) fn transcribe_persisted_bytes(
+        self: &Arc<Self>,
+        bytes: &[u8],
+        mime_type: &str,
+    ) -> Result<WhisperTranscription> {
+        let extension = extension_for_mime(mime_type);
+        let temp_path = env::temp_dir().join(format!(
+            "synth-whisper-persisted-{}.{extension}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&temp_path, bytes)
+            .with_context(|| format!("write temporary audio file {}", temp_path.display()))?;
+        let result = self.transcribe(&temp_path.to_string_lossy());
+        let _ = fs::remove_file(&temp_path);
+        result
+    }
+
     fn stop_runtime(&self) -> Result<()> {
         let mut runtime = self
             .runtime
@@ -254,15 +274,15 @@ impl crate::services::ManagedService for WhisperManager {
 pub struct WhisperRuntimeStatus {
     pub phase: String,
     pub loaded_model: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub idle_seconds: Option<u64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub idle_unload_after_seconds: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub last_used_at: Option<u64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub free_at: Option<u64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub updated_at: u64,
 }
 
@@ -342,9 +362,9 @@ pub struct WhisperModelHit {
     pub description: String,
     pub recommended: bool,
     pub multilingual: bool,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub download_bytes: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub installed_bytes: Option<u64>,
     pub path: Option<String>,
     pub selected: bool,

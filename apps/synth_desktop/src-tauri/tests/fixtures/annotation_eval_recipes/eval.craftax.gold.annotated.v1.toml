@@ -1,0 +1,25 @@
+id = "eval.craftax.gold.annotated.v1"
+algorithm = "eval"
+container = "craftax-gamebench-rust"
+provider = "none"
+model = "scripted_react"
+locality = "container"
+train_seeds = [0]
+environment_ref = "env:craftax_gold"
+
+[bounds]
+max_cost_usd = 2.00
+max_total_rollouts = 1
+
+[annotation]
+annotators = [
+  "craftax.belief_facts",
+  "craftax.plan_action_fidelity",
+  "craftax.recovery_facts",
+  "craftax.milestone_progress",
+  { id = "craftax.rubric_verifier", rubric_id = "craftax.execution_quality" },
+]
+label = "post_rollout"
+
+[annotation.throughput]
+deterministic = 4

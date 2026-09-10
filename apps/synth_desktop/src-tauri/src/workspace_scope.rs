@@ -64,9 +64,9 @@ pub struct ConversationWorkspaceScope {
     pub session_id: String,
     pub workspace: String,
     pub attachments: Vec<WorkspaceAttachment>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub revision: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub bound_revision: i64,
     pub binding_status: String,
     pub binding_error: Option<String>,
@@ -184,6 +184,34 @@ pub fn writable_roots(scope: &ConversationWorkspaceScope) -> Vec<String> {
         .collect()
 }
 
+/// Conversation workspace plus every attached folder. Nested declaring
+/// repositories under these roots keep their own `workshop.containers.toml`.
+pub fn approved_search_roots(db: &Database, session_id: &str) -> Result<Vec<PathBuf>> {
+    let id = session_id.to_string();
+    let scope = db.with_conn(move |conn| {
+        if load(conn, &id)?.is_none() {
+            let _ = initialize_from_session(conn, &id)?;
+        }
+        load(conn, &id)
+    })?;
+    let Some(scope) = scope else {
+        return Err(anyhow!(
+            "session `{session_id}` has no workspace; declare workshop.containers.toml there"
+        ));
+    };
+    let mut roots = Vec::new();
+    let workspace = canonical_directory(&scope.workspace)?;
+    roots.push(workspace);
+    for attachment in &scope.attachments {
+        if let Ok(path) = canonical_directory(&attachment.path) {
+            if !roots.iter().any(|root| root == &path) {
+                roots.push(path);
+            }
+        }
+    }
+    Ok(roots)
+}
+
 fn load(
     conn: &rusqlite::Connection,
     session_id: &str,
@@ -270,7 +298,7 @@ pub async fn attach(
     let path = path.to_string_lossy().into_owned();
     db.run_transaction(move |conn| {
         if load(conn, &id)?.is_none() && !initialize_from_session(conn, &id)? {
-            return Err(anyhow!("conversation has no durable workspace metadata"));
+            return Err(anyhow!("conversation has no saved workspace metadata"));
         }
         reject_overlap(conn, &id, Path::new(&path))?;
         conn.execute("INSERT INTO workspace_attachments(session_id,path,access,source,created_at) VALUES(?1,?2,?3,?4,datetime('now'))", params![id,path,access.as_str(),source.as_str()]).context("attachment is already present")?;

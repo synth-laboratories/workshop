@@ -1,3 +1,4 @@
+import { openOutputs } from "./v02-helpers";
 import { expect, test } from "./browser.fixture";
 import type { Page } from "@playwright/test";
 import type { VisualRecord } from "@synth/runtime-protocol";
@@ -29,6 +30,7 @@ const sampleVisual: VisualRecord = {
 async function installVisualsFixture(page: Page, visuals: VisualRecord[] = [sampleVisual]): Promise<void> {
 	await page.addInitScript((rows) => {
 		const store = [...rows] as VisualRecord[];
+		const listeners = new Set<(event: { kind: string; payload: { visualId: string } }) => void>();
 		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
 			listTemplates: async () => [{ id: "reward.breakdown.v1", title: "Reward breakdown", genre: "reward" }],
 			getTemplate: async (templateId: string) => ({ id: templateId, title: templateId }),
@@ -41,14 +43,20 @@ async function installVisualsFixture(page: Page, visuals: VisualRecord[] = [samp
 			revisions: async () => [],
 			create: async (request: { templateId: string; title?: string }) => {
 				const created = {
-					...store[0],
+					schemaVersion: "synth.desktop-visual.v1" as const,
 					id: `vis_${store.length + 1}`,
+					currentRevision: 1,
 					templateId: request.templateId,
 					title: request.title ?? "New visual",
 					status: "draft" as const,
-					currentRevision: 1
+					rendererKind: "template" as const,
+					bindings: {}, sessionId: null, messageId: null, runId: null, traceId: null,
+					parentVisualId: null, sourceAgentId: "test", sourceModel: "fixture",
+					contentDigest: null, previewDigest: null, metadata: {},
+					createdAt: "2026-08-28T12:00:00Z", updatedAt: "2026-08-28T12:00:00Z"
 				};
 				store.unshift(created);
+				queueMicrotask(() => listeners.forEach((listener) => listener({ kind: "visual.created", payload: { visualId: created.id } })));
 				return created;
 			},
 			update: async () => store[0],
@@ -60,7 +68,10 @@ async function installVisualsFixture(page: Page, visuals: VisualRecord[] = [samp
 				if (!hit) throw new Error(`missing visual ${visualId}`);
 				return hit;
 			},
-			onEvent: () => () => undefined,
+			onEvent: (listener: (event: { kind: string; payload: { visualId: string } }) => void) => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
 			onShow: () => () => undefined
 		};
 	}, visuals);
@@ -76,21 +87,116 @@ test("Visuals library lists a saved visual by visual_id", async ({ page }) => {
 	await expect(page.getByTestId("visuals-card-vis_test_reward")).toContainText("Reward breakdown");
 });
 
-test("chat visual card, registry, and right pane resolve one visual_id", async ({ page }) => {
+test("Visuals preview keeps primary chrome concise and omits report controls", async ({ page }) => {
 	await installVisualsFixture(page);
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId("visuals-card-vis_test_reward").getByRole("button", { name: "Open" }).click();
-	await expect(page.getByTestId("visual-pane")).toBeVisible();
-	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
+	const header = page.getByTestId("visuals-preview-header");
+	await expect(header).toContainText("Reward breakdown");
+	await expect(header).toContainText("Saved · rev 1 · Reward Breakdown");
+	await expect(header.getByRole("button", { name: "Expand" })).toBeVisible();
+	await expect(header.getByLabel("Report destination")).toHaveCount(0);
+	await expect(page.getByLabel("Report placement")).toHaveCount(0);
+	await expect(page.getByTestId("visual-add-to-report")).toHaveCount(0);
+	await header.getByLabel("More actions for Reward breakdown").click();
+	await expect(page.getByTestId("visuals-preview-context")).toHaveCount(0);
+	await expect(header.getByRole("menuitem", { name: "Rename" })).toBeVisible();
+	await expect(header.getByRole("menuitem", { name: "Archive" })).toBeVisible();
+	await header.getByRole("menuitem", { name: "Details & provenance" }).click();
+	await expect(page.getByTestId("visuals-preview-context")).toBeVisible();
+	await expect(header.getByRole("menuitem", { name: "Rename" })).toBeHidden();
+});
+
+test("Open canvas expands the registry preview without a duplicate dock", async ({ page }) => {
+	await installVisualsFixture(page);
+	await page.getByTestId("open-visuals").click();
+	await page.getByTestId("visuals-actions-vis_test_reward").locator("summary").click();
+	await page.getByTestId("visuals-actions-vis_test_reward").getByRole("menuitem", { name: "Open canvas" }).click();
+	await expect(page.getByTestId("visual-pane")).toBeHidden();
+	await expect(page.getByTestId("visuals-preview")).toContainText("Reward breakdown");
 	await expect(page.getByTestId("visuals-preview")).toBeVisible();
 });
 
-test("Visuals page can create a draft visual from the registry", async ({ page }) => {
+test("an open visual pane keeps its title when switching chat and Visuals", async ({ page }) => {
+	await page.addInitScript((visual) => {
+		const store = [visual] as VisualRecord[];
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [{ id: visual.templateId, title: visual.title, genre: "reward" }],
+			getTemplate: async (templateId: string) => ({ id: templateId, title: templateId }),
+			list: async () => store,
+			get: async (visualId: string) => {
+				const hit = store.find((row) => row.id === visualId);
+				if (!hit) throw new Error(`missing visual ${visualId}`);
+				return hit;
+			},
+			revisions: async () => [],
+			show: async (visualId: string) => {
+				const hit = store.find((row) => row.id === visualId);
+				if (!hit) throw new Error(`missing visual ${visualId}`);
+				return hit;
+			},
+			onEvent: () => () => undefined,
+			onShow: () => () => undefined
+		};
+		const session = {
+			id: "pane-host-chat",
+			title: "Pane host chat",
+			target: { kind: "local", model: "laguna-xs-2.1", adapter: null },
+			createdAt: "2026-08-09T12:00:00.000Z",
+			updatedAt: "2026-08-09T12:00:00.000Z",
+			status: "ready",
+			latestCursor: 0,
+			metadata: {}
+		};
+		(window as typeof window & { synthRuntime?: unknown }).synthRuntime = {
+			async request(path: string) {
+				if (path === "/v1/health") return {
+					runtimeId: "renderer-test", local: { mode: "unavailable", modelPath: null },
+					intern: { mode: "demo" }, openrouter: { mode: "unconfigured" },
+					inventory: { containers: 0, traces: 0, visuals: 1 }
+				};
+				if (path === "/v1/sessions") return { sessions: [session] };
+				if (path === "/v1/projects") return { projects: [] };
+				if (path.includes("/events")) return { events: [], nextCursor: 0, hasMore: false };
+				throw new Error(`Unexpected renderer test request: ${path}`);
+			},
+			async subscribe() { return { close() {} }; }
+		};
+	}, sampleVisual);
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await page.getByTestId("open-visuals").click();
+	await page.getByTestId("visuals-actions-vis_test_reward").locator("summary").click();
+	await page.getByTestId("visuals-actions-vis_test_reward").getByRole("menuitem", { name: "Open canvas" }).click();
+	await expect(page.getByTestId("visual-pane")).toBeHidden();
+	await expect(page.getByTestId("visuals-preview")).toContainText("Reward breakdown");
+	await page.getByTestId("local-chat-pane-host-chat").click();
+	await expect(page.getByTestId("chat-transcript")).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
+	await page.getByTestId("open-visuals").click();
+	await expect(page.getByTestId("visuals-page")).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toBeHidden();
+	await expect(page.getByTestId("visuals-preview")).toContainText("Reward breakdown");
+});
+
+test("Visuals page directs visual creation through the agent", async ({ page }) => {
 	await installVisualsFixture(page, []);
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId("visuals-new").click();
-	await expect(page.getByTestId("visual-pane")).toBeVisible();
-	await expect(page.getByTestId("visuals-grid")).toContainText("New visual");
+	await expect(page.getByTestId("visuals-new")).toHaveCount(0);
+	await expect(page.getByTestId("visuals-grid")).toContainText("Ask the agent to create one in chat.");
+});
+
+test("Visual row overflow dismisses on outside interaction and Escape", async ({ page }) => {
+	await installVisualsFixture(page);
+	await page.getByTestId("open-visuals").click();
+	const actions = page.getByTestId("visuals-actions-vis_test_reward");
+	await actions.locator("summary").click();
+	await expect(actions).toHaveJSProperty("open", true);
+	await page.getByRole("heading", { name: "Visuals" }).click();
+	await expect(actions).toHaveJSProperty("open", false);
+	await actions.locator("summary").click();
+	await page.keyboard.press("Escape");
+	await expect(actions).toHaveJSProperty("open", false);
 });
 
 test("an already-open pane rejects stale gets and reconciles a dropped final update on focus", async ({ page }) => {
@@ -130,14 +236,16 @@ test("an already-open pane rejects stale gets and reconciles a dropped final upd
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualRace: { isAttached(): boolean } }).__visualRace.isAttached())).toBe(true);
-	await page.getByTestId("open-visuals").click();
+	await page.getByTestId("open-experiments").click();
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualRace: { isAttached(): boolean } }).__visualRace.isAttached())).toBe(true);
 	await page.evaluate(() => (window as typeof window & { __visualRace: { show13(): void; update14(): void } }).__visualRace.show13());
 	await page.evaluate(() => (window as typeof window & { __visualRace: { show13(): void; update14(): void } }).__visualRace.update14());
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualRace: { getCount(): number } }).__visualRace.getCount())).toBe(2);
 	await expect.poll(() => page.evaluate(() => window.__synthEval?.getState().openVisualId)).toBe("vis_race");
 	await expect(page.getByTestId("visual-pane")).toContainText("Revision 14");
-	await expect(page.getByTestId("visual-pane")).toContainText("rev 14");
+	await page.getByRole("button", {name: "Visual details and actions", exact: true}).click();
+	await expect(page.getByTestId("visual-pane-identity")).toContainText("rev 14");
+	await page.keyboard.press("Escape");
 	await page.evaluate(() => (window as typeof window & { __visualRace: { release13(): void } }).__visualRace.release13());
 	await expect(page.getByTestId("visual-pane")).toContainText("Revision 14");
 
@@ -181,7 +289,7 @@ test("an owned visual.show does not steal another chat's right pane", async ({ p
 	}, [sampleVisual, { ...sampleVisual, id: "vis_healthbench", title: "HealthBench smoke" }]);
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
-	await page.getByTestId("open-visuals").click();
+	await page.getByTestId("open-experiments").click();
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualOwner: { show(visualId: string, ownerSessionId?: string): void } }).__visualOwner !== undefined)).toBeTruthy();
 	await page.evaluate(() => (window as typeof window & { __visualOwner: { show(visualId: string, ownerSessionId?: string): void } }).__visualOwner.show("vis_test_reward", "chat-banking77"));
 	await expect.poll(() => page.evaluate(() => window.__synthEval?.getState().openVisualId ?? null)).toBe(null);
@@ -244,8 +352,8 @@ test("an optimizer visual event appears immediately in its chat Outputs shelf", 
 	await page.getByTestId("local-chat-visual-output-session").click();
 	await page.evaluate(() => (window as typeof window & { __optimizerVisual: { emit(): void } }).__optimizerVisual.emit());
 	const transcript = page.getByTestId("chat-transcript");
-	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
-	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect((await openOutputs(page))).toContainText(/Outputs\s*1/);
+	await (await openOutputs(page)).click();
 	await expect(page.getByTestId("visuals-icon-vis_optimizer_output")).toContainText("HealthBench live eval");
 });
 
@@ -290,8 +398,8 @@ test("a durable optimizer visual restores to its chat Outputs shelf outside the 
 	await page.reload();
 	await page.getByTestId("local-chat-restored-visual-output-session").click();
 	const transcript = page.getByTestId("chat-transcript");
-	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
-	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect((await openOutputs(page))).toContainText(/Outputs\s*1/);
+	await (await openOutputs(page)).click();
 	await expect(page.getByTestId("visuals-icon-vis_restored_optimizer_output")).toContainText("Restored HealthBench eval");
 });
 
@@ -326,8 +434,8 @@ test("a durable optimizer visual remains in Outputs when conversation replay fai
 	await page.reload();
 	await page.getByTestId("local-chat-journal-failed-output-session").click();
 	const transcript = page.getByTestId("chat-transcript");
-	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
-	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect((await openOutputs(page))).toContainText(/Outputs\s*1/);
+	await (await openOutputs(page)).click();
 	await expect(page.getByTestId("visuals-icon-vis_journal_failed_output")).toContainText("Recovered eval checkpoint");
 });
 
@@ -358,9 +466,9 @@ test("a persisted report is discoverable from Outputs after reopening a chat", a
 	});
 	await page.reload();
 	await page.getByTestId("local-chat-report-output-session").click();
-	await page.getByTestId("resource-shelf-trigger").click();
+	await (await openOutputs(page)).click();
 	await expect(page.getByTestId("report-output-rep_reopen_01")).toContainText("Bounded Craftax baseline");
-	await expect(page.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
+	await expect((await openOutputs(page))).toContainText(/Outputs\s*1/);
 });
 
 test("session-owned eval, cancelled, and failed runs remain inspectable in Outputs after reopen", async ({ page }) => {
@@ -433,7 +541,7 @@ test("session-owned eval, cancelled, and failed runs remain inspectable in Outpu
 	await page.reload();
 	await page.getByTestId("local-chat-run-output-session").click();
 	const transcript = page.getByTestId("chat-transcript");
-	await transcript.getByTestId("resource-shelf-trigger").click();
+	await (await openOutputs(page)).click();
 	await expect(page.getByTestId("run-output-opt_eval_cancelled_01")).toContainText("Cancelled Craftax eval");
 	await expect(page.getByTestId("run-output-opt_eval_failed_01")).toContainText("Failed HealthBench eval");
 	await expect(page.getByTestId("run-output-opt_eval_complete_01")).toContainText("Completed Qwen SFT");
@@ -495,18 +603,25 @@ test("a stale running local eval is refreshed before Outputs lists it after reop
 	});
 	await page.reload();
 	await page.getByTestId("local-chat-stale-running-output-session").click();
-	await page.getByTestId("resource-shelf-trigger").click();
+	await (await openOutputs(page)).click();
 	await expect(page.getByTestId("run-output-opt_eval_stale_01")).toContainText("opt_eval_stale_01 · completed");
 });
 
 test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears when stacked", async ({ page }) => {
-	await page.setViewportSize({ width: 1280, height: 840 });
+	await page.setViewportSize({ width: 1600, height: 840 });
 	await installVisualsFixture(page);
 	await page.getByTestId("open-visuals").click();
 	const splitter = page.getByTestId("visuals-resize-handle");
 	await expect(splitter).toBeVisible();
 	await expect(splitter).toHaveAttribute("role", "separator");
 	await expect(splitter).toHaveAttribute("aria-orientation", "vertical");
+	await expect.poll(async () => {
+		const reported = Number(await splitter.getAttribute("aria-valuenow"));
+		const realized = await page.getByTestId("visuals-grid").evaluate((element) => Math.round(element.getBoundingClientRect().width));
+		const minimum = Number(await splitter.getAttribute("aria-valuemin"));
+		const maximum = Number(await splitter.getAttribute("aria-valuemax"));
+		return Math.abs(reported - Math.min(maximum, Math.max(minimum, realized)));
+	}).toBeLessThanOrEqual(1);
 	const before = Number(await splitter.getAttribute("aria-valuenow"));
 	const box = await splitter.boundingBox();
 	if (!box) throw new Error("Visuals splitter geometry unavailable");
@@ -514,21 +629,85 @@ test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears w
 	await page.mouse.down();
 	await page.mouse.move(box.x + 72, box.y + 80, { steps: 4 });
 	await page.mouse.up();
+	await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 	const dragged = Number(await splitter.getAttribute("aria-valuenow"));
-	expect(dragged).toBeGreaterThan(before + 40);
+	// Concurrent browser workers can coalesce intermediate pointer-move frames;
+	// require the pointer gesture to grow the pane without assuming how many
+	// synthetic steps painted.
+	expect(dragged).toBeGreaterThan(before);
+	const grownBox = await splitter.boundingBox();
+	if (!grownBox) throw new Error("Visuals splitter geometry unavailable after growing the list");
+	await page.mouse.move(grownBox.x + grownBox.width / 2, grownBox.y + 80);
+	await page.mouse.down();
+	await page.mouse.move(grownBox.x - 112, grownBox.y + 80, { steps: 4 });
+	await page.mouse.up();
+	await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+	const draggedLeft = Number(await splitter.getAttribute("aria-valuenow"));
+	expect(draggedLeft).toBeLessThan(dragged);
+	await page.waitForTimeout(100);
+	await expect(splitter).toHaveAttribute("aria-valuenow", String(draggedLeft));
+	await page.reload();
+	await page.getByTestId("open-visuals").click();
+	await expect(page.getByTestId("visuals-resize-handle")).toHaveAttribute("aria-valuenow", String(draggedLeft));
 	await splitter.focus();
 	await page.keyboard.press("Shift+ArrowLeft");
+	const minimum = Number(await splitter.getAttribute("aria-valuemin"));
+	const expectedKeyboard = Math.max(minimum, draggedLeft - 64);
+	await expect(splitter).toHaveAttribute("aria-valuenow", String(expectedKeyboard));
 	const keyboard = Number(await splitter.getAttribute("aria-valuenow"));
-	expect(keyboard).toBe(dragged - 64);
 	await page.reload();
 	await page.getByTestId("open-visuals").click();
 	await expect(page.getByTestId("visuals-resize-handle")).toHaveAttribute("aria-valuenow", String(keyboard));
 	await page.setViewportSize({ width: 720, height: 840 });
 	await expect(page.getByTestId("visuals-resize-handle")).toBeHidden();
 	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
-	await page.setViewportSize({ width: 1280, height: 840 });
+	await page.setViewportSize({ width: 1600, height: 840 });
 	await expect(page.getByTestId("visuals-resize-handle")).toBeVisible();
 	expect(Number(await page.getByTestId("visuals-resize-handle").getAttribute("aria-valuenow"))).toBe(keyboard);
+});
+
+test("Visuals master-detail panes preserve the compact list and useful preview across supported widths", async ({ page }) => {
+	await installVisualsFixture(page);
+	await page.getByTestId("open-visuals").click();
+
+	for (const viewport of [
+		{ width: 960, height: 640 },
+		{ width: 1172, height: 768 },
+		{ width: 1280, height: 840 },
+		{ width: 1600, height: 900 }
+	]) {
+		await page.setViewportSize(viewport);
+		const geometry = await page.getByTestId("visuals-page").evaluate((pageElement) => {
+			const list = pageElement.querySelector<HTMLElement>('[data-testid="visuals-grid"]')!;
+			const preview = pageElement.querySelector<HTMLElement>('[data-testid="visuals-preview"]')!;
+			const splitter = pageElement.querySelector<HTMLElement>('[data-testid="visuals-resize-handle"]');
+			const listRect = list.getBoundingClientRect();
+			const previewRect = preview.getBoundingClientRect();
+			const splitterRect = splitter?.getBoundingClientRect() ?? null;
+			const split = Boolean(splitterRect && splitterRect.width > 0 && splitterRect.height > 0);
+			return {
+				split,
+				listWidth: listRect.width,
+				previewWidth: previewRect.width,
+				listOverflowY: getComputedStyle(list).overflowY,
+				previewOverflowY: getComputedStyle(preview).overflowY,
+				boundariesOrdered: !splitterRect || (listRect.right <= splitterRect.left + 1 && splitterRect.right <= previewRect.left + 1),
+				noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1
+			};
+		});
+
+		expect(geometry.noHorizontalOverflow, `${viewport.width}px should not overflow horizontally`).toBe(true);
+		if (geometry.split) {
+			expect(geometry.listWidth).toBeGreaterThanOrEqual(239);
+			expect(geometry.listWidth).toBeLessThanOrEqual(421);
+			expect(geometry.previewWidth).toBeGreaterThanOrEqual(419);
+			expect(geometry.listOverflowY).toBe("auto");
+			expect(geometry.previewOverflowY).toBe("auto");
+			expect(geometry.boundariesOrdered).toBe(true);
+		} else {
+			expect(geometry.previewWidth).toBeGreaterThanOrEqual(419);
+		}
+	}
 });
 
 test("Trace V5 inspector provides focus, full, evidence, and expandable output views", async ({ page }) => {
@@ -562,8 +741,9 @@ test("Trace V5 inspector provides focus, full, evidence, and expandable output v
 	};
 	await installVisualsFixture(page, [traceVisual]);
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId("visuals-card-tracevis_test").getByRole("button", { name: "Open" }).click();
-	const pane = page.getByTestId("visual-pane");
+	await page.getByTestId("visuals-actions-tracevis_test").locator("summary").click();
+	await page.getByTestId("visuals-actions-tracevis_test").getByRole("menuitem", { name: "Open canvas" }).click();
+	const pane = page.getByTestId("visuals-preview");
 	await expect(pane.getByTestId("visual-trace-rollout-inspector")).toBeVisible();
 	await expect(pane).toContainText("I’ll update the configuration.");
 	await expect(pane).not.toContainText("Model call 1");
@@ -625,8 +805,9 @@ test("Trace V5 inspector renders canonical Craftax rewards, usage, achievements,
 	};
 	await installVisualsFixture(page, [craftaxVisual]);
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId("visuals-card-tracevis_craftax").getByRole("button", { name: "Open" }).click();
-	const comparison = page.getByTestId("visual-pane").getByTestId("craftax-policy-comparison");
+	await page.getByTestId("visuals-actions-tracevis_craftax").locator("summary").click();
+	await page.getByTestId("visuals-actions-tracevis_craftax").getByRole("menuitem", { name: "Open canvas" }).click();
+	const comparison = page.getByTestId("visuals-preview").getByTestId("craftax-policy-comparison");
 	await expect(comparison).toBeVisible();
 	await expect(comparison).toContainText("4");
 	await expect(comparison).toContainText("23,227");
@@ -638,3 +819,27 @@ test("Trace V5 inspector renders canonical Craftax rewards, usage, achievements,
 		await page.screenshot({ path: process.env.SYNTH_CRAFTAX_SCREENSHOT, fullPage: true });
 	}
 });
+
+for (const width of [1092, 1440]) {
+	test(`Visuals keeps the list left and one scrollable preview right at ${width}px`, async ({ page }) => {
+		await page.setViewportSize({ width, height: 800 });
+		await installVisualsFixture(page, [{ ...sampleVisual, metadata: { presentation: "canvas" } }]);
+		await page.getByTestId("open-visuals").click();
+		const list = page.getByTestId("visuals-grid");
+		const preview = page.getByTestId("visuals-preview");
+		await expect(list).toBeVisible();
+		await expect(preview).toBeVisible();
+		const left = await list.boundingBox();
+		const right = await preview.boundingBox();
+		expect(left!.x + left!.width).toBeLessThan(right!.x);
+		expect(Math.abs(left!.y - right!.y)).toBeLessThan(2);
+		await preview.getByRole("button", { name: "Expand", exact: true }).click();
+		await expect(list).toBeHidden();
+		await expect(page.getByTestId("visual-pane")).toBeHidden();
+		const bounds = await preview.boundingBox();
+		expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(800);
+		expect(await preview.evaluate(el => getComputedStyle(el).overflowY)).toBe("auto");
+		await preview.getByRole("button", { name: "Show library", exact: true }).click();
+		await expect(list).toBeVisible();
+	});
+}

@@ -1,0 +1,336 @@
+{
+ "aggregate": {
+  "asOfSequence": 124,
+  "evaluatorEvidence": 0,
+  "evidence": {
+   "completeness": "partial",
+   "reason": "5/5 trials terminal; evidence ledger: 0 complete, 5 partial, 0 aborted, 0 missing",
+   "refs": [
+    {
+     "digest": "sha256:46c4ea39a816ee593a441fcc4327723deb24f83223f1ee4008ae55211081e4e6",
+     "id": "tracev5_46c4ea39a816ee593a441fcc",
+     "kind": "trace_v5"
+    },
+    {
+     "digest": "sha256:bbe0e8c0e2b372b4053cdc7e7a9928f16f78691a093832a6c2274ca11167537d",
+     "id": "tracev5_bbe0e8c0e2b372b4053cdc7e",
+     "kind": "trace_v5"
+    },
+    {
+     "digest": "sha256:e600bdc672344b3fa59014b6762d9d2d925e4ce9227d05d6374dc1eff9d863d7",
+     "id": "tracev5_e600bdc672344b3fa59014b6",
+     "kind": "trace_v5"
+    },
+    {
+     "digest": "sha256:836023b6d8dd9084c45833f176a6fec71379b57481f9993a7b824d7ec5bb9dcb",
+     "id": "tracev5_836023b6d8dd9084c45833f1",
+     "kind": "trace_v5"
+    },
+    {
+     "digest": "sha256:b645c2ebe5b8ed16f36df0adbdca8133eddbf42621c697cb372214353dacb1c1",
+     "id": "tracev5_b645c2ebe5b8ed16f36df0ad",
+     "kind": "trace_v5"
+    }
+   ]
+  },
+  "evidenceRefCount": 5,
+  "lifecycle": "terminal",
+  "meanReward": null,
+  "projectionRevision": 124,
+  "runId": "opt_eval_deepswe_348bdbe13925",
+  "schemaVersion": "eval.aggregate.v1",
+  "scoredTrials": 0,
+  "selection": "promotion_not_applicable",
+  "traceCount": 5,
+  "work": {
+   "cancelled": 0,
+   "failed": 5,
+   "fixedDenominator": true,
+   "planned": 5,
+   "queued": 0,
+   "running": 0,
+   "succeeded": 0,
+   "unit": "trials"
+  }
+ },
+ "arms": [
+  {
+   "baseline": true,
+   "id": "baseline",
+   "label": "agentic_codex",
+   "score": null,
+   "status": "failed"
+  }
+ ],
+ "assessment": {
+  "nextStep": "Inspect the per-seed failure reasons before deciding whether to run again.",
+  "summary": "The evaluation failed: 0 of 5 rollouts completed successfully."
+ },
+ "experimentId": "eval.deepswe.annotated.v1",
+ "limitations": [
+  "Baseline-only. No candidate generation and no uplift claim.",
+  "5 of 5 rollouts failed.",
+  "The producer reported no cost telemetry; cost is unavailable, not zero."
+ ],
+ "metrics": [
+  {
+   "detail": "omitted until the split is complete",
+   "label": "Train mean",
+   "value": null
+  },
+  {
+   "detail": "this recipe has no heldout pool",
+   "label": "Heldout mean",
+   "value": null
+  },
+  {
+   "detail": "missing rewards stay missing",
+   "label": "Overall mean",
+   "value": null
+  }
+ ],
+ "progress": {
+  "active": 0,
+  "completed": 0,
+  "cost": "unavailable / $16.00",
+  "elapsed": "1m 21s",
+  "eta": "terminal",
+  "phase": "failed",
+  "stateCounts": {
+   "cancelled": 0,
+   "completed": 0,
+   "failed": 5,
+   "queued": 0,
+   "running": 0
+  },
+  "total": 5,
+  "usage": "unavailable"
+ },
+ "provenance": {
+  "executionSpecDigest": "catalog recipe",
+  "source": "catalog"
+ },
+ "question": "Score the advertised deepswe policy on the declared eval pool.",
+ "results": {
+  "rollouts": [
+   {
+    "achievements": null,
+    "costUsd": null,
+    "id": "roll_deepswe_train_0_6c59f61a",
+    "label": "anko-default-function-arguments",
+    "modelCalls": null,
+    "reportedFacts": {
+     "achievements": {
+      "source": "retained_event_log",
+      "unavailableReason": "achievements_not_reported",
+      "value": null
+     },
+     "calls": {
+      "source": "container_runtime",
+      "unavailableReason": "calls_not_reported",
+      "value": null
+     },
+     "costUsd": {
+      "source": "container_runtime",
+      "unavailableReason": "cost_not_reported",
+      "value": null
+     },
+     "frames": {
+      "source": "trusted_trace_v5",
+      "unavailableReason": null,
+      "value": 0
+     },
+     "steps": {
+      "source": "container_runtime",
+      "unavailableReason": "steps_not_reported",
+      "value": null
+     },
+     "tokens": {
+      "source": "container_runtime",
+      "unavailableReason": "tokens_not_reported",
+      "value": null
+     }
+    },
+    "reward": null,
+    "seed": 0,
+    "status": "failed",
+    "steps": null,
+    "stopReason": "producer_terminal_failure_missing_reason: container reported a failed terminal state without error, reason, or detail",
+    "summary": "0 trusted native frame observations retained",
+    "taskInstanceId": "deepswe/anko-default-function-arguments",
+    "tokens": null,
+    "traceId": "tracev5_46c4ea39a816ee593a441fcc",
+    "visualId": "vis_35b5728e0164450ebac49b26f558fbce"
+   },
+   {
+    "achievements": null,
+    "costUsd": null,
+    "id": "roll_deepswe_train_1_8dcccc37",
+    "label": "happy-dom-abort-pending-body-reads",
+    "modelCalls": null,
+    "reportedFacts": {
+     "achievements": {
+      "source": "retained_event_log",
+      "unavailableReason": "achievements_not_reported",
+      "value": null
+     },
+     "calls": {
+      "source": "container_runtime",
+      "unavailableReason": "calls_not_reported",
+      "value": null
+     },
+     "costUsd": {
+      "source": "container_runtime",
+      "unavailableReason": "cost_not_reported",
+      "value": null
+     },
+     "frames": {
+      "source": "trusted_trace_v5",
+      "unavailableReason": null,
+      "value": 0
+     },
+     "steps": {
+      "source": "container_runtime",
+      "unavailableReason": "steps_not_reported",
+      "value": null
+     },
+     "tokens": {
+      "source": "container_runtime",
+      "unavailableReason": "tokens_not_reported",
+      "value": null
+     }
+    },
+    "reward": null,
+    "seed": 1,
+    "status": "failed",
+    "steps": null,
+    "stopReason": "producer_terminal_failure_missing_reason: container reported a failed terminal state without error, reason, or detail",
+    "summary": "0 trusted native frame observations retained",
+    "taskInstanceId": "deepswe/happy-dom-abort-pending-body-reads",
+    "tokens": null,
+    "traceId": "tracev5_b645c2ebe5b8ed16f36df0ad",
+    "visualId": "vis_35b5728e0164450ebac49b26f558fbce"
+   }
+  ]
+ },
+ "runtime": {
+  "maximumModelCallsPerRollout": 50,
+  "maximumStepsPerRollout": 2000,
+  "model": "openai/gpt-5.6-luna",
+  "parallelism": 5,
+  "policy": "codex_agentic / agentic_codex",
+  "provider": "openrouter"
+ },
+ "schemaVersion": "synth.experiment.overview.v1",
+ "status": "failed",
+ "task": {
+  "evaluator": "deepswe_eval.v1",
+  "name": "deepswe",
+  "seeds": 5,
+  "world": "world:deepswe@eval"
+ },
+ "title": "DeepSWE \u00b7 five-task annotated sample",
+ "traces": {
+  "evidenceGaps": 0,
+  "items": [
+   {
+    "achievements": null,
+    "costUsd": null,
+    "id": "roll_deepswe_train_0_6c59f61a",
+    "label": "anko-default-function-arguments",
+    "modelCalls": null,
+    "reportedFacts": {
+     "achievements": {
+      "source": "retained_event_log",
+      "unavailableReason": "achievements_not_reported",
+      "value": null
+     },
+     "calls": {
+      "source": "container_runtime",
+      "unavailableReason": "calls_not_reported",
+      "value": null
+     },
+     "costUsd": {
+      "source": "container_runtime",
+      "unavailableReason": "cost_not_reported",
+      "value": null
+     },
+     "frames": {
+      "source": "trusted_trace_v5",
+      "unavailableReason": null,
+      "value": 0
+     },
+     "steps": {
+      "source": "container_runtime",
+      "unavailableReason": "steps_not_reported",
+      "value": null
+     },
+     "tokens": {
+      "source": "container_runtime",
+      "unavailableReason": "tokens_not_reported",
+      "value": null
+     }
+    },
+    "reward": null,
+    "seed": 0,
+    "status": "failed",
+    "steps": null,
+    "stopReason": "producer_terminal_failure_missing_reason: container reported a failed terminal state without error, reason, or detail",
+    "summary": "0 trusted native frame observations retained",
+    "taskInstanceId": "deepswe/anko-default-function-arguments",
+    "tokens": null,
+    "traceId": "tracev5_46c4ea39a816ee593a441fcc",
+    "visualId": "vis_35b5728e0164450ebac49b26f558fbce"
+   },
+   {
+    "achievements": null,
+    "costUsd": null,
+    "id": "roll_deepswe_train_1_8dcccc37",
+    "label": "happy-dom-abort-pending-body-reads",
+    "modelCalls": null,
+    "reportedFacts": {
+     "achievements": {
+      "source": "retained_event_log",
+      "unavailableReason": "achievements_not_reported",
+      "value": null
+     },
+     "calls": {
+      "source": "container_runtime",
+      "unavailableReason": "calls_not_reported",
+      "value": null
+     },
+     "costUsd": {
+      "source": "container_runtime",
+      "unavailableReason": "cost_not_reported",
+      "value": null
+     },
+     "frames": {
+      "source": "trusted_trace_v5",
+      "unavailableReason": null,
+      "value": 0
+     },
+     "steps": {
+      "source": "container_runtime",
+      "unavailableReason": "steps_not_reported",
+      "value": null
+     },
+     "tokens": {
+      "source": "container_runtime",
+      "unavailableReason": "tokens_not_reported",
+      "value": null
+     }
+    },
+    "reward": null,
+    "seed": 1,
+    "status": "failed",
+    "steps": null,
+    "stopReason": "producer_terminal_failure_missing_reason: container reported a failed terminal state without error, reason, or detail",
+    "summary": "0 trusted native frame observations retained",
+    "taskInstanceId": "deepswe/happy-dom-abort-pending-body-reads",
+    "tokens": null,
+    "traceId": "tracev5_b645c2ebe5b8ed16f36df0ad",
+    "visualId": "vis_35b5728e0164450ebac49b26f558fbce"
+   }
+  ]
+ }
+}

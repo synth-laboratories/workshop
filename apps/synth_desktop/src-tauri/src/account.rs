@@ -71,22 +71,40 @@ pub const SOURCE_NONE: &str = "none";
 #[serde(rename_all = "camelCase")]
 pub struct AccountPlan {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub tier: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub state: Option<String>,
     /// False when the backend reports no dollar limit for this account: the UI
     /// must then omit allowance figures instead of showing zeros.
     pub metered: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub effective_price_usd: Option<f64>,
+    #[serde(default)]
+    pub billing_interval: Option<String>,
+    #[serde(default)]
+    pub grant_kind: Option<String>,
+    #[serde(default)]
+    pub entitlement_state: Option<String>,
+    #[serde(default)]
+    pub entitlement_starts_at: Option<String>,
+    #[serde(default)]
+    pub entitlement_expires_at: Option<String>,
+    #[serde(default)]
+    pub campaign_id: Option<String>,
+    #[serde(default)]
+    pub claim_state: Option<String>,
+    #[serde(default)]
     pub monthly_allowance_usd: Option<f64>,
     pub used_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub remaining_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub resets_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub renews_at: Option<String>,
+    #[serde(default)]
+    pub cancel_at_period_end: bool,
     /// `cloud` or `dev_seed`; the UI labels the stand-in explicitly.
     pub source: String,
 }
@@ -95,25 +113,25 @@ pub struct AccountPlan {
 #[serde(rename_all = "camelCase")]
 pub struct AccountOrganization {
     pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub display_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub role: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountUsageWindow {
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub events: i64,
     /// Finalized billed dollars. Never the sum of pending + billed.
     pub cost_usd: f64,
     pub finalized_usd: f64,
     /// Nominal minus billed for this window. Live estimates, not ledger truth.
     pub pending_usd: f64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub tokens: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub runtime_seconds: i64,
 }
 
@@ -128,11 +146,11 @@ pub struct AccountCloudUsage {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountBilling {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub checkout_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub portal_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub upgrade_tier: Option<String>,
 }
 
@@ -153,25 +171,25 @@ pub struct AccountSummary {
     pub environment: String,
     /// Where the rendered plan came from, so the UI can label a dev stand-in.
     pub source: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub account_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub display_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub email: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub organization: Option<AccountOrganization>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub plan: Option<AccountPlan>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub cloud_usage: Option<AccountCloudUsage>,
     pub billing: AccountBilling,
     pub catalog: Vec<AccountPlanOption>,
     /// When the rendered cloud facts were fetched, for a `Last updated` line.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub last_updated: Option<String>,
     pub stale: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub error: Option<String>,
     /// `local_only` | `signed_out` | `active` | `revoked` | `offline` | `malformed`
     pub session_health: String,
@@ -234,14 +252,19 @@ fn usd(cents: i64) -> f64 {
 
 fn used_cents_since(storage: &Storage, since: DateTime<Utc>) -> Result<i64> {
     let floor = since.to_rfc3339();
-    // One ledger: settled charge first, else its labeled estimate. Legacy
-    // `usage_ledger` rows were folded into `usage_records` by migration 11.
+    // One ledger: count authoritative settled charges, or a Backend-owned
+    // Synth Cloud estimate when settlement has not arrived yet. Legacy local
+    // tariff estimates are deliberately excluded.
     let used_usd: f64 = storage.database().with_conn(|conn| {
         let mut statement = conn.prepare(
-            "SELECT COALESCE(SUM(COALESCE(billed_cost_usd, estimated_cost_usd)), 0)
+            "SELECT COALESCE(SUM(CASE
+                         WHEN cost_source IN ('provider_reported', 'synth_cloud')
+                              AND billed_cost_usd IS NOT NULL THEN billed_cost_usd
+                         WHEN cost_source = 'synth_cloud' THEN estimated_cost_usd
+                         ELSE NULL
+                     END), 0)
              FROM usage_records
-             WHERE COALESCE(billed_cost_usd, estimated_cost_usd) IS NOT NULL
-               AND created_at >= ?1",
+             WHERE created_at >= ?1",
         )?;
         let value: f64 = statement.query_row([&floor], |row| row.get(0))?;
         Ok(value)
@@ -327,11 +350,20 @@ fn dev_seed_plan(
         tier: Some("dev".into()),
         state: Some("active".into()),
         metered: true,
+        effective_price_usd: None,
+        billing_interval: None,
+        grant_kind: None,
+        entitlement_state: None,
+        entitlement_starts_at: None,
+        entitlement_expires_at: None,
+        campaign_id: None,
+        claim_state: None,
         monthly_allowance_usd: Some(usd(stored.monthly_allowance_cents)),
         used_usd: Some(usd(used_cents)),
         remaining_usd: Some(usd(remaining_cents)),
         resets_at: Some(next_monthly_reset(now).to_rfc3339()),
         renews_at: None,
+        cancel_at_period_end: false,
         source: SOURCE_DEV_SEED.into(),
     }))
 }
@@ -344,11 +376,20 @@ fn plan_from_snapshot(snapshot: &CloudSnapshot) -> AccountPlan {
         tier: Some(snapshot.plan.tier.clone()),
         state: Some(snapshot.plan.state.clone()),
         metered,
+        effective_price_usd: snapshot.plan.effective_price_cents.map(usd),
+        billing_interval: snapshot.plan.billing_interval.clone(),
+        grant_kind: snapshot.plan.grant_kind.clone(),
+        entitlement_state: snapshot.plan.entitlement_state.clone(),
+        entitlement_starts_at: snapshot.plan.entitlement_starts_at.clone(),
+        entitlement_expires_at: snapshot.plan.entitlement_expires_at.clone(),
+        campaign_id: snapshot.plan.campaign_id.clone(),
+        claim_state: snapshot.plan.claim_state.clone(),
         monthly_allowance_usd: allowance.limit_cents.map(usd),
         used_usd: allowance.used_cents.map(usd),
         remaining_usd: allowance.remaining_cents.map(usd),
         resets_at: allowance.resets_at.clone(),
         renews_at: snapshot.plan.renews_at.clone(),
+        cancel_at_period_end: snapshot.plan.cancel_at_period_end,
         source: SOURCE_CLOUD.into(),
     }
 }
@@ -611,6 +652,16 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn scheduled_cancellation_survives_native_account_projection() {
+        let mut read = cloud_snapshot("active", Some(2000), 0);
+        let snapshot = read.snapshot.as_mut().unwrap();
+        snapshot.plan.cancel_at_period_end = true;
+        let plan = plan_from_snapshot(snapshot);
+        assert!(plan.cancel_at_period_end);
+        assert_eq!(plan.renews_at, snapshot.plan.renews_at);
+    }
+
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 10, 12, 0, 0).unwrap()
     }
@@ -639,7 +690,16 @@ mod tests {
                 display_name: "Pro".into(),
                 state: "active".into(),
                 price_cents: 20_000,
+                effective_price_cents: Some(20_000),
+                billing_interval: Some("month".into()),
+                grant_kind: Some("subscription".into()),
+                entitlement_state: Some("active".into()),
+                entitlement_starts_at: None,
+                entitlement_expires_at: Some("2026-09-01T00:00:00+00:00".into()),
+                campaign_id: None,
+                claim_state: None,
                 renews_at: Some("2026-09-01T00:00:00+00:00".into()),
+                cancel_at_period_end: false,
                 is_paid: true,
             },
             allowance: CloudAllowance {
@@ -970,6 +1030,32 @@ mod tests {
         .unwrap();
         assert_eq!(plan.used_usd, Some(13.0));
         assert_eq!(plan.remaining_usd, Some(187.0));
+    }
+
+    #[test]
+    fn only_backend_owned_estimates_count_toward_cloud_usage() {
+        let (_root, storage) = open_storage();
+        storage
+            .database()
+            .with_conn(|conn| {
+                for (id, source) in [("backend", "synth_cloud"), ("legacy", "tariff_estimate")] {
+                    conn.execute(
+                        "INSERT INTO usage_records(
+                            id,provider,model_id,request_id,measurement_kind,status,
+                            started_at_ms,completed_at_ms,input_tokens,output_tokens,
+                            billed_cost_usd,estimated_cost_usd,cost_source,source,created_at
+                         ) VALUES(
+                            ?1,'synth','laguna-xs',?1,'provider_reported','completed',
+                            0,0,10,10,NULL,1.25,?2,'test','2026-08-06T00:00:00+00:00'
+                         )",
+                        rusqlite::params![id, source],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(used_cents_since(&storage, month_start(now())).unwrap(), 125);
     }
 
     #[test]

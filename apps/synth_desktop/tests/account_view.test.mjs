@@ -36,6 +36,11 @@ const cloudSummary = (overrides = {}) => ({
 		tier: "pro",
 		state: "active",
 		metered: true,
+		effectivePriceUsd: 200,
+		billingInterval: "month",
+		grantKind: "subscription",
+		entitlementState: "active",
+		entitlementExpiresAt: "2026-09-01T00:00:00+00:00",
 		monthlyAllowanceUsd: 200,
 		usedUsd: 42.5,
 		remainingUsd: 157.5,
@@ -86,6 +91,51 @@ test("an active cloud account renders its own identity, plan, and manage action"
 	assert.equal(view.planHasDollars, true);
 	assert.equal(view.cloudBlockedReason, null);
 	assert.deepEqual(view.primaryAction, { kind: "manage", label: "Manage billing" });
+	assert.equal(view.activation.state, "active");
+	assert.deepEqual(
+		view.activation.rows.map((row) => row.label),
+		["Account", "Organization", "Plan", "Effective price", "Included allowance", "Expires"]
+	);
+});
+
+test("an active Starter promotion proves zero price, allowance, and expiration", () => {
+	const view = buildAccountView(cloudSummary({
+		plan: {
+			name: "Starter",
+			tier: "starter",
+			state: "trialing",
+			metered: true,
+			effectivePriceUsd: 0,
+			billingInterval: "month",
+			grantKind: "promotion",
+			entitlementState: "active",
+			entitlementExpiresAt: "2026-09-30T00:00:00+00:00",
+			campaignId: "workshop_launch",
+			claimState: "claimed",
+			monthlyAllowanceUsd: 30,
+			usedUsd: 0,
+			remainingUsd: 30,
+			resetsAt: "2026-09-01T00:00:00+00:00",
+			source: "cloud"
+		}
+	}), true);
+	assert.equal(view.activation.state, "active");
+	assert.deepEqual(view.activation.rows.slice(2, 5).map((row) => row.value), [
+		"Starter",
+		"$0.00/month",
+		"$30.00"
+	]);
+	assert.match(view.activation.rows.at(-1).value, /9\/(29|30)\/2026/);
+});
+
+test("a legacy active snapshot remains verifying instead of inventing activation facts", () => {
+	const plan = { ...cloudSummary().plan };
+	delete plan.effectivePriceUsd;
+	delete plan.entitlementState;
+	const view = buildAccountView(cloudSummary({ plan }), true);
+	assert.equal(view.activation.state, "verifying");
+	assert.equal(view.activation.rows.length, 0);
+	assert.match(view.activation.note, /has not yet reported every activation detail/);
 });
 
 test("active free and starter accounts offer the backend-issued upgrade path", () => {

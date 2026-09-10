@@ -19,7 +19,7 @@ For a real Evals ReAct run, start the JSONL-tail server before starting the runn
 ```sh
 python3 prototypes/live-evals/craftax/serve.py \
   --events /absolute/path/to/containers-storage-root \
-  --container-base http://127.0.0.1:8099 \
+  --container-base http://127.0.0.1:8080 \
   --bundle-root /absolute/path/to/trace-v5-bundles
 ```
 
@@ -43,7 +43,7 @@ or other model policy.
 A native Craftax endpoint looks like:
 
 ```text
-http://127.0.0.1:8098/rollouts/<rollout-id>/stream
+http://127.0.0.1:8080/rollouts/<rollout-id>/stream
 ```
 
 Multiple endpoints can be supplied one per line. A normalized run-level

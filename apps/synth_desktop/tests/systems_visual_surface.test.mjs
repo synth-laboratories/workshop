@@ -6,27 +6,28 @@ import test from "node:test";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src");
 const read = (path) => readFileSync(join(root, path), "utf8");
+const core = (path) => readFileSync(new URL(`../../../packages/visuals-react/src/${path}`,import.meta.url),"utf8");
 
 test("VisualHost routes both systems visual kinds before template shells", () => {
 	const host = read("components/VisualHost.tsx");
-	assert.match(host, /diagram\.systems\.v1/);
 	assert.match(host, /rendererKind === "systems"/);
-	assert.match(host, /diagram\.systems\.dynamic\.v1/);
 	assert.match(host, /rendererKind === "systems-dynamic"/);
-	assert.ok(host.indexOf("isSystemsDynamic") < host.indexOf("isMermaid"));
+	assert.match(host,/artifact\.rendererKind\?\?definition\?\.renderer/);
+	assert.ok(host.indexOf('id: "systems-dynamic"') < host.indexOf('id: "template", matches: () => true'));
 });
 
 test("static systems maps retain Mermaid-class source and rendition controls", () => {
-	const surface = read("components/SystemsMapVisual.tsx");
-	for (const label of ["Zoom in", "Zoom out", "Fit", "Source", "Copy source", "Export SVG", "Retry"]) assert.ok(surface.includes(label), label);
-	assert.match(surface, /rendition\?\.\(visualId, "svg"/);
-	assert.match(surface, /SYSTEMS MAP · 2D/);
-	for (const cleanup of ["onPointerCancel", "onLostPointerCapture", "releasePointerCapture"]) assert.ok(surface.includes(cleanup), cleanup);
-	assert.match(surface, /retryToken\.current === token/);
+	const surface = core("rendition.tsx");
+	for (const label of ["Zoom in", "Zoom out", "Fit", "Source", "Copy", "Export SVG", "Retry"]) assert.ok(surface.includes(label), label);
+	assert.match(read("components/SystemsMapVisual.tsx"),/WorkshopRendition/);
+	assert.match(read("visuals/WorkshopRendition.tsx"), /rendition/);
+	for (const cleanup of ["onPointerCancel", "onLostPointerCapture", "releasePointerCapture"]) assert.ok(core("useViewport.ts").includes(cleanup), cleanup);
+	assert.match(surface, /identityRef\.current===token/);
 });
 
 test("dynamic systems explainers are declarative and expose deterministic playback controls", () => {
-	const surface = read("components/SystemsDynamicVisual.tsx");
+	const surface = core("dynamicDiagram.tsx");
+	assert.match(read("components/SystemsDynamicVisual.tsx"),/DynamicDiagramSurface/);
 	for (const label of ["Play", "Pause", "Replay", "Previous beat", "Next beat", "Reduced motion", "Explainer timeline", "Copy source", "Export still", "Retry"]) assert.ok(surface.includes(label), label);
 	assert.match(surface, /posterTimeMs/);
 	assert.match(surface, /prefers-reduced-motion/);
@@ -45,9 +46,9 @@ test("dynamic systems explainers are declarative and expose deterministic playba
 });
 
 test("Mermaid pan cleanup and retry are revision safe", () => {
-	const surface = read("components/MermaidVisual.tsx");
-	for (const cleanup of ["onPointerCancel", "onLostPointerCapture", "releasePointerCapture"]) assert.ok(surface.includes(cleanup), cleanup);
-	assert.match(surface, /retryToken\.current !== token/);
+	assert.match(read("components/MermaidVisual.tsx"),/WorkshopRendition/);
+	for (const cleanup of ["onPointerCancel", "onLostPointerCapture", "releasePointerCapture"]) assert.ok(core("useViewport.ts").includes(cleanup), cleanup);
+	assert.match(core("rendition.tsx"), /identityRef\.current===token/);
 });
 
 test("systems surfaces have bounded responsive native presentation", () => {
@@ -69,14 +70,17 @@ test("systems authoring requires screenshot-backed collision and density review"
 });
 
 test("visual MCP exposes image-backed review capture", () => {
-	const mcp = readFileSync(new URL("../src-tauri/src/bin/synth_visuals_mcp.rs", import.meta.url), "utf8");
+	const mcp = readFileSync(new URL("../src-tauri/src/adapters/mcp/operations/visuals.rs", import.meta.url), "utf8");
 	const ipc = readFileSync(new URL("../src-tauri/src/visuals_ipc.rs", import.meta.url), "utf8");
 	const stdio = readFileSync(new URL("../src-tauri/src/ipc/mcp_stdio.rs", import.meta.url), "utf8");
 	assert.match(mcp, /capture_review/);
 	assert.match(mcp, /visual_capture_review/);
 	assert.match(mcp, /screenshot_path/);
 	assert.match(mcp, /_mcpImage/);
-	assert.match(mcp, /deterministic-svg/);
+  assert.match(mcp, /Every certified review uses the same/);
+  assert.match(ipc, /begin_visual_pixel_barrier/);
+  assert.match(ipc, /end_visual_pixel_barrier/);
+  assert.match(ipc, /"pixelCut": pixel_cut/);
 	assert.match(mcp, /\/v1\/review-window\/capture/);
 	assert.match(ipc, /\/v1\/review-window\/capture/);
 	assert.doesNotMatch(mcp, /\/usr\/sbin\/screencapture/);

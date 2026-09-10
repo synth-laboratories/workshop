@@ -1,0 +1,18 @@
+id = "eval.healthbench.annotated.v1"
+algorithm = "eval"
+container = "healthbench2"
+provider = "openrouter"
+model = "chat_completion"
+locality = "container"
+train_seeds = [7]
+
+[bounds]
+max_cost_usd = 2.00
+max_total_rollouts = 1
+
+[annotation]
+annotators = ["healthbench.rubric_outcomes"]
+label = "post_rollout"
+
+[annotation.throughput]
+deterministic = 4

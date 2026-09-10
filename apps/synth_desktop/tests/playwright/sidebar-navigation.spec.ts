@@ -1,3 +1,4 @@
+import { openOutputs } from "./v02-helpers";
 import { expect, test } from "./browser.fixture";
 
 test("sidebar omits the deprecated Connectors catalog", async ({ page }) => {
@@ -16,6 +17,12 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 			latestCursor: 0,
 			metadata: {}
 		};
+		const remoteSession = {
+			...session,
+			id: "remote-failure-chat",
+			title: "Remote failure review",
+			target: { kind: "remote", provider: "openrouter", model: "openai/gpt-5.6" }
+		};
 		(window as typeof window & { synthRuntime?: unknown }).synthRuntime = {
 			async request(path: string) {
 				if (path === "/v1/health") return {
@@ -23,7 +30,7 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 					intern: { mode: "demo" }, openrouter: { mode: "unconfigured" },
 					inventory: { containers: 0, traces: 0, visuals: 0 }
 				};
-				if (path === "/v1/sessions") return { sessions: [session] };
+				if (path === "/v1/sessions") return { sessions: [session, remoteSession] };
 				if (path === "/v1/projects") return { projects: [] };
 				if (path.includes("/events")) return { events: [], nextCursor: 0, hasMore: false };
 				throw new Error(`Unexpected renderer test request: ${path}`);
@@ -41,9 +48,9 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 	await search.getByRole("option", { name: /Craftax rollout review/ }).click();
 	await expect(page.getByTestId("conversation-search")).toHaveCount(0);
 	await expect(page.getByTestId("chat-transcript")).toBeVisible();
-	const outputsTrigger = page.getByTestId("resource-shelf-trigger");
+	const outputsTrigger = (await openOutputs(page));
 	await expect(outputsTrigger).toBeVisible();
-	await expect(outputsTrigger).toHaveAttribute("aria-expanded", "false");
+	await expect(outputsTrigger).toHaveAttribute("aria-selected", "true");
 	await outputsTrigger.click();
 	const sidePanel = page.getByTestId("workbench-side-panel");
 	const outputsPanel = sidePanel.getByTestId("resource-shelf");
@@ -51,10 +58,43 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 	await expect(sidePanel.getByRole("tab", { name: "Inference" })).toHaveAttribute("aria-selected", "false");
 	await expect(outputsPanel).toBeVisible();
 	await expect(outputsPanel.getByTestId("resource-shelf-empty")).toContainText("No outputs yet");
+	await sidePanel.evaluate((panel) => {
+		const workbench = panel.parentElement;
+		if (workbench) workbench.style.gridTemplateColumns = "minmax(0, 1fr) 228px";
+	});
+	const outerTabs = sidePanel.locator(".workbench-side-panel-tabs [role=tab]");
+	expect(await outerTabs.count()).toBe(4);
+	const tabGeometry = await outerTabs.evaluateAll((elements) => {
+		const header = elements[0]?.closest(".workbench-side-panel-header")?.getBoundingClientRect();
+		return elements.map((element) => {
+			const rect = element.getBoundingClientRect();
+			return Boolean(header)
+				&& rect.width > 0
+				&& rect.height > 0
+				&& rect.left >= header!.left
+				&& rect.right <= header!.right;
+		});
+	});
+	expect(tabGeometry).toEqual([true, true, true, true]);
+	await page.evaluate(() => {
+		(window as any).__TAURI_INTERNALS__ = { invoke: async (command: string) => {
+			if (command === "observability_status") return {mode: "durable"};
+			if (command === "failures_query") return {status: "ok", data: {failures: []}};
+			if (command === "logs_query") return {status: "ok", data: {records: []}};
+			return null;
+		}, transformCallback: (callback: unknown) => callback };
+	});
+	await sidePanel.getByRole("tab", { name: "Diagnostics" }).click();
+	await expect(sidePanel).toBeVisible();
+	await expect(sidePanel.getByRole("tab", { name: "Diagnostics" })).toHaveAttribute("aria-selected", "true");
+	await expect(sidePanel.getByTestId("errors-logs-panel")).toBeVisible();
+	await expect(sidePanel.getByText("Error log", { exact: true })).toBeVisible();
+	await expect(sidePanel.getByRole("tab", { name: "Failures" })).toHaveCount(0);
+	await expect(sidePanel.getByTestId("error-log-empty")).toBeVisible();
+	await sidePanel.getByRole("tab", { name: "Outputs" }).click();
 	await sidePanel.getByRole("button", { name: "Close side panel" }).click();
 	await expect(outputsPanel).toHaveCount(0);
-	await expect(outputsTrigger).toHaveAttribute("aria-expanded", "false");
-	await outputsTrigger.click();
+	await openOutputs(page);
 	await expect(outputsPanel).toBeVisible();
 	await sidePanel.getByRole("tab", { name: "Inference" }).click();
 	await expect(page.getByTestId("inference-panel")).toBeVisible();
@@ -82,6 +122,20 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 	await expect(page.getByTestId("conversation-search")).toBeVisible();
 	await page.getByRole("button", { name: "Close search" }).click();
 	await expect(page.getByTestId("conversation-search")).toHaveCount(0);
+
+	// Diagnostics is not a local-inference-only tab. Remote chats must expose the
+	// same unified error log instead of closing the panel during activation.
+	await page.keyboard.press("Meta+k");
+	const remoteSearch = page.getByTestId("conversation-search");
+	await remoteSearch.getByRole("searchbox", { name: "Search conversations" }).fill("Remote failure");
+	await remoteSearch.getByRole("option", { name: /Remote failure review/ }).click();
+	const remoteOutputsTrigger = (await openOutputs(page));
+	await remoteOutputsTrigger.click();
+	const remoteSidePanel = page.getByTestId("workbench-side-panel");
+	await remoteSidePanel.getByRole("tab", { name: "Diagnostics" }).click();
+	await expect(remoteSidePanel).toBeVisible();
+	await expect(remoteSidePanel.getByTestId("errors-logs-panel")).toBeVisible();
+	await expect(remoteSidePanel.getByRole("tab", { name: "Failures" })).toHaveCount(0);
 });
 
 test("dense search results scroll inside the dialog instead of clipping its last row", async ({ page }) => {

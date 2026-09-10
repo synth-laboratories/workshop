@@ -1,6 +1,4 @@
-# Deploy-independent Wave 0 lane: SynthStyle CONFORM CHECK counts for
-# apps/synth_desktop. Full `desktop.sh verify` (cargo test + Playwright) is
-# intentionally not run here — keep this job cheap on every PR.
+# Keep the public release branch's deploy-independent conformance gate.
 name: Desktop conform
 
 on:
@@ -8,7 +6,9 @@ on:
   push:
     branches:
       - main
-      - josh/v02-architecture-refactor
+      - dev
+      # Validate the release candidate over SSH before integration promotion.
+      - codex/v010-production-parity
 
 jobs:
   conform:

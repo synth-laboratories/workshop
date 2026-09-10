@@ -1,0 +1,46 @@
+{
+  "bindings": [
+    {
+      "slot": "projection",
+      "kind": "inline",
+      "schema": "synth.trace-projection.rollout-inspector.v1",
+      "data": {
+        "schema_version": "synth.trace-projection.rollout-inspector.v1",
+        "trace_id": "acceptance-fixture",
+        "trace_digest": "fixture:trace-a",
+        "visual": {
+          "state": "sealed",
+          "lanes": [
+            {
+              "lane_id": "agent",
+              "display_name": "Fixture agent",
+              "role": "agent"
+            }
+          ],
+          "items": [
+            {
+              "item_id": "one",
+              "kind": "message.user",
+              "title": "Explicit fixture request",
+              "lane_id": "agent",
+              "sequence": 1,
+              "detail": {
+                "text": "Inspect shared controls."
+              }
+            },
+            {
+              "item_id": "two",
+              "kind": "tool.result",
+              "title": "Explicit fixture result",
+              "lane_id": "agent",
+              "sequence": 2,
+              "detail": {
+                "text": "No provider run was performed."
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

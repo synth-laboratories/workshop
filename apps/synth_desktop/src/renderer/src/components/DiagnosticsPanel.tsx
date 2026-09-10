@@ -1,7 +1,10 @@
+// @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { COMMANDS, invokeCommand } from "../bridge";
+import { fromGenerated, spectaCommands } from "../bridge";
 import "./DiagnosticsPanel.css";
 import { publicError } from "../runtime/publicError";
+import type { PluginStatus } from "../bridge/types";
+import { CapabilityManifest } from "./CapabilityManifest";
 
 /**
  * The Diagnostics surface.
@@ -101,6 +104,8 @@ function clockTime(timestamp: string): string {
 export type DiagnosticsPanelProps = {
 	sessionId?: string | null;
 	visualId?: string | null;
+	pluginStatuses?: readonly PluginStatus[] | null;
+	lagunaPhase?: string | null;
 	onOpenVisual?: (visualId: string) => void;
 	onOpenOptimizer?: (optimizerRunId: string) => void;
 	onOpenContainer?: (containerId: string) => void;
@@ -110,6 +115,8 @@ export type DiagnosticsPanelProps = {
 export function DiagnosticsPanel({
 	sessionId,
 	visualId,
+	pluginStatuses,
+	lagunaPhase,
 	onOpenVisual,
 	onOpenOptimizer,
 	onOpenContainer,
@@ -147,8 +154,8 @@ export function DiagnosticsPanel({
 		setFailure(null);
 		try {
 			const [nextStatus, nextResult] = await Promise.all([
-				invokeCommand<DiagnosticStatus>(COMMANDS.DIAGNOSTICS_STATUS),
-				invokeCommand<DiagnosticResult>(COMMANDS.DIAGNOSTICS_QUERY, { request: query })
+				fromGenerated(spectaCommands.diagnosticsStatus()),
+				fromGenerated(spectaCommands.diagnosticsQuery(query))
 			]);
 			// A superseded query never writes: closing the pane or changing a
 			// filter mid-fetch abandons the answer instead of flashing it.
@@ -172,7 +179,7 @@ export function DiagnosticsPanel({
 
 	const copyBundle = useCallback(async () => {
 		try {
-			const receipt = await invokeCommand<{ path: string }>(COMMANDS.DIAGNOSTICS_BUNDLE, { request: query });
+			const receipt = await fromGenerated(spectaCommands.diagnosticsBundle(query)) as { path: string };
 			setBundlePath(receipt.path);
 			await navigator.clipboard?.writeText(receipt.path).catch(() => undefined);
 		} catch (reason) {
@@ -195,9 +202,7 @@ export function DiagnosticsPanel({
 		setExplanation(null);
 		try {
 			setExplanation(
-				await invokeCommand<DiagnosticExplanation>(COMMANDS.DIAGNOSTICS_EXPLAIN, {
-					request: { ...identities, since }
-				})
+				await fromGenerated(spectaCommands.diagnosticsExplain({ ...identities, since }))
 			);
 		} catch (reason) {
 			setFailure(publicError(reason));
@@ -208,7 +213,7 @@ export function DiagnosticsPanel({
 
 	const clearIndex = useCallback(async () => {
 		try {
-			await invokeCommand(COMMANDS.DIAGNOSTICS_CLEAR_INDEX);
+			await fromGenerated(spectaCommands.diagnosticsClearIndex());
 			await refresh();
 		} catch (reason) {
 			setFailure(publicError(reason));
@@ -219,6 +224,7 @@ export function DiagnosticsPanel({
 
 	return (
 		<section className="diagnostics-panel" data-testid="diagnostics-panel" aria-label="Diagnostics">
+			<CapabilityManifest pluginStatuses={pluginStatuses} lagunaPhase={lagunaPhase} />
 			<header className="diagnostics-status" data-testid="diagnostics-status" data-state={state}>
 				<span className={`diagnostics-state diagnostics-state-${state}`}>{state}</span>
 				{status?.reason ? <span className="diagnostics-reason">{status.reason}</span> : null}

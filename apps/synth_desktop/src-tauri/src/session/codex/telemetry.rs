@@ -17,7 +17,6 @@ use tokio::sync::Mutex;
 use super::generation_speed::{
     protocol_event, GenerationSpeedMeasurement, SegmentPhase, SegmentStatus, TurnSegmentTracker,
 };
-use super::home::ProviderClass;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TurnTokenUsage {
@@ -107,11 +106,17 @@ pub(crate) fn usage_from_object(value: &Value) -> Option<TurnTokenUsage> {
                 "cacheCreationInputTokens",
             ],
         )),
-        reasoning_tokens: details.and_then(|details| {
-            positive_i64(integer_field(
-                details,
-                &["reasoning_tokens", "reasoningTokens"],
-            ))
+        reasoning_tokens: positive_i64(integer_field(
+            value,
+            &["reasoning_output_tokens", "reasoningOutputTokens"],
+        ))
+        .or_else(|| {
+            details.and_then(|details| {
+                positive_i64(integer_field(
+                    details,
+                    &["reasoning_tokens", "reasoningTokens"],
+                ))
+            })
         }),
         output_tokens,
     })
@@ -186,22 +191,44 @@ pub(crate) async fn track_performance_event(
             tracker.first_output_at_ms.get_or_insert(now_ms);
             tracker.last_output_at_ms = Some(now_ms);
         }
-        if method.to_ascii_lowercase().contains("usage") || terminal {
+        let usage_event = method.to_ascii_lowercase().contains("usage");
+        let response_output_tokens = if usage_event || terminal {
             if let Some(usage) = extract_turn_usage(params) {
+                let output = usage.output_tokens;
                 tracker.usage = usage;
+                output
+            } else {
+                None
             }
-        }
-        match protocol_event(method, params) {
+        } else {
+            None
+        };
+        let mut finalized = match protocol_event(method, params) {
             Some(event) => tracker.segments.observe(event, received_at_us),
             None => Vec::new(),
+        };
+        if usage_event {
+            if let Some(output_tokens) = response_output_tokens {
+                if let Some(updated) = tracker
+                    .segments
+                    .apply_final_response_output_usage(output_tokens)
+                {
+                    finalized.push(updated);
+                }
+            }
         }
+        finalized
     };
     for measurement in &finalized {
         if let Err(error) = persistence
             .record_generation_speed(generation_speed_row(measurement))
             .await
         {
-            eprintln!("generation speed measurement could not be persisted: {error:#}");
+            crate::platform::logging::report(
+                "session",
+                "eprintln",
+                format!("generation speed measurement could not be persisted: {error:#}"),
+            );
         }
     }
     let mut finalized = finalized;
@@ -319,42 +346,37 @@ pub(crate) async fn finalize_performance_tracker(
             .record_generation_speed(generation_speed_row(measurement))
             .await
         {
-            eprintln!("generation speed measurement could not be persisted: {error:#}");
+            crate::platform::logging::report(
+                "session",
+                "eprintln",
+                format!("generation speed measurement could not be persisted: {error:#}"),
+            );
         }
     }
     let output_tokens = tracker.usage.output_tokens.filter(|tokens| *tokens > 0);
-    let end_to_end_seconds = ((completed_at_ms - tracker.started_at_ms) as f64 / 1_000.0).max(0.0);
     // The ledger's throughput column now carries a real measurement or nothing.
     // Only a completed final-answer segment qualifies: it is the one segment
     // whose scope a per-request row can honestly stand for. A turn with several
     // answer segments has no single rate, and inventing one by blending them is
     // the defect this replaced.
     let observed_output_tps = turn_headline_tps(&tracker);
-    let end_to_end_output_tps = output_tokens
-        .filter(|_| end_to_end_seconds > 0.0)
-        .map(|tokens| tokens as f64 / end_to_end_seconds);
+    // Acceptance-to-completion includes queueing, model warmup, prefill, and
+    // tool time. It is latency, never generation TPS. Only the measured text
+    // delivery segment above is eligible for a throughput field.
+    let end_to_end_output_tps = None;
     let measurement_kind = if observed_output_tps.is_some() {
         MeasurementKind::ObservedStreamSegment
     } else {
         MeasurementKind::EndToEnd
     };
-    // A failed or interrupted turn still consumed whatever the provider
-    // reported, so it is recorded — and estimated — like any other request.
-    let estimated_cost_usd = crate::tariffs::estimate_cost_usd(
-        &tracker.provider,
-        &tracker.model_id,
-        completed_at_ms,
-        crate::tariffs::BillableTokens {
-            input_tokens: tracker.usage.input_tokens,
-            cached_input_tokens: tracker.usage.cached_input_tokens,
-            cache_write_tokens: tracker.usage.cache_write_tokens,
-            output_tokens: tracker.usage.output_tokens,
-        },
-    );
-    // Settled Synth Cloud accounting, captured by the credential broker as the
-    // child's responses streamed through it. Only cloud turns drain: local /
-    // on-device providers have no provider charge and their rows stay exactly
-    // as the tracker built them — billed stays `None`, never $0.
+    // Usage rows record tokens even when money is unknown. Workshop never
+    // invents a dollar amount from a built-in tariff: only a provider-settled
+    // receipt may populate billed_cost_usd.
+    let estimated_cost_usd = None;
+    // Settled OpenRouter and Synth Cloud accounting is captured by the
+    // credential broker as the child's responses stream through it. Only those
+    // relayed providers drain receipts; local/on-device rows stay exactly as
+    // the tracker built them — billed stays `None`, never $0.
     //
     // Laguna-local turns (`ProviderClass::LocalLaguna` / `local-laguna`) write
     // into this same `usage_records` ledger via finalize — tokens and
@@ -366,21 +388,17 @@ pub(crate) async fn finalize_performance_tracker(
     // under this turn, and draining removes those receipts. A late receipt
     // keeps the old scope and is never charged to a later turn; session close
     // logs and drops anything that arrived too late to be finalized.
-    let settled_cost_usd = if super::home::provider_class(Some(&tracker.provider))
-        == super::home::ProviderClass::SynthCloud
-    {
-        settled_cost_from_receipts(&receipts.drain_for_turn(session_id, &tracker.receipt_scope))
-    } else {
-        None
+    let provider_class = super::home::provider_class(Some(&tracker.provider));
+    let settled_cost_usd = match provider_class {
+        super::home::ProviderClass::OpenRouter | super::home::ProviderClass::SynthCloud => {
+            settled_cost_from_receipts(&receipts.drain_for_turn(session_id, &tracker.receipt_scope))
+        }
+        _ => None,
     };
-    // A settled receipt is authoritative; the tariff figure stays in
-    // `estimated_cost_usd` and must never override it.
-    let cost_source = if settled_cost_usd.is_some() {
-        CostSource::SynthCloud
-    } else if estimated_cost_usd.is_some() {
-        CostSource::TariffEstimate
-    } else {
-        CostSource::None
+    let cost_source = match (provider_class, settled_cost_usd) {
+        (super::home::ProviderClass::OpenRouter, Some(_)) => CostSource::ProviderReported,
+        (super::home::ProviderClass::SynthCloud, Some(_)) => CostSource::SynthCloud,
+        _ => CostSource::None,
     };
     let record = UsageRecord {
         id: format!("perf:{}:{}", tracker.provider, tracker.turn_id),
@@ -412,7 +430,11 @@ pub(crate) async fn finalize_performance_tracker(
         source: "codex_app_server".into(),
     };
     if let Err(error) = persistence.record_usage(record).await {
-        eprintln!("usage record could not be persisted: {error:#}");
+        crate::platform::logging::report(
+            "session",
+            "eprintln",
+            format!("usage record could not be persisted: {error:#}"),
+        );
     }
     finalized
 }

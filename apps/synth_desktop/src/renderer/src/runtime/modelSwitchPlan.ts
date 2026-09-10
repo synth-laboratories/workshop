@@ -99,7 +99,7 @@ export function planModelChipChange(input: PlanModelChipChangeInput): ModelChipC
 }
 
 /**
- * Effort chip change is always localStorage + next turn/start effort.
+ * Effort chip changes persist through runtime storage and apply to the next turn/start.
  * Never triggers compact or model rebind.
  */
 export function planEffortChipChange(): EffortChipChangePlan {

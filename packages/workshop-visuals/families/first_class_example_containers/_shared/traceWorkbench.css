@@ -1,0 +1,105 @@
+/* The desktop can host this visual in a 320px pane while the application
+   window remains wide. Respond to that host pane, not the viewport. */
+@container visual-pane (max-width: 700px) {
+  .trace-workbench-layout {
+    --tw-main-columns: minmax(0, 1fr);
+    --tw-main-height: auto;
+  }
+
+  .trace-workbench-call-column {
+    --tw-call-rows: minmax(72px, 180px) auto;
+  }
+}
+
+@container visual-pane (max-width: 420px) {
+  .synth-visual-root:has(.trace-workbench-layout) {
+    padding: 12px 10px 16px;
+  }
+
+  .synth-visual-root:has(.trace-workbench-layout) .sv-title,
+  .synth-visual-root:has(.trace-workbench-layout) .sv-lede {
+    overflow-wrap: anywhere;
+  }
+
+  .trace-workbench-aggregate {
+    position: static !important;
+    padding: var(--sv-sp-2) !important;
+  }
+
+  .trace-workbench-usage {
+    --tw-usage-columns: minmax(0, 1fr);
+  }
+
+  .trace-workbench-distributions {
+    --tw-distribution-columns: minmax(0, 1fr);
+  }
+
+  .trace-workbench-achievement {
+    --tw-achievement-columns: minmax(0, 1fr);
+  }
+
+  .trace-workbench-layout {
+    gap: var(--sv-sp-3) !important;
+  }
+}
+
+.trace-workbench-priority > div {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-muted);
+}
+
+.trace-workbench-priority span,
+.trace-workbench-priority small {
+  display: block;
+  color: var(--sv-text-faint);
+  font-size: var(--sv-fs-micro);
+}
+
+.trace-workbench-priority span {
+  text-transform: uppercase;
+}
+
+.trace-workbench-priority strong {
+  display: block;
+  margin: 2px 0;
+  overflow: hidden;
+  color: var(--sv-text);
+  font-family: var(--sv-mono);
+  font-size: var(--sv-fs-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-workbench-run-details > summary {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sv-sp-2);
+  padding: 6px 2px 2px;
+  color: var(--sv-text-muted);
+  cursor: pointer;
+  font-size: var(--sv-fs-meta);
+}
+
+.trace-workbench-run-details > summary span {
+  color: var(--sv-text-faint);
+  font-family: var(--sv-mono);
+  font-size: var(--sv-fs-micro);
+  text-align: right;
+}
+
+.trace-workbench-run-details[open] > .trace-workbench-usage {
+  margin-top: var(--sv-sp-3);
+}
+
+@container visual-pane (max-width: 420px) {
+  .trace-workbench-priority {
+    grid-template-columns: repeat(3, minmax(72px, 1fr)) !important;
+  }
+
+  .trace-workbench-priority > div {
+    padding: 6px;
+  }
+}

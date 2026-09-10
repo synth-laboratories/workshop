@@ -4,7 +4,7 @@
 //! never read `best_candidate.json` and never invent GEPA-shaped winners.
 //! Missing metrics serialize as `null` plus coverage, never numeric zero.
 
-use super::models::{OptimizerEventEnvelope, OptimizerRunRecord};
+use super::models::{OptimizerEventEnvelope, OptimizerRunRecord, TrainingJobStatus};
 use super::OptimizerService;
 use anyhow::Result;
 use serde_json::{json, Map, Value};
@@ -429,10 +429,11 @@ fn usage_from(run: &OptimizerRunRecord, events: &[OptimizerEventEnvelope]) -> Va
 }
 
 fn terminal_label(status: &str, verdict: &str) -> String {
-    if status == "failed" {
+    let job_status = TrainingJobStatus::parse(status);
+    if job_status == Some(TrainingJobStatus::Failed) {
         return "Failed".into();
     }
-    if status == "cancelled" || status == "canceled" {
+    if job_status == Some(TrainingJobStatus::Cancelled) {
         return "Cancelled".into();
     }
     match verdict {

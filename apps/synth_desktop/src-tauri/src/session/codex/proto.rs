@@ -16,9 +16,12 @@ use std::{
     time::Duration,
 };
 use tokio::{
+    io::AsyncWrite,
     process::Child,
     sync::{oneshot, Mutex, RwLock},
 };
+
+pub(crate) type RpcWriter = Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>;
 
 pub(crate) const MIN_AUTO_COMPACT_TOKEN_LIMIT: u64 = 16_000;
 pub(crate) const COMPACT_PROMPT: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION for a coding agent.\nWrite a handoff for another LLM that will continue the same workspace task.\nInclude:\n- Goal and acceptance criteria\n- Files read/changed (paths + one-line why)\n- Commands/tests run and outcomes\n- Decisions and constraints\n- Open bugs / next concrete steps\n- Any secrets-safe identifiers (branch names, ticket ids) needed to continue\nOmit raw file dumps, full command logs, and superseded plans.\nBe concise and structured (bullets).";
@@ -32,6 +35,10 @@ pub struct CodexSessionStartRequest {
     #[serde(default)]
     pub api_key: String,
     pub model: String,
+    /// Stable renderer catalog identity for this exact provider/model target.
+    /// It is stored in the session target but is never forwarded upstream.
+    #[serde(default)]
+    pub target_id: Option<String>,
     pub provider_name: Option<String>,
     pub provider_title: Option<String>,
     pub provider_env_key: Option<String>,
@@ -41,12 +48,17 @@ pub struct CodexSessionStartRequest {
     pub thread_id: Option<String>,
     pub multi_agent_version: Option<MultiAgentVersion>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub auto_compact_token_limit: Option<u64>,
     /// Rust-populated exact roots for this conversation. Renderer input is
     /// discarded by `prepare_codex_start` before launch.
     #[serde(default)]
     pub writable_roots: Vec<String>,
+    /// Catalog identity (`sha256:…`) of a This Mac Laguna-compatible LoRA.
+    /// `None` is the base Laguna XS weights. Renderer-owned; never forwarded
+    /// into the Codex app-server provider payload.
+    #[serde(default)]
+    pub adapter: Option<String>,
     /// Authenticated native Codex model envelope returned by the local Laguna
     /// daemon. Rust populates this after residency preflight; renderer input is
     /// never accepted, and local startup fails closed when it is absent.
@@ -70,6 +82,7 @@ impl fmt::Debug for CodexSessionStartRequest {
             .field("base_url", &self.base_url)
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
+            .field("target_id", &self.target_id)
             .field("provider_name", &self.provider_name)
             .field("provider_title", &self.provider_title)
             .field("provider_env_key", &self.provider_env_key)
@@ -80,6 +93,7 @@ impl fmt::Debug for CodexSessionStartRequest {
             .field("multi_agent_version", &self.multi_agent_version)
             .field("auto_compact_token_limit", &self.auto_compact_token_limit)
             .field("writable_roots", &self.writable_roots)
+            .field("adapter", &self.adapter)
             .field(
                 "local_model_catalog",
                 &self.local_model_catalog.as_ref().map(|_| "<present>"),
@@ -95,6 +109,9 @@ pub struct CodexTurnStartRequest {
     pub session_id: String,
     pub prompt: String,
     pub effort: Option<String>,
+    /// Ephemeral renderer state sent to the model but not journalled as user text.
+    #[serde(default)]
+    pub ui_context: Option<String>,
     /// Renderer optimistic bubble id. When present, the journalled
     /// `message.created` reuses it so the host event collapses onto the
     /// already-visible bubble instead of minting a second UUID.
@@ -111,6 +128,9 @@ pub struct CodexTurnSendRequest {
     pub start: CodexSessionStartRequest,
     pub prompt: String,
     pub effort: Option<String>,
+    /// Same ownership as [`CodexTurnStartRequest::ui_context`].
+    #[serde(default)]
+    pub ui_context: Option<String>,
     /// When the destination model differs from the live attachment, compact the
     /// thread on the *source* model before rebind. Renderer sets this from the
     /// send-time state machine (`modelSwitchPlan`): true only when the thread
@@ -120,6 +140,11 @@ pub struct CodexTurnSendRequest {
     /// Same ownership as [`CodexTurnStartRequest::client_message_id`].
     #[serde(default)]
     pub client_message_id: Option<String>,
+    /// Crash recovery is not an ordinary retry. After attaching, first inspect
+    /// the resumed thread and rejoin an existing active turn when possible;
+    /// only start `prompt` as a continuation when no live turn remains.
+    #[serde(default)]
+    pub recovery_mode: bool,
 }
 
 /// Typed failure so the renderer can react to a lost app-server without
@@ -202,7 +227,7 @@ pub(crate) struct RunNotPersisted;
 
 impl std::fmt::Display for RunNotPersisted {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("the turn has no durable run anchor")
+        formatter.write_str("the turn has no recorded run anchor")
     }
 }
 
@@ -211,6 +236,23 @@ impl std::error::Error for RunNotPersisted {}
 pub(crate) fn is_not_recorded_failure(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| cause.is::<RunNotPersisted>())
 }
+
+/// Codex app-server has no rollout for a remembered `threadId` (for example
+/// after `CODEX_HOME` changed). Classified once at the transport boundary;
+/// resume callers start a replacement thread via [`error_is`].
+#[derive(Debug)]
+pub(crate) struct MissingThreadRollout;
+
+impl std::fmt::Display for MissingThreadRollout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Codex has no rollout for this remembered thread")
+    }
+}
+
+impl std::error::Error for MissingThreadRollout {}
+
+/// Exact prose the app-server emits. Matched only here, then wrapped.
+const MISSING_THREAD_ROLLOUT: &str = "no rollout found for thread id";
 
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -272,6 +314,11 @@ pub struct CodexSessionRecord {
     pub thread_id: String,
     pub workspace: String,
     pub model: String,
+    /// Stable picker/catalog identity for a remote model. This is retained
+    /// independently from the slug so removing a config entry cannot make a
+    /// historical session look like a different model.
+    #[serde(default)]
+    pub target_id: Option<String>,
     pub provider_name: String,
     pub provider_title: String,
     pub base_url: String,
@@ -288,6 +335,9 @@ pub struct CodexSessionRecord {
     pub approval_policy: String,
     #[serde(default = "default_sandbox")]
     pub sandbox: String,
+    /// This Mac Laguna adapter catalog id. `None` is the base model.
+    #[serde(default)]
+    pub adapter: Option<String>,
     /// Set when the previous process died holding this chat's turn. It is what
     /// lets the sidebar say "Workshop exited while this task was running"
     /// instead of silently showing an idle chat — or, worse, a live one.
@@ -304,14 +354,15 @@ pub(crate) type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, S
 /// compaction turn and leave no answer.
 pub(crate) type CompactWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<Result<(), String>>>>>;
 pub(crate) struct AppServer {
-    pub(crate) child: Mutex<Child>,
-    pub(crate) stdin: Arc<Mutex<tokio::process::ChildStdin>>,
+    pub(crate) child: Mutex<Option<Child>>,
+    pub(crate) stdin: RpcWriter,
     pub(crate) pending: Pending,
     pub(crate) next_id: AtomicU64,
+    pub(crate) persistent: bool,
 }
 
 pub(crate) struct CodexResolver {
-    pub(crate) stdin: Arc<Mutex<tokio::process::ChildStdin>>,
+    pub(crate) stdin: RpcWriter,
     pub(crate) rpc_id: Value,
     pub(crate) available_decisions: Vec<String>,
 }
@@ -330,6 +381,11 @@ impl ApprovalResolver for CodexResolver {
                 ApprovalDecision::ApproveWithCap { .. } => {
                     return Err(anyhow!(
                         "Codex cannot resolve a capped paid-compute approval"
+                    ))
+                }
+                ApprovalDecision::Credential { .. } => {
+                    return Err(anyhow!(
+                        "Codex RPC cannot resolve a host credential approval"
                     ))
                 }
             };
@@ -366,6 +422,7 @@ impl ApprovalResolver for CodexResolver {
 impl Drop for AppServer {
     fn drop(&mut self) {
         if let Ok(mut child) = self.child.try_lock() {
+            let Some(child) = child.as_mut() else { return };
             #[cfg(unix)]
             if let Some(pgid) = owned_process_group(child.id()) {
                 signal_process_group(pgid, libc::SIGTERM);
@@ -398,6 +455,10 @@ impl AppServer {
                 Err(anyhow!(crate::error::DatabaseLocked)
                     .context(format!("codex app-server {method} error: {error}")))
             }
+            Ok(Ok(Err(error))) if error.contains(MISSING_THREAD_ROLLOUT) => {
+                Err(anyhow!(MissingThreadRollout)
+                    .context(format!("codex app-server {method} error: {error}")))
+            }
             Ok(Ok(Err(error))) => Err(anyhow!("codex app-server {method} error: {error}")),
             Ok(Err(_)) => Err(anyhow!(SessionDetached)
                 .context(format!("codex app-server stopped while handling {method}"))),
@@ -415,6 +476,12 @@ impl AppServer {
 
     pub(crate) async fn perform_stop(&self) -> Result<()> {
         let mut child = self.child.lock().await;
+        let Some(child) = child.as_mut() else {
+            // A reconnectable app-server is a conversation service rather than
+            // an attachment process. The manager interrupts the turn and
+            // cleans its background terminals before fencing this connection.
+            return Ok(());
+        };
         #[cfg(unix)]
         {
             let pid = child.id();
@@ -546,6 +613,8 @@ pub(crate) struct Session {
     pub(crate) server: Arc<AppServer>,
     pub(crate) thread_id: String,
     pub(crate) turn_id: RwLock<Option<String>>,
+    /// A durable daemon can retain old MCP children across desktop upgrades.
+    pub(crate) mcp_reload_pending: Mutex<bool>,
     pub(crate) model: String,
     pub(crate) approval_policy: String,
     pub(crate) sandbox: String,

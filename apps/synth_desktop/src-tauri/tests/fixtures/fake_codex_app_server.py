@@ -87,6 +87,13 @@ for raw in sys.stdin:
         result = {"thread": {"id": params.get("threadId", "thread-fixture")}}
     elif method == "thread/name/set":
         result = {}
+    elif method == "thread/read":
+        result = {"thread": {"id": params.get("threadId", "thread-fixture"), "status": {"type": "active" if (home / "active-thread").exists() else "idle"}}}
+    elif method == "config/mcpServer/reload":
+        if (home / "reject-mcp-reload").exists():
+            send({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32603, "message": "MCP reload refused"}})
+            continue
+        result = {}
     elif method == "thread/loaded/list":
         result = {"data": [params.get("threadId", "thread-fixture")]}
     elif method == "thread/compact/start":

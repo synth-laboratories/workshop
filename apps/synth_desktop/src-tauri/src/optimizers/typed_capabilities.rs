@@ -101,7 +101,11 @@ pub fn inspect_training_artifact(id: &str) -> Result<Value> {
     }))
 }
 
-pub fn launch_artifact_eval_request(artifact_id: &str, recipe_id: Option<&str>, confirm: bool) -> Result<Value> {
+pub fn launch_artifact_eval_request(
+    artifact_id: &str,
+    recipe_id: Option<&str>,
+    confirm: bool,
+) -> Result<Value> {
     require_confirm(confirm, "launch_artifact_eval")?;
     let recipe = recipe_id
         .map(str::trim)
@@ -118,25 +122,30 @@ pub fn launch_artifact_eval_request(artifact_id: &str, recipe_id: Option<&str>, 
     }))
 }
 
-pub fn export_or_delete_artifact(id: &str, operation: &str, confirm: bool) -> Result<Value> {
+pub fn export_or_delete_artifact(
+    id: &str,
+    operation: &str,
+    confirm: bool,
+    destination: Option<&str>,
+    expected_digest: Option<&str>,
+) -> Result<Value> {
     require_confirm(confirm, "export_or_delete_artifact")?;
     match operation {
         "export" => {
-            let artifact = crate::training_artifacts::export(id)?;
-            Ok(json!({
-                "operation": "export",
-                "artifact": artifact,
-                "path": artifact.path
-            }))
+            let dest = destination
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("export destination is required"))?;
+            let receipt = crate::training_artifacts::export_to(id, dest, expected_digest)?;
+            Ok(serde_json::to_value(receipt)?)
         }
         "delete" => {
-            let artifact = crate::training_artifacts::delete(id)?;
-            Ok(json!({
-                "operation": "delete",
-                "artifact": artifact
-            }))
+            let receipt = crate::training_artifacts::delete(id)?;
+            Ok(serde_json::to_value(receipt)?)
         }
-        other => bail!("export_or_delete_artifact operation must be export or delete, not `{other}`"),
+        other => {
+            bail!("export_or_delete_artifact operation must be export or delete, not `{other}`")
+        }
     }
 }
 
@@ -147,24 +156,8 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
-    fn isolated_root() -> (std::path::PathBuf, Option<std::ffi::OsString>) {
-        let isolated = std::env::temp_dir().join(format!(
-            "synth-desktop-typed-caps-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&isolated);
-        fs::create_dir_all(&isolated).unwrap();
-        let previous = std::env::var_os(crate::instance::DATA_ROOT_ENV);
-        std::env::set_var(crate::instance::DATA_ROOT_ENV, &isolated);
-        (isolated, previous)
-    }
-
-    fn restore(previous: Option<std::ffi::OsString>, isolated: std::path::PathBuf) {
-        match previous {
-            Some(value) => std::env::set_var(crate::instance::DATA_ROOT_ENV, value),
-            None => std::env::remove_var(crate::instance::DATA_ROOT_ENV),
-        }
-        let _ = fs::remove_dir_all(isolated);
+    fn isolated_root() -> crate::instance::IsolatedDataRoot {
+        crate::instance::IsolatedDataRoot::new("typed-caps")
     }
 
     #[test]
@@ -174,11 +167,12 @@ mod tests {
             .to_string();
         assert!(err.contains("confirm=true"), "{err}");
         assert!(launch_artifact_eval_request("x", None, false).is_err());
-        assert!(export_or_delete_artifact("x", "delete", false).is_err());
+        assert!(export_or_delete_artifact("x", "delete", false, None, None).is_err());
     }
 
     #[test]
     fn inspect_and_plan_never_download() {
+        let _lock = crate::instance::lock_data_root_for_test();
         let inspect = inspect_local_mlx();
         assert_eq!(
             inspect["modelId"],
@@ -190,7 +184,7 @@ mod tests {
         let err = plan_model_install(Some("someone/else"))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("Qwen/Qwen3.5-0.8B"), "{err}");
+        assert!(err.contains("Qwen/Qwen3.5-2B"), "{err}");
     }
 
     #[test]
@@ -207,7 +201,10 @@ mod tests {
 
     #[test]
     fn artifact_list_inspect_export_delete() {
-        let (isolated, previous) = isolated_root();
+        let isolated = isolated_root();
+        let adapter = isolated.path.join("adapter");
+        fs::create_dir_all(&adapter).unwrap();
+        fs::write(adapter.join("weights.safetensors"), b"lora").unwrap();
         let artifact = TrainingArtifact::from_mlx_handoff(
             "run-cap",
             "sft",
@@ -217,7 +214,8 @@ mod tests {
                 "checkpoint": {
                     "checkpoint_id": "cap-1",
                     "sha256": "abcd",
-                    "path": "/tmp/adapter"
+                    "path": adapter.to_string_lossy(),
+                    "bytes": 4
                 }
             }),
             None,
@@ -229,16 +227,33 @@ mod tests {
         assert_eq!(listed["artifacts"].as_array().unwrap().len(), 1);
         let inspected = inspect_training_artifact("cap-1").unwrap();
         assert_eq!(inspected["artifact"]["id"], "cap-1");
-        let exported = export_or_delete_artifact("cap-1", "export", true).unwrap();
-        assert_eq!(exported["path"], "/tmp/adapter");
-        export_or_delete_artifact("cap-1", "delete", true).unwrap();
+        let dest = isolated.path.join("exports");
+        fs::create_dir_all(&dest).unwrap();
+        let dest_path = dest.join("cap-1");
+        let exported = export_or_delete_artifact(
+            "cap-1",
+            "export",
+            true,
+            Some(dest_path.to_str().unwrap()),
+            Some("sha256:abcd"),
+        )
+        .unwrap();
+        assert_eq!(exported["operation"], "export");
+        assert_eq!(exported["artifactId"], "cap-1");
+        assert!(dest_path.join("weights.safetensors").is_file());
+        export_or_delete_artifact("cap-1", "delete", true, None, None).unwrap();
         assert!(inspect_training_artifact("cap-1").is_err());
-        restore(previous, isolated);
+    }
+
+    #[test]
+    fn export_without_destination_or_confirm_fails_closed() {
+        assert!(export_or_delete_artifact("cap-1", "export", true, None, None).is_err());
+        assert!(export_or_delete_artifact("cap-1", "export", false, Some("/tmp/x"), None).is_err());
     }
 
     #[test]
     fn eval_launch_retains_artifact_id() {
-        let (isolated, previous) = isolated_root();
+        let _isolated = isolated_root();
         let artifact = TrainingArtifact::from_mlx_handoff(
             "run-eval",
             "sft",
@@ -255,6 +270,5 @@ mod tests {
         let body = launch_artifact_eval_request("eval-art", None, true).unwrap();
         assert_eq!(body["recipeId"], EVAL_MLX_LOCAL_RECIPE);
         assert_eq!(body["trainingArtifactId"], "eval-art");
-        restore(previous, isolated);
     }
 }

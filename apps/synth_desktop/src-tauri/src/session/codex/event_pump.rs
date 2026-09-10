@@ -1,6 +1,8 @@
 //! Stdio JSON-RPC event pump for the Codex app-server child.
 use anyhow::{anyhow, Context, Result};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
@@ -27,10 +29,20 @@ fn codex_child_path(binary: &Path, inherited: Option<&OsStr>) -> Result<Option<O
 }
 use tauri::AppHandle;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
+    net::UnixStream,
     process::Command,
     sync::{Mutex, RwLock},
 };
+use tokio_tungstenite::{client_async, tungstenite::Message};
+
+type CodexWebSocket = tokio_tungstenite::WebSocketStream<UnixStream>;
+
+async fn connect_websocket(path: &Path) -> Result<CodexWebSocket> {
+    let stream = UnixStream::connect(path).await?;
+    let (socket, _) = client_async("ws://localhost/", stream).await?;
+    Ok(socket)
+}
 
 use crate::domain::{RunStatus, SessionStatus, SessionTitleOrigin};
 use crate::session::approval::{ApprovalDecision, ApprovalKind, ApprovalOrigin, ApprovalScope};
@@ -42,7 +54,7 @@ use super::home::persist_records;
 use super::proto::{
     default_approval_policy, select_approval_decision, AppServer, CodexResolver,
     CodexSessionRecord, CodexSessionStartRequest, CompactWaiters, Pending, ProviderTransport,
-    Session, STDOUT_CLOSED,
+    RpcWriter, Session, STDOUT_CLOSED,
 };
 use super::telemetry::{
     finalize_performance_tracker, is_context_compaction_notification, track_performance_event,
@@ -93,6 +105,7 @@ pub(crate) struct SpawnServerRequest<'a> {
     pub session_id: &'a str,
     pub home: &'a Path,
     pub request: &'a CodexSessionStartRequest,
+    pub persistent: bool,
 }
 
 /// Shared pump state cloned into the stdout reader task.
@@ -128,7 +141,11 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
         session_id,
         home,
         request,
+        persistent,
     } = spawn;
+    if persistent {
+        return spawn_persistent_server(app, binary, session_id, home, request, pump).await;
+    }
     let mut command = Command::new(binary);
     command
         .args(["app-server", "--listen", "stdio://"])
@@ -156,17 +173,18 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
     // own process group so the transport can terminate that exact tree.
     isolate_process_group(&mut command);
     let mut child = command.spawn().context("spawn codex app-server")?;
-    let stdin = Arc::new(Mutex::new(
+    let stdin: RpcWriter = Arc::new(Mutex::new(Box::new(
         child.stdin.take().context("capture app-server stdin")?,
-    ));
+    )));
     let stdout = child.stdout.take().context("capture app-server stdout")?;
     let stderr = child.stderr.take().context("capture app-server stderr")?;
     let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
     let server = Arc::new(AppServer {
-        child: Mutex::new(child),
+        child: Mutex::new(Some(child)),
         stdin: stdin.clone(),
         pending: pending.clone(),
         next_id: AtomicU64::new(1),
+        persistent: false,
     });
     let sid = session_id.to_owned();
     let approval_policy = request
@@ -195,6 +213,147 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
     Ok(server)
 }
 
+/// Connect to (or launch) the instance's durable ChatGPT app-server.
+///
+/// The Unix listener is owned by Codex itself. Workshop can disappear and a
+/// later process can reconnect to the same live thread with `thread/resume`.
+/// Only ChatGPT OAuth sessions use this path: proxy-backed providers depend on
+/// the in-process credential broker and therefore cannot safely outlive it.
+async fn spawn_persistent_server<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    binary: &Path,
+    session_id: &str,
+    home: &Path,
+    request: &CodexSessionStartRequest,
+    pump: EventPumpState,
+) -> Result<Arc<AppServer>> {
+    let mut digest = Sha256::new();
+    digest.update(crate::instance::instance_id().as_bytes());
+    digest.update(b"\0");
+    digest.update(session_id.as_bytes());
+    let suffix = format!("{:x}", digest.finalize());
+    let socket = std::env::temp_dir().join(format!(
+        "synth-codex-{}-{}.sock",
+        unsafe { libc::geteuid() },
+        &suffix[..20]
+    ));
+
+    let ws = match connect_websocket(&socket).await {
+        Ok(socket) => socket,
+        Err(_) => {
+            if socket.exists() {
+                // A Unix socket with no listener is inert filesystem state.
+                // Remove this exact deterministic socket only after connect
+                // failed; never unlink a socket another server accepted.
+                std::fs::remove_file(&socket).with_context(|| {
+                    format!("remove stale app-server socket {}", socket.display())
+                })?;
+            }
+            let mut command = Command::new(binary);
+            command
+                .arg("app-server")
+                .arg("--listen")
+                .arg(format!("unix://{}", socket.display()))
+                .current_dir(&request.workspace)
+                .env("CODEX_HOME", home)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(false);
+            if let Some(path) = codex_child_path(binary, std::env::var_os("PATH").as_deref())? {
+                command.env("PATH", path);
+            }
+            isolate_process_group(&mut command);
+            // `kill_on_drop(false)` deliberately transfers the listener's
+            // lifetime to Codex. Workshop owns only a WebSocket attachment.
+            let listener = command
+                .spawn()
+                .context("spawn persistent codex app-server")?;
+            let mut connected = None;
+            for _ in 0..100 {
+                match connect_websocket(&socket).await {
+                    Ok(stream) => {
+                        connected = Some(stream);
+                        break;
+                    }
+                    Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+                }
+            }
+            let connected = connected.ok_or_else(|| {
+                anyhow!(
+                    "persistent codex app-server did not open {}",
+                    socket.display()
+                )
+            })?;
+            drop(listener);
+            connected
+        }
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("secure app-server socket {}", socket.display()))?;
+    }
+    // Adapt WebSocket text messages to the existing newline JSON-RPC pump.
+    // The two bounded duplex channels provide backpressure in both directions.
+    let (mut websocket_sink, mut websocket_stream) = ws.split();
+    let (stdin_writer, stdin_reader) = tokio::io::duplex(1024 * 1024);
+    let (stdout_writer, stdout_reader) = tokio::io::duplex(1024 * 1024);
+    let stdin: RpcWriter = Arc::new(Mutex::new(Box::new(stdin_writer)));
+    tauri::async_runtime::spawn(async move {
+        let mut lines = BufReader::new(stdin_reader).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if websocket_sink
+                .send(Message::Text(line.into()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+        let _ = websocket_sink.close().await;
+    });
+    tauri::async_runtime::spawn(async move {
+        let mut output = stdout_writer;
+        while let Some(message) = websocket_stream.next().await {
+            match message {
+                Ok(Message::Text(text)) => {
+                    if output.write_all(text.as_bytes()).await.is_err()
+                        || output.write_all(b"\n").await.is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(Message::Close(_)) | Err(_) => break,
+                _ => {}
+            }
+        }
+    });
+    let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+    let server = Arc::new(AppServer {
+        child: Mutex::new(None),
+        stdin: stdin.clone(),
+        pending: pending.clone(),
+        next_id: AtomicU64::new(1),
+        persistent: true,
+    });
+    let approval_policy = request
+        .approval_policy
+        .clone()
+        .unwrap_or_else(default_approval_policy);
+    tauri::async_runtime::spawn(read_stdout(
+        app,
+        session_id.to_owned(),
+        stdout_reader,
+        stdin,
+        pending,
+        approval_policy,
+        pump,
+    ));
+    Ok(server)
+}
+
 #[cfg(unix)]
 fn isolate_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
@@ -204,11 +363,132 @@ fn isolate_process_group(command: &mut Command) {
 #[cfg(not(unix))]
 fn isolate_process_group(_command: &mut Command) {}
 
-async fn read_stdout<R: tauri::Runtime>(
+#[cfg(test)]
+mod persistent_transport_tests {
+    use super::*;
+    use serde_json::json;
+
+    async fn response(socket: &mut CodexWebSocket, id: u64) -> Value {
+        loop {
+            let message = socket
+                .next()
+                .await
+                .expect("websocket closed")
+                .expect("websocket error");
+            if let Message::Text(text) = message {
+                let value: Value = serde_json::from_str(&text).expect("valid app-server JSON");
+                if value.get("id").and_then(Value::as_u64) == Some(id) {
+                    return value;
+                }
+            }
+        }
+    }
+
+    async fn send(socket: &mut CodexWebSocket, value: Value) {
+        socket
+            .send(Message::Text(value.to_string().into()))
+            .await
+            .expect("send app-server request");
+    }
+
+    /// Requires the locally installed Codex binary. This is an explicit
+    /// transport acceptance test, not part of hermetic CI.
+    #[tokio::test]
+    #[ignore = "requires a local codex binary"]
+    async fn reconnects_over_unix_websocket_and_resumes_the_same_thread() {
+        let root = tempfile::Builder::new()
+            .prefix("synth-codex-")
+            .tempdir_in("/tmp")
+            .expect("short temporary path");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(&home).expect("create isolated CODEX_HOME");
+        let socket_path = root.path().join("server.sock");
+        let mut server = Command::new("codex");
+        server
+            .args(["app-server", "--listen"])
+            .arg(format!("unix://{}", socket_path.display()))
+            .env("CODEX_HOME", &home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut server = server.spawn().expect("launch codex app-server");
+
+        let mut first = None;
+        for _ in 0..100 {
+            match connect_websocket(&socket_path).await {
+                Ok(socket) => {
+                    first = Some(socket);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        let mut first = first.expect("first websocket connection");
+        send(&mut first, json!({
+            "method": "initialize", "id": 1,
+            "params": {"clientInfo": {"name": "workshop-proof", "title": "Workshop proof", "version": "0.8"}, "capabilities": {"experimentalApi": true}}
+        })).await;
+        assert!(response(&mut first, 1).await.get("result").is_some());
+        send(&mut first, json!({
+            "method": "thread/start", "id": 2,
+            "params": {"cwd": root.path(), "approvalPolicy": "never", "sandbox": "read-only", "persistExtendedHistory": true}
+        })).await;
+        let started = response(&mut first, 2).await;
+        let thread_id = started
+            .pointer("/result/thread/id")
+            .and_then(Value::as_str)
+            .expect("thread id")
+            .to_owned();
+        // A started thread is not resumable until Codex has created its first
+        // rollout. The turn need not succeed (this isolated home has no auth);
+        // its durable identity is what this transport test exercises.
+        send(
+            &mut first,
+            json!({
+                "method": "turn/start", "id": 5,
+                "params": {"threadId": thread_id, "model": "gpt-5.1", "input": [{"type": "text", "text": "transport proof", "textElements": []}], "approvalPolicy": "never"}
+            }),
+        )
+        .await;
+        let turn_started = response(&mut first, 5).await;
+        assert!(
+            turn_started.pointer("/result/turn/id").is_some(),
+            "unexpected turn/start response: {turn_started}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        first.close(None).await.expect("close first client");
+
+        let mut second = connect_websocket(&socket_path)
+            .await
+            .expect("second websocket connection");
+        send(&mut second, json!({
+            "method": "initialize", "id": 3,
+            "params": {"clientInfo": {"name": "workshop-proof", "title": "Workshop proof", "version": "0.8"}, "capabilities": {"experimentalApi": true}}
+        })).await;
+        assert!(response(&mut second, 3).await.get("result").is_some());
+        send(
+            &mut second,
+            json!({
+                "method": "thread/resume", "id": 4,
+                "params": {"threadId": thread_id, "persistExtendedHistory": true}
+            }),
+        )
+        .await;
+        let resumed = response(&mut second, 4).await;
+        assert_eq!(
+            resumed.pointer("/result/thread/id").and_then(Value::as_str),
+            Some(thread_id.as_str()),
+            "unexpected thread/resume response: {resumed}"
+        );
+        server.kill().await.expect("stop proof server");
+    }
+}
+
+async fn read_stdout<R: tauri::Runtime, T: AsyncRead + Unpin>(
     app: AppHandle<R>,
     session_id: String,
-    stdout: tokio::process::ChildStdout,
-    stdin: Arc<Mutex<tokio::process::ChildStdin>>,
+    stdout: T,
+    stdin: RpcWriter,
     pending: Pending,
     approval_policy: String,
     persistence: EventPumpState,
@@ -1152,10 +1432,7 @@ pub(crate) fn approval_decisions(params: &Value) -> Vec<String> {
         .collect()
 }
 
-pub(crate) async fn write_message(
-    stdin: &Arc<Mutex<tokio::process::ChildStdin>>,
-    value: &Value,
-) -> Result<()> {
+pub(crate) async fn write_message(stdin: &RpcWriter, value: &Value) -> Result<()> {
     let mut encoded = serde_json::to_vec(value)?;
     encoded.push(b'\n');
     let mut stdin = stdin.lock().await;

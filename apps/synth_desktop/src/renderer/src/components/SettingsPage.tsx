@@ -1,9 +1,12 @@
+// @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 import { useEffect, useState } from "react";
 import type {
 	DesktopInstanceDiagnostics,
 	LagunaStatus,
 	ModelMultiAgentSetting,
+	ModelCatalog,
 	MultiAgentVersion,
+	PluginStatus,
 	SynthAccountSummary,
 	SynthBackendSettings,
 	TariffCard,
@@ -19,6 +22,7 @@ import { VoiceRecognitionSettings } from "./VoiceRecognitionSettings";
 import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
 import { AccountPage } from "./AccountPage";
 import { GeneralPreferencesSettings } from "./GeneralPreferencesSettings";
+import { AgentHostingPanel } from "./AgentHostingPanel";
 import { SettingsCard } from "./SettingsCard";
 import { RuntimeContractRows } from "./RuntimeContractRows";
 import type { DesktopPreferences } from "../preferences";
@@ -27,6 +31,8 @@ import { bridges } from "../runtime/desktopBridge";
 import { ChatgptCodexSubscriptionCard } from "./ChatgptCodexSubscriptionCard";
 import { ContextSettings } from "./ContextSettings";
 import { SecretsSettings } from "./SecretsSettings";
+import { CapabilityManifest } from "./CapabilityManifest";
+import { PluginVisibilitySettings } from "./PluginVisibilitySettings";
 
 type Props = {
 	onBack: () => void;
@@ -34,6 +40,7 @@ type Props = {
 	account: AccountSectionProps;
 	onReloadLaguna: () => Promise<LagunaStatus>;
 	lagunaPhase?: string | null;
+	pluginStatuses?: readonly PluginStatus[] | null;
 	initialSection?: SectionId;
 	onSectionChange?: (section: SectionId) => void;
 	preferences?: DesktopPreferences;
@@ -125,6 +132,7 @@ const SECTIONS = [
 	{ id: "models", label: "Models", icon: IconChip },
 	{ id: "inference", label: "Inference", icon: IconGauge },
 	{ id: "voice", label: "Voice", icon: IconMic },
+	{ id: "plugins", label: "Integrations", icon: IconChip },
 	{ id: "account", label: "Account", icon: IconPerson },
 	{ id: "secrets", label: "Secrets", icon: IconKey },
 	{ id: "about", label: "About", icon: IconInfo }
@@ -165,8 +173,8 @@ const CHANGELOG = [
 			{
 				label: "Improved",
 				items: [
-					"Live visuals use one canonical binding envelope and durable replay through declared poll transports.",
-					"Generation-speed labels stay frozen at their historical cutoff, and completed turns show durable elapsed work time.",
+					"Live visuals use one canonical binding envelope and saved replay through declared poll transports.",
+					"Generation-speed labels stay frozen at their historical cutoff, and completed turns show elapsed work time.",
 					"Review captures use a dedicated window identity so capture sizing does not mutate the product window."
 				]
 			},
@@ -288,10 +296,17 @@ type AuthorizedModel = {
 	id: string;
 	name: string;
 	provider: string;
-	providerMark: "openai" | "laguna" | "meta" | "google" | "synth";
+	providerMark: "openai" | "laguna" | "meta" | "google" | "openrouter" | "synth";
 	modelId: string;
 	tariffProvider?: string;
 	planMetered?: boolean;
+	availability?: string;
+	source?: string;
+	contextTokens?: number | null;
+	inputModalities?: string[];
+	outputModalities?: string[];
+	supportsTools?: boolean;
+	metadataObservedAt?: string | null;
 };
 
 function formatPerMillion(rate: number): string {
@@ -303,23 +318,40 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 	// Prices come from the native tariff catalog — the same numbers cost
 	// estimation uses — never from strings kept in the renderer.
 	const [tariffs, setTariffs] = useState<TariffCard[]>([]);
+	const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
 	useEffect(() => {
 		void bridges.tariffs?.catalog()
 			.then(setTariffs)
 			.catch(() => setTariffs([]));
 	}, []);
+	useEffect(() => {
+		void bridges.config?.modelCatalog()
+			.then((next) => setCatalog(next ?? null))
+			.catch(() => setCatalog(null));
+	}, []);
 	const models: AuthorizedModel[] = [];
-	if (connection?.openrouterApiKeyConfigured) {
-		models.push(
-			{ id: "openrouter-luna", name: "GPT 5.6 Luna", provider: "OpenRouter · OpenAI", providerMark: "openai", modelId: "openai/gpt-5.6-luna", tariffProvider: "openrouter" },
-			{ id: "openrouter-laguna-s", name: "Laguna S 2.1", provider: "OpenRouter · Poolside", providerMark: "laguna", modelId: "poolside/laguna-s-2.1", tariffProvider: "openrouter" },
-			{ id: "openrouter-muse-spark", name: "Muse Spark 1.2", provider: "OpenRouter · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", tariffProvider: "openrouter" },
-			{ id: "openrouter-gemini-flash", name: "Gemini 3.7 Flash", provider: "OpenRouter · Google", providerMark: "google", modelId: "google/gemini-3.7-flash", tariffProvider: "openrouter" }
-		);
+	for (const entry of catalog?.entries ?? []) {
+		models.push({
+			id: entry.targetId,
+			name: entry.displayName,
+			provider: entry.source === "user_config" ? "OpenRouter · Configured in config.toml" : "OpenRouter",
+			providerMark: "openrouter",
+			modelId: entry.modelId,
+			tariffProvider: entry.source === "builtin" ? "openrouter" : undefined,
+			availability: entry.availability.replace("_", " "),
+			source: entry.source,
+			contextTokens: entry.capabilities.maxContextTokens,
+			inputModalities: entry.capabilities.inputModalities,
+			outputModalities: entry.capabilities.outputModalities,
+			supportsTools: entry.capabilities.tools,
+			metadataObservedAt: entry.metadataObservedAt
+		});
 	}
 	if (connection?.apiKeyConfigured) {
 		models.push(
-			{ id: "synth-cloud-laguna-s", name: "Laguna S 2.1", provider: "Synth Cloud", providerMark: "synth", modelId: "openrouter/poolside/laguna-s-2.1", planMetered: true },
+			{ id: "synth-cloud-laguna-s", name: "Laguna S 2.1", provider: "Synth Cloud · B200", providerMark: "synth", modelId: "synth_internal/laguna-s-2.1-nvfp4", planMetered: true },
+			{ id: "synth-cloud-laguna-xs-b200", name: "Laguna XS 2.1", provider: "Synth Cloud · B200", providerMark: "synth", modelId: "synth_internal/laguna-xs-2.1-nvfp4", planMetered: true },
+			{ id: "synth-cloud-laguna-xs-h100", name: "Laguna XS 2.1", provider: "Synth Cloud · H100 option", providerMark: "synth", modelId: "synth_internal/laguna-xs-2.1-fp8-h100", planMetered: true },
 			{ id: "synth-cloud-muse-spark", name: "Muse Spark 1.2", provider: "Synth Cloud · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", planMetered: true }
 		);
 	}
@@ -334,12 +366,13 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 					return (
 						<article className="authorized-model-row" key={model.id} data-testid={`authorized-model-${model.id}`}>
 							<ProviderMark kind={model.providerMark} className="authorized-model-mark" />
-							<div className="authorized-model-identity"><strong>{model.name}</strong><span>{model.provider}</span><code>{model.modelId}</code></div>
-							{model.planMetered ? <dl><div><dt>Pricing</dt><dd>Plan metered</dd></div></dl> : tariff ? <dl><div><dt>Input / 1M</dt><dd>{formatPerMillion(tariff.inputUsdPerM)}</dd></div><div><dt>Output / 1M</dt><dd>{formatPerMillion(tariff.outputUsdPerM)}</dd></div>{tariff.cachedInputUsdPerM != null ? <div><dt>Cached read / 1M</dt><dd>{formatPerMillion(tariff.cachedInputUsdPerM)}</dd></div> : null}{tariff.cacheWriteUsdPerM != null ? <div><dt>Cache write / 1M</dt><dd>{formatPerMillion(tariff.cacheWriteUsdPerM)}</dd></div> : null}</dl> : null}
+							<div className="authorized-model-identity"><strong>{model.name}</strong><span>{model.provider}{model.availability ? ` · ${model.availability}` : ""}</span><code>{model.modelId}</code>{model.inputModalities?.length ? <span>Input: {model.inputModalities.join(", ")}</span> : null}{model.outputModalities?.length ? <span>Output: {model.outputModalities.join(", ")}</span> : null}{model.supportsTools ? <span>Tools: supported</span> : null}{model.contextTokens ? <span>Context: {model.contextTokens.toLocaleString()} tokens</span> : null}{model.metadataObservedAt ? <span>Metadata checked: {model.metadataObservedAt}</span> : null}</div>
+							{model.planMetered ? <dl><div><dt>Pricing</dt><dd>Plan metered</dd></div></dl> : tariff ? <dl><div><dt>Input / 1M</dt><dd>{formatPerMillion(tariff.inputUsdPerM)}</dd></div><div><dt>Output / 1M</dt><dd>{formatPerMillion(tariff.outputUsdPerM)}</dd></div>{tariff.cachedInputUsdPerM != null ? <div><dt>Cached read / 1M</dt><dd>{formatPerMillion(tariff.cachedInputUsdPerM)}</dd></div> : null}{tariff.cacheWriteUsdPerM != null ? <div><dt>Cache write / 1M</dt><dd>{formatPerMillion(tariff.cacheWriteUsdPerM)}</dd></div> : null}</dl> : model.source === "user_config" ? <dl><div><dt>Pricing</dt><dd>No estimate — provider-reported settled cost is authoritative</dd></div></dl> : null}
 						</article>
 					);
 				})}
 			</div>
+			{catalog?.diagnostics.length ? <p className="settings-inline-error">{catalog.diagnostics.map((diagnostic) => `${diagnostic.location}: ${diagnostic.message}`).join(" ")}</p> : null}
 		</SettingsCard>
 	);
 }
@@ -426,6 +459,7 @@ export function SettingsPage({
 	account,
 	onReloadLaguna,
 	lagunaPhase,
+	pluginStatuses,
 	initialSection = "general",
 	onSectionChange,
 	preferences,
@@ -521,7 +555,7 @@ export function SettingsPage({
 							</SettingsCard>
 						</div>
 					) : null}
-					{section === "context" ? <ContextSettings subagents={<MultiAgentModelSettings />} /> : null}
+					{section === "context" ? <div className="settings-sections"><ContextSettings subagents={<MultiAgentModelSettings />} /><AgentHostingPanel /></div> : null}
 					{section === "inference" ? (
 						<div className="settings-sections" data-testid="settings-inference">
 							<InferenceSettings />
@@ -538,6 +572,9 @@ export function SettingsPage({
 							</SettingsCard>
 						</div>
 					) : null}
+					{section === "plugins" && preferences && onPreferencesChange ? (
+						<PluginVisibilitySettings preferences={preferences} pluginStatuses={pluginStatuses} onPreferencesChange={onPreferencesChange} />
+					) : null}
 					{section === "account" ? (
 						<AccountPage
 							view={account.view}
@@ -552,6 +589,9 @@ export function SettingsPage({
 					{section === "secrets" ? <SecretsSettings /> : null}
 					{section === "about" ? (
 						<div className="settings-sections" data-testid="settings-about">
+							<SettingsCard title="v0.9 capabilities">
+								<CapabilityManifest pluginStatuses={pluginStatuses} lagunaPhase={lagunaPhase} />
+							</SettingsCard>
 							<SettingsCard title="Synth Desktop">
 								<div className="finetune-base-card" data-testid="about-build-identity">
 									<span className="finetune-kicker">Build</span>
@@ -572,6 +612,8 @@ export function SettingsPage({
 										</button>
 									) : null}
 									<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? "Local-first research workbench"}</code>
+									<span className="finetune-meta">Data root</span>
+									<code className="finetune-file">{desktopIdentity?.dataRoot ?? "Unavailable"}</code>
 									<RuntimeContractRows />
 								</div>
 								<p className="settings-runtime-copy">

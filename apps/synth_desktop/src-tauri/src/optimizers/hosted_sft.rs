@@ -1,14 +1,12 @@
-//! Hosted SFT recipes backed by the public `synth-optimizers` control plane.
-//!
-//! Optimizers-beta remains an internal training executor. Workshop starts, watches,
-//! cancels, and mirrors only public SFT runs before opening `optimizer.sft.live.v1`.
+//! Hosted SFT recipes backed by the public `synth-optimizers` `sft service`
+//! (`TinkerSftExecutor`). Workshop starts, watches, cancels, and mirrors only
+//! public SFT runs before opening `optimizer.sft.live.v1`.
 
-use super::events::OptimizerEventDraft;
 use super::{
     ingest,
     models::{
         OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding, OptimizerQuery,
-        OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
+        OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord, OptimizerRunStatus,
     },
     sft_client::SftOptimizerClient,
     sidecar_training::PLACEMENT_TRAINING_SFT_HOSTED,
@@ -28,11 +26,11 @@ const LOCAL_BANKING77_SLOT: &str = "http://127.0.0.1:8110";
 /// plan and world are the container's, not something this recipe invents.
 const BANKING77_PLAN_REF: &str = "banking77_eval.v1";
 const BANKING77_WORLD_REF: &str = "world:banking77@heldout";
-const BANKING77_CHECKPOINT_STEPS: [u32; 3] = [10, 20, 30];
+const BANKING77_CHECKPOINT_STEPS: [u32; 4] = [25, 50, 75, 100];
 /// Length of training. `optimizers-beta` used to infer this as
 /// `max(checkpoint_steps)`, so the checkpoint list silently decided how long a
 /// run trained. It is now named separately and required.
-const BANKING77_TRAINING_STEPS: u32 = 30;
+const BANKING77_TRAINING_STEPS: u32 = 100;
 const CRAFTAX_CHECKPOINT_STEPS: [u32; 3] = [16, 33, 66];
 /// One pass over the proven 131-row corpus at batch size 2. Tinker samples
 /// with replacement, so this is a named optimizer-step budget, not an epoch.
@@ -54,31 +52,54 @@ const CHECKPOINT_EVALUATION_TIMEOUT_S: u32 = 3600;
 /// counts are product-owned), so cap each paid launch at one fifth of the
 /// five-run acceptance budget. The public service remains the execution
 /// authority and Workshop reconciles actual usage from its event stream.
-const HOSTED_SFT_COST_CEILING_USD: f64 = 10.0;
+const HOSTED_SFT_COST_CEILING_USD: f64 = 15.0;
 /// Allowlisted dataset shards. A caller selects one; it cannot supply a path.
 const BANKING77_SHARDS: [&str; 2] = ["train_a", "train_b"];
 /// Torn-tail reads while the producer appends are transient. Give up only
 /// after the upstream stays unreadable across this many consecutive polls.
 const MAX_CONSECUTIVE_PAGE_ERRORS: u32 = 20;
-const HOSTED_SFT_LORA_RANK: u64 = 8;
+const HOSTED_SFT_LORA_RANK: u64 = 16;
+const CRAFTAX_SFT_LORA_RANK: u64 = 8;
+const BANKING77_SPLIT_SEED: u64 = 20260907;
+const BANKING77_SELECTION_SEED: u64 = 20260908;
+const BANKING77_HELDOUT_SEED: u64 = 20260906;
+const BANKING77_SELECTION_SIZE: u32 = 400;
+const BANKING77_HELDOUT_SIZE: u32 = 400;
 
 pub fn recipe_catalog() -> Vec<Value> {
-    vec![craftax_nemotron_recipe(), banking77_recipe()]
+    let evaluators = super::eval_recipes::checkpoint_evaluators();
+    let mut recipes = vec![craftax_nemotron_recipe(), banking77_recipe()];
+    for recipe in &mut recipes {
+        recipe["limits"]["checkpointEvaluators"] = json!(evaluators);
+        recipe["limits"].as_object_mut().unwrap().remove("evaluationPlan");
+        recipe["limits"]["evaluationModes"] = json!(["none", "builtin", "container", "both"]);
+    }
+    recipes
 }
 
 fn craftax_nemotron_recipe() -> Value {
     let catalog_ok = super::tinker_catalog::TinkerBaseModelCatalog::load().is_ok();
-    let availability = if catalog_ok && SftOptimizerClient::from_env().is_ok() {
-        "available"
+    let service_reason = public_sft_service_reason();
+    let dataset_reason = craftax_training_jsonl_reason();
+    let available = catalog_ok && service_reason.is_none() && dataset_reason.is_none();
+    let availability_reason = if available {
+        Value::Null
+    } else if let Some(reason) = service_reason {
+        json!(reason)
+    } else if let Some(reason) = dataset_reason {
+        json!(reason)
     } else {
-        "unavailable"
+        json!("Hosted Tinker base-model catalog is unavailable")
     };
     json!({
         "id": HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE,
         "title": "Craftax Nemotron 3.5 Lightning Tinker SFT",
         "algorithmId": "sft",
+        "provider": "tinker",
+        "model": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
         "task": "craftax",
-        "availability": availability,
+        "availability": if available { "available" } else { "unavailable" },
+        "availabilityReason": availability_reason,
         "limits": {
             "backend": "tinker",
             "checkpointSteps": CRAFTAX_CHECKPOINT_STEPS,
@@ -87,66 +108,229 @@ fn craftax_nemotron_recipe() -> Value {
             "campaignRolloutsPerCheckpoint": 2,
             "evalSeeds": [501, 502],
             "costCeilingUsd": HOSTED_SFT_COST_CEILING_USD,
-            "costNotice": "Hosted Tinker + local Craftax slot. Student id from docs/sft_tinker_base_models.toml (default 3.5 Lightning)."
+            "costNotice": "Hosted Tinker training with optional checkpoint evaluation."
         },
         "credentialInputs": [],
         "prerequisites": [
-            "SYNTH_OPTIMIZERS_SFT_SERVICE_URL (or local http://127.0.0.1:8878)",
+            "synth-optimizers sft service --db … --bind 127.0.0.1:8878",
             "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN",
-            "TINKER_API_KEY held by the Optimizers-beta executor",
-            "Craftax gold / GameBench on 127.0.0.1:8098"
+            "SYNTH_OPTIMIZERS_SFT_SERVICE_URL",
+            "SYNTH_SFT_TRAIN_JSONL (readable, non-empty real training corpus)",
+            "Optional evaluation: registered digest-pinned checkpoint evaluator"
         ],
     })
 }
 
+fn craftax_training_jsonl_reason() -> Option<String> {
+    let raw = match std::env::var("SYNTH_SFT_TRAIN_JSONL") {
+        Ok(value) => value,
+        Err(_) => return Some("SYNTH_SFT_TRAIN_JSONL is required for Craftax hosted SFT.".into()),
+    };
+    let path = std::path::Path::new(raw.trim());
+    if raw.trim().is_empty() {
+        return Some("SYNTH_SFT_TRAIN_JSONL is required for Craftax hosted SFT.".into());
+    }
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => None,
+        _ => Some(format!(
+            "SYNTH_SFT_TRAIN_JSONL must name a readable, non-empty file: {}",
+            path.display()
+        )),
+    }
+}
+
 fn banking77_recipe() -> Value {
     let catalog_ok = super::tinker_catalog::TinkerBaseModelCatalog::load().is_ok();
-    let availability =
-        if catalog_ok && SftOptimizerClient::from_env().is_ok() && banking77_source().is_ok() {
-            "available"
-        } else {
-            "unavailable"
-        };
+    let service_reason = public_sft_service_reason();
+    let jsonl_ok = banking77_source().is_ok() || banking77_reference_sources().is_ok();
+    let available = catalog_ok && service_reason.is_none() && jsonl_ok;
+    let availability_reason = if available {
+        Value::Null
+    } else if let Some(reason) = service_reason {
+        json!(reason)
+    } else if !jsonl_ok {
+        json!("Set SYNTH_BANKING77_TRAIN_CSV and SYNTH_BANKING77_HELDOUT_CSV for the NanoClassify reference split, or SYNTH_SFT_BANKING77_TRAIN_JSONL for a smoke corpus")
+    } else {
+        json!("Hosted Tinker base-model catalog is unavailable")
+    };
+    let reference_mode = banking77_reference_sources().is_ok();
     json!({
         "id": HOSTED_SFT_BANKING77_RECIPE,
-        "title": "Banking77 Nemotron Lightning Tinker SFT",
+        "title": if reference_mode { "Banking77 GPT-OSS 20B Tinker SFT" } else { "Banking77 Nemotron Lightning Tinker SFT" },
         "algorithmId": "sft",
+        "provider": "tinker",
+        "model": if reference_mode { "openai/gpt-oss-20b" } else { "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16" },
         "task": "banking77",
-        "availability": availability,
+        "availability": if available { "available" } else { "unavailable" },
+        "availabilityReason": availability_reason,
         "limits": {
             "backend": "tinker",
             "checkpointSteps": BANKING77_CHECKPOINT_STEPS,
+            "trainingSteps": BANKING77_TRAINING_STEPS,
+            "batchSize": 64,
+            "rank": HOSTED_SFT_LORA_RANK,
+            "selectionExamples": BANKING77_SELECTION_SIZE,
+            "heldoutExamples": BANKING77_HELDOUT_SIZE,
             "evaluationPlan": { "phases": ["baseline", "checkpoint", "final"], "checkpointSteps": BANKING77_CHECKPOINT_STEPS, "transport": "tunnel", "metric": "reward" },
             "campaignRolloutsPerCheckpoint": BANKING77_CAMPAIGN_ROLLOUTS,
             "datasetShards": BANKING77_SHARDS,
             "evalSeeds": [1, 2],
             "evaluationPlanRef": BANKING77_PLAN_REF,
             "costCeilingUsd": HOSTED_SFT_COST_CEILING_USD,
-            "costNotice": "Hosted Tinker training plus banking77_classify campaign rollouts. Provider charges apply."
+            "costNotice": "Hosted Tinker training with optional checkpoint evaluation. Provider charges apply."
         },
         "credentialInputs": [],
         "prerequisites": [
-            "SYNTH_OPTIMIZERS_SFT_SERVICE_URL (or local http://127.0.0.1:8878)",
+            "synth-optimizers sft service --db … --bind 127.0.0.1:8878",
             "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN",
-            "TINKER_API_KEY held by the Optimizers-beta executor",
-            "SYNTH_SFT_BANKING77_TRAIN_JSONL",
+            "SYNTH_OPTIMIZERS_SFT_SERVICE_URL",
+            "SYNTH_OPTIMIZERS_SFT_FIXTURE=1 for unpaid",
+            "SYNTH_BANKING77_TRAIN_CSV + SYNTH_BANKING77_HELDOUT_CSV (reference)",
+            "or SYNTH_SFT_BANKING77_TRAIN_JSONL (smoke corpus)",
+            "optional SYNTH_BANKING77_HELDOUT_INDICES_JSON for sealed membership",
             "banking77_classify container on 127.0.0.1:8110"
         ],
     })
 }
 
+#[cfg(test)]
+mod catalog_identity_tests {
+    use super::*;
+
+    #[test]
+    fn hosted_sft_recipes_name_the_paid_provider_and_model() {
+        assert!(recipe_catalog().iter().all(|recipe| {
+            recipe.get("provider").and_then(Value::as_str) == Some("tinker")
+                && recipe.get("model").and_then(Value::as_str).is_some()
+        }));
+    }
+}
+
+fn public_sft_service_reason() -> Option<String> {
+    if SftOptimizerClient::from_env().is_ok() {
+        return None;
+    }
+    if std::env::var("SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        return Some(
+            "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN is required to reach the public SFT service."
+                .into(),
+        );
+    }
+    if std::env::var("SYNTH_OPTIMIZERS_SFT_SERVICE_URL")
+        .ok()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return Some("SYNTH_OPTIMIZERS_SFT_SERVICE_URL is empty.".into());
+    }
+    Some(
+        "Public SFT service client is not configured (SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN / SYNTH_OPTIMIZERS_SFT_SERVICE_URL)."
+            .into(),
+    )
+}
+
 pub async fn start(
     service: &OptimizerService,
-    request: OptimizerRecipeRunRequest,
+    mut request: OptimizerRecipeRunRequest,
 ) -> Result<(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
+    let overrides = request.plan_override.get_or_insert_with(|| json!({}));
+    if overrides.get("sft").is_none() { overrides["sft"] = json!({"evaluationMode":"none"}); }
     match request.recipe_id.as_str() {
         HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE => start_craftax_nemotron(service, request).await,
         HOSTED_SFT_BANKING77_RECIPE => start_banking77(service, request).await,
         other => bail!("unknown hosted SFT recipe: {other}"),
     }
+}
+
+fn launch_uses_container(request: &OptimizerRecipeRunRequest) -> bool {
+    request.plan_override.as_ref().and_then(|value| value.get("sft"))
+        .map(|plan| matches!(plan.get("evaluationMode").and_then(Value::as_str), Some("container" | "both")))
+        .unwrap_or(true)
+}
+
+/// Explicit migration of the launch form's optional evaluator selection.
+/// Historical recipe text is retained for old receipts; new launches freeze v2.
+fn resolved_training_plan(text: String, request: &OptimizerRecipeRunRequest, model: &str) -> Result<String> {
+    let Some(plan) = request.plan_override.as_ref().and_then(|value| value.get("sft")) else {
+        return Ok(text);
+    };
+    let mode = plan.get("evaluationMode").and_then(Value::as_str).unwrap_or("none");
+    if !matches!(mode, "none" | "builtin" | "container" | "both") { bail!("unsupported SFT evaluation mode"); }
+    let mut config: toml::Value = toml::from_str(&text)?;
+    let table = config.as_table_mut().context("SFT config must be a table")?;
+    for key in ["training_file_id", "selection_file_id", "heldout_file_id", "container_url", "checkpoint_evaluation_policy", "checkpoint_evaluation_seeds", "checkpoint_evaluation_policy_harness", "checkpoint_evaluation_plan_ref", "checkpoint_evaluation_world_ref", "checkpoint_evaluation_timeout_s"] { table.remove(key); }
+    if let Some(metadata) = table.get_mut("metadata").and_then(toml::Value::as_table_mut) {
+        metadata.retain(|key, _| !key.starts_with("evaluation_"));
+    }
+    let mut evaluation = plan.get("checkpointEvaluation").cloned().unwrap_or_else(|| json!({}));
+    evaluation.as_object_mut().context("checkpointEvaluation must be an object")?.insert("mode".into(), json!(mode));
+    table.insert("checkpoint_evaluation".into(), toml::Value::try_from(evaluation)?);
+    if matches!(mode, "container" | "both") {
+        let profile = plan.get("rendererProfile").context("container evaluation requires its frozen renderer profile")?;
+        table.insert("evaluation_renderer_profile".into(), toml::Value::try_from(profile.clone())?);
+    }
+    if let Some(steps) = plan.get("trainingSteps").and_then(Value::as_u64) {
+        let training = table.get_mut("training").and_then(toml::Value::as_table_mut).context("training section missing")?;
+        let ceiling = training.get("steps").and_then(toml::Value::as_integer).unwrap_or(0);
+        if steps == 0 || steps > ceiling as u64 { bail!("trainingSteps must narrow the recipe length"); }
+        training.insert("steps".into(), toml::Value::Integer(steps as i64));
+        let middle = (steps / 2).max(1);
+        training.insert("checkpoint_every_steps".into(), toml::Value::Integer(middle as i64));
+        training.insert("eval_every_steps".into(), toml::Value::Integer(middle as i64));
+        let mut saves = vec![toml::Value::Integer(middle as i64)];
+        if middle != steps { saves.push(toml::Value::Integer(steps as i64)); }
+        table.insert("checkpoint_steps".into(), toml::Value::Array(saves.clone()));
+        if let Some(evaluation) = table.get_mut("checkpoint_evaluation").and_then(toml::Value::as_table_mut) {
+            let schedule = evaluation.entry("schedule").or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            schedule.as_table_mut().context("evaluation schedule must be a table")?.insert("steps".into(), toml::Value::Array(saves));
+        }
+        table.insert("training_steps".into(), toml::Value::Integer(steps as i64));
+    }
+    let cap = plan.get("maxCostUsd").and_then(Value::as_f64).unwrap_or(HOSTED_SFT_COST_CEILING_USD);
+    if !cap.is_finite() || cap <= 0.0 || cap > HOSTED_SFT_COST_CEILING_USD { bail!("maxCostUsd must be positive and within the recipe ceiling"); }
+    let rates = match model {
+        "openai/gpt-oss-20b" => (0.18, 0.45, 0.396),
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16" | "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16" => (0.195, 0.495, 0.44),
+        _ => bail!("SFT launch has no frozen pricing for this model"),
+    };
+    table.insert("budget".into(), toml::Value::try_from(json!({
+        "max_cost_usd": cap,
+        "pricing_version":"tinker.models.20260908.conservative-operation-reserves",
+        "pricing":{"input_usd_per_million":rates.0,"output_usd_per_million":rates.1,"training_usd_per_million":rates.2,
+                   "session_usd":0.25,"save_usd":0.25,"restore_usd":0.25}
+    }))?);
+    Ok(toml::to_string(&config)?)
+}
+
+async fn freeze_checkpoint_evaluator(mut request: OptimizerRecipeRunRequest, model: &str) -> Result<OptimizerRecipeRunRequest> {
+    let Some(plan) = request.plan_override.as_mut().and_then(|value| value.get_mut("sft")) else { return Ok(request); };
+    if !matches!(plan.get("evaluationMode").and_then(Value::as_str), Some("container" | "both")) { return Ok(request); }
+    let id = plan.get("evaluatorId").and_then(Value::as_str).context("Select a registered checkpoint evaluator")?;
+    if id != "eval.tinker.checkpoint.gsm8k.v1" { bail!("Checkpoint evaluator metric contract is not supported"); }
+    let recipe = super::eval_recipes::checkpoint_evaluators().into_iter()
+        .find(|recipe| recipe.get("id").and_then(Value::as_str) == Some(id))
+        .context("Checkpoint evaluator is no longer registered")?;
+    let digest = recipe.get("imageDigest").and_then(Value::as_str)
+        .filter(|digest| digest.starts_with("sha256:") && digest.len() == 71)
+        .context("Checkpoint evaluator requires a pinned image digest")?;
+    let selection = recipe.pointer("/limits/screeningSeeds").and_then(Value::as_array).context("Evaluator selection panel missing")?;
+    let final_seeds = recipe.pointer("/limits/confirmationSeeds").and_then(Value::as_array).context("Evaluator final panel missing")?;
+    // A bounded launch uses the first two members of each registered, disjoint panel.
+    let evaluator = json!({"id":id,"recipe_id":id,"image_digest":digest,
+        "metric_ref":"accuracy","reward_version":"gsm8k.frozen.exact.v1","units":"fraction",
+        "selection_seeds":selection.iter().take(2).collect::<Vec<_>>(),
+        "final_seeds":final_seeds.iter().take(2).collect::<Vec<_>>(),"failure_policy":"block"});
+    plan["checkpointEvaluation"] = json!({"evaluators":[evaluator],
+        "selection":{"evaluator_id":id,"direction":"maximize","tie_break":"earliest_step"}});
+    plan["rendererProfile"] = SftOptimizerClient::from_env()?.renderer_profile(model).await?;
+    Ok(request)
 }
 
 fn content_sha256(bytes: &[u8]) -> String {
@@ -170,12 +354,67 @@ fn banking77_source() -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct Banking77ReferenceSources {
+    pub(crate) train_csv: std::path::PathBuf,
+    pub(crate) heldout_csv: std::path::PathBuf,
+    pub(crate) heldout_indices_json: Option<std::path::PathBuf>,
+}
+
+pub(crate) fn banking77_reference_sources() -> Result<Banking77ReferenceSources> {
+    let required = |name: &str| -> Result<std::path::PathBuf> {
+        let raw = std::env::var(name).with_context(|| format!("{name} is required"))?;
+        let path = std::path::PathBuf::from(raw.trim());
+        if !path.is_file() {
+            bail!("{name} is not a file: {}", path.display());
+        }
+        Ok(path)
+    };
+    let heldout_indices_json = std::env::var("SYNTH_BANKING77_HELDOUT_INDICES_JSON")
+        .ok()
+        .map(|raw| std::path::PathBuf::from(raw.trim()))
+        .filter(|path| path.is_file());
+    Ok(Banking77ReferenceSources {
+        train_csv: required("SYNTH_BANKING77_TRAIN_CSV")?,
+        heldout_csv: required("SYNTH_BANKING77_HELDOUT_CSV")?,
+        heldout_indices_json,
+    })
+}
+
 fn banking77_slot_url() -> String {
     std::env::var("SYNTH_CONTAINERS_BANKING77_URL")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| LOCAL_BANKING77_SLOT.into())
+}
+
+fn normalize_banking77_row(line: &str) -> Result<String> {
+    let mut row: serde_json::Value =
+        serde_json::from_str(line).context("decode Banking77 SFT row")?;
+    let object = row
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Banking77 SFT row must be a JSON object"))?;
+    if !object.get("text").is_some_and(serde_json::Value::is_string) {
+        let text = object
+            .get("query")
+            .filter(|value| value.is_string())
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Banking77 SFT row is missing text/query"))?;
+        object.insert("text".into(), text);
+    }
+    if !object
+        .get("category")
+        .is_some_and(serde_json::Value::is_string)
+    {
+        let category = object
+            .get("expected")
+            .filter(|value| value.is_string())
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Banking77 SFT row is missing category/expected"))?;
+        object.insert("category".into(), category);
+    }
+    serde_json::to_string(&row).context("encode normalized Banking77 SFT row")
 }
 
 /// Materialize one allowlisted shard under the instance data root. Two shards
@@ -193,11 +432,12 @@ fn materialize_banking77_shard(shard: &str) -> Result<std::path::PathBuf> {
         })?;
     let source = banking77_source()?;
     let text = std::fs::read_to_string(&source).context("read Banking77 SFT corpus")?;
-    let rows: Vec<&str> = text
+    let rows: Vec<String> = text
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .collect();
+        .map(normalize_banking77_row)
+        .collect::<Result<_>>()?;
     if rows.len() < BANKING77_SHARDS.len() {
         bail!("Banking77 SFT corpus is too small to shard");
     }
@@ -223,18 +463,43 @@ async fn start_banking77(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
-    let catalog = super::tinker_catalog::TinkerBaseModelCatalog::load()?;
-    let model_id = catalog.resolve(request.base_model.as_deref())?;
-    let shard = request
-        .dataset_shard
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(BANKING77_SHARDS[0])
-        .to_string();
-    let shard_path = materialize_banking77_shard(&shard)?;
-    let dataset_digest = dataset_digest_for_path(&shard_path)?;
-    super::sft_result::validate_dataset_digest(&shard_path, &dataset_digest)?;
+    let reference = banking77_reference_sources().ok();
+    let model_id = if reference.is_some() {
+        // NanoClassify's public reference result is a GPT-OSS 20B result. A
+        // different catalog default makes both its prompt renderer and uplift
+        // comparison invalid, even when the CSV split is identical.
+        "openai/gpt-oss-20b".to_string()
+    } else {
+        let catalog = super::tinker_catalog::TinkerBaseModelCatalog::load()?;
+        catalog.resolve(request.base_model.as_deref())?
+    };
+    let reference_mode = reference.is_some();
+    let model_title = if reference_mode {
+        "Banking77 GPT-OSS 20B Tinker SFT"
+    } else {
+        "Banking77 Nemotron Lightning Tinker SFT"
+    };
+    let (shard, shard_path, dataset_digest) = if let Some(sources) = reference.as_ref() {
+        let train_digest = dataset_digest_for_path(&sources.train_csv)?;
+        let heldout_digest = dataset_digest_for_path(&sources.heldout_csv)?;
+        (
+            "nanoclassify_reference".to_string(),
+            sources.train_csv.clone(),
+            content_sha256(format!("{train_digest}\n{heldout_digest}\n").as_bytes()),
+        )
+    } else {
+        let shard = request
+            .dataset_shard
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(BANKING77_SHARDS[0])
+            .to_string();
+        let path = materialize_banking77_shard(&shard)?;
+        let digest = dataset_digest_for_path(&path)?;
+        super::sft_result::validate_dataset_digest(&path, &digest)?;
+        (shard, path, digest)
+    };
     let container_url = banking77_slot_url();
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_banking77_{}_{}", shard, &suffix[..8]);
@@ -246,15 +511,26 @@ async fn start_banking77(
         &container_url,
         &shard_path.to_string_lossy(),
         &dataset_digest,
+        reference.as_ref(),
     );
+    let request = freeze_checkpoint_evaluator(request, &model_id).await?;
+    let config_toml = resolved_training_plan(config_toml, &request, &model_id)?;
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
-        algorithm_version: Some("banking77-nemotron-lightning-tinker-v1".into()),
+        algorithm_version: Some(if reference_mode {
+            "banking77-gpt-oss-20b-tinker-v1".into()
+        } else {
+            "banking77-nemotron-lightning-tinker-v1".into()
+        }),
         objective: Some(
             "Banking77 intent SFT · hosted Tinker · banking77_classify checkpoint campaigns".into(),
         ),
         source: Some("hosted".into()),
-        project_ref: Some("banking77@nemotron-lightning-tinker".into()),
+        project_ref: Some(if reference_mode {
+            "banking77@gpt-oss-20b-tinker".into()
+        } else {
+            "banking77@nemotron-lightning-tinker".into()
+        }),
         session_ref: request.session_ref.clone(),
         id: Some(run_id.clone()),
         execution_bindings: Some(vec![
@@ -290,7 +566,7 @@ async fn start_banking77(
                 id: HOSTED_SFT_BANKING77_RECIPE.into(),
                 digest: None,
                 role: Some("configuration".into()),
-                title: Some("Banking77 Nemotron Lightning Tinker SFT".into()),
+                title: Some(model_title.into()),
                 metadata: json!({"backend": "tinker", "baseModel": model_id}),
             },
             OptimizerResourceRef {
@@ -298,8 +574,8 @@ async fn start_banking77(
                 id: training_file.clone(),
                 digest: Some(dataset_digest.clone()),
                 role: Some("train".into()),
-                title: Some(format!("Banking77 SFT corpus · shard {shard}")),
-                metadata: json!({"shard": shard, "shards": BANKING77_SHARDS, "datasetDigest": dataset_digest}),
+                title: Some(format!("Banking77 SFT corpus · {shard}")),
+                metadata: json!({"shard": shard, "shards": BANKING77_SHARDS, "datasetDigest": dataset_digest, "splitStrategy": reference.as_ref().map(|_| "banking77.nanoclassify.v1")}),
             },
         ]),
         capabilities: Some(OptimizerCapabilities::for_algorithm("sft")),
@@ -314,6 +590,11 @@ async fn start_banking77(
             "rank": HOSTED_SFT_LORA_RANK,
             "localSlot": container_url,
             "checkpointSteps": BANKING77_CHECKPOINT_STEPS,
+            "trainingSteps": BANKING77_TRAINING_STEPS,
+            "batchSize": 64,
+            "selectionExamples": BANKING77_SELECTION_SIZE,
+            "heldoutExamples": BANKING77_HELDOUT_SIZE,
+            "heldoutSealed": reference.as_ref().is_some_and(|sources| sources.heldout_indices_json.is_some()),
         })),
         open_visual: request.open_visual.or(Some(true)),
         seed_fixture: None,
@@ -330,6 +611,7 @@ fn banking77_config_toml(
     container_url: &str,
     training_jsonl: &str,
     dataset_digest: &str,
+    reference: Option<&Banking77ReferenceSources>,
 ) -> String {
     let steps = BANKING77_CHECKPOINT_STEPS
         .iter()
@@ -337,10 +619,53 @@ fn banking77_config_toml(
         .collect::<Vec<_>>()
         .join(", ");
     let adapter = lora_adapter_label(HOSTED_SFT_LORA_RANK);
+    let label_taxonomy = super::cispo::BANKING77_LABEL_TAXONOMY
+        .iter()
+        .map(|label| format!("{label:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let reference_contract = reference
+        .map(|_| {
+            let system_prompt = format!(
+                "Classify the customer banking message. Return exactly one label from this list, with no explanation or punctuation:\n{}",
+                super::cispo::BANKING77_LABEL_TAXONOMY.join(", ")
+            );
+            format!(
+                "renderer_version = \"renderers.gpt-oss.low.v1\"\nsystem_prompt = {system_prompt:?}\n"
+            )
+        })
+        .unwrap_or_default();
+    let reference_dataset = reference
+        .map(|sources| {
+            let heldout_indices = sources
+                .heldout_indices_json
+                .as_ref()
+                .map(|path| format!("heldout_indices_json = {:?}\n", path.to_string_lossy()))
+                .unwrap_or_default();
+            format!(
+                r#"
+[dataset]
+recipe_id = "banking77.sft.nanoclassify.v1"
+split_strategy = "banking77.nanoclassify.v1"
+train_csv = {:?}
+heldout_csv = {:?}
+{heldout_indices}split_seed = {BANKING77_SPLIT_SEED}
+selection_seed = {BANKING77_SELECTION_SEED}
+heldout_seed = {BANKING77_HELDOUT_SEED}
+dev_per_class = 10
+selection_size = {BANKING77_SELECTION_SIZE}
+heldout_size = {BANKING77_HELDOUT_SIZE}
+label_taxonomy = [{label_taxonomy}]
+"#,
+                sources.train_csv.to_string_lossy(),
+                sources.heldout_csv.to_string_lossy(),
+            )
+        })
+        .unwrap_or_default();
     format!(
         r#"run_id = "{run_id}"
 backend = "tinker"
-base_model = "{model_id}"
+{reference_contract}base_model = "{model_id}"
 adapter = "{adapter}"
 training_file_id = "{training_file}"
 training_jsonl = "{training_jsonl}"
@@ -348,6 +673,7 @@ dataset_digest = "{dataset_digest}"
 selection_file_id = "file_selection"
 heldout_file_id = "file_heldout"
 accelerator_slots = 1
+rank = {HOSTED_SFT_LORA_RANK}
 checkpoint_steps = [{steps}]
 training_steps = {BANKING77_TRAINING_STEPS}
 max_seq_len = {BANKING77_MAX_SEQ_LEN}
@@ -360,6 +686,21 @@ checkpoint_evaluation_policy_harness = "classify"
 checkpoint_evaluation_plan_ref = "{BANKING77_PLAN_REF}"
 checkpoint_evaluation_world_ref = "{BANKING77_WORLD_REF}"
 checkpoint_evaluation_timeout_s = {CHECKPOINT_EVALUATION_TIMEOUT_S}
+
+[training]
+steps = {BANKING77_TRAINING_STEPS}
+batch_size = 64
+learning_rate = 0.00002
+checkpoint_every_steps = 25
+eval_every_steps = 25
+
+[evaluation]
+max_tokens = 1024
+confidence = 0.95
+bootstrap_resamples = 4000
+minimum_claim_uplift = 0.01
+minimum_paired_examples = 400
+{reference_dataset}
 
 [metadata]
 evaluation_schema = "training.evaluation.plan.v1"
@@ -383,9 +724,9 @@ evaluation_timeout_s = {CHECKPOINT_EVALUATION_TIMEOUT_S}
 api_key_env = "TINKER_API_KEY"
 
 [hyperparameters]
-rank = 8
-batch_size = 2
-lr = 0.001
+rank = 16
+batch_size = 64
+lr = 0.00002
 "#
     )
 }
@@ -399,7 +740,7 @@ async fn start_craftax_nemotron(
 )> {
     let catalog = super::tinker_catalog::TinkerBaseModelCatalog::load()?;
     let model_id = catalog.resolve(request.base_model.as_deref())?;
-    let container_url = local_craftax_slot_url()?;
+    let container_url = if request.plan_override.as_ref().and_then(|value| value.get("sft")).is_none() { local_craftax_slot_url()? } else { String::new() };
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_craftax_nemo_{}", &suffix[..8]);
     let training_file = format!("file_train_{}", &suffix[..8]);
@@ -422,6 +763,8 @@ async fn start_craftax_nemotron(
         training_jsonl.as_deref(),
         &dataset_digest,
     );
+    let request = freeze_checkpoint_evaluator(request, &model_id).await?;
+    let config_toml = resolved_training_plan(config_toml, &request, &model_id)?;
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
         algorithm_version: Some("craftax-nemotron-nano-tinker-v1".into()),
@@ -515,12 +858,28 @@ fn local_craftax_slot_url() -> Result<String> {
 async fn admit_hosted(
     service: &OptimizerService,
     request: OptimizerRecipeRunRequest,
-    create: OptimizerCreateRequest,
+    mut create: OptimizerCreateRequest,
     config_toml: String,
 ) -> Result<(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
+    let resolved: toml::Value = toml::from_str(&config_toml)?;
+    if let Some(summary) = create.summary.as_mut().and_then(Value::as_object_mut) {
+        summary.insert("trainingSteps".into(), serde_json::to_value(resolved.get("training").and_then(|v| v.get("steps")))?);
+        summary.insert("checkpointSteps".into(), serde_json::to_value(resolved.get("checkpoint_steps"))?);
+        summary.insert("checkpointEvaluation".into(), serde_json::to_value(resolved.get("checkpoint_evaluation"))?);
+    }
+    if request.plan_override.as_ref().and_then(|value| value.get("sft")).is_some() {
+        if let Some(bindings) = create.execution_bindings.as_mut() {
+            bindings.retain(|binding| binding.kind != "local_slot");
+        }
+        if let Some(summary) = create.summary.as_mut().and_then(Value::as_object_mut) {
+            summary.remove("localSlot");
+            summary.remove("evaluationPlan");
+            summary.insert("checkpointEvaluationMode".into(), request.plan_override.as_ref().and_then(|value| value.pointer("/sft/evaluationMode")).cloned().unwrap_or(json!("none")));
+        }
+    }
     super::sidecar_training::create_and_watch(
         service,
         request,
@@ -531,6 +890,67 @@ async fn admit_hosted(
     .await
 }
 
+
+pub(super) fn recoverable_observer_failure(run: &OptimizerRunRecord) -> bool {
+    if run.source == "hosted" && run.algorithm_id == "sft" && run.status == "failed_evidence"
+        && run.summary.get("trainingTransport").and_then(Value::as_str) == Some("public-sft.v1") {
+        return true;
+    }
+    run.source == "hosted" && run.algorithm_id == "sft" && run.status == "failed"
+        && run.error.as_ref().and_then(|error| error.get("source")).and_then(Value::as_str) == Some("sidecar-training")
+        && run.error.as_ref().and_then(|error| error.get("message")).and_then(Value::as_str)
+            .is_some_and(|message| message.starts_with("training event sequence gap") || message.contains("event polling stayed unavailable"))
+}
+
+/// Preserve the failed observer's sealed receipt and attach a new local mirror
+/// to the same proven-paused producer job. No training job or paid call is created.
+pub(super) async fn recover_observer(service: &OptimizerService, old: &OptimizerRunRecord)
+    -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
+    anyhow::ensure!(recoverable_observer_failure(old), "run is not a recoverable observer failure");
+    let client = SftOptimizerClient::from_env()?;
+    let producer_id = old.summary.get("producerRunId").and_then(Value::as_str).unwrap_or(&old.id).to_string();
+    let remote = client.get_run(&producer_id).await?;
+    anyhow::ensure!(matches!(remote.get("status").and_then(Value::as_str), Some("paused" | "completed")),
+                    "producer must acknowledge a safe paused checkpoint or completion before observer recovery");
+    let id = format!("{}_recovered", old.id);
+    if let Ok(existing) = service.get(id.clone()).await { return Ok((existing, None)); }
+    let mut summary = old.summary.clone();
+    if let Some(object) = summary.as_object_mut() {
+        object.remove("trainingCursor"); object.remove("hostedMirror");
+        object.insert("producerRunId".into(), json!(producer_id));
+        object.insert("recoveredFrom".into(), json!(old.id));
+        object.insert("trainingTransport".into(), json!("public-sft.v1"));
+    }
+    let (run, event) = service.create(OptimizerCreateRequest {
+        algorithm_id: old.algorithm_id.clone(), algorithm_version: old.algorithm_version.clone(),
+        objective: old.objective.clone(), source: Some("hosted".into()), project_ref: old.project_ref.clone(),
+        session_ref: old.session_ref.clone(), id: Some(id.clone()), execution_bindings: Some(old.execution_bindings.clone()),
+        input_refs: Some(old.input_refs.clone()), capabilities: Some(old.capabilities.clone()), summary: Some(summary),
+        open_visual: Some(false), seed_fixture: None, cloud_config: None, local_path: None,
+    }).await?;
+    spawn_hosted_worker(service, client, id, None, 0).await;
+    Ok((run, event))
+}
+
+fn page_for_mirror(mut page: Value, mirror_id: &str, producer_id: &str) -> Value {
+    if mirror_id == producer_id { return page; }
+    page["run_id"] = json!(mirror_id);
+    if let Some(events) = page.get_mut("events").and_then(Value::as_array_mut) {
+        for event in events {
+            if let Some(source_id) = event.get("event_id").and_then(Value::as_str).map(str::to_string) {
+                event["source_event_id"] = json!(source_id);
+                event["event_id"] = json!(format!("{mirror_id}:producer:{source_id}"));
+            }
+            event["optimizer_run_id"] = json!(mirror_id);
+            event["job_id"] = json!(mirror_id);
+            event["run_id"] = json!(mirror_id);
+            if let Some(payload) = event.get_mut("payload").and_then(Value::as_object_mut) {
+                payload.insert("producer_run_id".into(), json!(producer_id));
+            }
+        }
+    }
+    page
+}
 #[allow(dead_code)]
 async fn spawn_hosted_worker(
     service: &OptimizerService,
@@ -539,10 +959,8 @@ async fn spawn_hosted_worker(
     config_toml: Option<String>,
     start_cursor: u64,
 ) {
-    let (cancel_tx, cancel_rx) = watch::channel(false);
-    service
-        .register_local_recipe(run_id.clone(), cancel_tx)
-        .await;
+    let (cancel_tx, cancel_rx) = watch::channel(None);
+    if !service.try_register_local_recipe(run_id.clone(), cancel_tx).await { return; }
     let _ = persist_hosted_cursor(service, &run_id, start_cursor, true).await;
     let worker = service.clone();
     tokio::spawn(async move {
@@ -556,7 +974,11 @@ async fn spawn_hosted_worker(
         )
         .await
         {
-            eprintln!("hosted SFT worker {run_id} failed: {error:#}");
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!("hosted SFT worker {run_id} failed: {error:#}"),
+            );
             // A failure the viewer cannot read is not evidence. Carry the
             // reason onto the terminal event instead of dropping it on stderr.
             let _ = append_failure(&worker, &run_id, &format!("{error:#}")).await;
@@ -577,12 +999,53 @@ pub async fn restore_hosted_mirrors(service: &OptimizerService) {
         return;
     };
     let registered = service.registered_local_recipes().await;
+    if let Ok(public) = SftOptimizerClient::from_env() {
+        for run in &runs {
+            if run.summary.get("trainingTransport").and_then(Value::as_str) == Some("public-sft.v1")
+                && !OptimizerRunStatus::str_is_terminal(&run.status) && !registered.contains(&run.id) {
+                spawn_hosted_worker(service, public.clone(), run.id.clone(), None, resume_cursor(run)).await;
+            }
+        }
+    }
+    let registered = service.registered_local_recipes().await;
+    // Read the public producer even when the optional local plugin is idle.
+    // This also repairs control facts normalized by an older desktop build.
+    if let Ok(public) = SftOptimizerClient::from_env() {
+        for (id, cursor) in hosted_runs_needing_restore(&runs, &registered) {
+            if let Ok(remote) = public.get_run(&id).await {
+                let state = remote.get("status").and_then(Value::as_str).unwrap_or("");
+                if matches!(state, "paused" | "blocked_evaluation" | "blocked_budget" | "blocked_uncertain") {
+                    let _ = service.append_event_payloads(id, vec![super::events::OptimizerEventDraft::new("optimizer.run.paused", "sft")
+                        .delta(serde_json::Map::from_iter([("state".into(), json!(state)), ("error".into(), remote.get("error").cloned().unwrap_or(Value::Null))]))
+                        .idempotency_key(format!("sft:recovered-control-v1:{cursor}:{state}"))]).await;
+                }
+            }
+        }
+    }
     let Ok(client) =
-        super::sidecar_training::SidecarTrainingClient::from_manager(service.manager()).await
+        super::sidecar_training::require_training_ready(service, PLACEMENT_TRAINING_SFT_HOSTED)
+            .await
     else {
         return;
     };
     for (run_id, cursor) in hosted_runs_needing_restore(&runs, &registered) {
+        let recipe_id = runs
+            .iter()
+            .find(|run| run.id == run_id)
+            .and_then(|run| run.project_ref.as_deref())
+            .filter(|value| !value.is_empty())
+            .unwrap_or(HOSTED_SFT_BANKING77_RECIPE);
+        if let Err(error) = client
+            .attach_existing_hosted_job(&run_id, PLACEMENT_TRAINING_SFT_HOSTED, recipe_id)
+            .await
+        {
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!("hosted SFT mirror {run_id} could not reattach: {error:#}"),
+            );
+            continue;
+        }
         super::sidecar_training::spawn_watch_worker(service, client.clone(), run_id, cursor).await;
     }
 }
@@ -595,10 +1058,7 @@ pub(crate) fn hosted_runs_needing_restore(
         .filter(|run| {
             run.source == "hosted"
                 && run.algorithm_id == "sft"
-                && !matches!(
-                    run.status.as_str(),
-                    "completed" | "failed" | "cancelled" | "canceled"
-                )
+                && !OptimizerRunStatus::str_is_terminal(&run.status)
                 && !registered.contains(&run.id)
         })
         .map(|run| (run.id.clone(), resume_cursor(run)))
@@ -606,6 +1066,9 @@ pub(crate) fn hosted_runs_needing_restore(
 }
 
 fn resume_cursor(run: &OptimizerRunRecord) -> u64 {
+    if let Some(cursor) = run.summary.get("trainingCursor").and_then(Value::as_u64) {
+        return cursor;
+    }
     run.summary
         .get("hostedMirror")
         .and_then(|value| value.get("cursor"))
@@ -649,10 +1112,12 @@ async fn run_hosted_worker(
     run_id: String,
     config_toml: Option<String>,
     start_cursor: u64,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: super::CancelObserver,
 ) -> Result<()> {
+    let record = service.get(run_id.clone()).await?;
+    let producer_id = record.summary.get("producerRunId").and_then(Value::as_str).unwrap_or(&run_id).to_string();
     if let Some(toml) = config_toml.as_deref() {
-        client.submit_toml(&run_id, toml).await?;
+        client.submit_toml(&producer_id, toml).await?;
     }
     let mut upstream_cursor = start_cursor;
     // The producer appends to its log while we page it. A read that lands on a
@@ -662,10 +1127,12 @@ async fn run_hosted_worker(
     let mut consecutive_page_errors = 0u32;
     loop {
         match client
-            .optimizer_events_after(&run_id, upstream_cursor, 500)
+            .optimizer_events_after(&producer_id, upstream_cursor, 500)
             .await
         {
             Ok(page) => {
+                import_page_checkpoint_evidence(&service, &client, &producer_id, &page).await?;
+                let page = page_for_mirror(page, &run_id, &producer_id);
                 consecutive_page_errors = 0;
                 ingest::ingest_event_page(&service, &run_id, "sft", &page, &mut upstream_cursor)
                     .await?;
@@ -683,32 +1150,26 @@ async fn run_hosted_worker(
                 continue;
             }
         }
-        let remote = client.get_run(&run_id).await?;
+        let remote = client.get_run(&producer_id).await?;
         let status = remote
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("running");
         tokio::select! {
             changed = cancel.changed() => {
-                if changed.is_ok() && *cancel.borrow() {
-                    let _ = client.cancel(&run_id).await;
-                    append_status(&service, &run_id, "optimizer.run.cancelled", "cancelled").await?;
-                    return Ok(());
+                if changed.is_ok() && cancel.borrow().is_some() {
+                    client.cancel(&producer_id).await?;
+                    // Continue ingesting until the provider confirms drained cancellation.
+
                 }
             }
             _ = sleep(Duration::from_millis(750)) => {}
         }
-        if matches!(status, "succeeded" | "failed" | "cancelled") {
-            ingest::ingest_event_page(
-                &service,
-                &run_id,
-                "sft",
-                &client
-                    .optimizer_events_after(&run_id, upstream_cursor, 2_000)
-                    .await?,
-                &mut upstream_cursor,
-            )
-            .await?;
+        if OptimizerRunStatus::str_is_terminal(status) {
+            let page = client.optimizer_events_after(&producer_id, upstream_cursor, 2_000).await?;
+            import_page_checkpoint_evidence(&service, &client, &producer_id, &page).await?;
+            ingest::ingest_event_page(&service, &run_id, "sft",
+                &page_for_mirror(page, &run_id, &producer_id), &mut upstream_cursor).await?;
             persist_remote_terminal(
                 &service,
                 &run_id,
@@ -719,6 +1180,18 @@ async fn run_hosted_worker(
             return Ok(());
         }
     }
+}
+
+async fn import_page_checkpoint_evidence(service: &OptimizerService, client: &SftOptimizerClient,
+    producer: &str, page: &Value) -> Result<()> {
+    for event in page["events"].as_array().into_iter().flatten() {
+        if event.get("kind").and_then(Value::as_str) == Some("sft.child_eval.completed") {
+            if let Some(child) = event.pointer("/payload/eval_job_id").and_then(Value::as_str) {
+                service.import_checkpoint_evidence(client, producer, child).await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn craftax_nemotron_config_toml(
@@ -734,7 +1207,7 @@ fn craftax_nemotron_config_toml(
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(", ");
-    let adapter = lora_adapter_label(HOSTED_SFT_LORA_RANK);
+    let adapter = lora_adapter_label(CRAFTAX_SFT_LORA_RANK);
     let training_jsonl_line = training_jsonl
         .map(|path| format!("training_jsonl = \"{path}\"\n"))
         .unwrap_or_default();
@@ -793,7 +1266,7 @@ sampler_ready_timeout_s = 300
 system_prompt = "You play Craftax. Reply with JSON only."
 
 [hyperparameters]
-rank = 8
+rank = {CRAFTAX_SFT_LORA_RANK}
 batch_size = 2
 lr = 0.001
 "#
@@ -803,44 +1276,13 @@ lr = 0.001
 /// Terminal failure with a readable reason. `optimizer.run.failed` carrying an
 /// empty delta tells a viewer nothing and hides producer-side success.
 async fn append_failure(service: &OptimizerService, run_id: &str, reason: &str) -> Result<()> {
-    // The event is what makes the run failed. Writing the status first and the
-    // event second let a status exist with no evidence behind it.
-    service
-        .append_event_payloads(
-            run_id.to_string(),
-            vec![OptimizerEventDraft::new("optimizer.run.failed", "sft")
-                .idempotency_key("hosted:optimizer.run.failed")
-                .level("error")
-                .delta(serde_json::Map::from_iter([(
-                    "status".into(),
-                    json!("failed"),
-                )]))
-                .error(json!({ "message": reason }))
-                .raw(json!({"source": "hosted_sft"}))],
-        )
-        .await?;
-    Ok(())
-}
-
-async fn append_status(
-    service: &OptimizerService,
-    run_id: &str,
-    event_type: &str,
-    status: &str,
-) -> Result<()> {
-    service
-        .append_event_payloads(
-            run_id.to_string(),
-            vec![OptimizerEventDraft::new(event_type, "sft")
-                .idempotency_key(format!("hosted:{event_type}"))
-                .level("info")
-                .delta(serde_json::Map::from_iter([(
-                    "status".into(),
-                    json!(status),
-                )]))
-                .raw(json!({"source": "hosted_sft"}))],
-        )
-        .await?;
+    // A stopped observer cannot certify that paid producer work has failed or drained.
+    // Leave the producer lifecycle intact and expose the transport condition.
+    let run = service.get(run_id.to_string()).await?;
+    if OptimizerRunStatus::str_is_terminal(&run.status) { return Ok(()); }
+    service.append_event_payloads(run_id.to_string(), vec![super::events::OptimizerEventDraft::new(
+        "optimizer.condition.waiting_for_producer", &run.algorithm_id)
+        .delta(serde_json::Map::from_iter([("message".into(), json!(reason))]))]).await?;
     Ok(())
 }
 
@@ -850,27 +1292,81 @@ async fn persist_remote_terminal(
     remote_status: &str,
     error: Option<&str>,
 ) -> Result<()> {
-    let mapped = match remote_status {
-        "succeeded" => "completed",
-        other => other,
+    // Backend P0-3 is the producer authority: it no longer emits `succeeded`.
+    // The one remaining fold is `OptimizerRunStatus::parse` — do not keep a
+    // second remote-status rewrite arm here.
+    let status = OptimizerRunStatus::parse(remote_status)
+        .with_context(|| format!("{remote_status} is not an OptimizerRunStatus"))?;
+    let detail = error
+        .filter(|value| !value.is_empty())
+        .unwrap_or(remote_status)
+        .to_string();
+    let cause = match status {
+        OptimizerRunStatus::Completed => super::kernel::SettleCause::Completed,
+        OptimizerRunStatus::Degraded => super::kernel::SettleCause::Degraded {
+            detail: detail.clone(),
+        },
+        OptimizerRunStatus::Cancelled => super::kernel::SettleCause::Cancelled {
+            request: std::sync::Arc::new(super::kernel::CancellationRequest::new(
+                super::kernel::CancellationCause::ContainerRequested,
+                "hosted-sft:remote",
+                format!("run:{run_id}"),
+            )),
+        },
+        OptimizerRunStatus::Failed => super::kernel::SettleCause::Failed {
+            detail: detail.clone(),
+        },
+        _ => bail!("{remote_status} is not terminal"),
     };
-    let mut run = service.get(run_id.to_string()).await?;
-    if run.status != mapped {
-        run.status = mapped.into();
-    }
-    if mapped != "completed" {
-        if let Some(message) = error.filter(|value| !value.is_empty()) {
-            run.error = Some(json!({"message": message}));
-        } else if run.error.is_none() {
-            run.error = Some(json!({"message": remote_status}));
-        }
-    }
-    service.persist_run(run).await?;
+    let error_payload = (status != OptimizerRunStatus::Completed)
+        .then(|| json!({"message": detail, "source": "hosted_sft"}));
+    service
+        .settle_run(run_id.to_string(), cause, error_payload)
+        .await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recovered_mirror_preserves_producer_checkpoint_identity() {
+        let page = serde_json::json!({"run_id":"producer", "events":[{
+            "schema_version":"optimizer_event.v1", "run_id":"producer",
+            "algorithm_id":"sft", "sequence_number":1,
+            "type":"sft.checkpoint.created", "event_id":"original-event",
+            "created_at":"2026-09-08T00:00:00Z",
+            "payload":{"checkpoint_id":"original-checkpoint", "sampler_ref":"tinker://exact"}
+        }]});
+        let remapped = super::page_for_mirror(page, "mirror", "producer");
+        assert_eq!(remapped["events"][0]["event_id"], "mirror:producer:original-event");
+        assert_eq!(remapped["events"][0]["source_event_id"], "original-event");
+        assert_eq!(remapped["events"][0]["payload"]["checkpoint_id"], "original-checkpoint");
+        assert_eq!(remapped["events"][0]["payload"]["sampler_ref"], "tinker://exact");
+        assert_eq!(remapped["events"][0]["payload"]["producer_run_id"], "producer");
+        let (events, cursor) = super::ingest::remap_page_events(
+            remapped["events"].as_array().unwrap(), "mirror", "sft", 7, 0).unwrap();
+        assert_eq!(cursor, 1);
+        assert_eq!(events[0].optimizer_run_id, "mirror");
+        assert_eq!(events[0].sequence_number, 8);
+    }
+
+    #[test]
+    fn explicit_no_eval_launch_removes_legacy_container_requirements() {
+        let request: super::OptimizerRecipeRunRequest = serde_json::from_value(serde_json::json!({
+            "recipeId": super::HOSTED_SFT_BANKING77_RECIPE,
+            "planOverride": {"sft":{"evaluationMode":"none"}}
+        })).unwrap();
+        let source = "training_file_id = \"obsolete\"\ntraining_jsonl = \"/data/train.jsonl\"\ncontainer_url = \"http://localhost:8110\"\n[metadata]\nevaluation_transport = \"tunnel\"\n";
+        let migrated = super::resolved_training_plan(source.into(), &request, "openai/gpt-oss-20b").unwrap();
+        let parsed: toml::Value = toml::from_str(&migrated).unwrap();
+        assert!(parsed.get("container_url").is_none());
+        assert!(parsed.get("training_file_id").is_none());
+        assert_eq!(parsed["training_jsonl"].as_str(), Some("/data/train.jsonl"));
+        assert!(parsed["metadata"].get("evaluation_transport").is_none());
+        assert_eq!(parsed["checkpoint_evaluation"]["mode"].as_str(), Some("none"));
+        assert_eq!(parsed["budget"]["max_cost_usd"].as_float(), Some(super::HOSTED_SFT_COST_CEILING_USD));
+        assert!(!super::launch_uses_container(&request));
+    }
     use super::*;
 
     #[test]
@@ -887,6 +1383,7 @@ mod tests {
                     "http://127.0.0.1:8110",
                     "/tmp/train_a.jsonl",
                     "sha256:deadbeef",
+                    None,
                 ),
             ),
             (
@@ -923,9 +1420,12 @@ mod tests {
             "http://127.0.0.1:8110",
             "/tmp/train_a.jsonl",
             "sha256:content",
+            None,
         );
         assert!(toml.contains("backend = \"tinker\""));
-        assert!(toml.contains("checkpoint_steps = [10, 20, 30]"));
+        assert!(toml.contains("checkpoint_steps = [25, 50, 75, 100]"));
+        assert!(toml.contains("batch_size = 64"));
+        assert!(toml.contains("minimum_paired_examples = 400"));
         assert!(toml.contains("campaign_rollouts_per_checkpoint = 2"));
         assert!(toml.contains("checkpoint_evaluation_plan_ref = \"banking77_eval.v1\""));
         assert!(toml.contains("checkpoint_evaluation_world_ref = \"world:banking77@heldout\""));
@@ -940,12 +1440,71 @@ mod tests {
     }
 
     #[test]
+    fn banking77_reference_toml_is_valid_and_pins_nanoclassify_split() {
+        let sources = Banking77ReferenceSources {
+            train_csv: std::path::PathBuf::from("/tmp/banking77-train.csv"),
+            heldout_csv: std::path::PathBuf::from("/tmp/banking77-heldout.csv"),
+            heldout_indices_json: Some(std::path::PathBuf::from("/tmp/heldout-indices.json")),
+        };
+        let raw = banking77_config_toml(
+            "sft_banking77_reference_ab12cd34",
+            "banking77.sft.nanoclassify.v1",
+            "openai/gpt-oss-20b",
+            "http://127.0.0.1:8110",
+            "/tmp/banking77-train.csv",
+            "sha256:content",
+            Some(&sources),
+        );
+        let parsed: toml::Value = toml::from_str(&raw).unwrap();
+        assert_eq!(parsed["base_model"].as_str(), Some("openai/gpt-oss-20b"));
+        assert_eq!(
+            parsed["renderer_version"].as_str(),
+            Some("renderers.gpt-oss.low.v1")
+        );
+        assert!(parsed["system_prompt"].as_str().is_some_and(|value| value
+            .starts_with("Classify the customer banking message. Return exactly one label")));
+        assert_eq!(
+            parsed["dataset"]["split_strategy"].as_str(),
+            Some("banking77.nanoclassify.v1")
+        );
+        assert_eq!(parsed["dataset"]["selection_size"].as_integer(), Some(400));
+        assert_eq!(parsed["dataset"]["heldout_size"].as_integer(), Some(400));
+        assert_eq!(
+            parsed["dataset"]["label_taxonomy"].as_array().map(Vec::len),
+            Some(77)
+        );
+        assert_eq!(parsed["training"]["steps"].as_integer(), Some(100));
+        assert_eq!(parsed["training"]["batch_size"].as_integer(), Some(64));
+        assert_eq!(parsed["evaluation"]["max_tokens"].as_integer(), Some(1024));
+    }
+
+    #[test]
     fn banking77_shard_selection_is_allowlisted_not_a_path() {
         let error = materialize_banking77_shard("../../etc/passwd")
             .unwrap_err()
             .to_string();
         assert!(error.contains("unknown Banking77 dataset shard"), "{error}");
         assert_eq!(BANKING77_SHARDS.len(), 2);
+    }
+
+    #[test]
+    fn banking77_rows_are_normalized_for_the_public_trainer() {
+        let normalized = normalize_banking77_row(
+            r#"{"id":"mipro_1","query":"My card is declined","expected":"card_not_working"}"#,
+        )
+        .unwrap();
+        let row: Value = serde_json::from_str(&normalized).unwrap();
+        assert_eq!(row["id"], "mipro_1");
+        assert_eq!(row["text"], "My card is declined");
+        assert_eq!(row["category"], "card_not_working");
+    }
+
+    #[test]
+    fn banking77_rows_without_labels_fail_closed() {
+        let error = normalize_banking77_row(r#"{"query":"My card is declined"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("category/expected"), "{error}");
     }
 
     #[test]
@@ -960,7 +1519,30 @@ mod tests {
             banking77["limits"]["costCeilingUsd"],
             HOSTED_SFT_COST_CEILING_USD
         );
-        assert_eq!(HOSTED_SFT_COST_CEILING_USD, 10.0);
+        assert_eq!(HOSTED_SFT_COST_CEILING_USD, 15.0);
+    }
+
+    #[test]
+    fn hosted_sft_prerequisites_name_the_public_sft_service() {
+        for recipe in [craftax_nemotron_recipe(), banking77_recipe()] {
+            let text = serde_json::to_string(&recipe).unwrap();
+            assert!(!text.contains("Optimizers-beta"), "{}", recipe["id"]);
+            let prerequisites = recipe["prerequisites"].as_array().unwrap();
+            assert!(prerequisites.iter().any(|item| {
+                item.as_str() == Some("synth-optimizers sft service --db … --bind 127.0.0.1:8878")
+            }));
+            assert!(prerequisites
+                .iter()
+                .any(|item| item.as_str() == Some("SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN")));
+            assert!(prerequisites
+                .iter()
+                .any(|item| item.as_str() == Some("SYNTH_OPTIMIZERS_SFT_SERVICE_URL")));
+        }
+        let craftax = serde_json::to_string(&craftax_nemotron_recipe()).unwrap();
+        assert!(craftax.contains("Optional evaluation: registered digest-pinned checkpoint evaluator"));
+        let banking = serde_json::to_string(&banking77_recipe()).unwrap();
+        assert!(banking.contains("SYNTH_SFT_BANKING77_TRAIN_JSONL"));
+        assert!(banking.contains("127.0.0.1:8110"));
     }
 
     #[test]
@@ -1022,6 +1604,7 @@ mod tests {
             "http://127.0.0.1:8110",
             &first.to_string_lossy(),
             &left,
+            None,
         );
         assert!(toml.contains(&format!("dataset_digest = \"{left}\"")));
         assert!(!toml.contains("file_train_run_a") || toml.contains("training_file_id"));
@@ -1036,6 +1619,7 @@ mod tests {
             "http://127.0.0.1:8110",
             "/tmp/train_a.jsonl",
             "sha256:abc",
+            None,
         );
         let craftax = craftax_nemotron_config_toml(
             "sft_c",
@@ -1045,14 +1629,10 @@ mod tests {
             None,
             "sha256:abc",
         );
-        for toml in [banking, craftax] {
-            assert!(toml.contains("adapter = \"lora_r8\""), "{toml}");
-            assert!(
-                toml.contains("rank = 8") || toml.contains("[hyperparameters]\nrank = 8"),
-                "{toml}"
-            );
-            assert!(!toml.contains("lora_r16"), "{toml}");
-        }
+        assert!(banking.contains("adapter = \"lora_r16\""), "{banking}");
+        assert!(banking.contains("rank = 16"), "{banking}");
+        assert!(craftax.contains("adapter = \"lora_r8\""), "{craftax}");
+        assert!(craftax.contains("rank = 8"), "{craftax}");
     }
 
     #[test]
@@ -1094,10 +1674,7 @@ mod tests {
 
     #[test]
     fn start_paths_do_not_dial_the_public_sft_loopback() {
-        let production = include_str!("hosted_sft.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
+        let production = &crate::optimizers::production_source(include_str!("hosted_sft.rs"));
         assert!(!production.contains("client.base_url"));
         assert!(production.contains("admit_hosted"));
         assert!(production.contains("PLACEMENT_TRAINING_SFT_HOSTED"));

@@ -1,0 +1,4 @@
+{
+  "bindings": [],
+  "content": "{\"version\":1,\"title\":\"Acceptance fixture — observed reward\",\"panels\":[{\"kind\":\"series\",\"title\":\"Recorded steps\",\"x\":{\"label\":\"Logical step\"},\"y\":{\"label\":\"Reward\"},\"series\":[{\"name\":\"Fixture\",\"points\":[{\"x\":0,\"y\":0},{\"x\":1,\"y\":0.2},{\"x\":2,\"y\":null},{\"x\":3,\"y\":0.8}]}]},{\"kind\":\"note\",\"body\":\"Explicit synthetic fixture. Missing reward remains missing.\"}]}"
+}

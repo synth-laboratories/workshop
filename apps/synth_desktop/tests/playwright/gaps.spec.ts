@@ -68,9 +68,9 @@ test.describe("coverage gaps", () => {
 				onStatus: () => () => undefined, listModels: async () => [],
 				chooseModelDirectory: async () => null, setModelDirectory: async () => undefined, clearModelDirectory: async () => undefined
 			};
-			// Chat projection must open from structuredContent alone — registry hits fail the contract.
+			// Empty historical registry; the newly emitted visual must open from structuredContent without an individual lookup.
 			testWindow.synthVisuals = {
-				list: async () => { throw new Error("chat projection must not query the separate visuals registry"); },
+				list: async () => [],
 				get: async () => { throw new Error("chat projection must not query the separate visuals registry"); },
 				listTemplates: async () => [],
 				getTemplate: async () => { throw new Error("unused"); },
@@ -104,8 +104,7 @@ test.describe("coverage gaps", () => {
 		});
 		await page.reload();
 		await page.getByTestId("local-chat-visual-create-session").click();
-		await page.getByTestId("activity-mode-menu-trigger").click();
-		await page.getByTestId("activity-mode-option-detailed").click();
+		await page.evaluate(async () => { const {updatePreferences} = await import("/src/preferences"); updatePreferences(current => ({...current, toolActivity: {mode: "detailed"}})); });
 		await page.evaluate(() => {
 			const emit = (window as typeof window & { __emitVisualCreateCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitVisualCreateCodex;
 			const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "visual-create-session", method, params });
@@ -154,16 +153,32 @@ test.describe("coverage gaps", () => {
 		await expect(visualPane).toBeVisible();
 		await expect(visualPane).toContainText("Originating chat visual");
 		await expect(visualPane.getByTestId("visual-craftax-eval-matrix")).toBeVisible();
+		for (const width of [1440, 1024, 860]) {
+			await page.setViewportSize({ width, height: 840 });
+			const geometry = await page.evaluate(() => {
+				const transcript = document.querySelector<HTMLElement>('[data-testid="chat-transcript"]')?.getBoundingClientRect();
+				const composer = document.querySelector<HTMLElement>('[data-testid="composer"]')?.getBoundingClientRect();
+				if (!transcript || !composer) throw new Error("Composer split geometry is unavailable");
+				return {
+					inside: composer.left >= transcript.left - 1 && composer.right <= transcript.right + 1,
+					centerDelta: Math.abs((composer.left + composer.width / 2) - (transcript.left + transcript.width / 2)),
+					overflow: document.documentElement.scrollWidth - window.innerWidth
+				};
+			});
+			expect(geometry.inside).toBe(true);
+			expect(geometry.centerDelta).toBeLessThanOrEqual(2);
+			expect(geometry.overflow).toBeLessThanOrEqual(1);
+		}
 	});
 
 	test("Intern is absent from every v0.1 navigation and setup surface", async ({ page }) => {
-		await page.getByTestId("model-picker").click();
-		const menu = page.getByTestId("model-dropdown");
-		await menu.getByTestId("model-access-local").click();
+		await page.getByTestId("composer-model").click();
+		const menu = page.getByTestId("composer-model-menu");
+		await menu.getByTestId("composer-model-access-local").click();
 		await expect(menu).toBeVisible();
 		await expect(menu.getByText("Intern · Live", { exact: true })).toHaveCount(0);
 		await expect(menu.getByText("Intern · Background", { exact: true })).toHaveCount(0);
-		await expect(menu.getByTestId("model-option-local-laguna")).toBeVisible();
+		await expect(menu.getByTestId("composer-model-option-local-laguna")).toBeVisible();
 		await expect(page.getByTestId("cloud-list")).toHaveCount(0);
 		await expect(page.getByTestId("new-sync-session")).toHaveCount(0);
 		await expect(page.getByTestId("async-intern-pin")).toHaveCount(0);
@@ -181,6 +196,8 @@ test.describe("coverage gaps", () => {
 				},
 				async getContainer() { return (await this.listContainers())[0]; },
 				async probeContainer() { return (await this.listContainers())[0]; },
+				async reconcileContainer() { return (await this.listContainers())[0]; },
+				async restartContainer() { return (await this.listContainers())[0]; },
 				async listTraces() {
 					return [{ id: "rust-trace", digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", title: "Rust trace", source: "local", metrics: [], metadata: {}, createdAt: timestamp }];
 				},
@@ -198,7 +215,8 @@ test.describe("coverage gaps", () => {
 		await page.getByTestId("titlebar").waitFor();
 		await page.getByTestId("open-inventory").click();
 		await page.getByTestId("inventory-container-rust-container").waitFor();
-		await page.getByTestId("inventory-tab-traces").click();
+		await page.getByTestId("open-inventory").click();
+	await page.getByTestId("inventory-tab-traces").click();
 		await page.getByTestId("inventory-trace-rust-trace").waitFor();
 		await expect(page.getByText("Filter traces", { exact: true })).toHaveCSS("position", "absolute");
 		await page.getByTestId("filter-traces-container").selectOption("unassigned");
@@ -209,10 +227,11 @@ test.describe("coverage gaps", () => {
 		await expect(page.getByText("No traces match that filter.")).toBeVisible();
 		await page.getByRole("button", { name: "Clear filters" }).click();
 		await expect(page.getByTestId("inventory-trace-rust-trace")).toBeVisible();
-		await page.getByTestId("inventory-tab-usage").click();
+		await page.getByTestId("open-inference").click();
+	await page.getByTestId("inventory-tab-usage").click();
 		// The dashboard leads; the raw ledger is the receipt behind it, one
 		// disclosure away.
-		await page.getByText("1 containers · 1 traces · 1 usage entries").waitFor();
+		await page.getByTestId("inventory-usage-ledger-toggle").getByText("1 usage entries").waitFor();
 		await page.getByTestId("inventory-usage-ledger-toggle").click();
 		await page.getByText("openai/gpt-5.6-luna").waitFor();
 	});

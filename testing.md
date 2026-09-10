@@ -5,6 +5,37 @@ untested during the Rust CoreRuntime migration.
 
 Ignore `apps/mock` — it is UX pin-down only and is not part of these gates.
 
+This map is regenerated from the workspace `package.json` scripts table. The
+Playwright tree currently has **0** `test.fail` / skip / fixme markers.
+
+## Scripts table (root `package.json`)
+
+| Script | What it runs |
+| --- | --- |
+| `desktop:check` | `./scripts/desktop.sh check` — TypeScript + Rust compile contracts |
+| `desktop:build` | `./scripts/desktop.sh build` — production bundle, no test suite |
+| `desktop:verify` | `./scripts/desktop.sh verify` — typecheck, Rust tests, instance acceptance, Playwright |
+| `desktop:verify:fast` | same as `desktop:check` |
+| `desktop:install` / `desktop:install:release` | `./scripts/desktop.sh install` / `install-release` |
+| `desktop:instance*` / `desktop:codex:*` | `./scripts/desktop-instance.sh` / `test-desktop-instance.sh` |
+| `desktop:ui-gates` / `:bombadil` / `:playwright` | `./scripts/desktop-ui-gates.sh` |
+| `desktop:v02-e2e` | `./scripts/v02-e2e-gates.sh` |
+| `typecheck` | `npm run typecheck --workspace @synth/synth-desktop` |
+| `test` | `test:rust` + `test:visuals` + `test:a11y` + `test:ui` |
+| `test:rust` | `cargo test` via `@synth/synth-desktop` `rust:test` |
+| `test:a11y` | `node --test apps/synth_desktop/tests/*.test.mjs` |
+| `test:visuals` | `node --experimental-strip-types --test visuals/tests/*.test.mjs` |
+| `test:ui` / `test:playwright` | frontend build + Playwright config |
+| `test:legacy-bombadil` | frontend build + Bombadil runner |
+| `test:legacy-runtime` | Python unittest under `services/local-runtime/tests` (contract reference only) |
+| `test:modern-stack` | `python3 -m unittest scripts.tests.test_modern_stack_dogfood` |
+| `check:graph` / `build:graph` | Turborepo typecheck / frontend:build |
+| `cache:rust:stats` | `sccache --show-stats` |
+
+Desktop workspace (`apps/synth_desktop/package.json`) also exposes
+`frontend:build`, `typecheck`, `rust:check` / `rust:test`, `test:playwright`,
+`test:ui-gates*`, and directed Bombadil specs (`test:bombadil:*`).
+
 ## Quick commands
 
 From the workshop root:
@@ -28,7 +59,7 @@ npm test
 # UI gates
 npm run test:playwright          # build frontend path + Playwright
 npm run test:legacy-bombadil     # legacy browser/Python compatibility exploration
-npm run test:a11y                # static testid / bridge surface checks
+npm run test:a11y                # static testid / bridge / contract-authority checks
 
 # Backend / packages
 npm run test:legacy-runtime      # legacy Python contract-reference tests
@@ -107,17 +138,21 @@ signing are intentionally never restored from task cache.
 
 Runs against a Vite-served renderer with `window.synthRuntime` / `synthLaguna` /
 `synthCodex` / `synthConfig` stubs (`browser.fixture.ts`). Does **not** launch
-Tauri or a real MLX/Codex process.
+Tauri or a real MLX/Codex process. All cases are plain `test(...)` (0 expected-fail).
 
 | Spec | What it asserts |
 | --- | --- |
 | `layout-invariants.spec.ts` | Composer inside viewport at 3 sizes; stays anchored on landing scroll; no horizontal overflow; terminal toggle keeps landing visible |
 | `runtime-regressions.spec.ts` | Laguna ready/starting/loading UX; remote/cloud escape when local blocked; Settings models + multi-agent; Subagents visual; projectless workspace; residency countdown; streamed Codex deltas + Stop |
-| `visuals-registry.spec.ts` | Visuals library by `visual_id`; chat card = pane = registry; create draft |
-| `gaps.spec.ts` | Migration backlog (`test.fail` + some landed fixtures) |
-| `design-debt.spec.ts` | **Intended design locks** (no deferred-adapter UI or fixture catalog; Craftax `:8098` Attach; Trace import control; typed Laguna reload) + **`test.fail` debt** (Account menu/Downloads/Expand stubs, inert Always-ask, Set up agent, Async Respond, always-on leave-safe, persisted analysis-visual render failure, browser Attach/Open-trace dogfood) |
+| `visuals-registry.spec.ts` | Visuals library by `visual_id`; chat card = pane = registry; create draft; Outputs shelf restore |
+| `gaps.spec.ts` | Remaining migration coverage (CoreRuntime diagnostics, journal replay, VisualHost, inventory) — all must-pass |
+| `design-debt.spec.ts` | Intended design locks (no deferred-adapter UI or fixture catalog; Craftax Attach; Trace import; typed Laguna reload; no stub Account/Downloads/Expand chrome) |
 
-**Strength:** fast regression for renderer behavior.  
+Further specs in the same directory cover account, approvals, usage, training,
+OAuth, Whisper, Mander, diagnostics, and v0.2 surfaces. Inventory via
+`ls apps/synth_desktop/tests/playwright/*.spec.ts`.
+
+**Strength:** fast regression for renderer behavior.
 **Weakness:** fixtures can pass while Rust CoreRuntime / real Codex is broken.
 
 ### Codex process-boundary lifecycle
@@ -129,7 +164,7 @@ assert the temporary SQLite session/run records, durable interruption reason,
 thread resume request, idempotent Stop behavior, and attachment-generation
 fence. They do not load a real model or exercise an installed WebView bundle.
 
-Static companion: `tests/design_debt.test.mjs` (picked up by `npm run test:a11y`) greps for stub toast strings, leave-safe hard-wire, Craftax VisualHost heuristics, and asserts deferred adapter fixtures, UI, and styling stay absent.
+Static companion: `tests/design_debt.test.mjs` (picked up by `npm run test:a11y`) greps for stub toast strings, leave-safe hard-wire, Craftax VisualHost heuristics, and asserts deferred adapter fixtures, UI, and styling stay absent. Specta lock: `tests/contract_single_authority.test.mjs` (zero `invokeCommand<` in `desktopBridge.ts`; no duplicate type names vs `generated/protocol.ts`).
 
 ### 2. Bombadil — `apps/synth_desktop/tests/bombadil/`
 
@@ -152,16 +187,17 @@ renderer (`dist/` preferred, `out/renderer` fallback) plus an isolated Python
 
 Default run: headless, 10s time limit, exit on violation.
 
-`npm run test:bombadil:launch-debt --workspace @synth/synth-desktop` is an
-intentionally-red directed CUA regression: it opens a persisted
-`analysis.visual.v1` payload and fails until the renderer accepts its
-agent-authored `type` blocks (or rejects them before the preview is rendered).
+Directed Bombadil specs are the `test:bombadil:*` scripts on
+`@synth/synth-desktop` (`launch-debt`, `alignment`, `composer-surfaces`,
+`reasoning`, `empty-turn`, `composer-toolbar`, `terminal`, `v0.1-visuals`,
+`approval`, `grouped-visual`, `min-width`, `mander`).
 
 ### 3. Accessibility / surface static checks — `tests/a11y_surface.test.mjs`
 
 Node `node:test` that greps renderer source for stable `data-testid`s, target
-kinds, Tauri bridge command names, and native Codex restore/sequence patterns.
-Catches accidental removals without starting a browser.
+kinds, Tauri bridge command names (from `generated/protocol.ts`), and native
+Codex restore/sequence patterns. Catches accidental removals without starting a
+browser.
 
 ### 4. Rust — `apps/synth_desktop/src-tauri`
 
@@ -171,6 +207,7 @@ Catches accidental removals without starting a browser.
 - Content-addressed store idempotence
 - Shared `AppEvent` / visual fixture contract round-trips
 - Existing Laguna / config / terminal / runtime path unit tests
+- `export_specta_protocol_bindings` (generated `protocol.ts` must match export)
 
 Commands under test for CoreRuntime: `core_diagnostics`, `core_events_after`,
 `core_session_events_after`, channel `runtime:event`.
@@ -191,23 +228,17 @@ Template registry discovery / metadata for bundled visuals.
 
 ---
 
-## Gaps we should add next (aligned with Rust migration)
+## Remaining thin coverage (not expected-fail)
 
-Tracked as expected-fail Playwright cases in
-`apps/synth_desktop/tests/playwright/gaps.spec.ts` so a normal UI run prints the
-backlog:
+These are still testid-only, package-only, or manual. They are ordinary gaps,
+not `test.fail` debt:
 
-1. **`window.synthCore` / diagnostics in browser harness**
-2. **`runtime:event` journal replay after reload**
-3. **Visuals library list by `visual_id`**
-4. **Shared VisualHost across chat / registry / right pane**
-5. **MCP `visual_create` → one registry**
-6. **Intern Live without Python product runtime**
-7. **Inventory (traces/containers/usage) from Rust**
-8. **Legacy Python SQLite migration receipt**
-
-Also still thin (testid-only or package-only): Inventory page UX, Cloud desk UX,
-Bombadil specs beyond composer/shell.
+1. Full `window.synthCore` / `runtime:event` journal replay in the browser harness
+2. Intern Live without the Python product runtime
+3. Inventory (traces/containers/usage) UX beyond testids
+4. Legacy Python SQLite migration receipt
+5. Installed Tauri + real Codex/provider E2E (manual dogfood)
+6. Bombadil specs beyond composer/shell invariants
 
 ---
 
@@ -221,8 +252,7 @@ Bombadil specs beyond composer/shell.
 | Bombadil “No renderer build” | Run `npm run frontend:build --workspace @synth/synth-desktop` |
 | Legacy Bombadil runtime not healthy | Explicit compatibility fixture import/path/`connection.json` |
 | Rust contract fixture fail | `packages/runtime-protocol/fixtures` drift vs serde models |
-
----
+| `export_specta_protocol_bindings` fail | regenerate `generated/protocol.ts` via ignored `regenerate_protocol_bindings` |
 
 ## CI-shaped order (recommended)
 
@@ -235,12 +265,3 @@ Bombadil specs beyond composer/shell.
 
 Prefer frontend-only build for UI gates during CoreRuntime work; reserve full
 `tauri build` for packaging / native dogfood.
-
-## Latest local run (2026-08-09)
-
-| Suite | Result |
-| --- | --- |
-| Playwright (layout + runtime + visuals + gaps + **design-debt**) | **passed** (design-debt: 4 locks + 9 expected-fail) |
-| Bombadil `layout.spec.ts` | **passed** (no invariant violations) |
-| a11y surface + **design_debt.test.mjs** | **passed** |
-| Rust lib tests | see `npm run rust:test` |

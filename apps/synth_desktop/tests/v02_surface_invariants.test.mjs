@@ -32,7 +32,7 @@ test("v0.4 transcript shows immutable generation speed and final elapsed work", 
 	const labels = read("runtime/modelPerformanceLabels.ts");
 	assert.match(source, /data-testid="model-working-generation-tps"/);
 	assert.match(source, /data-testid={`assistant-generation-tps-\${m\.id}`}/);
-	assert.match(source, /useTurnPerformanceLabels\(chat, events, running\)/);
+	assert.match(source, /useTurnPerformanceLabels\(\s*chat,\s*events,\s*running,/);
 	assert.doesNotMatch(source, /medianTpsLabel\?\.replace/);
 	assert.match(turnLabels, /Generation speed unavailable/);
 	assert.match(turnLabels, /event\.eventKind === "turn\/accepted"/);
@@ -60,6 +60,16 @@ test("running tool calls show a compact progress icon before their tool icon", (
 	assert.match(css, /prefers-reduced-motion: reduce[\s\S]*\.tool-running-indicator/);
 });
 
+test("local model working status names loading and prefill lifecycle phases", () => {
+	const transcript = read("components/ChatTranscript.tsx");
+	const routes = read("routes.tsx");
+	assert.match(transcript, /localInferencePhase === "loading"[\s\S]*"Loading…"/);
+	assert.match(transcript, /localInferencePhase === "prefill"[\s\S]*"Prefilling…"/);
+	assert.match(transcript, /session\?\.target\.kind === "local" && localInferencePhase/);
+	assert.match(routes, /inferenceMonitor\.snapshot\?\.active\?\.phase === "loading"/);
+	assert.match(routes, /inferenceMonitor\.snapshot\?\.active\?\.phase === "prefill"/);
+});
+
 test("finished tool calls show duration only after fifteen seconds", () => {
 	const transcript = read("components/ChatTranscript.tsx");
 	const projection = read("runtime/sessionView.ts");
@@ -68,15 +78,35 @@ test("finished tool calls show duration only after fifteen seconds", () => {
 	assert.match(projection, /durationMs: safeTool\.durationMs/);
 });
 
+test("MCP activity uses a wrench icon instead of a decorative diamond", () => {
+	const transcript = read("components/ChatTranscript.tsx");
+	assert.match(transcript, /function McpToolIcon/);
+	assert.match(transcript, /data-icon="mcp-wrench"/);
+	assert.match(transcript, /<McpToolIcon \/>/);
+	assert.doesNotMatch(transcript, />◆</);
+});
+
 test("paid-compute approval is a cap-scoped modal, not a transcript card", () => {
 	const transcript = read("components/ChatTranscript.tsx");
 	assert.match(transcript, /data-testid="paid-compute-approval-modal"/);
 	assert.match(transcript, /role="dialog" aria-modal="true"/);
-	assert.match(transcript, /Approve with cap/);
+	assert.match(transcript, />Approve</);
 	assert.match(transcript, /Predicted spend/);
 	assert.match(transcript, /requestingAgent/);
 	assert.match(transcript, /line\.approvalKind !== "paid_compute"/);
 	assert.match(transcript, /Escape/);
+	assert.match(transcript, /pendingApprovals\.find\(\(line\) => line\.approvalKind === "paid_compute"\)/);
+});
+
+test("paid-compute auto-approval settings live on the Workshop permission surface", () => {
+	const settings = read("components/PaidComputePermissionSettings.tsx");
+	const general = read("components/GeneralPreferencesSettings.tsx");
+	assert.match(general, /PaidComputePermissionSettings/);
+	assert.match(settings, /data-testid="paid-compute-auto-approve"/);
+	assert.match(settings, /data-testid="paid-compute-max-request"/);
+	assert.match(settings, /data-testid="paid-compute-max-conversation"/);
+	assert.match(settings, /Limits apply to each request’s hard ceiling/);
+	assert.match(settings, /parseUsdAmount/);
 });
 
 test("optimizer MCP recipe starts cannot bypass the typed approval broker", () => {
@@ -113,8 +143,11 @@ test("hosted SFT uses only the public synth-optimizers control plane", () => {
 	// function bodies so a stray mention elsewhere cannot satisfy them, and keep
 	// refusing any path that dials :8787 / Optimizers-beta directly.
 	const sidecarTraining = readTauri("optimizers/sidecar_training.rs");
-	const cancelStart = service.indexOf("pub async fn cancel(&self, id: String)");
-	const cancelEnd = service.indexOf("pub async fn pause(&self, id: String)", cancelStart);
+	// Cancellation now also receives the typed, durable cancellation request;
+	// locate the body by function boundary rather than pinning its full signature.
+	const cancelStart = service.search(/pub async fn cancel\s*\(/);
+	const pauseOffset = service.slice(cancelStart).search(/pub async fn pause\s*\(\s*&self,\s*id:\s*String\s*\)/);
+	const cancelEnd = pauseOffset === -1 ? -1 : cancelStart + pauseOffset;
 	assert.ok(cancelStart !== -1 && cancelEnd > cancelStart, "OptimizerService::cancel body not found");
 	const cancelBody = service.slice(cancelStart, cancelEnd);
 	assert.match(
@@ -128,17 +161,24 @@ test("hosted SFT uses only the public synth-optimizers control plane", () => {
 	const hostedSftBody = sidecarTraining.slice(hostedStart, hostedEnd === -1 ? undefined : hostedEnd);
 	assert.match(
 		hostedSftBody,
-		/let client = SftOptimizerClient::from_env\(\)\?;[\s\S]*?job\.cancelled[\s\S]*?client\.cancel\(job_id\)\.await/,
+		/let client = SftOptimizerClient::from_env\(\)\?;[\s\S]*?job\.cancelled[\s\S]*?client\s*\.cancel\(job_id\)\s*\.await/,
 	);
 	assert.doesNotMatch(hostedSftBody, /HostedOptimizerClient|MlxLoopback/);
 	assert.doesNotMatch(sidecarTraining, /8787|OPTIMIZERS_BETA|SYNTH_OPTIMIZERS_BETA/);
 	assert.match(hostedSft, /kind:\s*"optimizer_sidecar"\.into\(\)/);
-	assert.match(service, /fn primary_visual_template[\s\S]*"sft" \| "cispo" => "optimizer\.sft\.live\.v1"/);
-	assert.match(commands, /"sft\.hosted\.fixture\.v1"[\s\S]*SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN/);
+	assert.match(service, /fn primary_visual_template[\s\S]*"sft" => "optimizer\.sft\.live\.v1"[\s\S]*"cispo" => "optimizer\.cispo\.live\.v1"/);
+	assert.match(commands, /"sft\.craftax\.nemotron-nano\.tinker\.v1"[\s\S]*SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN/);
 	assert.match(
 		commands,
-		/matches!\([\s\S]*request\.recipe_id\.as_str\(\)[\s\S]*"sft\.hosted\.fixture\.v1"[\s\S]*start_recipe\(request\)[\s\S]*return Ok\(run\)/,
+		/matches!\([\s\S]*request\.recipe_id\.as_str\(\)[\s\S]*"cispo\.mlx\.v1"[\s\S]*start_recipe\(request\)[\s\S]*return Ok\(run\)/,
 	);
+});
+
+test("transcript generation labels retain per-turn measurement ownership", () => {
+ const source = read("components/ChatTranscript.tsx");
+ assert.match(source, /data-testid="model-working-generation-tps"/);
+ assert.match(source, /turnTpsLabels\.byMessageId\[m\.id\]/);
+ assert.doesNotMatch(source, /medianTpsLabel/);
 });
 
 test("v0.2 grouped activity keeps visual and container MCP calls out of used-tools summaries", () => {

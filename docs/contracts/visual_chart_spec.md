@@ -148,6 +148,33 @@ per-axis `min`/`max` preference), `histogram`, `heatmap`, `table`, `note`.
 The palette is the `visuals/chrome/tokens.css` vocabulary; the dark set
 mirrors the systems-map technical dark.
 
+### Minimal literal example
+
+The MCP `spec` argument is the object below, not a JSON-encoded string. Use
+`version`, not `schemaVersion`; metric values are strings so callers control
+their displayed precision and unit; bar series use `name`, not `label`.
+
+```json
+{
+  "version": 1,
+  "title": "Evaluation summary",
+  "panels": [
+    {
+      "kind": "metrics",
+      "items": [
+        {"label": "Mean reward", "value": "0.42"},
+        {"label": "Runs", "value": "12"}
+      ]
+    },
+    {
+      "kind": "bars",
+      "categories": ["base", "candidate"],
+      "series": [{"name": "reward", "values": [0.31, 0.42]}]
+    }
+  ]
+}
+```
+
 ## Capture geometry
 
 A chart is a document, not a poster. `capture_review` keeps the requested

@@ -60,6 +60,8 @@ pub struct RuntimeContract {
     /// anyone tracking dev. When a dev cut lags, the handshake is what refuses
     /// it, which is the gate that was always doing the real work.
     pub min_supported_dev: &'static str,
+    /// Child/host ownership handshake generation.
+    pub ownership_protocol: u8,
     /// Workshop release line this runtime is pinned against.
     pub workshop_compat: &'static str,
     /// Algorithm ids Desktop expects this runtime to serve. The runtime's own
@@ -139,35 +141,36 @@ fn numeric_segments(version: &str) -> Vec<u64> {
 pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
     runtime_id: "optimizers",
     package: "synth-optimizers",
-    official: "0.2.15",
+    official: "0.2.22",
     // Behind official: this cut predates both required routes. It still
     // installs — its own channel's floor is what it is measured against — and
     // then fails the handshake, which is the honest place for that failure.
     // Blocking the install instead would take the dev channel offline to
     // report a problem the gate already reports precisely.
     dev: "0.2.9.dev20260814",
-    // 0.2.15 is the plain v0.7 cut (experiment layer excluded). It preserves
-    // the required routes and legacy-workspace migration, and identifies the
-    // running Rust service with the same version as the Python distribution.
-    min_supported: "0.2.15",
+    // 0.2.20 carries ownership protocol v2 and preserves the required routes
+    // and legacy-workspace migration, and identifies the running Rust service
+    // with the same version as the Python distribution. It adds the container
+    // preflight fix: GEPA no longer requires a `capabilities.metadata` block
+    // it reads on only one branch, which refused every container that exists.
+    min_supported: "0.2.20",
     // No dev cut carries the required routes yet; the handshake refuses one
     // that cannot serve them. Raise this when the dev channel is cut again.
     min_supported_dev: "0.2.9.dev20260814",
+    ownership_protocol: 2,
     workshop_compat: "0.4.0",
     algorithms: &["gepa", "sft", "cispo"],
     templates: &[
         "optimizer.gepa.live.v1",
         "optimizer.sft.live.v1",
+        "optimizer.cispo.live.v1",
         "optimizer.run.v1",
     ],
     bounded_recipes: &[
-        "gepa.banking77.smoke.v1",
-        "gepa.banking77.luna.v1",
-        "gepa.banking77.sol.v1",
-        "gepa.craftax.smoke.v1",
-        "sft.qwen35-0.8b.mlx.v1",
+        "sft.qwen35-2b.mlx.v1",
         "cispo.banking77.mlx.v1",
-        "cispo.slime.hosted.v1",
+        "cispo.hosted.tinker.v1",
+        "cispo.banking77.tinker.v1",
     ],
     recipe_schema: "gepa.recipe.v1",
     provisioned_by_desktop: true,
@@ -175,26 +178,23 @@ pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
 
 /// The local container-evaluation runtime.
 ///
-/// Desktop provisions it from the same 0.2.15 `synth-optimizers` install as
+/// Desktop provisions it from the same 0.2.22 `synth-optimizers` install as
 /// GEPA, writing a digest-pinned manifest under `data_root()/runtime/eval`.
 pub const EVAL: RuntimeContract = RuntimeContract {
     runtime_id: "eval",
     package: "synth-optimizers[eval]",
-    official: "0.2.15",
-    dev: "0.2.15",
-    min_supported: "0.2.15",
-    min_supported_dev: "0.2.15",
+    official: "0.2.22",
+    dev: "0.2.22",
+    min_supported: "0.2.20",
+    min_supported_dev: "0.2.20",
+    ownership_protocol: 2,
     workshop_compat: "0.4.0",
     algorithms: &["eval"],
     templates: &["optimizer.eval.live.v1", "optimizer.run.v1"],
     bounded_recipes: &[
-        "eval.fixture.policy-smoke.v1",
         "eval.craftax.code-policy.smoke.v1",
         "eval.gamebench.craftax-code-policy.confirm.v1",
-        "eval.craftax.llm-policy.smoke.v1",
         "eval.gamebench.llm-policy.confirm.v1",
-        "eval.banking77.baseline.v1",
-        "eval.healthbench.smoke.v1",
         "eval.mlx.local-policy.smoke.v1",
     ],
     recipe_schema: "eval.worker-manifest.v1",
@@ -216,6 +216,7 @@ pub struct RuntimeContractView {
     /// Version Desktop pins for the active channel.
     pub expected: String,
     pub min_supported: String,
+    pub ownership_protocol: u8,
     pub release_channel: String,
     pub workshop_compat: String,
     pub algorithms: Vec<String>,
@@ -238,6 +239,7 @@ impl RuntimeContract {
             installed,
             expected: self.version_for(channel).into(),
             min_supported: self.min_supported.into(),
+            ownership_protocol: self.ownership_protocol,
             release_channel: match channel {
                 ReleaseChannel::Official => "official".into(),
                 ReleaseChannel::Dev => "dev".into(),
@@ -315,15 +317,21 @@ mod tests {
         assert_ne!(OPTIMIZERS.official, OPTIMIZERS.dev);
     }
 
-    /// Eval is provisioned by Desktop from the 0.2.15 sidecar pin.
+    /// Eval is provisioned by Desktop from the coordinated sidecar pin.
     #[test]
     fn eval_runtime_is_pinned_and_managed() {
         assert!(EVAL.provisioned_by_desktop);
-        assert_eq!(EVAL.official, "0.2.15");
-        assert_eq!(EVAL.min_supported, "0.2.15");
-        assert!(EVAL.meets_floor("0.2.15"));
+        assert_eq!(EVAL.official, OPTIMIZERS.official);
+        assert_eq!(EVAL.min_supported, "0.2.20");
+        assert!(EVAL.meets_floor("0.2.20"));
         assert!(!EVAL.meets_floor("0.2.14"));
         assert!(OPTIMIZERS.provisioned_by_desktop);
+        assert!(
+            !EVAL
+                .bounded_recipes
+                .contains(&"eval.fixture.policy-smoke.v1"),
+            "product runtime contracts must not publish test fixtures"
+        );
     }
 
     /// The app version has two homes the build reads independently. They are

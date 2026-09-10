@@ -33,6 +33,7 @@ from .settings import SETTINGS_SCHEMA_VERSION, SettingsError, SettingsStore
 from .responses_api.backends.mlx import (
     _MIN_SYSTEM_MEMORY_BYTES,
     _available_memory_bytes,
+    _model_weight_bytes,
     _physical_memory_bytes,
     _required_available_memory_bytes,
     _required_system_memory_bytes,
@@ -398,6 +399,35 @@ class SynthControl:
         )
         return capacity_ok and available_ok
 
+    def _memory_failure_details(self) -> dict[str, Any]:
+        path = self._model_path()
+        required_system = self._required_bytes()
+        required_available = (
+            _required_available_memory_bytes(path) if path is not None else None
+        )
+        system = self.system_memory_bytes
+        available = self._free_memory_bytes()
+        capacity_blocked = system is not None and system < required_system
+        weight_bytes = _model_weight_bytes(path) if path is not None else None
+        return {
+            "constraint": "system_capacity" if capacity_blocked else "available_memory",
+            "system_bytes": system,
+            "required_bytes": required_system,
+            "model_weight_bytes": weight_bytes,
+            "required_available_bytes": required_available,
+            "available_bytes": available,
+            "load_headroom_bytes": (
+                max(0, required_available - weight_bytes)
+                if required_available is not None and weight_bytes is not None
+                else None
+            ),
+            "shortfall_bytes": max(
+                0,
+                (required_system if capacity_blocked else required_available or 0)
+                - (system if capacity_blocked else available or 0),
+            ),
+        }
+
     # -- canonical state -------------------------------------------------------
 
     def _diagnostics(self) -> dict[str, Any]:
@@ -719,7 +749,7 @@ class SynthControl:
 
     # -- load / unload ---------------------------------------------------------
 
-    async def load(self, model: str) -> dict[str, Any]:
+    async def load(self, model: str, adapter_path: Any = ..., adapter_specified: bool = False) -> dict[str, Any]:
         canonical = self.resolve_model(model)
         async with self._load_lock:
             operation_id = new_id("op")
@@ -742,16 +772,31 @@ class SynthControl:
                     retryable=True,
                     details={"job_id": active.job_id},
                 )
-            residency = self.service.residency() or {}
-            if residency.get("loaded"):
-                # Idempotent: a second load of the resident model is a no-op.
-                return {
-                    "operation_id": operation_id,
-                    "model": canonical,
-                    "state": self._state,
-                    "resident": True,
-                    "already_resident": True,
-                }
+            setter = getattr(self.service.backend, "set_adapter", None)
+            if adapter_specified and callable(setter):
+                previous = getattr(self.service.backend, "adapter_path", None)
+                try:
+                    await setter(None if adapter_path is None else str(adapter_path))
+                except Exception as error:
+                    if callable(setter):
+                        await setter(previous)
+                    raise ControlError(
+                        "load_failed",
+                        f"Laguna adapter reload failed: {error}",
+                        500,
+                        retryable=True,
+                    ) from error
+            else:
+                residency = self.service.residency() or {}
+                if residency.get("loaded"):
+                    # Idempotent: a second load of the resident model is a no-op.
+                    return {
+                        "operation_id": operation_id,
+                        "model": canonical,
+                        "state": self._state,
+                        "resident": True,
+                        "already_resident": True,
+                    }
             model_path = self._model_path()
             if model_path is None:
                 raise ControlError(
@@ -775,13 +820,7 @@ class SynthControl:
                     "insufficient_memory",
                     "This machine does not have enough unified memory to load the model.",
                     503,
-                    details={
-                        "required_bytes": self._required_bytes(),
-                        "required_available_bytes": _required_available_memory_bytes(
-                            model_path
-                        ),
-                        "available_bytes": self._free_memory_bytes(),
-                    },
+                    details=self._memory_failure_details(),
                 )
             self._set_state("loading", operation_id)
             try:
@@ -793,13 +832,7 @@ class SynthControl:
                         "insufficient_memory",
                         error.message,
                         503,
-                        details={
-                            "required_bytes": self._required_bytes(),
-                            "required_available_bytes": _required_available_memory_bytes(
-                                model_path
-                            ),
-                            "available_bytes": self._free_memory_bytes(),
-                        },
+                        details=self._memory_failure_details(),
                     ) from error
                 self._last_error = {"code": error.code, "message": error.message}
                 self._set_state("error", operation_id)
@@ -994,9 +1027,22 @@ def register_control_routes(app: FastAPI, control: SynthControl) -> None:
             return error.response()
 
     @app.post("/v1/synth/models/{model:path}/load")
-    async def synth_load(model: str) -> Any:
+    async def synth_load(model: str, request: Request) -> Any:
+        adapter_specified = False
+        adapter_path: Any = None
+        length = request.headers.get("content-length")
+        if length not in (None, "0"):
+            try:
+                body = await request.json()
+            except (ValueError, UnicodeDecodeError):
+                body = None
+            if isinstance(body, dict) and "adapter_path" in body:
+                adapter_specified = True
+                adapter_path = body.get("adapter_path")
         try:
-            return await control.load(model)
+            return await control.load(
+                model, adapter_path=adapter_path, adapter_specified=adapter_specified
+            )
         except ControlError as error:
             return error.response()
 

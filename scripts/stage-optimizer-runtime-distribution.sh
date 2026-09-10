@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Stage the pinned Synth Optimizers wheel carried by a Workshop app bundle.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TARGET="$ROOT/runtime-distributions/optimizers"
+# Every pin is derived from the Rust catalog, never restated. manager.rs is what
+# verifies the embedded distribution at install time, so constants copied here
+# can drift from it -- and did: bumping only this script staged 0.2.20 while the
+# app still demanded 686f41c4, and the install failed with "embedded Optimizers
+# distribution does not match the release pin". The version was still a copy
+# after that fix, which is the same defect one field further along.
+OPTIMIZER_CATALOG="$ROOT/apps/synth_desktop/src-tauri/src/optimizers/manager.rs"
+VERSION="$(rg -o 'DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-([0-9][0-9A-Za-z.\-]*)"' --replace '$1' -m1 "$OPTIMIZER_CATALOG")"
+EXPECTED_SOURCE_REVISION="$(rg -o 'OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "([0-9a-f]{40})"' --replace '$1' -m1 "$OPTIMIZER_CATALOG")"
+EXPECTED_LOCK_SHA256="$(rg -o 'OPTIMIZER_DISTRIBUTION_LOCK_SHA256: &str =\s*\n?\s*"([0-9a-f]{64})"' --replace '$1' -m1 --multiline "$OPTIMIZER_CATALOG")"
+[[ -n "$VERSION" && -n "$EXPECTED_SOURCE_REVISION" && -n "$EXPECTED_LOCK_SHA256" ]] || {
+  echo "[optimizers-runtime] cannot read the pinned catalog from $OPTIMIZER_CATALOG" >&2
+  exit 1
+}
+PROJECT="${SYNTH_OPTIMIZER_DISTRIBUTION_SOURCE:-}"
+
+verify_existing_distribution() {
+  python3 - "$TARGET" "$VERSION" "$EXPECTED_SOURCE_REVISION" "$EXPECTED_LOCK_SHA256" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+version, revision, lock_sha256 = sys.argv[2:]
+try:
+    manifest = json.loads((root / "manifest.json").read_text())
+    if manifest.get("schemaVersion") != "synth.optimizer-runtime-distribution.v1":
+        raise ValueError("unexpected manifest schema")
+    if manifest.get("package") != "synth-optimizers" or manifest.get("version") != version:
+        raise ValueError("unexpected package or version")
+    if manifest.get("sourceRevision") != revision or manifest.get("lockSha256") != lock_sha256:
+        raise ValueError("runtime pin does not match this release")
+    artifact = manifest.get("artifact")
+    if not isinstance(artifact, dict):
+        raise ValueError("manifest has no primary artifact")
+    name = artifact.get("fileName")
+    expected_hash = artifact.get("sha256")
+    expected_size = artifact.get("sizeBytes")
+    if not isinstance(name, str) or pathlib.Path(name).name != name:
+        raise ValueError("invalid artifact name")
+    if not name.startswith(f"synth_optimizers-{version}-"):
+        raise ValueError("unexpected primary artifact")
+    if not isinstance(expected_hash, str) or not isinstance(expected_size, int):
+        raise ValueError("invalid artifact metadata")
+    path = root / "wheels" / name
+    if not path.is_file() or path.stat().st_size != expected_size:
+        raise ValueError("missing or resized primary artifact")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
+        raise ValueError("primary artifact digest mismatch")
+    for dependency in manifest["dependencyArtifacts"]:
+        name = dependency["fileName"]
+        if pathlib.Path(name).name != name:
+            raise ValueError("invalid dependency artifact name")
+        data = (root / "wheels" / name).read_bytes()
+        if len(data) != dependency["sizeBytes"] or hashlib.sha256(data).hexdigest() != dependency["sha256"]:
+            raise ValueError("dependency artifact digest mismatch")
+except (OSError, ValueError, json.JSONDecodeError, TypeError, AttributeError, KeyError) as error:
+    print(f"[optimizers-runtime] existing distribution is not reusable: {error}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
+# A verified resource is immutable input to a named CUA build. Reuse it before
+# consulting an optional release checkout, so the packaged app never acquires a
+# dependency on a live source folder at runtime.
+if verify_existing_distribution; then
+  echo "[optimizers-runtime] reusing verified embedded distribution at $TARGET"
+  exit 0
+fi
+
+if [[ -z "$PROJECT" ]]; then
+  echo "[optimizers-runtime] synth-optimizers source is unavailable" >&2
+  echo "[optimizers-runtime] set SYNTH_OPTIMIZER_DISTRIBUTION_SOURCE to the pinned release checkout" >&2
+  exit 1
+fi
+if [[ ! -f "$PROJECT/pyproject.toml" ]] || ! rg -q '^name = "synth-optimizers"$' "$PROJECT/pyproject.toml"; then
+  echo "[optimizers-runtime] invalid synth-optimizers source: $PROJECT" >&2
+  exit 1
+fi
+if [[ ! -f "$PROJECT/uv.lock" ]]; then
+  echo "[optimizers-runtime] pinned source lock is unavailable at $PROJECT/uv.lock" >&2
+  exit 1
+fi
+if [[ -n "$(git -C "$PROJECT" status --porcelain=v1 --untracked-files=all)" ]]; then
+  echo "[optimizers-runtime] release source must be clean: $PROJECT" >&2
+  exit 1
+fi
+SOURCE_REVISION="$(git -C "$PROJECT" rev-parse HEAD)"
+LOCK_SHA256="$(shasum -a 256 "$PROJECT/uv.lock" | awk '{print $1}')"
+if [[ "$SOURCE_REVISION" != "$EXPECTED_SOURCE_REVISION" ]]; then
+  echo "[optimizers-runtime] expected synth-optimizers $EXPECTED_SOURCE_REVISION, got $SOURCE_REVISION" >&2
+  exit 1
+fi
+if [[ "$LOCK_SHA256" != "$EXPECTED_LOCK_SHA256" ]]; then
+  echo "[optimizers-runtime] expected uv.lock $EXPECTED_LOCK_SHA256, got $LOCK_SHA256" >&2
+  exit 1
+fi
+
+UV="${SYNTH_OPTIMIZER_UV_PATH:-$(command -v uv || true)}"
+if [[ -z "$UV" ]]; then
+  for candidate in /opt/homebrew/bin/uv /usr/local/bin/uv "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+    if [[ -x "$candidate" ]]; then UV="$candidate"; break; fi
+  done
+fi
+if [[ ! -x "$UV" ]]; then
+  echo "[optimizers-runtime] uv is required to stage the embedded distribution" >&2
+  exit 1
+fi
+
+STAGING="$(mktemp -d "${TMPDIR:-/tmp}/synth-optimizers-runtime.XXXXXX")"
+trap 'rm -rf "$STAGING"' EXIT
+mkdir -p "$STAGING/wheels"
+# Only the manifest-verified distribution above can be reused. A wheel in
+# target/wheels has no source receipt and may predate the current commit.
+"$UV" build --wheel --out-dir "$STAGING/wheels" "$PROJECT"
+WHEEL="$(find "$STAGING/wheels" -maxdepth 1 -type f -name "synth_optimizers-${VERSION}-*.whl" -print -quit)"
+if [[ -z "$WHEEL" ]]; then
+  echo "[optimizers-runtime] build omitted synth-optimizers==$VERSION" >&2
+  exit 1
+fi
+if [[ "$(dirname "$WHEEL")" != "$STAGING/wheels" ]]; then
+  cp "$WHEEL" "$STAGING/wheels/"
+fi
+
+# Carry locally pinned wheel dependencies; pip cannot resolve unpublished
+# coordinated-release packages from the public index.
+python3 - "$PROJECT" "$STAGING/wheels" <<'PYDEPS'
+import hashlib, pathlib, shutil, sys, tomllib
+project, wheels = map(pathlib.Path, sys.argv[1:])
+lock = tomllib.loads((project / 'uv.lock').read_text())
+for package in lock['package']:
+    relative = package.get('source', {}).get('path', '')
+    if not relative.endswith('.whl'):
+        continue
+    path = (project / relative).resolve()
+    if not path.is_relative_to(project.resolve()):
+        raise SystemExit('dependency wheel must be vendored in the pinned project')
+    expected = package['wheels'][0]['hash']
+    if 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        raise SystemExit('vendored dependency does not match uv.lock')
+    shutil.copy2(path, wheels / path.name)
+PYDEPS
+
+python3 - "$STAGING" "$VERSION" "$SOURCE_REVISION" "$LOCK_SHA256" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+version, source_revision, lock_sha256 = sys.argv[2:]
+wheels = sorted((root / "wheels").glob(f"synth_optimizers-{version}-*.whl"))
+if len(wheels) != 1:
+    raise SystemExit("embedded distribution must contain exactly one primary wheel")
+wheel = wheels[0]
+data = wheel.read_bytes()
+(root / "manifest.json").write_text(json.dumps({
+    "schemaVersion": "synth.optimizer-runtime-distribution.v1",
+    "package": "synth-optimizers",
+    "version": version,
+    "sourceRevision": source_revision,
+    "lockSha256": lock_sha256,
+    "dependencyArtifacts": [
+        {"fileName": item.name, "sha256": hashlib.sha256(item.read_bytes()).hexdigest(), "sizeBytes": item.stat().st_size}
+        for item in sorted((root / "wheels").glob("*.whl")) if item != wheel
+    ],
+    "artifact": {
+        "fileName": wheel.name,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "sizeBytes": len(data),
+    },
+}, indent=2) + "\n")
+PY
+
+mkdir -p "$(dirname "$TARGET")"
+if [[ -e "$TARGET" ]]; then
+  retained="${TARGET}.invalid-$(uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-')"
+  mv "$TARGET" "$retained"
+  echo "[optimizers-runtime] retained invalid distribution at $retained"
+fi
+mv "$STAGING" "$TARGET"
+trap - EXIT
+echo "[optimizers-runtime] staged verified embedded distribution at $TARGET"

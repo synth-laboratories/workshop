@@ -155,7 +155,7 @@ pub fn canonicalize_import_path(path: &Path, allowed_roots: &[PathBuf]) -> Resul
         // path itself was a symlink that escaped the allowed roots.
     }
     if allowed_roots.is_empty() {
-        return Ok(canonical);
+        bail!("no import roots are approved");
     }
     let allowed = allowed_roots.iter().any(|root| {
         fs::canonicalize(root)
@@ -216,7 +216,7 @@ pub fn parse_dotenv(text: &str) -> Result<HashMap<String, String>> {
             continue;
         };
         let key = key.trim();
-        if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        if !super::path_gate::is_valid_env_variable(key) {
             continue;
         }
         let rest = rest.trim();

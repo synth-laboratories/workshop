@@ -37,6 +37,27 @@ export function newestVisualArtifact(
 			!best || revision(candidate) > revision(best) ? candidate : best, null);
 }
 
+/** Decide whether the pane must consult the durable visual registry.
+ *
+ * Chat output artifacts are publication snapshots, not current-revision
+ * authorities. On a fresh renderer process they can legitimately contain
+ * revision 1 while the registry has advanced to revision 14, so selecting a
+ * chat-owned artifact always performs one authoritative refresh. */
+export function visualRevisionRefreshRequired(options: {
+	acceptedRevision: number;
+	minimumRevision: number;
+	open: boolean;
+	wasOpen: boolean;
+	authoritativeRefresh?: boolean;
+}): boolean {
+	if (options.authoritativeRefresh) return true;
+	return !(
+		options.minimumRevision >= 0 &&
+		options.acceptedRevision >= options.minimumRevision &&
+		(!options.open || options.wasOpen)
+	);
+}
+
 function stableJson(value: unknown): string {
 	if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
 	if (value && typeof value === "object") {

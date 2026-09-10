@@ -111,6 +111,7 @@ BOMBADIL_SPECS=(
 	run-summary-sanity.spec.ts
 	model-menu-polish.spec.ts
 	mander-boundaries.spec.ts
+	side-panel-seam.spec.ts
 )
 
 BOMBADIL_EXIT=0

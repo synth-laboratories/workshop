@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "workshop.visuals-capture-viewport-acceptance.v1",
+  "visualId": "accept-trace-rollout_inspector-v1",
+  "revision": 7,
+  "paneCut": {
+    "width": 2560,
+    "height": 1800,
+    "path": "/tmp/workshop-visuals-native-Pjo0DW/visual-pixel-captures/ad64ea63-d1c1-4f28-868e-e626eecab1b9.png"
+  },
+  "reviewCaptures": [
+    {
+      "label": "short",
+      "requestedHeight": 520,
+      "width": 2560,
+      "pixelHeight": 1040,
+      "path": "/tmp/workshop-visuals-native-Pjo0DW/visual-review-captures/viewport-short.png",
+      "sha256": "sha256:3adbb0f97f0d8606cbcfde231fbe8656577fefa4cdf72df2ff4ad45ad8fc3717"
+    },
+    {
+      "label": "tall",
+      "requestedHeight": 1400,
+      "width": 2560,
+      "pixelHeight": 2006,
+      "path": "/tmp/workshop-visuals-native-Pjo0DW/visual-review-captures/viewport-tall.png",
+      "sha256": "sha256:677c73ce758a506a7cbba2b87be07148d7eb95bc886a052d35378a96208f3bcd"
+    }
+  ]
+}

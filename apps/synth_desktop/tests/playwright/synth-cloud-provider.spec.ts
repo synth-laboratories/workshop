@@ -1,7 +1,8 @@
 import { expect, test } from "./browser.fixture";
+import { BROWSER_MODEL_CATALOG } from "../../src/renderer/src/runtime/modelCatalog";
 
 test("Synth Cloud hosted models appear under SYNTH CLOUD when api key is configured", async ({ page }) => {
-	await page.addInitScript(() => {
+	await page.addInitScript((catalog) => {
 		window.synthConfig = {
 			get: async () => ({
 				configPath: "/tmp/config.toml",
@@ -15,13 +16,15 @@ test("Synth Cloud hosted models appear under SYNTH CLOUD when api key is configu
 				workerKeyConfigured: false,
 				openrouterApiKeyConfigured: false
 			}),
+			modelCatalog: async () => catalog,
+			refreshModelCatalog: async () => catalog,
 			update: async () => { throw new Error("unused"); },
 			listModelMultiAgent: async () => [],
 			updateModelMultiAgent: async () => [],
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
 			updateWorkspaceAccess: async () => ({ allowedRoots: [] })
 		};
-	});
+	}, BROWSER_MODEL_CATALOG);
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 
@@ -41,6 +44,10 @@ test("Synth Cloud hosted models appear under SYNTH CLOUD when api key is configu
 		.not.toContainText("usage tracked");
 	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-laguna-s"))
 		.not.toHaveAttribute("aria-disabled", "true");
+	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-laguna-xs-b200"))
+		.toHaveText(/Laguna XS 2\.1.*B200/);
+	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-laguna-xs-h100"))
+		.toHaveText(/Laguna XS 2\.1.*H100/);
 	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-muse-spark"))
 		.toHaveText(/Muse Spark 1\.2/);
 	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-muse-spark"))
@@ -89,7 +96,7 @@ test("OpenRouter models are gated and link directly to Account settings", async 
 });
 
 test("a removed OpenRouter key rejects the message before creating a session", async ({ page }) => {
-	await page.addInitScript(() => {
+	await page.addInitScript((catalog) => {
 		let configured = true;
 		const testWindow = window as typeof window & {
 			__setOpenRouterConfigured?: (value: boolean) => void;
@@ -102,12 +109,14 @@ test("a removed OpenRouter key rejects the message before creating a session", a
 				apiKeyConfigured: false, workerKeyConfigured: false,
 				openrouterApiKeyConfigured: configured
 			}),
+			modelCatalog: async () => catalog,
+			refreshModelCatalog: async () => catalog,
 			update: async () => { throw new Error("unused"); },
 			listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
 			updateWorkspaceAccess: async () => ({ allowedRoots: [] })
 		};
-	});
+	}, BROWSER_MODEL_CATALOG);
 	await page.reload();
 	await page.getByTestId("composer-model").click();
 	await page.getByTestId("composer-model-access-api").click();
@@ -138,7 +147,7 @@ test("a removed OpenRouter key rejects the message before creating a session", a
 });
 
 test("configured Luna replaces a stale remembered chat and sends the first message", async ({ page }) => {
-	await page.addInitScript(() => {
+	await page.addInitScript((catalog) => {
 		window.localStorage.setItem("synth.preferences.v1", JSON.stringify({
 			schemaVersion: 4,
 			layout: { last: { selectedConversationId: "missing-chat" } }
@@ -172,14 +181,16 @@ test("configured Luna replaces a stale remembered chat and sends the first messa
 				apiKeyConfigured: false, workerKeyConfigured: false,
 				openrouterApiKeyConfigured: true
 			}),
+			modelCatalog: async () => catalog,
+			refreshModelCatalog: async () => catalog,
 			update: async () => { throw new Error("unused"); },
 			listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
 			updateWorkspaceAccess: async () => ({ allowedRoots: [] })
 		};
-	});
+	}, BROWSER_MODEL_CATALOG);
 	await page.reload();
-	await expect(page.getByRole("tab", { name: /Chat/ })).toBeVisible();
+	await expect(page.getByRole("group", { name: /chat tab$/ })).toBeVisible();
 	await page.getByTestId("composer-model").click();
 	await page.getByTestId("composer-model-access-api").click();
 	await page.getByTestId("composer-model-option-openrouter-luna").click();

@@ -25,18 +25,33 @@ use crate::visuals::{TemplateMeta, TemplateObservationContract};
 use base64::Engine;
 
 const MAX_SCRIPTED_ROLLOUTS: u64 = 10;
-const BASE_AUTHORING_CHECKS: [&str; 6] = [
-    "rendered",
-    "noOverflow",
-    "primarySurfaceVisible",
-    "temporalControls",
-    "traceInspector",
-    "realEvidence",
-];
+const BASE_AUTHORING_CHECKS: [&str; 3] = ["rendered", "noOverflow", "primarySurfaceVisible"];
+const EVIDENCE_AUTHORING_CHECKS: [&str; 3] = ["temporalControls", "traceInspector", "realEvidence"];
 
 fn required_authoring_checks(template: &TemplateMeta) -> Vec<&'static str> {
     let mut checks = BASE_AUTHORING_CHECKS.to_vec();
     checks.push("screenshotInspected");
+    if let Some(contract) = template.observation_contract.as_ref() {
+        match contract.readiness.authoring_affordances.as_ref() {
+            // Declared affordances narrow the evidence checks to the ones the
+            // surface can actually satisfy. Template loading parses them into
+            // a closed enum, so an unknown name cannot silently weaken this gate.
+            Some(declared) if !declared.is_empty() => checks.extend(
+                EVIDENCE_AUTHORING_CHECKS
+                    .iter()
+                    .filter(|check| {
+                        declared
+                            .iter()
+                            .any(|affordance| affordance.check_name() == **check)
+                    })
+                    .copied(),
+            ),
+            // Empty declarations are rejected while loading a manifest. Keep
+            // programmatically constructed values strict as a second line of
+            // defence rather than allowing an empty list to disable evidence.
+            Some(_) | None => checks.extend(EVIDENCE_AUTHORING_CHECKS),
+        }
+    }
     if template.id.starts_with("diagram.") {
         checks.push("noTextCollisions");
         checks.push("focalDensity");
@@ -58,8 +73,18 @@ struct VisualCaptureObservationReceipt {
     visual_id: String,
     revision: i64,
     screenshot_path: String,
+    screenshot_sha256: String,
+    viewport: VisualCaptureViewport,
     capture_time: String,
+    certification_identity: Value,
     observation: Option<RenderedVisualObservation>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct VisualCaptureViewport {
+    width: u64,
+    height: u64,
 }
 
 fn capture_observation_receipt(screenshot: &str) -> Result<VisualCaptureObservationReceipt> {
@@ -72,12 +97,68 @@ fn capture_observation_receipt(screenshot: &str) -> Result<VisualCaptureObservat
             )
         })?)
         .context("visual capture observation receipt is invalid")?;
-    if receipt.schema_version != "synth.visual-capture-observation.v1"
+    if receipt.schema_version != "synth.visual-capture-observation.v2"
         || receipt.screenshot_path != screenshot
     {
         anyhow::bail!("visual capture observation receipt does not match screenshot");
     }
+    let bytes = fs::read(screenshot).context("read visual review screenshot")?;
+    let actual = format!("sha256:{:x}", sha2::Sha256::digest(bytes));
+    if receipt.screenshot_sha256 != actual {
+        anyhow::bail!("visual review screenshot bytes do not match their capture receipt");
+    }
     Ok(receipt)
+}
+
+fn validate_review_viewport(
+    receipt: &VisualCaptureObservationReceipt,
+    width: u64,
+    height: u64,
+) -> Result<()> {
+    if receipt.viewport.width != width || receipt.viewport.height != height {
+        anyhow::bail!(
+            "review viewport {width}x{height} does not match the authoritative capture viewport {}x{}",
+            receipt.viewport.width,
+            receipt.viewport.height
+        );
+    }
+    Ok(())
+}
+
+fn validate_certification_build_identity(identity: &Value) -> Result<()> {
+    let source = identity
+        .get("sourceRevision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "unknown")
+        .context("visual readiness requires a known source revision")?;
+    let build = identity
+        .get("buildRevision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "unknown")
+        .context("visual readiness requires a known build revision")?;
+    if source != build {
+        anyhow::bail!(
+            "visual readiness requires source and build revisions to match; source is {source}, build is {build}"
+        );
+    }
+    if source.contains("-dirty") || build.contains("-dirty") {
+        anyhow::bail!(
+            "visual readiness requires a clean committed renderer build; current revision is {build}"
+        );
+    }
+    let executable = identity
+        .get("executableDigest")
+        .and_then(Value::as_str)
+        .context("visual readiness requires the running executable digest")?;
+    if executable.len() != 71
+        || !executable.starts_with("sha256:")
+        || !executable[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        anyhow::bail!("visual readiness requires a valid running executable digest");
+    }
+    Ok(())
 }
 
 /// Rendered transport states that can carry evidence.
@@ -105,7 +186,7 @@ fn validate_readiness_observation(
         );
     }
     if observation.bindings_digest != bindings_digest {
-        anyhow::bail!("captured bindings do not match the current durable revision");
+        anyhow::bail!("captured bindings do not match the current saved revision");
     }
     let readiness = &contract.readiness;
     // Readiness is decided by an allowlist, not a denylist. A denylist accepts
@@ -172,6 +253,7 @@ fn certification_receipts(
     required_checks: &[&'static str],
     contract: Option<&TemplateObservationContract>,
     bindings_digest: Option<&str>,
+    certification_identity: &Value,
 ) -> Result<Vec<Value>> {
     let mut latest_by_width: BTreeMap<u64, &Value> = BTreeMap::new();
     for review in current_reviews {
@@ -185,6 +267,15 @@ fn certification_receipts(
     }
     let mut receipts = Vec::new();
     for (width, review) in &latest_by_width {
+        if review.get("certificationIdentity") != Some(certification_identity) {
+            anyhow::bail!(
+                "the latest review at width {width} certifies different visual bytes; recapture this width"
+            );
+        }
+        let screenshot_sha256 = review
+            .get("screenshotSha256")
+            .and_then(Value::as_str)
+            .context("visual review is missing its immutable screenshot digest")?;
         for check in required_checks {
             if review
                 .pointer(&format!("/checks/{check}"))
@@ -202,6 +293,8 @@ fn certification_receipts(
             "viewportWidth": width,
             "viewportHeight": review.pointer("/viewport/height").cloned().unwrap_or(Value::Null),
             "screenshotPath": review.get("screenshotPath").cloned().unwrap_or(Value::Null),
+            "screenshotSha256": screenshot_sha256,
+            "certificationIdentity": certification_identity,
             "captureTime": review.get("captureTime").cloned().unwrap_or(Value::Null),
             "reviewedAt": review.get("reviewedAt").cloned().unwrap_or(Value::Null),
         });
@@ -238,14 +331,16 @@ use anyhow::{Context, Result};
 use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::Digest;
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
 };
-use tauri::{AppHandle, LogicalSize, Manager, Size};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, Size};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -261,15 +356,15 @@ pub struct VisualsIpcConnection {
 pub struct RenderedVisualObservation {
     pub schema_version: String,
     pub visual_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub rendered_revision: i64,
     pub bindings_digest: String,
     pub transport_state: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub rollout_count: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub rendered_frame_count: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub semantic_event_count: u64,
     pub terminal: bool,
     pub error: Option<String>,
@@ -303,7 +398,7 @@ pub fn record_rendered_observation(observation: RenderedVisualObservation) -> Re
     Ok(())
 }
 
-fn rendered_observation(visual_id: &str) -> Result<RenderedVisualObservation> {
+pub(crate) fn rendered_observation(visual_id: &str) -> Result<RenderedVisualObservation> {
     RENDERED_OBSERVATIONS
         .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock()
@@ -352,7 +447,11 @@ pub async fn spawn(
         })
         .await;
         if let Err(error) = result {
-            eprintln!("synth-desktop: visuals IPC stopped: {error:#}");
+            crate::platform::logging::report(
+                "visuals_ipc",
+                "eprintln",
+                format!("synth-desktop: visuals IPC stopped: {error:#}"),
+            );
         }
     });
     Ok(connection)
@@ -531,11 +630,27 @@ async fn route_request_inner(
                 &error,
             ) =>
         {
-            JsonHttpResponse {
-                status: StatusCode::CONFLICT,
-                body: crate::container_capabilities::preflight_error_body(&error),
-                extra_headers: Vec::new(),
-            }
+            let body = error
+                .chain()
+                .find_map(|cause| {
+                    cause.downcast_ref::<crate::container_capabilities::ContainerPreflightError>()
+                })
+                .and_then(|preflight| {
+                    core.storage()
+                        .database()
+                        .transaction(|conn| {
+                            crate::domains::containers::raise_probe_failure(
+                                conn,
+                                crate::domains::containers::from_preflight(preflight),
+                                &preflight.container_id,
+                                None,
+                            )
+                        })
+                        .ok()
+                        .map(|raised| crate::adapters::mcp::tool_error_body(&raised))
+                })
+                .unwrap_or_else(|| crate::container_capabilities::preflight_error_body(&error));
+            JsonHttpResponse::with_status(StatusCode::CONFLICT, body)
         }
         Err(error) if crate::error::error_is::<crate::error::StructuredFailure>(&error) => {
             let body = error
@@ -543,22 +658,38 @@ async fn route_request_inner(
                 .find_map(|cause| cause.downcast_ref::<crate::error::StructuredFailure>())
                 .map(crate::error::StructuredFailure::to_json)
                 .unwrap_or_else(|| json!({"code": "internal", "error": error.to_string()}));
-            JsonHttpResponse {
-                status: StatusCode::BAD_REQUEST,
-                body,
-                extra_headers: Vec::new(),
-            }
+            JsonHttpResponse::with_status(StatusCode::BAD_REQUEST, body)
+        }
+        Err(error)
+            if error.chain().any(|cause| {
+                cause
+                    .downcast_ref::<crate::optimizers::admission::AdmissionError>()
+                    .is_some()
+            }) =>
+        {
+            let body = error
+                .chain()
+                .find_map(|cause| {
+                    cause.downcast_ref::<crate::optimizers::admission::AdmissionError>()
+                })
+                .and_then(|admission| {
+                    core.storage()
+                        .database()
+                        .transaction(|conn| {
+                            crate::domains::evaluations::raise(conn, admission, None)
+                        })
+                        .ok()
+                        .map(|raised| crate::adapters::mcp::tool_error_body(&raised))
+                })
+                .unwrap_or_else(|| json!({"code": "admission_failed"}));
+            JsonHttpResponse::with_status(StatusCode::BAD_REQUEST, body)
         }
         Err(error) if crate::error::error_is::<crate::plugins::PluginNotReady>(&error) => {
             let body = error
                 .downcast_ref::<crate::plugins::PluginNotReady>()
                 .map(crate::plugins::PluginNotReady::to_json)
                 .unwrap_or_else(|| json!({"code":"plugin_not_ready"}));
-            JsonHttpResponse {
-                status: StatusCode::CONFLICT,
-                body,
-                extra_headers: Vec::new(),
-            }
+            JsonHttpResponse::with_status(StatusCode::CONFLICT, body)
         }
         Err(error) => JsonHttpResponse::error(StatusCode::BAD_REQUEST, error.to_string()),
     }
@@ -587,6 +718,9 @@ async fn dispatch_request(
         request.body
     };
     let method = request.method.as_str();
+    if method == "POST" && path.starts_with("/v1/workshop/") {
+        return crate::adapters::workshop::dispatch(core, app, path, json_body).await;
+    }
     if method == "GET" && path.starts_with("/v1/review-observations/") {
         let visual_id = path.trim_start_matches("/v1/review-observations/");
         if visual_id.is_empty() || visual_id.contains('/') {
@@ -614,8 +748,31 @@ async fn dispatch_request(
     if method == "POST" && path == "/v1/review-window/capture" {
         return capture_review_window(app, &json_body).await;
     }
+    if method=="POST" && path.starts_with("/v1/visuals/") && path.ends_with("/engine") && json_body["operation"]=="capture.pixels" {
+        let id=path.trim_start_matches("/v1/visuals/").trim_end_matches("/engine");
+        if id.is_empty()||id.contains('/'){anyhow::bail!("invalid capture visual id");}
+        return capture_visual_session(app,id,&json_body).await;
+    }
+    if method == "POST" && path == "/v1/capture" {
+        return capture_surface(app, &json_body).await;
+    }
+    if method == "POST" && path == "/v1/jesterky/settings" {
+        return Ok(serde_json::to_value(crate::plugins::jesterky::analysis_settings(None)?)?);
+    }
+    if method == "POST" && path == "/v1/jesterky/prepare" {
+        let object = json_body.as_object().context("Jesterky preparation must be an object")?;
+        for key in object.keys() { if !["snapshot_id","result_ids","annotation_scope","sessionRef","session_id"].contains(&key.as_str()) {anyhow::bail!("unknown Jesterky preparation argument {key}");} }
+        let id=json_body["snapshot_id"].as_str().context("snapshot_id required")?;
+        let ids:Vec<String>=serde_json::from_value(json_body["result_ids"].clone()).context("result_ids required")?;
+        let snapshot=core.data().query_snapshot(id.to_string()).await?;
+        let scope = json_body.get("annotation_scope").map(|value| serde_json::from_value(value.clone())).transpose()?;
+        return crate::plugins::jesterky::prepare(&snapshot,&ids,scope);
+    }
     if path.starts_with("/v1/plugins") {
         return dispatch_plugins(method, path, json_body, core, app).await;
+    }
+    if path.starts_with("/v1/display/plugins") {
+        return dispatch_display_plugins(method, path, json_body, app);
     }
     if path.starts_with("/v1/computer-use") {
         return dispatch_computer_use(method, path, json_body, core, app).await;
@@ -623,25 +780,214 @@ async fn dispatch_request(
     if method == "POST" && path == "/v1/sessions/present" {
         return present_session(app, core, json_body).await;
     }
-    if path.starts_with("/v1/optimizers") {
+    if path.starts_with("/v1/optimizers")
+        || path.starts_with("/v1/training")
+        || path.starts_with("/v1/mlx")
+    {
         return dispatch_optimizer(method, path, json_body, core, app).await;
-    }
-    if path.starts_with("/v1/campaigns") {
-        return dispatch_campaigns(method, path, json_body, core).await;
     }
     if path.starts_with("/v1/experiments") {
         return dispatch_experiments(method, path, json_body, core).await;
     }
+    if path.starts_with("/v1/research-log") {
+        return dispatch_research_log(method, path, json_body, core).await;
+    }
     if path.starts_with("/v1/traces") {
         return dispatch_traces(method, path, json_body, core).await;
+    }
+    if path.starts_with("/v1/analysis") {
+        return dispatch_analysis(method, path, json_body, core).await;
+    }
+    if path.starts_with("/v1/annotations") {
+        return crate::annotations_ipc::dispatch_annotations(method, path, json_body, core, app)
+            .await;
+    }
+    if path.starts_with("/v1/human-annotations") {
+        return dispatch_human_annotations(method, path, json_body, core, app).await;
     }
     if path.starts_with("/v1/diagnostics") {
         return dispatch_diagnostics(method, path, json_body, core).await;
     }
     if path.starts_with("/v1/secrets") {
-        return dispatch_secrets(method, path, json_body, core);
+        return dispatch_secrets(method, path, json_body, core, app).await;
+    }
+    if method == "POST" && path.starts_with("/v1/containers/") && path.ends_with("/restart") {
+        return dispatch_container_restart(path, json_body, core, app).await;
     }
     dispatch(method, path, json_body, core).await
+}
+
+async fn dispatch_human_annotations(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+    app: &AppHandle,
+) -> Result<Value> {
+    use crate::human_annotations::models::{
+        HumanAnnotationCampaignActionRequest, HumanAnnotationCampaignAdjudicateRequest,
+        HumanAnnotationCampaignCreateRequest, HumanAnnotationCancelRequest,
+        HumanAnnotationCreateRequest, HumanAnnotationExportRequest, HumanAnnotationListQuery,
+        HumanAnnotationPreviewRequest, HumanAnnotationSupersedeRequest,
+    };
+    let service = crate::human_annotations::from_core(core);
+    match (method, path) {
+        ("POST", "/v1/human-annotations/create") => Ok(serde_json::to_value(
+            service
+                .create(serde_json::from_value::<HumanAnnotationCreateRequest>(
+                    body,
+                )?)
+                .await?,
+        )?),
+        ("POST", "/v1/human-annotations/preview") => Ok(serde_json::to_value(
+            service
+                .preview(serde_json::from_value::<HumanAnnotationPreviewRequest>(
+                    body,
+                )?)
+                .await?,
+        )?),
+        ("POST", "/v1/human-annotations/show") => {
+            let session_id = body
+                .get("sessionId")
+                .or_else(|| body.get("session_id"))
+                .and_then(Value::as_str)
+                .context("sessionId required")?
+                .to_owned();
+            let view = service.open(session_id.clone()).await?;
+            app.emit(
+                "human-annotation:show",
+                serde_json::json!({"sessionId":session_id}),
+            )?;
+            Ok(serde_json::to_value(view)?)
+        }
+        ("POST", "/v1/human-annotations/get") => {
+            if let Some(result_id) = body
+                .get("resultId")
+                .or_else(|| body.get("result_id"))
+                .and_then(Value::as_str)
+            {
+                return service.sealed_result(result_id.to_owned()).await;
+            }
+            let id = body
+                .get("taskId")
+                .or_else(|| body.get("task_id"))
+                .or_else(|| body.get("sessionId"))
+                .or_else(|| body.get("session_id"))
+                .and_then(Value::as_str)
+                .context("taskId, sessionId, or resultId required")?
+                .to_owned();
+            Ok(serde_json::to_value(service.status(id).await?)?)
+        }
+        ("POST", "/v1/human-annotations/list") => Ok(Value::Array(
+            service
+                .list(serde_json::from_value::<HumanAnnotationListQuery>(body)?)
+                .await?,
+        )),
+        ("POST", "/v1/human-annotations/cancel") => Ok(serde_json::to_value(
+            service
+                .cancel(serde_json::from_value::<HumanAnnotationCancelRequest>(
+                    body,
+                )?)
+                .await?,
+        )?),
+        ("POST", "/v1/human-annotations/export") => Ok(serde_json::to_value(
+            service
+                .export(serde_json::from_value::<HumanAnnotationExportRequest>(
+                    body,
+                )?)
+                .await?,
+        )?),
+        ("POST", "/v1/human-annotations/supersede") => {
+            let task = service
+                .supersede(serde_json::from_value::<HumanAnnotationSupersedeRequest>(
+                    body,
+                )?)
+                .await?;
+            app.emit(
+                "human-annotation:show",
+                serde_json::json!({"sessionId":task.session_id}),
+            )?;
+            Ok(serde_json::to_value(task)?)
+        }
+        ("POST", "/v1/human-annotations/campaign/create") => {
+            service
+                .campaign_create(serde_json::from_value::<
+                    HumanAnnotationCampaignCreateRequest,
+                >(body)?)
+                .await
+        }
+        ("POST", "/v1/human-annotations/campaign/status") => {
+            let id = body
+                .get("campaignId")
+                .and_then(Value::as_str)
+                .context("campaignId required")?;
+            service.campaign_status(id.to_owned()).await
+        }
+        ("POST", "/v1/human-annotations/campaign/close") => {
+            service
+                .campaign_close(serde_json::from_value::<
+                    HumanAnnotationCampaignActionRequest,
+                >(body)?)
+                .await
+        }
+        ("POST", "/v1/human-annotations/campaign/adjudicate") => {
+            service
+                .campaign_adjudicate(serde_json::from_value::<
+                    HumanAnnotationCampaignAdjudicateRequest,
+                >(body)?)
+                .await
+        }
+        _ => anyhow::bail!("unsupported human annotation IPC route {method} {path}"),
+    }
+}
+
+fn dispatch_display_plugins(
+    method: &str,
+    path: &str,
+    body: Value,
+    app: &AppHandle,
+) -> Result<Value> {
+    const ALLOWED: [&str; 9] = [
+        "jesterky",
+        "environment-qa",
+        "visuals",
+        "reports",
+        "experiments",
+        "optimizers",
+        "inventory",
+        "inference",
+        "computer-use",
+    ];
+    if method == "GET" && path == "/v1/display/plugins" {
+        return Ok(json!({"pluginIds": ALLOWED}));
+    }
+    if method != "POST" || path != "/v1/display/plugins/visibility" {
+        anyhow::bail!("unsupported display IPC route {method} {path}");
+    }
+    let ids = body
+        .get("visiblePluginIds")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("visiblePluginIds array required"))?;
+    let mut visible = Vec::new();
+    for value in ids {
+        let id = value
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("plugin ids must be strings"))?;
+        if !ALLOWED.contains(&id) {
+            anyhow::bail!("unknown display plugin `{id}`");
+        }
+        if !visible.iter().any(|current| current == id) {
+            visible.push(id.to_string());
+        }
+    }
+    let core = app.state::<Arc<CoreRuntime>>();
+    let current = crate::domains::desktop_state::read(&core)?.entries.remove("synth.preferences.v1").context("desktop preferences missing")?;
+    let mut preferences: Value = serde_json::from_str(current.value.as_deref().context("desktop preferences missing")?)?;
+    preferences["navigation"]["visiblePluginIds"] = json!(visible);
+    let committed = crate::domains::desktop_state::write(&core, crate::domains::desktop_state::Write {
+        key: "synth.preferences.v1".into(), value: Some(preferences.to_string()), expected_revision: current.revision,
+    }, true)?;
+    Ok(json!({"visiblePluginIds": visible, "revision": committed.revision, "committed": true}))
 }
 
 fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
@@ -693,96 +1039,851 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
     }))
 }
 
+const DESKTOP_WINDOW_MIN_WIDTH: f64 = 960.0;
+const DESKTOP_WINDOW_MIN_HEIGHT: f64 = 640.0;
+const REVIEW_WINDOW_MIN_WIDTH: f64 = 320.0;
+const REVIEW_WINDOW_MIN_HEIGHT: f64 = 400.0;
+
+fn review_capture_requires_relaxed_minimum(width: f64, height: f64) -> bool {
+    width < DESKTOP_WINDOW_MIN_WIDTH || height < DESKTOP_WINDOW_MIN_HEIGHT
+}
+
+#[cfg(target_os = "macos")]
+fn set_review_window_minimum(app: &AppHandle, width: f64, height: f64) -> Result<()> {
+    let window = app
+        .get_webview_window("main")
+        .context("review capture requires the main Desktop window")?;
+    window
+        .set_min_size(Some(Size::Logical(LogicalSize::new(width, height))))
+        .context("set review window minimum")
+}
+
 /// How long the renderer gets to relayout at the review viewport before the
 /// snapshot. Carried over from the previous capture pipeline, where the helper
 /// slept between resize and `screencapture` for the same reason.
-const REVIEW_CAPTURE_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+const REVIEW_CAPTURE_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The whole snapshot round trip, resize excluded. Bounds the window a wedged
 /// WebKit could hold the resized viewport, and the IPC route with it.
+/// First snapshot attempt. `setAfterScreenUpdates(true)` waits for the renderer
+/// to commit a frame, so this budget is really "how long may a repaint take",
+/// not how long the encode takes.
 const REVIEW_CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// Resize the main window, snapshot its own webview, restore — one call.
+/// Second attempt, after the first has already forced layout and paint.
 ///
-/// The snapshot is the app photographing its own WKWebView surface, so this
-/// needs no Screen Recording TCC grant, no window-identity resolution, and no
-/// visibility: it captures correctly while occluded or backgrounded. Holding
-/// resize and restore on this side also means a helper that dies mid-capture
-/// can no longer strand the user's window at the review size.
+/// A terminal SFT surface -- 2917 events, checkpoint curves, a rollout ledger --
+/// missed the 10s budget on its first frame, and the run's most important
+/// capture was lost with nothing to retry it. The cheapest fix is to ask twice:
+/// the first attempt pays for layout, the second usually returns immediately.
+/// A longer single timeout would make every genuinely dead webview wait twice
+/// as long before saying so.
+const REVIEW_CAPTURE_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+
+/// Resizing, routing, snapshotting, and restoring all mutate the one main
+/// WebView. Concurrent requests otherwise photograph whichever request wrote
+/// the viewport and route last, then race to restore two different geometries.
+/// Keep the lock in the long-lived Desktop process (not the short-lived MCP
+/// adapter) so every capture caller shares it.
+#[cfg(target_os = "macos")]
+fn capture_pipeline_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Tell the React shell to make one selected visual the only visible surface
+/// while a review image is taken. This is deliberately an ephemeral renderer
+/// state: a review must not mutate the user's saved layout, nor should a
+/// narrow viewport spend most of its pixels on navigation chrome.
+#[cfg(target_os = "macos")]
+fn set_review_capture_mode(app: &AppHandle, visual_id: &str, active: bool) -> Result<()> {
+    let window = app
+        .get_webview_window("main")
+        .context("review capture requires the main Desktop window")?;
+    let detail = serde_json::to_string(&json!({
+        "active": active,
+        "visualId": visual_id,
+    }))?;
+    window
+        .eval(format!(
+            "window.__synthVisualReviewCapture={detail};document.documentElement.removeAttribute('data-synth-review-capture-ready');document.documentElement.toggleAttribute('data-synth-review-capture',{active});window.dispatchEvent(new CustomEvent('synth:visual-review-capture',{{detail:window.__synthVisualReviewCapture}}));"
+        ))
+        .context("set review capture renderer mode")
+}
+
+/// The fixed layout delay above permits CSS and WebKit to react to a resize.
+/// This acknowledgement closes the remaining cold-start race: React may still
+/// be mounting the requested visual when that delay expires.
+#[cfg(target_os = "macos")]
+async fn wait_for_review_capture_surface(app: &AppHandle, visual_id: &str) -> Result<bool> {
+    // Three seconds was enough for a warm app and not for a cold one. On a
+    // freshly launched instance the first heavy template -- a trace workstation
+    // or an optimizer workspace -- had not mounted before the deadline, so the
+    // wait gave up and the capture proceeded with the visual still closed.
+    //
+    // Waiting longer is safe now that a scope mismatch is an error: the loop
+    // still returns the instant the renderer acknowledges, so a surface that is
+    // already open pays nothing, and a surface that never opens fails loudly at
+    // the end rather than yielding a picture of whatever was on screen.
+    //
+    // Eight seconds, not twenty. The visuals IPC is single-threaded, so this
+    // wait holds it: at twenty seconds a run of failing captures made every
+    // other call on the socket return EAGAIN, turning one broken capture into
+    // an unusable control plane. Eight covers a cold mount with room to spare
+    // and bounds what one bad request can cost everything else.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        let window = app
+            .get_webview_window("main")
+            .context("review capture requires the main Desktop window")?;
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let sender = std::sync::Arc::new(std::sync::Mutex::new(Some(sender)));
+        let callback_sender = std::sync::Arc::clone(&sender);
+        window
+            .eval_with_callback(
+                "document.documentElement.dataset.synthReviewCaptureReady || ''",
+                move |value| {
+                    if let Some(sender) = callback_sender
+                        .lock()
+                        .ok()
+                        .and_then(|mut sender| sender.take())
+                    {
+                        let _ = sender.send(value);
+                    }
+                },
+            )
+            .context("query review capture renderer readiness")?;
+        if let Ok(Ok(value)) =
+            tokio::time::timeout(std::time::Duration::from_millis(250), receiver).await
+        {
+            if value.contains(visual_id) {
+                return Ok(true);
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            // Some already-focused routes do not rerun their React effect when
+            // the capture request repeats. The conservative settle window has
+            // elapsed; capture instead of rejecting a valid visual solely for
+            // lack of a duplicate acknowledgement -- but report that nothing
+            // acknowledged, so the caller can check the surface another way.
+            return Ok(false);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn reset_review_capture_scroll(app: &AppHandle) -> Result<()> {
+    let window = app
+        .get_webview_window("main")
+        .context("review capture requires the main Desktop window")?;
+    window
+        .eval(
+            "window.scrollTo(0,0);document.scrollingElement?.scrollTo(0,0);document.querySelectorAll('*').forEach((element)=>{element.scrollTop=0;element.scrollLeft=0;});",
+        )
+        .context("reset review capture scroll position")
+}
+
+/// The certified review capture: `capture_surface` with the visual scope and a
+/// required viewport. Keeping it a caller rather than a second implementation
+/// is what stops the review path and the agent-facing one from drifting.
 #[cfg(target_os = "macos")]
 async fn capture_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
+    let visual_id = body
+        .get("visualId")
+        .or_else(|| body.get("visual_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("review capture requires visualId")?
+        .to_string();
+    // A review is always taken at an explicit breakpoint, so unlike a general
+    // capture it refuses to fall back to the window's current size.
+    body.get("width")
+        .and_then(Value::as_f64)
+        .context("review window width is required")?;
+    body.get("height")
+        .and_then(Value::as_f64)
+        .context("review window height is required")?;
+    let mut request = body.clone();
+    request["scope"] = json!("visual");
+    request["target"] = json!(visual_id);
+    capture_surface(app, &request).await
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn capture_review_window(_app: &AppHandle, _body: &Value) -> Result<Value> {
+    anyhow::bail!("UnsupportedCapturePlatform: host webview snapshot requires macOS")
+}
+
+/* ── Surface capture ─────────────────────────────────────────────────────────
+ *
+ * One pipeline behind every screenshot the host takes of itself.
+ *
+ * `capture_review_window` grew for a single job: photograph one visual, in
+ * isolation, at a review viewport. Everything it learned on the way — resize
+ * and restore on this side of the IPC so a dying helper cannot strand the
+ * user's window, wait for a renderer acknowledgement rather than a fixed
+ * sleep, snapshot the app's own WKWebView so no Screen Recording grant and no
+ * window visibility are required — applies just as well to photographing a
+ * plugin page or the whole app. It was only the *subject* that was hard-wired.
+ *
+ * So the subject became a parameter. `CaptureScope` says what to photograph;
+ * the orchestration below is shared, and `capture_review_window` is now a thin
+ * caller of it so the certified review path and the new agent-facing one
+ * cannot drift.
+ */
+
+/// What a capture is a picture of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CaptureScope {
+    /// The app exactly as it stands: real chrome, current route, current
+    /// scroll. The default subject for "what does Workshop look like now".
+    App,
+    /// One plugin destination, with the app's chrome intact around it.
+    Plugin(String),
+    /// One visual, isolated from the surrounding chrome. The review subject.
+    Visual(String),
+    /// One element, addressed by `data-testid`, cropped out of an app capture.
+    Element(String),
+}
+
+/// Plugin destinations the renderer can be routed to. Mirrors the `ALLOWED`
+/// list in `dispatch_display_plugins`; a capture must not be able to name a
+/// destination the display contract does not admit.
+const CAPTURE_PLUGINS: [&str; 7] = [
+    "visuals",
+    "reports",
+    "experiments",
+    "optimizers",
+    "inventory",
+    "inference",
+    "computer-use",
+];
+
+impl CaptureScope {
+    fn parse(scope: &str, target: Option<&str>) -> Result<Self> {
+        let target = target.map(str::trim).filter(|value| !value.is_empty());
+        match scope {
+            "app" => Ok(Self::App),
+            "plugin" => {
+                let id = target.context("capture scope `plugin` requires a target plugin id")?;
+                if !CAPTURE_PLUGINS.contains(&id) {
+                    anyhow::bail!(
+                        "unknown capture plugin `{id}`; expected one of {}",
+                        CAPTURE_PLUGINS.join(", ")
+                    );
+                }
+                Ok(Self::Plugin(id.to_string()))
+            }
+            "visual" => Ok(Self::Visual(
+                target
+                    .context("capture scope `visual` requires a target visual id")?
+                    .to_string(),
+            )),
+            "element" => Ok(Self::Element(
+                target
+                    .context("capture scope `element` requires a target data-testid")?
+                    .to_string(),
+            )),
+            other => anyhow::bail!(
+                "unknown capture scope `{other}`; expected app, plugin, visual, or element"
+            ),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::App => "app",
+            Self::Plugin(_) => "plugin",
+            Self::Visual(_) => "visual",
+            Self::Element(_) => "element",
+        }
+    }
+
+    fn target(&self) -> Option<&str> {
+        match self {
+            Self::App => None,
+            Self::Plugin(id) | Self::Visual(id) | Self::Element(id) => Some(id),
+        }
+    }
+
+    /// Scroll is app state everywhere except a review, where the subject is the
+    /// visual's own top-of-surface and a carried-over scroll offset is noise.
+    fn resets_scroll(&self) -> bool {
+        matches!(self, Self::Visual(_))
+    }
+
+    /// The renderer only has to route somewhere for a scope that names a
+    /// destination. `element` crops whatever is already on screen.
+    fn routes(&self) -> bool {
+        matches!(self, Self::Plugin(_) | Self::Visual(_))
+    }
+}
+
+/// A CSS-pixel rectangle read from the renderer, before scaling.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CaptureRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Crop a captured PNG to one element's box.
+///
+/// The snapshot is in device pixels and the rectangle arrives in CSS pixels, so
+/// the scale factor has to be applied here — a 2x display otherwise crops the
+/// top-left quadrant of the intended region and calls it the element. Kept pure
+/// and separate from the window plumbing so the arithmetic is testable without
+/// a display.
+#[cfg(target_os = "macos")]
+pub(crate) fn crop_png(bytes: &[u8], rect: CaptureRect, scale: f64) -> Result<Vec<u8>> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder.read_info().context("decode capture for crop")?;
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut buffer)
+        .context("read capture pixels")?;
+    if info.bit_depth != png::BitDepth::Eight {
+        anyhow::bail!("capture crop supports 8-bit images only");
+    }
+    let channels = info.color_type.samples();
+    let (image_width, image_height) = (info.width as i64, info.height as i64);
+
+    // Round outward: a half-pixel box that rounds inward clips the element's
+    // own border, which is exactly the evidence a layout review is looking at.
+    let left = ((rect.x * scale).floor() as i64).clamp(0, image_width);
+    let top = ((rect.y * scale).floor() as i64).clamp(0, image_height);
+    let right = (((rect.x + rect.width) * scale).ceil() as i64).clamp(left, image_width);
+    let bottom = (((rect.y + rect.height) * scale).ceil() as i64).clamp(top, image_height);
+    let (width, height) = ((right - left) as usize, (bottom - top) as usize);
+    if width == 0 || height == 0 {
+        anyhow::bail!(
+            "element is not visible in the capture: its box resolved to {width}x{height} pixels"
+        );
+    }
+
+    let stride = info.width as usize * channels;
+    let mut cropped = Vec::with_capacity(width * height * channels);
+    for row in 0..height {
+        let start = (top as usize + row) * stride + left as usize * channels;
+        cropped.extend_from_slice(&buffer[start..start + width * channels]);
+    }
+
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, width as u32, height as u32);
+        encoder.set_color(info.color_type);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().context("write cropped PNG header")?;
+        writer
+            .write_image_data(&cropped)
+            .context("write cropped PNG pixels")?;
+    }
+    Ok(out)
+}
+
+/// Announce a non-review capture to the renderer.
+///
+/// Deliberately a second, parallel protocol rather than a rename of the review
+/// one: `visual` scope keeps emitting exactly what it emitted before, so the
+/// certified capture → review → mark_ready chain and the CSS that isolates a
+/// reviewed visual are untouched by this addition.
+#[cfg(target_os = "macos")]
+fn set_capture_mode(app: &AppHandle, scope: &CaptureScope, active: bool) -> Result<()> {
+    let window = app
+        .get_webview_window("main")
+        .context("capture requires the main Desktop window")?;
+    let detail = serde_json::to_string(&json!({
+        "active": active,
+        "scope": scope.name(),
+        "target": scope.target(),
+        "route": scope.routes(),
+    }))?;
+    window
+        .eval(format!(
+            "window.__synthCapture={detail};document.documentElement.removeAttribute('data-synth-capture-ready');document.documentElement.toggleAttribute('data-synth-capture',{active});window.dispatchEvent(new CustomEvent('synth:capture',{{detail:window.__synthCapture}}));"
+        ))
+        .context("set renderer capture mode")
+}
+
+/// Read one JS expression out of the renderer as a string.
+#[cfg(target_os = "macos")]
+async fn eval_string(
+    app: &AppHandle,
+    script: &str,
+    timeout: std::time::Duration,
+) -> Result<String> {
+    let window = app
+        .get_webview_window("main")
+        .context("capture requires the main Desktop window")?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let sender = std::sync::Arc::new(std::sync::Mutex::new(Some(sender)));
+    let callback_sender = std::sync::Arc::clone(&sender);
+    window
+        .eval_with_callback(script, move |value| {
+            if let Some(sender) = callback_sender
+                .lock()
+                .ok()
+                .and_then(|mut sender| sender.take())
+            {
+                let _ = sender.send(value);
+            }
+        })
+        .context("evaluate renderer expression")?;
+    tokio::time::timeout(timeout, receiver)
+        .await
+        .context("renderer did not answer in time")?
+        .context("renderer answer channel closed")
+}
+
+/// Wait for the renderer to acknowledge that it is showing the requested
+/// surface. Same contract as the review path: a bounded wait, then capture
+/// anyway, because an already-focused route may not rerun its effect and a
+/// valid surface must not be refused for want of a duplicate acknowledgement.
+#[cfg(target_os = "macos")]
+async fn wait_for_capture_surface(app: &AppHandle, scope: &CaptureScope) -> Result<()> {
+    let Some(target) = scope.target() else {
+        return Ok(());
+    };
+    let expected = format!("{}:{target}", scope.name());
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if let Ok(value) = eval_string(
+            app,
+            "document.documentElement.dataset.synthCaptureReady || ''",
+            std::time::Duration::from_millis(250),
+        )
+        .await
+        {
+            if value.contains(&expected) {
+                return Ok(());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// The on-screen box of one `data-testid`, in CSS pixels.
+#[cfg(target_os = "macos")]
+async fn capture_element_rect(app: &AppHandle, testid: &str) -> Result<CaptureRect> {
+    // The id travels as a JSON string literal so a quote in it cannot end the
+    // selector and run as script.
+    let literal = serde_json::to_string(testid)?;
+    let script = format!(
+        "(()=>{{const el=document.querySelector(`[data-testid=${{CSS.escape?CSS.escape({literal}):{literal}}}]`)||document.querySelector('[data-testid='+JSON.stringify({literal})+']');if(!el)return '';const r=el.getBoundingClientRect();return JSON.stringify({{x:r.x,y:r.y,width:r.width,height:r.height}});}})()"
+    );
+    let raw = eval_string(app, &script, std::time::Duration::from_secs(2)).await?;
+    let trimmed = raw.trim().trim_matches('"').replace("\\\"", "\"");
+    if trimmed.is_empty() {
+        anyhow::bail!("no element with data-testid `{testid}` is on screen");
+    }
+    let parsed: Value = serde_json::from_str(&trimmed)
+        .with_context(|| format!("element rect for `{testid}` was not JSON: {raw}"))?;
+    let number = |key: &str| -> Result<f64> {
+        parsed
+            .get(key)
+            .and_then(Value::as_f64)
+            .with_context(|| format!("element rect for `{testid}` is missing {key}"))
+    };
+    let rect = CaptureRect {
+        x: number("x")?,
+        y: number("y")?,
+        width: number("width")?,
+        height: number("height")?,
+    };
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        anyhow::bail!("element `{testid}` has no on-screen box to capture");
+    }
+    Ok(rect)
+}
+
+/// What the app was showing, and what its own layout audit found, read at the
+/// moment of the capture.
+///
+/// A screenshot proves a state rendered; it does not say the state is
+/// defensible. Harvesting both here — inside the same held viewport, before the
+/// window is restored — is what makes a capture reviewable evidence rather than
+/// an image somebody has to squint at later.
+#[cfg(target_os = "macos")]
+async fn harvest_capture_evidence(app: &AppHandle) -> (Value, Value) {
+    let state = eval_string(
+        app,
+        r#"JSON.stringify({
+            ...JSON.parse(document.documentElement.dataset.synthAppState || '{}'),
+            mountedVisuals: Array.from(document.querySelectorAll('[data-visual-id][data-visual-revision]'))
+                .filter(node => node.getBoundingClientRect().width > 0 && node.getBoundingClientRect().height > 0)
+                .map(node => ({visualId: node.dataset.visualId, revision: Number(node.dataset.visualRevision)})),
+            visualRenderError: document.querySelector('[data-testid="visual-invalid"]')?.textContent?.trim() || undefined
+        })"#,
+        std::time::Duration::from_millis(500),
+    )
+    .await
+    .ok()
+    .and_then(|raw| parse_renderer_json(&raw))
+    .unwrap_or(Value::Null);
+    let audit = eval_string(
+        app,
+        "(window.__synthCaptureAudit && window.__synthCaptureAudit()) || ''",
+        std::time::Duration::from_secs(3),
+    )
+    .await
+    .ok()
+    .and_then(|raw| parse_renderer_json(&raw))
+    .unwrap_or(Value::Null);
+    (state, audit)
+}
+
+/// `eval_with_callback` hands back the JS value already serialized, so a string
+/// result arrives quoted and escaped. Unwrap one layer before parsing, and fall
+/// back to the raw text so a protocol change degrades to "unavailable" rather
+/// than to a wrong record.
+#[cfg(target_os = "macos")]
+fn parse_renderer_json(raw: &str) -> Option<Value> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "\"\"" {
+        return None;
+    }
+    if let Ok(Value::String(inner)) = serde_json::from_str::<Value>(trimmed) {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&inner) {
+            return Some(parsed);
+        }
+    }
+    serde_json::from_str::<Value>(trimmed).ok()
+}
+
+#[cfg(target_os = "macos")]
+async fn begin_visual_pixel_barrier(app:&AppHandle,id:&str)->Result<Value>{
+    let literal=serde_json::to_string(id)?;
+    let mounted_deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(8);
+    let revision=loop {
+        let raw=eval_string(app,&format!("(()=>{{const n=Array.from(document.querySelectorAll('[data-visual-session-id]')).find(n=>n.dataset.visualSessionId==={literal}&&n.dataset.visualSessionReady==='true');return n?JSON.stringify({{revision:Number(n.dataset.visualSessionRevision)}}):'';}})()"),std::time::Duration::from_secs(2)).await?;
+        if let Some(revision)=parse_renderer_json(&raw).and_then(|v|v["revision"].as_i64()){break revision;}
+        if tokio::time::Instant::now()>=mounted_deadline{anyhow::bail!("coherent capture requires a mounted, compatible visual session");}
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    let core=app.state::<Arc<CoreRuntime>>();
+    let frozen=core.visuals().engine().request(id.to_string(),json!({"operation":"capture.freeze","revision":revision})).await?;
+    let version=frozen["checkpoint"]["state"]["stateVersion"].as_i64().context("capture checkpoint missing version")?;
+    let result=async {
+        eval_string(app,&format!("(()=>{{if(!window.__synthVisualCapture)throw new Error('visual capture adapter unavailable');window.__synthVisualCapture.begin({literal},{revision},{version});return 'started';}})()"),std::time::Duration::from_secs(2)).await?;
+        let deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(8);
+        loop {
+            let stamp=read_visual_pixel_barrier(app).await?;
+            if let Some(error)=stamp["error"].as_str(){anyhow::bail!("{error}");}
+            if stamp["ready"]==true && stamp["mutations"]==0{return Ok(());}
+            if tokio::time::Instant::now()>=deadline{anyhow::bail!("visual pixel barrier did not settle (ready={}, mutations={})",stamp["ready"],stamp["mutations"]);}
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }.await;
+    if let Err(error)=result {
+        let _=core.visuals().engine().request(id.to_string(),json!({"operation":"capture.release","revision":revision,"token":frozen["token"]})).await;
+        let _=eval_string(app,"window.__synthVisualCapture?.release(); ''",std::time::Duration::from_secs(1)).await;
+        return Err(error);
+    }
+    Ok(json!({"visualId":id,"revision":revision,"token":frozen["token"],"checkpoint":frozen["checkpoint"]}))
+}
+
+#[cfg(target_os = "macos")]
+async fn read_visual_pixel_barrier(app:&AppHandle)->Result<Value>{
+    let raw=eval_string(app,"JSON.stringify(window.__synthVisualCapture?.read() ?? null)",std::time::Duration::from_secs(2)).await?;
+    parse_renderer_json(&raw).filter(|v|v.is_object()).context("visual pixel barrier unavailable")
+}
+
+#[cfg(target_os = "macos")]
+async fn end_visual_pixel_barrier(app:&AppHandle,barrier:&Value)->Result<Value>{
+    let stamp=async {
+        eval_string(app,"window.__synthVisualCapture?.verify(); ''",std::time::Duration::from_secs(2)).await?;
+        let deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(4);
+        loop {
+            let stamp=read_visual_pixel_barrier(app).await?;
+            if stamp.get("error").is_some() || stamp["verified"]==true { return Ok::<Value,anyhow::Error>(stamp); }
+            if tokio::time::Instant::now()>=deadline { anyhow::bail!("capture renderer verification timed out"); }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }.await;
+    let core=app.state::<Arc<CoreRuntime>>();
+    let released=core.visuals().engine().request(barrier["visualId"].as_str().context("capture visual identity")?.to_string(),
+        json!({"operation":"capture.release","revision":barrier["revision"],"token":barrier["token"]})).await;
+    let resumed=eval_string(app,"window.__synthVisualCapture?.release(); ''",std::time::Duration::from_secs(2)).await;
+    released?;resumed?;
+    let stamp=stamp?;
+    if stamp["ready"]!=true || stamp["verified"]!=true || stamp["mutations"]!=0 || stamp.get("error").is_some(){
+        anyhow::bail!("visual evidence or rendered presentation changed during pixel capture: {stamp}");
+    }
+    Ok(json!({"schemaVersion":"synth.visual-pixel-cut.v1","checkpoint":barrier["checkpoint"],"paint":stamp}))
+}
+
+/// Human toolbar and MCP use this same bounded pixel-capture workflow.
+pub(crate) async fn capture_visual_session(app:&AppHandle,id:&str,request:&Value)->Result<Value>{
+    let directory=crate::instance::data_root().join("visual-pixel-captures");
+    fs::create_dir_all(&directory)?;
+    let path=directory.join(format!("{}.png",uuid::Uuid::new_v4()));
+    let mut receipt=capture_surface(app,&json!({"scope":"visual","target":id,
+        "width":request["width"].as_u64().unwrap_or(1280),"height":request["height"].as_u64().unwrap_or(900),
+        "revision":request["revision"],"outputPath":path.to_string_lossy()})).await?;
+    let core=app.state::<Arc<CoreRuntime>>();
+    let checkpoint=&receipt["pixelCut"]["checkpoint"];
+    let saved=core.visuals().engine().request(id.to_string(),json!({"operation":"checkpoint.import",
+        "revision":checkpoint["state"]["revision"],"checkpoint":checkpoint})).await?;
+    receipt["pixelCut"]["checkpoint"]=saved["checkpoint"].clone();
+    fs::write(path.with_extension("json"),serde_json::to_vec_pretty(&receipt)?)?;
+    Ok(receipt)
+}
+
+/// The caller names the file; this side refuses to write outside its own data
+/// root. Both ends are canonicalized so `..` segments cannot slip past the
+/// prefix check.
+fn resolve_capture_output(body: &Value) -> Result<PathBuf> {
     let output = body
         .get("outputPath")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .context("review capture requires outputPath")?;
+        .context("capture requires outputPath")?;
     let output = PathBuf::from(output);
     if !output.is_absolute() {
-        anyhow::bail!("review capture outputPath must be absolute");
+        anyhow::bail!("capture outputPath must be absolute");
     }
     let root = VISUALS_DATA_ROOT
         .get()
         .context("visuals IPC data root is not initialized")?;
-    // The caller names the file; this side refuses to write outside its own
-    // data root. Canonicalize both ends so `..` segments cannot slip past a
-    // prefix check.
     let parent = output
         .parent()
-        .context("review capture outputPath requires a parent directory")?;
+        .context("capture outputPath requires a parent directory")?;
     fs::create_dir_all(parent)?;
     let canonical_root = fs::canonicalize(root).context("resolve visuals data root")?;
-    let canonical_parent =
-        fs::canonicalize(parent).context("resolve review capture output directory")?;
+    let canonical_parent = fs::canonicalize(parent).context("resolve capture output directory")?;
     if !canonical_parent.starts_with(&canonical_root) {
         anyhow::bail!(
-            "review capture outputPath must stay under the visuals data root {}",
+            "capture outputPath must stay under the visuals data root {}",
             canonical_root.display()
         );
     }
-    let resize = resize_review_window(app, body)?;
-    // Do not `?` between here and the restore: the window is resized, and any
-    // early return from this span leaves it that way.
-    tokio::time::sleep(REVIEW_CAPTURE_SETTLE).await;
-    let snapshot = match app.get_webview_window("main") {
-        Some(window) => {
-            crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT).await
-        }
-        None => Err(anyhow::anyhow!(
-            "review capture requires the main Desktop window"
-        )),
+    Ok(output)
+}
+
+/// Resize if asked, snapshot the app's own webview, restore — one call.
+///
+/// The snapshot needs no Screen Recording TCC grant, no window-identity
+/// resolution, and no visibility: it captures correctly while the app is
+/// occluded or backgrounded. Holding resize and restore on this side means a
+/// helper that dies mid-capture cannot strand the user's window at the capture
+/// size. A capture with no requested viewport never resizes at all, because
+/// "what does the app look like right now" must not begin by changing it.
+#[cfg(target_os = "macos")]
+pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Value> {
+    // This guard must span the full enter-mode -> resize -> snapshot -> restore
+    // transaction. Parsing first would be safe, but acquiring here also makes
+    // the serialization boundary obvious and difficult to regress.
+    let _capture_guard = capture_pipeline_lock().lock().await;
+    let scope = CaptureScope::parse(
+        body.get("scope").and_then(Value::as_str).unwrap_or("app"),
+        body.get("target")
+            .or_else(|| body.get("visualId"))
+            .or_else(|| body.get("visual_id"))
+            .and_then(Value::as_str),
+    )?;
+    let output = resolve_capture_output(body)?;
+    let viewport = match (
+        body.get("width").and_then(Value::as_f64),
+        body.get("height").and_then(Value::as_f64),
+    ) {
+        (Some(width), Some(height)) => Some((width, height)),
+        (None, None) => None,
+        _ => anyhow::bail!("a capture viewport needs both width and height"),
     };
-    let restore = resize
-        .get("previous")
-        .cloned()
-        .context("review window resize omitted its previous size")
-        .and_then(|previous| resize_review_window(app, &previous));
+
+    // Enter capture mode before resizing so React has the entire settle window
+    // to route to the requested surface and lay it out.
+    match &scope {
+        CaptureScope::Visual(id) => set_review_capture_mode(app, id, true)?,
+        other => set_capture_mode(app, other, true)?,
+    }
+    let leave_capture_mode = |app: &AppHandle| match &scope {
+        CaptureScope::Visual(id) => set_review_capture_mode(app, id, false),
+        other => set_capture_mode(app, other, false),
+    };
+
+    let geometry = match capture_window_geometry(app, viewport) {
+        Ok(geometry) => geometry,
+        Err(error) => {
+            let _ = leave_capture_mode(app);
+            return Err(error);
+        }
+    };
+    // Do not `?` between here and the restore: the window may be resized, and
+    // any early return from this span leaves it that way.
+    tokio::time::sleep(REVIEW_CAPTURE_SETTLE).await;
+
+    // Whether the renderer positively acknowledged the requested visual. The
+    // scope check below needs this because the two ways a visual can be "open"
+    // are different states: `openArtifactId` is the artifact pane, set by
+    // toggleArtifact, while a review capture drives the visuals page and
+    // publishes `synthReviewCaptureReady`. Comparing only against the pane
+    // rejected correct captures of a visual reviewed through the page.
+    let mut review_acknowledged = false;
+    let snapshot = match &scope {
+        CaptureScope::Visual(id) => {
+            wait_for_review_capture_surface(app, id)
+                .await
+                .map(|acknowledged| {
+                    review_acknowledged = acknowledged;
+                })
+        }
+        other => wait_for_capture_surface(app, other).await,
+    }
+    .and_then(|()| {
+        if scope.resets_scroll() {
+            reset_review_capture_scroll(app)
+        } else {
+            Ok(())
+        }
+    });
+    let mut cropped_to = None;
+    let mut visual_barrier=None;
+    let snapshot=match (&scope,snapshot){
+        (CaptureScope::Visual(id),Ok(()))=>match begin_visual_pixel_barrier(app,id).await{
+            Ok(barrier)=>{
+                let revision_matches=body["revision"].is_null() || body["revision"]==barrier["revision"];
+                visual_barrier=Some(barrier);
+                if revision_matches{Ok(())}else{Err(anyhow::anyhow!("requested visual revision differs from mounted capture revision"))}
+            },
+            Err(error)=>Err(error),
+        },
+        (_,result)=>result,
+    };
+    let snapshot = match snapshot {
+        Ok(()) => match app.get_webview_window("main") {
+            Some(window) => {
+                let first =
+                    crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT)
+                        .await;
+                let attempt = match first {
+                    Err(_) => {
+                        crate::visuals::snapshot::capture_webview_png(
+                            &window,
+                            REVIEW_CAPTURE_RETRY_TIMEOUT,
+                        )
+                        .await
+                    }
+                    ok => ok,
+                };
+                match attempt {
+                    Ok(bytes) => match &scope {
+                        CaptureScope::Element(testid) => {
+                            match capture_element_rect(app, testid).await {
+                                Ok(rect) => {
+                                    cropped_to = Some(rect);
+                                    crop_png(&bytes, rect, geometry.scale)
+                                }
+                                Err(error) => Err(error),
+                            }
+                        }
+                        _ => Ok(bytes),
+                    },
+                    Err(error) => Err(error),
+                }
+            }
+            None => Err(anyhow::anyhow!("capture requires the main Desktop window")),
+        },
+        Err(error) => Err(error),
+    };
+
+    // Before the restore: the audit must measure the viewport that was
+    // photographed, not the one the window goes back to.
+    let (app_state, audit) = match &snapshot {
+        Ok(_) => harvest_capture_evidence(app).await,
+        Err(_) => (Value::Null, Value::Null),
+    };
+
+    let mut pixel_cut=Value::Null;
+    let snapshot=if let Some(barrier)=visual_barrier{
+        match end_visual_pixel_barrier(app,&barrier).await{
+            Ok(cut)=>{pixel_cut=cut;snapshot},
+            Err(error)=>Err(error),
+        }
+    }else{snapshot};
+
+    let restore = restore_capture_geometry(app, &geometry, viewport.is_some());
+    let capture_mode_restore = leave_capture_mode(app);
     let written = match &snapshot {
-        Ok(bytes) => fs::write(&output, bytes).context("write review capture PNG"),
+        Ok(bytes) => fs::write(&output, bytes).context("write capture PNG"),
         Err(_) => Ok(()),
     };
-    // A failed restore leaves the user's window at the review viewport; it has
+
+    // A failed restore leaves the user's window at the capture viewport; it has
     // to reach the caller even when the capture itself failed.
-    match (snapshot, restore, written) {
-        (Err(capture), Err(restore), _) => Err(anyhow::anyhow!(
+    match (snapshot, restore, capture_mode_restore, written) {
+        (Err(capture), Err(restore), _, _) => Err(anyhow::anyhow!(
             "{capture:#}; additionally the Desktop window was not restored: {restore:#}"
         )),
-        (Err(capture), Ok(_), _) => Err(capture),
-        (Ok(_), Err(restore), _) => Err(anyhow::anyhow!(
-            "captured review but failed to restore Desktop window: {restore:#}"
+        (Err(capture), Ok(_), _, _) => Err(capture),
+        (Ok(_), Err(restore), _, _) => Err(anyhow::anyhow!(
+            "captured but failed to restore Desktop window: {restore:#}"
         )),
-        (Ok(_), Ok(_), Err(write)) => Err(write),
-        (Ok(bytes), Ok(_), Ok(())) => {
+        (Ok(_), Ok(_), Err(restore), _) => Err(anyhow::anyhow!(
+            "captured but failed to restore the renderer layout: {restore:#}"
+        )),
+        (Ok(_), Ok(_), Ok(()), Err(write)) => Err(write),
+        (Ok(bytes), Ok(_), Ok(()), Ok(())) => {
+            // A scoped capture must photograph the surface it was asked for.
+            //
+            // `scope: visual` asks the renderer to open a visual and then
+            // photographs the window. When that open silently does not happen
+            // -- a full page reload had just reset the route to chat -- the
+            // capture returned a PNG of the chat view, `ok`, with the requested
+            // id in `target` and `openVisualId: null` two lines below it. Every
+            // claim built on these captures assumes the picture is of what its
+            // name says, so a mismatch has to be an error rather than something
+            // a reader might notice in the metadata.
+            if let CaptureScope::Visual(target) = &scope {
+                let opened = app_state
+                    .get("openVisualId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("none");
+                if !review_acknowledged && opened != target.as_str() {
+                    return Err(anyhow::anyhow!(
+                        "capture_scope_mismatch: asked for visual `{target}` but the renderer \
+                         had `{opened}` open; the image would not be of the requested surface"
+                    ));
+                }
+            }
             let (width, height) = png_dimensions(&bytes).unwrap_or((0, 0));
+            let diagnostics = crate::instance::diagnostics();
             Ok(json!({
+                "schemaVersion": "synth.surface-capture.v1",
                 "path": output.to_string_lossy(),
+                "digest": format!("sha256:{:x}", sha2::Sha256::digest(&bytes)),
+                "scope": scope.name(),
+                "target": scope.target(),
+                "capturedAt": chrono::Utc::now().to_rfc3339(),
+                "instance": {
+                    "name": diagnostics.name,
+                    "mode": diagnostics.mode,
+                    "appVersion": diagnostics.app_version,
+                    "sourceRevision": diagnostics.source_revision,
+                    "buildRevision": diagnostics.build_revision,
+                },
+                "appState": app_state,
+                "audit": audit,
+                "pixelCut": pixel_cut,
                 "width": width,
                 "height": height,
-                "previous": resize.get("previous"),
-                "current": resize.get("current"),
-                "scaleFactor": resize.get("scaleFactor"),
-                "windowLabel": resize.get("windowLabel"),
-                "processId": resize.get("processId"),
+                "previous": {"width": geometry.previous.0, "height": geometry.previous.1},
+                "current": {"width": geometry.current.0, "height": geometry.current.1},
+                "resized": viewport.is_some(),
+                "croppedTo": cropped_to.map(|rect| json!({
+                    "x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height
+                })),
+                "scaleFactor": geometry.scale,
+                "windowLabel": geometry.label,
+                "windowFullscreen": app.get_webview_window("main")
+                    .map(|window| window.is_fullscreen()).transpose()?,
+                "processId": std::process::id(),
                 "captureMode": "host-webview-snapshot",
                 "restored": true,
             }))
@@ -790,8 +1891,105 @@ async fn capture_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
     }
 }
 
+#[cfg(target_os = "macos")]
+struct CaptureGeometry {
+    previous: (u64, u64),
+    current: (u64, u64),
+    scale: f64,
+    label: String,
+    minimum_relaxed: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn restore_capture_geometry(
+    app: &AppHandle,
+    geometry: &CaptureGeometry,
+    resized: bool,
+) -> Result<()> {
+    let size_restore = if resized {
+        resize_review_window(
+            app,
+            &json!({"width": geometry.previous.0, "height": geometry.previous.1}),
+        )
+        .map(|_| ())
+    } else {
+        Ok(())
+    };
+    let minimum_restore = if geometry.minimum_relaxed {
+        set_review_window_minimum(app, DESKTOP_WINDOW_MIN_WIDTH, DESKTOP_WINDOW_MIN_HEIGHT)
+    } else {
+        Ok(())
+    };
+    match (size_restore, minimum_restore) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(size), Ok(())) => Err(size),
+        (Ok(()), Err(minimum)) => Err(minimum),
+        (Err(size), Err(minimum)) => Err(anyhow::anyhow!(
+            "{size:#}; additionally failed to restore the Desktop window minimum: {minimum:#}"
+        )),
+    }
+}
+
+/// Resize to the requested viewport, or just report the window as it stands.
+#[cfg(target_os = "macos")]
+fn capture_window_geometry(
+    app: &AppHandle,
+    viewport: Option<(f64, f64)>,
+) -> Result<CaptureGeometry> {
+    let window = app
+        .get_webview_window("main")
+        .context("capture requires the main Desktop window")?;
+    let scale = window.scale_factor().context("read display scale factor")?;
+    let label = window.label().to_string();
+    let Some((width, height)) = viewport else {
+        let size = window
+            .inner_size()
+            .context("read capture window size")?
+            .to_logical::<f64>(scale);
+        let logical = (size.width.round() as u64, size.height.round() as u64);
+        return Ok(CaptureGeometry {
+            previous: logical,
+            current: logical,
+            scale,
+            label,
+            minimum_relaxed: false,
+        });
+    };
+    let minimum_relaxed = review_capture_requires_relaxed_minimum(width, height);
+    if minimum_relaxed {
+        set_review_window_minimum(app, REVIEW_WINDOW_MIN_WIDTH, REVIEW_WINDOW_MIN_HEIGHT)?;
+    }
+    let resize = match resize_review_window(app, &json!({"width": width, "height": height})) {
+        Ok(resize) => resize,
+        Err(error) => {
+            if minimum_relaxed {
+                let _ = set_review_window_minimum(
+                    app,
+                    DESKTOP_WINDOW_MIN_WIDTH,
+                    DESKTOP_WINDOW_MIN_HEIGHT,
+                );
+            }
+            return Err(error);
+        }
+    };
+    let read = |key: &str, field: &str| -> u64 {
+        resize
+            .get(key)
+            .and_then(|value| value.get(field))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    Ok(CaptureGeometry {
+        previous: (read("previous", "width"), read("previous", "height")),
+        current: (read("current", "width"), read("current", "height")),
+        scale,
+        label,
+        minimum_relaxed,
+    })
+}
+
 #[cfg(not(target_os = "macos"))]
-async fn capture_review_window(_app: &AppHandle, _body: &Value) -> Result<Value> {
+pub(crate) async fn capture_surface(_app: &AppHandle, _body: &Value) -> Result<Value> {
     anyhow::bail!("UnsupportedCapturePlatform: host webview snapshot requires macOS")
 }
 
@@ -911,7 +2109,9 @@ fn percent_decode(value: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn validated_loopback_rollout_base(base: &str) -> Result<String> {
+/// The registered container's own origin, proved local before anything is
+/// fetched from it. Frame media resolves against this and nothing else.
+pub(crate) fn validated_loopback_rollout_base(base: &str) -> Result<String> {
     let trimmed = base.trim_end_matches('/');
     let parsed = reqwest::Url::parse(trimmed).context("invalid container base URL")?;
     let local_host = matches!(
@@ -1080,7 +2280,8 @@ async fn run_one_scripted_rollout(
         requested_rollout_id.unwrap_or_else(|| format!("roll_{}", Uuid::new_v4().simple()));
     let prepare = client
         .post(format!("{base}/rollouts/prepare"))
-        .json(&json!({ "rollout_id": requested_rollout_id, "telemetry": telemetry }))
+        .json(&json!({ "rollout_id": requested_rollout_id, "telemetry": telemetry,
+            "task_instance_id": format!("seed:{seed}") }))
         .send()
         .await
         .context("POST /rollouts/prepare")?;
@@ -1116,6 +2317,7 @@ async fn run_one_scripted_rollout(
         .json(&json!({
             "rollout_id": rollout_id,
             "seed": seed,
+            "task_instance_id": format!("seed:{seed}"),
             "telemetry": telemetry,
             "slot": LIVE_EVAL_SLOT,
         }))
@@ -1187,7 +2389,8 @@ async fn step_until_done(
 
 fn require_scripted_stream_slot(body: &Value) -> Result<()> {
     let requested = body
-        .get("slot")
+        .get("input")
+        .or_else(|| body.get("slot"))
         .or_else(|| body.get("streamSlot"))
         .or_else(|| body.get("stream_slot"))
         .and_then(Value::as_str)
@@ -1195,7 +2398,7 @@ fn require_scripted_stream_slot(body: &Value) -> Result<()> {
     assert_live_eval_slot(requested)?;
     if requested != LIVE_EVAL_SLOT {
         anyhow::bail!(
-            "visuals IPC scripted rollouts bind slot \"{LIVE_EVAL_SLOT}\", not \"{requested}\""
+            "visuals IPC scripted rollouts bind input \"{LIVE_EVAL_SLOT}\", not \"{requested}\""
         );
     }
     Ok(())
@@ -1319,22 +2522,32 @@ fn observed_task_family(
     classified: Option<crate::visuals::LiveEvalFamily>,
     requested: Option<&str>,
 ) -> Option<String> {
-    classified
-        .map(|family| family.as_str().to_string())
-        .or_else(|| {
-            info.and_then(|value| {
-                value
-                    .get("env_family")
-                    .or_else(|| value.get("task_family"))
-                    .or_else(|| value.get("runtime_family"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
+    info.and_then(|value| {
+        value
+            .pointer("/liveEval/benchmarkFamily")
+            .or_else(|| value.pointer("/metadata/liveEval/benchmarkFamily"))
+            .or_else(|| value.get("env_family"))
+            .or_else(|| value.get("task_family"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+    .or_else(|| requested.map(str::to_string))
+    .or_else(|| {
+        info.and_then(|value| {
+            value
+                .get("runtime_family")
+                .and_then(Value::as_str)
+                .map(str::to_string)
         })
-        .or_else(|| requested.map(str::to_string))
+    })
+    .or_else(|| classified.map(|family| family.as_str().to_string()))
 }
 
 pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
+    // Native commands and loopback consumers share the same trace routes.
+    if path == "/v1/traces" || path.starts_with("/v1/traces/") {
+        return dispatch_traces(method, path, body, core).await;
+    }
     let registry = core.visuals();
     let reports = core.reports();
     match (method, path) {
@@ -1474,6 +2687,61 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
         ("GET", "/v1/containers") => {
             Ok(json!({"containers": core.data().list_containers().await?}))
         }
+        ("POST", "/v1/containers/ensure") => {
+            let manifest_path = body
+                .get("manifestPath")
+                .or_else(|| body.get("manifest_path"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!(
+                    "manifestPath required; container resolution is not coupled to the active workspace"
+                ))?;
+            let manifest_path = std::path::PathBuf::from(manifest_path);
+            if !manifest_path.is_absolute() {
+                anyhow::bail!("manifestPath must be absolute");
+            }
+            if manifest_path.file_name().and_then(|value| value.to_str())
+                != Some("workshop.containers.toml")
+            {
+                anyhow::bail!("manifestPath must name workshop.containers.toml");
+            }
+            let manifest_path = manifest_path.canonicalize().with_context(|| {
+                format!(
+                    "canonicalize container manifest {}",
+                    manifest_path.display()
+                )
+            })?;
+            let spec_id = body
+                .get("specId")
+                .or_else(|| body.get("spec_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("specId required"))?;
+            let spec = crate::optimizers::workspace_recipe::load_container_specs_from_manifest(
+                &manifest_path,
+            )?
+            .into_iter()
+            .find(|candidate| candidate.id == spec_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "container spec `{spec_id}` is not declared in {}",
+                    manifest_path.display()
+                )
+            })?;
+            let origin = spec.origin.to_json();
+            let ensured = crate::optimizers::container_lifecycle::ensure_spec(
+                core.storage().database(),
+                &spec,
+            )
+            .await?;
+            Ok(json!({
+                "containerId": ensured.container_id,
+                "baseUrl": ensured.base_url,
+                "specId": ensured.spec_id,
+                "locality": ensured.locality.as_str(),
+                "declarationOrigin": origin,
+            }))
+        }
         ("POST", "/v1/containers") => {
             let request: ContainerRegisterRequest = serde_json::from_value(body)?;
             let container = register_hydrated_container(core, request).await?;
@@ -1484,7 +2752,12 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
         }
         ("GET", path)
             if path.starts_with("/v1/containers/")
+                && path != "/v1/containers/ensure"
+                && path != "/v1/containers/resolve_declaration"
                 && !path.ends_with("/probe")
+                && !path.ends_with("/reconcile")
+                && !path.ends_with("/restart")
+                && !path.ends_with("/stop")
                 && !path.contains("/rollouts/") =>
         {
             let id = path.trim_start_matches("/v1/containers/");
@@ -1572,10 +2845,14 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     }
                 }
             }
-            let family = observed_task_family(
-                info.as_ref(),
-                classified,
-                container.task_family.as_deref(),
+            let family =
+                observed_task_family(info.as_ref(), classified, container.task_family.as_deref());
+            let live = status == crate::container_capabilities::READY_STATUS
+                && health.get("ok").and_then(Value::as_bool) != Some(false);
+            crate::optimizers::container_lifecycle::stamp_metadata_freshness(
+                &mut metadata,
+                live,
+                &chrono::Utc::now().to_rfc3339(),
             );
             let updated = core
                 .update_container_hydration(
@@ -1587,6 +2864,92 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 )
                 .await?;
             Ok(json!({"container":updated}))
+        }
+        ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/reconcile") => {
+            let id = path
+                .trim_start_matches("/v1/containers/")
+                .trim_end_matches("/reconcile")
+                .trim_end_matches('/');
+            let session = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_ref"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
+            let spec = crate::optimizers::container_lifecycle::reconcile_declaration(
+                core.storage().database(),
+                session,
+                id,
+            )?;
+            let container = core.data().get_container(id.to_string()).await?;
+            Ok(json!({
+                "container": container,
+                "declarationOrigin": spec.origin.to_json(),
+                "launchDeclaration": {
+                    "valid": true,
+                    "command": spec.command,
+                    "workingDirectory": spec.cwd.display().to_string(),
+                    "sourceRoot": spec.origin.source_root.display().to_string(),
+                    "manifestPath": spec.origin.manifest_path.display().to_string(),
+                    "sourceRevision": spec.origin.source_revision,
+                    "sourceDigest": spec.origin.source_digest,
+                },
+            }))
+        }
+        ("POST", "/v1/containers/resolve_declaration") => {
+            let session = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_ref"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
+            let spec = if let Some(container_id) = body
+                .get("containerId")
+                .or_else(|| body.get("container_id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                crate::optimizers::container_lifecycle::resolve_declared_spec(
+                    core.storage().database(),
+                    session,
+                    container_id,
+                )?
+            } else {
+                let spec_id = body
+                    .get("specId")
+                    .or_else(|| body.get("spec_id"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("specId or containerId required"))?;
+                crate::optimizers::container_lifecycle::resolve_spec_for_session(
+                    core.storage().database(),
+                    session,
+                    spec_id,
+                )?
+            };
+            Ok(json!({
+                "specId": spec.id,
+                "sourceRoot": spec.origin.source_root.display().to_string(),
+                "manifestPath": spec.origin.manifest_path.display().to_string(),
+                "declarationDigest": spec.origin.source_digest,
+                "sourceRevision": spec.origin.source_revision,
+                "declarationOrigin": spec.origin.to_json(),
+            }))
+        }
+        ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/stop") => {
+            let id = path
+                .trim_start_matches("/v1/containers/")
+                .trim_end_matches("/stop")
+                .trim_end_matches('/');
+            let stopped =
+                crate::optimizers::container_lifecycle::stop(core.storage().database(), id).await?;
+            Ok(json!({
+                "containerId": stopped.container_id,
+                "specId": stopped.spec_id,
+                "pid": stopped.pid,
+                "status": "stopped",
+            }))
+        }
+        ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/restart") => {
+            anyhow::bail!("container restart requires the app-bound approval route")
         }
         ("POST", path)
             if path.starts_with("/v1/containers/") && path.ends_with("/rollouts/prepare") =>
@@ -1616,7 +2979,9 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
                 .build()?;
-            let prepare_body = json!({"rollout_id": rollout_id, "telemetry": telemetry});
+            let prepare_body = crate::container_stream::prepared_rollout_request(
+                &body, &rollout_id, telemetry,
+            )?;
             let mut response = client
                 .post(format!("{base}/rollouts/prepare"))
                 .json(&prepare_body)
@@ -1650,15 +3015,42 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             if returned_rollout_id != rollout_id {
                 anyhow::bail!("prepare returned a different rollout_id than the caller-stable id");
             }
-            let stream = declared_stream_descriptor(&prepared)?
+            let mut stream = declared_stream_descriptor(&prepared)?
                 .context("prepare omitted stream descriptor")?;
+            if let Some(raw_max_steps) = body.get("max_steps") {
+                let max_steps = raw_max_steps
+                    .as_u64()
+                    .context("max_steps must be a positive integer")?;
+                if max_steps == 0 {
+                    anyhow::bail!("max_steps must be a positive integer");
+                }
+                stream
+                    .as_object_mut()
+                    .context("prepare stream descriptor must be an object")?
+                    .insert("max_steps".into(), json!(max_steps));
+            }
             let poll_url = resolve_declared_url(&base, &declared_poll_url(&stream)?)?;
             let sse_url = resolve_declared_url(&base, &declared_sse_url(&stream)?)?;
             crate::visuals::assert_declared_stream_source(&sse_url)?;
+            // A pinned live annotation protocol declares a sibling channel;
+            // bind it beside the rollout stream on live.annotated_rollouts.v1.
+            let annotation_visual_binding = match (
+                crate::container_stream::declared_annotation_sse_url(&stream),
+                crate::container_stream::declared_annotation_poll_url(&stream),
+            ) {
+                (Some(annotation_sse), Some(annotation_poll)) => {
+                    let annotation_sse = resolve_declared_url(&base, &annotation_sse)?;
+                    let annotation_poll = resolve_declared_url(&base, &annotation_poll)?;
+                    crate::visuals::assert_declared_stream_source(&annotation_sse)?;
+                    json!({"input":"stream","kind":"live_sse","source":annotation_sse,"poll_url":annotation_poll,"schema":"synth.trace-stream-event.v1"})
+                }
+                _ => Value::Null,
+            };
             Ok(json!({
                 "container_id": id, "rollout_id": rollout_id, "prepared": prepared, "stream": stream,
                 "resolved": {"poll_url": poll_url, "sse_url": sse_url},
-                "visual_binding": {"slot":"stream","kind":"live_sse","source":sse_url,"poll_url":poll_url,"schema":"synth.trace-stream-event.v1"},
+                "visual_binding": {"input":"stream","kind":"live_sse","source":sse_url,"poll_url":poll_url,"schema":"synth.trace-stream-event.v1"},
+                "annotation_visual_binding": annotation_visual_binding,
                 "start_blocked_until": "stream.subscribed"
             }))
         }
@@ -1691,23 +3083,6 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             // Workshop's index stayed empty, so the inspector could not resolve
             // a trace that demonstrably existed.
             let import = if state.get("terminated").and_then(Value::as_bool) == Some(true) {
-                // A campaign's terminal count comes from the container's own
-                // record, captured on the reconciliation the agent already
-                // performs — not from a later retelling of it.
-                if core
-                    .data()
-                    .campaign_for_rollout(rollout_id.to_string())
-                    .await?
-                    .is_some()
-                {
-                    core.data()
-                        .campaign_record_terminal(
-                            rollout_id.to_string(),
-                            state.clone(),
-                            chrono::Utc::now().to_rfc3339(),
-                        )
-                        .await?;
-                }
                 match import_terminal_trace(core, id, rollout_id, &state).await {
                     Ok(value) => value,
                     // Import is reconciliation, not the answer to this call.
@@ -1825,10 +3200,6 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 )?;
             }
             let task_instance_id = require_task_instance(&body)?;
-            // A planned rollout runs the plan. Silently starting campaign
-            // rollout 7 against a different seed would produce a distribution
-            // whose points do not mean what the plan says they mean.
-            require_campaign_plan_match(core, rollout_id, &body, &task_instance_id).await?;
             let poll_url = resolve_declared_url(&base, &declared_poll_url(stream)?)?;
             let telemetry = normalized_rollout_telemetry(body.get("telemetry"))?;
             let client = crate::http::http_client_builder()
@@ -1868,6 +3239,27 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "rollout_id": rollout_id, "seed": body.get("seed"), "task_instance_id": task_instance_id,
                 "policy_ref": policy_ref, "telemetry": telemetry, "slot": LIVE_EVAL_SLOT
             });
+            // Prepared NanoHorizon rollouts are pinned to an immutable policy
+            // revision. Preserve that pin across the host bridge instead of
+            // silently degrading the request to a mutable policy reference.
+            if let Some(policy_revision_id) = body
+                .get("policy_revision_id")
+                .or_else(|| body.get("policyRevisionId"))
+                .cloned()
+            {
+                start_body["policy_revision_id"] = policy_revision_id;
+            }
+            if let Some(max_steps) = stream.get("max_steps").and_then(Value::as_u64) {
+                start_body["max_steps"] = json!(max_steps);
+            }
+            if let Some(revision) = body
+                .get("annotation_protocol_revision_id")
+                .and_then(Value::as_str)
+            {
+                // Same pin as prepare, or the container answers 409
+                // rollout_identity_conflict: the observer is part of identity.
+                start_body["annotation_protocol_revision_id"] = json!(revision);
+            }
             if let Some(environment_ref) = body
                 .get("environment_ref")
                 .or_else(|| body.get("environmentRef"))
@@ -1919,20 +3311,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             crate::recovery::crash_checkpoint(crate::recovery::checkpoints::AFTER_TOOL_RECEIPT);
             core.update_container_last_rollout(id.to_string(), rollout_id.to_string())
                 .await?;
-            let campaign_id = core
-                .data()
-                .campaign_for_rollout(rollout_id.to_string())
-                .await?;
-            if campaign_id.is_some() {
-                core.data()
-                    .campaign_record_started(
-                        rollout_id.to_string(),
-                        chrono::Utc::now().to_rfc3339(),
-                    )
-                    .await?;
-            }
             Ok(
-                json!({"container_id":id,"rollout_id":rollout_id,"visual_id":visual_id,"visual_revision":visual.current_revision,"state":state,"subscription":subscription,"started":true,"recovered":recovered,"campaign_id":campaign_id}),
+                json!({"container_id":id,"rollout_id":rollout_id,"visual_id":visual_id,"visual_revision":visual.current_revision,"state":state,"subscription":subscription,"started":true,"recovered":recovered}),
             )
         }
         ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/rollouts") => {
@@ -2036,8 +3416,23 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }))
         }
         ("GET", "/v1/visuals/templates") => {
-            let genre = body.get("genre").and_then(Value::as_str);
-            Ok(json!({"templates": registry.list_templates(genre)?}))
+            // The existing GET endpoint permits an absent HTTP body. Normalize
+            // that transport representation only; malformed queries still fail.
+            let body = if body.is_null() { json!({}) } else { body };
+            let request = serde_json::from_value::<
+                crate::domains::visuals::operations::ListVisualTemplatesRequest,
+            >(body)?;
+            Ok(serde_json::to_value(
+                crate::domains::visuals::operations::ListVisualTemplates::execute(registry, request)?,
+            )?)
+        }
+        ("POST", "/v1/visuals/templates/import") => {
+            let source_path = body
+                .get("sourcePath")
+                .or_else(|| body.get("source_path"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("source_path is required"))?;
+            Ok(json!({"template": registry.import_template(source_path)?}))
         }
         ("GET", path) if path.starts_with("/v1/visuals/templates/") => {
             let id = path.trim_start_matches("/v1/visuals/templates/");
@@ -2079,6 +3474,37 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }
             Ok(json!({"bundle": registry.get_seal(digest.to_string()).await?}))
         }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/engine") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/engine").trim_end_matches('/');
+            if matches!(body["operation"].as_str(),Some("attach"|"publish"|"corpus.put"|"evidence.put"|"playback.tick"|"playback.commit"|"record.tick"|"record.commit"|"capture.freeze"|"capture.release")) {
+                anyhow::bail!("control registration and scene publication belong to the mounted renderer");
+            }
+            registry.engine().request(id.to_string(), body.clone()).await
+        }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/presentation") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/presentation").trim_end_matches('/');
+            Ok(json!({"presentation": registry.state_store().presentation(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/presentation") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/presentation").trim_end_matches('/');
+            Ok(json!({"presentation": registry.state_store().put_presentation(id.to_string(), body).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/snapshots") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/snapshots").trim_end_matches('/');
+            Ok(json!({"snapshots": registry.state_store().snapshots(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/snapshots") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/snapshots").trim_end_matches('/');
+            Ok(json!({"snapshot": registry.state_store().put_snapshot(id.to_string(), body).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/recordings") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/recordings").trim_end_matches('/');
+            Ok(json!({"recordings": registry.state_store().recordings(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/recordings") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/recordings").trim_end_matches('/');
+            Ok(json!({"recording": registry.state_store().put_recording(id.to_string(), body).await?}))
+        }
         ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/annotations") => {
             let id = path
                 .trim_start_matches("/v1/visuals/")
@@ -2106,7 +3532,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .cloned()
                 .unwrap_or_default();
             let automated_findings =
-                if let Some(kind) = crate::visuals::systems::template_kind(&visual.template_id) {
+                if let Some(kind) = match visual.renderer_kind {
+                    crate::visuals::RendererKind::Systems => Some(crate::visuals::systems::SystemsKind::Static),
+                    crate::visuals::RendererKind::SystemsDynamic => Some(crate::visuals::systems::SystemsKind::Dynamic),
+                    _ => None,
+                } {
                     let asset = registry.visual_source(id.to_string()).await?;
                     let bytes = base64::engine::general_purpose::STANDARD
                         .decode(asset.base64)
@@ -2114,7 +3544,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     let source = String::from_utf8(bytes)
                         .context("systems authoring source must be UTF-8")?;
                     crate::visuals::systems::authoring_findings(&source, kind)?
-                } else if crate::visuals::charts::is_chart_template(&visual.template_id) {
+                } else if visual.renderer_kind == crate::visuals::RendererKind::Chart {
                     // Recorded by the render that produced the image. A chart's
                     // real width is only known after its bindings resolve, so
                     // re-deriving from the spec alone would under-report.
@@ -2136,9 +3566,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let overlay_digest = registry
                 .overlay_digest(id.to_string(), visual.current_revision)
                 .await?;
+            let certification_identity = registry.certification_identity(id.to_string()).await?;
             Ok(json!({
                 "visual": visual,
                 "template": template,
+                "certificationIdentity": certification_identity,
                 "annotations": annotations,
                 "overlayDigest": overlay_digest,
                 "authoring": {
@@ -2242,8 +3674,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .get("height")
                 .and_then(Value::as_u64)
                 .context("review viewport requires height")?;
-            if width < 320 || height < 400 {
-                anyhow::bail!("review viewport is below the supported 320x400 floor");
+            if !(320..=2400).contains(&width) || !(400..=1800).contains(&height) {
+                anyhow::bail!("review viewport must be within 320x400 and 2400x1800");
             }
             let checks = body
                 .get("checks")
@@ -2283,8 +3715,15 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                         "visual capture observations do not match the reviewed visual revision"
                     );
                 }
+                validate_review_viewport(&receipt, width, height)?;
                 receipt
             };
+            let certification_identity = registry.certification_identity(id.to_string()).await?;
+            if capture_receipt.certification_identity != certification_identity {
+                anyhow::bail!(
+                    "visual capture was produced by different content, bindings, template, renderer, or build; capture again"
+                );
+            }
             let template = registry.get_template(&current.template_id)?;
             if template.observation_contract.is_some() && capture_receipt.observation.is_none() {
                 anyhow::bail!(
@@ -2303,6 +3742,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "checks": checks,
                 "findings": findings,
                 "screenshotPath": body.get("screenshot_path").cloned().unwrap_or(Value::Null),
+                "screenshotSha256": capture_receipt.screenshot_sha256,
+                "certificationIdentity": capture_receipt.certification_identity,
                 "captureTime": capture_receipt.capture_time,
                 "observations": capture_receipt.observation,
                 "reviewedAt": chrono::Utc::now().to_rfc3339(),
@@ -2360,6 +3801,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 );
             }
             let template = registry.get_template(&current.template_id)?;
+            let certification_identity = registry.certification_identity(id.to_string()).await?;
+            validate_certification_build_identity(&certification_identity)?;
             let required = required_authoring_checks(&template);
             let bindings_digest = if template.observation_contract.is_some() {
                 let durable = registry
@@ -2383,8 +3826,13 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 &required,
                 template.observation_contract.as_ref(),
                 bindings_digest.as_deref(),
+                &certification_identity,
             )?;
-            if let Some(kind) = crate::visuals::systems::template_kind(&current.template_id) {
+            if let Some(kind) = match current.renderer_kind {
+                crate::visuals::RendererKind::Systems => Some(crate::visuals::systems::SystemsKind::Static),
+                crate::visuals::RendererKind::SystemsDynamic => Some(crate::visuals::systems::SystemsKind::Dynamic),
+                _ => None,
+            } {
                 let asset = registry.visual_source(id.to_string()).await?;
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(asset.base64)
@@ -2399,7 +3847,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     );
                 }
             }
-            if crate::visuals::charts::is_chart_template(&current.template_id) {
+            if current.renderer_kind == crate::visuals::RendererKind::Chart {
                 let findings: Vec<String> = current
                     .metadata
                     .get("authoringFindings")
@@ -2422,7 +3870,9 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "qualityGate".into(),
                 json!({
                     "ready": true,
+                    "state": "ready",
                     "revision": revision,
+                    "certificationIdentity": certification_identity,
                     "reviewCount": current_reviews.len(),
                     "certifiedBy": receipts,
                     "supersededReviewCount": current_reviews.len() - receipts.len(),
@@ -2449,8 +3899,9 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             Ok(json!({"visual": visual, "event": event, "ready": true, "revision": revision}))
         }
         ("POST", "/v1/visuals") => {
+            let shared = body.get("workspaceOwned").and_then(Value::as_bool) == Some(true);
             let request: VisualCreateRequest = serde_json::from_value(body)?;
-            let (visual, event) = registry.create(request).await?;
+            let (visual, event) = if shared { registry.create_shared(request).await? } else { registry.create(request).await? };
             Ok(json!({"visual": visual, "event": event}))
         }
         ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/save") => {
@@ -2496,7 +3947,19 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
-            let (visual, event) = registry.show(id.to_string(), session_id).await?;
+            let foreground_owner = body
+                .get("foregroundOwner")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let (visual, mut event) = registry.show(id.to_string(), session_id).await?;
+            if foreground_owner {
+                if let Some(payload) = event.get_mut("payload").and_then(Value::as_object_mut) {
+                    // Presentation intent is broadcast-only. The durable
+                    // visual.show record remains an ownership fact; reopening
+                    // Workshop must not replay an old QA navigation request.
+                    payload.insert("foregroundOwner".into(), Value::Bool(true));
+                }
+            }
             core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
             Ok(json!({"opened": true, "visual": visual, "event": event}))
         }
@@ -2512,6 +3975,10 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let id = path.trim_start_matches("/v1/visuals/");
             let request: VisualUpdateRequest = serde_json::from_value(body)?;
             let (visual, event) = registry.update(id.to_string(), request).await?;
+            // MCP bind/update writes a durable visual.updated event. Publish the
+            // same committed event to the renderer so an already-open pane
+            // reconciles its binding instead of remaining frozen until reload.
+            core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
             Ok(json!({"visual": visual, "event": event}))
         }
         _ => anyhow::bail!("unsupported visuals IPC route {method} {path}"),
@@ -2530,7 +3997,84 @@ pub(crate) async fn dispatch_optimizer(
         ("GET", "/v1/optimizers/algorithms") => {
             Ok(json!({ "algorithms": optimizers.list_algorithms() }))
         }
-        ("GET", "/v1/optimizers/recipes") => Ok(json!({ "recipes": optimizers.list_recipes() })),
+        ("GET", "/v1/optimizers/recipes") => {
+            let session = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_ref"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
+            Ok(json!({
+                "recipes": optimizers.list_recipes_for_session(session.as_deref())
+            }))
+        }
+        ("POST", "/v1/optimizers/evaluations/spec/draft")
+        | ("POST", "/v1/optimizers/evaluations/spec/validate")
+        | ("POST", "/v1/optimizers/evaluations/spec/admit") => {
+            let request_value = body.get("request").cloned().unwrap_or(body);
+            let request: crate::optimizers::admission::InlineRequest =
+                crate::optimizers::admission::InlineRequest::from_tool_arguments(request_value)?;
+            let admissible =
+                crate::optimizers::inline_eval::admit_inline(optimizers, request).await?;
+            Ok(json!({
+                "sourceKind": "inline",
+                "executionSpecDigest": admissible.digest().as_str(),
+                "executionSpec": admissible.canonical().as_value(),
+                "approvalDisclosure": admissible.approval_disclosure(),
+                "status": "ready_for_approval"
+            }))
+        }
+        ("POST", "/v1/optimizers/evaluations/start") => {
+            let idempotency_key = body
+                .get("idempotencyKey")
+                .or_else(|| body.get("idempotency_key"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("idempotencyKey is required for evaluation_start"))?
+                .to_owned();
+            anyhow::ensure!(
+                idempotency_key.len() <= 128,
+                "idempotencyKey must be at most 128 characters"
+            );
+            let request: crate::optimizers::admission::InlineRequest =
+                crate::optimizers::admission::InlineRequest::from_tool_arguments(
+                    body.get("request").cloned().unwrap_or_else(|| body.clone()),
+                )?;
+            let session_ref = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_ref"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
+            let open_visual = body
+                .get("openVisual")
+                .or_else(|| body.get("open_visual"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let codex = app.state::<Arc<crate::codex::CodexManager>>();
+            let run = crate::authorize_inline_evaluation_start(
+                app,
+                core,
+                &codex,
+                request,
+                session_ref,
+                open_visual,
+                idempotency_key,
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            Ok(json!({
+                "run": run,
+                "sourceKind": "inline",
+                "status": run.status,
+                "optimizerRunId": run.id,
+                "visualRefs": run.visual_refs,
+                "eventCursor": run.cursor_seq
+            }))
+        }
         ("POST", "/v1/optimizers/eval/candidates") => {
             let request: crate::optimizers::EvalStageCandidatesRequest =
                 serde_json::from_value(body)?;
@@ -2544,7 +4088,10 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_start_matches("/v1/training/artifacts/")
                 .trim_end_matches("/chat")
                 .trim_end_matches('/');
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             if !confirm {
                 anyhow::bail!("launch_artifact_inference requires confirm=true");
             }
@@ -2555,13 +4102,32 @@ pub(crate) async fn dispatch_optimizer(
             let inference = crate::optimizers::launch_artifact_inference(id, message).await?;
             Ok(json!({ "inference": inference }))
         }
-        ("GET", "/v1/mlx/inspect") => Ok(crate::optimizers::typed_capabilities::inspect_local_mlx()),
+        ("GET", "/v1/mlx/inspect") => {
+            Ok(crate::optimizers::typed_capabilities::inspect_local_mlx())
+        }
+        ("GET", "/v1/training/mlx-runtime") => Ok(serde_json::to_value(
+            crate::optimizers::mlx_runtime::runtime_status(),
+        )?),
+        ("POST", "/v1/training/mlx-runtime/install") => {
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let status =
+                crate::optimizers::mlx_runtime::training_mlx_runtime_install(app.clone(), confirm)
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+            Ok(serde_json::to_value(status)?)
+        }
         ("GET", "/v1/mlx/install-plan") => {
             let model_id = body.get("model_id").and_then(Value::as_str);
             crate::optimizers::typed_capabilities::plan_model_install(model_id)
         }
         ("POST", "/v1/mlx/install") => {
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let model_id = body.get("model_id").and_then(Value::as_str);
             crate::optimizers::typed_capabilities::install_model_or_runtime(model_id, confirm)
         }
@@ -2586,18 +4152,22 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_start_matches("/v1/training/artifacts/")
                 .trim_end_matches("/eval")
                 .trim_end_matches('/');
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let recipe_id = body.get("recipe_id").and_then(Value::as_str);
             let request = crate::optimizers::typed_capabilities::launch_artifact_eval_request(
                 id, recipe_id, confirm,
             )?;
-            let admitted: crate::optimizers::OptimizerRecipeRunRequest =
-                serde_json::from_value(json!({
+            let admitted: crate::optimizers::OptimizerRecipeRunRequest = serde_json::from_value(
+                json!({
                     "recipeId": request["recipeId"],
                     "trainingArtifactId": request["trainingArtifactId"],
                     "sessionRef": body.get("sessionRef").cloned().or_else(|| body.get("session_ref").cloned()),
                     "openVisual": body.get("openVisual").cloned().or_else(|| body.get("open_visual").cloned()).unwrap_or(json!(true))
-                }))?;
+                }),
+            )?;
             let codex = app.state::<Arc<crate::codex::CodexManager>>();
             let run = crate::authorize_optimizer_recipe_start(app, core, &codex, admitted)
                 .await
@@ -2613,11 +4183,24 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_start_matches("/v1/training/artifacts/")
                 .trim_end_matches(if export { "/export" } else { "/delete" })
                 .trim_end_matches('/');
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let destination = body
+                .get("destination")
+                .and_then(Value::as_str)
+                .or_else(|| body.get("path").and_then(Value::as_str));
+            let expected_digest = body
+                .get("digest")
+                .and_then(Value::as_str)
+                .or_else(|| body.get("expectedDigest").and_then(Value::as_str));
             crate::optimizers::typed_capabilities::export_or_delete_artifact(
                 id,
                 if export { "export" } else { "delete" },
                 confirm,
+                destination,
+                expected_digest,
             )
         }
         ("POST", "/v1/optimizers/recipes/prepare") => {
@@ -2699,7 +4282,9 @@ pub(crate) async fn dispatch_optimizer(
                         .summary
                         .get("recipeId")
                         .and_then(Value::as_str)
-                        .unwrap_or("gepa.banking77.smoke.v1");
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("prepared optimizer run omitted recipeId")
+                        })?;
                     let max_cost_usd = run
                         .summary
                         .pointer("/limits/maxCostUsd")
@@ -2721,6 +4306,13 @@ pub(crate) async fn dispatch_optimizer(
                         .ok_or_else(|| {
                         anyhow::anyhow!("prepared optimizer run omitted proposerModel")
                     })?;
+                    let provider = run
+                        .summary
+                        .pointer("/credentialChain/provider")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("prepared optimizer run omitted credential provider")
+                        })?;
                     let auth = core
                         .plugins()
                         .authorize_compute(
@@ -2731,6 +4323,7 @@ pub(crate) async fn dispatch_optimizer(
                             digest.as_deref().unwrap_or(""),
                             max_cost_usd,
                             max_rollouts,
+                            provider,
                             proposer_model,
                             300,
                         )
@@ -2852,6 +4445,18 @@ pub(crate) async fn dispatch_optimizer(
             let run = optimizers.refresh(id.to_string()).await?;
             Ok(json!({ "run": run }))
         }
+        ("POST", path)
+            if path.starts_with("/v1/optimizers/runs/")
+                && path.ends_with("/reconcile_evidence") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/reconcile_evidence");
+            let run = optimizers
+                .reconcile_evaluation_evidence(id.to_string())
+                .await?;
+            Ok(json!({ "run": run }))
+        }
         ("POST", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/pause") => {
             let id = path
                 .trim_start_matches("/v1/optimizers/runs/")
@@ -2870,7 +4475,21 @@ pub(crate) async fn dispatch_optimizer(
             let id = path
                 .trim_start_matches("/v1/optimizers/runs/")
                 .trim_end_matches("/cancel");
-            let (run, event) = optimizers.cancel(id.to_string()).await?;
+            // This route is the agent surface (MCP relays through it). The
+            // caller may name itself in the body; without that, the route
+            // itself is the most specific identity available.
+            let requested_by = body
+                .get("requestedBy")
+                .or_else(|| body.get("requested_by"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("agent:optimizers_ipc");
+            let request = crate::optimizers::kernel::CancellationRequest::new(
+                crate::optimizers::kernel::CancellationCause::AgentRequested,
+                requested_by,
+                format!("run:{id}"),
+            );
+            let (run, event) = optimizers.cancel(id.to_string(), request).await?;
             Ok(json!({ "run": run, "event": event }))
         }
         ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/result") => {
@@ -2933,6 +4552,70 @@ pub(crate) async fn dispatch_optimizer(
             let runs = optimizers.list_cloud(algorithm, status, limit).await?;
             Ok(json!({ "runs": runs }))
         }
+        ("GET", "/v1/optimizers/checkpoints") => {
+            let query: crate::optimizers::SavedLoraCheckpointQuery =
+                serde_json::from_value(body).unwrap_or_default();
+            let page = optimizers.search_saved_lora_checkpoints(query).await?;
+            Ok(json!({ "page": page }))
+        }
+        ("POST", "/v1/optimizers/checkpoints/archive") => {
+            let checkpoint_id = body
+                .get("checkpointId")
+                .or_else(|| body.get("checkpoint_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("checkpoint_id required"))?;
+            let checkpoint = optimizers
+                .archive_saved_lora_checkpoint(checkpoint_id.to_string())
+                .await?;
+            Ok(json!({ "checkpoint": checkpoint }))
+        }
+        ("POST", "/v1/optimizers/checkpoints/import") => {
+            let path = body
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("path required"))?;
+            let checkpoint = optimizers.import_saved_lora_dir(path.to_string()).await?;
+            Ok(json!({ "checkpoint": checkpoint }))
+        }
+        ("POST", "/v1/optimizers/checkpoints/infer") => {
+            let request: crate::optimizers::CheckpointInferRequest = serde_json::from_value(body)?;
+            Ok(optimizers.infer_saved_lora(request).await?)
+        }
+        ("POST", "/v1/optimizers/checkpoints/update") => {
+            let checkpoint_id = body
+                .get("checkpointId")
+                .or_else(|| body.get("checkpoint_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("checkpoint_id required"))?;
+            let patch = crate::optimizers::SavedLoraPatchRequest {
+                name: body.get("name").and_then(Value::as_str).map(str::to_string),
+                description: body
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                tags: body.get("tags").and_then(Value::as_array).map(|rows| {
+                    rows.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                }),
+            };
+            let checkpoint = optimizers
+                .patch_saved_lora(checkpoint_id.to_string(), patch)
+                .await?;
+            Ok(json!({ "checkpoint": checkpoint }))
+        }
+        ("POST", "/v1/optimizers/checkpoints/publish") => {
+            let checkpoint_id = body
+                .get("checkpointId")
+                .or_else(|| body.get("checkpoint_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("checkpoint_id required"))?;
+            let checkpoint = optimizers
+                .publish_saved_lora(checkpoint_id.to_string())
+                .await?;
+            Ok(json!({ "checkpoint": checkpoint }))
+        }
         _ => anyhow::bail!("unsupported optimizer IPC route {method} {path}"),
     }
 }
@@ -2987,7 +4670,165 @@ async fn dispatch_diagnostics(
     }
 }
 
-fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsEmptyRequest {}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsListRequest {
+    provider: Option<String>,
+    scope: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsLocatorRequest {
+    workspace_root_ref: String,
+    relative_path: String,
+    provider: String,
+    variable: String,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsSourceRequest {
+    #[serde(default)]
+    locator_id: Option<String>,
+    #[serde(default)]
+    workspace_root_ref: Option<String>,
+    #[serde(default)]
+    relative_path: Option<String>,
+    provider: String,
+    variable: String,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsIdRequest {
+    locator_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsRevokeUseRequest {
+    #[serde(default)]
+    capability_id: Option<String>,
+    #[serde(default)]
+    run_id: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsUseRequest {
+    #[serde(default)]
+    locator_id: Option<String>,
+    #[serde(default)]
+    source_id: Option<String>,
+    #[serde(default)]
+    secret_id: Option<String>,
+    #[serde(default)]
+    run_id: Option<String>,
+    #[serde(default)]
+    recipe_id: Option<String>,
+    #[serde(default)]
+    workload: Option<String>,
+}
+
+fn parse_secrets_request<T: serde::de::DeserializeOwned>(body: Value) -> Result<T> {
+    if body.as_object().is_some_and(|object| {
+        object.keys().any(|key| {
+            matches!(
+                key.to_ascii_lowercase().as_str(),
+                "value" | "secret" | "apikey" | "api_key" | "token" | "password" | "credential"
+            )
+        })
+    }) {
+        return Err(anyhow::Error::new(crate::error::StructuredFailure::new(
+            crate::secrets::lease::CREDENTIAL_LOCATOR_VALUE_SUPPLIED,
+            "credential values are not accepted by the locator registry",
+            "Pass an opaque workspaceRootRef, a relative path, and the environment variable name only.",
+        )));
+    }
+    serde_json::from_value(body).map_err(|error| {
+        anyhow::Error::new(crate::error::StructuredFailure::new(
+            "credential_locator_invalid_request",
+            format!("invalid secrets request: {error}"),
+            "Use only the documented operation fields; absolute paths and credential values are never accepted.",
+        ))
+    })
+}
+
+fn structured_credential_error(error: anyhow::Error) -> anyhow::Error {
+    let Some(failure) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::secrets::lease::CredentialError>())
+    else {
+        return error;
+    };
+    let code = match failure.code.as_str() {
+        crate::secrets::lease::CREDENTIAL_SOURCE_UNCONFIGURED => {
+            crate::secrets::lease::CREDENTIAL_SOURCE_UNCONFIGURED
+        }
+        crate::secrets::lease::CREDENTIAL_VALUE_MISSING => {
+            crate::secrets::lease::CREDENTIAL_VALUE_MISSING
+        }
+        crate::secrets::lease::CREDENTIAL_VALUE_UNLOADED => {
+            crate::secrets::lease::CREDENTIAL_VALUE_UNLOADED
+        }
+        crate::secrets::lease::CREDENTIAL_LOCATOR_UNAPPROVED_WORKSPACE => {
+            crate::secrets::lease::CREDENTIAL_LOCATOR_UNAPPROVED_WORKSPACE
+        }
+        crate::secrets::lease::CREDENTIAL_PATH_ESCAPE => {
+            crate::secrets::lease::CREDENTIAL_PATH_ESCAPE
+        }
+        crate::secrets::lease::CREDENTIAL_LOCATOR_NOT_REGULAR_FILE => {
+            crate::secrets::lease::CREDENTIAL_LOCATOR_NOT_REGULAR_FILE
+        }
+        crate::secrets::lease::CREDENTIAL_LOCATOR_VALUE_SUPPLIED => {
+            crate::secrets::lease::CREDENTIAL_LOCATOR_VALUE_SUPPLIED
+        }
+        crate::secrets::lease::CREDENTIAL_LOCATOR_PICKER_MISMATCH => {
+            crate::secrets::lease::CREDENTIAL_LOCATOR_PICKER_MISMATCH
+        }
+        crate::secrets::lease::CREDENTIAL_LOCATOR_BROAD_DISCOVERY => {
+            crate::secrets::lease::CREDENTIAL_LOCATOR_BROAD_DISCOVERY
+        }
+        crate::secrets::lease::CREDENTIAL_LOCATOR_COMPAT_IMPORT => {
+            crate::secrets::lease::CREDENTIAL_LOCATOR_COMPAT_IMPORT
+        }
+        crate::secrets::lease::CREDENTIAL_LOCATOR_LIMIT => {
+            crate::secrets::lease::CREDENTIAL_LOCATOR_LIMIT
+        }
+        crate::secrets::lease::CREDENTIAL_DECISION_EXCEEDS_REQUEST => {
+            crate::secrets::lease::CREDENTIAL_DECISION_EXCEEDS_REQUEST
+        }
+        crate::secrets::lease::CREDENTIAL_SOURCE_CONSENT_PENDING => {
+            crate::secrets::lease::CREDENTIAL_SOURCE_CONSENT_PENDING
+        }
+        _ => return error,
+    };
+    anyhow::Error::new(
+        crate::error::StructuredFailure::new(
+            code,
+            failure.message.clone(),
+            "Inspect workspace_roots, bindings, locators, and source status before retrying.",
+        )
+        .retryable(failure.retryable),
+    )
+}
+
+async fn dispatch_secrets(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+    app: &AppHandle,
+) -> Result<Value> {
     let lower = path.to_ascii_lowercase();
     if lower.contains("create")
         || lower.contains("replace")
@@ -3002,75 +4843,412 @@ fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -
     {
         anyhow::bail!(
             "secrets MCP cannot create, reveal, export, commit, or test credentials; \
-             list registered aliases, request a host-mediated .env import, or request use. \
-             The user approves in Settings → Secrets."
+             list credential locations, request registration, or request bounded use. \
+             Native approval cards settle agent requests."
         );
     }
     let secrets = core.secrets();
-    let mut request = body.clone();
+    let session_id = body
+        .get("sessionRef")
+        .or_else(|| body.get("session_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let mut request = body;
     if let Some(object) = request.as_object_mut() {
         object.remove("sessionRef");
+        object.remove("session_id");
+        object.remove("operation");
     }
-    let str_field = |key: &str, alt: &str| {
-        request
-            .get(key)
-            .or_else(|| request.get(alt))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-    };
     match (method, path) {
-        ("GET", "/v1/secrets") | ("POST", "/v1/secrets") | ("POST", "/v1/secrets/list") => {
-            let provider = str_field("provider", "provider");
-            let scope = str_field("scope", "scope");
-            let listed = secrets.list(provider.as_deref(), scope.as_deref())?;
+        ("POST", "/v1/secrets/workspace_roots") => {
+            let _: SecretsEmptyRequest = parse_secrets_request(request)?;
             Ok(json!({
-                "secrets": listed,
-                "guidance": "Registered connections are aliases only. To add one, call request_env_import with an absolute .env path, or ask the user to add it in Settings → Secrets."
+                "workspaceRoots": secrets.workspace_roots(),
             }))
+        }
+        ("POST", "/v1/secrets/bindings")
+        | ("GET", "/v1/secrets")
+        | ("POST", "/v1/secrets")
+        | ("POST", "/v1/secrets/list") => {
+            let filters: SecretsListRequest = parse_secrets_request(request)?;
+            let mut bindings = secrets.bindings().map_err(structured_credential_error)?;
+            if let Some(provider) = filters.provider.as_deref() {
+                bindings.retain(|binding| binding.provider == provider);
+            }
+            let _ = filters.scope;
+            Ok(json!({
+                "bindings": bindings,
+                "guidance": "Bindings contain source licenses and load state only. They never contain values or masked suffixes."
+            }))
+        }
+        ("POST", "/v1/secrets/locators") => {
+            let filters: SecretsListRequest = parse_secrets_request(request)?;
+            let mut locators = secrets.locators(false).map_err(structured_credential_error)?;
+            if let Some(provider) = filters.provider.as_deref() {
+                locators.retain(|locator| locator.provider == provider);
+            }
+            let _ = filters.scope;
+            Ok(json!({ "locators": locators }))
+        }
+        ("POST", "/v1/secrets/locator_request") => {
+            let session_id = session_id.ok_or_else(|| anyhow::Error::new(
+                crate::error::StructuredFailure::new(
+                    "credential_access_requires_session",
+                    "remembering a credential location requires an owning session",
+                    "Retry from the active agent session.",
+                )
+            ))?;
+            let input: SecretsLocatorRequest = parse_secrets_request(request)?;
+            let label = input.label.unwrap_or_else(|| input.provider.clone());
+            let locator = secrets
+                .remember_workspace_locator_pending(
+                    &input.workspace_root_ref,
+                    &input.relative_path,
+                    &input.provider,
+                    &input.variable,
+                    &label,
+                )
+                .map_err(structured_credential_error)?;
+            match locator.state {
+                crate::secrets::CredentialLocatorState::Observed => {
+                    return Ok(json!({ "status": "remembered", "locator": locator }));
+                }
+                crate::secrets::CredentialLocatorState::WorkspaceAuthorityRevoked => {
+                    return Err(structured_credential_error(
+                        crate::secrets::lease::CredentialError::new(
+                            crate::secrets::lease::CREDENTIAL_LOCATOR_UNAPPROVED_WORKSPACE,
+                            "locator",
+                            false,
+                            "This folder is allowed again. Forget and remember to restore.",
+                        )
+                        .anyhow(),
+                    ));
+                }
+                crate::secrets::CredentialLocatorState::ApprovalPending => {}
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "credential locator is not available to remember"
+                    ));
+                }
+            }
+            let codex = app.state::<Arc<crate::codex::CodexManager>>();
+            let outcome = codex
+                .approvals
+                .authorize_host_outcome(
+                    app,
+                    Some(&session_id),
+                    crate::session::approval::ApprovalKind::CredentialAccess {
+                        consent: crate::session::approval::CredentialConsent::RememberLocator,
+                        provider: input.provider,
+                        purpose: "Remember this credential location without loading its value".into(),
+                        locator_id: Some(locator.id.clone()),
+                        display_path: Some(locator.display_path.clone()),
+                        variable: Some(input.variable),
+                        switch_from_display: None,
+                    },
+                )
+                .await;
+            match outcome {
+                Ok((_, crate::session::approval::ApprovalDecision::Credential {
+                    outcome: crate::session::approval::CredentialDecision::RememberLocator,
+                })) => secrets
+                    .settle_remembered_locator(&locator.id)
+                    .map_err(structured_credential_error)?,
+                Ok(_) => unreachable!("credential decision validation refused this outcome"),
+                Err(error) => {
+                    let _ = secrets.deny_pending_locator(&locator.id);
+                    return Err(structured_credential_error(error));
+                }
+            }
+            let remembered = secrets
+                .locators(false)
+                .map_err(structured_credential_error)?
+                .into_iter()
+                .find(|row| row.id == locator.id);
+            Ok(json!({ "status": "remembered", "locator": remembered }))
+        }
+        ("POST", "/v1/secrets/source_request") => {
+            let session_id = session_id.ok_or_else(|| anyhow::Error::new(
+                crate::error::StructuredFailure::new(
+                    "credential_access_requires_session",
+                    "registering a credential source requires an owning session",
+                    "Retry from the active agent session.",
+                )
+            ))?;
+            let input: SecretsSourceRequest = parse_secrets_request(request)?;
+            if input.locator_id.is_some()
+                && (input.workspace_root_ref.is_some() || input.relative_path.is_some())
+            {
+                anyhow::bail!(
+                    "source_request accepts locatorId or workspaceRootRef plus relativePath, not both"
+                );
+            }
+            let label = input.label.clone().unwrap_or_else(|| input.provider.clone());
+            let locator = if let Some(locator_id) = input.locator_id.as_deref() {
+                secrets
+                    .locators(false)
+                    .map_err(structured_credential_error)?
+                    .into_iter()
+                    .find(|row| row.id == locator_id)
+                    .ok_or_else(|| anyhow::anyhow!("credential locator {locator_id} was not found"))?
+            } else {
+                let workspace_root_ref = input.workspace_root_ref.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("workspaceRootRef is required when locatorId is omitted")
+                })?;
+                let relative_path = input.relative_path.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("relativePath is required when locatorId is omitted")
+                })?;
+                secrets
+                    .remember_workspace_locator_pending(
+                        workspace_root_ref,
+                        relative_path,
+                        &input.provider,
+                        &input.variable,
+                        &label,
+                    )
+                    .map_err(structured_credential_error)?
+            };
+            if locator.provider != input.provider.trim().to_ascii_lowercase()
+                || locator.variable != input.variable.trim()
+            {
+                anyhow::bail!(
+                    "source_request provider and variable must match the selected locator"
+                );
+            }
+            if locator.loaded {
+                return Ok(json!({ "status": "registered", "locator": locator }));
+            }
+            secrets
+                .begin_source_consent(&input.provider, &input.variable)
+                .map_err(structured_credential_error)?;
+            let was_existing = match secrets.prepare_register_approval(&locator.id) {
+                Ok(value) => value,
+                Err(error) => {
+                    secrets.end_source_consent(&input.provider, &input.variable);
+                    return Err(structured_credential_error(error));
+                }
+            };
+            let switch_from_display = match secrets.locators(false) {
+                Ok(rows) => rows
+                    .into_iter()
+                    .find(|row| {
+                        row.preferred
+                            && row.id != locator.id
+                            && row.provider == locator.provider
+                            && row.variable == locator.variable
+                    })
+                    .map(|row| row.display_path),
+                Err(error) => {
+                    if was_existing {
+                        let _ = secrets.settle_remembered_locator(&locator.id);
+                    } else {
+                        let _ = secrets.deny_pending_locator(&locator.id);
+                    }
+                    secrets.end_source_consent(&input.provider, &input.variable);
+                    return Err(structured_credential_error(error));
+                }
+            };
+            let codex = app.state::<Arc<crate::codex::CodexManager>>();
+            let outcome = codex
+                .approvals
+                .authorize_host_outcome(
+                    app,
+                    Some(&session_id),
+                    crate::session::approval::ApprovalKind::CredentialAccess {
+                        consent: crate::session::approval::CredentialConsent::RegisterSource,
+                        provider: input.provider.clone(),
+                        purpose: "Register this location as the provider source".into(),
+                        locator_id: Some(locator.id.clone()),
+                        display_path: Some(locator.display_path.clone()),
+                        variable: Some(input.variable.clone()),
+                        switch_from_display,
+                    },
+                )
+                .await;
+            let result: Result<Value> = match outcome {
+                Ok((_, crate::session::approval::ApprovalDecision::Credential {
+                    outcome: crate::session::approval::CredentialDecision::RememberLocator,
+                })) => secrets
+                    .settle_remembered_locator(&locator.id)
+                    .map(|_| json!({ "status": "remembered" }))
+                    .map_err(structured_credential_error),
+                Ok((_, crate::session::approval::ApprovalDecision::Credential {
+                    outcome: crate::session::approval::CredentialDecision::RegisterSource,
+                })) => secrets
+                    .register_locator(&locator.id)
+                    .map(|registered| {
+                        json!({ "status": "registered", "locator": registered })
+                    })
+                    .map_err(structured_credential_error),
+                Ok(_) => unreachable!("credential decision validation refused this outcome"),
+                Err(error) => Err(structured_credential_error(error)),
+            };
+            if result.is_err() {
+                if was_existing {
+                    let _ = secrets.settle_remembered_locator(&locator.id);
+                } else {
+                    let _ = secrets.deny_pending_locator(&locator.id);
+                }
+            }
+            secrets.end_source_consent(&input.provider, &input.variable);
+            result
+        }
+        ("POST", "/v1/secrets/locator_status")
+        | ("POST", "/v1/secrets/source_status") => {
+            let input: SecretsIdRequest = parse_secrets_request(request)?;
+            let locator = secrets
+                .locators(false)
+                .map_err(structured_credential_error)?
+                .into_iter()
+                .find(|row| row.id == input.locator_id)
+                .ok_or_else(|| anyhow::anyhow!("credential locator was not found"))?;
+            Ok(json!({ "locator": locator }))
+        }
+        ("POST", "/v1/secrets/locator_remove") => {
+            let input: SecretsIdRequest = parse_secrets_request(request)?;
+            let codex = app.state::<Arc<crate::codex::CodexManager>>();
+            let _ = codex
+                .approvals
+                .expire_credential_locator(app, &input.locator_id, "credential_locator_forgotten")
+                .await;
+            secrets
+                .forget_locator(&input.locator_id)
+                .map_err(structured_credential_error)?;
+            Ok(json!({ "status": "forgotten" }))
+        }
+        ("POST", "/v1/secrets/source_remove") => {
+            let input: SecretsIdRequest = parse_secrets_request(request)?;
+            let codex = app.state::<Arc<crate::codex::CodexManager>>();
+            let _ = codex
+                .approvals
+                .expire_credential_locator(app, &input.locator_id, "credential_source_removed")
+                .await;
+            secrets
+                .remove_locator_source(&input.locator_id)
+                .map_err(structured_credential_error)?;
+            Ok(json!({
+                "status": "unregistered",
+                "sourceRegistered": false,
+                "guidance": "This removes the reusable source registration. Use use_revoke to revoke only a run capability."
+            }))
+        }
+        ("POST", "/v1/secrets/use_revoke") => {
+            let input: SecretsRevokeUseRequest = parse_secrets_request(request)?;
+            match (input.capability_id.as_deref(), input.run_id.as_deref()) {
+                (Some(capability_id), None) => {
+                    secrets
+                        .revoke_capability(capability_id, "agent")
+                        .map_err(structured_credential_error)?;
+                    Ok(json!({
+                        "status": "revoked",
+                        "capabilityId": capability_id,
+                        "sourceRegistered": true,
+                    }))
+                }
+                (None, Some(run_id)) => {
+                    let revoked = secrets
+                        .revoke_run(run_id)
+                        .map_err(structured_credential_error)?;
+                    Ok(json!({
+                        "status": "revoked",
+                        "runId": run_id,
+                        "capabilityIds": revoked,
+                        "sourceRegistered": true,
+                    }))
+                }
+                _ => anyhow::bail!(
+                    "use_revoke requires exactly one of capabilityId or runId"
+                ),
+            }
         }
         ("POST", "/v1/secrets/import") => {
-            let source = str_field("sourcePath", "source_path")
-                .ok_or_else(|| anyhow::anyhow!("sourcePath is required"))?;
-            let names = request
-                .get("variableNames")
-                .or_else(|| request.get("variable_names"))
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let preview = secrets.request_env_import(
-                &source,
-                &names,
-                "personal/development/providers",
-                &crate::secrets::import_roots(),
-            )?;
-            Ok(json!({
-                "status": preview.status,
-                "requestId": preview.request_id,
-                "sourcePath": preview.source_path,
-                "candidates": preview.candidates,
-                "guidance": "Approve or deny this import in Settings → Secrets. This result contains masked suffixes only."
-            }))
+            Err(anyhow::Error::new(crate::error::StructuredFailure::new(
+                crate::secrets::lease::CREDENTIAL_LOCATOR_COMPAT_IMPORT,
+                "request_env_import has been replaced by the credential locator registry",
+                "Call workspace_roots_list, locators_list, source_request, then request_use. Absolute source paths are not accepted.",
+            )))
         }
         ("POST", "/v1/secrets/use") => {
-            let secret_id = str_field("secretId", "secret_id")
-                .ok_or_else(|| anyhow::anyhow!("secretId is required"))?;
-            let run_id = str_field("runId", "run_id").unwrap_or_else(|| "session".into());
-            let recipe_id = str_field("recipeId", "recipe_id").unwrap_or_else(|| "session".into());
-            let result = secrets.request_use(
-                &secret_id,
-                &run_id,
-                &recipe_id,
-                crate::secrets::SecretsUsePolicy::default(),
-                "agent",
-            )?;
+            let input: SecretsUseRequest = parse_secrets_request(request)?;
+            let target_count = [
+                input.locator_id.is_some(),
+                input.source_id.is_some(),
+                input.secret_id.is_some(),
+            ]
+            .into_iter()
+            .filter(|present| *present)
+            .count();
+            if target_count != 1 {
+                anyhow::bail!("request_use requires exactly one of locatorId, sourceId, or secretId");
+            }
+            let secret_id = if let Some(locator_id) = input.locator_id.as_deref() {
+                secrets
+                    .source_for_locator(locator_id)
+                    .map_err(structured_credential_error)?
+            } else {
+                input.source_id.or(input.secret_id).expect("one target was checked")
+            };
+            let run_id = input.run_id.unwrap_or_else(|| "session".into());
+            let recipe_id = input.recipe_id.unwrap_or_else(|| "session".into());
+            // An MCP client may select a known workload contract, never arbitrary
+            // operations or spend limits.  Codex is a Responses client, whereas
+            // the generic assistant path remains Chat Completions only.
+            let policy = agent_use_policy(input.workload.as_deref())?;
+            let mut result =
+                secrets.request_use(&secret_id, &run_id, &recipe_id, policy.clone(), "agent")?;
+            if result.status == "approval_required" {
+                let provider_display = secrets
+                    .list(None, None)?
+                    .into_iter()
+                    .find(|entry| entry.id == secret_id)
+                    .map(|entry| entry.provider)
+                    .unwrap_or_else(|| "Unknown provider".into());
+                let session_id = session_id.as_deref()
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "credential_access_requires_session: request_use must name its owning session"
+                    ))?;
+                let request_id = result.request_id.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "credential_access_request_invalid: pending use has no request id"
+                    )
+                })?;
+                let purpose = format!(
+                    "Issue a run-scoped Workshop proxy capability for recipe {recipe_id}, run {run_id}; operations={}; maxCalls={}; maxCostUsd={}",
+                    policy.operations.join(","),
+                    policy.max_calls,
+                    policy.max_cost_usd,
+                );
+                let codex = app.state::<Arc<crate::codex::CodexManager>>();
+                let approval = codex
+                    .approvals
+                    .authorize_host(
+                        app,
+                        Some(&session_id),
+                        crate::session::approval::ApprovalKind::CredentialAccess {
+                            consent: crate::session::approval::CredentialConsent::IssueLease,
+                            provider: provider_display,
+                            purpose,
+                            locator_id: input.locator_id.clone(),
+                            display_path: None,
+                            variable: None,
+                            switch_from_display: None,
+                        },
+                    )
+                    .await;
+                match approval {
+                    Ok(_) => {
+                        result = secrets.grant_pending(&request_id, "agent", false)?;
+                    }
+                    Err(error) => {
+                        let _ = secrets.deny_pending(&request_id, "agent");
+                        return Err(structured_credential_error(
+                            error.context("credential access was not approved"),
+                        ));
+                    }
+                }
+            }
             Ok(json!({
                 "status": result.status,
                 "requestId": result.request_id,
@@ -3078,14 +5256,32 @@ fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -
                 "proxyOrigin": result.proxy_origin,
                 "handle": result.handle,
                 "provider_routes": result.provider_routes,
-                "guidance": if result.status == "approval_required" {
-                    "Ask the user to allow this in Settings → Secrets, then call request_use again."
-                } else {
-                    "Use provider_routes.openai_base unchanged with OPENAI_API_KEY=workshop-proxy. Do not construct a route from proxyOrigin or handle."
-                }
+                "requestedPolicy": {
+                    "operations": policy.operations,
+                    "maxCalls": policy.max_calls,
+                    "maxCostUsd": policy.max_cost_usd,
+                },
+                "guidance": "The native approval has settled. Use provider_routes.openai_base unchanged with OPENAI_API_KEY=workshop-proxy. Do not construct a route from proxyOrigin or handle."
             }))
         }
         (method, path) => anyhow::bail!("unknown secrets route {method} {path}"),
+    }
+}
+
+/// Product-owned, least-privilege policies available to the agent-facing
+/// secrets adapter.  The agent can name a workload shape, but it cannot widen
+/// its operation set, model allowance, budget, or lifetime.
+fn agent_use_policy(workload: Option<&str>) -> Result<crate::secrets::SecretsUsePolicy> {
+    let mut policy = crate::secrets::SecretsUsePolicy::default();
+    match workload.unwrap_or("chat_completions") {
+        "chat_completions" => Ok(policy),
+        "codex_responses" => {
+            policy.operations = vec!["responses.create".into()];
+            Ok(policy)
+        }
+        other => anyhow::bail!(
+            "unsupported secrets workload `{other}`; use chat_completions or codex_responses"
+        ),
     }
 }
 
@@ -3143,12 +5339,33 @@ async fn import_terminal_trace(
 /// lite seal document is recorded as a provenance-bearing import but cannot be
 /// projected, and this says so rather than reporting a success the inspector
 /// will contradict.
-async fn import_container_trace(
+pub(crate) async fn import_container_trace(
     core: &CoreRuntime,
     container_id: &str,
     rollout_id: &str,
 ) -> Result<Value> {
-    let container = core.data().get_container(container_id.to_string()).await?;
+    let (result, event, _) =
+        import_container_trace_into(core.data(), container_id, rollout_id).await?;
+    core.broadcast_committed(event);
+    Ok(result)
+}
+
+/// The import itself, over a `DataStore` rather than the whole runtime.
+///
+/// The eval worker needs exactly this and holds no `CoreRuntime`; splitting it
+/// out is what lets a rollout seal its replay at the moment it finishes instead
+/// of waiting for an agent to ask for it later. The committed event is returned
+/// rather than broadcast so each caller places it on its own bus.
+pub(crate) async fn import_container_trace_into(
+    data: &crate::data::DataStore,
+    container_id: &str,
+    rollout_id: &str,
+) -> Result<(
+    Value,
+    Option<crate::storage::AppEvent>,
+    Vec<ImportedTraceFrame>,
+)> {
+    let container = data.get_container(container_id.to_string()).await?;
     let base = validated_loopback_rollout_base(
         container
             .base_url
@@ -3163,7 +5380,7 @@ async fn import_container_trace(
         .await?
         .context("unknown rollout")?;
     let reference = state.get("trace").filter(|value| value.is_object());
-    let staging = core.data().staging_root().join("container-seals");
+    let staging = data.staging_root().join("container-seals");
     fs::create_dir_all(&staging)?;
 
     // A bundle archive first: only a self-contained Trace V5 archive can be
@@ -3205,43 +5422,239 @@ async fn import_container_trace(
         (path, "container_seal")
     };
 
-    let result = core
-        .data()
+    let result = data
         .ingest_trace_bundle(crate::trace_ingest::TraceBundleIngestRequest {
             source_path: source_path.display().to_string(),
             source_kind: Some(source_kind.to_owned()),
             title: Some(format!("{rollout_id} · {container_id}")),
             source_uri: Some(format!("{base}/rollouts/{rollout_id}")),
+            container_id: Some(container.id.clone()),
         })
         .await;
+    let (result, event) = match result {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = fs::remove_file(&source_path);
+            return Err(error);
+        }
+    };
+    let (frames, max_step, trace_provenance) =
+        (if source_kind == "container_bundle" && result.trusted {
+            extract_imported_trace_frames(&source_path, rollout_id)
+        } else {
+            Ok((Vec::new(), None, None))
+        })?;
     let _ = fs::remove_file(&source_path);
-    let (result, event) = result?;
-    core.broadcast_committed(event);
 
     let indexed: Vec<Value> = result
         .traces
         .iter()
-        .map(|trace| json!({"traceId": trace.id, "digest": trace.digest}))
+        .map(|trace| {
+            json!({
+                // `traceId` is Workshop's stable local index identity.
+                "traceId": trace.id,
+                // `producerTraceId` is the identity sealed inside Trace V5.
+                // They are not interchangeable and usually differ.
+                "producerTraceId": trace.metadata.get("producerTraceId"),
+                "digest": trace.digest,
+            })
+        })
         .collect();
-    Ok(json!({
-        "containerId": container_id,
-        "rolloutId": rollout_id,
-        "sourceKind": source_kind,
-        "compatibilityLevel": result.compatibility_level,
-        "trusted": result.trusted,
-        "duplicate": result.duplicate,
-        // Inspectable only when a capture-supervisor Trace V5 bundle indexed
-        // real traces. A lite seal is retained with its provenance but cannot
-        // be projected; saying otherwise is how an agent retries an inspector
-        // that can never render.
-        "inspectable": source_kind == "container_bundle" && !indexed.is_empty(),
-        "traces": indexed,
-        "note": if indexed.is_empty() {
-            "Imported as a provenance record only: this container returned a lite seal, not a self-contained Trace V5 bundle, so it cannot be projected into the inspector."
-        } else {
-            "Sealed Trace V5 is now indexed in Workshop."
-        },
-    }))
+    Ok((
+        json!({
+            "containerId": container_id,
+            "rolloutId": rollout_id,
+            "sourceKind": source_kind,
+            "compatibilityLevel": result.compatibility_level,
+            "trusted": result.trusted,
+            "duplicate": result.duplicate,
+            "inputDigest": result.input_digest,
+            "bundleDigest": result.bundle_digest,
+            "archiveDigest": result.archive_digest,
+            "traceProvenance": trace_provenance,
+            // Inspectable only when a capture-supervisor Trace V5 bundle indexed
+            // real traces. A lite seal is retained with its provenance but cannot
+            // be projected; saying otherwise is how an agent retries an inspector
+            // that can never render.
+            "inspectable": source_kind == "container_bundle" && !indexed.is_empty(),
+            "traces": indexed,
+            "validation": result.validation,
+            "note": trace_import_note(source_kind, result.trusted, !indexed.is_empty()),
+            "embeddedFrameCount": frames.len(),
+            "maxStep": max_step,
+        }),
+        event,
+        frames,
+    ))
+}
+
+fn trace_import_note(source_kind: &str, trusted: bool, indexed: bool) -> &'static str {
+    if source_kind == "container_seal" {
+        "Imported as a provenance record only: this container returned a lite seal, not a self-contained Trace V5 bundle, so it cannot be projected into the inspector."
+    } else if !trusted || !indexed {
+        "The container returned a trace bundle, but inspection did not produce a trusted indexed trace. See validation for the failure; resolve it before retrying the import."
+    } else {
+        "Sealed Trace V5 is now indexed in Workshop."
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ImportedTraceFrame {
+    pub bytes: Vec<u8>,
+    pub digest: String,
+    pub width: u32,
+    pub height: u32,
+    pub step: i64,
+    pub producer_digest: Option<String>,
+}
+
+fn extract_imported_trace_frames(
+    archive_path: &std::path::Path,
+    rollout_id: &str,
+) -> Result<(Vec<ImportedTraceFrame>, Option<i64>, Option<Value>)> {
+    let file = fs::File::open(archive_path)
+        .with_context(|| format!("open imported trace archive {}", archive_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file).context("open imported trace ZIP")?;
+    let sealed_names = (0..archive.len())
+        .filter_map(|index| {
+            let entry = archive.by_index(index).ok()?;
+            let name = entry.name().to_string();
+            (name.contains("/sealed/") && name.ends_with(".json")).then_some(name)
+        })
+        .collect::<Vec<_>>();
+    let mut frames = Vec::new();
+    let mut max_step = None::<i64>;
+    let mut trace_provenance = None::<Value>;
+    for name in sealed_names {
+        let document = {
+            let mut entry = archive.by_name(&name)?;
+            if entry.size() > limits::MAX_IMPORTED_TRACE_BYTES {
+                anyhow::bail!("sealed trace document exceeded import limit");
+            }
+            let mut bytes = Vec::with_capacity(entry.size() as usize);
+            entry.read_to_end(&mut bytes)?;
+            serde_json::from_slice::<Value>(&bytes).context("decode sealed trace document")?
+        };
+        if document
+            .pointer("/identity/rollout_id")
+            .and_then(Value::as_str)
+            != Some(rollout_id)
+        {
+            continue;
+        }
+        if let Some(provenance) = document.get("provenance").filter(|value| value.is_object()) {
+            if let Some(previous) = &trace_provenance {
+                anyhow::ensure!(
+                    previous == provenance,
+                    "sealed traces for rollout `{rollout_id}` disagree on provenance"
+                );
+            } else {
+                trace_provenance = Some(provenance.clone());
+            }
+        }
+        let artifacts = document
+            .get("artifacts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|artifact| {
+                let id = artifact.get("artifact_id")?.as_str()?.to_string();
+                (artifact.get("media_type").and_then(Value::as_str) == Some("image/png"))
+                    .then_some((id, artifact.clone()))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        for event in document
+            .get("events")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            // A frame's `step` is a producer claim about the frame, and some
+            // producers file the frame ordinal there: RuneBench numbers 236
+            // frames 0-235 for a 22-step episode. Letting frames widen this
+            // would report 235 environment steps for that rollout, so the
+            // ceiling comes only from events whose step is an environment step.
+            if event.get("event_type").and_then(Value::as_str) == Some("frame") {
+                continue;
+            }
+            for pointer in ["/payload/env_steps", "/payload/step", "/payload/step_index"] {
+                if let Some(step) = event.pointer(pointer).and_then(Value::as_i64) {
+                    max_step = Some(max_step.map_or(step, |current| current.max(step)));
+                }
+            }
+        }
+        let mut imported_artifacts = std::collections::HashSet::new();
+        for event in document
+            .get("events")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|event| event.get("event_type").and_then(Value::as_str) == Some("frame"))
+        {
+            let artifact_id = event
+                .get("artifact_ids")
+                .and_then(Value::as_array)
+                .and_then(|ids| ids.first())
+                .and_then(Value::as_str)
+                .context("sealed frame event omitted its PNG artifact")?;
+            let step = match event.pointer("/payload/step").and_then(Value::as_i64) {
+                Some(step) => step,
+                None if imported_artifacts.contains(artifact_id) => continue,
+                None => anyhow::bail!(
+                    "sealed frame event omitted step for unique artifact `{artifact_id}`"
+                ),
+            };
+            let artifact = artifacts
+                .get(artifact_id)
+                .context("sealed frame event references an unknown PNG artifact")?;
+            let uri = artifact
+                .get("uri")
+                .and_then(Value::as_str)
+                .context("sealed frame artifact omitted bundle URI")?;
+            let bytes = {
+                let mut blob = archive
+                    .by_name(uri)
+                    .context("sealed frame blob missing from bundle")?;
+                if blob.size() > 16 * 1024 * 1024 {
+                    anyhow::bail!("sealed frame blob exceeded 16 MiB");
+                }
+                let mut bytes = Vec::with_capacity(blob.size() as usize);
+                blob.read_to_end(&mut bytes)?;
+                bytes
+            };
+            let actual = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
+            let digest = artifact
+                .get("digest")
+                .and_then(Value::as_str)
+                .context("sealed frame artifact omitted digest")?;
+            if actual != digest {
+                anyhow::bail!("sealed frame artifact digest mismatch");
+            }
+            if artifact.get("size_bytes").and_then(Value::as_u64) != Some(bytes.len() as u64) {
+                anyhow::bail!("sealed frame artifact size mismatch");
+            }
+            let decoder = png::Decoder::new(bytes.as_slice());
+            let mut reader = decoder.read_info().context("decode sealed frame PNG")?;
+            let (width, height) = (reader.info().width, reader.info().height);
+            let mut decoded = vec![0; reader.output_buffer_size()];
+            reader
+                .next_frame(&mut decoded)
+                .context("fully decode sealed frame PNG")?;
+            frames.push(ImportedTraceFrame {
+                bytes,
+                digest: digest.to_string(),
+                width,
+                height,
+                step,
+                producer_digest: event
+                    .pointer("/payload/source_event_digest")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            });
+            imported_artifacts.insert(artifact_id.to_string());
+        }
+    }
+    Ok((frames, max_step, trace_provenance))
 }
 
 /// Capture-supervisor bundle first (Lane E `/rollouts/{id}/trace/bundle`),
@@ -3311,169 +5724,6 @@ async fn fetch_trace_artifact(
     Ok(Some(bytes.to_vec()))
 }
 
-/// The campaign surface: plan, reconcile, settle.
-///
-/// Reconcile and settle both read the container's authoritative rollout records
-/// rather than anything an agent reports, because the failure this contract
-/// exists for is an agent's own summary of work it did not do.
-async fn dispatch_campaigns(
-    method: &str,
-    path: &str,
-    body: Value,
-    core: &CoreRuntime,
-) -> Result<Value> {
-    match (method, path) {
-        ("POST", "/v1/campaigns") => {
-            let container_id = json_field(&body, "containerId", "container_id")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .context("campaign requires container_id")?
-                .to_owned();
-            // Resolve the container now: a plan that names a container this
-            // instance does not have is not a plan.
-            core.data().get_container(container_id.clone()).await?;
-            let expected = json_field(&body, "expectedRollouts", "expected_rollouts")
-                .and_then(Value::as_i64)
-                .context("campaign requires expected_rollouts")?;
-            let seeds = json_field(&body, "seeds", "seeds").and_then(Value::as_array);
-            let seed_start = json_field(&body, "seedStart", "seed_start").and_then(Value::as_i64);
-            let seeds = crate::campaigns::resolve_seeds(seeds, seed_start, expected)?;
-            let id = json_field(&body, "campaignId", "campaign_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("camp_{}", Uuid::new_v4().simple()));
-            let request = crate::campaigns::CampaignCreate {
-                id,
-                session_id: json_field(&body, "sessionRef", "session_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .or_else(|| std::env::var("SYNTH_SESSION_ID").ok()),
-                container_id,
-                title: json_field(&body, "title", "title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Evaluation campaign")
-                    .to_owned(),
-                expected_rollouts: expected,
-                max_concurrency: json_field(&body, "maxConcurrency", "max_concurrency")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(4),
-                policy_ref: require_caller_policy_ref(&body)?,
-                seeds,
-                task_instance_template: json_field(&body, "taskInstance", "task_instance_template")
-                    .and_then(Value::as_str)
-                    .unwrap_or("seed:{seed}")
-                    .to_owned(),
-                created_at: chrono::Utc::now().to_rfc3339(),
-            };
-            let campaign = core.data().campaign_create(request).await?;
-            Ok(json!({
-                "campaign": campaign,
-                "instruction": "Start every planned rollout with its own rollout_id, seed, and task_instance_id, then reconcile. A campaign settles complete only when every planned rollout has a terminal record.",
-            }))
-        }
-        ("GET", path) if path.starts_with("/v1/campaigns/") && !path.contains('/') => {
-            let id = path.trim_start_matches("/v1/campaigns/");
-            Ok(json!({"campaign": core.data().campaign_get(id.to_string()).await?}))
-        }
-        ("POST", path) if path.ends_with("/reconcile") => {
-            let id = path
-                .trim_start_matches("/v1/campaigns/")
-                .trim_end_matches("/reconcile")
-                .trim_end_matches('/');
-            Ok(json!({"campaign": reconcile_campaign(core, id).await?}))
-        }
-        ("POST", path) if path.ends_with("/result") => {
-            let id = path
-                .trim_start_matches("/v1/campaigns/")
-                .trim_end_matches("/result")
-                .trim_end_matches('/');
-            // Reconcile first, always. A result computed from stale local state
-            // is the same failure as an agent's own summary.
-            reconcile_campaign(core, id).await?;
-            core.data()
-                .campaign_settle(id.to_string(), chrono::Utc::now().to_rfc3339())
-                .await
-        }
-        ("GET", path) if path.starts_with("/v1/campaigns/") => {
-            let id = path
-                .trim_start_matches("/v1/campaigns/")
-                .trim_end_matches('/');
-            Ok(json!({"campaign": core.data().campaign_get(id.to_string()).await?}))
-        }
-        _ => anyhow::bail!("unsupported campaign IPC route {method} {path}"),
-    }
-}
-
-/// Hold a campaign rollout to the plan it was allocated.
-///
-/// A rollout id that belongs to a campaign carries that campaign's seed and task
-/// instance. Starting it with different ones would leave a ten-point
-/// distribution whose points are not the ten the plan named, and nothing
-/// downstream could tell.
-async fn require_campaign_plan_match(
-    core: &CoreRuntime,
-    rollout_id: &str,
-    body: &Value,
-    task_instance_id: &str,
-) -> Result<()> {
-    let Some(campaign_id) = core
-        .data()
-        .campaign_for_rollout(rollout_id.to_string())
-        .await?
-    else {
-        return Ok(());
-    };
-    let campaign = core.data().campaign_get(campaign_id.clone()).await?;
-    let Some(plan) = campaign
-        .rollouts
-        .iter()
-        .find(|rollout| rollout.rollout_id == rollout_id)
-    else {
-        return Ok(());
-    };
-    let seed = body.get("seed").and_then(Value::as_i64);
-    if let Some(seed) = seed {
-        if seed != plan.seed {
-            return Err(anyhow::Error::new(
-                crate::error::StructuredFailure::new(
-                    "campaign_rollout_plan_mismatch",
-                    format!(
-                        "{rollout_id} is planned for seed {} in campaign {campaign_id}, not seed {seed}",
-                        plan.seed
-                    ),
-                    "Start each campaign rollout with the seed and task instance its plan allocated, or create a new campaign.",
-                )
-                .with_details(json!({
-                    "campaignId": campaign_id,
-                    "rolloutId": rollout_id,
-                    "plannedSeed": plan.seed,
-                    "requestedSeed": seed,
-                })),
-            ));
-        }
-    }
-    if task_instance_id != plan.task_instance_id {
-        return Err(anyhow::Error::new(
-            crate::error::StructuredFailure::new(
-                "campaign_rollout_plan_mismatch",
-                format!(
-                    "{rollout_id} is planned for task instance {} in campaign {campaign_id}, not {task_instance_id}",
-                    plan.task_instance_id
-                ),
-                "Start each campaign rollout with the seed and task instance its plan allocated, or create a new campaign.",
-            )
-            .with_details(json!({
-                "campaignId": campaign_id,
-                "rolloutId": rollout_id,
-                "plannedTaskInstanceId": plan.task_instance_id,
-                "requestedTaskInstanceId": task_instance_id,
-            })),
-        ));
-    }
-    Ok(())
-}
-
 async fn dispatch_experiments(
     method: &str,
     path: &str,
@@ -3481,75 +5731,345 @@ async fn dispatch_experiments(
     core: &CoreRuntime,
 ) -> Result<Value> {
     match (method, path) {
-        ("GET", "/v1/experiments") | ("GET", "/v1/experiments/") => {
+        ("POST", "/v1/experiments") | ("POST", "/v1/experiments/") => {
+            let mut payload = body;
+            if payload.get("createdAt").is_none() {
+                payload["createdAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentCreateRequest =
+                serde_json::from_value(payload)?;
+            Ok(json!({"experiment": core.data().experiment_create(request).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/children") => {
+            let parent_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches("/children")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !parent_id.is_empty() && !parent_id.contains('/'),
+                "invalid experiment children path"
+            );
+            let mut payload = body;
+            payload["parentExperimentId"] = json!(parent_id);
+            if payload.get("createdAt").is_none() && payload.get("created_at").is_none() {
+                payload["createdAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentChildCreateRequest =
+                serde_json::from_value(payload)?;
+            Ok(json!({
+                "experiment": core.data().experiment_create_child(request).await?
+            }))
+        }
+        ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/relate") => {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches("/relate")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !experiment_id.is_empty() && !experiment_id.contains('/'),
+                "invalid experiment relate path"
+            );
+            let mut payload = body;
+            payload["experimentId"] = json!(experiment_id);
+            if payload.get("createdAt").is_none() && payload.get("created_at").is_none() {
+                payload["createdAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentRelateRequest =
+                serde_json::from_value(payload)?;
+            Ok(json!({
+                "experiment": core.data().experiment_relate(request).await?
+            }))
+        }
+        ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/activate") => {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches("/activate")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !experiment_id.is_empty() && !experiment_id.contains('/'),
+                "invalid experiment activate path"
+            );
             let session_id = json_field(&body, "sessionId", "session_id")
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .context("experiments list requires sessionId")?;
-            let group = core
-                .data()
-                .experiment_for_session(session_id.to_owned())
-                .await?;
+                .context("experiments activate requires sessionId")?;
             Ok(json!({
-                "sessionId": session_id,
-                "experiment": group,
+                "experiment": core.data().experiment_activate(session_id.to_owned(), experiment_id.to_owned()).await?
             }))
+        }
+        ("GET", "/v1/experiments") | ("GET", "/v1/experiments/") => {
+            let session_id = json_field(&body, "sessionId", "session_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            if let Some(session_id) = session_id {
+                let group = core
+                    .data()
+                    .experiment_for_session(session_id.to_owned())
+                    .await?;
+                Ok(json!({"sessionId": session_id, "experiment": group}))
+            } else {
+                let query = body.get("query").and_then(Value::as_str).map(str::to_owned);
+                Ok(json!({"experiments": core.data().experiments_list(query).await?}))
+            }
+        }
+        ("PATCH", path) if path.starts_with("/v1/experiments/") => {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !experiment_id.is_empty() && !experiment_id.contains('/'),
+                "invalid experiment path"
+            );
+            let mut payload = body;
+            payload["experimentId"] = json!(experiment_id);
+            if payload.get("updatedAt").is_none() && payload.get("updated_at").is_none() {
+                payload["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentUpdateRequest =
+                serde_json::from_value(payload)?;
+            Ok(json!({"experiment": core.data().experiment_update(request).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/experiments/") => {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !experiment_id.is_empty() && !experiment_id.contains('/'),
+                "invalid experiment path"
+            );
+            Ok(json!({
+                "experiment": core.data().experiment_get(experiment_id.to_owned()).await?
+            }))
+        }
+        ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/evidence") => {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches("/evidence")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !experiment_id.is_empty() && !experiment_id.contains('/'),
+                "invalid experiment evidence path"
+            );
+            let mut payload = body;
+            payload["experimentId"] = json!(experiment_id);
+            if payload.get("attachedAt").is_none() && payload.get("attached_at").is_none() {
+                payload["attachedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentEvidenceAttachRequest =
+                serde_json::from_value(payload)?;
+            Ok(json!({"experiment": core.data().experiment_attach_evidence(request).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/finalize") => {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches("/finalize")
+                .trim_end_matches('/');
+            let mut payload = body;
+            payload["experimentId"] = json!(experiment_id);
+            if payload.get("finalizedAt").is_none() {
+                payload["finalizedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentFinalizeRequest =
+                serde_json::from_value(payload)?;
+            Ok(json!({"experiment": core.data().experiment_finalize(request).await?}))
         }
         _ => anyhow::bail!("unknown experiments route {method} {path}"),
     }
 }
 
-/// Ask the container about every planned rollout and record what it says.
-async fn reconcile_campaign(core: &CoreRuntime, id: &str) -> Result<crate::campaigns::Campaign> {
-    let campaign = core.data().campaign_get(id.to_string()).await?;
-    let container = core
-        .data()
-        .get_container(campaign.container_id.clone())
-        .await?;
-    let base = validated_loopback_rollout_base(
-        container
-            .base_url
-            .as_deref()
-            .context("container has no base URL")?,
-    )?;
-    let client = crate::http::http_client_builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
-        .build()?;
-    for rollout in &campaign.rollouts {
-        let Some(state) = get_rollout_status(&client, &base, &rollout.rollout_id).await? else {
-            continue;
-        };
-        let now = chrono::Utc::now().to_rfc3339();
-        let already_settled = matches!(rollout.status.as_str(), "terminal" | "failed");
-        if !already_settled {
-            if state.get("terminated").and_then(Value::as_bool) == Some(true) {
-                core.data()
-                    .campaign_record_terminal(rollout.rollout_id.clone(), state.clone(), now)
-                    .await?;
-            } else if state.get("started").and_then(Value::as_bool) == Some(true) {
-                core.data()
-                    .campaign_record_started(rollout.rollout_id.clone(), now)
-                    .await?;
-            }
+async fn dispatch_research_log(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+) -> Result<Value> {
+    match (method, path) {
+        ("GET", "/v1/research-log") | ("GET", "/v1/research-log/") => {
+            let query = body.get("query").and_then(Value::as_str).map(str::to_owned);
+            let experiment_id = body
+                .get("experimentId")
+                .or_else(|| body.get("experiment_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            Ok(json!({"entries": core.data().research_log_list(query, experiment_id).await?}))
         }
-        // Consume the sealed-trace announcement even after local terminal
-        // settlement: a capture-supervisor bundle can appear after the
-        // rollout record itself went terminal.
-        if state
-            .get("trace")
-            .filter(|value| value.is_object())
-            .is_some()
-            || state.get("terminated").and_then(Value::as_bool) == Some(true)
-            || already_settled
-        {
-            let _ =
-                import_terminal_trace(core, &campaign.container_id, &rollout.rollout_id, &state)
-                    .await;
+        ("POST", "/v1/research-log") | ("POST", "/v1/research-log/") => {
+            let request: crate::experiments::ResearchJournalAppendRequest =
+                serde_json::from_value(body)?;
+            Ok(json!({"entry": core.data().research_log_append(request).await?}))
         }
+        _ => anyhow::bail!("unknown research log route {method} {path}"),
     }
-    core.data().campaign_get(id.to_string()).await
+}
+
+async fn dispatch_analysis(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+) -> Result<Value> {
+    match (method, path) {
+        ("POST", "/v1/analysis/projection") => {
+            let kind = body
+                .get("kind")
+                .and_then(Value::as_str)
+                .context("kind required")?;
+            let digest = body
+                .get("digest")
+                .or_else(|| body.get("source"))
+                .and_then(Value::as_str)
+                .context("digest required")?;
+            let kind = kind.to_string();
+            let digest = digest.to_string();
+            core.storage()
+                .database()
+                .run_read(move |conn| {
+                    crate::session::annotation_projection::projection_payload(conn, &kind, &digest)
+                })
+                .await
+        }
+        ("POST", "/v1/analysis/open") => {
+            let trace_id = body
+                .get("trace_id")
+                .or_else(|| body.get("traceId"))
+                .and_then(Value::as_str)
+                .context("trace_id required")?;
+            let evidence_digest = body
+                .get("evidence_digest")
+                .or_else(|| body.get("evidenceDigest"))
+                .and_then(Value::as_str)
+                .context("evidence_digest required")?;
+            let rubric_digest = body
+                .get("rubric_digest")
+                .or_else(|| body.get("rubricDigest"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let campaign_id = body
+                .get("campaign_id")
+                .or_else(|| body.get("campaignId"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let title = body.get("title").and_then(Value::as_str).map(str::to_owned);
+            let session_id = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
+            let trace = core.data().get_trace(trace_id.to_string()).await?;
+            let visual = crate::presentation::ensure_annotation_workbench(
+                core,
+                crate::presentation::AnnotationWorkbenchRequest {
+                    trace,
+                    evidence_digest: evidence_digest.to_string(),
+                    rubric_digest,
+                    campaign_id,
+                    title,
+                    session_id: session_id.clone(),
+                },
+            )
+            .await?;
+            let (shown, event) = core.visuals().show(visual.id.clone(), session_id).await?;
+            core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
+            Ok(json!({
+                "opened": true,
+                "visualId": shown.id,
+                "templateId": shown.template_id,
+                "revision": shown.current_revision,
+                "visual": shown,
+            }))
+        }
+        ("POST", "/v1/analysis/campaigns") => {
+            let eval_run_id = body
+                .get("eval_run_id")
+                .or_else(|| body.get("evalRunId"))
+                .or_else(|| body.get("runId"))
+                .and_then(Value::as_str)
+                .context("evalRunId required")?;
+            let eval_run_id = eval_run_id.to_string();
+            core.storage()
+                .database()
+                .run_read(move |conn| {
+                    let campaigns = crate::session::annotation_projection::list_campaigns_for_eval(
+                        conn,
+                        &eval_run_id,
+                    )?;
+                    Ok(json!({ "campaigns": campaigns }))
+                })
+                .await
+        }
+        ("POST", "/v1/analysis/findings") => {
+            let digest = body
+                .get("trace_digest")
+                .or_else(|| body.get("traceDigest"))
+                .and_then(Value::as_str)
+                .context("traceDigest required")?;
+            let digest = digest.to_string();
+            core.storage()
+                .database()
+                .run_read(move |conn| {
+                    let findings = crate::session::annotation_projection::list_findings_for_trace(
+                        conn, &digest,
+                    )?;
+                    Ok(json!({ "findings": findings }))
+                })
+                .await
+        }
+        ("POST", "/v1/analysis/review") => {
+            let finding_id = body
+                .get("finding_id")
+                .or_else(|| body.get("findingId"))
+                .and_then(Value::as_str)
+                .context("findingId required")?
+                .to_string();
+            let decision = body
+                .get("decision")
+                .and_then(Value::as_str)
+                .unwrap_or("flag")
+                .to_string();
+            let reviewer = body
+                .get("reviewer")
+                .and_then(Value::as_str)
+                .unwrap_or("workshop")
+                .to_string();
+            let rationale = body
+                .get("rationale")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let evidence_head = body
+                .get("evidence_head_digest")
+                .or_else(|| body.get("evidenceHeadDigest"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let review_id = core
+                .storage()
+                .database()
+                .run_transaction({
+                    let finding_id = finding_id.clone();
+                    let evidence_head = evidence_head.clone();
+                    let decision = decision.clone();
+                    let reviewer = reviewer.clone();
+                    let rationale = rationale.clone();
+                    move |conn| {
+                        crate::session::annotation_projection::record_local_review(
+                            conn,
+                            &finding_id,
+                            &evidence_head,
+                            &decision,
+                            &reviewer,
+                            &rationale,
+                        )
+                    }
+                })
+                .await?;
+            Ok(json!({ "reviewId": review_id, "findingId": finding_id, "decision": decision }))
+        }
+        _ => anyhow::bail!("unsupported analysis IPC route {method} {path}"),
+    }
 }
 
 async fn dispatch_traces(
@@ -3597,13 +6117,45 @@ async fn dispatch_traces(
                 "inspectability": inspectability.label(),
             }))
         }
+        ("POST", "/v1/traces/window") => {
+            core.data().trace_view_window(
+                body["trace_digest"].as_str().context("trace_digest required")?.to_owned(),
+                body.get("snapshot_digest").and_then(Value::as_str).map(str::to_owned),
+                body["offset"].as_u64().unwrap_or(0) as usize,
+                body["limit"].as_u64().unwrap_or(200) as usize,
+            ).await
+        }
         ("POST", "/v1/traces/query") => {
+            if body.pointer("/query/schemaVersion").and_then(Value::as_str) == Some(crate::trace_research::SCHEMA) {
+                let query = body.get("query").cloned().context("query required")?;
+                let limit = query.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize;
+                let snapshot = core.data().research_query(query).await?;
+                return crate::trace_research::page(&snapshot, 0, limit);
+            }
             let query = crate::trace_query::parse_query(body.get("query").unwrap_or(&Value::Null))?;
             let snapshot = core
                 .data()
                 .query_traces(query, chrono::Utc::now().to_rfc3339())
                 .await?;
             Ok(serde_json::to_value(snapshot)?)
+        }
+        ("POST", "/v1/traces/prepare_annotations") => {
+            let id=body["snapshot_id"].as_str().context("snapshot_id required")?;
+            let ids:Vec<String>=serde_json::from_value(body["result_ids"].clone()).context("result_ids required")?;
+            let snapshot=core.data().query_snapshot(id.to_string()).await?;
+            crate::trace_research::annotation_selection(&snapshot,&ids)
+        }
+        ("POST", "/v1/traces/source") => {
+            let snapshot=body["snapshot_id"].as_str().context("snapshot_id required")?.to_string();
+            let result=body["result_id"].as_str().context("result_id required")?.to_string();
+            core.data().research_source(snapshot,result,body.get("selector").cloned(),body["offset"].as_u64().unwrap_or(0) as usize,body["source_limit"].as_u64().unwrap_or(16000) as usize).await
+        }
+        ("POST", "/v1/traces/page") => {
+            let id = body.get("snapshot_id").and_then(Value::as_str).context("snapshot_id required")?;
+            let snapshot = core.data().query_snapshot(id.to_string()).await?;
+            let offset = body.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let limit = body.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize;
+            crate::trace_research::page(&snapshot, offset, limit)
         }
         ("POST", "/v1/traces/snapshot") => {
             let snapshot_id = body
@@ -3744,6 +6296,164 @@ async fn dispatch_computer_use(
     }
 }
 
+pub(crate) async fn dispatch_container_restart(
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+    app: &AppHandle,
+) -> Result<Value> {
+    let id = path
+        .trim_start_matches("/v1/containers/")
+        .trim_end_matches("/restart")
+        .trim_end_matches('/');
+    let session = body
+        .get("sessionRef")
+        .or_else(|| body.get("session_ref"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
+    // A restart is a maintenance operation, not an implicit cancellation.
+    // Refuse before approval when any non-terminal optimizer run is bound to
+    // this evaluator so the operator can stop or cancel that work explicitly.
+    let active = core
+        .optimizers()
+        .list(crate::optimizers::models::OptimizerQuery {
+            limit: Some(1_000),
+            ..Default::default()
+        })
+        .await?
+        .into_iter()
+        .filter(|run| {
+            !crate::optimizers::models::OptimizerRunStatus::str_is_terminal(&run.status)
+                && (run
+                    .execution_bindings
+                    .iter()
+                    .any(|binding| binding.kind == "container_http" && binding.id == id)
+                    || run
+                        .summary
+                        .get("containerId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|container_id| container_id == id))
+        })
+        .map(|run| run.id)
+        .collect::<Vec<_>>();
+    if !active.is_empty() {
+        anyhow::bail!(
+            "container_restart_blocked_active_optimizer_runs: `{id}` is used by {}; cancel or finish those runs before restarting",
+            active.join(", ")
+        );
+    }
+    // Validate and reconcile before the destructive approval. An invalid
+    // declaration must not consume a click.
+    let spec = crate::optimizers::container_lifecycle::reconcile_declaration(
+        core.storage().database(),
+        session,
+        id,
+    )?;
+    let launcher = spec.command.join(" ");
+    let declaration_digest =
+        crate::optimizers::container_lifecycle::approval_declaration_digest(&spec)?;
+    let effect = format!(
+        "Stop the currently registered workload when Workshop owns it, then run `{launcher}` from {} (revision {}, digest {}).",
+        spec.origin.source_root.display(),
+        spec.origin.source_revision.as_deref().unwrap_or("unknown"),
+        spec.origin.source_digest.as_deref().unwrap_or("none")
+    );
+    let broker = app
+        .try_state::<Arc<crate::session::approval::ApprovalBroker>>()
+        .ok_or_else(|| anyhow::anyhow!("approval broker unavailable"))?;
+    let authorization = broker
+        .authorize_host(
+            app,
+            Some(session),
+            crate::session::approval::ApprovalKind::ContainerLifecycle {
+                container_id: id.to_owned(),
+                declaration_id: spec.id.clone(),
+                declaration_digest: declaration_digest.clone(),
+                manifest_path: spec.origin.manifest_path.display().to_string(),
+                source_root: spec.origin.source_root.display().to_string(),
+                source_revision: spec.origin.source_revision.clone(),
+                source_digest: spec.origin.source_digest.clone(),
+                action: "force_replace".into(),
+                effect,
+            },
+        )
+        .await
+        .map_err(|error| {
+            let _ = core.storage().database().transaction(|conn| {
+                if let Some(open) =
+                    crate::platform::failure::repository::FailureRepository::open_for_container(
+                        conn, id,
+                    )?
+                {
+                    crate::platform::failure::FailureAuthority::transition(
+                        conn,
+                        open.failure_id.as_str(),
+                        crate::platform::failure::FailureLifecycleState::Terminalized,
+                        crate::platform::failure::TransitionReason::ApprovalDenied,
+                        "operator",
+                    )?;
+                }
+                Ok(())
+            });
+            error
+        });
+    let mut continuation =
+        crate::optimizers::container_lifecycle::ContainerReplacementContinuation::new(
+            authorization,
+            declaration_digest,
+        );
+    let outcome = continuation
+        .consume(core.storage().database(), session, id, &spec)
+        .await?;
+    let approval_id = outcome.approval_id;
+    let approved = outcome.declaration;
+    let stopped = outcome.stopped;
+    let ensured = outcome.ensured;
+    let _ = core.storage().database().transaction(|conn| {
+        if let Some(open) =
+            crate::platform::failure::repository::FailureRepository::open_for_container(conn, id)?
+        {
+            let plan = crate::platform::failure::RecoveryPlan::restart_container(
+                open.failure_id.clone(),
+                id.to_owned(),
+                spec.id.clone(),
+            );
+            crate::platform::failure::recovery::insert_plan(conn, &plan)?;
+            crate::platform::failure::recovery::insert_receipt(
+                conn,
+                &crate::platform::failure::RecoveryReceipt {
+                    recovery_id: plan.recovery_id.clone(),
+                    failure_id: open.failure_id.clone(),
+                    status: "completed".into(),
+                    approval_id: Some(approval_id.clone()),
+                    completed_at: chrono::Utc::now(),
+                    detail: serde_json::json!({"containerId": ensured.container_id}),
+                },
+            )?;
+            crate::platform::failure::FailureAuthority::transition(
+                conn,
+                open.failure_id.as_str(),
+                crate::platform::failure::FailureLifecycleState::Resolved,
+                crate::platform::failure::TransitionReason::Resolved,
+                "container_restart",
+            )?;
+            crate::domains::containers::clear_current(conn, id)?;
+        }
+        Ok(())
+    });
+    Ok(json!({
+        "containerId": ensured.container_id,
+        "baseUrl": ensured.base_url,
+        "specId": ensured.spec_id,
+        "locality": ensured.locality.as_str(),
+        "replacedPid": stopped.as_ref().map(|value| value.pid),
+        "replacementMode": "declared-command-force",
+        "approvalId": approval_id,
+        "declarationOrigin": approved.origin.to_json(),
+        "status": "ready",
+    }))
+}
+
 async fn dispatch_plugins(
     method: &str,
     path: &str,
@@ -3830,17 +6540,16 @@ mod diagnostics_tests {
     use tempfile::tempdir;
 
     fn capability_rejection() -> JsonHttpResponse {
-        JsonHttpResponse {
-            status: StatusCode::CONFLICT,
-            body: json!({
+        JsonHttpResponse::with_status(
+            StatusCode::CONFLICT,
+            json!({
                 "code": "capability_mismatch",
                 "container_id": "ctr_9",
                 "missingOperations": ["rollouts/start"],
                 "remediation": "Re-probe the container, then start only against a declared capability set.",
                 "retryable": false
             }),
-            extra_headers: Vec::new(),
-        }
+        )
     }
 
     #[tokio::test]
@@ -3978,6 +6687,165 @@ mod tests {
     use super::*;
 
     #[test]
+    fn capture_scope_names_its_subject_or_refuses() {
+        assert_eq!(CaptureScope::parse("app", None).unwrap(), CaptureScope::App);
+        // A target on an app capture is meaningless, not fatal: there is
+        // nothing to point it at, and refusing would only make the tool fussy.
+        assert_eq!(
+            CaptureScope::parse("app", Some("visuals")).unwrap(),
+            CaptureScope::App
+        );
+        assert_eq!(
+            CaptureScope::parse("plugin", Some("visuals")).unwrap(),
+            CaptureScope::Plugin("visuals".into())
+        );
+        assert_eq!(
+            CaptureScope::parse("visual", Some("vis_1")).unwrap(),
+            CaptureScope::Visual("vis_1".into())
+        );
+        assert_eq!(
+            CaptureScope::parse("element", Some("visuals-preview")).unwrap(),
+            CaptureScope::Element("visuals-preview".into())
+        );
+
+        // A scope that names a destination must actually name one. Whitespace
+        // is not a target: it would route nowhere and photograph whatever the
+        // window happened to be showing.
+        for (scope, target) in [
+            ("plugin", None),
+            ("plugin", Some("   ")),
+            ("visual", None),
+            ("element", None),
+        ] {
+            assert!(
+                CaptureScope::parse(scope, target).is_err(),
+                "{scope} {target:?}"
+            );
+        }
+        // Only destinations the display contract admits.
+        assert!(CaptureScope::parse("plugin", Some("settings")).is_err());
+        assert!(CaptureScope::parse("window", None).is_err());
+    }
+
+    #[test]
+    fn only_a_visual_capture_routes_away_and_resets_scroll() {
+        // Scroll position is app state; a capture that silently scrolled the
+        // user's window to the top would be photographing a different app than
+        // the one it was asked about. Only a review, whose subject is the
+        // visual's own surface, resets it.
+        assert!(CaptureScope::Visual("vis_1".into()).resets_scroll());
+        assert!(!CaptureScope::App.resets_scroll());
+        assert!(!CaptureScope::Plugin("visuals".into()).resets_scroll());
+        assert!(!CaptureScope::Element("x".into()).resets_scroll());
+
+        // `element` crops what is already on screen, so it must not navigate.
+        assert!(CaptureScope::Plugin("visuals".into()).routes());
+        assert!(CaptureScope::Visual("vis_1".into()).routes());
+        assert!(!CaptureScope::App.routes());
+        assert!(!CaptureScope::Element("x".into()).routes());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn solid_png(width: u32, height: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            // Encode the x coordinate into red and y into green so a crop can
+            // be checked for position, not just for size.
+            let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+            for y in 0..height {
+                for x in 0..width {
+                    pixels.extend_from_slice(&[x as u8, y as u8, 0, 255]);
+                }
+            }
+            writer.write_image_data(&pixels).unwrap();
+        }
+        out
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn crop_applies_the_display_scale_factor() {
+        // The rect arrives in CSS pixels and the snapshot is in device pixels.
+        // Without the scale factor a 2x display crops the top-left quadrant of
+        // the intended region and calls it the element.
+        let image = solid_png(200, 200);
+        let rect = CaptureRect {
+            x: 10.0,
+            y: 20.0,
+            width: 30.0,
+            height: 40.0,
+        };
+
+        let at_1x = crop_png(&image, rect, 1.0).unwrap();
+        assert_eq!(png_dimensions(&at_1x), Some((30, 40)));
+
+        let at_2x = crop_png(&image, rect, 2.0).unwrap();
+        assert_eq!(png_dimensions(&at_2x), Some((60, 80)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn crop_rounds_outward_so_a_border_is_not_clipped() {
+        // A half-pixel box that rounded inward would shave the element's own
+        // border — exactly the evidence a layout review is looking at.
+        let image = solid_png(100, 100);
+        let rect = CaptureRect {
+            x: 10.5,
+            y: 10.5,
+            width: 20.2,
+            height: 20.2,
+        };
+        let cropped = crop_png(&image, rect, 1.0).unwrap();
+        assert_eq!(png_dimensions(&cropped), Some((21, 21)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn crop_clamps_to_the_image_and_refuses_an_offscreen_element() {
+        let image = solid_png(100, 100);
+
+        // Partly offscreen: keep the visible part rather than failing.
+        let overhang = CaptureRect {
+            x: 80.0,
+            y: 80.0,
+            width: 40.0,
+            height: 40.0,
+        };
+        assert_eq!(
+            png_dimensions(&crop_png(&image, overhang, 1.0).unwrap()),
+            Some((20, 20))
+        );
+
+        // Entirely offscreen has nothing to show, and a zero-pixel PNG would be
+        // a worse answer than an error that says the element is not visible.
+        let gone = CaptureRect {
+            x: 400.0,
+            y: 400.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        let error = crop_png(&image, gone, 1.0).unwrap_err().to_string();
+        assert!(error.contains("not visible"), "{error}");
+    }
+
+    #[test]
+    fn agent_secret_workload_selects_only_fixed_wire_operations() {
+        let chat = agent_use_policy(None).unwrap();
+        assert_eq!(chat.operations, vec!["chat.completions.create"]);
+
+        let codex = agent_use_policy(Some("codex_responses")).unwrap();
+        assert_eq!(codex.operations, vec!["responses.create"]);
+        assert_eq!(codex.max_calls, chat.max_calls);
+        assert_eq!(codex.max_cost_usd, chat.max_cost_usd);
+
+        assert!(agent_use_policy(Some("arbitrary.operations")).is_err());
+    }
+
+    #[test]
     fn preserves_explicit_runtime_family_for_gepa_v2_selection() {
         let info = json!({
             "runtime_family": "healthbench",
@@ -3987,6 +6855,25 @@ mod tests {
         assert_eq!(
             observed_task_family(Some(&info), None, None).as_deref(),
             Some("healthbench")
+        );
+    }
+
+    #[test]
+    fn keeps_benchmark_family_separate_from_live_visual_family() {
+        let info = json!({
+            "liveEval": {
+                "family": "harbor",
+                "benchmarkFamily": "runebench"
+            }
+        });
+        assert_eq!(
+            observed_task_family(
+                Some(&info),
+                Some(crate::visuals::LiveEvalFamily::Harbor),
+                Some("runebench")
+            )
+            .as_deref(),
+            Some("runebench")
         );
     }
 
@@ -4023,6 +6910,16 @@ mod tests {
     }
 
     #[test]
+    fn bundle_inspection_failure_is_not_reported_as_a_lite_seal() {
+        let failed = trace_import_note("container_bundle", false, false);
+        assert!(failed.contains("See validation"));
+        assert!(!failed.contains("lite seal"));
+        assert!(trace_import_note("container_seal", false, false).contains("lite seal"));
+        assert_eq!(trace_import_note("container_bundle", true, true),
+            "Sealed Trace V5 is now indexed in Workshop.");
+    }
+
+    #[test]
     fn lite_seal_import_receipt_is_not_inspectable() {
         let receipt = json!({
             "sourceKind": "container_seal",
@@ -4047,6 +6944,7 @@ mod tests {
                 minimum_rendered_frame_count: 1,
                 minimum_semantic_event_count: 1,
                 require_terminal: true,
+                authoring_affordances: None,
             },
         }
     }
@@ -4067,9 +6965,109 @@ mod tests {
         }
     }
 
+    fn certification_identity() -> Value {
+        json!({
+            "schemaVersion": "synth.visual-certification-identity.v1",
+            "visualId": "vis_1",
+            "revision": 14,
+            "templateDigest": "sha256:template",
+            "rendererDigest": "sha256:renderer",
+            "bindingsDigest": "bindings-14",
+            "contentDigest": null
+        })
+    }
+
+    #[test]
+    fn capture_receipt_rejects_screenshot_bytes_changed_after_capture() {
+        let temp = tempfile::tempdir().unwrap();
+        let screenshot = temp.path().join("capture.png");
+        fs::write(&screenshot, b"original pixels").unwrap();
+        let screenshot_text = screenshot.to_string_lossy().to_string();
+        let digest = format!("sha256:{:x}", sha2::Sha256::digest(b"original pixels"));
+        fs::write(
+            screenshot.with_extension("observations.json"),
+            serde_json::to_vec(&json!({
+                "schemaVersion": "synth.visual-capture-observation.v2",
+                "visualId": "vis_1",
+                "revision": 14,
+                "screenshotPath": screenshot_text,
+                "screenshotSha256": digest,
+                "viewport": {"width": 1280, "height": 900},
+                "captureTime": "2026-09-03T00:00:00Z",
+                "certificationIdentity": certification_identity(),
+                "observation": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        capture_observation_receipt(&screenshot_text).unwrap();
+        fs::write(&screenshot, b"changed pixels").unwrap();
+        assert!(capture_observation_receipt(&screenshot_text)
+            .unwrap_err()
+            .to_string()
+            .contains("bytes do not match"));
+    }
+
+    #[test]
+    fn review_viewport_must_come_from_the_capture_receipt() {
+        let receipt = VisualCaptureObservationReceipt {
+            schema_version: "synth.visual-capture-observation.v2".into(),
+            visual_id: "vis_1".into(),
+            revision: 14,
+            screenshot_path: "/tmp/capture.png".into(),
+            screenshot_sha256: "sha256:pixels".into(),
+            viewport: VisualCaptureViewport {
+                width: 1280,
+                height: 900,
+            },
+            capture_time: "2026-09-03T00:00:00Z".into(),
+            certification_identity: certification_identity(),
+            observation: None,
+        };
+        validate_review_viewport(&receipt, 1280, 900).unwrap();
+        let error = validate_review_viewport(&receipt, 390, 844)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("authoritative capture viewport 1280x900"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn compact_review_temporarily_relaxes_the_desktop_window_minimum() {
+        assert!(!review_capture_requires_relaxed_minimum(1280.0, 900.0));
+        assert!(review_capture_requires_relaxed_minimum(390.0, 844.0));
+        assert!(review_capture_requires_relaxed_minimum(1280.0, 500.0));
+    }
+
+    #[test]
+    fn certification_requires_a_clean_matching_build_and_executable() {
+        let identity = json!({
+            "sourceRevision": "abc123",
+            "buildRevision": "abc123",
+            "executableDigest": format!("sha256:{}", "a".repeat(64)),
+        });
+        validate_certification_build_identity(&identity).unwrap();
+
+        let mut dirty = identity.clone();
+        dirty["sourceRevision"] = json!("abc123-dirty");
+        dirty["buildRevision"] = json!("abc123-dirty");
+        assert!(validate_certification_build_identity(&dirty).is_err());
+
+        let mut mismatched = identity.clone();
+        mismatched["sourceRevision"] = json!("other");
+        assert!(validate_certification_build_identity(&mismatched).is_err());
+
+        let mut digestless = identity;
+        digestless["executableDigest"] = Value::Null;
+        assert!(validate_certification_build_identity(&digestless).is_err());
+    }
+
     fn review(width: u64, passing: bool, observation: Option<&RenderedVisualObservation>) -> Value {
         let checks: serde_json::Map<String, Value> = BASE_AUTHORING_CHECKS
             .iter()
+            .chain(EVIDENCE_AUTHORING_CHECKS.iter())
             .chain(["screenshotInspected", "imageReplay"].iter())
             .map(|check| ((*check).to_string(), json!(passing)))
             .collect();
@@ -4079,6 +7077,8 @@ mod tests {
             "checks": Value::Object(checks),
             "findings": [],
             "screenshotPath": format!("/tmp/vis_1-r14-{width}x900.png"),
+            "screenshotSha256": format!("sha256:screenshot-{width}"),
+            "certificationIdentity": certification_identity(),
             "captureTime": "2026-08-17T01:00:00Z",
             "observations": observation.map(|value| serde_json::to_value(value).unwrap()),
             "reviewedAt": "2026-08-17T01:00:01Z",
@@ -4088,6 +7088,80 @@ mod tests {
     /// Seeds 202/204: honest pre-start reviews (no frames yet) kept vetoing
     /// readiness after terminal evidence arrived on the same revision, and the
     /// only workaround was a cosmetic revision bump.
+    #[test]
+    fn a_template_requires_only_the_evidence_affordances_it_declares() {
+        // A static analysis projection of immutable sealed evidence has no
+        // temporal control. Demanding one made it uncertifiable no matter how
+        // truthful the review was.
+        let mut template = TemplateMeta {
+            schema_version: "synth.visual-template.v1".into(),
+            id: "analysis.annotation_workbench.v1".into(),
+            template_digest: "sha256:test-template".into(),
+            title: String::new(),
+            genre: None,
+            family: None,
+            version: None,
+            description: None,
+            tags: Vec::new(),
+            path: None,
+            shell_path: None,
+            renderer_path: None,
+            source_kind: None,
+            renderer_kind: None,
+            example_binding: None,
+            inputs: Vec::new(),
+            slots: Vec::new(),
+            components: Vec::new(),
+            binding_schema: Vec::new(),
+            observation_contract: Some(crate::visuals::TemplateObservationContract {
+                schema_version: "synth.visual-observation-contract.v1".into(),
+                readiness: crate::visuals::TemplateReadinessContract {
+                    reject_transport_states: vec!["idle".into()],
+                    minimum_rollout_count: 0,
+                    minimum_rendered_frame_count: 0,
+                    minimum_semantic_event_count: 1,
+                    require_terminal: true,
+                    authoring_affordances: None,
+                },
+            }),
+        };
+
+        // Undeclared keeps every evidence check: nothing is relaxed by default.
+        let strict = required_authoring_checks(&template);
+        for check in EVIDENCE_AUTHORING_CHECKS {
+            assert!(strict.contains(&check), "{check} must stay required");
+        }
+
+        if let Some(contract) = template.observation_contract.as_mut() {
+            contract.readiness.authoring_affordances = Some(vec![
+                crate::visuals::AuthoringAffordance::TraceInspector,
+                crate::visuals::AuthoringAffordance::RealEvidence,
+            ]);
+        }
+        let declared = required_authoring_checks(&template);
+        assert!(declared.contains(&"traceInspector"));
+        assert!(declared.contains(&"realEvidence"));
+        assert!(
+            !declared.contains(&"temporalControls"),
+            "a surface with no temporal control must not be asked for one"
+        );
+        // The base checks are never negotiable.
+        for check in BASE_AUTHORING_CHECKS {
+            assert!(declared.contains(&check), "{check} must stay required");
+        }
+        assert!(declared.contains(&"screenshotInspected"));
+
+        // An empty declaration cannot disable the strict defaults, even when
+        // a TemplateMeta is constructed directly instead of loaded.
+        if let Some(contract) = template.observation_contract.as_mut() {
+            contract.readiness.authoring_affordances = Some(Vec::new());
+        }
+        let empty = required_authoring_checks(&template);
+        for check in EVIDENCE_AUTHORING_CHECKS {
+            assert!(empty.contains(&check), "{check} must fail closed");
+        }
+    }
+
     #[test]
     fn certification_uses_the_latest_review_at_each_width_not_all_history() {
         let contract = live_contract();
@@ -4113,6 +7187,7 @@ mod tests {
             &required,
             Some(&contract),
             Some("bindings-14"),
+            &certification_identity(),
         )
         .expect("terminal evidence must certify over a superseded pre-start failure");
         assert_eq!(receipts.len(), 2);
@@ -4144,10 +7219,33 @@ mod tests {
             &required,
             Some(&contract),
             Some("bindings-14"),
+            &certification_identity(),
         )
         .unwrap_err()
         .to_string();
         assert!(error.contains("width 640"), "{error}");
+    }
+
+    #[test]
+    fn certification_rejects_reviews_from_an_old_renderer_identity() {
+        let required = required_authoring_checks(
+            &crate::visuals::resolve_template("trace.rollout_inspector.v1").unwrap(),
+        );
+        let first = review(1280, true, None);
+        let mut second = review(640, true, None);
+        second["certificationIdentity"]["rendererDigest"] = json!("sha256:old-renderer");
+        let error = certification_receipts(
+            "vis_1",
+            14,
+            &[&first, &second],
+            &required,
+            None,
+            None,
+            &certification_identity(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("different visual bytes"), "{error}");
     }
 
     /// The Trace inspector renders no image frames. Its contract must still be
@@ -4174,6 +7272,7 @@ mod tests {
             &required,
             Some(&contract),
             Some("bindings-14"),
+            &certification_identity(),
         )
         .expect("a sealed trace projection is terminal evidence");
         assert_eq!(receipts.len(), 2);
@@ -4186,12 +7285,18 @@ mod tests {
         );
         let first = review(1280, true, None);
         let second = review(1280, true, None);
-        assert!(
-            certification_receipts("vis_1", 14, &[&first, &second], &required, None, None)
-                .unwrap_err()
-                .to_string()
-                .contains("two distinct viewport widths")
-        );
+        assert!(certification_receipts(
+            "vis_1",
+            14,
+            &[&first, &second],
+            &required,
+            None,
+            None,
+            &certification_identity(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("two distinct viewport widths"));
     }
 
     #[test]
@@ -4202,6 +7307,28 @@ mod tests {
         assert!(required_authoring_checks(&template).contains(&"imageReplay"));
         template.observation_contract = None;
         assert!(!required_authoring_checks(&template).contains(&"imageReplay"));
+    }
+
+    #[test]
+    fn static_diagram_requires_visual_checks_not_live_evidence_controls() {
+        let template = crate::visuals::resolve_template("diagram.mermaid.v1").unwrap();
+        let required = required_authoring_checks(&template);
+        for check in [
+            "rendered",
+            "noOverflow",
+            "primarySurfaceVisible",
+            "screenshotInspected",
+            "noTextCollisions",
+            "focalDensity",
+        ] {
+            assert!(required.contains(&check), "missing {check}");
+        }
+        for check in ["temporalControls", "traceInspector", "realEvidence"] {
+            assert!(
+                !required.contains(&check),
+                "static diagram required {check}"
+            );
+        }
     }
 
     #[test]
@@ -4383,8 +7510,9 @@ mod tests {
     fn scripted_rollouts_bind_slot_stream() {
         assert!(require_scripted_stream_slot(&json!({})).is_ok());
         assert!(require_scripted_stream_slot(&json!({"slot": "stream"})).is_ok());
+        assert!(require_scripted_stream_slot(&json!({"input": "stream"})).is_ok());
         assert!(require_scripted_stream_slot(&json!({"slot": "live"})).is_err());
-        assert!(require_scripted_stream_slot(&json!({"slot": "jobs"})).is_err());
+        assert!(require_scripted_stream_slot(&json!({"input": "jobs"})).is_err());
     }
 
     #[test]
@@ -4603,11 +7731,12 @@ mod tests {
     }
 
     #[test]
-    fn harbor_and_digbench_register_metadata_is_visual_first() {
+    fn harbor_register_metadata_is_visual_first() {
         let harbor =
             live_eval_bind_metadata(crate::visuals::LiveEvalFamily::Harbor, &json!({}), None)
                 .unwrap();
         assert_eq!(harbor["templateId"], "live.harbor_eval.v1");
+        assert_eq!(harbor["input"], "stream");
         assert_eq!(harbor["slot"], "stream");
         assert_eq!(harbor["liveFrames"], "unsupported");
         assert_eq!(harbor["policyRefs"].as_array().map(Vec::len), Some(2));
@@ -4617,11 +7746,119 @@ mod tests {
             None
         )
         .is_err());
-        let digbench =
-            live_eval_bind_metadata(crate::visuals::LiveEvalFamily::Digbench, &json!({}), None)
-                .unwrap();
-        assert_eq!(digbench["templateId"], "live.digbench.v1");
-        assert_eq!(digbench["policyRefs"][0]["harness"], "react_legal_actions");
-        assert_eq!(digbench["policyRefs"][1]["mcp_bind"], "digbench-mcp");
+    }
+
+    #[test]
+    fn portable_trace_png_is_extracted_and_verified_for_eval_cas() {
+        use std::io::Write;
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+            .unwrap();
+        let digest = format!("sha256:{:x}", sha2::Sha256::digest(&png));
+        let uri = format!("blobs/sha256/{}/{}", &digest[7..9], &digest[7..]);
+        let document = json!({
+            "identity": {"rollout_id": "roll_portable"},
+            "provenance": {
+                "producer_commit": "containers@abc123",
+                "container_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "artifacts": [{
+                "artifact_id": "frame_0",
+                "digest": digest,
+                "media_type": "image/png",
+                "size_bytes": png.len(),
+                "uri": uri,
+            }],
+            "events": [{
+                "event_type": "frame",
+                "artifact_ids": ["frame_0"],
+                "payload": {"step": 0, "source_event_digest": "producer16"},
+            }],
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("portable.zip");
+        let file = fs::File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        archive
+            .start_file("traces/roll_portable/sealed/trace.json", options)
+            .unwrap();
+        archive
+            .write_all(&serde_json::to_vec(&document).unwrap())
+            .unwrap();
+        archive.start_file(&uri, options).unwrap();
+        archive.write_all(&png).unwrap();
+        archive.finish().unwrap();
+
+        let (frames, max_step, provenance) =
+            extract_imported_trace_frames(&archive_path, "roll_portable").unwrap();
+        assert_eq!(frames.len(), 1);
+        // This bundle has no environment event, so it establishes no
+        // environment step. The frame's own `step` is a claim about the frame.
+        assert_eq!(max_step, None);
+        assert_eq!(frames[0].bytes, png);
+        assert_eq!(frames[0].step, 0);
+        assert_eq!(frames[0].width, 1);
+        assert_eq!(frames[0].height, 1);
+        assert_eq!(frames[0].producer_digest.as_deref(), Some("producer16"));
+        assert_eq!(provenance.unwrap()["producer_commit"], "containers@abc123");
+    }
+
+    /// A producer that numbers frames sequentially and files that number under
+    /// `step` must not raise the environment step ceiling. RuneBench does this:
+    /// 236 frames claim steps 0-235 while the episode reaches step 22.
+    #[test]
+    fn frame_ordinals_do_not_inflate_the_reported_environment_step() {
+        use std::io::Write;
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+            .unwrap();
+        let digest = format!("sha256:{:x}", sha2::Sha256::digest(&png));
+        let uri = format!("blobs/sha256/{}/{}", &digest[7..9], &digest[7..]);
+        let mut events = vec![
+            json!({"event_type": "observation", "payload": {"step": 1}}),
+            json!({"event_type": "action", "payload": {"step": 2, "action": "chop"}}),
+        ];
+        for ordinal in 0..6 {
+            events.push(json!({
+                "event_type": "frame",
+                "artifact_ids": ["frame_0"],
+                "payload": {"step": ordinal, "source_event_digest": format!("producer{ordinal}")},
+            }));
+        }
+        let document = json!({
+            "identity": {"rollout_id": "roll_ordinal"},
+            "provenance": {
+                "producer_commit": "containers@abc123",
+                "container_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "artifacts": [{
+                "artifact_id": "frame_0",
+                "digest": digest,
+                "media_type": "image/png",
+                "size_bytes": png.len(),
+                "uri": uri,
+            }],
+            "events": events,
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("ordinal.zip");
+        let file = fs::File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        archive
+            .start_file("traces/roll_ordinal/sealed/trace.json", options)
+            .unwrap();
+        archive
+            .write_all(&serde_json::to_vec(&document).unwrap())
+            .unwrap();
+        archive.start_file(&uri, options).unwrap();
+        archive.write_all(&png).unwrap();
+        archive.finish().unwrap();
+
+        let (_frames, max_step, _provenance) =
+            extract_imported_trace_frames(&archive_path, "roll_ordinal").unwrap();
+        // Six frames claim up to step 5; the episode only ever reached step 2.
+        assert_eq!(max_step, Some(2));
     }
 }

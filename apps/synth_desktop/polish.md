@@ -20,7 +20,7 @@ Owner handoff: [`HANDOFF_POLISH_CUA_TESTS.md`](./HANDOFF_POLISH_CUA_TESTS.md).
 
 ### 2026-08-09 — Bootstrap (prior work)
 
-- **Shipped:** Removed stub LoRA / Finetunes UI (Composer + Settings); Settings shows Adapters · Not wired; Inventory Attach defaults to Craftax `http://127.0.0.1:8098`.
+- **Shipped:** Removed stub LoRA / Finetunes UI (Composer + Settings); Settings shows Adapters · Not wired; Inventory Attach defaults to Craftax GameBench rust `http://127.0.0.1:8080`.
 - **Tests:** Added `tests/playwright/design-debt.spec.ts` (4 design locks + 9 `test.fail` debt flags) and `tests/design_debt.test.mjs` (static stub greps + LoRA regression locks). Documented in `testing.md`.
 - **Flagged:** Account / Downloads / Expand toast stubs; Always-ask inert; Set up agent stub; Reload Laguna stub; async leave-safe `!isSync`; Codex `adapter: null`; VisualHost Craftax preview heuristics; Attach/Open-trace browser dogfood fragility.
 - **CUA notes:** Empty Inventory screenshot archived at `refs/inventory-containers-empty.png`.
@@ -378,3 +378,24 @@ Pick from debt flags or CUA; log when done.
 - **Tests:** Typecheck passes. Focused Synth Cloud and layout Playwright coverage passes 12/12, including short-window containment, terminal layering, names-only cloud rows, Advanced metadata, and the current Account destination for API-key setup. The broader static accessibility slice has one unrelated existing failure because `App.tsx` currently contains reachable `nativeIntern.createSession` code.
 - **CUA notes:** The already-running `aesthetic-audit` native app is an installed debug bundle rather than an HMR process, so it continued to display its pre-change model menu. Browser-built Playwright exercised the updated renderer; a new native build/install is required for installed-app visual confirmation.
 - **Refs:** `components/Composer.tsx`, `styles/app.css`, `tests/playwright/synth-cloud-provider.spec.ts`, `visual_style_guide_v0p1.md`.
+### 2026-08-21 — Optimizer sidecar ownership survives app restart
+
+- **CUA finding:** Stopping and relaunching a named v0.7 app left its previous GEPA service alive. Pressing **Start** created a second sidecar against the same instance database, and **Stop** terminated only the new process while reporting success.
+- **Shipped:** The typed instance-scoped runtime lease is now the durable sidecar authority across Workshop boots. A fresh manager reports a live previous-boot process as degraded, **Start** terminates the verified leased process group before spawning, and **Stop** terminates a verified leased process even when no in-memory `Child` exists. The two incompatible writers for `runtime-lease.json` were consolidated into one versioned record with PID start identity, process-group identity, instance/boot identity, runtime identity, service URL, and database digest.
+- **Safety:** Reconciliation validates instance ID, PID start identity, and isolated process-group ownership before signaling. Sentinel, host, foreign-instance, and PID-reuse cases remain fail-closed.
+- **Tests:** Native Rust regressions model a second Workshop boot and prove Start leaves one replacement sidecar while Stop leaves zero processes and removes the lease. Existing process-group refusal and supervisor-drain tests remain the safety boundary. Packaged CUA restart verification is required before completion.
+- **Refs:** `src-tauri/src/optimizers/manager.rs`, `src-tauri/src/secrets/lease.rs`, `scripts/desktop-instance.sh`.
+### 2026-09-07 — External-agent visual presentation
+
+- **Implemented:** An external MCP client can create a shared visual without a hosted chat, request its focused library preview and native full screen, then capture real pixels. The shell and visual library consume one presentation intent; late responses cannot replace a newer requested visual. Missing targets surface an error. Focused previews fill the available canvas through the existing visual host boundary.
+- **Verification:** Typecheck and focused Playwright presentation/chart tests pass. A real named development instance passed MCP creation, revision-conflict, presentation and native capture checks. The full-screen PNG was inspected: the diagram is centered on the full-height canvas, with its toolbar visible and no clipped content. Its native receipt reports full screen and the requested visual revision. The test restores windowed mode.
+- **Limits:** The raw dev binary was unavailable to CUA; signed installed-app acceptance remains pending. Browser fixtures are UI tests only. No provider calls or Keychain operations were used.
+- **Refs:** `runtime/visualPresentation.ts`, `components/VisualsPage.tsx`, `styles/app.css`, `scripts/test-workshop-mcp.py`, and `docs/engineering/capability-migration-ledger.md`.
+
+
+## Hosted agents and attachable desktop (2026-09-07)
+
+- **Changed:** Settings → Context includes hosted ACP task creation, prompt sending, retained history, cancellation, explicit resume and one-time human permission controls. It uses existing Settings components and generated native commands.
+- **Runtime:** Closing/detaching a view leaves the instance owner available to MCP. Visual presentation and app capture can attach the view again. ACP tasks use real session/run records and the shared approval broker.
+- **Verification:** Native acceptance passed 339-tool discovery/schema checks, headless survival, ACP streaming, self-approval rejection, permission cancellation, replay and crash handling. Focused browser tests passed for the panel and visual routing. Provider-specific authenticated adapters and installed release packaging have not been certified.
+- **Refs:** `components/AgentHostingPanel.tsx`, `session/acp`, `platform/desktop_runtime.rs`, `scripts/test-workshop-runtime.py` and the capability migration ledger.

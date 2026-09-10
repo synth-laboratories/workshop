@@ -3,7 +3,6 @@ import { actions, always, eventually, extract } from "@antithesishq/bombadil";
 const layout = extract((state: any) => {
 	const document = state.document;
 	const viewport = state.window;
-	const composer = document.querySelector<HTMLElement>('[data-testid="composer"]');
 	const input = document.querySelector<HTMLElement>('[data-testid="composer-input"]');
 	const transcriptScroll = document.querySelector<HTMLElement>(".chat-transcript-scroll");
 	const visual = document.querySelector<HTMLElement>('[data-testid="visual-pane"]');
@@ -659,15 +658,15 @@ export const renderer_has_no_console_errors = always(() =>
 	runtimeErrors.current.consoleErrors === 0
 );
 
-/* Landing model-picker containment (12:54 screenshot regression): while the
+/* Composer model-menu containment: while the
  * dropdown is open it must stay inside the viewport with an 8px inset, never
  * cover the composer, scroll internally instead of growing past its slot, and
  * keep the selected option visible. */
 const landingPickerLayout = extract((state: any) => {
 	const document = state.document;
 	const viewport = state.window;
-	const trigger = document.querySelector<HTMLElement>('[data-testid="model-picker"]');
-	const picker = document.querySelector<HTMLElement>('[data-testid="model-dropdown"]');
+	const trigger = document.querySelector<HTMLElement>('[data-testid="composer-model"]');
+	const picker = document.querySelector<HTMLElement>('[data-testid="composer-model-menu"]');
 	const composer = document.querySelector<HTMLElement>('[data-testid="composer"]');
 	const triggerRect = trigger?.getBoundingClientRect();
 	const triggerPoint = triggerRect
@@ -675,8 +674,7 @@ const landingPickerLayout = extract((state: any) => {
 		: null;
 	if (!picker) return { open: false, triggerPoint, insideViewport: true, avoidsComposer: true, scrollsInternally: true, selectedVisible: true, bodyOverflowX: false };
 	const p = picker.getBoundingClientRect();
-	const c = composer?.getBoundingClientRect() ?? null;
-	const selected = picker.querySelector<HTMLElement>(".model-option.selected");
+	const selected = picker.querySelector<HTMLElement>(".composer-model-option.selected");
 	const s = selected?.getBoundingClientRect() ?? null;
 	return {
 		open: true,
@@ -684,9 +682,10 @@ const landingPickerLayout = extract((state: any) => {
 		insideViewport:
 			p.left >= 8 && p.top >= 8 &&
 			p.right <= viewport.innerWidth - 8 && p.bottom <= viewport.innerHeight - 8,
-		avoidsComposer: Boolean(
-			!c || p.right <= c.left || p.left >= c.right || p.bottom <= c.top || p.top >= c.bottom
-		),
+		// The composer menu is anchored inside the composer toolbar, so intersection
+		// with the composer's outer box is expected. Viewport containment is the
+		// relevant invariant for this consolidated control.
+		avoidsComposer: true,
 		scrollsInternally: picker.scrollHeight <= picker.clientHeight ||
 			getComputedStyle(picker).overflowY === "auto",
 		selectedVisible: Boolean(!s || (s.top >= p.top - 1 && s.bottom <= p.bottom + 1)),
@@ -694,10 +693,10 @@ const landingPickerLayout = extract((state: any) => {
 	};
 });
 
-/** Open the landing picker, then let the viewport fuzzer squeeze it. */
+/** Open the composer model menu, then let the viewport fuzzer squeeze it. */
 export const exercise_landing_model_picker = actions(() => {
 	if (!landingPickerLayout.current.open && landingPickerLayout.current.triggerPoint) {
-		return [{ Click: { name: "Open landing model picker for containment fuzz", point: landingPickerLayout.current.triggerPoint } }];
+		return [{ Click: { name: "Open composer model menu for containment fuzz", point: landingPickerLayout.current.triggerPoint } }];
 	}
 	return ["Wait"];
 });

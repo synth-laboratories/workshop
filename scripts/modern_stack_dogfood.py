@@ -338,10 +338,6 @@ DEFAULT_PINS = {
         {"harness": "harbor_fused", "config": "luna_med"},
         {"harness": "harbor_fused", "config": "sol_med"},
     ],
-    "digbench": [
-        {"harness": "react_legal_actions", "config": "react_legal_actions"},
-        {"harness": "codex", "config": "agentic_codex", "mcp_bind": "digbench-mcp"},
-    ],
 }
 
 
@@ -415,7 +411,7 @@ def prepare_container(args: argparse.Namespace, client: IpcClient, receipt: Rece
             "templateId": template,
             "title": args.title or f"{args.name or args.family} · {rollout_id}",
             "sourceAgentId": "modern-stack-dogfood",
-            "bindings": {"schemaVersion": "synth.visual-bindings.v1", "slots": [binding]},
+            "bindings": {"schemaVersion": "synth.visual-bindings.v1", "inputs": [binding]},
             "metadata": {
                 "presentation": "pane",
                 "liveEval": live_eval,
@@ -465,16 +461,27 @@ def prepare_container(args: argparse.Namespace, client: IpcClient, receipt: Rece
     return 2
 
 
+def descriptor_input_name(item: dict[str, Any]) -> str | None:
+    input_name = item.get("input")
+    slot_name = item.get("slot")
+    if isinstance(input_name, str) and isinstance(slot_name, str) and input_name != slot_name:
+        return None
+    name = input_name if isinstance(input_name, str) else slot_name
+    return name if isinstance(name, str) else None
+
+
 def same_binding(expected: dict[str, Any], visual: dict[str, Any]) -> bool:
-    slots = (visual.get("bindings") or {}).get("slots") or []
+    bindings = visual.get("bindings") or {}
+    descriptors = bindings.get("inputs") or bindings.get("slots") or []
+    expected_name = descriptor_input_name(expected)
     return any(
-        item.get("slot") == expected.get("slot")
+        isinstance(item, dict)
+        and descriptor_input_name(item) == expected_name
         and item.get("kind") == expected.get("kind")
         and item.get("source") == expected.get("source")
         and item.get("schema") == expected.get("schema")
         and item.get("poll_url") == expected.get("poll_url")
-        for item in slots
-        if isinstance(item, dict)
+        for item in descriptors
     )
 
 
@@ -628,7 +635,7 @@ def parser() -> argparse.ArgumentParser:
 
     prepare = commands.add_parser("container-prepare")
     prepare.add_argument("--base-url", required=True)
-    prepare.add_argument("--family", choices=("craftax", "harbor", "digbench"), required=True)
+    prepare.add_argument("--family", choices=("craftax", "harbor"), required=True)
     prepare.add_argument("--name")
     prepare.add_argument("--title")
     prepare.add_argument("--rollout-id")

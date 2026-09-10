@@ -21,7 +21,7 @@ pub fn classify(kind: &ApprovalKind, active_runs: u64) -> PluginRisk {
     match kind {
         ApprovalKind::PluginLifecycle { action, .. } => match action.as_str() {
             "enable" | "disable" => PluginRisk::Low,
-            "start" | "stop" if active_runs == 0 => PluginRisk::Low,
+            "start" | "restart" | "stop" if active_runs == 0 => PluginRisk::Low,
             "stop" | "install" | "update" | "remove" => PluginRisk::High,
             _ => PluginRisk::High,
         },
@@ -29,6 +29,10 @@ pub fn classify(kind: &ApprovalKind, active_runs: u64) -> PluginRisk {
             "start" | "stop" if active_runs == 0 => PluginRisk::Low,
             _ => PluginRisk::High,
         },
+        // A validated container declaration is a bounded local mutation. It
+        // remains modal under on-request/untrusted, but `never` is an explicit
+        // operator choice to let trusted lifecycle recovery proceed.
+        ApprovalKind::ContainerLifecycle { .. } => PluginRisk::High,
         ApprovalKind::PaidCompute { .. } => PluginRisk::High,
         ApprovalKind::CredentialAccess { .. } => PluginRisk::High,
         ApprovalKind::ShellCommand { .. } => PluginRisk::High,
@@ -97,6 +101,14 @@ pub fn plugin_kind(
             true,
         ),
         "start" => ("Start the installed optimizer service", true),
+        "restart" if active_runs == 0 => (
+            "Restart the idle optimizer service; retain runs, artifacts, and visuals",
+            true,
+        ),
+        "restart" => (
+            "Restart the optimizer service while jobs are active; product safety refuses",
+            false,
+        ),
         "stop" if active_runs == 0 => ("Stop the idle optimizer service; retain runs and visuals", true),
         "stop" => (
             "Stop the optimizer service while jobs are active; product safety may refuse",
@@ -117,7 +129,7 @@ pub fn plugin_kind(
         download_size_bytes: matches!(action, "install" | "update")
             .then_some(catalog.download_size_bytes),
         network_host: matches!(action, "install" | "update").then(|| catalog.network_host.clone()),
-        service_effect: service_effect.into(),
+        service_effect: if catalog.plugin_id == super::jesterky::ID { format!("{action} the optional Jesterky runtime; analysis runs on demand") } else { service_effect.into() },
         active_runs,
         retention: retention.into(),
         always_supported,
@@ -129,19 +141,20 @@ pub fn compute_kind(
     preparation_digest: &str,
     max_cost_usd: f64,
     max_rollouts: u64,
+    provider: &str,
     proposer_model: &str,
     timeout_seconds: u64,
 ) -> ApprovalKind {
     let micros = (max_cost_usd * 1_000_000.0).round() as u64;
-    let (dataset, evaluator_model) = match recipe_id {
-        "gepa.craftax.smoke.v1" => ("craftax", "craftax_gpt_4_1_nano"),
-        _ => ("banking77", "banking77_candidate"),
-    };
     ApprovalKind::PaidCompute {
         operation: recipe_id.into(),
         parameters: json!({
             "recipeId": recipe_id,
             "preparationDigest": preparation_digest,
+            "model": {
+                "provider": provider,
+                "model": proposer_model,
+            },
         }),
         estimated_cost_usd_micros: Some(micros),
         requested_cap: PaidComputeCap {
@@ -150,11 +163,11 @@ pub fn compute_kind(
         },
         requesting_agent: "agent".into(),
         recipe_id: Some(recipe_id.into()),
-        dataset: Some(dataset.into()),
+        dataset: Some(recipe_id.into()),
         proposer_model: Some(proposer_model.into()),
-        evaluator_model: Some(evaluator_model.into()),
+        evaluator_model: Some(recipe_id.into()),
         timeout_seconds: Some(timeout_seconds),
-        credential_names: vec!["OPENAI_API_KEY".into()],
+        credential_names: vec![format!("{provider}:workshop_secrets_proxy")],
         preparation_digest: Some(preparation_digest.into()),
     }
 }
@@ -217,17 +230,12 @@ mod tests {
     }
 
     #[test]
-    fn never_auto_authorizes_risky_actions() {
+    fn never_auto_authorizes_non_human_risk_but_hands_off_paid_compute() {
         assert!(auto_decision("never", &install_kind(), 0)
             .unwrap()
             .is_some());
-        assert!(auto_decision("never", &compute(), 0).unwrap().is_some());
-        match auto_decision("never", &compute(), 0).unwrap() {
-            Some(ApprovalDecision::ApproveWithCap { cap }) => {
-                assert_eq!(cap.max_rollouts, Some(240));
-            }
-            other => panic!("expected capped auto-approval, got {other:?}"),
-        }
+        assert!(auto_decision("never", &compute(), 0).unwrap().is_none());
+        assert_eq!(classify(&compute(), 0), PluginRisk::HandOff);
     }
 
     #[test]
@@ -302,12 +310,13 @@ mod tests {
     }
 
     #[test]
-    fn craftax_compute_approval_discloses_exact_bounded_workload() {
+    fn compute_approval_discloses_the_recipe_id_not_a_shipped_task_family() {
         let approval = compute_kind(
-            "gepa.craftax.smoke.v1",
-            "sha256:craftax",
+            "gepa.workspace.v1",
+            "sha256:prep",
             1.50,
             6,
+            "openrouter",
             "gpt-5.6-luna",
             300,
         );
@@ -317,13 +326,22 @@ mod tests {
                 evaluator_model,
                 requested_cap,
                 preparation_digest,
+                parameters,
+                credential_names,
                 ..
             } => {
-                assert_eq!(dataset.as_deref(), Some("craftax"));
-                assert_eq!(evaluator_model.as_deref(), Some("craftax_gpt_4_1_nano"));
+                assert_eq!(dataset.as_deref(), Some("gepa.workspace.v1"));
+                assert_eq!(evaluator_model.as_deref(), Some("gepa.workspace.v1"));
                 assert_eq!(requested_cap.max_cost_usd_micros, Some(1_500_000));
                 assert_eq!(requested_cap.max_rollouts, Some(6));
-                assert_eq!(preparation_digest.as_deref(), Some("sha256:craftax"));
+                assert_eq!(preparation_digest.as_deref(), Some("sha256:prep"));
+                assert_eq!(
+                    parameters
+                        .pointer("/model/provider")
+                        .and_then(serde_json::Value::as_str),
+                    Some("openrouter")
+                );
+                assert_eq!(credential_names, vec!["openrouter:workshop_secrets_proxy"]);
             }
             other => panic!("expected paid compute approval, got {other:?}"),
         }

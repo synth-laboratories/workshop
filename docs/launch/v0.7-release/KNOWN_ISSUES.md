@@ -1,5 +1,34 @@
 # v0.7 known issues (living)
 
+## Shipped in v0.7.4 (2026-08-22) — user-facing known issues
+
+These are the issues published with the release, and they match the public catalog
+(`frontend/src/lib/desktopRelease.ts`, `"0.7.4"`) and changelog exactly.
+
+| # | Observed fact |
+|---|---|
+| V74-1 | The package is **ad-hoc signed and not Apple-notarized**. macOS may require Control-click → Open, or System Settings → Privacy & Security → Open Anyway, on first launch. Gatekeeper assesses it as rejected. |
+| V74-2 | Lengthy workload training end-to-end lanes were **not rerun** for this patch: ALFWorld, Craftax, HealthBench, Harvey/OpenRouter, and the full Banking77 GEPA and SFT → CISPO replays. They are outstanding follow-up, not passes. |
+| V74-3 | Hosted CISPO remains **fail-closed**; the available canary is not admissible, so no hosted CISPO pass is claimed. |
+| V74-4 | On a completed GEPA run, the compact card can show a lower rollout count than the detailed evidence panel and the raw run events, which are authoritative. Display defect only — it is not a run failure. Observed as `16 / 24` on a card whose raw terminal evidence and detailed visual both showed `20 / 24`. |
+| V74-5 | Updates are manual in v0.7. About can announce a newer version but always routes back to the official download page. |
+| V74-6 | Requires macOS 14 or later on Apple silicon. Intel Macs, Windows, and Linux are unsupported. |
+
+Release-engineering limitations (not user-facing, recorded for the next release owner):
+
+- Developer ID signing and Apple notarization are unavailable: every implemented path in
+  `scripts/release-artifact.sh` and `scripts/build-computer-use-helper.sh` requires
+  `security find-identity` or `notarytool --keychain-profile`, and the standing credential
+  constraint forbids macOS Keychain access. A non-Keychain signing/notarization mechanism must be
+  provisioned before any release can claim Developer ID or notarized status.
+- GitHub Release asset mirroring is unavailable for the same reason. Tag and branches go over SSH.
+- `scripts/desktop-instance.sh` reaches a Keychain only on its default dev-signer path;
+  `SYNTH_DESKTOP_USE_DEV_SIGNER=0` selects ad-hoc and is the compliant opt-out.
+
+---
+
+## v0.7.0-era register (historical)
+
 Seeded 2026-08-20 from the v0.7 release work register (§0, §2, §3, §4b, §7) and its keeper log. Each entry is an **observed fact**, the register id, and the owner lane. An entry is removed only when a merged PR closes it; closed entries move to the bottom with the closing SHA.
 
 ## Open

@@ -1,5 +1,9 @@
-//! Hosted Craftax GELO recipe. optimizers-beta owns algorithm execution and
-//! canonical optimizer events; Containers owns child rollout streams.
+//! Hosted Craftax GELO recipe. Canonical algorithm id is `go-ex`; GELO is the
+//! display label and this recipe id. `gelo` / `hosted_gelo` are not algorithm
+//! ids and must not be folded into `go-ex`.
+//!
+//! optimizers-beta owns algorithm execution and canonical optimizer events;
+//! Containers owns child rollout streams.
 
 use super::events::OptimizerEventDraft;
 use super::{
@@ -8,7 +12,7 @@ use super::{
     models::{
         OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope,
         OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef,
-        OPTIMIZER_EVENT_SCHEMA_VERSION,
+        TrainingJobStatus, OPTIMIZER_EVENT_SCHEMA_VERSION,
     },
     OptimizerService,
 };
@@ -18,7 +22,7 @@ use std::time::Duration;
 use tokio::{sync::watch, time::sleep};
 
 pub const HOSTED_GELO_CRAFTAX_RECIPE: &str = "gelo.craftax.hosted.v1";
-const DEFAULT_CRAFTAX_CONTAINERS_URL: &str = "http://127.0.0.1:8100";
+const DEFAULT_CRAFTAX_CONTAINERS_URL: &str = "http://127.0.0.1:8080";
 const STATE_SLICES: &[&str] = &[
     "board",
     "themes",
@@ -66,14 +70,14 @@ pub(super) async fn reconcile_persisted(
     if let Ok(batch) = client.state_batch(run_id, STATE_SLICES).await {
         append_state_batch(service, run_id, remote_status, batch).await?;
     }
-    if matches!(remote_status, "succeeded" | "failed" | "cancelled") {
+    if TrainingJobStatus::parse(remote_status).is_some_and(TrainingJobStatus::is_terminal) {
         append_terminal(
             service,
             run_id,
-            if remote_status == "succeeded" {
-                "completed"
-            } else {
-                remote_status
+            match TrainingJobStatus::parse(remote_status) {
+                Some(TrainingJobStatus::Succeeded) => "completed",
+                Some(TrainingJobStatus::Cancelled) => "cancelled",
+                _ => "failed",
             },
             remote
                 .get("error")
@@ -95,6 +99,7 @@ pub fn recipe_catalog() -> Value {
         "id": HOSTED_GELO_CRAFTAX_RECIPE,
         "title": "Hosted GELO · Craftax",
         "algorithmId": "go-ex",
+        "algorithmDisplay": "GELO",
         "task": "craftax",
         "availability": availability,
         "limits": {
@@ -112,7 +117,7 @@ pub fn recipe_catalog() -> Value {
         "prerequisites": [
             "SYNTH_OPTIMIZERS_BETA_URL (default http://127.0.0.1:8879)",
             "OPTIMIZERS_BETA_SERVICE_TOKEN",
-            "SYNTH_CONTAINERS_CRAFTAX_URL (default http://127.0.0.1:8100)",
+            "SYNTH_CONTAINERS_CRAFTAX_URL (default http://127.0.0.1:8080)",
             "optimizers-beta proposer credentials"
         ]
     })
@@ -228,7 +233,7 @@ fn craftax_containers_url() -> Result<String> {
         .with_context(|| format!("Craftax Containers URL is not a host:port: {url}"))?;
     if std::net::TcpStream::connect_timeout(&address, Duration::from_millis(500)).is_err() {
         bail!(
-            "Craftax Containers service is not listening at {url}; start the craftax_engine façade or set SYNTH_CONTAINERS_CRAFTAX_URL"
+            "Craftax Containers service is not listening at {url}; start `python -m craftax_gold` or set SYNTH_CONTAINERS_CRAFTAX_URL"
         );
     }
     Ok(url)
@@ -240,7 +245,7 @@ async fn spawn_worker(
     run_id: String,
     config: Value,
 ) {
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
@@ -249,8 +254,12 @@ async fn spawn_worker(
         if let Err(error) =
             run_worker(worker.clone(), client, run_id.clone(), config, cancel_rx).await
         {
-            eprintln!("hosted GELO worker {run_id} failed: {error:#}");
-            let _ = append_terminal(&worker, &run_id, "failed", Some(error.to_string())).await;
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!("hosted GELO worker {run_id} failed: {error:#}"),
+            );
+            let _ = append_terminal(&worker, &run_id, "failed", Some(format!("{error:#}"))).await;
         }
         worker.unregister_local_recipe(&run_id).await;
     });
@@ -261,7 +270,7 @@ async fn run_worker(
     client: HostedOptimizerClient,
     run_id: String,
     config: Value,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: super::CancelObserver,
 ) -> Result<()> {
     client.submit_json("go-ex", &run_id, config).await?;
     let mut upstream_cursor = 0u64;
@@ -285,15 +294,26 @@ async fn run_worker(
         }
         tokio::select! {
             changed = cancel.changed() => {
-                if changed.is_ok() && *cancel.borrow() {
+                if changed.is_ok() && cancel.borrow().is_some() {
                     let _ = client.cancel(&run_id).await;
-                    append_terminal(&service, &run_id, "cancelled", None).await?;
+                    let request = cancel
+                        .borrow()
+                        .as_ref()
+                        .cloned()
+                        .expect("cancel observer changed with a request");
+                    service
+                        .settle_run(
+                            run_id.clone(),
+                            super::kernel::SettleCause::Cancelled { request },
+                            None,
+                        )
+                        .await?;
                     return Ok(());
                 }
             }
             _ = sleep(Duration::from_millis(600)) => {}
         }
-        if matches!(remote_status, "succeeded" | "failed" | "cancelled") {
+        if TrainingJobStatus::parse(remote_status).is_some_and(TrainingJobStatus::is_terminal) {
             let page = client
                 .goex_optimizer_events_after(&run_id, upstream_cursor, 5_000)
                 .await?;
@@ -305,10 +325,10 @@ async fn run_worker(
             append_terminal(
                 &service,
                 &run_id,
-                if remote_status == "succeeded" {
-                    "completed"
-                } else {
-                    remote_status
+                match TrainingJobStatus::parse(remote_status) {
+                    Some(TrainingJobStatus::Succeeded) => "completed",
+                    Some(TrainingJobStatus::Cancelled) => "cancelled",
+                    _ => "failed",
                 },
                 remote
                     .get("error")
@@ -353,23 +373,22 @@ async fn append_terminal(
     status: &str,
     error: Option<String>,
 ) -> Result<()> {
-    let mut draft = OptimizerEventDraft::new(
-        match status {
-            "completed" => "optimizer.run.completed",
-            "cancelled" => "optimizer.run.cancelled",
-            _ => "optimizer.run.failed",
+    let error_payload = error.clone().map(|message| json!({ "message": message }));
+    let cause = match status {
+        "completed" => super::kernel::SettleCause::Completed,
+        "cancelled" => super::kernel::SettleCause::Cancelled {
+            request: std::sync::Arc::new(super::kernel::CancellationRequest::new(
+                super::kernel::CancellationCause::ContainerRequested,
+                "go-ex:remote",
+                format!("run:{run_id}"),
+            )),
         },
-        "go-ex",
-    )
-    .idempotency_key(format!("terminal:{status}"))
-    .level(if status == "failed" { "error" } else { "info" })
-    .delta(Map::from_iter([("status".into(), json!(status))]))
-    .raw(json!({"source": "optimizers-beta"}));
-    if let Some(message) = error {
-        draft = draft.error(json!({ "message": message }));
-    }
+        _ => super::kernel::SettleCause::Failed {
+            detail: error.unwrap_or_else(|| "hosted GELO run failed".into()),
+        },
+    };
     service
-        .append_event_payloads(run_id.to_string(), vec![draft])
+        .settle_run(run_id.to_string(), cause, error_payload)
         .await?;
     Ok(())
 }

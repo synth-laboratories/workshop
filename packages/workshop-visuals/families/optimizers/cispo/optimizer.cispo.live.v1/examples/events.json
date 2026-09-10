@@ -1,0 +1,102 @@
+{
+  "run": {
+    "schemaVersion": "optimizer_run.v1",
+    "id": "opt_cispo_live",
+    "algorithmId": "cispo",
+    "algorithmVersion": "cispo.slime.v1",
+    "status": "running",
+    "source": "hosted",
+    "objective": "CISPO clipped-importance policy optimization",
+    "createdAt": "2026-09-02T14:00:00Z",
+    "startedAt": "2026-09-02T14:00:01Z",
+    "cursorSeq": 6,
+    "capabilities": {
+      "cancel": true,
+      "streamEvents": true,
+      "stateSlices": true,
+      "checkpoints": true
+    },
+    "summary": {
+      "baseModel": "openai/gpt-oss-20b",
+      "backend": "tinker",
+      "trainingArtifactId": "sft-adapter-7"
+    }
+  },
+  "events": [
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_cispo_live:1",
+      "type": "optimizer.run.created",
+      "sequenceNumber": 1,
+      "occurredAt": "2026-09-02T14:00:01Z",
+      "optimizerRunId": "opt_cispo_live",
+      "algorithmId": "cispo",
+      "delta": { "status": "starting" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_cispo_live:2",
+      "type": "cispo.clip.identity",
+      "sequenceNumber": 2,
+      "occurredAt": "2026-09-02T14:00:02Z",
+      "optimizerRunId": "opt_cispo_live",
+      "algorithmId": "cispo",
+      "delta": {
+        "identity": "cispo.slime.v1",
+        "clip": { "clip_low": 0.0, "clip_high": 5.0 }
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_cispo_live:3",
+      "type": "training.metrics",
+      "sequenceNumber": 3,
+      "occurredAt": "2026-09-02T14:00:10Z",
+      "optimizerRunId": "opt_cispo_live",
+      "algorithmId": "cispo",
+      "delta": {
+        "step": 1,
+        "group_size": 16,
+        "reward_variance": 0.12,
+        "advantage_mean": 0.08,
+        "advantage_std": 0.31,
+        "optimizer_step": 1,
+        "train_loss": 1.4
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_cispo_live:4",
+      "type": "training.checkpoint.created",
+      "sequenceNumber": 4,
+      "occurredAt": "2026-09-02T14:00:20Z",
+      "optimizerRunId": "opt_cispo_live",
+      "algorithmId": "cispo",
+      "item": { "kind": "checkpoint", "id": "cispo-ckpt-1", "status": "created" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_cispo_live:5",
+      "type": "training.checkpoint.ready",
+      "sequenceNumber": 5,
+      "occurredAt": "2026-09-02T14:00:21Z",
+      "optimizerRunId": "opt_cispo_live",
+      "algorithmId": "cispo",
+      "item": { "kind": "checkpoint", "id": "cispo-ckpt-1", "status": "ready" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_cispo_live:6",
+      "type": "sft.model.materialized",
+      "sequenceNumber": 6,
+      "occurredAt": "2026-09-02T14:00:22Z",
+      "optimizerRunId": "opt_cispo_live",
+      "algorithmId": "cispo",
+      "item": {
+        "kind": "model",
+        "id": "cispo-ckpt-1",
+        "raw": { "baseModel": "openai/gpt-oss-20b", "checkpointId": "cispo-ckpt-1", "parentArtifactId": "sft-adapter-7" }
+      }
+    }
+  ]
+}

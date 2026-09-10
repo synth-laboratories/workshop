@@ -1,7 +1,6 @@
 //! Tauri event channel names + origin tagging. Keep in sync with
-//! `src/renderer/src/bridge/protocolConstants.ts`.
-//!
-//! Drift: `scripts/check-desktop-contract-drift.sh`.
+//! `src/renderer/src/bridge/protocolConstants.ts` `EVENT_CHANNELS` /
+//! `EVENT_ORIGINS`. Command names live in generated `protocol.ts`.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +23,7 @@ impl EventChannel {
     pub const WHISPER_RUNTIME: &'static str = "whisper:runtime";
     pub const WHISPER_DOWNLOAD: &'static str = "whisper:download";
     pub const OPTIMIZER_STATUS: &'static str = "optimizer:status";
+    pub const OPTIMIZER_INFER: &'static str = "optimizer:infer";
 }
 
 /// All known channels (for drift checks / docs).
@@ -39,6 +39,7 @@ pub const EVENT_CHANNELS: &[&str] = &[
     EventChannel::WHISPER_RUNTIME,
     EventChannel::WHISPER_DOWNLOAD,
     EventChannel::OPTIMIZER_STATUS,
+    EventChannel::OPTIMIZER_INFER,
 ];
 
 /// Who produced a boundary event.

@@ -117,6 +117,7 @@ class FakeWorkshop(BaseHTTPRequestHandler):
                             "liveEval": {
                                 "family": "harbor",
                                 "templateId": "live.harbor_eval.v1",
+                                "input": "stream",
                                 "slot": "stream",
                                 "policyRefs": body["metadata"]["policyRefs"],
                             }
@@ -125,6 +126,7 @@ class FakeWorkshop(BaseHTTPRequestHandler):
                     "liveEval": {
                         "family": "harbor",
                         "templateId": "live.harbor_eval.v1",
+                        "input": "stream",
                         "slot": "stream",
                         "policyRefs": body["metadata"]["policyRefs"],
                     },
@@ -139,7 +141,7 @@ class FakeWorkshop(BaseHTTPRequestHandler):
                 "cursor": {"kind": "sequence"},
             }
             binding = {
-                "slot": "stream",
+                "input": "stream",
                 "kind": "live_sse",
                 "source": "http://127.0.0.1:4567/rollouts/roll_harbor/events/stream",
                 "poll_url": "http://127.0.0.1:4567/rollouts/roll_harbor/events",

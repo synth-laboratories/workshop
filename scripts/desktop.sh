@@ -191,11 +191,21 @@ launch_installed() {
 }
 
 verify_desktop() {
+  local release_root="${WORKSHOP_RELEASE_ROOT:-$ROOT/../workshop-release}"
+  local instance_test="$release_root/scripts/source-checkout/test-desktop-instance.sh"
+  [[ -f "$instance_test" ]] || {
+    echo "[desktop] Full verification requires workshop-release; set WORKSHOP_RELEASE_ROOT to its checkout." >&2
+    return 1
+  }
   cd "$ROOT"
+  python3 scripts/generate-workshop-dispatch.py --check
+  node scripts/generate-workshop-schemas.mjs --check
+  node scripts/generate-desktop-preferences.mjs --check
+  python3 scripts/capability-inventory.py --check
 	enable_rust_cache
 	run_renderer_typecheck
   cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml
-  ./scripts/test-desktop-instance.sh
+  bash "$instance_test" "$ROOT"
   npm run test:playwright --workspace @synth/synth-desktop
 }
 
@@ -218,7 +228,7 @@ build_desktop() {
 	# so overlap it with the real packaging compilation instead of serializing it.
 	run_renderer_typecheck &
 	type_pid=$!
-	(cd "$ROOT/apps/synth_desktop" && npx tauri build --bundles app) || build_status=$?
+	(cd "$ROOT/apps/synth_desktop" && npx tauri build --bundles app --config src-tauri/tauri.package.json) || build_status=$?
 	wait "$type_pid" || type_status=$?
 	[[ "$type_status" -eq 0 && "$build_status" -eq 0 ]]
 }

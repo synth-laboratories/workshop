@@ -6,14 +6,18 @@
 //! fail-closed until the slime clip
 //! canary admits it.
 
+use super::cispo_client::CispoOptimizerClient;
 use super::events::OptimizerEventDraft;
-use super::mlx_runtime::MlxLoopback;
+use super::mlx_runtime::{MlxLoopback, PolicySnapshotMissing};
 use super::models::{
-    OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding,
-    OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
+    CheckpointInferRequest, OptimizerCapabilities, OptimizerCreateRequest,
+    OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
+    SavedLoraCheckpoint, TrainingJobStatus,
 };
 use super::sft_client::SftOptimizerClient;
+use super::training_adapter::{adapt_source_fact, TerminalMapping};
 use super::OptimizerService;
+use crate::error::error_is;
 use crate::ipc::{JsonHttpRequest, JsonHttpResponse};
 use anyhow::{anyhow, bail, Context, Result};
 use hyper::StatusCode;
@@ -32,16 +36,27 @@ pub const PLACEMENT_TRAINING_SFT_HOSTED: &str = "training.sft.hosted";
 pub const PLACEMENT_TRAINING_CISPO_LOCAL: &str = "training.cispo.local";
 pub const PLACEMENT_TRAINING_CISPO_HOSTED: &str = "training.cispo.hosted";
 
-pub const LOCAL_MLX_SFT_RECIPE: &str = "sft.qwen35-0.8b.mlx.v1";
-pub const LOCAL_MLX_CISPO_RECIPE: &str = "cispo.banking77.mlx.v1";
-pub const HOSTED_CISPO_RECIPE: &str = "cispo.slime.hosted.v1";
+pub const LOCAL_MLX_SFT_RECIPE: &str = "sft.qwen35-2b.mlx.v1";
+pub const LOCAL_SFT_LEARNING_RATE: f64 = 0.00001;
+pub const LOCAL_MLX_CISPO_RECIPE: &str = "cispo.mlx.v1";
+pub const HOSTED_CISPO_RECIPE: &str = "cispo.hosted.tinker.v1";
+pub const HOSTED_BANKING77_CISPO_RECIPE: &str = "cispo.banking77.tinker.v1";
+const HOSTED_CISPO_LEGACY_IDS: &[&str] =
+    &["cispo.slime.hosted.v1", "cispo.banking77.slime.tinker.v1"];
 
-const BASE_MODEL: &str = "Qwen/Qwen3.5-0.8B";
+pub fn is_hosted_cispo_recipe(recipe_id: &str) -> bool {
+    recipe_id == HOSTED_CISPO_RECIPE
+        || recipe_id == HOSTED_BANKING77_CISPO_RECIPE
+        || HOSTED_CISPO_LEGACY_IDS.contains(&recipe_id)
+        || matches!(recipe_id, "cispo.healthbench.container.v1" | "cispo.craftax.container.v1")
+}
+
+const BASE_MODEL: &str = "Qwen/Qwen3.5-2B";
 const MAX_STEPS: u64 = 4;
 const CHECKPOINT_EVERY: u64 = 2;
 const LORA_RANK: u64 = 8;
 const LORA_ALPHA: f64 = 16.0;
-const MAX_SEQ_LENGTH: u64 = 4096;
+const MAX_SEQ_LENGTH: u64 = super::mlx_runtime::LOCAL_TRAINING_MAX_SEQ_LENGTH;
 const MAX_PAGE_ERRORS: u32 = 20;
 
 #[derive(Clone, Default)]
@@ -53,7 +68,7 @@ pub struct TrainingRuntime {
 struct TrainingJob {
     placement: String,
     recipe_id: String,
-    status: String,
+    status: TrainingJobStatus,
     events: Vec<Value>,
     handoff: Value,
     cancelled: bool,
@@ -70,6 +85,12 @@ impl TrainingRuntime {
         let method = request.method.as_str();
         match (method, path) {
             ("POST", "/v1/training/jobs") => self.create_job(&request.body).await,
+            ("POST", "/v1/inference/chat/completions") => {
+                self.infer_family("chat_completions", &request.body).await
+            }
+            ("POST", "/v1/inference/responses") => {
+                self.infer_family("responses", &request.body).await
+            }
             ("GET", path) if path.starts_with("/v1/training/jobs/") => {
                 let rest = &path["/v1/training/jobs/".len()..];
                 if let Some(id) = rest.strip_suffix("/events") {
@@ -84,6 +105,8 @@ impl TrainingRuntime {
                 let rest = &path["/v1/training/jobs/".len()..];
                 if let Some(id) = rest.strip_suffix("/cancel") {
                     self.cancel_job(id).await
+                } else if let Some(id) = rest.strip_suffix("/pause") {
+                    self.hosted_control(id, "pause").await
                 } else if let Some(id) = rest.strip_suffix("/resume") {
                     self.resume_job(id).await
                 } else if let Some(id) = rest.strip_suffix("/chat") {
@@ -93,6 +116,27 @@ impl TrainingRuntime {
                 }
             }
             _ => JsonHttpResponse::error(StatusCode::NOT_FOUND, "not found"),
+        }
+    }
+
+    async fn infer_family(&self, family: &str, body: &Value) -> JsonHttpResponse {
+        match infer_from_sidecar_envelope(family, body).await {
+            Ok(outcome) => {
+                if let Some(sse) = outcome.sse {
+                    JsonHttpResponse::sse(sse)
+                } else {
+                    JsonHttpResponse::ok(outcome.json)
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let status = if message.contains("does not advertise") {
+                    StatusCode::NOT_IMPLEMENTED
+                } else {
+                    StatusCode::BAD_GATEWAY
+                };
+                JsonHttpResponse::error(status, message)
+            }
         }
     }
 
@@ -145,7 +189,7 @@ impl TrainingRuntime {
                 TrainingJob {
                     placement: placement.clone(),
                     recipe_id: recipe_id.clone(),
-                    status: "queued".into(),
+                    status: TrainingJobStatus::Queued,
                     events: Vec::new(),
                     handoff: json!({}),
                     cancelled: false,
@@ -165,7 +209,7 @@ impl TrainingRuntime {
             {
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(&drive_id) {
-                    job.status = "failed".into();
+                    job.status = TrainingJobStatus::Failed;
                     let message = format!("{error:#}");
                     job.error = Some(message.clone());
                     append_job_event(job, "job.failed", json!({"error": message}));
@@ -224,6 +268,7 @@ impl TrainingRuntime {
             .filter(|event| {
                 event
                     .get("sequence")
+                    .or_else(|| event.get("sequence_number"))
                     .and_then(Value::as_u64)
                     .is_some_and(|sequence| sequence > after)
             })
@@ -239,7 +284,9 @@ impl TrainingRuntime {
     async fn job_handoff(&self, job_id: &str) -> JsonHttpResponse {
         let jobs = self.jobs.lock().await;
         match jobs.get(job_id) {
-            Some(job) if job.status == "succeeded" => JsonHttpResponse::ok(job.handoff.clone()),
+            Some(job) if job.status == TrainingJobStatus::Succeeded => {
+                JsonHttpResponse::ok(job.handoff.clone())
+            }
             Some(_) => JsonHttpResponse::error(StatusCode::CONFLICT, "handoff is not ready"),
             None => JsonHttpResponse::error(StatusCode::NOT_FOUND, "training job not found"),
         }
@@ -251,9 +298,9 @@ impl TrainingRuntime {
             return JsonHttpResponse::error(StatusCode::NOT_FOUND, "training job not found");
         };
         job.cancelled = true;
-        if !matches!(job.status.as_str(), "succeeded" | "failed" | "cancelled") {
-            job.status = "cancelled".into();
-            append_job_event(job, "job.cancelled", json!({}));
+        if !job.status.is_terminal() {
+            job.status = TrainingJobStatus::StopRequested;
+            append_job_event(job, "job.stop_requested", json!({}));
         }
         let status = job.status.clone();
         let local = matches!(
@@ -271,6 +318,35 @@ impl TrainingRuntime {
         JsonHttpResponse::ok(json!({"job_id": job_id, "status": status}))
     }
 
+    async fn hosted_control(&self, job_id: &str, action: &str) -> JsonHttpResponse {
+        let placement = {
+            let jobs = self.jobs.lock().await;
+            let Some(job) = jobs.get(job_id) else {
+                return JsonHttpResponse::error(StatusCode::NOT_FOUND, "training job not found");
+            };
+            job.placement.clone()
+        };
+        let result = async {
+            match placement.as_str() {
+                PLACEMENT_TRAINING_SFT_HOSTED => SftOptimizerClient::from_env()?.control(job_id, action).await,
+                PLACEMENT_TRAINING_CISPO_HOSTED => CispoOptimizerClient::from_env()?.experiment_control(job_id, action).await,
+                _ => bail!("hosted training control unavailable for this placement"),
+            }
+        }.await;
+        match result {
+            Ok(remote) => {
+                let mut jobs = self.jobs.lock().await;
+                if let Some(job) = jobs.get_mut(job_id) {
+                    if let Some(status) = remote.get("status").and_then(Value::as_str).and_then(TrainingJobStatus::parse) {
+                        job.status = status;
+                    }
+                }
+                JsonHttpResponse::ok(remote)
+            }
+            Err(error) => JsonHttpResponse::error(StatusCode::BAD_GATEWAY, error.to_string()),
+        }
+    }
+
     async fn resume_job(&self, job_id: &str) -> JsonHttpResponse {
         let local = {
             let jobs = self.jobs.lock().await;
@@ -282,10 +358,7 @@ impl TrainingRuntime {
             })
         };
         if !local {
-            return JsonHttpResponse::error(
-                StatusCode::CONFLICT,
-                "resume is available only for real local MLX training jobs",
-            );
+            return self.hosted_control(job_id, "resume").await;
         }
         if let Err(error) = resume_mlx_job(job_id).await {
             return JsonHttpResponse::error(StatusCode::BAD_GATEWAY, error.to_string());
@@ -294,7 +367,7 @@ impl TrainingRuntime {
         let Some(job) = jobs.get_mut(job_id) else {
             return JsonHttpResponse::error(StatusCode::NOT_FOUND, "training job not found");
         };
-        job.status = "running".into();
+        job.status = TrainingJobStatus::Running;
         append_job_event(job, "job.resumed", json!({"from_checkpoint": true}));
         JsonHttpResponse::ok(json!({"job_id": job_id, "status": "running"}))
     }
@@ -304,11 +377,23 @@ impl TrainingRuntime {
         let Some(job) = jobs.get(job_id) else {
             return JsonHttpResponse::error(StatusCode::NOT_FOUND, "training job not found");
         };
-        let snapshot = job
+        let registered_snapshot = job
             .handoff
             .get("policy_snapshot_id")
             .cloned()
-            .unwrap_or_else(|| json!(format!("{job_id}-snap")));
+            .and_then(|value| value.as_str().map(str::to_string))
+            .filter(|value| !value.trim().is_empty());
+        let adapter_path = job
+            .handoff
+            .pointer("/inference/path")
+            .or_else(|| job.handoff.pointer("/checkpoint/path"))
+            .and_then(Value::as_str)
+            .map(PathBuf::from);
+        let artifact_digest = job
+            .handoff
+            .pointer("/checkpoint/sha256")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let prompt = body
             .get("message")
             .and_then(Value::as_str)
@@ -320,20 +405,65 @@ impl TrainingRuntime {
         );
         drop(jobs);
         if local {
-            let snapshot_id = snapshot.as_str().unwrap_or(job_id);
             match MlxLoopback::from_env() {
-                Ok(client) => match client.chat(&prompt, snapshot_id).await {
-                    Ok(reply) => {
-                        return JsonHttpResponse::ok(json!({
-                            "job_id": job_id,
-                            "policy_snapshot_id": snapshot,
-                            "reply": reply
-                        }));
+                Ok(client) => {
+                    let snapshot_id = match registered_snapshot {
+                        Some(snapshot) => snapshot,
+                        None => {
+                            let Some(adapter_path) = adapter_path else {
+                                return JsonHttpResponse::error(
+                                    StatusCode::CONFLICT,
+                                    "local checkpoint handoff omitted its adapter path",
+                                );
+                            };
+                            // A local checkpoint has bytes and a digest but no resident
+                            // snapshot after a process restart. Register the exact adapter
+                            // before inference; a guessed `-snap` identifier is not a pin.
+                            let requested_snapshot =
+                                artifact_digest.as_deref().unwrap_or(job_id).to_string();
+                            let snapshot = match client
+                                .register_policy(
+                                    &adapter_path,
+                                    &requested_snapshot,
+                                    artifact_digest.as_deref(),
+                                )
+                                .await
+                            {
+                                Ok(snapshot) => snapshot,
+                                Err(error) => {
+                                    return JsonHttpResponse::error(
+                                        StatusCode::BAD_GATEWAY,
+                                        error.to_string(),
+                                    );
+                                }
+                            };
+                            if let Some(job) = self.jobs.lock().await.get_mut(job_id) {
+                                if let Some(handoff) = job.handoff.as_object_mut() {
+                                    handoff.insert(
+                                        "policy_snapshot_id".into(),
+                                        json!(snapshot.clone()),
+                                    );
+                                }
+                            }
+                            snapshot
+                        }
+                    };
+                    match client.chat(&prompt, &snapshot_id).await {
+                        Ok(reply) => {
+                            return JsonHttpResponse::ok(json!({
+                                "job_id": job_id,
+                                "policy_snapshot_id": snapshot_id,
+                                "reply": reply
+                            }));
+                        }
+                        Err(error) => {
+                            return JsonHttpResponse::error(
+                                StatusCode::BAD_GATEWAY,
+                                error.to_string(),
+                            );
+                        }
                     }
-                    Err(error) => {
-                        return JsonHttpResponse::error(StatusCode::BAD_GATEWAY, error.to_string());
-                    }
-                },
+                }
                 Err(error) => {
                     return JsonHttpResponse::error(StatusCode::BAD_GATEWAY, error.to_string());
                 }
@@ -354,10 +484,26 @@ pub fn admitted_placements() -> Vec<&'static str> {
         PLACEMENT_TRAINING_SFT_HOSTED,
         PLACEMENT_TRAINING_CISPO_LOCAL,
     ];
-    if hosted_cispo_admitted() {
+    if hosted_cispo_receipt_admits() {
         placements.push(PLACEMENT_TRAINING_CISPO_HOSTED);
     }
     placements
+}
+
+pub(super) fn hosted_cispo_receipt_admits() -> bool {
+    let Ok(path) = std::env::var("TINKER_CISPO_VALIDATION_RECEIPT") else {
+        return false;
+    };
+    let Ok(text) = std::fs::read_to_string(path.trim()) else {
+        return false;
+    };
+    let Ok(receipt) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    receipt.get("schema_version").and_then(Value::as_str) == Some("tinker.capability_validation.v1")
+        && receipt.get("capability").and_then(Value::as_str) == Some("cispo.slime.v1")
+        && receipt.get("validated").and_then(Value::as_bool) == Some(true)
+        && receipt.get("paid_update").and_then(Value::as_bool) == Some(true)
 }
 
 pub fn merge_training_capabilities(mut upstream: Value) -> Value {
@@ -412,10 +558,6 @@ pub fn require_placement(capabilities: &Value, placement: &str) -> Result<()> {
     bail!("optimizer sidecar does not advertise placement `{placement}`")
 }
 
-fn hosted_cispo_admitted() -> bool {
-    std::env::var("SYNTH_OPTIMIZERS_CISPO_HOSTED_ADMITTED").as_deref() == Ok("1")
-}
-
 fn append_job_event(job: &mut TrainingJob, kind: &str, payload: Value) {
     let sequence = job.events.len() as u64 + 1;
     job.events.push(json!({
@@ -455,6 +597,25 @@ impl SidecarTrainingClient {
 
     pub async fn create_job(&self, body: &Value) -> Result<Value> {
         self.post("/v1/training/jobs", Some(body)).await
+    }
+
+    /// Recreate the volatile sidecar mirror for a durable hosted run after a
+    /// Workshop restart. The hosted service already owns the paid job, so this
+    /// must never submit it again; it only replays the producer log into the
+    /// in-process training job that `watch_job` consumes.
+    pub async fn attach_existing_hosted_job(
+        &self,
+        job_id: &str,
+        placement: &str,
+        recipe_id: &str,
+    ) -> Result<Value> {
+        self.create_job(&json!({
+            "job_id": job_id,
+            "placement": placement,
+            "recipe_id": recipe_id,
+            "config": { "attach_existing": true },
+        }))
+        .await
     }
 
     pub async fn job(&self, job_id: &str) -> Result<Value> {
@@ -538,21 +699,25 @@ pub async fn require_training_ready(
     super::recipes::require_plugin_ready(service.manager()).await?;
     let capabilities = service.manager().advertised_capabilities();
     let algorithm = algorithm_for_placement(placement);
-    let algorithms = capabilities
-        .get("algorithms")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect::<Vec<_>>();
-    if !algorithms
-        .iter()
-        .any(|item| *item == algorithm || *item == algorithm.split('.').next().unwrap_or(algorithm))
-    {
+    if !advertises_training_algorithm(&capabilities, algorithm) {
         bail!("optimizer runtime does not advertise algorithm `{algorithm}`");
     }
     require_placement(&capabilities, placement)?;
     SidecarTrainingClient::from_manager(service.manager()).await
+}
+
+fn advertises_training_algorithm(capabilities: &Value, algorithm: &str) -> bool {
+    capabilities
+        // Manager projections deliberately separate optimizer algorithms from
+        // evaluation execution capabilities under this canonical key.
+        .get("optimization_algorithms")
+        // Accept the raw sidecar handshake too, before manager projection.
+        .or_else(|| capabilities.get("algorithms"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|item| item == algorithm || item == algorithm.split('.').next().unwrap_or(algorithm))
 }
 
 fn algorithm_for_placement(placement: &str) -> &'static str {
@@ -596,10 +761,13 @@ pub async fn spawn_watch_worker(
     run_id: String,
     cursor: u64,
 ) {
-    let (cancel_tx, cancel_rx) = watch::channel(false);
-    service
-        .register_local_recipe(run_id.clone(), cancel_tx)
-        .await;
+    let (cancel_tx, cancel_rx) = watch::channel(None);
+    if !service
+        .try_register_local_recipe(run_id.clone(), cancel_tx)
+        .await
+    {
+        return;
+    }
     let worker = service.clone();
     tokio::spawn(async move {
         if let Err(error) =
@@ -616,12 +784,19 @@ async fn watch_job(
     client: SidecarTrainingClient,
     run_id: String,
     mut cursor: u64,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: super::CancelObserver,
 ) -> Result<()> {
     let mut errors = 0;
+    let mut gap_errors = 0;
+    let mut cancel_sent = false;
+    let mut last_observed_control_state = String::new();
     loop {
-        if *cancel.borrow() {
-            let _ = client.cancel(&run_id).await;
+        if cancel.borrow().is_some() && !cancel_sent {
+            client
+                .cancel(&run_id)
+                .await
+                .context("request sidecar training cancellation")?;
+            cancel_sent = true;
         }
         let page = match client.events_after(&run_id, cursor).await {
             Ok(page) => {
@@ -638,44 +813,154 @@ async fn watch_job(
             }
         };
         let algorithm = service.get(run_id.clone()).await?.algorithm_id;
-        for event in page
+        let events = page
             .get("events")
             .and_then(Value::as_array)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // A job can become terminal after this page was read but before the
+        // status request below.  Seeing a terminal status therefore does not
+        // prove that this was the final event page.  Require one subsequent
+        // empty read after terminal so events appended during that race are
+        // drained before the Workshop run is settled.
+        let terminal_page_drained = training_event_page_drained(&events);
+        if let Some(sequence) = events
+            .first()
+            .and_then(|event| {
+                event
+                    .get("sequence")
+                    .or_else(|| event.get("sequence_number"))
+            })
+            .and_then(Value::as_u64)
         {
+            if sequence != cursor + 1 {
+                if gap_errors < 3 {
+                    gap_errors += 1;
+                    sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+                bail!("training event sequence gap after {cursor}: {sequence}");
+            }
+            gap_errors = 0;
+        }
+        let mut drafts = Vec::new();
+        for event in events {
             let sequence = event
                 .get("sequence")
+                .or_else(|| event.get("sequence_number"))
                 .and_then(Value::as_u64)
                 .ok_or_else(|| anyhow!("training event omitted sequence"))?;
             if sequence != cursor + 1 {
                 bail!("training event sequence gap after {cursor}: {sequence}");
             }
-            append_mapped_event(&service, &run_id, &algorithm, &event, sequence).await?;
+            if event.get("kind").or_else(|| event.get("event_type")).and_then(Value::as_str) == Some("sft.child_eval.completed") {
+                if !drafts.is_empty() {
+                    service.append_event_payloads(run_id.clone(), std::mem::take(&mut drafts)).await?;
+                }
+                if let Some(child) = event.pointer("/payload/eval_job_id").and_then(Value::as_str) {
+                    let public = SftOptimizerClient::from_env()?;
+                    service.import_checkpoint_evidence(&public, &run_id, child).await?;
+                }
+            }
+            drafts.push(mapped_training_draft_with_identity(&algorithm, &event, sequence));
+            let checkpoint_created = event
+                .get("type")
+                .or_else(|| event.get("event_type"))
+                .or_else(|| event.get("kind"))
+                .and_then(Value::as_str)
+                .is_some_and(|kind| {
+                    kind == "checkpoint.created" || kind.ends_with("checkpoint.created")
+                });
+            // Commit bounded pages rather than replaying the run projection
+            // once per token/usage receipt. Flush before domain side effects.
+            if drafts.len() >= 64 || checkpoint_created {
+                service.append_event_payloads(run_id.clone(), std::mem::take(&mut drafts)).await?;
+            }
+            if checkpoint_created {
+                let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
+                let _ = service
+                    .upsert_local_lora_from_event(run_id.clone(), payload)
+                    .await;
+            }
             cursor = sequence;
+        }
+        if !drafts.is_empty() {
+            service.append_event_payloads(run_id.clone(), drafts).await?;
         }
         persist_cursor(&service, &run_id, cursor).await?;
         let job = client.job(&run_id).await?;
+        let observed_state = job.get("status").and_then(Value::as_str).unwrap_or("running");
+        if observed_state != last_observed_control_state {
+            let event_type = match observed_state {
+                "pause_requested" => Some("training.lifecycle"),
+                "paused" | "blocked_evaluation" | "blocked_budget" | "blocked_uncertain" => Some("optimizer.run.paused"),
+                "stop_requested" => Some("optimizer.run.cancelling"),
+                "running" if !last_observed_control_state.is_empty() => Some("optimizer.run.resumed"),
+                _ => None,
+            };
+            if let Some(event_type) = event_type {
+                service.append_event_payloads(run_id.clone(), vec![OptimizerEventDraft::new(event_type, &algorithm)
+                    .delta(Map::from_iter([("state".into(), json!(observed_state)), ("error".into(), job.get("error").cloned().unwrap_or(Value::Null))]))
+                    .idempotency_key(format!("training:observed-control-v1:{cursor}:{observed_state}"))]).await?;
+            }
+            last_observed_control_state = observed_state.to_string();
+        }
         match job
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("running")
         {
             "succeeded" => {
+                if !terminal_page_drained {
+                    continue;
+                }
+                if algorithm == "sft" {
+                    append_paired_sft_evaluation(&service, &run_id, &job).await?;
+                }
                 persist_handoff(&service, &client, &run_id).await?;
-                append_status(&service, &run_id, "optimizer.run.completed", "completed").await?;
+                service
+                    .settle_run(run_id.clone(), super::kernel::SettleCause::Completed, None)
+                    .await?;
+                service.open_visual(run_id.clone()).await?;
                 return Ok(());
             }
             "failed" => {
-                return Err(anyhow!(
-                    "training job failed: {}",
-                    job.get("error")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown error")
-                ));
+                if !terminal_page_drained {
+                    continue;
+                }
+                let detail = job
+                    .get("error")
+                    .and_then(|value| {
+                        value
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .or_else(|| value.get("error_code").and_then(Value::as_str))
+                            .or_else(|| value.as_str())
+                            .map(str::to_string)
+                            .or_else(|| Some(value.to_string()))
+                    })
+                    .unwrap_or_else(|| "unknown error".into());
+                append_terminal_mapping(&service, &run_id, TerminalMapping::failed(&detail))
+                    .await?;
+                return Err(anyhow!("training job failed: {detail}"));
             }
             "cancelled" => {
-                append_status(&service, &run_id, "optimizer.run.cancelled", "cancelled").await?;
+                if !terminal_page_drained {
+                    continue;
+                }
+                service
+                    .settle_run(
+                        run_id.clone(),
+                        super::kernel::SettleCause::Cancelled {
+                            request: Arc::new(super::kernel::CancellationRequest::new(
+                                super::kernel::CancellationCause::ContainerRequested,
+                                "sidecar-training:remote",
+                                format!("run:{run_id}"),
+                            )),
+                        },
+                        None,
+                    )
+                    .await?;
                 return Ok(());
             }
             _ => {}
@@ -687,6 +972,106 @@ async fn watch_job(
     }
 }
 
+async fn append_paired_sft_evaluation(
+    service: &OptimizerService,
+    run_id: &str,
+    job: &Value,
+) -> Result<()> {
+    let Some(draft) = paired_sft_evaluation_draft(job) else {
+        return Ok(());
+    };
+    service
+        .append_event_payloads(run_id.into(), vec![draft])
+        .await?;
+    Ok(())
+}
+
+fn paired_sft_evaluation_draft(job: &Value) -> Option<OptimizerEventDraft> {
+    let evaluation = job.get("evaluation")?;
+    let items = evaluation.get("items")?.as_array()?;
+    if items.is_empty() {
+        return None;
+    }
+    let mut base = Vec::with_capacity(items.len());
+    let mut trained = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let before = item.get("before_loss")?.as_f64()?;
+        let after = item.get("after_loss")?.as_f64()?;
+        let seed = item
+            .get("item")
+            .and_then(Value::as_u64)
+            .unwrap_or(index as u64)
+            .to_string();
+        // The shared paired-comparison visual uses a higher-is-better scalar.
+        // Negated token loss preserves the authoritative ordering without
+        // relabelling loss as accuracy or reward.
+        base.push(json!({ "seed": seed, "reward": -before, "loss": before }));
+        trained.push(json!({ "seed": seed, "reward": -after, "loss": after }));
+    }
+    let checkpoint_id = job
+        .get("checkpoints")
+        .and_then(Value::as_array)
+        .and_then(|items| items.last())
+        .and_then(|item| item.get("checkpoint_id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let split_digest = evaluation
+        .get("dataset_sha256")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let payload = json!({
+        "role": "heldout",
+        "metric": "negative_token_loss",
+        "measurementOnly": true,
+        "split_digest": split_digest,
+        "checkpoint_id": checkpoint_id,
+        "base": { "label": "Unchanged base model", "seeds": base },
+        "trained": { "label": "Trained SFT adapter", "seeds": trained },
+        "mean_before_loss": evaluation.get("mean_before_loss"),
+        "mean_after_loss": evaluation.get("mean_after_loss"),
+        "mean_paired_delta": evaluation.get("mean_paired_delta"),
+        "improved_items": evaluation.get("improved_items"),
+        "item_count": evaluation.get("item_count"),
+        "evaluation_sha256": evaluation.get("sha256"),
+    });
+    Some(
+        OptimizerEventDraft::new("sft.heldout_evaluation.completed", "sft")
+            .delta(payload.as_object()?.clone())
+            .item(payload)
+            .idempotency_key("local-sft:paired-heldout-evaluation"),
+    )
+}
+
+pub async fn reconcile_persisted_sft(
+    service: &OptimizerService,
+    run_id: &str,
+    summary: &Value,
+) -> Result<bool> {
+    let Some(handoff) = summary.get("adapterHandoff") else {
+        return Ok(false);
+    };
+    let evaluation = handoff.get("evaluation").cloned().unwrap_or(Value::Null);
+    if evaluation.get("status").and_then(Value::as_str) != Some("completed") {
+        return Ok(false);
+    }
+    let checkpoint = handoff.get("checkpoint").cloned().unwrap_or(Value::Null);
+    let job = json!({ "evaluation": evaluation, "checkpoints": [checkpoint] });
+    let Some(comparison) = paired_sft_evaluation_draft(&job) else {
+        return Ok(false);
+    };
+    service
+        .append_event_payloads(run_id.into(), vec![comparison])
+        .await?;
+    service
+        .settle_run(
+            run_id.to_string(),
+            super::kernel::SettleCause::Completed,
+            None,
+        )
+        .await?;
+    Ok(true)
+}
+
 pub async fn append_mapped_event(
     service: &OptimizerService,
     run_id: &str,
@@ -694,21 +1079,34 @@ pub async fn append_mapped_event(
     event: &Value,
     sequence: u64,
 ) -> Result<()> {
+    let draft = mapped_training_draft_with_identity(algorithm, event, sequence);
+    service
+        .append_event_payloads(run_id.into(), vec![draft])
+        .await?;
+    Ok(())
+}
+
+fn mapped_training_draft_with_identity(algorithm: &str, event: &Value, sequence: u64) -> OptimizerEventDraft {
+    let mut draft = mapped_training_draft(algorithm, event)
+        .idempotency_key(format!("sidecar-training:{sequence}"));
+    if draft.raw.is_null() {
+        draft = draft.raw(event.clone());
+    }
+    draft
+}
+
+fn mapped_training_draft(algorithm: &str, event: &Value) -> OptimizerEventDraft {
+    if let Ok(adapted) = adapt_source_fact(algorithm, event) {
+        return adapted.draft;
+    }
     let kind = event
         .get("type")
+        .or_else(|| event.get("event_type"))
+        .or_else(|| event.get("kind"))
         .and_then(Value::as_str)
         .unwrap_or("job.event");
     let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
-    let draft = mapped_event_draft(kind, algorithm, &payload);
-    service
-        .append_event_payloads(
-            run_id.into(),
-            vec![draft
-                .idempotency_key(format!("sidecar-training:{sequence}"))
-                .raw(event.clone())],
-        )
-        .await?;
-    Ok(())
+    mapped_event_draft(kind, algorithm, &payload)
 }
 
 fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> OptimizerEventDraft {
@@ -743,8 +1141,7 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
                 "uri": payload["path"],
                 "digest": payload["sha256"]
             })]),
-        kind if kind.ends_with("evaluation.completed")
-            || kind.ends_with("eval.completed") => {
+        kind if kind.ends_with("evaluation.completed") || kind.ends_with("eval.completed") => {
             let detail = payload.get("delta").unwrap_or(payload);
             let phase = evaluation_phase(kind, detail);
             let checkpoint_id = detail
@@ -764,8 +1161,98 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
                 ]))
                 .item(normalized_sidecar_evaluation(kind, algorithm, detail))
         }
-        "training.clip" => OptimizerEventDraft::new("cispo.clip.identity", algorithm)
-            .delta(Map::from_iter([("clip".into(), payload.clone())])),
+        "training.clip" | "cispo.clip.identity" => {
+            OptimizerEventDraft::new("cispo.clip.identity", algorithm).delta(Map::from_iter([
+                (
+                    "clip".into(),
+                    payload
+                        .get("clip")
+                        .cloned()
+                        .unwrap_or_else(|| payload.clone()),
+                ),
+                (
+                    "identity".into(),
+                    payload
+                        .get("identity")
+                        .cloned()
+                        .unwrap_or_else(|| json!("cispo.slime.v1")),
+                ),
+            ]))
+        }
+        "sft.step.metrics" | "sft.training.metrics" => {
+            OptimizerEventDraft::new("sft.training.metrics", algorithm).delta(Map::from_iter([
+                (
+                    "step".into(),
+                    payload.get("step").cloned().unwrap_or(Value::Null),
+                ),
+                (
+                    "train_loss".into(),
+                    payload
+                        .get("train_loss")
+                        .or_else(|| payload.get("loss"))
+                        .or_else(|| payload.pointer("/metrics/loss"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                ),
+                ("learning_rate".into(), payload["learning_rate"].clone()),
+                ("throughput".into(), payload["tokens_per_second"].clone()),
+            ]))
+        }
+        "cispo.update.completed" | "cispo.step.metrics" => {
+            OptimizerEventDraft::new("training.metrics", algorithm).delta(Map::from_iter([
+                (
+                    "step".into(),
+                    payload
+                        .get("step")
+                        .or_else(|| payload.get("update"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "train_loss".into(),
+                    payload
+                        .get("train_loss")
+                        .or_else(|| payload.get("loss"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                ),
+                ("reward_variance".into(), payload["reward_variance"].clone()),
+                // A group count is the number of groups in this update, not
+                // the number of sampled rollouts in a group. Keep the latter
+                // absent unless the producer reports it explicitly; the
+                // CISPO reducer can derive it from rollout-group rewards.
+                (
+                    "group_size".into(),
+                    payload.get("group_size").cloned().unwrap_or(Value::Null),
+                ),
+                ("mean_reward".into(), payload["reward_mean"].clone()),
+                (
+                    "optimizer_step".into(),
+                    payload
+                        .get("update")
+                        .or_else(|| payload.get("step"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                ),
+            ]))
+        }
+        "cispo.importance_ratio.measured" => {
+            OptimizerEventDraft::new("cispo.importance_ratio.measured", algorithm)
+                .delta(payload.as_object().cloned().unwrap_or_default())
+        }
+        "sft.checkpoint.created" | "cispo.checkpoint.created" => {
+            OptimizerEventDraft::new("sft.checkpoint.ready", algorithm).item(json!({
+                "id": payload["checkpoint_id"],
+                "step": payload.get("step").cloned().unwrap_or_else(|| payload["update"].clone()),
+                "status": "ready",
+                "ready": true,
+                "raw": payload
+            }))
+        }
+        "sft.completed" | "cispo.completed" => {
+            OptimizerEventDraft::new("training.job.completed", algorithm)
+                .delta(Map::from_iter([("status".into(), json!("succeeded"))]))
+        }
         "cispo.no_learning_signal" => {
             OptimizerEventDraft::new("cispo.no_learning_signal", algorithm)
                 .level("error")
@@ -859,7 +1346,7 @@ async fn persist_handoff(
     client: &SidecarTrainingClient,
     run_id: &str,
 ) -> Result<()> {
-    let Ok(handoff) = client.handoff(run_id).await else {
+    let Ok(mut handoff) = client.handoff(run_id).await else {
         return Ok(());
     };
     let mut run = service.get(run_id.into()).await?;
@@ -877,11 +1364,81 @@ async fn persist_handoff(
             title: Some("Training adapter".into()),
             metadata: handoff.clone(),
         });
+        let mut payload = handoff
+            .get("checkpoint")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        if let Some(object) = payload.as_object_mut() {
+            if let Some(path) = handoff.pointer("/inference/path").and_then(Value::as_str) {
+                object.insert("path".into(), json!(path));
+            }
+            if let Some(sha) = handoff
+                .pointer("/checkpoint/sha256")
+                .and_then(Value::as_str)
+            {
+                object.insert("sha256".into(), json!(sha));
+            }
+        }
+        service
+            .upsert_local_lora_from_event(run_id.to_string(), payload)
+            .await
+            .context("persist terminal adapter in canonical LoRA inventory")?;
+        let digest = handoff
+            .pointer("/checkpoint/sha256")
+            .and_then(Value::as_str)
+            .map(super::local_lora::normalize_digest)
+            .ok_or_else(|| anyhow!("MLX terminal handoff omitted checkpoint.sha256"))?;
+        let saved = service
+            .get_local_lora(digest)
+            .await?
+            .ok_or_else(|| anyhow!("canonical terminal adapter disappeared after persistence"))?;
+        if let Some(checkpoint) = handoff.get_mut("checkpoint").and_then(Value::as_object_mut) {
+            checkpoint.insert("path".into(), json!(saved.storage.key));
+        }
+        // Compatibility projection for callers that still use training
+        // artifact ids. The canonical bytes and identity live in SQLite.
+        let dataset_digest = handoff
+            .pointer("/provenance/dataset_sha256")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("sha256:{}", value.trim_start_matches("sha256:")));
+        let config_digest = handoff
+            .pointer("/provenance/config_sha256")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("sha256:{}", value.trim_start_matches("sha256:")));
+        let artifact = crate::training_artifacts::TrainingArtifact::from_mlx_handoff(
+            run_id,
+            &run.algorithm_id,
+            crate::training_models::QWEN_TRAINING_MODEL_ID,
+            &handoff,
+            dataset_digest,
+            config_digest,
+        )?;
+        crate::training_artifacts::register(artifact)
+            .context("project canonical terminal adapter into training artifacts")?;
     }
     let mut summary = run.summary.as_object().cloned().unwrap_or_default();
     summary.insert("adapterHandoff".into(), handoff);
     run.summary = Value::Object(summary);
     service.persist_run(run).await?;
+    Ok(())
+}
+
+async fn append_terminal_mapping(
+    service: &OptimizerService,
+    run_id: &str,
+    mapping: TerminalMapping,
+) -> Result<()> {
+    let algorithm = service.get(run_id.into()).await?.algorithm_id;
+    service
+        .append_event_payloads(
+            run_id.into(),
+            vec![mapping
+                .draft(&algorithm)
+                .idempotency_key(format!("training:terminal-mapped:{}", mapping.mapped_to))],
+        )
+        .await?;
     Ok(())
 }
 
@@ -894,42 +1451,14 @@ async fn persist_cursor(service: &OptimizerService, run_id: &str, cursor: u64) -
     Ok(())
 }
 
-async fn append_status(
-    service: &OptimizerService,
-    run_id: &str,
-    kind: &str,
-    status: &str,
-) -> Result<()> {
-    let algorithm = service.get(run_id.into()).await?.algorithm_id;
-    service
-        .append_event_payloads(
-            run_id.into(),
-            vec![OptimizerEventDraft::new(kind, algorithm)
-                .idempotency_key(format!("sidecar-training:{kind}"))
-                .delta(Map::from_iter([("status".into(), json!(status))]))
-                .raw(json!({"source":"sidecar-training"}))],
-        )
-        .await?;
-    Ok(())
-}
-
 async fn append_failure(service: &OptimizerService, run_id: &str, reason: &str) -> Result<()> {
-    let algorithm = service
-        .get(run_id.into())
-        .await
-        .map(|run| run.algorithm_id)
-        .unwrap_or_else(|_| "sft".into());
-    service
-        .append_event_payloads(
-            run_id.into(),
-            vec![OptimizerEventDraft::new("optimizer.run.failed", algorithm)
-                .idempotency_key("sidecar-training:optimizer.run.failed")
-                .level("error")
-                .delta(Map::from_iter([("status".into(), json!("failed"))]))
-                .error(json!({"message": reason}))
-                .raw(json!({"source":"sidecar-training"}))],
-        )
-        .await?;
+    // A stopped observer cannot certify that paid producer work has failed or drained.
+    // Leave the producer lifecycle intact and expose the transport condition.
+    let run = service.get(run_id.to_string()).await?;
+    if super::models::OptimizerRunStatus::str_is_terminal(&run.status) { return Ok(()); }
+    service.append_event_payloads(run_id.to_string(), vec![super::events::OptimizerEventDraft::new(
+        "optimizer.condition.waiting_for_producer", &run.algorithm_id)
+        .delta(serde_json::Map::from_iter([("message".into(), json!(reason))]))]).await?;
     Ok(())
 }
 
@@ -969,26 +1498,53 @@ pub fn training_create_request(
     }
 }
 
-pub fn local_sft_config(run_id: &str, dataset: Option<&Path>, evaluation: Option<&Path>) -> Value {
-    let evaluation_plan = tunneled_banking77_evaluation_plan(
-        std::env::var("SYNTH_MLX_SFT_EVAL_URL").ok(),
+pub fn local_sft_config(
+    run_id: &str,
+    dataset: Option<&Path>,
+    evaluation: Option<&Path>,
+    bind: Option<&super::container_training::ContainerTrainingBind>,
+) -> Value {
+    let task = bind
+        .map(|bind| bind.task_id.clone())
+        .or_else(|| {
+            std::env::var("SYNTH_MLX_SFT_TASK_ID")
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| "local".into());
+    let evaluator = bind
+        .and_then(|bind| bind.cispo.as_ref())
+        .map(|cispo| EvaluationContract {
+            task: task.clone(),
+            harness: cispo.harness.clone(),
+            plan_ref: cispo.plan_ref.clone(),
+            world_ref: cispo.heldout_world_ref.clone(),
+        })
+        .unwrap_or_else(|| EvaluationContract::from_task(&task));
+    let container_url = bind
+        .map(|bind| bind.base_url.clone())
+        .or_else(|| std::env::var("SYNTH_MLX_SFT_EVAL_URL").ok());
+    let evaluation_plan = tunneled_evaluation_plan(
+        container_url,
         "SYNTH_MLX_SFT_EVAL_URL",
         "SYNTH_MLX_SFT_EVAL_TOKEN",
         CHECKPOINT_EVERY,
         vec![CHECKPOINT_EVERY, MAX_STEPS],
+        evaluator,
     );
     json!({
         "job_id": run_id,
         "config": {
             "backend": "qwen_lora",
             "base_model": BASE_MODEL,
+            "task_id": task,
             "dataset": dataset.map(|path| json!({"path": path})),
             "evaluation_dataset": evaluation.map(|path| json!({"path": path})),
             "output_dir": crate::instance::data_root().join("optimizers/mlx-sft").join(run_id),
             "max_steps": MAX_STEPS,
             "checkpoint_every": CHECKPOINT_EVERY,
             "evaluation": evaluation_plan,
-            "learning_rate": 0.00005,
+            "learning_rate": LOCAL_SFT_LEARNING_RATE,
             "lora_rank": LORA_RANK,
             "lora_alpha": LORA_ALPHA,
             "max_seq_length": MAX_SEQ_LENGTH,
@@ -999,12 +1555,43 @@ pub fn local_sft_config(run_id: &str, dataset: Option<&Path>, evaluation: Option
     })
 }
 
-pub fn tunneled_banking77_evaluation_plan(
+pub struct EvaluationContract {
+    pub task: String,
+    pub harness: String,
+    pub plan_ref: String,
+    pub world_ref: String,
+}
+
+impl EvaluationContract {
+    pub fn from_task(task: &str) -> Self {
+        let harness = std::env::var("SYNTH_TRAINING_EVAL_HARNESS")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "rollout".into());
+        let plan_ref = std::env::var("SYNTH_TRAINING_EVAL_PLAN_REF")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| format!("{task}_eval.v1"));
+        let world_ref = std::env::var("SYNTH_TRAINING_EVAL_WORLD_REF")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| format!("world:{task}@heldout"));
+        Self {
+            task: task.to_string(),
+            harness,
+            plan_ref,
+            world_ref,
+        }
+    }
+}
+
+pub fn tunneled_evaluation_plan(
     container_url: Option<String>,
     container_url_env: &str,
     bearer_token_env: &str,
     checkpoint_every: u64,
     checkpoint_steps: Vec<u64>,
+    evaluator: EvaluationContract,
 ) -> Value {
     json!({
         "schema_version": "training.evaluation.plan.v1",
@@ -1028,16 +1615,44 @@ pub fn tunneled_banking77_evaluation_plan(
             "final_target": "terminal_artifact"
         },
         "evaluator": {
-            "task": "banking77",
-            "harness": "classify",
-            "plan_ref": "banking77_eval.v1",
-            "world_ref": "world:banking77@heldout",
+            "task": evaluator.task,
+            "harness": evaluator.harness,
+            "plan_ref": evaluator.plan_ref,
+            "world_ref": evaluator.world_ref,
             "metric": "reward",
             "seeds": [1, 2],
             "sample_count": 16,
             "timeout_s": 120
         }
     })
+}
+
+fn public_tinker_cispo_request(value: &Value) -> bool {
+    value.get("schema_version").and_then(Value::as_str) == Some("cispo.request.v1")
+        && value.get("algorithm_id").and_then(Value::as_str) == Some("cispo")
+}
+
+fn hosted_cispo_submit_payload(config: &Value) -> Result<Value> {
+    let experiment = config.get("config_json").unwrap_or(config);
+    if experiment.get("schema_version").and_then(Value::as_str) == Some("rl.experiment.v1") {
+        if std::env::var("SYNTH_OPTIMIZERS_RL_EXPERIMENT_PREVIEW").as_deref() != Ok("1") {
+            bail!("container experiments are not enabled in this Workshop build");
+        }
+        return Ok(experiment.clone());
+    }
+    if let Some(config_json) = config.get("config_json") {
+        if public_tinker_cispo_request(config_json) {
+            return Ok(config_json.clone());
+        }
+    }
+    if public_tinker_cispo_request(config) {
+        return Ok(config.clone());
+    }
+    validate_tunneled_evaluation_plan(config)?;
+    Ok(config
+        .get("config_json")
+        .cloned()
+        .unwrap_or_else(|| config.clone()))
 }
 
 fn validate_tunneled_evaluation_plan(config: &Value) -> Result<()> {
@@ -1104,7 +1719,7 @@ async fn drive_mlx_job(
                     "reason": capabilities.pointer("/capabilities/cispo_training/reason")
                 }),
             );
-            job.status = "failed".into();
+            job.status = TrainingJobStatus::Failed;
         }
         bail!("MLX CISPO training is not advertised");
     }
@@ -1113,19 +1728,28 @@ async fn drive_mlx_job(
         .cloned()
         .map(|inner| json!({"job_id": job_id, "config": inner}))
         .unwrap_or_else(|| json!({"job_id": job_id, "config": config}));
-    client.post("/v1/jobs/preflight", Some(&payload)).await?;
+    let preflight = client.post("/v1/jobs/preflight", Some(&payload)).await?;
+    if preflight.get("accepted").and_then(Value::as_bool) != Some(true) {
+        bail!(
+            "MLX training preflight rejected the job: {}",
+            serde_json::to_string_pretty(&preflight).unwrap_or_else(|_| preflight.to_string())
+        );
+    }
     client.post("/v1/jobs", Some(&payload)).await?;
     client
         .post(&format!("/v1/jobs/{job_id}/launch"), None)
         .await?;
     let mut cursor = 0u64;
+    let mut cancel_sent = false;
     loop {
         {
             let jobs = runtime.jobs.lock().await;
-            if jobs.get(job_id).is_some_and(|job| job.cancelled) {
-                let _ = client
+            if jobs.get(job_id).is_some_and(|job| job.cancelled) && !cancel_sent {
+                client
                     .post(&format!("/v1/jobs/{job_id}/cancel"), None)
-                    .await;
+                    .await
+                    .context("request MLX training cancellation")?;
+                cancel_sent = true;
             }
         }
         let page = client
@@ -1136,7 +1760,7 @@ async fn drive_mlx_job(
             let job = jobs
                 .get_mut(job_id)
                 .ok_or_else(|| anyhow!("training job disappeared"))?;
-            job.status = "running".into();
+            job.status = TrainingJobStatus::Running;
             for event in page
                 .get("events")
                 .and_then(Value::as_array)
@@ -1157,6 +1781,31 @@ async fn drive_mlx_job(
             .unwrap_or("running")
         {
             "succeeded" => {
+                // The MLX job record becomes terminal only after it appends its
+                // final evaluation and terminal lifecycle facts. The preceding
+                // page can still be one poll behind that durable record, so
+                // drain once more before advertising completion to Workshop.
+                let final_page = client
+                    .get(&format!("/v1/jobs/{job_id}/events?after={cursor}"))
+                    .await?;
+                {
+                    let mut jobs = runtime.jobs.lock().await;
+                    let job = jobs
+                        .get_mut(job_id)
+                        .ok_or_else(|| anyhow!("training job disappeared"))?;
+                    for event in final_page
+                        .get("events")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default()
+                    {
+                        let sequence = event.get("sequence").and_then(Value::as_u64).unwrap_or(0);
+                        if sequence > cursor {
+                            job.events.push(event);
+                            cursor = sequence;
+                        }
+                    }
+                }
                 let handoff = client
                     .get(&format!("/v1/jobs/{job_id}/handoff"))
                     .await
@@ -1164,7 +1813,7 @@ async fn drive_mlx_job(
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
                     job.handoff = handoff;
-                    job.status = "succeeded".into();
+                    job.status = TrainingJobStatus::Succeeded;
                     append_job_event(job, "job.succeeded", json!({}));
                 }
                 return Ok(());
@@ -1179,7 +1828,7 @@ async fn drive_mlx_job(
             "cancelled" => {
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
-                    job.status = "cancelled".into();
+                    job.status = TrainingJobStatus::Cancelled;
                 }
                 return Ok(());
             }
@@ -1196,10 +1845,7 @@ async fn resume_mlx_job(job_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn launch_artifact_inference(
-    artifact_id: &str,
-    message: &str,
-) -> Result<Value> {
+pub(crate) async fn launch_artifact_inference(artifact_id: &str, message: &str) -> Result<Value> {
     let artifact = crate::training_artifacts::get(artifact_id)?;
     let policy_dir = artifact
         .path
@@ -1232,21 +1878,31 @@ async fn drive_hosted_sft_job(
     config: &Value,
 ) -> Result<()> {
     let client = SftOptimizerClient::from_env()?;
-    let toml = config
-        .get("config_toml")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("hosted SFT job omitted config_toml"))?;
-    client.submit_toml(job_id, toml).await?;
+    if !attach_existing_requested(config) {
+        let toml = config
+            .get("config_toml")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("hosted SFT job omitted config_toml"))?;
+        client.submit_toml(job_id, toml).await?;
+    }
     let mut cursor = 0u64;
     let mut page_errors = 0u32;
+    let mut cancel_sent = false;
     loop {
         {
             let jobs = runtime.jobs.lock().await;
-            if jobs.get(job_id).is_some_and(|job| job.cancelled) {
-                let _ = client.cancel(job_id).await;
+            if jobs.get(job_id).is_some_and(|job| job.cancelled) && !cancel_sent {
+                client
+                    .cancel(job_id)
+                    .await
+                    .context("request hosted SFT cancellation")?;
+                cancel_sent = true;
             }
         }
-        let page = match client.optimizer_events_after(job_id, cursor, 500).await {
+        let page = match client
+            .optimizer_events_after(job_id, cursor, HOSTED_EVENT_PAGE_LIMIT)
+            .await
+        {
             Ok(page) => {
                 page_errors = 0;
                 page
@@ -1265,7 +1921,7 @@ async fn drive_hosted_sft_job(
             let job = jobs
                 .get_mut(job_id)
                 .ok_or_else(|| anyhow!("training job disappeared"))?;
-            job.status = "running".into();
+            job.status = TrainingJobStatus::Running;
             for event in page
                 .get("events")
                 .and_then(Value::as_array)
@@ -1278,11 +1934,7 @@ async fn drive_hosted_sft_job(
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
                 if sequence > cursor {
-                    job.events.push(json!({
-                        "sequence": sequence,
-                        "type": event.get("type").cloned().unwrap_or_else(|| json!("hosted.event")),
-                        "payload": event,
-                    }));
+                    job.events.push(normalize_hosted_event(event, sequence));
                     cursor = sequence;
                 }
             }
@@ -1294,9 +1946,13 @@ async fn drive_hosted_sft_job(
             .unwrap_or("running")
         {
             "succeeded" | "completed" => {
+                if !hosted_event_page_drained(&page, HOSTED_EVENT_PAGE_LIMIT) {
+                    sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
-                    job.status = "succeeded".into();
+                    job.status = TrainingJobStatus::Succeeded;
                     append_job_event(job, "job.succeeded", json!({}));
                 }
                 return Ok(());
@@ -1311,9 +1967,18 @@ async fn drive_hosted_sft_job(
             "cancelled" => {
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
-                    job.status = "cancelled".into();
+                    job.status = TrainingJobStatus::Cancelled;
                 }
                 return Ok(());
+            }
+            status @ ("stop_requested" | "pause_requested" | "paused" | "blocked_budget" | "blocked_evaluation" | "blocked_uncertain") => {
+                let mut jobs = runtime.jobs.lock().await;
+                if let Some(job) = jobs.get_mut(job_id) {
+                    job.status = TrainingJobStatus::parse(status).expect("known training state");
+                    job.error = remote.get("error").and_then(Value::as_str).map(str::to_owned);
+                }
+                drop(jobs);
+                sleep(Duration::from_millis(400)).await;
             }
             _ => sleep(Duration::from_millis(400)).await,
         }
@@ -1325,18 +1990,565 @@ async fn drive_hosted_cispo_job(
     job_id: &str,
     config: &Value,
 ) -> Result<()> {
-    validate_tunneled_evaluation_plan(config)?;
-    if !hosted_cispo_admitted() {
-        bail!("hosted CISPO is fail-closed until the slime clip canary admits it");
+    if !hosted_cispo_receipt_admits() {
+        bail!(
+            "hosted CISPO is fail-closed until TINKER_CISPO_VALIDATION_RECEIPT points at a paid slime-canary receipt"
+        );
     }
-    let client = super::hosted_client::HostedOptimizerClient::from_env()?;
-    client.submit_json("cispo", job_id, config.clone()).await?;
-    let mut jobs = runtime.jobs.lock().await;
-    if let Some(job) = jobs.get_mut(job_id) {
-        job.status = "running".into();
-        append_job_event(job, "job.started", json!({"backend": "hosted-cispo"}));
+    let client = CispoOptimizerClient::from_env()?;
+    if !attach_existing_requested(config) {
+        let payload = hosted_cispo_submit_payload(config)?;
+        if payload.get("schema_version").and_then(Value::as_str) == Some("rl.experiment.v1")
+            && client.capabilities().await?.get("container_experiments").and_then(Value::as_bool) != Some(true)
+        {
+            bail!("CISPO service does not advertise container experiments");
+        }
+        client.submit(job_id, &payload).await?;
     }
-    Ok(())
+    let mut cursor = 0u64;
+    let mut page_errors = 0u32;
+    let mut cancel_sent = false;
+    loop {
+        {
+            let jobs = runtime.jobs.lock().await;
+            if jobs.get(job_id).is_some_and(|job| job.cancelled) && !cancel_sent {
+                client
+                    .cancel(job_id)
+                    .await
+                    .context("request hosted CISPO cancellation")?;
+                cancel_sent = true;
+            }
+        }
+        let page = match client
+            .optimizer_events_after(job_id, cursor, HOSTED_EVENT_PAGE_LIMIT)
+            .await
+        {
+            Ok(page) => {
+                page_errors = 0;
+                page
+            }
+            Err(_error) if page_errors < MAX_PAGE_ERRORS => {
+                page_errors += 1;
+                sleep(Duration::from_millis(250)).await;
+                continue;
+            }
+            Err(error) => {
+                return Err(error.context("hosted CISPO event polling stayed unavailable"));
+            }
+        };
+        {
+            let mut jobs = runtime.jobs.lock().await;
+            let job = jobs
+                .get_mut(job_id)
+                .ok_or_else(|| anyhow!("training job disappeared"))?;
+            job.status = TrainingJobStatus::Running;
+            for event in page
+                .get("events")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            {
+                let sequence = event
+                    .get("sequence_number")
+                    .or_else(|| event.get("sequence"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if sequence > cursor {
+                    job.events.push(normalize_hosted_event(event, sequence));
+                    cursor = sequence;
+                }
+            }
+        }
+        let remote = client.get_run(job_id).await?;
+        match remote
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("running")
+        {
+            "succeeded" | "completed" => {
+                if !hosted_event_page_drained(&page, HOSTED_EVENT_PAGE_LIMIT) {
+                    sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+                let mut jobs = runtime.jobs.lock().await;
+                if let Some(job) = jobs.get_mut(job_id) {
+                    job.status = TrainingJobStatus::Succeeded;
+                    append_job_event(job, "job.succeeded", json!({}));
+                }
+                return Ok(());
+            }
+            "failed" => bail!(
+                "{}",
+                remote
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("hosted CISPO failed")
+            ),
+            "cancelled" | "stopped" => {
+                let mut jobs = runtime.jobs.lock().await;
+                if let Some(job) = jobs.get_mut(job_id) {
+                    job.status = TrainingJobStatus::Cancelled;
+                }
+                return Ok(());
+            }
+            status @ ("stop_requested" | "pause_requested" | "paused" | "blocked_budget" | "blocked_evaluation" | "blocked_uncertain") => {
+                let mut jobs = runtime.jobs.lock().await;
+                if let Some(job) = jobs.get_mut(job_id) {
+                    job.status = TrainingJobStatus::parse(status).expect("known training state");
+                    job.error = remote.get("error").and_then(Value::as_str).map(str::to_owned);
+                }
+                drop(jobs);
+                sleep(Duration::from_millis(400)).await;
+            }
+            _ => sleep(Duration::from_millis(400)).await,
+        }
+    }
+}
+
+const HOSTED_EVENT_PAGE_LIMIT: usize = 500;
+
+fn attach_existing_requested(config: &Value) -> bool {
+    config
+        .get("attach_existing")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn training_event_page_drained(events: &[Value]) -> bool {
+    events.is_empty()
+}
+
+fn hosted_event_page_drained(page: &Value, limit: usize) -> bool {
+    page.get("terminal").and_then(Value::as_bool) == Some(true)
+        && page
+            .get("events")
+            .and_then(Value::as_array)
+            .is_some_and(|events| events.len() < limit)
+}
+
+fn normalize_hosted_event(mut event: Value, sequence: u64) -> Value {
+    let kind = event
+        .get("type")
+        .or_else(|| event.get("event_type"))
+        .or_else(|| event.get("kind"))
+        .cloned();
+    if let Some(object) = event.as_object_mut() {
+        object
+            .entry("sequence".to_string())
+            .or_insert_with(|| json!(sequence));
+        if !object.get("type").is_some_and(Value::is_string) {
+            if let Some(kind) = kind {
+                object.insert("type".into(), kind);
+            }
+        }
+    }
+    event
+}
+
+pub async fn infer_checkpoint<F>(
+    service: &OptimizerService,
+    request: CheckpointInferRequest,
+    mut on_delta: F,
+) -> Result<Value>
+where
+    F: FnMut(&str) + Send,
+{
+    let family = normalize_family(&request.family)?;
+    if let Some(checkpoint) = service
+        .get_local_lora(request.checkpoint_id.clone())
+        .await?
+    {
+        return Ok(
+            infer_local(&checkpoint, family, &request.body, &mut on_delta)
+                .await?
+                .json,
+        );
+    }
+    Ok(
+        infer_hosted(&request.checkpoint_id, family, &request.body, &mut on_delta)
+            .await?
+            .json,
+    )
+}
+
+struct InferOutcome {
+    json: Value,
+    sse: Option<Vec<u8>>,
+}
+
+async fn infer_from_sidecar_envelope(family: &str, envelope: &Value) -> Result<InferOutcome> {
+    let family = normalize_family(family)?;
+    let body = envelope
+        .get("body")
+        .cloned()
+        .unwrap_or_else(|| envelope.clone());
+    let placement = envelope
+        .get("placement")
+        .and_then(Value::as_str)
+        .unwrap_or("this_mac");
+    if placement == "hosted" {
+        let checkpoint_id = envelope
+            .get("checkpoint_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("hosted inference requires checkpoint_id"))?;
+        return infer_hosted(checkpoint_id, family, &body, &mut (|_| {})).await;
+    }
+    let pin = envelope
+        .get("policy_snapshot_id")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("policy_snapshot_id").and_then(Value::as_str))
+        .ok_or_else(|| anyhow!("local inference requires policy_snapshot_id"))?;
+    let adapter_path = envelope
+        .get("adapter_path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from);
+    infer_mlx(pin, adapter_path.as_deref(), family, &body, &mut (|_| {})).await
+}
+
+fn normalize_family(family: &str) -> Result<&'static str> {
+    match family.trim() {
+        "chat_completions" | "chat" => Ok("chat_completions"),
+        "responses" => Ok("responses"),
+        other => bail!("family must be chat_completions or responses, got {other}"),
+    }
+}
+
+fn wants_stream(body: &Value) -> bool {
+    body.get("stream").and_then(Value::as_bool) == Some(true)
+}
+
+async fn infer_local<F>(
+    checkpoint: &SavedLoraCheckpoint,
+    family: &str,
+    body: &Value,
+    on_delta: &mut F,
+) -> Result<InferOutcome>
+where
+    F: FnMut(&str) + Send,
+{
+    if family == "chat_completions" && !checkpoint.inference_chat_completions {
+        bail!("this checkpoint does not advertise chat completions");
+    }
+    if family == "responses" && !checkpoint.inference_responses {
+        bail!("this checkpoint does not advertise responses");
+    }
+    let pin = checkpoint
+        .storage
+        .sha256
+        .clone()
+        .unwrap_or_else(|| checkpoint.checkpoint_id.clone());
+    infer_mlx(
+        &pin,
+        Some(Path::new(&checkpoint.storage.key)),
+        family,
+        body,
+        on_delta,
+    )
+    .await
+}
+
+async fn infer_mlx<F>(
+    pin: &str,
+    adapter_path: Option<&Path>,
+    family: &str,
+    body: &Value,
+    on_delta: &mut F,
+) -> Result<InferOutcome>
+where
+    F: FnMut(&str) + Send,
+{
+    let client = MlxLoopback::ensure().await?;
+    let mut payload = body.clone();
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("policy_snapshot_id".into(), json!(pin));
+    }
+    let stream = wants_stream(&payload);
+    if stream {
+        let (content_type, bytes) =
+            match mlx_family_stream(&client, family, &payload, on_delta).await {
+                Ok(value) => value,
+                Err(error) if error_is::<PolicySnapshotMissing>(&error) => {
+                    let name = adapter_path
+                        .and_then(|path| path.file_name())
+                        .and_then(|value| value.to_str())
+                        .ok_or_else(|| {
+                            anyhow!("adapter path is required to load a missing snapshot")
+                        })?;
+                    client.load_adapter(name).await?;
+                    mlx_family_stream(&client, family, &payload, on_delta).await?
+                }
+                Err(error) => return Err(error),
+            };
+        if content_type.contains("event-stream") {
+            let text = String::from_utf8_lossy(&bytes);
+            return Ok(InferOutcome {
+                json: assemble_family_json(family, &text)?,
+                sse: Some(bytes),
+            });
+        }
+        let json: Value = serde_json::from_slice(&bytes).context("decode MLX JSON")?;
+        let text = family_text(family, &json);
+        if !text.is_empty() {
+            on_delta(&text);
+        }
+        return Ok(InferOutcome { json, sse: None });
+    }
+    match client.openai_family(family, &payload).await {
+        Ok(value) => {
+            let text = family_text(family, &value);
+            if !text.is_empty() {
+                on_delta(&text);
+            }
+            Ok(InferOutcome {
+                json: value,
+                sse: None,
+            })
+        }
+        Err(error) if error_is::<PolicySnapshotMissing>(&error) => {
+            let name = adapter_path
+                .and_then(|path| path.file_name())
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| anyhow!("adapter path is required to load a missing snapshot"))?;
+            client.load_adapter(name).await?;
+            let json = client.openai_family(family, &payload).await?;
+            let text = family_text(family, &json);
+            if !text.is_empty() {
+                on_delta(&text);
+            }
+            Ok(InferOutcome { json, sse: None })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn mlx_family_stream<F>(
+    client: &MlxLoopback,
+    family: &str,
+    payload: &Value,
+    on_delta: &mut F,
+) -> Result<(String, Vec<u8>)>
+where
+    F: FnMut(&str) + Send,
+{
+    client
+        .openai_family_stream(family, payload, |block| {
+            if let Some(text) = sse_text_delta(family, block) {
+                on_delta(&text);
+            }
+        })
+        .await
+}
+
+async fn infer_hosted<F>(
+    checkpoint_id: &str,
+    family: &str,
+    body: &Value,
+    on_delta: &mut F,
+) -> Result<InferOutcome>
+where
+    F: FnMut(&str) + Send,
+{
+    let stream = wants_stream(body);
+    let mut sample_body = body.clone();
+    if let Some(object) = sample_body.as_object_mut() {
+        object.remove("stream");
+    }
+    let checkpoint = super::cloud::CloudOptimizerClient::from_config()?
+        .saved_lora_checkpoint(checkpoint_id)
+        .await?;
+    let sampler = checkpoint
+        .provider_checkpoint_reference
+        .as_deref()
+        .or(checkpoint.lineage.provider_checkpoint_reference.as_deref())
+        .ok_or_else(|| anyhow!("hosted checkpoint has no tinker sampler path"))?;
+    if !sampler.starts_with("tinker://") {
+        bail!("hosted inference requires a tinker:// sampler path");
+    }
+    if checkpoint.checkpoint_kind != "inference" {
+        bail!("training-kind checkpoints are resume-only");
+    }
+    let json = SftOptimizerClient::from_env()?
+        .infer_checkpoint(
+            family,
+            sampler,
+            checkpoint.run_id.as_deref().unwrap_or(checkpoint_id),
+            checkpoint_id,
+            &sample_body,
+        )
+        .await?;
+    let text = family_text(family, &json);
+    if !text.is_empty() {
+        on_delta(&text);
+    }
+    let sse = stream.then(|| family_sse(family, &json).into_bytes());
+    Ok(InferOutcome { json, sse })
+}
+
+fn family_text(family: &str, payload: &Value) -> String {
+    let pointer = if family == "responses" {
+        "/output/0/content/0/text"
+    } else {
+        "/choices/0/message/content"
+    };
+    payload
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn sse_text_delta(family: &str, block: &str) -> Option<String> {
+    let mut event = None;
+    let mut data = None;
+    for line in block.lines() {
+        if let Some(value) = line.strip_prefix("event: ") {
+            event = Some(value.trim());
+        } else if let Some(value) = line.strip_prefix("data: ") {
+            data = Some(value.trim());
+        }
+    }
+    let raw = data?;
+    if raw == "[DONE]" {
+        return None;
+    }
+    let payload: Value = serde_json::from_str(raw).ok()?;
+    if family == "responses" {
+        let is_delta = event == Some("response.output_text.delta")
+            || payload.get("type").and_then(Value::as_str) == Some("response.output_text.delta");
+        if !is_delta {
+            return None;
+        }
+        return payload
+            .get("delta")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+    }
+    payload
+        .pointer("/choices/0/delta/content")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn assemble_family_json(family: &str, sse: &str) -> Result<Value> {
+    if family == "responses" {
+        for block in sse.split("\n\n") {
+            let mut event = None;
+            let mut data = None;
+            for line in block.lines() {
+                if let Some(value) = line.strip_prefix("event: ") {
+                    event = Some(value.trim());
+                } else if let Some(value) = line.strip_prefix("data: ") {
+                    data = Some(value.trim());
+                }
+            }
+            if event == Some("response.completed") {
+                if let Some(raw) = data {
+                    let payload: Value = serde_json::from_str(raw)?;
+                    if let Some(response) = payload.get("response") {
+                        return Ok(response.clone());
+                    }
+                    return Ok(payload);
+                }
+            }
+        }
+        bail!("streamed responses completed event was missing");
+    }
+    let mut id = json!("chatcmpl-stream");
+    let mut created = json!(0);
+    let mut model = json!("");
+    let mut text = String::new();
+    for block in sse.split("\n\n") {
+        for line in block.lines() {
+            let Some(raw) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            if raw.trim() == "[DONE]" {
+                continue;
+            }
+            let chunk: Value = serde_json::from_str(raw).unwrap_or(json!({}));
+            if chunk.get("id").is_some() {
+                id = chunk["id"].clone();
+            }
+            if chunk.get("created").is_some() {
+                created = chunk["created"].clone();
+            }
+            if chunk.get("model").is_some() {
+                model = chunk["model"].clone();
+            }
+            if let Some(delta) = chunk
+                .pointer("/choices/0/delta/content")
+                .and_then(Value::as_str)
+            {
+                text.push_str(delta);
+            }
+        }
+    }
+    Ok(json!({
+        "id": id,
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": "stop"
+        }]
+    }))
+}
+
+fn family_sse(family: &str, payload: &Value) -> String {
+    if family == "responses" {
+        let text = payload
+            .pointer("/output/0/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let created = json!({
+            "type": "response.created",
+            "response": payload
+        });
+        let delta = json!({
+            "type": "response.output_text.delta",
+            "delta": text
+        });
+        let completed = json!({
+            "type": "response.completed",
+            "response": payload
+        });
+        format!(
+            "event: response.created\ndata: {}\n\n\
+event: response.output_text.delta\ndata: {}\n\n\
+event: response.completed\ndata: {}\n\n",
+            created, delta, completed
+        )
+    } else {
+        let text = payload
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let id = payload
+            .get("id")
+            .cloned()
+            .unwrap_or(json!("chatcmpl-hosted"));
+        let created = payload.get("created").cloned().unwrap_or(json!(0));
+        let model = payload.get("model").cloned().unwrap_or(json!("hosted"));
+        let chunk = |delta: Value, finish: Value| {
+            json!({
+                "id": id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]
+            })
+        };
+        format!(
+            "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            chunk(json!({"role": "assistant"}), Value::Null),
+            chunk(json!({"content": text}), Value::Null),
+            chunk(json!({}), json!("stop")),
+        )
+    }
 }
 
 pub fn optional_jsonl(var: &str) -> Option<PathBuf> {
@@ -1349,6 +2561,66 @@ pub fn optional_jsonl(var: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requested_controls_and_blocked_states_are_not_terminal() {
+        for state in ["stop_requested", "pause_requested", "paused", "blocked_budget", "blocked_evaluation", "blocked_uncertain"] {
+            let parsed = TrainingJobStatus::parse(state).unwrap();
+            assert_eq!(parsed.as_str(), state);
+            assert!(!parsed.is_terminal());
+        }
+    }
+
+
+    #[tokio::test]
+    async fn public_sequence_number_events_survive_the_sidecar_page() {
+        let runtime = TrainingRuntime::new();
+        runtime.jobs.lock().await.insert(
+            "hosted-job".into(),
+            TrainingJob {
+                placement: PLACEMENT_TRAINING_SFT_HOSTED.into(),
+                recipe_id: "sft.banking77.nemotron-lightning.tinker.v1".into(),
+                status: TrainingJobStatus::Running,
+                events: vec![json!({
+                    "sequence_number": 1,
+                    "event_type": "sft.step.metrics",
+                    "payload": {"step": 1, "train_loss": 0.42}
+                })],
+                handoff: json!({}),
+                cancelled: false,
+                error: None,
+            },
+        );
+
+        let response = runtime.job_events("hosted-job", "after=0").await;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.body["events"].as_array().unwrap().len(), 1);
+        assert_eq!(response.body["events"][0]["sequence_number"], 1);
+    }
+
+    #[test]
+    fn hosted_event_copy_backfills_sequence_and_type() {
+        let event = normalize_hosted_event(
+            json!({
+                "sequence_number": 7,
+                "kind": "cispo.update.completed",
+                "payload": {"update": 1}
+            }),
+            7,
+        );
+        assert_eq!(event["sequence"], 7);
+        assert_eq!(event["sequence_number"], 7);
+        assert_eq!(event["type"], "cispo.update.completed");
+    }
+
+    #[test]
+    fn hosted_attach_is_explicit_and_defaults_to_submit() {
+        assert!(attach_existing_requested(&json!({"attach_existing": true})));
+        assert!(!attach_existing_requested(&json!({})));
+        assert!(!attach_existing_requested(
+            &json!({"attach_existing": false})
+        ));
+    }
 
     #[test]
     fn capability_merge_keeps_gepa_first_and_adds_training() {
@@ -1378,12 +2650,72 @@ mod tests {
     }
 
     #[test]
-    fn local_cispo_is_admitted_and_hosted_cispo_follows_the_canary_gate() {
+    fn training_admission_reads_manager_projected_algorithm_key() {
+        assert!(advertises_training_algorithm(
+            &json!({"optimization_algorithms": ["gepa", "sft", "cispo"]}),
+            "cispo"
+        ));
+        assert!(advertises_training_algorithm(
+            &json!({"algorithms": ["gepa", "sft"]}),
+            "sft"
+        ));
+        assert!(!advertises_training_algorithm(
+            &json!({"optimization_algorithms": ["gepa"]}),
+            "cispo"
+        ));
+    }
+
+    #[test]
+    fn local_cispo_is_admitted_and_hosted_cispo_has_no_environment_bypass() {
         assert!(admitted_placements().contains(&PLACEMENT_TRAINING_CISPO_LOCAL));
-        assert_eq!(
-            admitted_placements().contains(&PLACEMENT_TRAINING_CISPO_HOSTED),
-            hosted_cispo_admitted()
-        );
+        std::env::set_var("SYNTH_OPTIMIZERS_CISPO_HOSTED_ADMITTED", "1");
+        assert!(!admitted_placements().contains(&PLACEMENT_TRAINING_CISPO_HOSTED));
+        std::env::remove_var("SYNTH_OPTIMIZERS_CISPO_HOSTED_ADMITTED");
+        std::env::remove_var("TINKER_CISPO_VALIDATION_RECEIPT");
+    }
+
+    #[test]
+    fn hosted_cispo_admits_only_a_paid_slime_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cispo.slime.v1.receipt.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "schema_version": "tinker.capability_validation.v1",
+              "capability": "cispo.slime.v1",
+              "validated": true,
+              "paid_update": true
+            }"#,
+        )
+        .unwrap();
+        std::env::set_var("TINKER_CISPO_VALIDATION_RECEIPT", path.to_str().unwrap());
+        assert!(admitted_placements().contains(&PLACEMENT_TRAINING_CISPO_HOSTED));
+        std::env::remove_var("TINKER_CISPO_VALIDATION_RECEIPT");
+        assert!(!admitted_placements().contains(&PLACEMENT_TRAINING_CISPO_HOSTED));
+    }
+
+    #[test]
+    fn terminal_hosted_pages_are_drained_past_the_first_full_page() {
+        let full = json!({
+            "terminal": true,
+            "events": (0..HOSTED_EVENT_PAGE_LIMIT).map(|sequence| json!({"sequence": sequence + 1})).collect::<Vec<_>>()
+        });
+        assert!(!hosted_event_page_drained(&full, HOSTED_EVENT_PAGE_LIMIT));
+        let final_partial = json!({"terminal": true, "events": [{"sequence": 501}]});
+        assert!(hosted_event_page_drained(
+            &final_partial,
+            HOSTED_EVENT_PAGE_LIMIT
+        ));
+        assert!(!hosted_event_page_drained(
+            &json!({"terminal": false, "events": []}),
+            HOSTED_EVENT_PAGE_LIMIT
+        ));
+    }
+
+    #[test]
+    fn terminal_training_jobs_require_an_empty_followup_page() {
+        assert!(!training_event_page_drained(&[json!({"sequence": 500})]));
+        assert!(training_event_page_drained(&[]));
     }
 
     #[test]
@@ -1393,6 +2725,16 @@ mod tests {
                 "training.metric",
                 json!({"step":2,"epoch":1,"loss":0.42,"learning_rate":0.00005,"tokens":128.0,"step_seconds":2.0,"tokens_per_second":64.0,"memory_bytes":1048576}),
                 "sft.training.metrics",
+            ),
+            (
+                "sft.step.metrics",
+                json!({"step":2,"metrics":{"loss":0.31},"tokens":16}),
+                "sft.training.metrics",
+            ),
+            (
+                "cispo.update.completed",
+                json!({"update":1,"reward_mean":0.5,"reward_variance":0.08,"group_count":2}),
+                "training.metrics",
             ),
             (
                 "checkpoint.created",
@@ -1416,6 +2758,23 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn cispo_group_count_is_not_relabelled_as_group_size() {
+        let draft = mapped_event_draft(
+            "cispo.update.completed",
+            "cispo",
+            &json!({"update": 1, "group_count": 1, "reward_variance": 0.0}),
+        );
+        assert!(draft.delta["group_size"].is_null());
+
+        let draft = mapped_event_draft(
+            "cispo.update.completed",
+            "cispo",
+            &json!({"update": 1, "group_count": 1, "group_size": 2}),
+        );
+        assert_eq!(draft.delta["group_size"], 2);
     }
 
     #[test]
@@ -1449,8 +2808,54 @@ mod tests {
     }
 
     #[test]
+    fn completed_local_sft_job_projects_paired_loss_into_the_visual() {
+        let draft = paired_sft_evaluation_draft(&json!({
+            "evaluation": {
+                "dataset_sha256": "heldout-digest",
+                "mean_before_loss": 0.4,
+                "mean_after_loss": 0.2,
+                "mean_paired_delta": -0.2,
+                "improved_items": 2,
+                "item_count": 2,
+                "sha256": "evaluation-digest",
+                "items": [
+                    {"item": 0, "before_loss": 0.5, "after_loss": 0.1},
+                    {"item": 1, "before_loss": 0.3, "after_loss": 0.3}
+                ]
+            },
+            "checkpoints": [{"checkpoint_id": "run:step-4"}]
+        }))
+        .expect("paired evaluation draft");
+        assert_eq!(draft.event_type, "sft.heldout_evaluation.completed");
+        assert_eq!(draft.delta["split_digest"], "heldout-digest");
+        assert_eq!(draft.delta["checkpoint_id"], "run:step-4");
+        assert_eq!(draft.delta["base"]["seeds"][0]["reward"], -0.5);
+        assert_eq!(draft.delta["trained"]["seeds"][0]["reward"], -0.1);
+        assert_eq!(draft.delta["metric"], "negative_token_loss");
+    }
+
+    #[test]
+    fn persisted_sft_handoff_has_enough_evidence_for_restart_reconciliation() {
+        let summary = json!({"adapterHandoff": {
+            "evaluation": {
+                "status": "completed", "dataset_sha256": "heldout",
+                "items": [{"item": 7, "before_loss": 0.4, "after_loss": 0.2}]
+            },
+            "checkpoint": {"checkpoint_id": "run:step-4", "sha256": "abc"}
+        }});
+        let handoff = summary["adapterHandoff"].clone();
+        let job = json!({
+            "evaluation": handoff["evaluation"].clone(),
+            "checkpoints": [handoff["checkpoint"].clone()]
+        });
+        let draft = paired_sft_evaluation_draft(&job).expect("persisted comparison");
+        assert_eq!(draft.delta["base"]["seeds"][0]["seed"], "7");
+        assert_eq!(draft.delta["trained"]["seeds"][0]["reward"], -0.2);
+    }
+
+    #[test]
     fn local_sft_requests_tunneled_before_checkpoint_and_final_evaluations() {
-        let config = local_sft_config("run", None, None);
+        let config = local_sft_config("run", None, None, None);
         assert_eq!(config["config"]["evaluation"]["transport"], "tunnel");
         assert_eq!(
             config["config"]["evaluation"]["schedule"]["phases"],
@@ -1470,7 +2875,7 @@ mod tests {
         );
         assert_eq!(
             config["config"]["evaluation"]["evaluator"]["plan_ref"],
-            "banking77_eval.v1"
+            "local_eval.v1"
         );
         assert_eq!(
             config["config"]["evaluation"]["evaluator"]["sample_count"],
@@ -1482,8 +2887,9 @@ mod tests {
     #[test]
     fn training_evaluation_plan_fails_closed_when_checkpoint_identity_is_missing() {
         let mut config = json!({
-            "evaluation": tunneled_banking77_evaluation_plan(
-                Some("https://tunnel.invalid".into()), "URL_ENV", "TOKEN_ENV", 2, vec![2, 4]
+            "evaluation": tunneled_evaluation_plan(
+                Some("https://tunnel.invalid".into()), "URL_ENV", "TOKEN_ENV", 2, vec![2, 4],
+                EvaluationContract::from_task("local")
             )
         });
         config["evaluation"]["candidate"]["exact_checkpoint_required"] = json!(false);
@@ -1491,5 +2897,130 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("exact-artifact"));
+    }
+
+    #[test]
+    fn hosted_cispo_submit_payload_skips_tunnel_for_cispo_request_v1() {
+        let request = json!({
+            "schema_version": "cispo.request.v1",
+            "algorithm_id": "cispo",
+            "implementation": "slime-reference",
+            "implementation_version": "cispo.slime.v1",
+            "provider": "tinker",
+            "model_id": "openai/gpt-oss-20b",
+            "mode": "learning_signal",
+            "dataset": { "recipe_id": "banking77.cispo.v1", "examples": [], "heldout_locked": true },
+            "training": {
+                "updates": 1,
+                "group_size": 2,
+                "prompts_per_update": 1,
+                "eps_clip": 1.0,
+                "eps_clip_high": 4.0,
+                "checkpoint_every_updates": 1
+            },
+            "reward": { "version": "banking77.exact_label.v1", "task": "banking77" },
+            "evaluation": {
+                "scorer_version": "banking77.exact_label.v1",
+                "heldout_locked": true,
+                "mode": "learning_signal"
+            }
+        });
+        let payload = hosted_cispo_submit_payload(&json!({ "config_json": request })).unwrap();
+        assert_eq!(payload["schema_version"], "cispo.request.v1");
+        assert_eq!(payload["algorithm_id"], "cispo");
+        assert_eq!(payload["evaluation"]["mode"], "learning_signal");
+        assert!(payload["evaluation"].get("transport").is_none());
+    }
+
+    #[test]
+    fn hosted_cispo_submit_payload_requires_tunnel_without_cispo_request() {
+        let error = hosted_cispo_submit_payload(&json!({
+            "algorithm": "cispo",
+            "evaluation": { "mode": "learning_signal" }
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("evaluation plan"), "{error}");
+    }
+
+    #[test]
+    fn mapping_prefers_training_adapter_when_the_fact_is_coercible() {
+        let event = json!({
+            "sequence": 4,
+            "type": "cispo.update.completed",
+            "payload": {
+                "update": 1,
+                "reward_mean": 0.5,
+                "reward_variance": 0.08,
+                "group_count": 2
+            }
+        });
+        let draft = mapped_training_draft("cispo", &event);
+        assert_eq!(draft.event_type, "training.metrics");
+        assert_eq!(draft.delta["sourceSequence"], 4);
+        let fallback =
+            mapped_training_draft("sft", &json!({ "type": "job.started", "payload": {} }));
+        assert_eq!(fallback.event_type, "optimizer.run.started");
+    }
+
+    #[test]
+    fn checkpoint_created_maps_to_digest_catalog_identity() {
+        let payload = json!({
+            "checkpoint_id": "job:step-2",
+            "step": 2,
+            "path": "/tmp/adapter",
+            "sha256": "abc123",
+            "bytes": 128
+        });
+        let row =
+            super::super::local_lora::LocalLoraUpsert::from_checkpoint_event("run1", &payload)
+                .expect("checkpoint event");
+        assert_eq!(row.sha256, "sha256:abc123");
+        assert_eq!(row.adapter_path.as_os_str(), "/tmp/adapter");
+    }
+
+    #[test]
+    fn inference_families_are_peers_and_stream_is_native() {
+        assert_eq!(normalize_family("chat").unwrap(), "chat_completions");
+        assert_eq!(normalize_family("responses").unwrap(), "responses");
+        assert!(wants_stream(&json!({"stream": true})));
+        assert!(!wants_stream(&json!({"stream": false})));
+        let sse = family_sse(
+            "chat_completions",
+            &json!({
+                "id": "chatcmpl-1",
+                "created": 1,
+                "model": "m",
+                "choices": [{"message": {"content": "hi"}}]
+            }),
+        );
+        assert!(sse.contains("chat.completion.chunk"));
+        assert!(sse.contains("data: [DONE]"));
+        let sse = family_sse(
+            "responses",
+            &json!({
+                "id": "resp_1",
+                "output": [{"content": [{"text": "hi"}]}]
+            }),
+        );
+        assert!(sse.contains("event: response.completed"));
+        assert!(!sse.contains("chat.completion.chunk"));
+        assert_eq!(
+            sse_text_delta(
+                "chat_completions",
+                r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#
+            )
+            .as_deref(),
+            Some("hi")
+        );
+        assert_eq!(
+            sse_text_delta(
+                "responses",
+                "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"yo\"}"
+            )
+            .as_deref(),
+            Some("yo")
+        );
+        assert_eq!(sse_text_delta("chat_completions", "data: [DONE]"), None);
     }
 }

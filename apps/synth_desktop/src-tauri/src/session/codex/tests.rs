@@ -184,6 +184,7 @@ fn test_request(workspace: &Path, session_id: &str) -> CodexSessionStartRequest 
         base_url: "http://127.0.0.1:7333".into(),
         api_key: String::new(),
         model: "poolside/Laguna-XS-2.1-NVFP4-mlx".into(),
+        target_id: None,
         provider_name: Some("local-laguna".into()),
         provider_title: Some("Laguna fixture".into()),
         provider_env_key: Some("SYNTH_LAGUNA_API_KEY".into()),
@@ -194,6 +195,7 @@ fn test_request(workspace: &Path, session_id: &str) -> CodexSessionStartRequest 
         multi_agent_version: Some(MultiAgentVersion::None),
         auto_compact_token_limit: None,
         writable_roots: Vec::new(),
+        adapter: None,
         local_model_catalog: Some(local_catalog_envelope()),
         broker_credential: false,
     }
@@ -227,6 +229,41 @@ async fn missing_rollout_on_resume_starts_a_replacement_thread() {
         .filter(|method| *method == "thread/resume" || *method == "thread/start")
         .collect();
     assert_eq!(methods, vec!["thread/resume", "thread/start"]);
+}
+
+#[tokio::test]
+async fn durable_mcp_refresh_requires_idle_and_success_before_new_turn() {
+    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let temp = tempdir().unwrap();
+    let root = temp.path().join("codex");
+    let manager = CodexManager::with_paths(SessionPersistence::Null, root.clone(), fixture_binary(), CodexManager::test_broker());
+    let app = tauri::test::mock_app();
+    let request = test_request(temp.path(), "refresh-mcp");
+    manager.start(app.handle().clone(), request.clone()).await.unwrap();
+    let session = manager.sessions.read().await.get(&request.session_id).unwrap().clone();
+    // Exercise a retained-daemon attachment using the process-boundary fixture.
+    *session.mcp_reload_pending.lock().await = true;
+    let home = root.join("homes/refresh-mcp");
+    let turn = || CodexTurnStartRequest {
+        session_id: request.session_id.clone(), prompt: "new turn".into(),
+        effort: None, ui_context: None, client_message_id: None,
+    };
+    fs::write(home.join("active-thread"), "1").unwrap();
+    assert!(manager.start_turn(app.handle().clone(), turn()).await.unwrap_err().to_string().contains("must be idle"));
+    assert!(!fixture_requests(&root, &request.session_id).iter().any(|r| r["method"] == "config/mcpServer/reload" || r["method"] == "turn/start"));
+    fs::remove_file(home.join("active-thread")).unwrap();
+    fs::write(home.join("reject-mcp-reload"), "1").unwrap();
+    assert!(manager.start_turn(app.handle().clone(), turn()).await.is_err());
+    assert!(*session.mcp_reload_pending.lock().await);
+    assert!(!fixture_requests(&root, &request.session_id).iter().any(|r| r["method"] == "turn/start"));
+    fs::remove_file(home.join("reject-mcp-reload")).unwrap();
+    manager.start_turn(app.handle().clone(), turn()).await.unwrap();
+    assert!(!*session.mcp_reload_pending.lock().await);
+    let requests = fixture_requests(&root, &request.session_id);
+    let methods: Vec<_> = requests.iter().filter_map(|r| r["method"].as_str()).collect();
+    assert_eq!(methods.iter().filter(|m| **m == "config/mcpServer/reload").count(), 2);
+    assert!(methods.iter().rposition(|m| *m == "config/mcpServer/reload").unwrap() < methods.iter().position(|m| *m == "turn/start").unwrap());
+    manager.close(&request.session_id).await.unwrap();
 }
 
 /// These waits poll a spawned fixture process, so they are load-sensitive:
@@ -331,6 +368,7 @@ async fn shell_approval_resolves_through_the_broker_and_drains_pending_state() {
                 session_id: request.session_id.clone(),
                 prompt: "request fixture approval".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -409,6 +447,7 @@ async fn dead_approval_origin_expires_and_drains_pending_state() {
                 session_id: request.session_id.clone(),
                 prompt: "leave approval pending".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -486,6 +525,7 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
                 session_id: request.session_id.clone(),
                 prompt: "keep working until the process is killed".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -543,6 +583,7 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
                 session_id: request.session_id.clone(),
                 prompt: "continue after reconnect".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -595,6 +636,7 @@ async fn interrupt_terminates_non_cooperative_tool_tree_and_allows_a_new_turn() 
                 session_id: request.session_id.clone(),
                 prompt: "start a tool that ignores cooperative cancellation".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -617,19 +659,31 @@ async fn interrupt_terminates_non_cooperative_tool_tree_and_allows_a_new_turn() 
         .interrupt(app_handle.clone(), &request.session_id)
         .await
         .unwrap();
-    wait_for_record_status(
-        &manager,
-        &request.session_id,
-        SessionStatus::Interrupted.as_str(),
-    )
-    .await;
-    wait_for_run_status(&core, &first_turn, RunStatus::Interrupted.as_str()).await;
+    wait_for_record_status(&manager, &request.session_id, SessionStatus::Ready.as_str()).await;
+    wait_for_run_status(&core, &first_turn, RunStatus::Cancelled.as_str()).await;
     let first_run = RunService::new(core.storage().database().clone())
         .get(first_turn.clone())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(first_run.outcome.unwrap()["reason"], "operator_cancelled");
+    let cancelled = core
+        .journal()
+        .session_events_after(request.session_id.clone(), 0, 200)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event.kind == "turn/interrupted"
+                && event.payload["turnId"] == first_turn
+                && event.payload["reason"] == "operator_cancelled"
+                && event.payload["cancelledBy"] == "user"
+        })
+        .count();
+    assert_eq!(
+        cancelled, 1,
+        "Stop must journal one explicit user cancellation"
+    );
     assert!(!manager
         .sessions
         .read()
@@ -660,6 +714,7 @@ async fn interrupt_terminates_non_cooperative_tool_tree_and_allows_a_new_turn() 
                 session_id: request.session_id.clone(),
                 prompt: "start a new turn after Stop".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -668,6 +723,15 @@ async fn interrupt_terminates_non_cooperative_tool_tree_and_allows_a_new_turn() 
         .turn_id
         .unwrap();
     assert_ne!(first_turn, second_turn);
+    let runs = RunService::new(core.storage().database().clone())
+        .list_for_session(request.session_id.clone(), 20)
+        .await
+        .unwrap();
+    assert_eq!(
+        runs.len(),
+        2,
+        "Stop + follow-up must create no duplicate run"
+    );
     manager.close(&request.session_id).await.unwrap();
 }
 
@@ -699,6 +763,7 @@ async fn final_answer_before_app_server_exit_completes_the_run() {
                 session_id: request.session_id.clone(),
                 prompt: "reply and finish".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -739,6 +804,7 @@ async fn steer_turn_sends_turn_steer_with_the_active_turn_id() {
                 session_id: request.session_id.clone(),
                 prompt: "keep working on the task".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -894,8 +960,10 @@ fn send_request(start: CodexSessionStartRequest, prompt: &str) -> CodexTurnSendR
         start,
         prompt: prompt.into(),
         effort: Some("none".into()),
+        ui_context: None,
         compact_before_model_switch: false,
         client_message_id: None,
+        recovery_mode: false,
     }
 }
 
@@ -908,7 +976,7 @@ async fn turn_send_journals_the_renderer_message_id_once() {
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
     let manager = CodexManager::with_paths(
         SessionPersistence::from_core(Some(core.clone())),
-        codex_root,
+        codex_root.clone(),
         fixture_binary(),
         CodexManager::test_broker(),
     );
@@ -1378,6 +1446,7 @@ async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() 
         thread_id: "thread-restored".into(),
         workspace: temp.path().display().to_string(),
         model: "laguna".into(),
+        target_id: None,
         provider_name: "local-laguna".into(),
         provider_title: "Laguna fixture".into(),
         base_url: "http://127.0.0.1:7333/v1".into(),
@@ -1388,6 +1457,7 @@ async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() 
         presentation_summary: None,
         approval_policy: "never".into(),
         sandbox: "workspace-write".into(),
+        adapter: None,
         recovery: None,
     };
     fs::write(
@@ -1457,8 +1527,10 @@ async fn rejected_turn_send_arguments_never_mark_the_session_running() {
                 start: request.clone(),
                 prompt: "hello".into(),
                 effort: Some("ultra".into()),
+                ui_context: None,
                 compact_before_model_switch: false,
                 client_message_id: None,
+                recovery_mode: false,
             },
         )
         .await
@@ -1509,8 +1581,10 @@ async fn turn_send_compacts_on_source_model_before_rebind() {
                 start: request.clone(),
                 prompt: "continue on destination".into(),
                 effort: Some("medium".into()),
+                ui_context: None,
                 compact_before_model_switch: true,
                 client_message_id: None,
+                recovery_mode: false,
             },
         )
         .await
@@ -1588,7 +1662,7 @@ async fn turn_send_reuses_client_message_id_in_journalled_user_prompt() {
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
     let manager = CodexManager::with_paths(
         SessionPersistence::from_core(Some(core.clone())),
-        codex_root,
+        codex_root.clone(),
         fixture_binary(),
         CodexManager::test_broker(),
     );
@@ -1603,8 +1677,10 @@ async fn turn_send_reuses_client_message_id_in_journalled_user_prompt() {
                 start: request.clone(),
                 prompt: "one bubble please".into(),
                 effort: Some("none".into()),
+                ui_context: Some("<workshop_ui_context>{\"activeVisual\":{\"displayName\":\"Craftax Results\",\"visualId\":\"vis_results\"}}</workshop_ui_context>".into()),
                 compact_before_model_switch: false,
                 client_message_id: Some(client_message_id.into()),
+                recovery_mode: false,
             },
         )
         .await
@@ -1639,6 +1715,28 @@ async fn turn_send_reuses_client_message_id_in_journalled_user_prompt() {
             .payload
             .get("content")
             .and_then(Value::as_str),
+        Some("one bubble please")
+    );
+    let requests = fixture_requests(&codex_root, &request.session_id);
+    let turn_start = requests
+        .iter()
+        .find(|request| request.get("method").and_then(Value::as_str) == Some("turn/start"))
+        .expect("turn/start request");
+    let input = turn_start
+        .pointer("/params/input")
+        .and_then(Value::as_array)
+        .expect("turn/start input");
+    assert_eq!(
+        input.len(),
+        2,
+        "UI context and user prompt must be separate input items"
+    );
+    assert!(input[0]
+        .get("text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.contains("Craftax Results") && text.contains("vis_results")));
+    assert_eq!(
+        input[1].get("text").and_then(Value::as_str),
         Some("one bubble please")
     );
 }
@@ -1876,6 +1974,7 @@ async fn app_server_approval_is_journaled_and_resumes_after_one_approval() {
                 session_id: request.session_id.clone(),
                 prompt: "request a shell approval".into(),
                 effort: Some("none".into()),
+                ui_context: None,
                 client_message_id: None,
             },
         )
@@ -1968,10 +2067,10 @@ fn workspace_write_config_does_not_invent_a_read_denylist_field() {
     assert!(!comment.contains("writable_roots"));
 }
 #[test]
-fn advertises_only_the_compact_visual_tool_to_codex() {
+fn advertises_compact_visual_and_experiment_lifecycle_tools_to_codex() {
     assert_eq!(
         mcp_enabled_tools("synth_visuals"),
-        "enabled_tools = [\"visual_manage\"]\n"
+        "enabled_tools = [\"visual_manage\", \"experiment_list\", \"experiment_get\", \"experiment_create\", \"experiment_update\", \"experiment_create_child\", \"experiment_fork\", \"experiment_rerun\", \"experiment_relate\", \"experiment_attach_evidence\", \"experiment_finalize\", \"research_log_list\", \"research_log_append\", \"research_log_correct\"]\n"
     );
     assert_eq!(mcp_enabled_tools("synth_containers"), "");
     assert_eq!(
@@ -2064,11 +2163,15 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
     );
     assert!(secrets_skill.contains("tools.mcp__synth_secrets__secrets_manage"));
     assert!(secrets_skill.contains("request_env_import"));
-    assert!(secrets_skill.contains("Codex sandbox cannot deny those reads"));
+    assert!(secrets_skill.contains("workspace_roots_list"));
+    assert!(secrets_skill.contains("source_request"));
+    assert!(secrets_skill.contains("Pass an absolute path"));
     assert!(!secrets_skill.contains("secrets_create"));
     let agents = fs::read_to_string(home.join("AGENTS.md")).unwrap();
     assert!(agents.contains(".env"));
     assert!(agents.contains("no read-denylist field"));
+    assert!(agents.contains("mcp__synth_session__session_present"));
+    assert!(agents.contains("repeated calls"));
     let generated = fs::read_to_string(home.join("config.toml")).unwrap();
     assert!(generated.contains("no sandbox read-denylist"));
     assert!(!generated.contains("read_deny"));
@@ -2118,8 +2221,6 @@ fn generated_mcp_configs_pass_desktop_identity_for_visual_capture() {
     );
     assert!(config.contains("SYNTH_VISUALS_IPC_FILE = \"/tmp/visuals-ipc.json\""));
     assert!(config.contains("SYNTH_SESSION_ID = \"session-123\""));
-    assert!(config.contains("SYNTH_DESKTOP_APP_NAME = \"Synth Workshop v0.4 · cua\""));
-    assert!(config.contains("SYNTH_DESKTOP_BUNDLE_ID = \"com.synth.desktop.v04.dev.cua\""));
 }
 #[test]
 fn generated_browser_config_passes_human_owned_policy_and_profile_paths() {
@@ -2501,6 +2602,31 @@ fn openrouter_provider_overwrites_renderer_endpoint_before_leasing() {
         broker.upstream_for(&request.api_key).as_deref(),
         Some("https://openrouter.ai")
     );
+}
+
+#[test]
+fn configured_openrouter_model_reaches_codex_with_its_exact_slug() {
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let (broker, _listener) =
+        CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new()))
+            .unwrap();
+    let mut request = test_request(&workspace, "ox-alpha-exact-slug");
+    request.model = "stealth/ox-alpha".into();
+    request.target_id = Some("openrouter:ox-alpha".into());
+    request.provider_name = Some("openrouter".into());
+    request.provider_title = Some("OpenRouter Responses".into());
+    request.provider_env_key = Some("OPENROUTER_API_KEY".into());
+    apply_openrouter_provider(&mut request, Some("sk-or-fixture")).unwrap();
+    apply_brokered_credential(&mut request, &broker).unwrap();
+    ensure_home(&home, &request).unwrap();
+
+    let config = fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(config.contains("model = \"stealth/ox-alpha\""));
+    assert!(config.contains("model_provider = \"openrouter\""));
+    assert!(!config.contains("sk-or-fixture"));
 }
 
 #[test]
@@ -3024,6 +3150,16 @@ fn extracts_only_authoritative_per_turn_usage_shapes() {
     assert_eq!(camel_case.input_tokens, Some(50));
     assert_eq!(camel_case.output_tokens, Some(8));
     assert_eq!(camel_case.cached_input_tokens, Some(20));
+    let codex_last_usage = extract_turn_usage(&json!({
+        "tokenUsage": {"lastUsage": {
+            "inputTokens": 50,
+            "outputTokens": 698,
+            "reasoningOutputTokens": 516
+        }}
+    }))
+    .unwrap();
+    assert_eq!(codex_last_usage.output_tokens, Some(698));
+    assert_eq!(codex_last_usage.reasoning_tokens, Some(516));
     assert!(extract_turn_usage(&json!({
         "tokenUsage": {"totalUsage": {"inputTokens": 9999, "outputTokens": 9999}}
     }))
@@ -3163,6 +3299,26 @@ async fn a_synth_cloud_turn_records_the_sum_of_its_settled_receipts() {
 }
 
 #[tokio::test]
+async fn an_openrouter_turn_uses_only_its_provider_reported_settled_cost() {
+    let temp = tempdir().unwrap();
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let receipts = credential_broker::ReceiptStore::new();
+    let session = "custom-ox-alpha-settles";
+    // This is provider response accounting, not a catalog price. A custom slug
+    // must retain a missing cost as missing and accept a settled cost when one
+    // arrives through the existing OpenRouter lease/proxy.
+    receipts.push(settled_receipt(session, "resp-ox", Some(0.0123)));
+    finalize_turn(&core, &receipts, session, "openrouter", "turn-1").await;
+
+    let totals = usage_totals(&core).await;
+    assert_eq!(totals.requests, 1);
+    assert_eq!(totals.cost_source, CostSource::ProviderReported);
+    assert_eq!(totals.estimated_cost_usd, None);
+    assert_eq!(totals.billed_cost_usd, Some(0.0123));
+    assert!(receipts.drain(session).is_empty());
+}
+
+#[tokio::test]
 async fn cloud_receipts_without_money_leave_billed_unset() {
     let temp = tempdir().unwrap();
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -3270,6 +3426,7 @@ async fn a_running_record_left_by_a_dead_process_never_lists_as_running() {
                 thread_id: format!("thread-{seed}"),
                 workspace: temp.path().display().to_string(),
                 model: "gpt-5.6-luna".into(),
+                target_id: None,
                 provider_name: "openrouter".into(),
                 provider_title: "OpenRouter Responses".into(),
                 base_url: "https://openrouter.ai/api/v1".into(),
@@ -3280,6 +3437,7 @@ async fn a_running_record_left_by_a_dead_process_never_lists_as_running() {
                 presentation_summary: None,
                 approval_policy: "never".into(),
                 sandbox: "workspace-write".into(),
+                adapter: None,
                 recovery: None,
             },
         );
@@ -3302,7 +3460,7 @@ async fn a_running_record_left_by_a_dead_process_never_lists_as_running() {
                 "inst_previous_process",
                 Some("attach-dead"),
                 0,
-                chrono::Utc::now(),
+                chrono::Utc::now() - chrono::Duration::minutes(5),
             )
         })
         .unwrap();
@@ -3764,6 +3922,131 @@ fn turn_level_usage_is_never_borrowed_as_segment_usage() {
 }
 
 #[test]
+fn late_response_usage_measures_full_output_over_the_model_output_window() {
+    let item = "msg_late_usage";
+    let mut tracker = TurnSegmentTracker::new("sess", "turn-1", Some("synth-cloud".into()), None);
+    for (method, params, at_us) in [
+        (
+            "item/started",
+            json!({"item": {"id": "rs_1", "type": "reasoning"}}),
+            0,
+        ),
+        (
+            "item/completed",
+            json!({"item": {"id": "rs_1", "type": "reasoning"}}),
+            10_000_000,
+        ),
+        (
+            "item/started",
+            answer_started(item, "final_answer"),
+            10_000_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "a", None),
+            10_000_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "b", None),
+            10_400_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "c", None),
+            10_800_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "d", None),
+            11_200_000,
+        ),
+        (
+            "item/completed",
+            answer_completed(item, "final_answer", "abcd"),
+            11_200_000,
+        ),
+    ] {
+        if let Some(event) = protocol_event(method, &params) {
+            tracker.observe(event, at_us);
+        }
+    }
+    assert_eq!(tracker.measurements()[0].tps, None);
+
+    // All 896 response output tokens, including reasoning, less the first
+    // observed token, across the 11.2 second model-output interval.
+    let updated = tracker
+        .apply_final_response_output_usage(896)
+        .expect("late exact response usage should enrich the final answer");
+    assert!((updated.tps.unwrap() - (895.0 / 11.2)).abs() < 1e-9);
+    assert_eq!(updated.exact_tokens_after_first_sample, 895);
+    assert_eq!(updated.duration_ms, 11_200.0);
+    assert_eq!(updated.status, SegmentStatus::Completed);
+    assert_eq!(
+        updated.token_count_source,
+        TokenCountSource::ProviderResponseOutputUsage
+    );
+    assert_eq!(updated.unavailable_reason, None);
+    assert!(tracker.apply_final_response_output_usage(896).is_none());
+}
+
+#[test]
+fn tool_execution_resets_the_full_output_window() {
+    let item = "msg_after_tool";
+    let mut tracker = TurnSegmentTracker::new("sess", "turn-1", None, None);
+    for (method, params, at_us) in [
+        (
+            "item/started",
+            json!({"item": {"id": "rs_old", "type": "reasoning"}}),
+            0,
+        ),
+        ("item/started", tool_started("exec-1"), 8_000_000),
+        (
+            "item/started",
+            json!({"item": {"id": "rs_new", "type": "reasoning"}}),
+            20_000_000,
+        ),
+        (
+            "item/started",
+            answer_started(item, "final_answer"),
+            24_000_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "a", None),
+            24_000_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "b", None),
+            24_400_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "c", None),
+            24_800_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "d", None),
+            25_200_000,
+        ),
+        (
+            "item/completed",
+            answer_completed(item, "final_answer", "abcd"),
+            25_200_000,
+        ),
+    ] {
+        if let Some(event) = protocol_event(method, &params) {
+            tracker.observe(event, at_us);
+        }
+    }
+    let updated = tracker.apply_final_response_output_usage(261).unwrap();
+    assert_eq!(updated.duration_ms, 5_200.0);
+    assert!((updated.tps.unwrap() - 50.0).abs() < 1e-9);
+}
+
+#[test]
 fn text_volume_never_becomes_a_token_count() {
     // A long answer with no exact token source is unavailable, not estimated.
     let item = "msg_prose";
@@ -3960,7 +4243,7 @@ fn the_normalizer_maps_lifecycle_events_and_ignores_what_it_cannot_identify() {
     ));
     assert!(matches!(
         protocol_event("item/started", &tool_started("exec-9")),
-        Some(ProtocolEvent::NonTextItem { .. })
+        Some(ProtocolEvent::ToolBoundary { .. })
     ));
     assert!(matches!(
         protocol_event("turn/failed", &json!({})),
@@ -4244,8 +4527,8 @@ async fn a_segment_without_exact_tokens_records_its_refusal_and_leaves_the_ledge
     let totals = usage_totals(&core).await;
     assert_eq!(totals.requests, 1);
     assert_eq!(totals.decode_tps_p50, None);
-    assert!(
-        totals.end_to_end_tps_p50.is_some(),
-        "latency is still tracked"
+    assert_eq!(
+        totals.end_to_end_tps_p50, None,
+        "acceptance-to-completion latency must not be exposed as TPS"
     );
 }

@@ -3,6 +3,7 @@ use super::models::{
     ReportPromotion, ReportSeal, ReportSealBundle, ReportUpload, REPORT_BUNDLE_SCHEMA,
 };
 use super::registry::ReportRegistry;
+use crate::http::http_client;
 use crate::storage::{EventAppend, EventSource};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
@@ -25,7 +26,7 @@ impl ReportRegistry {
         backend_url: String,
         api_key: String,
     ) -> Result<ReportAudienceState> {
-        let response = reqwest::Client::new()
+        let response = http_client()
             .put(format!(
                 "{}/artifacts/v1/workshop/reports/{}/audience",
                 backend_url.trim_end_matches('/'),
@@ -57,7 +58,7 @@ impl ReportRegistry {
         backend_url: String,
         api_key: String,
     ) -> Result<ReportAudienceState> {
-        let response = reqwest::Client::new()
+        let response = http_client()
             .delete(format!(
                 "{}/artifacts/v1/workshop/reports/{}/audience",
                 backend_url.trim_end_matches('/'),
@@ -118,7 +119,7 @@ impl ReportRegistry {
             backend_url.trim_end_matches('/'),
             publication_id
         );
-        let response = reqwest::Client::new()
+        let response = http_client()
             .post(url)
             .bearer_auth(api_key)
             .json(&json!({
@@ -154,7 +155,7 @@ impl ReportRegistry {
         api_key: String,
         reason: Option<String>,
     ) -> Result<ReportPromotion> {
-        let mut request = reqwest::Client::new()
+        let mut request = http_client()
             .delete(format!(
                 "{}/artifacts/v1/workshop/reports/{}/promote",
                 backend_url.trim_end_matches('/'),
@@ -948,7 +949,7 @@ mod tests {
             return json_response(
                 StatusCode::OK,
                 json!({
-                    "publication_id": PUBLICATION_ID,
+                    "publicationId": PUBLICATION_ID,
                     "audience": audience,
                     "status": "active",
                 }),
@@ -961,7 +962,7 @@ mod tests {
             return json_response(
                 StatusCode::OK,
                 json!({
-                    "publication_id": PUBLICATION_ID,
+                    "publicationId": PUBLICATION_ID,
                     "audience": {"kind": "private"},
                     "status": "revoked",
                 }),
@@ -977,10 +978,10 @@ mod tests {
             return json_response(
                 StatusCode::OK,
                 json!({
-                    "publication_id": PUBLICATION_ID,
+                    "publicationId": PUBLICATION_ID,
                     "slug": "craftax-oss-contrast",
                     "status": "published",
-                    "public_url": "/reports/craftax-oss-contrast",
+                    "publicUrl": "/reports/craftax-oss-contrast",
                 }),
             );
         }

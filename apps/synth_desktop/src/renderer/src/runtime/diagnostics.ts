@@ -12,7 +12,7 @@
  * nothing awaits it on a render path.
  */
 
-import { COMMANDS, invokeCommand } from "../bridge";
+import { spectaCommands } from "../bridge";
 import { publicError } from "../runtime/publicError";
 
 export type DiagnosticSeverity = "debug" | "info" | "warn" | "error";
@@ -125,7 +125,7 @@ export function reportDiagnostic(report: DiagnosticReport): void {
 		toolCallId: report.toolCallId ?? null,
 		commandId: report.commandId ?? null,
 		visualId: report.visualId ?? null,
-		visualRevision: report.visualRevision ?? null,
+		visualRevision: report.visualRevision ?? undefined,
 		containerId: report.containerId ?? null,
 		rolloutId: report.rolloutId ?? null,
 		streamId: report.streamId ?? null,
@@ -133,7 +133,7 @@ export function reportDiagnostic(report: DiagnosticReport): void {
 		traceId: report.traceId ?? null,
 		details: safeDetails(report.details) ?? null,
 	};
-	void invokeCommand(COMMANDS.DIAGNOSTICS_REPORT, { request }).catch(() => {
+	void spectaCommands.diagnosticsReport(request).catch(() => {
 		// The backend is the record. If it cannot be reached there is nowhere
 		// better to put this, and retrying would only amplify the failure.
 	});
