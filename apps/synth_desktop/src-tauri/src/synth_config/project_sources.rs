@@ -38,7 +38,10 @@ pub fn merge_project_source(entry: ProjectSourceEntry) -> Result<ProjectSourceSe
 }
 
 fn merge_at(path: &Path, entry: ProjectSourceEntry) -> Result<ProjectSourceSettings> {
-    mutate_at(path, |entries| entries.push(entry))
+    mutate_at(path, |entries| {
+        entries.push(entry);
+        Ok(())
+    })
 }
 
 pub fn forget_project_source(path: &str) -> Result<ProjectSourceSettings> {
@@ -48,16 +51,86 @@ pub fn forget_project_source(path: &str) -> Result<ProjectSourceSettings> {
 fn forget_at(config: &Path, path: &str) -> Result<ProjectSourceSettings> {
     // Do not canonicalize: a deleted/unmounted source must still be revocable.
     let path = path.trim();
-    mutate_at(config, |entries| entries.retain(|entry| entry.path != path))
+    mutate_at(config, |entries| {
+        entries.retain(|entry| entry.path != path);
+        Ok(())
+    })
+}
+
+/// A compensatable, single-root mutation. Rollback never restores a stale
+/// whole-list snapshot or overwrites a newer change to the same root.
+pub(crate) struct ProjectSourceChange {
+    config: std::path::PathBuf,
+    path: String,
+    previous: Option<ProjectSourceEntry>,
+    written: Option<ProjectSourceEntry>,
+}
+
+impl ProjectSourceChange {
+    pub(crate) fn rollback(self) -> Result<()> {
+        mutate_at(&self.config, |entries| {
+            let current = entries
+                .iter()
+                .find(|entry| entry.path == self.path)
+                .cloned();
+            if current != self.written {
+                bail!("project source changed again; refusing to overwrite the newer grant during rollback");
+            }
+            entries.retain(|entry| entry.path != self.path);
+            if let Some(previous) = self.previous {
+                entries.push(previous);
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+}
+
+pub(crate) fn begin_project_source_grant(entry: ProjectSourceEntry) -> Result<ProjectSourceChange> {
+    change_at(&config_path(), entry.path.trim().to_owned(), Some(entry))
+}
+
+fn change_at(
+    config: &Path,
+    path: String,
+    entry: Option<ProjectSourceEntry>,
+) -> Result<ProjectSourceChange> {
+    let mut previous = None;
+    let settings = mutate_at(config, |entries| {
+        previous = entries.iter().find(|entry| entry.path == path).cloned();
+        match entry {
+            Some(entry) => entries.push(entry),
+            None => entries.retain(|entry| entry.path != path),
+        }
+        Ok(())
+    })?;
+    let written = settings
+        .entries
+        .into_iter()
+        .find(|entry| entry.path == path);
+    Ok(ProjectSourceChange {
+        config: config.to_owned(),
+        path,
+        previous,
+        written,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn begin_project_source_grant_at(
+    config: &Path,
+    entry: ProjectSourceEntry,
+) -> Result<ProjectSourceChange> {
+    change_at(config, entry.path.trim().to_owned(), Some(entry))
 }
 
 fn mutate_at(
     path: &Path,
-    edit: impl FnOnce(&mut Vec<ProjectSourceEntry>),
+    edit: impl FnOnce(&mut Vec<ProjectSourceEntry>) -> Result<()>,
 ) -> Result<ProjectSourceSettings> {
     let entries = mutate_config(path, |document| {
         let mut entries = entries_from_document(document)?;
-        edit(&mut entries);
+        edit(&mut entries)?;
         let entries = normalize(entries)?;
         let root = document
             .as_table_mut()
@@ -170,6 +243,26 @@ fn normalize(requested: Vec<ProjectSourceEntry>) -> Result<Vec<ProjectSourceEntr
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn grant_rollback_removes_only_its_new_root_and_refuses_newer_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let change =
+            begin_project_source_grant_at(&path, grant("/projects/first", false, true)).unwrap();
+        merge_at(&path, grant("/projects/other", true, false)).unwrap();
+        change.rollback().unwrap();
+        assert_eq!(
+            settings_at(&path).unwrap().entries,
+            vec![grant("/projects/other", true, false)]
+        );
+        let change =
+            begin_project_source_grant_at(&path, grant("/projects/first", false, true)).unwrap();
+        merge_at(&path, grant("/projects/first", true, false)).unwrap();
+        let before = fs::read_to_string(&path).unwrap();
+        assert!(change.rollback().is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
 
     fn grant(path: &str, containers: bool, recipes: bool) -> ProjectSourceEntry {
         ProjectSourceEntry {

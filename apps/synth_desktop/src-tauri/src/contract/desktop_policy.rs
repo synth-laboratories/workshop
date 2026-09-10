@@ -25,6 +25,7 @@ pub fn human_surface(name: &str) -> Option<&'static str> {
         | "project_source_add"
         | "project_source_remove"
         | "project_source_deny"
+        | "project_source_approve"
         | "workspace_scope_approve_request"
         | "workspace_scope_deny_request"
         | "desktop_permissions_update"
@@ -73,6 +74,7 @@ mod tests {
         assert!(super::human_surface("project_sources_get").is_none());
         assert!(super::human_surface("project_source_request").is_none());
         assert!(super::human_surface("project_source_deny").is_some());
+        assert!(super::human_surface("project_source_approve").is_some());
         assert!(super::human_surface("secrets_grant_use").is_some());
         assert!(super::human_surface("human_annotation_submit").is_some());
         assert!(!super::internal("visuals_render"));

@@ -10,9 +10,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod approval;
 pub mod commands;
 mod inspection;
 pub mod requests;
+pub use approval::{approve, ProjectSourceApproval};
 pub use inspection::{catalog, ProjectSourceCatalog};
 
 async fn admit_picked_root(
@@ -34,16 +36,16 @@ async fn admit_picked_root(
             inspection.message.as_deref().unwrap_or("invalid source")
         );
     }
-    synth_config::merge_project_source(ProjectSourceEntry {
+    let change = synth_config::begin_project_source_grant(ProjectSourceEntry {
         path: root.display().to_string(),
         containers,
         recipes,
     })?;
-    requests::audit(db, "project_source.approved", serde_json::json!({
+    if let Err(error) = requests::audit(db, "project_source.approved", serde_json::json!({
         "path": root.display().to_string(), "containers": inspection.containers,
         "recipes": inspection.recipes, "grant": { "containers": containers, "recipes": recipes },
         "method": "native_picker"
-    })).await?;
+    })).await { return Err(compensate(change, error)); }
     catalog()
 }
 
@@ -61,8 +63,16 @@ async fn remove_root(
         "project_source.removed",
         serde_json::json!({ "path": path.trim() }),
     )
-    .await?;
+    .await
+    .context("source was revoked, but its journal event could not be recorded")?;
     catalog()
+}
+
+fn compensate(change: synth_config::ProjectSourceChange, error: anyhow::Error) -> anyhow::Error {
+    match change.rollback() {
+        Ok(()) => error.context("source change was rolled back because its durable decision could not be recorded"),
+        Err(rollback) => anyhow!("source decision failed: {error}; rollback failed: {rollback}; inspect current source permissions before retrying"),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

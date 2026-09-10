@@ -740,6 +740,13 @@ export const commands = {
 	projectSourceRequest: (request: ProjectSourceRequestInput) => typedError<ProjectSourceRequest, AppError_Serialize>(__TAURI_INVOKE("project_source_request", { request })),
 	projectSourceRequestsList: (sessionId: string | null) => typedError<ProjectSourceRequest[], AppError_Serialize>(__TAURI_INVOKE("project_source_requests_list", { sessionId })),
 	projectSourceDeny: (requestId: string) => typedError<ProjectSourceRequest, AppError_Serialize>(__TAURI_INVOKE("project_source_deny", { requestId })),
+	projectSourceApprove: (requestId: string) => typedError<{
+	request: ProjectSourceRequest,
+	source: ProjectSourceRow,
+	catalog: ProjectSourceCatalog,
+	scope: ConversationWorkspaceScope | null,
+	attachmentError: string | null,
+} | null, AppError_Serialize>(__TAURI_INVOKE("project_source_approve", { requestId })),
 };
 
 /* Types */
@@ -3563,6 +3570,14 @@ export type PluginStatus = {
 	permissions?: PluginPermission[],
 	lastActionReceiptId?: string | null,
 	detail?: string | null,
+};
+
+export type ProjectSourceApproval = {
+	request: ProjectSourceRequest,
+	source: ProjectSourceRow,
+	catalog: ProjectSourceCatalog,
+	scope: ConversationWorkspaceScope | null,
+	attachmentError: string | null,
 };
 
 export type ProjectSourceCatalog = {
