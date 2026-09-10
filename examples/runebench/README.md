@@ -6,7 +6,44 @@ or a claim about model performance. It never connects to official game servers.
 
 ## Start here
 
-From the Workshop repository after `scripts/install.sh`:
+### 1. Build and open Workshop
+
+On an **Apple Silicon Mac running macOS 14 or newer**, paste this into Terminal
+(use a fresh `workshop-max` destination):
+
+```bash
+git clone https://github.com/synth-laboratories/workshop.git workshop-max &&
+cd workshop-max &&
+./scripts/install.sh --bootstrap &&
+./scripts/workshop.sh build-and-run
+```
+
+The script bootstraps build dependencies and builds the app locally. First
+builds download dependencies and take a while; installer prompts may need your
+attention. If Git is missing, run `xcode-select --install`, finish Apple's
+installer, and retry. Apple developer tools must provide **Swift 6+** (Xcode
+16+). No paid Apple developer membership or provider key is needed to build.
+The local app is ad-hoc signed, not notarized; never disable Gatekeeper globally.
+
+### 2. Give Workshop this prompt
+
+Connect ChatGPT in **Settings → Models**, then start a conversation with this
+checkout as its project. Model availability depends on your account. Paste:
+
+> Read `examples/runebench/PROMPT.md` in this checkout and follow it. Start with
+> the bundled four-agent recording. Show all agents, focus one, inspect messages
+> and failed actions, and follow the original evidence and game frames. Then
+> help me run the free 25-second scripted episode. No paid AI calls. If a native
+> visual tool or comparison control fails, explain the limitation rather than
+> claiming it worked.
+
+[Full agent instructions](PROMPT.md) are included in this repository. No separate
+private container or visual repository is needed. Chat itself is subject to
+your account's limits; the scripted game controllers make no model calls.
+
+### 3. Or review without chat authentication
+
+From the installed Workshop checkout:
 
 ```bash
 bash examples/runebench/example.sh setup
@@ -31,6 +68,11 @@ The inspector starts on All agents: focus one actor, compare a second, follow
 messages and actions, query unsuccessful chops or same-tree attempts, and open
 the exact source record and recorded game frame. Recording startup gaps are
 labeled. Same-tree attempts are not proof of causal interference.
+
+**Known walkthrough caveat:** the native comparison dropdown did not retain a
+selection during one CUA walkthrough. All-agent review, single-agent focus, and
+failure-to-replay navigation worked. If comparison does not stick, use those
+views; do not interpret this as verified side-by-side native comparison.
 
 Results are retained in `results/`, using a unique directory for each run. The
 runner checks all-player readiness, cross-actor capability rejection, authoritative
