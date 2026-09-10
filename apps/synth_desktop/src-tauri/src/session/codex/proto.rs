@@ -611,6 +611,8 @@ pub(crate) fn default_sandbox() -> String {
 }
 
 pub(crate) struct Session {
+    /// Serializes cancellation against notification projection for this attachment.
+    pub(crate) notification_closed: Arc<Mutex<bool>>,
     pub(crate) attachment_id: uuid::Uuid,
     pub(crate) server: Arc<AppServer>,
     pub(crate) thread_id: String,
