@@ -43,8 +43,10 @@ test("move controls disable at list boundaries and name the block", () => {
   assert.match(reportsPage, /disabled=\{index === movable\.length - 1\}/);
 });
 
-test("autosave state is visible and Save draft is disabled unless dirty", () => {
-  assert.match(reportsPage, /Edits save automatically\./);
+test("local drafts and explicit saves are described honestly", () => {
+  assert.match(reportsPage, /Draft edits are retained in this session/);
+  assert.match(reportsPage, /Unsaved changes/);
+  assert.doesNotMatch(reportsPage, /Edits save automatically/);
   assert.match(reportsPage, /Saved · rev \$\{readerRevision\.revision\}/);
   assert.match(reportsPage, /saveStatus === "saving" \? "Saving"/);
   assert.match(reportsPage, /saveStatus === "error" \? "Error"/);
