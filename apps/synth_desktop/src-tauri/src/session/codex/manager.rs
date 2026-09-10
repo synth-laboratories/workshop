@@ -302,6 +302,7 @@ impl CodexManager {
         install_local_laguna_catalog(&home, &request)?;
         ensure_home(&home, &request)?;
         let attachment_id = uuid::Uuid::new_v4();
+        let notification_closed = Arc::new(Mutex::new(false));
         let server = spawn_server(
             app.clone(),
             SpawnServerRequest {
@@ -314,6 +315,7 @@ impl CodexManager {
                         == super::home::ProviderClass::OpenaiCodexOauth,
             },
             EventPumpState {
+                notification_closed: notification_closed.clone(),
                 records: self.records.clone(),
                 state_path: self.state_path.clone(),
                 persistence: self.persistence.clone(),
@@ -402,6 +404,7 @@ impl CodexManager {
             .ok_or_else(|| anyhow!("Codex {method} response missing thread id: {result}"))?;
         let mcp_reload_pending = server.persistent;
         let session = Arc::new(Session {
+            notification_closed,
             attachment_id,
             server,
             thread_id: thread_id.clone(),
@@ -1223,6 +1226,9 @@ impl CodexManager {
         let Some(turn_id) = session.turn_id.read().await.clone() else {
             return Ok(());
         };
+        // Drain any in-flight projection, then reject late notifications while
+        // still allowing RPC acknowledgements through the stdout reader.
+        *session.notification_closed.lock().await = true;
         // Terminalize durable state before asking the provider. Its own
         // turn/interrupted notification can race the request acknowledgement;
         // recording cancellation first keeps a deliberate Stop distinct from
@@ -1253,6 +1259,27 @@ impl CodexManager {
                 ),
             )
             .await?;
+        // Finalize the interrupted turn exactly once, retaining usage already
+        // observed before Stop. Late notifications cannot contaminate it.
+        let measurements = super::telemetry::finalize_performance_tracker(
+            &self.persistence,
+            &self.performance_trackers,
+            &self.receipts(),
+            session_id,
+            RunStatus::Interrupted.as_str(),
+            None,
+        )
+        .await;
+        for measurement in measurements {
+            self.persistence
+                .notify_codex_event(
+                    &app,
+                    session_id.to_owned(),
+                    super::generation_speed::MEASUREMENT_EVENT,
+                    serde_json::to_value(measurement)?,
+                )
+                .await;
+        }
         // Give the provider a bounded opportunity to stop leases and seal
         // partial evidence. An acknowledgement is not proof that a child tool
         // died, so the owned process group is fenced below in every case.

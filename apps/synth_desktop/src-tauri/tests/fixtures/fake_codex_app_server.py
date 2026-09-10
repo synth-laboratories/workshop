@@ -128,6 +128,16 @@ for raw in sys.stdin:
             })
         result = {"turn": {"id": turn_id}}
     elif method == "turn/interrupt":
+        if ignore_interrupt_and_spawn_sleeper.exists():
+            # Late output and a false completion must not reopen a cancelled turn.
+            send({"jsonrpc": "2.0", "method": "item/agentMessage/delta", "params": {
+                "threadId": params.get("threadId"), "turnId": params.get("turnId"),
+                "itemId": "late-after-stop", "delta": "LATE_CANCEL_SENTINEL"}})
+            send({"jsonrpc": "2.0", "method": "turn/completed", "params": {
+                "threadId": params.get("threadId"), "turn": {
+                    "id": params.get("turnId"), "status": "completed"},
+                "usage": {"input_tokens": 999, "output_tokens": 888}}})
+            __import__("time").sleep(0.1)
         result = {}
     elif method == "turn/steer":
         result = {"turnId": params.get("expectedTurnId")}
