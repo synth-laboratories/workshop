@@ -357,6 +357,10 @@ pub const NAMES: &[&str] = &[
     "workspace_read_file",
     "workspace_list_dir",
     "document_show",
+    "visuals_template_shell_source",
+    "visuals_template_save",
+    "visuals_template_create",
+    "visuals_template_validate",
 ];
 
 type Reply<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Value>> + Send + 'a>>;
@@ -716,6 +720,10 @@ pub fn invoke<'a>(app: &'a tauri::AppHandle, name: &str, args: Value) -> Reply<'
         "workspace_read_file" => operation_351(app, args),
         "workspace_list_dir" => operation_352(app, args),
         "document_show" => operation_353(app, args),
+        "visuals_template_shell_source" => operation_354(app, args),
+        "visuals_template_save" => operation_355(app, args),
+        "visuals_template_create" => operation_356(app, args),
+        "visuals_template_validate" => operation_357(app, args),
         _ => Box::pin(async { anyhow::bail!("unknown desktop operation") }),
     }
 }
@@ -4610,6 +4618,50 @@ fn operation_353(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
             let allowed: &[&str] = &["sessionId", "path"];
             anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
             let result = crate::documents::commands::document_show(app.try_state().context("runtime service is unavailable")?, serde_json::from_value(args.get("sessionId").cloned().unwrap_or(Value::Null)).context("invalid sessionId")?, serde_json::from_value(args.get("path").cloned().unwrap_or(Value::Null)).context("invalid path")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            Ok(json!({"result": result}))
+    })
+}
+
+fn operation_354(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+    Box::pin(async move {
+            anyhow::ensure!(args.is_object(), "operation arguments must be an object");
+            // Handler: apps/synth_desktop/src-tauri/src/visuals/user_templates.rs
+            let allowed: &[&str] = &["templateId"];
+            anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
+            let result = crate::visuals::user_templates::visuals_template_shell_source(serde_json::from_value(args.get("templateId").cloned().unwrap_or(Value::Null)).context("invalid templateId")?).map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            Ok(json!({"result": result}))
+    })
+}
+
+fn operation_355(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+    Box::pin(async move {
+            anyhow::ensure!(args.is_object(), "operation arguments must be an object");
+            // Handler: apps/synth_desktop/src-tauri/src/visuals/user_templates.rs
+            let allowed: &[&str] = &["sessionId", "templateId", "manifest", "source"];
+            anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
+            let result = crate::visuals::user_templates::visuals_template_save(app.clone(), serde_json::from_value(args.get("sessionId").cloned().unwrap_or(Value::Null)).context("invalid sessionId")?, serde_json::from_value(args.get("templateId").cloned().unwrap_or(Value::Null)).context("invalid templateId")?, serde_json::from_value(args.get("manifest").cloned().unwrap_or(Value::Null)).context("invalid manifest")?, serde_json::from_value(args.get("source").cloned().unwrap_or(Value::Null)).context("invalid source")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            Ok(json!({"result": result}))
+    })
+}
+
+fn operation_356(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+    Box::pin(async move {
+            anyhow::ensure!(args.is_object(), "operation arguments must be an object");
+            // Handler: apps/synth_desktop/src-tauri/src/visuals/user_templates.rs
+            let allowed: &[&str] = &["sessionId", "templateId", "fromTemplateId", "title"];
+            anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
+            let result = crate::visuals::user_templates::visuals_template_create(app.clone(), serde_json::from_value(args.get("sessionId").cloned().unwrap_or(Value::Null)).context("invalid sessionId")?, serde_json::from_value(args.get("templateId").cloned().unwrap_or(Value::Null)).context("invalid templateId")?, serde_json::from_value(args.get("fromTemplateId").cloned().unwrap_or(Value::Null)).context("invalid fromTemplateId")?, serde_json::from_value(args.get("title").cloned().unwrap_or(Value::Null)).context("invalid title")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            Ok(json!({"result": result}))
+    })
+}
+
+fn operation_357(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+    Box::pin(async move {
+            anyhow::ensure!(args.is_object(), "operation arguments must be an object");
+            // Handler: apps/synth_desktop/src-tauri/src/visuals/user_templates.rs
+            let allowed: &[&str] = &["templateId"];
+            anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
+            let result = crate::visuals::user_templates::visuals_template_validate(serde_json::from_value(args.get("templateId").cloned().unwrap_or(Value::Null)).context("invalid templateId")?).map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
             Ok(json!({"result": result}))
     })
 }

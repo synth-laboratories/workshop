@@ -280,15 +280,10 @@ fn resolve_template_inner(visuals_root: &Path, id: &str) -> anyhow::Result<Templ
     }
 
     let managed_path = managed_templates_root().join(id);
-    if managed_path.join("template.json").is_file() && managed_path.join("renderer.html").is_file()
-    {
+    if let Some(meta) = instance_template(&managed_path)? {
         if resolved.is_some() {
             anyhow::bail!("managed visual template id collides with bundled template: {id}");
         }
-        let mut meta = load_template_meta(&managed_path)?;
-        meta.path = Some(managed_path.display().to_string());
-        meta.renderer_path = Some(managed_path.join("renderer.html").display().to_string());
-        meta.source_kind = Some("managed".into());
         resolved = Some(meta);
     }
 
@@ -386,22 +381,13 @@ fn build_template_index_inner(
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
             let path = entry.path();
-            if !path.is_dir()
-                || !path.join("template.json").is_file()
-                || !path.join("renderer.html").is_file()
-            {
-                continue;
-            }
-            let mut meta = load_template_meta(&path)?;
+            let Some(meta) = instance_template(&path)? else { continue; };
             if templates.contains_key(&meta.id) {
                 anyhow::bail!(
                     "managed visual template id collides with bundled template: {}",
                     meta.id
                 );
             }
-            meta.path = Some(path.display().to_string());
-            meta.renderer_path = Some(path.join("renderer.html").display().to_string());
-            meta.source_kind = Some("managed".into());
             templates.insert(meta.id.clone(), meta);
         }
     }
@@ -421,6 +407,60 @@ fn managed_templates_root() -> PathBuf {
     crate::instance::data_root().join("visuals").join("templates")
 }
 
+pub(super) fn user_template_path(id: &str) -> anyhow::Result<PathBuf> {
+    let root = managed_templates_root();
+    let path = root.join(id);
+    if path.parent() != Some(root.as_path()) || path.file_name().and_then(|name| name.to_str()) != Some(id) {
+        anyhow::bail!("invalid user visual template id");
+    }
+    Ok(path)
+}
+
+fn checked_template_file(path: &Path) -> anyhow::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => anyhow::bail!("template requires a regular file: {}", path.display()),
+        Ok(meta) if meta.len() > MANAGED_TEMPLATE_MAX_BYTES => anyhow::bail!("template exceeds size limit"),
+        Ok(_) => Ok(true),
+    }
+}
+
+pub(super) fn instance_template(path: &Path) -> anyhow::Result<Option<TemplateMeta>> {
+    let dir = match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        other => other?,
+    };
+    if dir.file_type().is_symlink() || !dir.is_dir() { anyhow::bail!("template directory must not be a symlink"); }
+    if !checked_template_file(&path.join("template.json"))? { return Ok(None); }
+    let html = checked_template_file(&path.join("renderer.html"))?;
+    let tsx = checked_template_file(&path.join("shell.tsx"))?;
+    if html && tsx { anyhow::bail!("template cannot contain both renderer.html and shell.tsx"); }
+    if !html && !tsx { return Ok(None); }
+    let mut meta = load_template_meta(path)?;
+    meta.path = Some(path.display().to_string());
+    if tsx {
+        meta.source_kind = Some("user".into());
+        meta.renderer_kind = Some("template".into());
+        meta.shell_path = Some(path.join("shell.tsx").display().to_string());
+    } else {
+        meta.source_kind = Some("managed".into());
+        meta.renderer_path = Some(path.join("renderer.html").display().to_string());
+    }
+    Ok(Some(meta))
+}
+
+pub(super) fn prepare_user_save(id: &str, manifest: &str, source: &str) -> anyhow::Result<PreparedManagedImport> {
+    let destination = user_template_path(id)?;
+    if destination.join("renderer.html").exists() { anyhow::bail!("cannot replace an HTML package with a TSX template"); }
+    if let Ok(existing) = resolve_template(id) {
+        if existing.source_kind.as_deref() != Some("user") { anyhow::bail!("cannot overwrite a bundled template; fork under a new id"); }
+    }
+    if manifest.len() as u64 > MANAGED_TEMPLATE_MAX_BYTES || source.len() > 256 * 1024 { anyhow::bail!("user template exceeds size limit"); }
+    let meta = decode_template_meta(&destination, manifest.as_bytes(), String::new())?;
+    Ok(PreparedManagedImport { meta, manifest: manifest.as_bytes().to_vec(), renderer: source.as_bytes().to_vec(), destination, renderer_file: "shell.tsx", source_kind: "user" })
+}
+
 /// Legacy synchronous seam: no broker means no permission to persist code.
 /// The approved path prepares exactly two files, obtains consent, then writes
 /// those immutable bytes through `PreparedManagedImport::persist`.
@@ -434,16 +474,23 @@ pub(crate) struct PreparedManagedImport {
     manifest: Vec<u8>,
     renderer: Vec<u8>,
     destination: PathBuf,
+    renderer_file: &'static str,
+    source_kind: &'static str,
 }
 
 impl PreparedManagedImport {
     pub(crate) fn request(&self) -> anyhow::Result<crate::session::template_persist::PersistRequest> {
+        let other_file = if self.source_kind == "user" { "renderer.html" } else { "shell.tsx" };
+        if checked_template_file(&self.destination.join(other_file))? {
+            anyhow::bail!("template cannot change renderer tier during approval");
+        }
         if let Ok(meta) = fs::symlink_metadata(&self.destination) {
             if !meta.is_dir() || meta.file_type().is_symlink() {
                 anyhow::bail!("managed template destination must be a real directory");
             }
         }
         let mut digest = Sha256::new();
+        digest.update(self.renderer_file.as_bytes());
         digest.update((self.manifest.len() as u64).to_le_bytes());
         digest.update(&self.manifest);
         digest.update((self.renderer.len() as u64).to_le_bytes());
@@ -454,13 +501,14 @@ impl PreparedManagedImport {
             package_digest: format!("sha256:{:x}", digest.finalize()),
             byte_size: (self.manifest.len() + self.renderer.len()) as u64,
             overwrites: self.destination.exists(),
+            source_kind: self.source_kind.into(),
         })
     }
 
     pub(crate) fn persist(mut self, consent: crate::session::template_persist::PersistConsent) -> anyhow::Result<TemplateMeta> {
         consent.bind(&self.request()?)?;
         fs::create_dir_all(&self.destination)?;
-        for (name, bytes) in [("template.json", &self.manifest), ("renderer.html", &self.renderer)] {
+        for (name, bytes) in [("template.json", &self.manifest), (self.renderer_file, &self.renderer)] {
             // Atomic file replacement does not follow an existing file symlink.
             let mut file = tempfile::NamedTempFile::new_in(&self.destination)?;
             std::io::Write::write_all(&mut file, bytes)?;
@@ -468,8 +516,13 @@ impl PreparedManagedImport {
         }
         self.meta = load_template_meta(&self.destination)?;
         self.meta.path = Some(self.destination.display().to_string());
-        self.meta.renderer_path = Some(self.destination.join("renderer.html").display().to_string());
-        self.meta.source_kind = Some("managed".into());
+        if self.source_kind == "managed" {
+            self.meta.renderer_path = Some(self.destination.join(self.renderer_file).display().to_string());
+        } else {
+            self.meta.renderer_kind = Some("template".into());
+            self.meta.shell_path = Some(self.destination.join(self.renderer_file).display().to_string());
+        }
+        self.meta.source_kind = Some(self.source_kind.into());
         Ok(self.meta)
     }
 }
@@ -506,7 +559,7 @@ pub(crate) fn prepare_managed_import(source_path: &str) -> anyhow::Result<Prepar
     }
     validate_managed_renderer(&renderer_bytes)?;
     let destination = managed_templates_root().join(&meta.id);
-    Ok(PreparedManagedImport { meta, manifest: manifest_bytes, renderer: renderer_bytes, destination })
+    Ok(PreparedManagedImport { meta, manifest: manifest_bytes, renderer: renderer_bytes, destination, renderer_file: "renderer.html", source_kind: "managed" })
 }
 
 fn validate_managed_renderer(bytes: &[u8]) -> anyhow::Result<()> {
@@ -641,6 +694,10 @@ fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
 }
 
 fn load_template_meta_bytes(path: &Path, raw: &[u8]) -> anyhow::Result<TemplateMeta> {
+    decode_template_meta(path, raw, template_package_digest(path)?)
+}
+
+fn decode_template_meta(path: &Path, raw: &[u8], template_digest: String) -> anyhow::Result<TemplateMeta> {
     let value: Value = serde_json::from_slice(raw)?;
     let id = value
         .get("id")
@@ -704,7 +761,7 @@ fn load_template_meta_bytes(path: &Path, raw: &[u8]) -> anyhow::Result<TemplateM
     let mut meta = TemplateMeta {
         schema_version,
         id,
-        template_digest: template_package_digest(path)?,
+        template_digest,
         title,
         genre: value
             .get("genre")
@@ -760,6 +817,44 @@ fn load_template_meta_bytes(path: &Path, raw: &[u8]) -> anyhow::Result<TemplateM
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_templates_persist_only_reviewed_tsx_and_index_as_user() {
+        let temp = tempfile::tempdir().unwrap();
+        let id = "user.authoring.test.v1";
+        let manifest = format!(r#"{{"schemaVersion":"synth.visual-template.v1","id":"{id}","version":"1.0.0","inputs":[]}}"#);
+        let mut prepared = prepare_user_save(id, &manifest, "export default function Shell() { return null; }").unwrap();
+        prepared.destination = temp.path().join(id);
+        let request = prepared.request().unwrap();
+        assert_eq!(request.source_kind, "user");
+        let meta = prepared.persist(crate::session::template_persist::PersistConsent::for_test(request)).unwrap();
+        assert_eq!(meta.source_kind.as_deref(), Some("user"));
+        let indexed = instance_template(&temp.path().join(id)).unwrap().unwrap();
+        assert_eq!(indexed.renderer_kind.as_deref(), Some("template"));
+        assert!(temp.path().join(id).join("shell.tsx").is_file());
+        assert!(!temp.path().join(id).join("renderer.html").exists());
+    }
+
+    #[test]
+    fn user_templates_refuse_traversal_foreign_ids_and_mismatched_manifests() {
+        for id in ["", ".", "..", "../outside", "/absolute", "nested/id"] { assert!(user_template_path(id).is_err()); }
+        assert!(prepare_user_save("user.test.v1", r#"{"schemaVersion":"synth.visual-template.v1","id":"other","version":"1.0.0"}"#, "x").is_err());
+        assert!(prepare_user_save("experiment.overview.v1", "{}", "x").is_err());
+    }
+
+    #[test]
+    fn user_template_renderer_tier_cannot_change_while_approval_is_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let id = "user.approval.test.v1";
+        let manifest = format!(r#"{{"schemaVersion":"synth.visual-template.v1","id":"{id}","version":"1.0.0"}}"#);
+        let mut prepared = prepare_user_save(id, &manifest, "export default function Shell() { return null; }").unwrap();
+        prepared.destination = temp.path().join(id);
+        let request = prepared.request().unwrap();
+        fs::create_dir(&prepared.destination).unwrap();
+        fs::write(prepared.destination.join("renderer.html"), "existing").unwrap();
+        assert!(prepared.persist(crate::session::template_persist::PersistConsent::for_test(request)).is_err());
+        assert!(!temp.path().join(id).join("shell.tsx").exists());
+    }
 
     #[test]
     fn managed_import_prepares_immutable_bytes_without_writing() {

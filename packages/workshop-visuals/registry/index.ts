@@ -69,6 +69,24 @@ overlay(internalManifests, "templates-internal");
 
 const ORDERED_ENTRIES = [...BY_ID.values()].sort((left, right) => left.meta.id.localeCompare(right.meta.id));
 const INTERNAL_IDS = new Set(Object.values(internalManifests).map((meta) => meta.id));
+const RUNTIME_TEMPLATES = new Map<string, VisualTemplate>();
+
+/** Native registry metadata, never a shell import path supplied by a template. */
+export function registerRuntimeTemplate(meta: Record<string, unknown>): void {
+  if (meta.sourceKind !== "user" || typeof meta.id !== "string" || meta.schemaVersion !== "synth.visual-template.v1") {
+    throw new Error("Invalid user-template metadata");
+  }
+  if (BY_ID.has(meta.id)) throw new Error(`User template cannot shadow bundled template ${meta.id}`);
+  const inputs = meta.inputs ?? meta.slots;
+  if (!Array.isArray(inputs) || inputs.some(input => !input || typeof input !== "object" || typeof input.name !== "string")) {
+    throw new Error("User template has invalid input declarations");
+  }
+  RUNTIME_TEMPLATES.set(meta.id, {
+    ...meta, title: String(meta.title ?? meta.id), genre: String(meta.genre ?? "custom"),
+    version: String(meta.version ?? ""), description: String(meta.description ?? ""),
+    shell: "shell.tsx", root: String(meta.path ?? ""), inputs, slots: inputs,
+  } as VisualTemplate);
+}
 
 type ShellModule = {
   Shell: (props: Record<string, unknown>) => unknown;
@@ -96,12 +114,12 @@ function withDistribution(entry: RegistryEntry): VisualTemplate {
 }
 
 export function listTemplates(): VisualTemplate[] {
-  return ORDERED_ENTRIES.map(withDistribution);
+  return [...ORDERED_ENTRIES.map(withDistribution), ...RUNTIME_TEMPLATES.values()];
 }
 
 export function resolveTemplate(id: string): VisualTemplate | undefined {
   const entry = BY_ID.get(id);
-  if (!entry) return undefined;
+  if (!entry) return RUNTIME_TEMPLATES.get(id);
   return withDistribution(entry);
 }
 

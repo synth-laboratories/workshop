@@ -625,6 +625,10 @@ export type VisualTemplateMeta = TemplateMeta;
 export type VisualsBridge = {
 	listTemplates(genre?: string | null): Promise<VisualTemplateMeta[]>;
 	getTemplate(templateId: string): Promise<VisualTemplateMeta>;
+	templateShellSource?(templateId: string): Promise<string>;
+	saveTemplate?(sessionId: string, templateId: string, manifest: string, source: string): Promise<VisualTemplateMeta>;
+	createTemplate?(sessionId: string, templateId: string, fromTemplateId: string, title?: string | null): Promise<VisualTemplateMeta>;
+	validateTemplate?(templateId: string): Promise<unknown>;
 	list(query?: {
 		status?: string;
 		sessionId?: string;

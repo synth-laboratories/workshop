@@ -65689,6 +65689,650 @@
       "_meta": {
         "workshop/operationId": "desktop.document_show.v1"
       }
+    },
+    {
+      "name": "visuals_template_shell_source",
+      "description": "Workshop visuals template shell source. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "templateId"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {}
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.visuals_template_shell_source.v1"
+      }
+    },
+    {
+      "name": "visuals_template_save",
+      "description": "Workshop visuals template save. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "templateId": {
+            "type": "string"
+          },
+          "manifest": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "templateId",
+          "manifest",
+          "source"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/T1"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "templateDigest": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "title": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "genre": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "family": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "version": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "rendererKind": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "tags": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "shellPath": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "rendererPath": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "sourceKind": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "exampleBinding": {},
+              "inputs": {},
+              "slots": {},
+              "components": {},
+              "bindingSchema": {},
+              "observationContract": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/T2"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "T2": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "string"
+              },
+              "readiness": {
+                "$ref": "#/$defs/T3"
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "readiness"
+            ],
+            "additionalProperties": false
+          },
+          "T3": {
+            "type": "object",
+            "properties": {
+              "rejectTransportStates": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              },
+              "minimumRolloutCount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "minimumRenderedFrameCount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "minimumSemanticEventCount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "requireTerminal": {
+                "anyOf": [
+                  {
+                    "const": false
+                  },
+                  {
+                    "const": true
+                  }
+                ]
+              },
+              "authoringAffordances": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "const": "temporalControls"
+                        },
+                        {
+                          "const": "traceInspector"
+                        },
+                        {
+                          "const": "realEvidence"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.visuals_template_save.v1"
+      }
+    },
+    {
+      "name": "visuals_template_create",
+      "description": "Workshop visuals template create. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "templateId": {
+            "type": "string"
+          },
+          "fromTemplateId": {
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "required": [
+          "sessionId",
+          "templateId",
+          "fromTemplateId"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/T1"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "templateDigest": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "title": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "genre": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "family": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "version": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "rendererKind": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "tags": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "shellPath": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "rendererPath": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "sourceKind": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "exampleBinding": {},
+              "inputs": {},
+              "slots": {},
+              "components": {},
+              "bindingSchema": {},
+              "observationContract": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/T2"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "T2": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "string"
+              },
+              "readiness": {
+                "$ref": "#/$defs/T3"
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "readiness"
+            ],
+            "additionalProperties": false
+          },
+          "T3": {
+            "type": "object",
+            "properties": {
+              "rejectTransportStates": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              },
+              "minimumRolloutCount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "minimumRenderedFrameCount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "minimumSemanticEventCount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "requireTerminal": {
+                "anyOf": [
+                  {
+                    "const": false
+                  },
+                  {
+                    "const": true
+                  }
+                ]
+              },
+              "authoringAffordances": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "const": "temporalControls"
+                        },
+                        {
+                          "const": "traceInspector"
+                        },
+                        {
+                          "const": "realEvidence"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.visuals_template_create.v1"
+      }
+    },
+    {
+      "name": "visuals_template_validate",
+      "description": "Workshop visuals template validate. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "templateId"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {}
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {}
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.visuals_template_validate.v1"
+      }
     }
   ]
 }
