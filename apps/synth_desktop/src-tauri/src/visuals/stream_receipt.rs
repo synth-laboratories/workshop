@@ -872,6 +872,10 @@ pub fn receipt(visual_id: &str, revision: i64, declared: &DeclaredStreams) -> St
     let mut absent = VisualState::new(revision, declared);
     let state = if newer(&store, visual_id, revision) { &mut absent }
         else { entry(&mut store, visual_id, revision, declared) };
+    receipt_from_state(visual_id, revision, declared, state)
+}
+
+fn receipt_from_state(visual_id: &str, revision: i64, declared: &DeclaredStreams, state: &VisualState) -> StreamReceipt {
     let streams: Vec<StreamReceiptStream> = declared
         .streams
         .iter()
@@ -918,6 +922,18 @@ pub fn receipt(visual_id: &str, revision: i64, declared: &DeclaredStreams) -> St
         first_observed_at: state.observed.then(|| state.first_observed_at.clone()),
         last_observed_at: state.observed.then(|| state.last_observed_at.clone()),
     }
+}
+
+/// Capture accounting and retained bytes under one lock. The projection is
+/// computed afterwards, without allowing a newer receipt to label older bytes.
+pub fn evidence_snapshot(visual_id: &str, revision: i64, declared: &DeclaredStreams) -> (StreamReceipt, Vec<Value>, bool) {
+    let mut store = store();
+    let mut absent = VisualState::new(revision, declared);
+    let state = if newer(&store, visual_id, revision) { &mut absent }
+        else { entry(&mut store, visual_id, revision, declared) };
+    (receipt_from_state(visual_id, revision, declared, state),
+        state.evidence.iter().map(|(_, envelope)| envelope.clone()).collect(),
+        state.evidence_books.values().any(|book| book.truncated))
 }
 
 // ---------------------------------------------------------------------------

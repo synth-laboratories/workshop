@@ -3118,14 +3118,12 @@ async fn visual_stream_poll(
             // which is the same O(page history) the renderer's own ingest
             // already pays on every batch; if that bites, the fix is an
             // incremental fold inside `stream_fold`, not a second projector.
-            let projection =
-                visuals::live_eval::observed_projection(&visual.id, visual.current_revision, None)
-                    .transpose()
-                    .map_err(AppError::from)?
-                    .map(|projection| visuals::live_eval::projection_view(&projection))
-                    .transpose()
-                    .map_err(AppError::from)?
-                    .map(contract::specta::OpaqueJson);
+            let (receipt, evidence, evidence_truncated) = visuals::stream_receipt::evidence_snapshot(
+                &visual.id, visual.current_revision, &receipt_streams);
+            let projection = if evidence.is_empty() { None } else {
+                Some(contract::specta::OpaqueJson(visuals::live_eval::seal_projection(&evidence)
+                    .map_err(AppError::from)?))
+            };
             Ok(VisualStreamPollResult {
                 schema_version: VISUAL_STREAM_POLL_SCHEMA.to_string(),
                 events: contract::specta::OpaqueJson(serde_json::Value::Array(
@@ -3133,12 +3131,8 @@ async fn visual_stream_poll(
                 )),
                 cursor: visuals::stream_receipt::page_cursor(&page),
                 projection,
-                evidence_truncated: outcome.evidence_truncated,
-                receipt: visuals::stream_receipt::receipt(
-                    &visual.id,
-                    visual.current_revision,
-                    &receipt_streams,
-                ),
+                evidence_truncated,
+                receipt,
             })
         }
         Err(error) => {
