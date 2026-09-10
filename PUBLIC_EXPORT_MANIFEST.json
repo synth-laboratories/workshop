@@ -6967,30 +6967,6 @@
       "sha256": "0a5d3b0b6bfe8f68b5845682433f6bcdc27ae72a00462752e6ab71ab11b292db"
     },
     {
-      "bytes": 0,
-      "mode": "100644",
-      "path": "packages/workshop-visuals/templates-internal/.gitkeep",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
-    {
-      "bytes": 628,
-      "mode": "100644",
-      "path": "packages/workshop-visuals/templates-internal/README.md",
-      "sha256": "2f297fdb8ca19280989f2e2e4206bc8024df1fcacaa261a44351b25945b274a4"
-    },
-    {
-      "bytes": 4248,
-      "mode": "100644",
-      "path": "packages/workshop-visuals/templates-internal/evidence.acceptance.v1/shell.tsx",
-      "sha256": "b47bca8bc0fd0013a9776d731b747994cf49195bceb1239998fe087a2f5c692c"
-    },
-    {
-      "bytes": 435,
-      "mode": "100644",
-      "path": "packages/workshop-visuals/templates-internal/evidence.acceptance.v1/template.json",
-      "sha256": "ef8812daa4a551d5902afe988e5f6be0cc05057612b3a87fdff8a4bcff631f4e"
-    },
-    {
       "bytes": 2082,
       "mode": "100644",
       "path": "pnpm-lock.yaml",
@@ -7097,12 +7073,6 @@
       "mode": "100755",
       "path": "scripts/finalize-browser-app.sh",
       "sha256": "78a4ae9e7c03654ae4566cce25a3f4239d7baaae3e3ed74cfb90953c6179a7b8"
-    },
-    {
-      "bytes": 2884,
-      "mode": "100644",
-      "path": "scripts/fixtures/workshop-acp-agent.py",
-      "sha256": "e7e6defbc8db0ba9cd6b4a60ba8da0db585e16ab48632c4f80cd050abfa6a114"
     },
     {
       "bytes": 3126,
@@ -7699,7 +7669,7 @@
       "sha256": "a45a6a8cc94c53e97bf2dc719e6172ad10ae9fea1091559456396e8fa1b244ea"
     }
   ],
-  "policySha256": "a95a44fbdc6b720a98a26580624ee7c6f5455a8a3ce47b3db11c3f6c79ea8232",
+  "policySha256": "099bcf78a1b8cc0752cf21d40300ffe36f2470eef6f8b9a8a72cce8a74b64cd4",
   "schema": "workshop.public-export-manifest.v1",
   "source": {
     "commit": "900b2e24aee873697c85d45d2d5a10412db8ace7",
