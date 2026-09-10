@@ -90,7 +90,7 @@ fn hex_sha256(bytes: &[u8]) -> String {
 fn validate_kind(kind: &str) -> Result<()> {
     match kind {
         "blobs" | "previews" | "traces" | "trace_imports" | "exports" | "artifact_bundles"
-        | "report_bundles" | "trace_views"
+        | "report_bundles" | "trace_views" | "optimizer_snapshots"
         // Native environment frames relayed off a running container. Their own
         // kind so a PNG is never served where a JSON document is expected, and
         // so frame retention can be dropped without touching any other
