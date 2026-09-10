@@ -490,6 +490,7 @@ pub(super) async fn start(
         find_ready_container(service, &spec.family, request.container_id.as_deref()).await?;
     let info = fresh_container_info(&container.base_url, "workspace eval identity").await?;
     bind_workspace_container_identity(&mut spec, &info);
+    crate::project_sources::require_manifest(&recipe.source_path, crate::project_sources::Capability::Recipes)?;
     // `start_eval` carries the state for the complete rollout/evidence
     // pipeline. In debug builds that future is large enough that embedding it
     // directly in each caller's state can overflow a Tokio worker before the

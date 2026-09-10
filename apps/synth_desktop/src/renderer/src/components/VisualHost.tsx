@@ -22,6 +22,7 @@ import {
 	propsFromBindings,
 	replayStreamsFromBindings,
 	resolveTemplate,
+	registerRuntimeTemplate,
 	visualExtensions,
 	resolveVisualBindings,
 	selectObservationSurface,
@@ -48,6 +49,7 @@ import { semanticCountsFromRunView } from "../runtime/runProgress/semanticCounts
 import type { ProgressAgreement } from "../runtime/runProgress/project";
 import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
 import { MermaidVisual } from "./MermaidVisual";
+import { DocumentPane, isDocumentArtifact } from "../documents/DocumentPane";
 import { SystemsMapVisual } from "./SystemsMapVisual";
 import { ChartVisual } from "./ChartVisual";
 import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
@@ -349,6 +351,19 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	}>>([]);
 	const [analysisFindings, setAnalysisFindings] = useState<unknown[]>([]);
 	const [analysisCampaigns, setAnalysisCampaigns] = useState<unknown[]>([]);
+	const [userTemplateDigest, setUserTemplateDigest] = useState<string | null>(null);
+	const [templateReload, setTemplateReload] = useState(0);
+	const [templateCatalogEpoch, setTemplateCatalogEpoch] = useState(0);
+	useEffect(() => {
+		if (!userTemplateDigest || !artifact.templateId || !bridges.visuals) return;
+		let cancelled = false;
+		const timer = window.setInterval(() => {
+			void bridges.visuals!.getTemplate(artifact.templateId!).then(meta => {
+				if (!cancelled && meta.templateDigest !== userTemplateDigest) setTemplateReload(value => value + 1);
+			}).catch(reason => { if (!cancelled) setShell(() => sourcedInvalidShell(publicError(reason))); });
+		}, 1000);
+		return () => { cancelled = true; window.clearInterval(timer); };
+	}, [artifact.templateId, userTemplateDigest]);
 
 	const visualIdentity = useMemo(
 		() => ({
@@ -524,12 +539,25 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				}
 				return;
 			}
-			if (isSourcedTemplate(templateId)) {
+			const nativeTemplate = typeof bridges.visuals?.getTemplate === "function" ? await bridges.visuals.getTemplate(templateId) : null;
+			const userAuthored = nativeTemplate?.sourceKind === "user";
+			if (cancelled) return;
+			if (userAuthored) {
+				registerRuntimeTemplate(nativeTemplate);
+				setUserTemplateDigest(nativeTemplate.templateDigest ?? null);
+				setTemplateCatalogEpoch(value => value + 1);
+			} else setUserTemplateDigest(null);
+			if (isSourcedTemplate(templateId) || userAuthored) {
 				const visualId = artifact.visualId ?? artifact.id;
 				let source = "";
 				try {
-					const asset = await bridges.visuals?.content?.(visualId);
-					if (asset?.base64) source = decodeBase64Utf8(asset.base64);
+					if (userAuthored) {
+						if (!bridges.visuals?.templateShellSource) throw new Error("User-template source requires a native host");
+						source = await bridges.visuals.templateShellSource(templateId);
+					} else {
+						const asset = await bridges.visuals?.content?.(visualId);
+						if (asset?.base64) source = decodeBase64Utf8(asset.base64);
+					}
 				} catch (reason) {
 					if (!cancelled) setShell(() => sourcedInvalidShell(publicError(reason)));
 					return;
@@ -576,7 +604,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			});
 		});
 		return () => { cancelled = true; };
-	}, [artifact.templateId, artifact.visualId, artifact.id, artifact.contentDigest, artifact.revision, visualIdentity]);
+	}, [artifact.templateId, artifact.visualId, artifact.id, artifact.contentDigest, artifact.revision, visualIdentity, templateReload]);
 
 	useEffect(() => {
 		const controller=new AbortController();
@@ -609,7 +637,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				message,details:{templateId:artifact.templateId ?? null}});
 		});
 		return ()=>controller.abort();
-	},[artifact.id,artifact.revision,artifact.templateId,bindingsSignature,asyncBindings.length,visualIdentity]);
+	},[artifact.id,artifact.revision,artifact.templateId,bindingsSignature,asyncBindings.length,visualIdentity,templateCatalogEpoch]);
 	/*
 	 * The optimizer stream is read through the shared `RunProgressSubscription`
 	 * store, not a private loop here. One run can be open in the transcript card,
@@ -1107,6 +1135,7 @@ class VisualErrorBoundary extends Component<
 }
 
 const visualRenderers = new ReactVisualRendererRegistry<ArtifactRef>()
+    .register({ id: "document", matches: isDocumentArtifact, component: DocumentPane })
 	.register({ id: "systems-dynamic", matches: (artifact) => artifact.rendererKind === "systems-dynamic", component: SystemsDynamicVisual })
 	.register({ id: "systems", matches: (artifact) => artifact.rendererKind === "systems", component: SystemsMapVisual })
 	.register({ id: "chart", matches: (artifact) => artifact.rendererKind === "chart", component: ChartVisual })

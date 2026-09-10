@@ -62,12 +62,14 @@ async fn start_inner(
     }
     let manager = service.manager().clone();
     require_plugin_ready(&manager).await?;
+    crate::project_sources::require_manifest(&recipe.source_path, crate::project_sources::Capability::Recipes)?;
     let ensured = super::container_lifecycle::ensure_from_session(
         service.database(),
         session,
         &recipe.container,
     )
     .await?;
+    crate::project_sources::require_manifest(&recipe.source_path, crate::project_sources::Capability::Recipes)?;
     let run_id = format!(
         "gepa_{}_{}",
         recipe
@@ -166,6 +168,7 @@ async fn start_inner(
             "recipeId": recipe.id,
             "task": recipe.family,
             "source": "workspace",
+            "recipeSourcePath": recipe.source_path,
             "containerId": ensured.container_id,
             "locality": recipe.locality.as_str(),
             "sourceHash": recipe.source_hash,
@@ -266,6 +269,8 @@ pub(super) async fn start_prepared(
 )> {
     require_plugin_ready(service.manager()).await?;
     let run = service.get(run_id.to_string()).await?;
+    let source_path = recipe_source_path(&run.summary)?;
+    crate::project_sources::require_manifest(&source_path, crate::project_sources::Capability::Recipes)?;
     if run.status != "waiting_for_viewer" && run.status != "queued" {
         bail!(
             "optimizer run `{run_id}` is not prepared for start (status {})",
@@ -489,6 +494,13 @@ fn run_index_wait() -> Duration {
     crate::limits::OPTIMIZER_RUN_INDEX_WAIT
 }
 
+fn recipe_source_path(summary: &Value) -> Result<PathBuf> {
+    let path = summary.get("recipeSourcePath").and_then(Value::as_str)
+        .map(PathBuf::from).filter(|path| path.is_absolute())
+        .ok_or_else(|| anyhow!("prepared recipe has no executable source provenance; prepare it again from an approved recipe source"))?;
+    Ok(path)
+}
+
 async fn run_recipe_worker(
     service: OptimizerService,
     run_id: String,
@@ -500,6 +512,9 @@ async fn run_recipe_worker(
 ) -> Result<()> {
     let _revoke_capabilities = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
+    let run = service.get(run_id.clone()).await?;
+    let source_path = recipe_source_path(&run.summary)?;
+    crate::project_sources::require_manifest(&source_path, crate::project_sources::Capability::Recipes)?;
     append_status_event(&service, &run_id, "optimizer.run.started", "running").await?;
     let provider = fs::read_to_string(&config_path)
         .context("read run-owned recipe provider")?
@@ -530,6 +545,7 @@ async fn run_recipe_worker(
     let mut child = manager
         .spawn_gepa_recipe(
             &run_id,
+            &source_path,
             &cookbook,
             &config_path,
             stdout,
@@ -1444,6 +1460,28 @@ fn gepa_runs_root() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_recipe_requires_persisted_source_and_current_recipe_capability() {
+        assert!(recipe_source_path(&json!({})).is_err());
+        assert!(recipe_source_path(&json!({"recipeSourcePath": "relative.toml"})).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("source");
+        fs::create_dir(&root).unwrap();
+        let recipe = root.join("workshop.recipe.toml");
+        fs::write(&recipe, "id = 'prepared'").unwrap();
+        let source = recipe_source_path(&json!({"recipeSourcePath": recipe})).unwrap();
+        let config = dir.path().join("sources.toml");
+        crate::project_sources::test_grant(&config, &root, true, false);
+        crate::project_sources::TEST_SOURCE_CONFIG.sync_scope(config.clone(), || {
+            let check = || crate::project_sources::require_manifest(&source, crate::project_sources::Capability::Recipes);
+            assert!(check().is_err());
+            crate::project_sources::test_grant(&config, &root, false, true);
+            assert_eq!(check().unwrap(), recipe.canonicalize().unwrap());
+            crate::synth_config::forget_project_source_at(&config, root.to_str().unwrap()).unwrap();
+            assert!(check().is_err());
+        });
+    }
 
     #[test]
     fn provider_policy_uses_the_run_owned_model_and_reasoning_effort() {

@@ -413,6 +413,14 @@ struct ManifestEnvelope<'a> {
     terminal_cursor: u64,
 }
 
+pub(super) fn snapshot_status(run: &OptimizerRunRecord, manifest: &Value) -> Result<String> {
+    let envelope = validate_manifest(&run.id, manifest)?;
+    if envelope.algorithm_id != run.algorithm_id || envelope.terminal_cursor > run.cursor_seq {
+        anyhow::bail!("optimizer snapshot terminal manifest does not match the run algorithm/cursor");
+    }
+    Ok(envelope.terminal_status.to_owned())
+}
+
 fn validate_manifest<'a>(run_id: &str, manifest: &'a Value) -> Result<ManifestEnvelope<'a>> {
     let object = manifest
         .as_object()

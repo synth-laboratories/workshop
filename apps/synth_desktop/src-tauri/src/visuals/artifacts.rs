@@ -151,7 +151,7 @@ impl VisualRegistry {
         if !optimizer_evidence_gate_ready && !authoring_gate_ready {
             bail!("visual revision has not passed the E1 quality gate");
         }
-        let frozen_bindings = freeze_bindings(bindings)?;
+        let (frozen_bindings, mut views) = super::seal_evidence::freeze(self, bindings, &visual.id, revision).await?;
         let annotations = self
             .annotations(visual_id.clone())
             .await?
@@ -176,7 +176,7 @@ impl VisualRegistry {
             "builder_run_id": builder_run_id,
         });
         let limitations = declared_limitations(&frozen_bindings);
-        let data = json!({
+        let mut data = json!({
             "schema_version": BUNDLE_SCHEMA,
             "artifact_id": artifact_id,
             "source": source_identity,
@@ -189,6 +189,22 @@ impl VisualRegistry {
             "claims": [],
             "limitations": limitations,
         });
+        let folded_live = !views.is_empty();
+        views.extend(super::seal_evidence::locate_sealed_projections(&data["bindings"]));
+        if !views.is_empty() {
+            let mut produced_by = json!({ "compiler": COMPILER_NAME,
+                "compiler_version": env!("CARGO_PKG_VERSION"), "template_id": source.template_id });
+            if folded_live { produced_by["fold"] = json!("stream_fold::project_live_eval"); }
+            data["projection"] = json!({
+                "schema_version": "synth.visual-projection.v1",
+                "produced_by": produced_by,
+                "views": views,
+            });
+        }
+        if let Some(source) = super::seal_template::embedded_source(&source.template_id,
+            visual.metadata.pointer("/qualityGate/certificationIdentity/templateDigest").and_then(Value::as_str))? {
+            data["template_source"] = source;
+        }
         scan_forbidden(&data, "$")?;
         let data_bytes = canonical_json(&data)?;
         let runtime_digest = hex_sha256(FROZEN_RUNTIME.as_bytes());
@@ -922,43 +938,11 @@ fn optimizer_runtime_evidence_rejected(summary: &Value) -> bool {
         })
 }
 
-fn freeze_bindings(mut value: Value) -> Result<Value> {
-    fn walk(value: &mut Value) -> Result<()> {
-        match value {
-            Value::Object(object) => {
-                if object.get("kind").and_then(Value::as_str) == Some("live_sse") {
-                    let snapshot = object
-                        .remove("snapshot")
-                        .ok_or_else(|| anyhow!("live SSE binding has no frozen snapshot"))?;
-                    object.insert("kind".into(), Value::String("inline".into()));
-                    object.insert("data".into(), snapshot);
-                    object.remove("source");
-                    object.remove("poll_url");
-                    object.remove("pollUrl");
-                }
-                for child in object.values_mut() {
-                    walk(child)?;
-                }
-            }
-            Value::Array(items) => {
-                for child in items {
-                    walk(child)?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-    walk(&mut value)?;
-    if value.get("inputs").is_some() || value.get("slots").is_some() {
-        if let Some(object) = value.as_object_mut() {
-            object
-                .entry("schemaVersion")
-                .or_insert_with(|| json!(super::VISUAL_BINDINGS_SCHEMA_VERSION));
-        }
-        return Ok(super::canonicalize_bindings(&value)?.value);
-    }
-    Ok(value)
+#[cfg(test)]
+fn freeze_bindings(value: Value) -> Result<Value> {
+    let directory = tempfile::tempdir()?;
+    let content = crate::storage::ContentStore::new(directory.path().to_path_buf());
+    super::seal_evidence::freeze_fixture(value, &content, "fixture", 1).map(|frozen| frozen.0)
 }
 
 fn evidence_refs(visual: &super::VisualRecord) -> Vec<Value> {
@@ -994,11 +978,18 @@ fn declared_limitations(value: &Value) -> Vec<String> {
     out
 }
 
-fn scan_forbidden(value: &Value, path: &str) -> Result<()> {
+pub(super) fn scan_forbidden(value: &Value, path: &str) -> Result<()> {
     match value {
         Value::Object(object) => {
             for (key, child) in object {
                 let normalized = key.to_ascii_lowercase().replace('-', "_");
+                // Trace V5 identifiers and boolean frame markers are not
+                // process-environment dumps. Keep scanning reference strings;
+                // objects and other environment-shaped keys remain forbidden.
+                let benign_environment_field = (normalized == "environment_ref" && child.is_string())
+                    || (normalized == "environment_frame" && child.is_boolean())
+                    || (normalized == "environment_events" && matches!(child.as_str(),
+                        Some("complete" | "partial" | "aggregate_only" | "unavailable" | "not_captured" | "unsupported")));
                 if [
                     "api_key",
                     "access_token",
@@ -1016,7 +1007,7 @@ fn scan_forbidden(value: &Value, path: &str) -> Result<()> {
                     "object_key",
                 ]
                 .iter()
-                .any(|needle| normalized.contains(needle))
+                .any(|needle| normalized.contains(needle) && !(benign_environment_field && *needle == "environment"))
                 {
                     bail!("seal policy forbids {path}.{key}");
                 }
@@ -1042,7 +1033,9 @@ fn scan_forbidden(value: &Value, path: &str) -> Result<()> {
 }
 
 fn build_index_html(data: &Value, runtime_digest: &str) -> Result<String> {
-    let inline = serde_json::to_string(data)?.replace("</script", "<\\/script");
+    // HTML closes script elements case-insensitively, even for JSON data.
+    // Escape every '<' so source text and producer strings remain inert.
+    let inline = serde_json::to_string(data)?.replace('<', "\\u003c");
     let css = INSPECTOR_CSS.replace("</style", "<\\/style");
     Ok(format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; frame-src 'none';"><title>Sealed Workshop visual</title><style>html{{font:14px system-ui;color:#20232a;background:#f7f7f5}}body{{margin:0}}#app{{max-width:1100px;margin:auto;padding:32px}}.kicker{{color:#6b7280}}h1{{font-size:30px}}.visual{{background:white;border:1px solid #ddd;border-radius:14px;padding:20px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}{css}</style></head><body><main id="app"></main><script id="synth-artifact-data" type="application/json">{inline}</script><script data-runtime-digest="{runtime_digest}">{FROZEN_RUNTIME}</script></body></html>"#
@@ -1184,7 +1177,7 @@ fn canonical_json(value: &Value) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn hex_sha256(bytes: &[u8]) -> String {
+pub(super) fn hex_sha256(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
@@ -1218,7 +1211,21 @@ mod tests {
     #[test]
     fn redaction_and_network_policy_fail_closed() {
         assert!(scan_forbidden(&json!({"api_key":"nope"}), "$").is_err());
+        assert!(scan_forbidden(&json!({"environment_ref":"env:dungeongrid_gold"}), "$").is_ok());
+        assert!(scan_forbidden(&json!({"environment_frame":true}), "$").is_ok());
+        assert!(scan_forbidden(&json!({"environment_events":"partial"}), "$").is_ok());
+        assert!(scan_forbidden(&json!({"environment_events":"private arbitrary text"}), "$").is_err());
+        assert!(scan_forbidden(&json!({"environment_frame":{"secret":"nope"}}), "$").is_err());
+        assert!(scan_forbidden(&json!({"environment_ref":{"API_KEY":"nope"}}), "$").is_err());
+        assert!(scan_forbidden(&json!({"environment_ref":"s3://private/object"}), "$").is_err());
+        assert!(scan_forbidden(&json!({"environment":{"PATH":"private"}}), "$").is_err());
+        assert!(scan_forbidden(&json!({"kind":"inline","evidence":{"origin":"trace_inventory"},"data":{"api_key":"nope"}}), "$").is_err());
         assert!(refuse_network_html("<script>fetch('/x')</script>").is_err());
+        let data = json!({"text":"</SCRIPT><script>notExecutable()</script><!--"});
+        let html = build_index_html(&data, "fixture").unwrap();
+        assert!(!html.contains("</SCRIPT>"));
+        let encoded = html.split("type=\"application/json\">").nth(1).unwrap().split("</script>").next().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(encoded).unwrap(), data);
     }
 
     fn optimizer_view(visual_id: &str, lifecycle: &str, completeness: &str, role: &str) -> Value {

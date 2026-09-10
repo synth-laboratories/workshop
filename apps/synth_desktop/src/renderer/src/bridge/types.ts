@@ -445,6 +445,16 @@ export type SynthConfigBridge = {
 	}): Promise<DesktopPermissionSettings>;
 };
 
+export type ProjectSourcesBridge = {
+	get(): Promise<import("../generated/protocol").ProjectSourceCatalog>;
+	refresh(): Promise<import("../generated/protocol").ProjectSourceCatalog>;
+	add(containers: boolean, recipes: boolean): Promise<import("../generated/protocol").ProjectSourceCatalog | null>;
+	remove(path: string): Promise<import("../generated/protocol").ProjectSourceCatalog>;
+	requests(sessionId?: string | null): Promise<import("../generated/protocol").ProjectSourceRequest[]>;
+	approve(requestId: string): Promise<import("../generated/protocol").ProjectSourceApproval | null>;
+	deny(requestId: string): Promise<import("../generated/protocol").ProjectSourceRequest>;
+};
+
 export type CodexSessionStart = {
 	sessionId: string;
 	workspace: string;
@@ -525,7 +535,7 @@ export type CodexBridge = {
 	listThreadItems?(sessionId: string, threadId: string, cursor?: string, limit?: number): Promise<unknown>;
 	/** Mid-turn user input via Codex `turn/steer`. Optional on browser fixtures without a native runtime. */
 	steerTurn?(sessionId: string, text: string): Promise<void>;
-	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject" | "remember-locator" | "register-source"): Promise<void>;
+	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject" | "remember-locator" | "register-source", approvalDigest?: string): Promise<void>;
 	close(sessionId: string): Promise<void>;
 	onEvent(listener: (event: CodexEvent) => void): () => void;
 };
@@ -625,6 +635,10 @@ export type VisualTemplateMeta = TemplateMeta;
 export type VisualsBridge = {
 	listTemplates(genre?: string | null): Promise<VisualTemplateMeta[]>;
 	getTemplate(templateId: string): Promise<VisualTemplateMeta>;
+	templateShellSource?(templateId: string): Promise<string>;
+	saveTemplate?(sessionId: string, templateId: string, manifest: string, source: string): Promise<VisualTemplateMeta>;
+	createTemplate?(sessionId: string, templateId: string, fromTemplateId: string, title?: string | null): Promise<VisualTemplateMeta>;
+	validateTemplate?(templateId: string): Promise<unknown>;
 	list(query?: {
 		status?: string;
 		sessionId?: string;

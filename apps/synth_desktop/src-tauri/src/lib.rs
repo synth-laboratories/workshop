@@ -31,6 +31,7 @@ mod credential_broker;
 pub mod data;
 mod device_auth;
 mod desktop_links;
+pub mod documents;
 pub mod diagnostics;
 mod domain;
 mod domains;
@@ -51,6 +52,7 @@ mod model_catalog;
 mod optimizers;
 mod platform;
 mod plugins;
+mod project_sources;
 pub mod presentation;
 pub mod recovery;
 mod reports;
@@ -60,6 +62,7 @@ mod services;
 mod session;
 mod skills;
 pub mod storage;
+pub mod stream_fold;
 mod synth_config;
 mod tariffs;
 mod telemetry;
@@ -2868,16 +2871,65 @@ struct VisualStreamPollRequest {
     limit: u16,
 }
 
+/// Envelope version for a poll answer. A renderer that does not know this
+/// string should read the page and fold it itself rather than guess at fields.
+const VISUAL_STREAM_POLL_SCHEMA: &str = "synth.visual-stream-poll.v1";
+
+/// What one poll of a declared live stream answers with.
+///
+/// The seam used to hand back the producer's page verbatim, which made the
+/// renderer the only thing in the system that knew what a live eval showed —
+/// so a review capture, a seal and the pane each had to be trusted to fold the
+/// same way, and the spool already proved they did not. The projection and the
+/// receipt are computed here, from bytes this process saw, and travel together
+/// so the pane, the capture and the seal read one answer.
+///
+/// `events` is the page's envelopes, verbatim and unfolded, and stays. A
+/// sourced visual may aggregate an eval in a way nobody anticipated, and
+/// making a novel aggregation require a Rust change would spend expressiveness
+/// — already this system's weakest axis against general codegen — to buy
+/// tidiness. The projection is authoritative for the built-in templates and
+/// for the readiness gate; it is not a ceiling on what a visual may compute.
+///
+/// The projection carries no envelope bodies of its own: it is the same
+/// derived object `visuals::live_eval::seal_projection` freezes into a sealed
+/// bundle, so the pane and the seal cannot render different numbers, and one
+/// poll's answer stays bounded by the page rather than by the run.
+#[derive(Clone, Debug, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+struct VisualStreamPollResult {
+    schema_version: String,
+    /// The producer's envelopes for this page, exactly as they arrived.
+    events: contract::specta::OpaqueJson,
+    /// The producer's own cursor, passed through rather than recomputed.
+    cursor: visuals::stream_receipt::PageCursor,
+    /// `synth.live-eval-projection.v1` over everything this host has observed
+    /// for the visual at this revision, or `null` when it has observed
+    /// nothing — which is the honest answer for a stream that has only ever
+    /// carried control envelopes.
+    projection: Option<contract::specta::OpaqueJson>,
+    /// The retained evidence prefix stopped short of the run, so the
+    /// projection is a lower bound rather than the whole eval.
+    evidence_truncated: bool,
+    /// The host's own account of the transport. Not renderer-reported and not
+    /// agent-authored: an agent reading this is reading the transport.
+    receipt: visuals::stream_receipt::StreamReceipt,
+}
+
 /// Fetch a visual's persisted, declaration-validated poll authority through
-/// the native process. WKWebView cannot reliably read loopback HTTP because
-/// its CORS/CSP boundary differs from the backend's; this command is narrowly
-/// scoped to exact URLs already stored on the named visual.
+/// the native process, and answer with what the host made of it.
+///
+/// WKWebView cannot reliably read loopback HTTP because its CORS/CSP boundary
+/// differs from the backend's; this command is narrowly scoped to exact URLs
+/// already stored on the named visual. Since every envelope already passes
+/// through here, this is also where the fold, the receipt and the projection
+/// happen — see [`VisualStreamPollResult`].
 #[tauri::command]
 #[specta::specta]
 async fn visual_stream_poll(
     state: State<'_, Arc<CoreRuntime>>,
     request: VisualStreamPollRequest,
-) -> Result<contract::specta::OpaqueJson, AppError> {
+) -> Result<VisualStreamPollResult, AppError> {
     let visual = state
         .visuals()
         .get(request.visual_id)
@@ -2890,6 +2942,12 @@ async fn visual_stream_poll(
     let declared = declared_urls
         .iter()
         .any(|url| url == request.poll_url.as_str());
+    // The receipt reads the same canonical `live_sse` bindings this check
+    // reads, and keeps what a receipt additionally has to name: the stream id
+    // the renderer polls under, and the declared streams that carry no durable
+    // poll authority at all. Nothing here decides whether a poll is allowed —
+    // `declared_urls` above remains the only authority for that.
+    let receipt_streams = visuals::stream_receipt::declared_streams(&visual.bindings);
     // Every renderer poll of a live stream lands here, so this is where a live
     // stream going quiet becomes a record rather than an empty pane.
     let diagnose_at = |severity: diagnostics::Severity,
@@ -2930,6 +2988,22 @@ async fn visual_stream_poll(
             false,
             serde_json::json!({"declared_stream_count": declared_urls.len()}),
         );
+        // The refusal belongs on the receipt too. A visual whose only poll was
+        // refused has still never had a stream opened, and the receipt is what
+        // says so out loud instead of leaving it resting in `declared`.
+        visuals::stream_receipt::record_poll_failure(
+            &visual.id,
+            visual.current_revision,
+            &receipt_streams,
+            &request.poll_url,
+            visuals::stream_receipt::StreamPollFailure {
+                code: diagnostics::codes::VISUAL_BINDING_UNRESOLVED.to_string(),
+                message: "visual stream poll URL is not declared on this visual".to_string(),
+                status: None,
+                retryable: false,
+                observed_at: chrono::Utc::now().to_rfc3339(),
+            },
+        );
         return Err(AppError::from(anyhow::anyhow!(
             "visual stream poll URL is not declared on this visual; \
              the visual declares {} live stream(s)",
@@ -2938,6 +3012,15 @@ async fn visual_stream_poll(
     }
     let limit = request.limit.clamp(1, 500);
     let started = std::time::Instant::now();
+    // Recorded before the request, not after it. Without the attempt, a stream
+    // that is being asked and a stream nobody asked read identically, and
+    // `replaying` would be a state the host could never observe.
+    visuals::stream_receipt::record_poll_attempt(
+        &visual.id,
+        visual.current_revision,
+        &receipt_streams,
+        &request.poll_url,
+    );
     let response = async {
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
@@ -2969,6 +3052,38 @@ async fn visual_stream_poll(
                 .and_then(|cursor| cursor.get("closed"))
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
+            // Fold bytes observed by the host, independently of anything the
+            // renderer reports about its DOM or local replay state.
+            let outcome = visuals::stream_receipt::record_poll_page(
+                &visual.id,
+                visual.current_revision,
+                &receipt_streams,
+                &request.poll_url,
+                &page,
+            );
+            // `STREAM_REPLAY_GAP` has had a code and a remediation and no
+            // emitter. This is the emitter: once per gap rather than once per
+            // poll, because a 500 ms loop over a permanent hole would otherwise
+            // file the same diagnostic twice a second forever.
+            for gap in &outcome.new_gaps {
+                diagnose_at(
+                    diagnostics::Severity::Error,
+                    "stream.replay.gap",
+                    diagnostics::codes::STREAM_REPLAY_GAP,
+                    format!(
+                        "replayed history skips sequence {} to {} on scope {}",
+                        gap.after, gap.before, gap.scope
+                    ),
+                    true,
+                    serde_json::json!({
+                        "scope": gap.scope,
+                        "after": gap.after,
+                        "before": gap.before,
+                        "missing": gap.before.saturating_sub(gap.after).saturating_sub(1),
+                        "transport_state": outcome.state_str(),
+                    }),
+                );
+            }
             diagnose_at(
                 diagnostics::Severity::Debug,
                 if closed {
@@ -2993,23 +3108,61 @@ async fn visual_stream_poll(
                     "high_water": cursor.and_then(|cursor| cursor.get("high_water")),
                     "closed": closed,
                     "duration_ms": started.elapsed().as_millis() as u64,
+                    "transport_state": outcome.state_str(),
                 }),
             );
-            Ok(contract::specta::OpaqueJson(page))
+            // The projection is folded from the evidence prefix this host was
+            // already retaining for the seal, so serving it costs a read of
+            // memory that is spent either way — not a second copy of the run.
+            // It is recomputed per poll rather than folded incrementally,
+            // which is the same O(page history) the renderer's own ingest
+            // already pays on every batch; if that bites, the fix is an
+            // incremental fold inside `stream_fold`, not a second projector.
+            let (receipt, evidence, evidence_truncated) = visuals::stream_receipt::evidence_snapshot(
+                &visual.id, visual.current_revision, &receipt_streams);
+            let projection = if evidence.is_empty() { None } else {
+                Some(contract::specta::OpaqueJson(visuals::live_eval::seal_projection(&evidence)
+                    .map_err(AppError::from)?))
+            };
+            Ok(VisualStreamPollResult {
+                schema_version: VISUAL_STREAM_POLL_SCHEMA.to_string(),
+                events: contract::specta::OpaqueJson(serde_json::Value::Array(
+                    visuals::stream_receipt::page_events(&page).to_vec(),
+                )),
+                cursor: visuals::stream_receipt::page_cursor(&page),
+                projection,
+                evidence_truncated,
+                receipt,
+            })
         }
         Err(error) => {
             let status = error.status().map(|status| status.as_u16());
+            // A refused or 5xx poll may recover; a 4xx says the stream is
+            // gone and retrying only repeats the question.
+            let retryable =
+                error.is_timeout() || error.is_connect() || status.is_none_or(|code| code >= 500);
             fail(
                 diagnostics::codes::STREAM_INTERRUPTED,
                 error.to_string(),
-                // A refused or 5xx poll may recover; a 4xx says the stream is
-                // gone and retrying only repeats the question.
-                error.is_timeout() || error.is_connect() || status.is_none_or(|code| code >= 500),
+                retryable,
                 serde_json::json!({
                     "status": status,
                     "after": request.after,
                     "duration_ms": started.elapsed().as_millis() as u64,
                 }),
+            );
+            visuals::stream_receipt::record_poll_failure(
+                &visual.id,
+                visual.current_revision,
+                &receipt_streams,
+                &request.poll_url,
+                visuals::stream_receipt::StreamPollFailure {
+                    code: diagnostics::codes::STREAM_INTERRUPTED.to_string(),
+                    message: error.to_string(),
+                    status,
+                    retryable,
+                    observed_at: chrono::Utc::now().to_rfc3339(),
+                },
             );
             Err(AppError::from(error))
         }
@@ -5362,7 +5515,7 @@ async fn codex_approval_resolve(
 ) -> Result<(), AppError> {
     if approvals.is_pending(&request.approval_id).await {
         let decision = approvals
-            .decision_from_shell(&request.approval_id, &request.decision)
+            .decision_from_view(&request.approval_id, &request.decision, request.approval_digest.as_deref())
             .await
             .map_err(AppError::from)?;
         approvals

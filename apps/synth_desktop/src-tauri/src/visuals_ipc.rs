@@ -371,9 +371,6 @@ pub struct RenderedVisualObservation {
     pub observed_at: String,
 }
 
-static RENDERED_OBSERVATIONS: OnceLock<Mutex<BTreeMap<String, RenderedVisualObservation>>> =
-    OnceLock::new();
-
 /// The data root this server was spawned with. Review capture writes PNGs to
 /// caller-named paths, and this is the boundary those paths must stay inside.
 static VISUALS_DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -390,21 +387,12 @@ pub fn record_rendered_observation(observation: RenderedVisualObservation) -> Re
     {
         anyhow::bail!("rendered visual observation requires bindings and transport authority");
     }
-    RENDERED_OBSERVATIONS
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock()
-        .map_err(|_| anyhow::anyhow!("rendered observation store is unavailable"))?
-        .insert(observation.visual_id.clone(), observation);
+    crate::visuals::stream_receipt::record_rendered(observation);
     Ok(())
 }
 
 pub(crate) fn rendered_observation(visual_id: &str) -> Result<RenderedVisualObservation> {
-    RENDERED_OBSERVATIONS
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock()
-        .map_err(|_| anyhow::anyhow!("rendered observation store is unavailable"))?
-        .get(visual_id)
-        .cloned()
+    crate::visuals::stream_receipt::rendered(visual_id)
         .with_context(|| format!("no rendered observation is available for visual {visual_id}"))
 }
 
@@ -795,6 +783,9 @@ async fn dispatch_request(
     if path.starts_with("/v1/traces") {
         return dispatch_traces(method, path, json_body, core).await;
     }
+    if path == "/v1/documents" || path.starts_with("/v1/documents/") {
+        return crate::documents::ipc::dispatch_documents(method, path, json_body, core).await;
+    }
     if path.starts_with("/v1/analysis") {
         return dispatch_analysis(method, path, json_body, core).await;
     }
@@ -813,6 +804,12 @@ async fn dispatch_request(
     }
     if method == "POST" && path.starts_with("/v1/containers/") && path.ends_with("/restart") {
         return dispatch_container_restart(path, json_body, core, app).await;
+    }
+    if method == "POST" && path == "/v1/visuals/templates/import" {
+        let source = json_body.get("sourcePath").or_else(|| json_body.get("source_path"))
+            .and_then(Value::as_str).context("source_path is required")?;
+        let session = json_body.get("sessionRef").and_then(Value::as_str);
+        return Ok(json!({"template": core.visuals().import_template_approved(app, session, source).await?}));
     }
     dispatch(method, path, json_body, core).await
 }
@@ -3569,6 +3566,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let certification_identity = registry.certification_identity(id.to_string()).await?;
             Ok(json!({
                 "visual": visual,
+                "streamReceipt": crate::visuals::stream_receipt::receipt(id, visual.current_revision,
+                    &crate::visuals::stream_receipt::declared_streams(&visual.bindings)),
                 "template": template,
                 "certificationIdentity": certification_identity,
                 "annotations": annotations,
@@ -3828,6 +3827,14 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 bindings_digest.as_deref(),
                 &certification_identity,
             )?;
+            let declared_streams = crate::visuals::stream_receipt::declared_streams(&current.bindings);
+            let stream_certification = if declared_streams.streams.is_empty() && declared_streams.missing_transport.is_empty() {
+                Value::Null
+            } else {
+                let receipt = crate::visuals::stream_receipt::receipt(id, revision, &declared_streams);
+                crate::visuals::stream_receipt::certification(&receipt, template.observation_contract.as_ref()
+                    .map(|contract| contract.readiness.minimum_transport_envelope_count).unwrap_or(0))?
+            };
             if let Some(kind) = match current.renderer_kind {
                 crate::visuals::RendererKind::Systems => Some(crate::visuals::systems::SystemsKind::Static),
                 crate::visuals::RendererKind::SystemsDynamic => Some(crate::visuals::systems::SystemsKind::Dynamic),
@@ -3875,6 +3882,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     "certificationIdentity": certification_identity,
                     "reviewCount": current_reviews.len(),
                     "certifiedBy": receipts,
+                    "streamReceipt": stream_certification,
                     "supersededReviewCount": current_reviews.len() - receipts.len(),
                     "readyAt": chrono::Utc::now().to_rfc3339(),
                 }),
@@ -3994,6 +4002,18 @@ pub(crate) async fn dispatch_optimizer(
 ) -> Result<Value> {
     let optimizers = core.optimizers();
     match (method, path) {
+        ("POST", "/v1/optimizers/snapshots/import") => {
+            let receipt = optimizers.import_snapshot(serde_json::from_value(body)?).await?;
+            Ok(json!({"receipt": receipt}))
+        }
+        ("GET", path) if path.starts_with("/v1/optimizers/snapshots/") => {
+            optimizers.get_snapshot(path.trim_start_matches("/v1/optimizers/snapshots/").to_owned()).await
+        }
+        ("POST", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/snapshot") => {
+            let id = path.trim_start_matches("/v1/optimizers/runs/").trim_end_matches("/snapshot");
+            let receipt = optimizers.export_snapshot(id.to_owned()).await?;
+            Ok(json!({"receipt": receipt}))
+        }
         ("GET", "/v1/optimizers/algorithms") => {
             Ok(json!({ "algorithms": optimizers.list_algorithms() }))
         }
@@ -6943,6 +6963,7 @@ mod tests {
                 minimum_rollout_count: 1,
                 minimum_rendered_frame_count: 1,
                 minimum_semantic_event_count: 1,
+                minimum_transport_envelope_count: 1,
                 require_terminal: true,
                 authoring_affordances: None,
             },
@@ -7120,6 +7141,7 @@ mod tests {
                     minimum_rollout_count: 0,
                     minimum_rendered_frame_count: 0,
                     minimum_semantic_event_count: 1,
+                    minimum_transport_envelope_count: 1,
                     require_terminal: true,
                     authoring_affordances: None,
                 },

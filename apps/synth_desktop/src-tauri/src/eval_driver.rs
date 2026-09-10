@@ -402,6 +402,7 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
                         session_id: session_id.clone(),
                         approval_id: approval_id.clone(),
                         decision,
+                        approval_digest: body.get("approvalDigest").and_then(Value::as_str).map(str::to_owned),
                     },
                 )
                 .await?;

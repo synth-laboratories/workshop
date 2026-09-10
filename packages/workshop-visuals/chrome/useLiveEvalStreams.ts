@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { LiveEvalEvent } from "../runtime/types.ts";
 import { reportVisualDiagnostic, VISUAL_STREAM_CODES } from "../runtime/diagnostics.ts";
 import { emptyLiveIngest, ingestLiveEnvelopeBatch } from "../runtime/liveStream.ts";
+import { acceptHostEvidence, type HostLiveEvidence } from "../runtime/hostLiveEvidence.ts";
 import {
   REPLAY_FIRST_RESPONSE_TIMEOUT_MS,
   REPLAY_PAGE_LIMIT,
@@ -18,6 +19,7 @@ export type LiveEvalStreamsView = {
   ready: boolean;
   recovered: number;
   error: string | null;
+  hostEvidence?: HostLiveEvidence;
 };
 
 const POLL_INTERVAL_MS = 500;
@@ -49,10 +51,11 @@ export function useLiveEvalStreams(
   const [ready, setReady] = useState(false);
   const [recovered, setRecovered] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [hostEvidence, setHostEvidence] = useState<HostLiveEvidence>();
   const ingest = useRef(emptyLiveIngest());
   const clientRef = useRef(client);
   clientRef.current = client;
-  const streamKey = client.streams.map((stream) => stream.streamId).join("\n");
+  const streamKey = JSON.stringify(client.streams.map(({streamId, pollUrl, sseUrl}) => [streamId, pollUrl, sseUrl]));
   const { visualId, revision } = identity;
 
   useEffect(() => {
@@ -62,6 +65,7 @@ export function useLiveEvalStreams(
     setRecovered(0);
     setError(null);
     setClosed(0);
+    setHostEvidence(undefined);
 
     const streams = clientRef.current.streams;
     if (streams.length === 0) {
@@ -72,12 +76,14 @@ export function useLiveEvalStreams(
 
     let stopped = false;
     let answered = false;
+    let host: HostLiveEvidence | undefined;
     let timer: number | undefined;
     const cursors = new Map(streams.map((stream) => [stream.streamId, 0]));
     const closedStreams = new Set<string>();
 
     const fail = (message: string, code: string) => {
       if (stopped) return;
+      stopped = true; // A late sibling response must not erase this failure.
       setError(message);
       setState("error");
       reportVisualDiagnostic({
@@ -126,6 +132,8 @@ export function useLiveEvalStreams(
         if (stopped) return;
         const page = await clientRef.current.poll(stream, after, REPLAY_PAGE_LIMIT);
         if (stopped) return;
+        host = acceptHostEvidence(host, page, streams, { visualId, revision });
+        setHostEvidence(host);
         const firstResponse = !answered;
         answered = true;
         pending.push(...page.events);
@@ -183,5 +191,7 @@ export function useLiveEvalStreams(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamKey, visualId, revision]);
 
-  return { events, state, closed, ready, recovered, error };
+  return { events, state, closed, ready: state !== "error" && (hostEvidence?.ready ?? ready),
+    recovered: hostEvidence?.recovered ?? recovered,
+    error: state === "error" ? error : hostEvidence ? hostEvidence.error : error, hostEvidence };
 }

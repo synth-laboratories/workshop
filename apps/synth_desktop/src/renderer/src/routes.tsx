@@ -60,7 +60,7 @@ export type MainView =
 	| { kind: "chat"; chatId: string }
 	| { kind: "sync"; sessionId: string }
 	| { kind: "async"; sessionId: string }
-	| { kind: "settings"; section?: "general" | "models" | "inference" | "context" | "voice" | "plugins" | "account" | "secrets" | "about" }
+	| { kind: "settings"; section?: "general" | "models" | "inference" | "context" | "workspace" | "voice" | "plugins" | "account" | "secrets" | "about" }
 	| { kind: "connectors" }
 	| { kind: "inventory" }
 	| { kind: "inference" }
@@ -620,7 +620,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 								onOpenArtifact={openArtifactInDock}
 								openContainerId={openContainer?.id ?? null}
 								onOpenContainer={(id) => void toggleContainer(id)}
-								onApprove={(approvalId, decision) => void controlActive("approve", { approvalId, decision })}
+								onApprove={(approvalId, decision, approvalDigest) => void controlActive("approve", { approvalId, decision, approvalDigest })}
 								onAlwaysAllow={(approvalId) =>
 									void controlActive("approve", { approvalId, decision: "always" })
 								}

@@ -7,6 +7,7 @@ pub mod codex;
 pub mod acp;
 pub(crate) mod live_annotation_projection;
 pub(crate) mod paid_compute_budget;
+pub(crate) mod template_persist;
 mod persistence;
 
 pub use persistence::SessionPersistence;

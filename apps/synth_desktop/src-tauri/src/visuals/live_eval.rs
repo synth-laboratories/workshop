@@ -460,6 +460,96 @@ pub fn live_eval_bind_metadata(
     Ok(bind)
 }
 
+/// The projection schema a sealed live-eval view carries.
+pub const LIVE_EVAL_PROJECTION_SCHEMA: &str = "synth.live-eval-projection.v1";
+
+/// The evidence prefix the host holds for one declared stream.
+#[derive(Clone, Debug)]
+pub struct ObservedEvidence {
+    /// Distinct non-control envelopes, in arrival order.
+    pub events: Vec<Value>,
+    /// Retention stopped short of the run — see the bound in
+    /// `stream_receipt`; the prefix is a lower bound, not the run.
+    pub truncated: bool,
+}
+
+/// Record the envelopes one poll of one declared stream delivered.
+///
+/// The poll seam does not come through here — it retains from the fold
+/// verdicts it already holds, in the lock it already holds. This is the door
+/// for a caller that has envelopes and no poll, and it lands in the same store
+/// with the same fold, so the two cannot disagree.
+pub fn record_live_evidence(visual_id: &str, revision: i64, stream_id: &str, envelopes: &[Value]) {
+    super::stream_receipt::record_evidence(visual_id, revision, stream_id, envelopes);
+}
+
+/// The evidence prefix the host observed for one declared stream, if any.
+///
+/// `None` means this process has recorded no evidence for that stream at that
+/// revision — which is the difference between "the stream carried nothing" and
+/// "nobody ever opened this visual", and the seal's refusal says which.
+pub fn observed_stream_evidence(
+    visual_id: &str,
+    revision: i64,
+    stream_id: &str,
+) -> Option<ObservedEvidence> {
+    let (events, truncated) =
+        super::stream_receipt::observed_evidence(visual_id, revision, stream_id)?;
+    Some(ObservedEvidence { events, truncated })
+}
+
+/// The live-eval projection over everything this host has observed, folded at
+/// an optional cutoff.
+///
+/// The seam that serves this is the poll seam, and it serves it from evidence
+/// that was already being retained for the seal. Nothing new is held to answer
+/// it: the projection is a read of the prefix, not a second copy of it.
+///
+/// `None` means this process observed nothing for that visual and revision,
+/// which is the honest answer for a pane no reviewer ever rendered.
+pub fn observed_projection(
+    visual_id: &str,
+    revision: i64,
+    cutoff: Option<&crate::stream_fold::CursorVector>,
+) -> Option<Result<crate::stream_fold::LiveEvalProjection>> {
+    let (events, _) = super::stream_receipt::observed_evidence_log(visual_id, revision)?;
+    if events.is_empty() { return None; }
+    Some(crate::stream_fold::project_live_eval(&events, cutoff))
+}
+
+
+/// The sealed projection over one stream's evidence.
+///
+/// The derived values only: `events` is dropped and replaced by
+/// `event_count`, because the evidence itself is already frozen into the
+/// binding beside this and a sealed bundle that carries every envelope twice
+/// is twice the upload for nothing. The frozen runtime renders these literal
+/// values and folds nothing.
+pub fn seal_projection(events: &[Value]) -> Result<Value> {
+    projection_view(&crate::stream_fold::project_live_eval(events, None)?)
+}
+
+/// The derived view of a folded projection: the shape a seal freezes and the
+/// shape the poll seam serves.
+///
+/// One shape for both on purpose. The pane, the review capture and the sealed
+/// bundle read the same object, so a number that appears in a review cannot
+/// differ from the number the seal carries — which is the whole premise the
+/// system rests on, and was previously guaranteed by nothing.
+pub fn projection_view(projection: &crate::stream_fold::LiveEvalProjection) -> Result<Value> {
+    let mut value = serde_json::to_value(projection)?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("live eval projection must serialize to an object"))?;
+    let count = object
+        .remove("events")
+        .and_then(|events| events.as_array().map(Vec::len))
+        .unwrap_or(0);
+    object.insert("event_count".into(), json!(count));
+    object.insert("schema_version".into(), json!(LIVE_EVAL_PROJECTION_SCHEMA));
+    Ok(value)
+}
+
 fn stream_path(source: &str) -> String {
     let without_query = source.split(['?', '#']).next().unwrap_or(source);
     if let Some(rest) = without_query.split("://").nth(1) {

@@ -654,6 +654,21 @@ window.synthConfig ??= isTauri
 			}),
 			updateDesktopPermissions: async () => { throw new Error("Desktop permission settings require Synth Desktop"); }
 		};
+// Source admission has its own boundary; it never reuses file attachments.
+if (!window.synthProjectSources) {
+	const requireDesktop = () => {
+		if (!isDesktopApp()) throw new Error("Project sources require Synth Desktop");
+	};
+	window.synthProjectSources = {
+		get: async () => { requireDesktop(); return fromGenerated(spectaCommands.projectSourcesGet()); },
+		refresh: async () => { requireDesktop(); return fromGenerated(spectaCommands.projectSourcesRefresh()); },
+		add: async (containers, recipes) => { requireDesktop(); return fromGenerated(spectaCommands.projectSourceAdd(containers, recipes)); },
+		remove: async (path) => { requireDesktop(); return fromGenerated(spectaCommands.projectSourceRemove(path)); },
+		requests: async (sessionId = null) => { requireDesktop(); return fromGenerated(spectaCommands.projectSourceRequestsList(sessionId)); },
+		approve: async (requestId) => { requireDesktop(); return fromGenerated(spectaCommands.projectSourceApprove(requestId)); },
+		deny: async (requestId) => { requireDesktop(); return fromGenerated(spectaCommands.projectSourceDeny(requestId)); }
+	};
+}
 window.synthWorkspaceScope ??= isTauri
 	? {
 		get: (sessionId) => fromGenerated(spectaCommands.workspaceScopeGet(sessionId)),
@@ -855,7 +870,7 @@ window.synthWorkspaceScope ??= isTauri
 				fromGenerated(spectaCommands.codexThreadItemsList(wire({ sessionId, threadId, cursor: cursor ?? null, limit: limit ?? null }))),
 			steerTurn: (sessionId, text) =>
 				fromGenerated(spectaCommands.codexTurnSteer({ sessionId, text })),
-			resolveApproval: (sessionId, approvalId, decision) => fromGenerated(spectaCommands.codexApprovalResolve({ sessionId, approvalId, decision })),
+			resolveApproval: (sessionId, approvalId, decision, approvalDigest) => fromGenerated(spectaCommands.codexApprovalResolve({ sessionId, approvalId, decision, approvalDigest: approvalDigest ?? null })),
 			close: (sessionId) => fromGenerated(spectaCommands.codexSessionClose({ sessionId })),
 			onEvent(listener) {
 				let disposed = false;
@@ -881,6 +896,10 @@ window.synthWorkspaceScope ??= isTauri
 		window.synthVisuals ??= {
 			listTemplates: (genre) => fromGenerated(spectaCommands.visualsTemplatesList(genre ?? null)),
 			getTemplate: (templateId) => fromGenerated(spectaCommands.visualsTemplatesGet(templateId)),
+			templateShellSource: (templateId) => fromGenerated(spectaCommands.visualsTemplateShellSource(templateId)),
+			saveTemplate: (sessionId, templateId, manifest, source) => fromGenerated(spectaCommands.visualsTemplateSave(sessionId, templateId, manifest, source)),
+			createTemplate: (sessionId, templateId, fromTemplateId, title) => fromGenerated(spectaCommands.visualsTemplateCreate(sessionId, templateId, fromTemplateId, title ?? null)),
+			validateTemplate: (templateId) => fromGenerated(spectaCommands.visualsTemplateValidate(templateId)),
 			list: (query) => fromGenerated(spectaCommands.visualsList(wire(query ?? null))),
 			get: (visualId) => fromGenerated(spectaCommands.visualsGet(visualId)),
 			engine: (visualId, request) => fromGenerated(spectaCommands.visualsEngine(visualId, request)) as Promise<Record<string, unknown>>,
@@ -1197,6 +1216,9 @@ window.synthWorkspaceScope ??= isTauri
 
 /** Quarantined window.synth* accessors — import these instead of reading window. */
 export const bridges = {
+	get projectSources() {
+		return window.synthProjectSources;
+	},
 	get desktop() {
 		return window.synthDesktop;
 	},

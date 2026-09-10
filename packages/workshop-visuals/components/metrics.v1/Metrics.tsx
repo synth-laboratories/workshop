@@ -1,5 +1,6 @@
 import type { LiveEvalEvent } from "../../runtime/types.ts";
 import { formatMissingNumber } from "../../runtime/liveStream.ts";
+import type { HostLiveEvalProjection } from "../../runtime/replayClient.ts";
 
 const SCALAR_KEYS = [
   "reward",
@@ -42,8 +43,10 @@ export function reduceMetricsStrip(events: LiveEvalEvent[]): MetricsStrip {
   };
 }
 
-export function Metrics({ events }: { events: LiveEvalEvent[] }) {
-  const strip = reduceMetricsStrip(events);
+export function Metrics({ events, projection }: { events: LiveEvalEvent[]; projection?: HostLiveEvalProjection }) {
+  const strip = projection
+    ? { count: projection.event_count, scalarLabel: "Reward", scalarValue: formatMissingNumber(projection.reward) }
+    : reduceMetricsStrip(events);
   return (
     <section className="sv-section" aria-label="Metrics" data-testid="compose-metrics">
       <div className="sv-section-head">
