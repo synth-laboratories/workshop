@@ -31,6 +31,8 @@ import { bridges } from "../runtime/desktopBridge";
 import { ChatgptCodexSubscriptionCard } from "./ChatgptCodexSubscriptionCard";
 import { ContextSettings } from "./ContextSettings";
 import { SecretsSettings } from "./SecretsSettings";
+import { ProjectSourcesSettings } from "./ProjectSourcesSettings";
+import { WorkspaceAccessSettings } from "./WorkspaceAccessSettings";
 import { CapabilityManifest } from "./CapabilityManifest";
 import { PluginVisibilitySettings } from "./PluginVisibilitySettings";
 
@@ -129,6 +131,7 @@ function IconChevronLeft() {
 const SECTIONS = [
 	{ id: "general", label: "General", icon: IconSliders },
 	{ id: "context", label: "Context", icon: IconContext },
+	{ id: "workspace", label: "Workspace", icon: IconContext },
 	{ id: "models", label: "Models", icon: IconChip },
 	{ id: "inference", label: "Inference", icon: IconGauge },
 	{ id: "voice", label: "Voice", icon: IconMic },
@@ -555,6 +558,10 @@ export function SettingsPage({
 							</SettingsCard>
 						</div>
 					) : null}
+					{section === "workspace" ? <div className="settings-sections" data-testid="settings-workspace">
+						<SettingsCard className="settings-card-embed"><ProjectSourcesSettings /></SettingsCard>
+						<SettingsCard className="settings-card-embed"><WorkspaceAccessSettings /></SettingsCard>
+					</div> : null}
 					{section === "context" ? <div className="settings-sections"><ContextSettings subagents={<MultiAgentModelSettings />} /><AgentHostingPanel /></div> : null}
 					{section === "inference" ? (
 						<div className="settings-sections" data-testid="settings-inference">

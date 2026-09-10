@@ -31,6 +31,8 @@ impl Commands {
     pub const CODEX_THREAD_ITEMS_LIST: &'static str = "codex_thread_items_list";
     pub const CODEX_TURN_STEER: &'static str = "codex_turn_steer";
     pub const CODEX_APPROVAL_RESOLVE: &'static str = "codex_approval_resolve";
+    pub const APPROVALS_PENDING: &'static str = "approvals_pending";
+    pub const APPROVALS_APPROVE_DIGEST: &'static str = "approvals_approve_digest";
     pub const CODEX_SESSION_CLOSE: &'static str = "codex_session_close";
     pub const ACCOUNT_BEGIN_SIGN_IN: &'static str = "account_begin_sign_in";
     pub const ACCOUNT_POLL_SIGN_IN: &'static str = "account_poll_sign_in";
@@ -52,6 +54,13 @@ impl Commands {
     pub const MODEL_MULTI_AGENT_LIST: &'static str = "model_multi_agent_list";
     pub const MODEL_MULTI_AGENT_UPDATE: &'static str = "model_multi_agent_update";
     pub const WORKSPACE_ACCESS_GET: &'static str = "workspace_access_get";
+    pub const WORKSPACE_READ_FILE: &'static str = "workspace_read_file";
+    pub const WORKSPACE_LIST_DIR: &'static str = "workspace_list_dir";
+    pub const DOCUMENT_SHOW: &'static str = "document_show";
+    pub const VISUALS_TEMPLATE_SHELL_SOURCE: &'static str = "visuals_template_shell_source";
+    pub const VISUALS_TEMPLATE_SAVE: &'static str = "visuals_template_save";
+    pub const VISUALS_TEMPLATE_CREATE: &'static str = "visuals_template_create";
+    pub const VISUALS_TEMPLATE_VALIDATE: &'static str = "visuals_template_validate";
     pub const WORKSPACE_ACCESS_UPDATE: &'static str = "workspace_access_update";
     pub const WORKSPACE_SCOPE_GET: &'static str = "workspace_scope_get";
     pub const WORKSPACE_SCOPE_CHOOSE_AND_ATTACH: &'static str = "workspace_scope_choose_and_attach";

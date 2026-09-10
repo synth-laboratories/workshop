@@ -27,6 +27,7 @@ test("annotation campaign paid card click-through resolves once", async ({ page 
 		journalEvent(3, "approval.requested", {
 			approvalId: "appr_annotation_campaign_1",
 			kind: "paid_compute",
+			approvalDigest: "sha256:annotation-reviewed",
 			operation: "annotation.post_rollout_campaign",
 			requestingAgent: "eval-worker",
 			estimatedCostUsdMicros: 2_000_000,
@@ -42,7 +43,7 @@ test("annotation campaign paid card click-through resolves once", async ({ page 
 	];
 	await page.addInitScript(({ rows }) => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
-		const decisions: Array<{ sessionId: string; approvalId: string; decision: string }> = [];
+		const decisions: Array<{ sessionId: string; approvalId: string; decision: string; approvalDigest?: string }> = [];
 		(window as typeof window & { __approvalDecisions?: () => typeof decisions }).__approvalDecisions = () => decisions;
 		(window as typeof window & { synthLaguna?: unknown }).synthLaguna = {
 			getStatus: async () => ({
@@ -73,8 +74,8 @@ test("annotation campaign paid card click-through resolves once", async ({ page 
 			start: async () => ({ sessionId: "annotation-paid-card-session", threadId: "annotation-paid-card-thread" }),
 			startTurn: async () => ({ sessionId: "annotation-paid-card-session", threadId: "annotation-paid-card-thread", turnId: "turn-annotation" }),
 			interrupt: async () => undefined,
-			resolveApproval: async (id: string, approvalId: string, decision: string) => {
-				decisions.push({ sessionId: id, approvalId, decision });
+			resolveApproval: async (id: string, approvalId: string, decision: string, approvalDigest?: string) => {
+				decisions.push({ sessionId: id, approvalId, decision, approvalDigest });
 			},
 			close: async () => undefined,
 			onEvent: (_next: (event: Event) => void) => () => undefined
@@ -102,6 +103,7 @@ test("annotation campaign paid card click-through resolves once", async ({ page 
 
 	const modal = page.getByTestId("paid-compute-approval-modal");
 	await expect(modal).toBeVisible();
+	await expect(modal).toHaveAttribute("data-approval-digest", "sha256:annotation-reviewed");
 	await expect(modal).toContainText("Approve this paid annotation?");
 	await expect(modal).toContainText("evals-banking77");
 	await expect(modal).toContainText("annotation.post_rollout_campaign");
@@ -111,6 +113,35 @@ test("annotation campaign paid card click-through resolves once", async ({ page 
 	await modal.getByRole("button", { name: "Approve", exact: true }).click();
 	await expect(modal).toBeHidden();
 	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
-		{ sessionId, approvalId: "appr_annotation_campaign_1", decision: "once" }
+		{ sessionId, approvalId: "appr_annotation_campaign_1", decision: "once", approvalDigest: "sha256:annotation-reviewed" }
 	]);
+});
+
+test("operator training approval forwards the viewed digest without a chat", async ({ page }) => {
+  await page.addInitScript(() => {
+    const listeners: Array<(event: unknown) => void> = [];
+    const decisions: unknown[] = [];
+    (window as any).__operatorProof = { emit: (event: unknown) => listeners.forEach(next => next(event)), decisions, ready: () => listeners.length > 0 };
+    (window as any).synthCore = { onEvent: (next: (event: unknown) => void) => { listeners.push(next); return () => undefined; } };
+    (window as any).synthCodex = {
+      list: async () => [], defaultWorkspace: async () => "/workspaces/operator-test",
+      onEvent: () => () => undefined,
+      resolveApproval: async (...args: unknown[]) => { decisions.push(args); }
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => (window as any).__operatorProof.ready());
+  await page.evaluate(() => (window as any).__operatorProof.emit({
+    schemaVersion: "synth.desktop-app-event.v1", eventId: "operator-approval-event",
+    sessionId: "operator-training-digest-proof", source: "codex", sequence: 1, sessionSequence: 1,
+    createdAt: "2026-09-10T12:00:00Z", kind: "approval.requested",
+    payload: { approvalId: "operator-approval", kind: "paid_compute", operation: "optimizer.train",
+      preparationDigest: "sha256:operator-reviewed", requestedCap: { maxCostUsdMicros: 10000 }, requestingAgent: "operator" }
+  }));
+  const modal = page.getByTestId("paid-compute-approval-modal");
+  await expect(modal).toHaveAttribute("data-approval-digest", "sha256:operator-reviewed");
+  await modal.getByRole("button", {name: "Approve", exact: true}).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__operatorProof.decisions)).toEqual([
+    ["operator-training-digest-proof", "operator-approval", "once", "sha256:operator-reviewed"]
+  ]);
 });

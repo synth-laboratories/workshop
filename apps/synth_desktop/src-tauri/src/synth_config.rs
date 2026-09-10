@@ -7,6 +7,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[path = "synth_config/project_sources.rs"]
+mod project_sources;
+#[cfg(test)]
+pub(crate) use project_sources::begin_project_source_grant_at;
+#[cfg(test)]
+pub(crate) use project_sources::{settings_at as project_source_settings_at, forget_at as forget_project_source_at};
+pub(crate) use project_sources::{begin_project_source_grant, ProjectSourceChange};
+pub use project_sources::{
+    forget_project_source, merge_project_source, project_source_settings, ProjectSourceEntry,
+    ProjectSourceSettings,
+};
+
 const DEFAULT_PROFILE: &str = "prod";
 const DEFAULT_API_KEY_ENV: &str = "SYNTH_API_KEY";
 const DEFAULT_WORKER_KEY_ENV: &str = "SMR_WORKER_API_KEY";
@@ -348,7 +360,12 @@ pub fn get() -> Result<BackendSettings> {
     let resolved = resolve()?;
     let mut document = read_toml(&resolved.config_path)?;
     if ensure_default_model_config(&mut document) {
-        write_toml(&resolved.config_path, &document)?;
+        // Keep complete, read-only configurations readable. When defaults are
+        // missing, re-read under the shared lock before applying them.
+        document = mutate_config(&resolved.config_path, |document| {
+            ensure_default_model_config(document);
+            Ok(document.clone())
+        })?;
     }
     let intern = document.get("intern").and_then(toml::Value::as_table);
     let profile = intern
@@ -464,31 +481,32 @@ pub fn update(request: BackendSettingsUpdate) -> Result<BackendSettings> {
         &request.env_file,
         config_path.parent().unwrap_or(Path::new(".")),
     )?;
-    let mut document = read_toml(&config_path)?;
-    let root = document
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
-    let intern = root
-        .entry("intern")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[intern] must be a TOML table"))?;
-    intern.insert("profile".into(), toml::Value::String(profile.clone()));
-    intern.insert(
-        "env_file".into(),
-        toml::Value::String(path_for_toml(&env_file)),
-    );
-    intern.insert(
-        "api_key_env".into(),
-        toml::Value::String(api_key_env.clone()),
-    );
-    let endpoints = intern
-        .entry("endpoints")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[intern.endpoints] must be a TOML table"))?;
-    endpoints.insert(profile, toml::Value::String(backend_url));
-    write_toml(&config_path, &document)?;
+    mutate_config(&config_path, |document| {
+        let root = document
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
+        let intern = root
+            .entry("intern")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[intern] must be a TOML table"))?;
+        intern.insert("profile".into(), toml::Value::String(profile.clone()));
+        intern.insert(
+            "env_file".into(),
+            toml::Value::String(path_for_toml(&env_file)),
+        );
+        intern.insert(
+            "api_key_env".into(),
+            toml::Value::String(api_key_env.clone()),
+        );
+        let endpoints = intern
+            .entry("endpoints")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[intern.endpoints] must be a TOML table"))?;
+        endpoints.insert(profile, toml::Value::String(backend_url));
+        Ok(())
+    })?;
 
     if let Some(api_key) = request.api_key.as_deref() {
         store_api_key(api_key)?;
@@ -682,26 +700,27 @@ pub(crate) fn select_default_workspace_path(
 pub fn update_workspace_access(request: WorkspaceAccessUpdate) -> Result<WorkspaceAccessSettings> {
     let allowed_roots = validate_workspace_roots(request.allowed_roots)?;
     let path = config_path();
-    let mut document = read_toml(&path)?;
-    let root = document
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
-    let workspace = root
-        .entry("workspace")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[workspace] must be a TOML table"))?;
-    workspace.insert(
-        "allowed_roots".into(),
-        toml::Value::Array(
-            allowed_roots
-                .iter()
-                .cloned()
-                .map(toml::Value::String)
-                .collect(),
-        ),
-    );
-    write_toml(&path, &document)?;
+    mutate_config(&path, |document| {
+        let root = document
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
+        let workspace = root
+            .entry("workspace")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[workspace] must be a TOML table"))?;
+        workspace.insert(
+            "allowed_roots".into(),
+            toml::Value::Array(
+                allowed_roots
+                    .iter()
+                    .cloned()
+                    .map(toml::Value::String)
+                    .collect(),
+            ),
+        );
+        Ok(())
+    })?;
     Ok(WorkspaceAccessSettings { allowed_roots })
 }
 
@@ -853,53 +872,54 @@ fn update_desktop_permissions_at(
     if !is_sandbox_mode(&request.sandbox_mode) {
         return Err(anyhow!("unsupported sandbox mode"));
     }
-    let mut document = read_toml(path)?;
-    let root = document
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
-    let desktop = root
-        .entry("desktop")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[desktop] must be a TOML table"))?;
-    let permissions = desktop
-        .entry("permissions")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[desktop.permissions] must be a TOML table"))?;
-    permissions.insert(
-        "approval_policy".into(),
-        toml::Value::String(request.approval_policy),
-    );
-    permissions.insert(
-        "sandbox_mode".into(),
-        toml::Value::String(request.sandbox_mode),
-    );
-    if let Some(paid_compute) = request.paid_compute {
-        let policy = paid_compute.policy()?;
-        let mut table = toml::value::Table::new();
-        table.insert("auto_approve".into(), toml::Value::Boolean(policy.enabled));
-        table.insert(
-            "max_request_usd".into(),
-            toml::Value::String(format_usd_micros(policy.max_request_usd_micros)),
+    mutate_config(path, |document| {
+        let root = document
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
+        let desktop = root
+            .entry("desktop")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[desktop] must be a TOML table"))?;
+        let permissions = desktop
+            .entry("permissions")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[desktop.permissions] must be a TOML table"))?;
+        permissions.insert(
+            "approval_policy".into(),
+            toml::Value::String(request.approval_policy),
         );
-        table.insert(
-            "max_conversation_usd".into(),
-            toml::Value::String(format_usd_micros(policy.max_conversation_usd_micros)),
+        permissions.insert(
+            "sandbox_mode".into(),
+            toml::Value::String(request.sandbox_mode),
         );
-        table.insert(
-            "providers".into(),
-            toml::Value::Array(
-                policy
-                    .providers
-                    .into_iter()
-                    .map(toml::Value::String)
-                    .collect(),
-            ),
-        );
-        permissions.insert("paid_compute".into(), toml::Value::Table(table));
-    }
-    write_toml(path, &document)?;
+        if let Some(paid_compute) = request.paid_compute {
+            let policy = paid_compute.policy()?;
+            let mut table = toml::value::Table::new();
+            table.insert("auto_approve".into(), toml::Value::Boolean(policy.enabled));
+            table.insert(
+                "max_request_usd".into(),
+                toml::Value::String(format_usd_micros(policy.max_request_usd_micros)),
+            );
+            table.insert(
+                "max_conversation_usd".into(),
+                toml::Value::String(format_usd_micros(policy.max_conversation_usd_micros)),
+            );
+            table.insert(
+                "providers".into(),
+                toml::Value::Array(
+                    policy
+                        .providers
+                        .into_iter()
+                        .map(toml::Value::String)
+                        .collect(),
+                ),
+            );
+            permissions.insert("paid_compute".into(), toml::Value::Table(table));
+        }
+        Ok(())
+    })?;
     desktop_permission_settings_at(path)
 }
 
@@ -1065,32 +1085,33 @@ pub fn update_model_multi_agent(
         return Err(anyhow!("modelId is required"));
     }
     let path = config_path();
-    let mut document = read_toml(&path)?;
-    let root = document
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
-    let models = root
-        .entry("models")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[models] must be a TOML table"))?;
-    let multi_agent = models
-        .entry("multi_agent")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[models.multi_agent] must be a TOML table"))?;
-    match request.version {
-        Some(version) => {
-            multi_agent.insert(
-                model_id,
-                toml::Value::String(multi_agent_version_name(version).to_owned()),
-            );
+    mutate_config(&path, |document| {
+        let root = document
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
+        let models = root
+            .entry("models")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[models] must be a TOML table"))?;
+        let multi_agent = models
+            .entry("multi_agent")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[models.multi_agent] must be a TOML table"))?;
+        match request.version {
+            Some(version) => {
+                multi_agent.insert(
+                    model_id,
+                    toml::Value::String(multi_agent_version_name(version).to_owned()),
+                );
+            }
+            None => {
+                multi_agent.remove(&model_id);
+            }
         }
-        None => {
-            multi_agent.remove(&model_id);
-        }
-    }
-    write_toml(&path, &document)?;
+        Ok(())
+    })?;
     model_multi_agent_settings()
 }
 
@@ -1382,6 +1403,53 @@ fn is_openrouter_model_slug(value: &str) -> bool {
     })
 }
 
+/// Serialize every config read-modify-write, including across app processes.
+/// The lock file stays at a stable inode while the document is atomically
+/// replaced. Readers see the old or new complete document, never half a grant.
+static CONFIG_MUTATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn mutate_config<T>(path: &Path, edit: impl FnOnce(&mut toml::Value) -> Result<T>) -> Result<T> {
+    use fs2::FileExt;
+    let _guard = CONFIG_MUTATION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Preserve user-managed config symlinks and share the same lock for aliases.
+    let resolved = match fs::canonicalize(path) {
+        Ok(resolved) => resolved,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !path.is_symlink() => {
+            let parent = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            fs::create_dir_all(parent)?;
+            fs::canonicalize(parent)?.join(
+                path.file_name()
+                    .ok_or_else(|| anyhow!("Config path must name a file"))?,
+            )
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let path = resolved.as_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path.with_extension("toml.lock"))?;
+    lock.lock_exclusive()
+        .with_context(|| format!("lock config {}", path.display()))?;
+    let mut document = read_toml(path)?;
+    let before = document.clone();
+    let result = edit(&mut document)?;
+    if document != before {
+        write_toml(path, &document)?;
+    }
+    Ok(result)
+}
+
 fn read_toml(path: &Path) -> Result<toml::Value> {
     match fs::read_to_string(path) {
         Ok(raw) => raw
@@ -1398,7 +1466,14 @@ fn write_toml(path: &Path, document: &toml::Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, toml::to_string_pretty(document)?)?;
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    if let Ok(metadata) = fs::metadata(path) {
+        file.as_file().set_permissions(metadata.permissions())?;
+    }
+    file.write_all(toml::to_string_pretty(document)?.as_bytes())?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|error| error.error)?;
     Ok(())
 }
 
@@ -1408,65 +1483,66 @@ pub(crate) fn rewrite_credential_locator_export(
     locators: &[crate::secrets::CredentialLocatorSummary],
 ) -> Result<()> {
     let path = config_path();
-    let mut document = read_toml(&path)?;
-    let root = document
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
-    let desktop = root
-        .entry("desktop")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[desktop] must be a TOML table"))?;
-    let entries = locators
-        .iter()
-        .map(|locator| {
-            let mut entry = toml::map::Map::new();
-            entry.insert("id".into(), toml::Value::String(locator.id.clone()));
-            entry.insert(
-                "kind".into(),
-                toml::Value::String(locator.kind.as_str().into()),
-            );
-            if let Some(reference) = locator.workspace_root_ref.as_ref() {
+    mutate_config(&path, |document| {
+        let root = document
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
+        let desktop = root
+            .entry("desktop")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[desktop] must be a TOML table"))?;
+        let entries = locators
+            .iter()
+            .map(|locator| {
+                let mut entry = toml::map::Map::new();
+                entry.insert("id".into(), toml::Value::String(locator.id.clone()));
                 entry.insert(
-                    "workspace_root_ref".into(),
-                    toml::Value::String(reference.clone()),
+                    "kind".into(),
+                    toml::Value::String(locator.kind.as_str().into()),
                 );
-            }
-            if let Some(relative) = locator.relative_path.as_ref() {
+                if let Some(reference) = locator.workspace_root_ref.as_ref() {
+                    entry.insert(
+                        "workspace_root_ref".into(),
+                        toml::Value::String(reference.clone()),
+                    );
+                }
+                if let Some(relative) = locator.relative_path.as_ref() {
+                    entry.insert(
+                        "relative_path".into(),
+                        toml::Value::String(relative.clone()),
+                    );
+                }
+                if matches!(
+                    locator.kind,
+                    crate::secrets::CredentialLocatorKind::ExternalEnvFile
+                ) && locator.display_path.starts_with("~/")
+                {
+                    entry.insert(
+                        "external_path".into(),
+                        toml::Value::String(locator.display_path.clone()),
+                    );
+                }
+                entry.insert("format".into(), toml::Value::String(locator.format.clone()));
                 entry.insert(
-                    "relative_path".into(),
-                    toml::Value::String(relative.clone()),
+                    "provider".into(),
+                    toml::Value::String(locator.provider.clone()),
                 );
-            }
-            if matches!(
-                locator.kind,
-                crate::secrets::CredentialLocatorKind::ExternalEnvFile
-            ) && locator.display_path.starts_with("~/")
-            {
                 entry.insert(
-                    "external_path".into(),
-                    toml::Value::String(locator.display_path.clone()),
+                    "variable".into(),
+                    toml::Value::String(locator.variable.clone()),
                 );
-            }
-            entry.insert("format".into(), toml::Value::String(locator.format.clone()));
-            entry.insert(
-                "provider".into(),
-                toml::Value::String(locator.provider.clone()),
-            );
-            entry.insert(
-                "variable".into(),
-                toml::Value::String(locator.variable.clone()),
-            );
-            entry.insert("label".into(), toml::Value::String(locator.label.clone()));
-            entry.insert(
-                "state".into(),
-                toml::Value::String(locator.state.as_str().into()),
-            );
-            toml::Value::Table(entry)
-        })
-        .collect::<Vec<_>>();
-    desktop.insert("credential_locators".into(), toml::Value::Array(entries));
-    write_toml(&path, &document)
+                entry.insert("label".into(), toml::Value::String(locator.label.clone()));
+                entry.insert(
+                    "state".into(),
+                    toml::Value::String(locator.state.as_str().into()),
+                );
+                toml::Value::Table(entry)
+            })
+            .collect::<Vec<_>>();
+        desktop.insert("credential_locators".into(), toml::Value::Array(entries));
+        Ok(())
+    })
 }
 
 fn resolve_secret(key: &str, env_file: &Path) -> (Option<String>, Option<String>) {
@@ -1744,6 +1820,104 @@ fn secret_fingerprint(secret: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_mutation_preserves_bytes_on_error_and_noop() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let original = "# Preserve comments when unchanged\nvalue = 7\n";
+        fs::write(&path, original).unwrap();
+        mutate_config(&path, |_| Ok(())).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        let result: Result<()> = mutate_config(&path, |document| {
+            document["value"] = toml::Value::Integer(8);
+            Err(anyhow!("Rejected mutation"))
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn config_mutation_serializes_processes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        fs::write(&path, "preserved = true\n").unwrap();
+        let mut children = Vec::new();
+        for key in ["first", "second"] {
+            children.push(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "synth_config::tests::config_mutation_child_writer",
+                        "--ignored",
+                    ])
+                    .env("SYNTH_TEST_CONFIG_MUTATION_PATH", &path)
+                    .env("SYNTH_TEST_CONFIG_MUTATION_KEY", key)
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            );
+        }
+        for child in children {
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+        let document = read_toml(&path).unwrap();
+        assert_eq!(document["preserved"].as_bool(), Some(true));
+        assert_eq!(document["first"].as_integer(), Some(20));
+        assert_eq!(document["second"].as_integer(), Some(20));
+    }
+
+    #[test]
+    #[ignore = "invoked in isolated child processes by config_mutation_serializes_processes"]
+    fn config_mutation_child_writer() {
+        let path = std::path::PathBuf::from(
+            std::env::var_os("SYNTH_TEST_CONFIG_MUTATION_PATH").expect("test config path"),
+        );
+        let key = std::env::var("SYNTH_TEST_CONFIG_MUTATION_KEY").expect("test config key");
+        for _ in 0..20 {
+            mutate_config(&path, |document| {
+                let value = document
+                    .get(&key)
+                    .and_then(toml::Value::as_integer)
+                    .unwrap_or(0);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                document
+                    .as_table_mut()
+                    .unwrap()
+                    .insert(key.clone(), toml::Value::Integer(value + 1));
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_mutation_preserves_symlinks_and_permissions() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target.toml");
+        let alias = directory.path().join("alias.toml");
+        fs::write(&target, "value = 1\n").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&target, &alias).unwrap();
+        mutate_config(&alias, |document| {
+            document["value"] = toml::Value::Integer(2);
+            Ok(())
+        })
+        .unwrap();
+        assert!(alias.is_symlink());
+        assert_eq!(read_toml(&target).unwrap()["value"].as_integer(), Some(2));
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 
     #[test]
     fn configurable_openrouter_model_accepts_minimal_ox_alpha_entry() {

@@ -21,6 +21,9 @@ use std::{
 use tauri::AppHandle;
 use tokio::sync::Mutex;
 
+#[path = "approval_inspection.rs"]
+pub(crate) mod inspection;
+
 pub(crate) type ResolverFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ApprovalDelivery>> + Send + 'a>>;
 
@@ -200,6 +203,14 @@ pub(crate) enum ApprovalKind {
         action: String,
         effect: String,
     },
+    VisualTemplatePersist {
+        template_id: String,
+        destination: String,
+        package_digest: String,
+        byte_size: u64,
+        overwrites: bool,
+        source_kind: String,
+    },
     PluginLifecycle {
         plugin_id: String,
         action: String,
@@ -250,6 +261,7 @@ impl ApprovalKind {
             Self::SidecarLifecycle { .. } => "sidecar_lifecycle",
             Self::ContainerLifecycle { .. } => "container_lifecycle",
             Self::PluginLifecycle { .. } => "plugin_lifecycle",
+            Self::VisualTemplatePersist { .. } => "visual_template_persist",
             Self::CredentialAccess { .. } => "credential_access",
             Self::ComputerUse { .. } => "computer_use",
         }
@@ -275,6 +287,7 @@ impl ApprovalKind {
             Self::ComputerUse { hazard: true, .. }
                 | Self::PaidCompute { .. }
                 | Self::CredentialAccess { .. }
+                | Self::VisualTemplatePersist { .. }
         )
     }
 
@@ -322,6 +335,7 @@ impl ApprovalKind {
                 },
             ) => Ok(()),
             (Self::PluginLifecycle { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
+            (Self::VisualTemplatePersist { .. }, ApprovalDecision::Approve { scope: ApprovalScope::Once }) => Ok(()),
             // Remembered scopes on a hazard action were already refused above,
             // so what reaches here is either a once-off hazard approval or an
             // app-scope grant, and both are valid.
@@ -420,6 +434,7 @@ impl ApprovalKind {
                 "timeoutSeconds": timeout_seconds,
                 "credentialNames": credential_names,
                 "preparationDigest": preparation_digest,
+                "approvalDigest": preparation_digest,
                 "alwaysSupported": false,
             }),
             Self::SidecarLifecycle { sidecar, action } => json!({
@@ -451,6 +466,17 @@ impl ApprovalKind {
                 "sourceDigest": source_digest,
                 "action": action,
                 "effect": effect,
+                "alwaysSupported": false,
+            }),
+            Self::VisualTemplatePersist { template_id, destination, package_digest, byte_size, overwrites, source_kind } => json!({
+                "approvalId": approval_id,
+                "kind": self.name(),
+                "templateId": template_id,
+                "destination": destination,
+                "packageDigest": package_digest,
+                "sourceKind": source_kind,
+                "byteSize": byte_size,
+                "overwrites": overwrites,
                 "alwaysSupported": false,
             }),
             Self::PluginLifecycle {
@@ -1825,6 +1851,75 @@ mod tests {
             .await
             .unwrap_err();
         assert!(missing.to_string().contains("no longer pending"));
+    }
+
+    #[tokio::test]
+    async fn approval_inspection_reports_live_state_and_exact_resolution_preserves_cap() {
+        let broker = ApprovalBroker::new(SessionPersistence::Null);
+        let app = tauri::test::mock_app();
+        let (resolver, rx) = HostDecisionResolver::pair();
+        let id = broker.request(app.handle(), ApprovalOrigin {
+            session_id: "operator-session".into(), instance_id: "operator-test".into(),
+        }, openrouter_paid(Some(10_000)), resolver).await.unwrap();
+        let rows = broker.pending_snapshot().await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].approval_id, id);
+        assert_eq!(rows[0].session_id, "operator-session");
+        assert_eq!(rows[0].preparation_digest.as_deref(), Some("sha256:spec"));
+        assert!(rows[0].requires_human);
+        assert!(broker.approve_digest(app.handle(), "sha256:wrong").await.is_err());
+        let (first, second) = tokio::join!(
+            broker.approve_digest(app.handle(), "sha256:spec"),
+            broker.approve_digest(app.handle(), "sha256:spec"));
+        assert_ne!(first.is_ok(), second.is_ok());
+        assert!(matches!(rx.await.unwrap().unwrap(), ApprovalDecision::ApproveWithCap { cap }
+            if cap.max_cost_usd_micros == Some(10_000) && cap.max_rollouts == Some(8)));
+        assert!(broker.pending_snapshot().await.is_empty());
+        assert!(broker.approve_digest(app.handle(), "sha256:spec").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn approval_inspection_refuses_ambiguous_and_expired_digests() {
+        let broker = ApprovalBroker::new(SessionPersistence::Null);
+        let app = tauri::test::mock_app();
+        let mut receivers = Vec::new();
+        for session in ["first", "second"] {
+            let (resolver, rx) = HostDecisionResolver::pair();
+            receivers.push(rx);
+            broker.request(app.handle(), ApprovalOrigin { session_id: session.into(),
+                instance_id: "ambiguous-test".into() }, openrouter_paid(Some(10_000)), resolver).await.unwrap();
+        }
+        assert!(broker.approve_digest(app.handle(), "sha256:spec").await.unwrap_err().to_string().contains("multiple"));
+        assert_eq!(broker.pending_snapshot().await.len(), 2);
+        for session in ["first", "second"] {
+            broker.expire_origin(app.handle(), &ApprovalOrigin { session_id: session.into(),
+                instance_id: "ambiguous-test".into() }, "test-complete").await.unwrap();
+        }
+        assert!(broker.pending_snapshot().await.is_empty());
+        assert!(broker.approve_digest(app.handle(), "sha256:spec").await.is_err());
+        assert!(broker.approve_digest(app.handle(), " ").await.is_err());
+        for rx in receivers { assert!(rx.await.unwrap().is_err()); }
+    }
+
+    #[tokio::test]
+    async fn viewed_proposal_digest_is_required_and_must_match_before_approval() {
+        let broker = ApprovalBroker::new(SessionPersistence::Null);
+        let app = tauri::test::mock_app();
+        let (resolver, rx) = HostDecisionResolver::pair();
+        let kind = openrouter_paid(Some(10_000));
+        assert_eq!(kind.safe_payload("test")["approvalDigest"], "sha256:spec");
+        let id = broker.request(app.handle(), ApprovalOrigin {
+            session_id: "viewed-session".into(), instance_id: "viewed-test".into(),
+        }, kind, resolver).await.unwrap();
+        assert!(broker.decision_from_view(&id, "once", None).await.is_err());
+        assert!(broker.decision_from_view(&id, "once", Some("sha256:other")).await.is_err());
+        assert!(matches!(broker.decision_from_view(&id, "reject", None).await.unwrap(), ApprovalDecision::Reject));
+        assert!(broker.is_pending(&id).await);
+        let decision = broker.decision_from_view(&id, "once", Some("sha256:spec")).await.unwrap();
+        broker.resolve(app.handle(), "viewed-session", &id, decision).await.unwrap();
+        assert!(matches!(rx.await.unwrap().unwrap(), ApprovalDecision::ApproveWithCap { cap }
+            if cap.max_cost_usd_micros == Some(10_000)));
+        assert!(broker.decision_from_view(&id, "once", Some("sha256:spec")).await.is_err());
     }
 
     fn openrouter_paid(max_cost_usd_micros: Option<u64>) -> ApprovalKind {

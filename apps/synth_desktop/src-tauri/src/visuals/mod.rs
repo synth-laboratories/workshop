@@ -1,6 +1,8 @@
 //! Local Visual Registry: durable visual instances, revisions, and template catalog.
 
 mod artifacts;
+mod seal_evidence;
+mod seal_template;
 mod backfill;
 pub mod cache_gc;
 
@@ -8,7 +10,8 @@ pub mod cache_gc;
 pub use mermaid::RENDERER_VERSION as RENDITION_RENDERER_VERSION;
 pub mod chart_data;
 pub mod charts;
-mod live_eval;
+pub(crate) mod live_eval;
+pub mod stream_receipt;
 pub mod mermaid;
 mod models;
 mod registry;
@@ -21,6 +24,7 @@ pub mod snapshot;
 pub mod sourced;
 pub mod systems;
 mod templates;
+pub mod user_templates;
 
 /// The repository's `visuals/` root, so tests can load the same fixtures the
 /// binding resolver reads.

@@ -8,6 +8,18 @@ const root = new URL("../../../", import.meta.url);
 const script = fileURLToPath(new URL("scripts/build-tier.sh", root));
 const build = readFileSync(script, "utf8");
 
+test("the shipped browser is a direct exact dependency, independent of private test tools", () => {
+  const pkg = JSON.parse(readFileSync(new URL("package.json", root), "utf8"));
+  const npmLock = JSON.parse(readFileSync(new URL("package-lock.json", root), "utf8"));
+  const browserLock = JSON.parse(readFileSync(new URL("apps/synth_desktop/browser/runtime.lock.json", root), "utf8"));
+  const version = browserLock.playwright.version;
+  assert.equal(pkg.dependencies.playwright, version);
+  assert.equal(npmLock.packages[""].dependencies.playwright, version);
+  assert.equal(npmLock.packages["node_modules/playwright"].version, version);
+  assert.equal(npmLock.packages["node_modules/playwright-core"].version, version);
+  assert.notEqual(npmLock.packages["node_modules/playwright"].dev, true);
+});
+
 test("macOS browser return is registered, delivered, and never authenticates", () => {
   const plist = readFileSync(new URL("apps/synth_desktop/src-tauri/Info.plist", root), "utf8");
   assert.match(plist, /CFBundleURLTypes[\s\S]*CFBundleURLSchemes[\s\S]*<string>synth-workshop<\/string>/);

@@ -27,16 +27,16 @@ export function OperatorTrainingApproval({ eventsBySession, onError }: {
             .filter(line => line.kind === "approval" && line.approvalKind === "paid_compute" && line.approvalId)
             .map(line => ({ sessionId, line }));
     })[0], [eventsBySession, operatorEvents]);
-    const resolve = async (approvalId: string, decision: "once" | "reject") => {
+    const resolve = async (approvalId: string, decision: "once" | "reject", approvalDigest?: string) => {
         if (!pending || settling) return;
         setSettling(true);
         try {
             if (!bridges.codex) throw new Error("Native approval service is unavailable");
-            await bridges.codex.resolveApproval(pending.sessionId, approvalId, decision);
+            await bridges.codex.resolveApproval(pending.sessionId, approvalId, decision, approvalDigest);
         } catch (error) {
             onError(error instanceof Error ? error.message : "Approval could not be resolved");
         } finally { setSettling(false); }
     };
     return pending ? <PaidComputeApprovalModal line={pending.line}
-        onApprove={id => void resolve(id, "once")} onReject={id => void resolve(id, "reject")} /> : null;
+        onApprove={(id, _decision, digest) => void resolve(id, "once", digest)} onReject={id => void resolve(id, "reject")} /> : null;
 }

@@ -35,6 +35,7 @@ pub fn classify(kind: &ApprovalKind, active_runs: u64) -> PluginRisk {
         ApprovalKind::ContainerLifecycle { .. } => PluginRisk::High,
         ApprovalKind::PaidCompute { .. } => PluginRisk::High,
         ApprovalKind::CredentialAccess { .. } => PluginRisk::High,
+        ApprovalKind::VisualTemplatePersist { .. } => PluginRisk::HandOff,
         ApprovalKind::ShellCommand { .. } => PluginRisk::High,
         // Non-hazard computer use: driving an app the operator has not yet
         // allowed. Hazard actions never reach here — `requires_human` above

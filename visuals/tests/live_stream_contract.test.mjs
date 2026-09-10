@@ -17,6 +17,21 @@ import {
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+test("host replay answers preserve projection, receipt and truncation without inventing provider authority", async () => {
+  const { parseReplayPage, HOST_POLL_SCHEMA } = await import("../runtime/replayClient.ts");
+  const projection = { schema_version: "synth.live-eval-projection.v1", kinds: ["frame"],
+    has_live_frames: true, has_reward_txt: false, reward: null, usage: null, event_count: 1 };
+  const body = { schemaVersion: HOST_POLL_SCHEMA, events: [{ sequence: "opaque" }],
+    cursor: { next: 6, closed: true }, projection, receipt: { recovered: 1 }, evidenceTruncated: true };
+  const page = parseReplayPage(body, 5);
+  assert.deepEqual(page.projection, projection);
+  assert.deepEqual(page.receipt, { recovered: 1 });
+  assert.equal(page.evidenceTruncated, true);
+  assert.equal(page.cursor.next, 6);
+  assert.equal(parseReplayPage({ ...body, schemaVersion: "producer.v1" }, 5).projection, undefined);
+  assert.equal(parseReplayPage({ ...body, projection: null }, 5).projection, undefined);
+});
+
 test("live.harbor_eval.v1 binds slot stream, not jobs", () => {
   const meta = JSON.parse(
     readFileSync(join(root, "families/first_class_example_containers/live.harbor_eval.v1/template.json"), "utf8"),

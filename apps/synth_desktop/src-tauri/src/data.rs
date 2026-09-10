@@ -1267,7 +1267,7 @@ impl DataStore {
         let lookup_digest = trace_digest.clone();
         let resolved = self.db.clone().run(move |conn| {
             conn.query_row(
-                "SELECT tpc.projection_schema,tpc.payload_digest,tb.archive_path,ta.relative_path
+                "SELECT tpc.projection_schema,tpc.payload_digest,tb.archive_digest,ta.relative_path
                  FROM trace_projection_cache tpc
                  JOIN trace_bundle_members tbm ON tbm.trace_digest=tpc.trace_digest
                  JOIN trace_bundles tb ON tb.bundle_digest=tbm.bundle_digest
@@ -1278,7 +1278,7 @@ impl DataStore {
                 |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?)),
             ).optional().map_err(Into::into)
         }).await?;
-        let Some((projection_schema, payload_digest, archive_path, relative_path)) = resolved
+        let Some((projection_schema, payload_digest, archive_digest, relative_path)) = resolved
         else {
             let lookup_digest = trace_digest.clone();
             let archive_path = self.db.clone().run(move |conn| {
@@ -1310,13 +1310,15 @@ impl DataStore {
                 payload: derived.payload,
             });
         };
-        let archive_path = std::path::PathBuf::from(archive_path);
+        let content = self.content.clone();
         let entry_path = relative_path.clone();
         let payload = tokio::task::spawn_blocking(move || -> Result<Value> {
-            let file = std::fs::File::open(&archive_path).with_context(|| {
-                format!("open trusted trace archive {}", archive_path.display())
-            })?;
-            let mut archive = zip::ZipArchive::new(file).context("open trusted trace ZIP")?;
+            // Import-time trust does not authorize changed bytes. Parse the
+            // exact buffer CAS verified, not a path reopened after validation.
+            let digest = qualified_sha256(&archive_digest)?;
+            let bytes = content.get_bytes("traces", &digest[7..])?;
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+                .context("open verified trace ZIP")?;
             let mut entry = archive.by_name(&entry_path).with_context(|| {
                 format!("projection asset missing from trusted archive: {entry_path}")
             })?;
@@ -1985,6 +1987,45 @@ mod tests {
             source_uri: None,
             container_id: container_id.map(str::to_owned),
         }
+    }
+
+    #[tokio::test]
+    async fn cached_projection_rechecks_archive_bytes_before_returning_evidence() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let content = ContentStore::new(storage.content_root());
+        let data = DataStore::new(storage.database().clone(), content.clone());
+        let payload = json!({"schema_version":"synth.trace-projection.rollout-inspector.v1","rollouts":[]});
+        let body = json!({"payload":payload}).to_string();
+        let mut archive = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut archive));
+            writer.start_file("projection.json", zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut writer, body.as_bytes()).unwrap();
+            writer.finish().unwrap();
+        }
+        let trace_hex = "e".repeat(64);
+        let trace_digest = format!("sha256:{trace_hex}");
+        let mut inspected = trusted_inspection(&archive, &trace_hex);
+        inspected.inspection_json["assets"] = json!([{
+            "path":"projection.json", "kind":"projection", "role":"rollout-inspector",
+            "bytes_digest":format!("sha256:{:x}", Sha256::digest(body.as_bytes())),
+            "media_type":"application/json", "byte_size":body.len(), "available":true, "verified":true
+        }]);
+        inspected.inspection_json["projections"] = json!([{
+            "path":"projection.json", "source_trace_digest":trace_digest,
+            "format":"synth.trace-projection.rollout-inspector.v1",
+            "digest":format!("sha256:{:x}", Sha256::digest(payload.to_string().as_bytes())),
+            "available":true, "verified":true
+        }]);
+        inspected.inspection = serde_json::from_value(inspected.inspection_json.clone()).unwrap();
+        data.commit_inspected_trace(ingest_request(None), inspected).await.unwrap();
+        assert_eq!(data.resolve_trace_projection(trace_digest.clone(), "rollout-inspector".into()).await.unwrap().payload, payload);
+        let digest = format!("{:x}", Sha256::digest(&archive));
+        // Corrupt only the isolated test store, leaving its trusted SQL receipt unchanged.
+        std::fs::write(content.path_for("traces", &digest), b"changed after import").unwrap();
+        let error = data.resolve_trace_projection(trace_digest, "rollout-inspector".into()).await.err().unwrap();
+        assert!(format!("{error:#}").contains("digest verification"));
     }
 
     async fn stored_owner(db: &crate::storage::Database, digest: &str) -> Option<String> {

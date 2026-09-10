@@ -43,6 +43,7 @@ const EXPECTED_IDS = [
   "diagram.mermaid.v1",
   "diagram.systems.dynamic.v1",
   "diagram.systems.v1",
+  "document.viewer.v1",
   "experiment.overview.v1",
   "live.annotated_rollouts.v1",
   "live.container_rollouts.v1",
@@ -80,7 +81,11 @@ test("visuals package exposes the registered templates", () => {
     const { meta, path } = templates.get(id);
     assert.equal(meta.id, id);
     assert.equal(meta.schemaVersion, "synth.visual-template.v1");
-    if (!id.startsWith("diagram.") && meta.rendererKind !== "chart") {
+    if (id === "document.viewer.v1") {
+      const host = readFileSync(join(root, "..", "apps/synth_desktop/src/renderer/src/components/VisualHost.tsx"), "utf8");
+      assert.match(host, /matches: isDocumentArtifact, component: DocumentPane/);
+      assert.deepEqual(declaredInputs(meta).map((input) => input.accepts), [["workspace_file"]]);
+    } else if (!id.startsWith("diagram.") && meta.rendererKind !== "chart") {
       assert.ok(existsSync(join(path, "shell.tsx")));
     }
     if (id === "live.container_rollouts.v1") {

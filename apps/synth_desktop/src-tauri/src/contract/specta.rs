@@ -446,6 +446,23 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::telemetry::product_telemetry_set_consent,
             crate::telemetry::product_telemetry_recent,
             crate::telemetry::product_telemetry_flush_now,
+            crate::documents::commands::workspace_read_file,
+            crate::documents::commands::workspace_list_dir,
+            crate::documents::commands::document_show,
+            crate::visuals::user_templates::visuals_template_shell_source,
+            crate::visuals::user_templates::visuals_template_save,
+            crate::visuals::user_templates::visuals_template_create,
+            crate::visuals::user_templates::visuals_template_validate,
+            crate::session::approval::inspection::approvals_pending,
+            crate::session::approval::inspection::approvals_approve_digest,
+            crate::project_sources::commands::project_sources_get,
+            crate::project_sources::commands::project_sources_refresh,
+            crate::project_sources::commands::project_source_add,
+            crate::project_sources::commands::project_source_remove,
+            crate::project_sources::commands::project_source_request,
+            crate::project_sources::commands::project_source_requests_list,
+            crate::project_sources::commands::project_source_deny,
+            crate::project_sources::commands::project_source_approve,
         ])
 }
 
@@ -603,8 +620,14 @@ mod tests {
         // and supersession. The previous 323 expectation undercounted six.
         // 329 → 338: seven ACP commands and two runtime-owned desktop state commands.
         // 348 → 351: consent, recent telemetry, and flush commands.
+        // 351 → 354: scoped workspace read/list and document presentation.
+        // 354 → 358: user-template source, approved save/fork and validation.
+        // 358 → 360: approval inbox and human-only digest resolution.
+        // 360 → 364: live project-source catalog/refresh and native admission/removal.
+        // 364 → 367: durable source request, inspection of requests, and human denial.
+        // 367 → 368: exact-picker source approval with optional conversation attachment.
         assert_eq!(
-            exported, 351,
+            exported, 368,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

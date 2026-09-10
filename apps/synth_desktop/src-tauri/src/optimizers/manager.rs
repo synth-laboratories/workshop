@@ -1055,6 +1055,7 @@ impl OptimizerManager {
     pub async fn spawn_gepa_recipe(
         &self,
         run_id: &str,
+        recipe_source: &Path,
         cookbook: &Path,
         config_path: &Path,
         stdout: fs::File,
@@ -1095,7 +1096,14 @@ impl OptimizerManager {
         ) {
             bail!("GEPA supervisor cancelled `{run_id}` while it was queued");
         }
-        match launch_gepa_recipe_process(
+        // Capacity waits must not block native source revocation. Check only
+        // after admission, then serialize the check and synchronous spawn.
+        let resolution = crate::project_sources::requests::RESOLUTION.lock().await;
+        if let Err(error) = crate::project_sources::require_manifest(recipe_source, crate::project_sources::Capability::Recipes) {
+            self.gepa_workers.lock().await.remove(run_id);
+            return Err(error);
+        }
+        let launched = launch_gepa_recipe_process(
             &self.home,
             &selected.version,
             cookbook,
@@ -1105,7 +1113,9 @@ impl OptimizerManager {
             openai_api_key,
             openai_base_url,
             extra_env,
-        ) {
+        );
+        drop(resolution);
+        match launched {
             Ok(mut child) => {
                 let pid = child
                     .id()
@@ -4148,6 +4158,7 @@ mod tests {
         let error = mgr
             .spawn_gepa_recipe(
                 "gepa_luna",
+                &home.path().join("recipe.toml"),
                 home.path(),
                 &home.path().join("recipe.toml"),
                 stdout,
@@ -4233,9 +4244,13 @@ mod tests {
         mgr.start().await.unwrap();
         let config = home.path().join("recipe.toml");
         fs::write(&config, "").unwrap();
+        let grants = home.path().join("sources.toml");
+        crate::project_sources::test_grant(&grants, home.path(), false, true);
+        crate::project_sources::TEST_SOURCE_CONFIG.scope(grants, async {
         let child_luna = mgr
             .spawn_gepa_recipe(
                 "gepa_luna",
+                &config,
                 home.path(),
                 &config,
                 fs::File::create(home.path().join("luna.out")).unwrap(),
@@ -4249,6 +4264,7 @@ mod tests {
         let child_sol = mgr
             .spawn_gepa_recipe(
                 "gepa_sol",
+                &config,
                 home.path(),
                 &config,
                 fs::File::create(home.path().join("sol.out")).unwrap(),
@@ -4270,6 +4286,34 @@ mod tests {
         mgr.release_gepa_recipe("gepa_luna").await;
         mgr.release_gepa_recipe("gepa_sol").await;
         assert!(mgr.active_gepa_run_ids().await.is_empty());
+        }).await;
+        let _ = mgr.stop().await;
+    }
+
+    #[tokio::test]
+    async fn queued_gepa_spawn_rechecks_revocation_after_capacity_wait() {
+        let (mgr, home) = manager();
+        mgr.install(None).unwrap();
+        mgr.start().await.unwrap();
+        let config = home.path().join("recipe.toml");
+        fs::write(&config, "").unwrap();
+        let grants = home.path().join("sources.toml");
+        crate::project_sources::test_grant(&grants, home.path(), false, true);
+        let permits = mgr.gepa_capacity.acquire_many(2).await.unwrap();
+        crate::project_sources::TEST_SOURCE_CONFIG.scope(grants.clone(), async {
+            let spawn = mgr.spawn_gepa_recipe("gepa_revoked", &config, home.path(), &config,
+                fs::File::create(home.path().join("out")).unwrap(),
+                fs::File::create(home.path().join("err")).unwrap(), "sk-test", None, &[]);
+            let revoke = async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let _resolution = crate::project_sources::requests::RESOLUTION.lock().await;
+                crate::synth_config::forget_project_source_at(&grants, home.path().to_str().unwrap()).unwrap();
+                drop(permits);
+            };
+            let result = tokio::time::timeout(Duration::from_secs(3), async { tokio::join!(spawn, revoke) }).await.unwrap();
+            assert!(result.0.unwrap_err().to_string().contains("launch_source_root_not_approved"));
+            assert!(mgr.active_gepa_run_ids().await.is_empty());
+        }).await;
         let _ = mgr.stop().await;
     }
 

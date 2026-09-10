@@ -293,6 +293,7 @@ pub struct VisualQuery {
 /// visual must never bind to a live query: it would return different rows on
 /// every render and the page could not state what the reader is looking at.
 pub const VISUAL_BINDING_KINDS: &[&str] = &[
+    "workspace_file",
     "inline",
     "trace_v5",
     "local_cas",

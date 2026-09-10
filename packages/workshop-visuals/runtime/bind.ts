@@ -133,6 +133,9 @@ async function resolveBinding(
       if (!ctx.loadRun) throw new Error(`No run loader for input "${bindingInputName(binding) ?? "?"}"`);
       return dig(await ctx.loadRun(binding.source!), binding.path);
     }
+    case "workspace_file": {
+      throw new Error("workspace_file inputs are read by the scoped host pane, not by bindTemplateSlots");
+    }
     case "optimizer_run": {
       if (binding.data !== undefined) return dig(binding.data, binding.path);
       if (!ctx.loadOptimizerRun) {
@@ -280,6 +283,7 @@ export function isVisualBindings(value: unknown): value is VisualBindings {
 }
 
 const BINDING_KINDS: readonly string[] = [
+  "workspace_file",
   "inline",
   "trace_v5",
   "local_cas",

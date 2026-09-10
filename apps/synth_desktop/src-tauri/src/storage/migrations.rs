@@ -79,6 +79,8 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_74,
     MIGRATION_75,
     MIGRATION_76,
+    MIGRATION_77,
+    MIGRATION_78,
 ];
 
 const MIGRATION_70: &str = r#"
@@ -246,6 +248,8 @@ CREATE TABLE IF NOT EXISTS optimizer_evidence_amendments (
 "#;
 
 const REQUIRED_TABLES: &[(&str, &str)] = &[
+    ("project_source_requests", MIGRATION_78),
+    ("optimizer_snapshots", MIGRATION_77),
     ("optimizer_terminal_manifests", MIGRATION_23),
     ("secret_refs", MIGRATION_25),
     ("credential_locators", CREDENTIAL_LOCATORS_TABLE_DDL),
@@ -3765,6 +3769,26 @@ mod tests {
     /// every test that asserts the database reached the newest version.
     const LATEST_VERSION: i64 = super::MIGRATIONS.len() as i64;
 
+    #[test]
+    fn project_source_request_upgrade_preserves_legacy_history_and_session_identity() {
+        let conn = seed_at_version(77);
+        conn.execute_batch("CREATE TABLE project_source_requests (
+            id TEXT PRIMARY KEY, session_id TEXT, requested_path TEXT NOT NULL,
+            canonical_path TEXT NOT NULL, reason TEXT NOT NULL, containers INTEGER NOT NULL,
+            recipes INTEGER NOT NULL, attach_to_conversation INTEGER NOT NULL,
+            status TEXT NOT NULL, created_at TEXT NOT NULL, resolved_at TEXT);
+            INSERT INTO project_source_requests VALUES
+            ('global',NULL,'/fixture','/fixture','legacy',1,0,0,'pending','2026-09-09',NULL),
+            ('empty','','/fixture','/fixture','legacy',1,0,0,'pending','2026-09-09',NULL),
+            ('history',NULL,'/fixture','/fixture','legacy',1,0,0,'expired','2026-09-08','2026-09-09');").unwrap();
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM project_source_requests", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 3);
+        let status: String = conn.query_row("SELECT status FROM project_source_requests WHERE id='history'", [], |row| row.get(0)).unwrap();
+        assert_eq!(status, "expired");
+        assert!(conn.execute("INSERT INTO project_source_requests SELECT 'duplicate',session_id,requested_path,canonical_path,reason,containers,recipes,attach_to_conversation,status,created_at,resolved_at FROM project_source_requests WHERE id='global'", []).is_err());
+    }
+
     use super::*;
 
     /// Every `MIGRATION_N` constant is registered exactly once, and the registry
@@ -5769,6 +5793,48 @@ CREATE TABLE visual_corpus_details (
  FOREIGN KEY(visual_id,visual_revision,corpus_id,corpus_revision,row_id)
  REFERENCES visual_corpus_rows(visual_id,visual_revision,corpus_id,corpus_revision,row_id)
 );
+"#;
+
+const MIGRATION_78: &str = r#"
+CREATE TABLE IF NOT EXISTS project_source_requests (
+    id TEXT PRIMARY KEY,
+    session_id TEXT,
+    requested_path TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 2048),
+    containers INTEGER NOT NULL CHECK(containers IN (0,1)),
+    recipes INTEGER NOT NULL CHECK(recipes IN (0,1)),
+    attach_to_conversation INTEGER NOT NULL CHECK(attach_to_conversation IN (0,1)),
+    status TEXT NOT NULL CHECK(status IN ('pending','approved','denied','expired')),
+    created_at TEXT NOT NULL,
+    resolved_at TEXT,
+    CHECK(containers=1 OR recipes=1),
+    CHECK(attach_to_conversation=0 OR session_id IS NOT NULL)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS project_source_requests_pending
+ON project_source_requests(session_id,canonical_path) WHERE status='pending' AND session_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS project_source_requests_pending_global
+ON project_source_requests(canonical_path) WHERE status='pending' AND session_id IS NULL;
+CREATE INDEX IF NOT EXISTS project_source_requests_session
+ON project_source_requests(session_id,created_at DESC,id DESC);
+"#;
+
+const MIGRATION_77: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    content_digest TEXT NOT NULL UNIQUE,
+    source_instance_id TEXT NOT NULL,
+    source_run_id TEXT NOT NULL,
+    terminal_status TEXT,
+    terminal_cursor INTEGER NOT NULL,
+    sealed INTEGER NOT NULL CHECK(sealed IN (0,1)),
+    captured_at TEXT NOT NULL,
+    imported_at TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS optimizer_snapshots_source_run
+ON optimizer_snapshots(source_instance_id, source_run_id, captured_at DESC);
 "#;
 
 const MIGRATION_76: &str = r#"

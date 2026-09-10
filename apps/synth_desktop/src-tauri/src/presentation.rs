@@ -7,6 +7,11 @@
 //! second copy on the agent path would have drifted from it immediately.
 
 use anyhow::{bail, Result};
+mod document;
+mod host;
+pub use document::{document_path_binding, ensure_document_viewer, DOCUMENT_PROJECTION_SCHEMA,
+    DOCUMENT_VIEWER_TEMPLATE, WORKSPACE_FILE_BINDING_KIND};
+pub use host::{Pane, Presentability, UnavailableReason};
 use serde_json::{json, Value};
 
 use crate::core_runtime::CoreRuntime;

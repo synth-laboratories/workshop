@@ -647,11 +647,22 @@ pub fn load_recipes(workspace: &Path) -> Result<Vec<WorkspaceRecipe>> {
 
 fn recipe_paths(workspace: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
+    let canonical_root = workspace.canonicalize().context("recipe source is unavailable")?;
+    let contained = |path: &Path| -> Result<PathBuf> {
+        let canonical = path.canonicalize().context("recipe declaration is unavailable")?;
+        if !canonical.starts_with(&canonical_root) {
+            bail!("recipe_source_root_not_approved: {} escapes its source", path.display());
+        }
+        Ok(canonical)
+    };
     let root_file = workspace.join(RECIPE_FILE);
-    if root_file.is_file() {
-        paths.push(root_file);
+    if root_file.exists() || root_file.is_symlink() {
+        paths.push(contained(&root_file)?);
     }
     let recipes_dir = workspace.join(RECIPES_DIR);
+    if recipes_dir.exists() || recipes_dir.is_symlink() {
+        contained(&recipes_dir)?;
+    }
     if recipes_dir.is_dir() {
         let mut entries: Vec<PathBuf> = fs::read_dir(&recipes_dir)
             .with_context(|| format!("read {}", recipes_dir.display()))?
@@ -663,7 +674,7 @@ fn recipe_paths(workspace: &Path) -> Result<Vec<PathBuf>> {
             })
             .collect();
         entries.sort();
-        paths.extend(entries);
+        for entry in entries { paths.push(contained(&entry)?); }
     }
     Ok(paths)
 }
@@ -693,16 +704,14 @@ pub fn find_recipe(workspace: &Path, recipe_id: &str) -> Result<WorkspaceRecipe>
         })
 }
 
-/// Resolve a workspace recipe from every repository the conversation has
-/// explicitly approved. The working workspace remains first, followed by
-/// user-attached folders. Container declarations already use this authority;
-/// recipe discovery must not silently apply a narrower boundary.
+/// Resolve recipes only from executable project sources with recipe capability.
+/// Conversation file attachments do not grant execution authority.
 pub fn find_session_recipe(
-    db: &crate::storage::Database,
-    session_id: &str,
+    _db: &crate::storage::Database,
+    _session_id: &str,
     recipe_id: &str,
 ) -> Result<(PathBuf, WorkspaceRecipe)> {
-    let roots = session_search_roots(db, session_id)?;
+    let roots = crate::project_sources::discovery_roots(crate::project_sources::Capability::Recipes)?;
     let mut matches = Vec::new();
     for root in roots {
         for path in recipe_paths(&root)? {
@@ -718,11 +727,11 @@ pub fn find_session_recipe(
     }
     match matches.len() {
         0 => Err(anyhow!(
-            "workspace recipe `{recipe_id}` is not declared in any approved workspace or attached folder"
+            "workspace recipe `{recipe_id}` is not declared in any approved recipe source"
         )),
         1 => Ok(matches.remove(0)),
         _ => Err(anyhow!(
-            "workspace recipe `{recipe_id}` is declared in more than one approved workspace or attached folder"
+            "workspace recipe `{recipe_id}` is declared in more than one approved recipe source"
         )),
     }
 }
@@ -731,11 +740,11 @@ pub fn find_session_recipe(
 /// ids are retained here so start can reject the ambiguity instead of the
 /// catalog silently choosing one source.
 pub fn load_session_recipes(
-    db: &crate::storage::Database,
-    session_id: &str,
+    _db: &crate::storage::Database,
+    _session_id: &str,
 ) -> Result<Vec<WorkspaceRecipe>> {
     let mut recipes = Vec::new();
-    for root in session_search_roots(db, session_id)? {
+    for root in crate::project_sources::discovery_roots(crate::project_sources::Capability::Recipes)? {
         for path in recipe_paths(&root)? {
             if let Ok(recipe) = parse_recipe(&path) {
                 recipes.push(recipe);
@@ -798,22 +807,30 @@ const MANIFEST_WALK_SKIP: &[&str] = &[
 pub fn discover_container_manifests(search_roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut manifests = Vec::new();
     for root in search_roots {
-        let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        collect_container_manifests(&canonical, 2, &mut manifests);
+        let Ok(canonical) = root.canonicalize() else {
+            continue;
+        };
+        collect_container_manifests(&canonical, &canonical, 2, &mut manifests);
     }
     manifests.sort();
     manifests.dedup();
     Ok(manifests)
 }
 
-fn collect_container_manifests(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+fn collect_container_manifests(root: &Path, approved: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    let Ok(canonical_root) = root.canonicalize() else {
+        return;
+    };
+    if !canonical_root.starts_with(approved) {
+        return;
+    }
     let candidate = root.join(CONTAINERS_FILE);
     if candidate.is_file() {
-        out.push(
-            candidate
-                .canonicalize()
-                .unwrap_or_else(|_| candidate.clone()),
-        );
+        if let Ok(canonical) = candidate.canonicalize() {
+            if canonical.starts_with(approved) {
+                out.push(canonical);
+            }
+        }
     }
     if depth == 0 {
         return;
@@ -831,7 +848,7 @@ fn collect_container_manifests(root: &Path, depth: usize, out: &mut Vec<PathBuf>
         if name.starts_with('.') || MANIFEST_WALK_SKIP.contains(&name.as_ref()) {
             continue;
         }
-        collect_container_manifests(&path, depth.saturating_sub(1), out);
+        collect_container_manifests(&path, approved, depth.saturating_sub(1), out);
     }
 }
 
@@ -839,15 +856,18 @@ pub fn origin_is_under_approved_roots(
     origin: &ContainerDeclarationOrigin,
     search_roots: &[PathBuf],
 ) -> bool {
+    let (Ok(source), Ok(manifest)) = (
+        origin.source_root.canonicalize(),
+        origin.manifest_path.canonicalize(),
+    ) else {
+        return false;
+    };
     search_roots.iter().any(|root| {
-        let root = root.canonicalize().unwrap_or_else(|_| root.clone());
-        paths_related(&origin.source_root, &root) || origin.manifest_path.starts_with(&root)
+        let Ok(root) = root.canonicalize() else {
+            return false;
+        };
+        source.starts_with(&root) && manifest.starts_with(&source) && manifest.is_file()
     })
-}
-
-fn paths_related(path: &Path, root: &Path) -> bool {
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    path == *root || path.starts_with(root)
 }
 
 /// Recover declaration provenance from registry metadata.
@@ -951,10 +971,10 @@ pub fn resolve_container_spec(
 }
 
 pub fn session_search_roots(
-    db: &crate::storage::Database,
-    session_id: &str,
+    _db: &crate::storage::Database,
+    _session_id: &str,
 ) -> Result<Vec<PathBuf>> {
-    crate::workspace_scope::approved_search_roots(db, session_id)
+    crate::project_sources::discovery_roots(crate::project_sources::Capability::Containers)
 }
 
 pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
@@ -2027,6 +2047,67 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    #[cfg(unix)]
+    #[test]
+    fn recipe_discovery_refuses_symlinked_files_and_directories_outside_source() {
+        use std::os::unix::fs::symlink;
+        let directory = tempdir().unwrap();
+        let outside = directory.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let target = outside.join("recipe.toml");
+        fs::write(&target, "invalid outside fixture").unwrap();
+        for mode in ["root-file", "directory", "nested-file"] {
+            let root = directory.path().join(mode);
+            fs::create_dir(&root).unwrap();
+            match mode {
+                "root-file" => symlink(&target, root.join(RECIPE_FILE)).unwrap(),
+                "directory" => symlink(&outside, root.join(RECIPES_DIR)).unwrap(),
+                _ => {
+                    fs::create_dir(root.join(RECIPES_DIR)).unwrap();
+                    symlink(&target, root.join(RECIPES_DIR).join("escape.toml")).unwrap();
+                }
+            }
+            let error = load_recipes(&root).unwrap_err().to_string();
+            assert!(error.contains("recipe_source_root_not_approved"), "{mode}: {error}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_and_stored_origin_refuse_symlink_escape_from_approved_roots() {
+        use std::os::unix::fs::symlink;
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("approved");
+        let nested = root.join("nested");
+        let outside = directory.path().join("outside");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let valid = nested.join(CONTAINERS_FILE);
+        let escaped = outside.join(CONTAINERS_FILE);
+        fs::write(&valid, "# valid path fixture").unwrap();
+        fs::write(&escaped, "# outside path fixture").unwrap();
+        symlink(&escaped, root.join(CONTAINERS_FILE)).unwrap();
+        symlink(&outside, root.join("escaped-folder")).unwrap();
+        let roots = vec![root.canonicalize().unwrap()];
+        assert_eq!(
+            discover_container_manifests(&roots).unwrap(),
+            vec![valid.canonicalize().unwrap()]
+        );
+        let mut origin = ContainerDeclarationOrigin {
+            source_root: root.clone(),
+            manifest_path: root.join(CONTAINERS_FILE),
+            declaration_id: "fixture".into(),
+            source_revision: None,
+            source_digest: None,
+        };
+        assert!(!origin_is_under_approved_roots(&origin, &roots));
+        origin.source_root = nested;
+        origin.manifest_path = valid;
+        assert!(origin_is_under_approved_roots(&origin, &roots));
+        origin.source_root = outside;
+        assert!(!origin_is_under_approved_roots(&origin, &roots));
+    }
+
     fn write_workspace() -> (tempfile::TempDir, PathBuf) {
         let dir = tempdir().unwrap();
         let workspace = dir.path().join("workspace");
@@ -2099,7 +2180,7 @@ max_total_rollouts = 2
     }
 
     #[tokio::test]
-    async fn attached_repository_recipes_are_cataloged_and_resolved_for_execution() {
+    async fn attachments_require_separate_recipe_grants_for_catalog_and_execution() {
         let root = tempdir().unwrap();
         let primary = root.path().join("primary");
         let attached = root.path().join("attached");
@@ -2165,6 +2246,17 @@ max_total_rollouts = 1
         .await
         .unwrap();
 
+        assert!(load_session_recipes(storage.database(), "attached-session").unwrap().is_empty());
+        assert!(find_session_recipe(storage.database(), "attached-session", "eval.attached.v1").is_err());
+        let config = data.path().join("sources.toml");
+        crate::project_sources::test_grant(&config, &attached, true, false);
+        crate::project_sources::TEST_SOURCE_CONFIG.sync_scope(config.clone(), || {
+            assert!(load_session_recipes(storage.database(), "attached-session").unwrap().is_empty());
+            assert_eq!(session_search_roots(storage.database(), "attached-session").unwrap(), vec![attached.canonicalize().unwrap()]);
+        });
+        crate::project_sources::test_grant(&config, &attached, false, true);
+        crate::project_sources::test_grant(&config, &primary, false, true);
+        crate::project_sources::TEST_SOURCE_CONFIG.sync_scope(config.clone(), || {
         let catalog = load_session_recipes(storage.database(), "attached-session").unwrap();
         assert!(catalog.iter().any(|recipe| recipe.id == "eval.attached.v1"));
         let (source_root, recipe) =
@@ -2175,6 +2267,9 @@ max_total_rollouts = 1
         let error = find_session_recipe(storage.database(), "attached-session", "gepa.stale.v1")
             .unwrap_err();
         assert!(error.to_string().contains("exceeds product cap"));
+        crate::synth_config::forget_project_source_at(&config, attached.to_str().unwrap()).unwrap();
+        assert!(find_session_recipe(storage.database(), "attached-session", "eval.attached.v1").is_err());
+        });
     }
 
     #[test]

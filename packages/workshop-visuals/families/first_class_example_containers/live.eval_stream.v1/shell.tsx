@@ -42,7 +42,7 @@ export function Shell(props: ShellProps) {
     [declaredStreamCount, stream.events]
   );
 
-  const { events, state, error } = useLiveEvalStream({
+  const { events, state, error, hostEvidence } = useLiveEvalStream({
     replay: props.replay,
     fixtureEvents,
     visualId: props.visualId,
@@ -60,7 +60,7 @@ export function Shell(props: ShellProps) {
       testId="visual-live-eval-stream"
       footer="live.eval_stream.v1"
     >
-      <Metrics events={events} />
+      <Metrics events={events} projection={hostEvidence?.projection} />
       <Scrubber
         events={events}
         cursorId={cursor?.identity ?? null}

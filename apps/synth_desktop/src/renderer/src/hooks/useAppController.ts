@@ -2034,7 +2034,7 @@ export function useAppController() {
 						};
 						settlingApprovalIdsRef.current.add(approvalId);
 						try {
-							await nativeCodex.resolveApproval(activeSessionId, approvalId, decision);
+							await nativeCodex.resolveApproval(activeSessionId, approvalId, decision, typeof payload.approvalDigest === "string" ? payload.approvalDigest : undefined);
 							// The durable native settlement event is authoritative, but the RPC
 							// reply is also a settlement receipt. Publish a local equivalent so a
 							// dropped/reordered event cannot leave a live approval modal behind.
