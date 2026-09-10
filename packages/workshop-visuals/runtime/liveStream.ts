@@ -62,6 +62,8 @@ export type LiveEnvelope = {
 };
 
 export type LiveIngestState = {
+  /** Includes controls and duplicate deliveries, matching the host fold. */
+  delivered: number;
   events: LiveEnvelope[];
   ready: boolean;
   ids: Set<string>;
@@ -133,6 +135,7 @@ export function assertDeclaredStreamSource(
 export function isControlEnvelope(event: LiveEnvelope): boolean {
   const kind = String(event.kind ?? event.type ?? "");
   return (
+    event.control === true ||
     kind === "stream.subscribed" ||
     kind === "heartbeat" ||
     kind === "stream.heartbeat" ||
@@ -223,7 +226,7 @@ export function envelopeIdentity(event: LiveEnvelope, index: number): string {
 
 export function emptyLiveIngest(): LiveIngestState {
   return {
-    events: [], ready: false, ids: new Set(), digests: new Map(),
+    delivered: 0, events: [], ready: false, ids: new Set(), digests: new Map(),
     lastSequenceByScope: new Map(), receivedSequencesByScope: new Map(), gaps: [], conflicts: []
   };
 }
@@ -248,6 +251,7 @@ export function ingestLiveEnvelopeBatch(
   const touchedSequenceScopes = new Set<string>();
   const conflicts = [...state.conflicts];
   let ready = state.ready;
+  let delivered = state.delivered;
   // Replayed pages can already carry the receiver clock. Continue after its
   // high-water mark; otherwise assign ticks in the exact order envelopes are
   // accepted below. Controls and duplicates never consume a tick.
@@ -259,7 +263,8 @@ export function ingestLiveEnvelopeBatch(
   }, 0) + 1;
 
   for (const event of incoming) {
-    const id = envelopeIdentity(event, events.length);
+    const id = envelopeIdentity(event, ++delivered);
+    ready ||= String(event.kind ?? event.type ?? "") === "stream.subscribed";
     const digest = typeof event.digest === "string" ? event.digest : JSON.stringify(event);
     if (ids.has(id)) {
       const previous = digests.get(id);
@@ -268,29 +273,30 @@ export function ingestLiveEnvelopeBatch(
     }
     ids.add(id);
     digests.set(id, digest);
-    if (isControlEnvelope(event)) {
-      ready ||= String(event.kind ?? event.type ?? "") === "stream.subscribed";
-      continue;
+    const control = isControlEnvelope(event);
+    if (!control) {
+      const suppliedLogicalTime = typeof event.logical_time === "number"
+        && Number.isInteger(event.logical_time)
+        && event.logical_time > 0
+        ? event.logical_time
+        : undefined;
+      const logicalTime = suppliedLogicalTime ?? nextLogicalTime;
+      nextLogicalTime = Math.max(nextLogicalTime, logicalTime + 1);
+      events.push({ ...normalizeEnvelopeIdentity(event), logical_time: logicalTime });
     }
-    const suppliedLogicalTime = typeof event.logical_time === "number"
-      && Number.isInteger(event.logical_time)
-      && event.logical_time > 0
-      ? event.logical_time
-      : undefined;
-    const logicalTime = suppliedLogicalTime ?? nextLogicalTime;
-    nextLogicalTime = Math.max(nextLogicalTime, logicalTime + 1);
-    events.push({ ...normalizeEnvelopeIdentity(event), logical_time: logicalTime });
     const scope = envelopeScope(event);
     const rawSequence = event.sequence_number ?? event.sequence;
-    const sequence = typeof rawSequence === "number" ? rawSequence : Number(rawSequence);
-    if (!Number.isFinite(sequence)) continue;
+    const sequence = typeof rawSequence === "number" ? rawSequence
+      : typeof rawSequence === "string" && /^[+-]?\d+$/.test(rawSequence.trim())
+        ? Number(rawSequence) : NaN;
+    if (!Number.isSafeInteger(sequence)) continue;
     if (!clonedSequenceScopes.has(scope)) {
       receivedSequencesByScope.set(scope, new Set(receivedSequencesByScope.get(scope) ?? []));
       clonedSequenceScopes.add(scope);
     }
     receivedSequencesByScope.get(scope)!.add(sequence);
     touchedSequenceScopes.add(scope);
-    lastSequenceByScope.set(scope, Math.max(lastSequenceByScope.get(scope) ?? sequence, sequence));
+    if (!control) lastSequenceByScope.set(scope, Math.max(lastSequenceByScope.get(scope) ?? sequence, sequence));
   }
 
   let gaps = state.gaps.filter((gap) => !touchedSequenceScopes.has(gap.scope));
@@ -302,7 +308,7 @@ export function ingestLiveEnvelopeBatch(
       }
     }
   }
-  return { events, ids, digests, lastSequenceByScope, receivedSequencesByScope, gaps, conflicts, ready };
+  return { delivered, events, ids, digests, lastSequenceByScope, receivedSequencesByScope, gaps, conflicts, ready };
 }
 
 /** Append one envelope. Control records can set ready; they are not evidence. */
