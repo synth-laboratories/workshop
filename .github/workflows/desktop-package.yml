@@ -2,7 +2,7 @@ name: Desktop package
 
 on:
   push:
-    branches: [codex/v010-package-ci]
+    branches: [codex/v010-package-ci, codex/v010-macos-browser-return]
     tags: ['v0.10.*']
   workflow_dispatch:
 
