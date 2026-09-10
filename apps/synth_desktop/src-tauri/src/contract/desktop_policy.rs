@@ -22,6 +22,8 @@ pub fn human_surface(name: &str) -> Option<&'static str> {
         | "desktop_state_commit"
         | "codex_approval_resolve"
         | "approvals_approve_digest"
+        | "project_source_add"
+        | "project_source_remove"
         | "workspace_scope_approve_request"
         | "workspace_scope_deny_request"
         | "desktop_permissions_update"
@@ -65,6 +67,9 @@ mod tests {
         assert!(super::human_surface("codex_approval_resolve").is_some());
         assert!(super::human_surface("approvals_approve_digest").is_some());
         assert!(super::human_surface("approvals_pending").is_none());
+        assert!(super::human_surface("project_source_add").is_some());
+        assert!(super::human_surface("project_source_remove").is_some());
+        assert!(super::human_surface("project_sources_get").is_none());
         assert!(super::human_surface("secrets_grant_use").is_some());
         assert!(super::human_surface("human_annotation_submit").is_some());
         assert!(!super::internal("visuals_render"));

@@ -455,6 +455,10 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::visuals::user_templates::visuals_template_validate,
             crate::session::approval::inspection::approvals_pending,
             crate::session::approval::inspection::approvals_approve_digest,
+            crate::project_sources::commands::project_sources_get,
+            crate::project_sources::commands::project_sources_refresh,
+            crate::project_sources::commands::project_source_add,
+            crate::project_sources::commands::project_source_remove,
         ])
 }
 
@@ -615,8 +619,9 @@ mod tests {
         // 351 → 354: scoped workspace read/list and document presentation.
         // 354 → 358: user-template source, approved save/fork and validation.
         // 358 → 360: approval inbox and human-only digest resolution.
+        // 360 → 364: live project-source catalog/refresh and native admission/removal.
         assert_eq!(
-            exported, 360,
+            exported, 364,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(
