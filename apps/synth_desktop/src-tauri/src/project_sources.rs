@@ -12,9 +12,16 @@ use std::{
 
 pub mod commands;
 mod inspection;
+pub mod requests;
 pub use inspection::{catalog, ProjectSourceCatalog};
 
-fn admit_picked_root(path: &str, containers: bool, recipes: bool) -> Result<ProjectSourceCatalog> {
+async fn admit_picked_root(
+    db: &std::sync::Arc<crate::storage::Database>,
+    path: &str,
+    containers: bool,
+    recipes: bool,
+) -> Result<ProjectSourceCatalog> {
+    let _resolution = requests::RESOLUTION.lock().await;
     if !containers && !recipes {
         bail!("choose containers, recipes, or both");
     }
@@ -32,11 +39,29 @@ fn admit_picked_root(path: &str, containers: bool, recipes: bool) -> Result<Proj
         containers,
         recipes,
     })?;
+    requests::audit(db, "project_source.approved", serde_json::json!({
+        "path": root.display().to_string(), "containers": inspection.containers,
+        "recipes": inspection.recipes, "grant": { "containers": containers, "recipes": recipes },
+        "method": "native_picker"
+    })).await?;
     catalog()
 }
 
-fn remove_root(path: &str) -> Result<ProjectSourceCatalog> {
+async fn remove_root(
+    db: &std::sync::Arc<crate::storage::Database>,
+    path: &str,
+) -> Result<ProjectSourceCatalog> {
+    let _resolution = requests::RESOLUTION.lock().await;
+    if path.trim().is_empty() {
+        bail!("a project source path is required");
+    }
     synth_config::forget_project_source(path)?;
+    requests::audit(
+        db,
+        "project_source.removed",
+        serde_json::json!({ "path": path.trim() }),
+    )
+    .await?;
     catalog()
 }
 
@@ -110,7 +135,10 @@ fn validate_root(root: &Path, home: Option<&Path>) -> Result<()> {
         "/bin",
         "/sbin",
     ];
-    if home == Some(root) || broad.iter().any(|path| root == Path::new(path)) {
+    if root.parent().is_none()
+        || home == Some(root)
+        || broad.iter().any(|path| root == Path::new(path))
+    {
         bail!("project source must be a specific project folder, not a machine-wide root");
     }
     Ok(())

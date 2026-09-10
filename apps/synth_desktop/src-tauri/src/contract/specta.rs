@@ -459,6 +459,9 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::project_sources::commands::project_sources_refresh,
             crate::project_sources::commands::project_source_add,
             crate::project_sources::commands::project_source_remove,
+            crate::project_sources::commands::project_source_request,
+            crate::project_sources::commands::project_source_requests_list,
+            crate::project_sources::commands::project_source_deny,
         ])
 }
 
@@ -620,8 +623,9 @@ mod tests {
         // 354 → 358: user-template source, approved save/fork and validation.
         // 358 → 360: approval inbox and human-only digest resolution.
         // 360 → 364: live project-source catalog/refresh and native admission/removal.
+        // 364 → 367: durable source request, inspection of requests, and human denial.
         assert_eq!(
-            exported, 364,
+            exported, 367,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

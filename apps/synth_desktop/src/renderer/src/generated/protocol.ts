@@ -737,6 +737,9 @@ export const commands = {
 	implicitRoots: ProjectSourceRow[],
 } | null, AppError_Serialize>(__TAURI_INVOKE("project_source_add", { containers, recipes })),
 	projectSourceRemove: (path: string) => typedError<ProjectSourceCatalog, AppError_Serialize>(__TAURI_INVOKE("project_source_remove", { path })),
+	projectSourceRequest: (request: ProjectSourceRequestInput) => typedError<ProjectSourceRequest, AppError_Serialize>(__TAURI_INVOKE("project_source_request", { request })),
+	projectSourceRequestsList: (sessionId: string | null) => typedError<ProjectSourceRequest[], AppError_Serialize>(__TAURI_INVOKE("project_source_requests_list", { sessionId })),
+	projectSourceDeny: (requestId: string) => typedError<ProjectSourceRequest, AppError_Serialize>(__TAURI_INVOKE("project_source_deny", { requestId })),
 };
 
 /* Types */
@@ -3575,6 +3578,29 @@ export type ProjectSourceInspection = {
 	message: string | null,
 	containers: string[],
 	recipes: string[],
+};
+
+export type ProjectSourceRequest = {
+	id: string,
+	sessionId: string | null,
+	requestedPath: string,
+	canonicalPath: string,
+	reason: string,
+	containers: boolean,
+	recipes: boolean,
+	attachToConversation: boolean,
+	status: string,
+	createdAt: string,
+	resolvedAt: string | null,
+};
+
+export type ProjectSourceRequestInput = {
+	sessionId: string | null,
+	path: string,
+	reason: string,
+	containers: boolean,
+	recipes: boolean,
+	attachToConversation?: boolean,
 };
 
 export type ProjectSourceRow = {
