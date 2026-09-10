@@ -7,7 +7,8 @@ use super::ContentStore;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 pub const LIVE_SPOOL_SCHEMA: &str = "synth.live-eval-spool.v1";
 
@@ -37,45 +38,18 @@ pub fn envelopes_from_event_log(log: &Value) -> Vec<Value> {
 }
 
 pub fn envelope_identity(event: &Value, index: usize) -> String {
-    if let Some(id) = event
-        .get("event_id")
-        .or_else(|| event.get("id"))
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-    {
-        return id.to_string();
-    }
-    let sequence = event
-        .get("sequence_number")
-        .or_else(|| event.get("sequence"))
-        .or_else(|| event.get("seq"));
-    if let Some(sequence) = sequence {
-        if !sequence.is_null() {
-            let run = event
-                .get("run_id")
-                .or_else(|| event.get("rollout_id"))
-                .and_then(Value::as_str)
-                .unwrap_or("run");
-            let lane = event.get("lane").and_then(Value::as_str).unwrap_or("");
-            return format!("{run}:{lane}:{sequence}");
+    // Preserve the older spool wire aliases at this boundary only.
+    let mut normalized = event.clone();
+    if let Some(object) = normalized.as_object_mut() {
+        if !object.contains_key("event_id") {
+            if let Some(id) = event.get("id") { object.insert("event_id".into(), id.clone()); }
+        }
+        if !object.contains_key("sequence_number") && !object.contains_key("sequence") {
+            if let Some(seq) = event.get("seq") { object.insert("sequence".into(), seq.clone()); }
         }
     }
-    let run = event
-        .get("run_id")
-        .or_else(|| event.get("rollout_id"))
-        .and_then(Value::as_str)
-        .unwrap_or("run");
-    let kind = event
-        .get("kind")
-        .or_else(|| event.get("type"))
-        .and_then(Value::as_str)
-        .unwrap_or("event");
-    let ts = event
-        .get("occurred_at")
-        .or_else(|| event.get("ts"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    format!("{run}:{kind}:{ts}:{index}")
+    let scope = crate::stream_fold::envelope_scope(&normalized);
+    crate::stream_fold::envelope_identity(&normalized, &scope, index as u64 + 1)
 }
 
 pub fn persist_live_envelopes(
@@ -84,11 +58,13 @@ pub fn persist_live_envelopes(
     rollout_id: Option<&str>,
     envelopes: impl IntoIterator<Item = Value>,
 ) -> Result<LiveSpool> {
-    let mut seen = HashSet::new();
+    let mut seen = HashMap::new();
     let mut unique = Vec::new();
     for (index, envelope) in envelopes.into_iter().enumerate() {
         let id = envelope_identity(&envelope, index);
-        if !seen.insert(id) {
+        let body_digest: [u8; 32] = Sha256::digest(serde_json::to_vec(&envelope)?).into();
+        if let Some(prior) = seen.insert(id.clone(), body_digest) {
+            if prior != body_digest { bail!("conflicting live spool envelope identity {id}"); }
             continue;
         }
         unique.push(envelope);
