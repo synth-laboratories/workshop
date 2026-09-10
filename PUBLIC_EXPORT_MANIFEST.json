@@ -5251,16 +5251,16 @@
       "sha256": "674d6b0ee1334dcf1fd4718c85fdd08117a2f05c998231ca258e8babfdbe9373"
     },
     {
-      "bytes": 108184,
+      "bytes": 108191,
       "mode": "100644",
       "path": "package-lock.json",
-      "sha256": "7ec50e5bb9ed00c736d7cb1120886ef245b453f82efd366bdeabfb1dc99bb2ea"
+      "sha256": "7a61c13101ea4a20c8d4650182ce9401e6df9c3697daff44af4a8df557e2dee3"
     },
     {
-      "bytes": 2789,
+      "bytes": 2841,
       "mode": "100644",
       "path": "package.json",
-      "sha256": "02b8d191fc53419f9f5c4c4489892810ca66f24e5915ec6ddd759fb1e1eb05a8"
+      "sha256": "4d311c3d880e81e96aa2cddd3b10fb4c4b07e6ab30173141bdb2f038696e202f"
     },
     {
       "bytes": 190,
@@ -7672,7 +7672,7 @@
   "policySha256": "099bcf78a1b8cc0752cf21d40300ffe36f2470eef6f8b9a8a72cce8a74b64cd4",
   "schema": "workshop.public-export-manifest.v1",
   "source": {
-    "commit": "900b2e24aee873697c85d45d2d5a10412db8ace7",
-    "tree": "fcb3ac862601c53de6d4b6a6979de263e0276ce6"
+    "commit": "81607fa7bb9d9cc6457995fb977ae660c64f82b1",
+    "tree": "275638dfd79c9356e19e302d37499130e8cadf98"
   }
 }
