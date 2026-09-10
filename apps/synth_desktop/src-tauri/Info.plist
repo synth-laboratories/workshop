@@ -2,6 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>Workshop browser return</string>
+      <key>CFBundleURLSchemes</key>
+      <array><string>synth-workshop</string></array>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+    </dict>
+  </array>
   <key>NSMicrophoneUsageDescription</key>
   <string>Synth uses the microphone only when you choose local voice dictation.</string>
   <key>AXManualAccessibility</key>

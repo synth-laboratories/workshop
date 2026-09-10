@@ -29,8 +29,11 @@ ditto "$app" "$stage/Synth Workshop.app"
 # validation through hardened runtime here rejects the bundled Ghostty dylib at
 # load time even though --verify --deep --strict succeeds. Developer-ID builds
 # can opt into hardened runtime in their separately authorized signing pipeline.
+bash "$repo_root/scripts/seal-adhoc-trace-import.sh" "$stage/Synth Workshop.app"
 codesign --force --sign - "$stage/Synth Workshop.app"
 codesign --verify --deep --strict "$stage/Synth Workshop.app"
+registered_scheme="$(/usr/bin/plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.0 raw -o - "$stage/Synth Workshop.app/Contents/Info.plist")"
+[[ "$registered_scheme" == synth-workshop ]] || { echo "Packaged app lacks Workshop browser-return scheme" >&2; exit 1; }
 rm -f "$archive" "$archive.sha256" "$manifest"
 ditto -c -k --sequesterRsrc --keepParent "$stage/Synth Workshop.app" "$archive"
 sha256="$(shasum -a 256 "$archive" | awk '{print $1}')"

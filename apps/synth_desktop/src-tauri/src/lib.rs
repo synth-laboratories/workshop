@@ -30,6 +30,7 @@ pub mod core_runtime;
 mod credential_broker;
 pub mod data;
 mod device_auth;
+mod desktop_links;
 pub mod diagnostics;
 mod domain;
 mod domains;
@@ -5980,6 +5981,12 @@ pub fn run() {
         .build(context)
         .expect("error while building Synth Desktop")
         .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let RunEvent::Opened { urls } = &event {
+                for url in urls {
+                    desktop_links::open(app, url.as_str());
+                }
+            }
             // A detached desktop is not a stopped runtime. Explicit exit(0)
             // (Quit / runtime stop) still drains all managed services below.
             if let RunEvent::ExitRequested { code: None, api, .. } = &event {
