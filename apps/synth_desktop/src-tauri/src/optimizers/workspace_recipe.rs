@@ -798,22 +798,30 @@ const MANIFEST_WALK_SKIP: &[&str] = &[
 pub fn discover_container_manifests(search_roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut manifests = Vec::new();
     for root in search_roots {
-        let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        collect_container_manifests(&canonical, 2, &mut manifests);
+        let Ok(canonical) = root.canonicalize() else {
+            continue;
+        };
+        collect_container_manifests(&canonical, &canonical, 2, &mut manifests);
     }
     manifests.sort();
     manifests.dedup();
     Ok(manifests)
 }
 
-fn collect_container_manifests(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+fn collect_container_manifests(root: &Path, approved: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    let Ok(canonical_root) = root.canonicalize() else {
+        return;
+    };
+    if !canonical_root.starts_with(approved) {
+        return;
+    }
     let candidate = root.join(CONTAINERS_FILE);
     if candidate.is_file() {
-        out.push(
-            candidate
-                .canonicalize()
-                .unwrap_or_else(|_| candidate.clone()),
-        );
+        if let Ok(canonical) = candidate.canonicalize() {
+            if canonical.starts_with(approved) {
+                out.push(canonical);
+            }
+        }
     }
     if depth == 0 {
         return;
@@ -831,7 +839,7 @@ fn collect_container_manifests(root: &Path, depth: usize, out: &mut Vec<PathBuf>
         if name.starts_with('.') || MANIFEST_WALK_SKIP.contains(&name.as_ref()) {
             continue;
         }
-        collect_container_manifests(&path, depth.saturating_sub(1), out);
+        collect_container_manifests(&path, approved, depth.saturating_sub(1), out);
     }
 }
 
@@ -839,15 +847,18 @@ pub fn origin_is_under_approved_roots(
     origin: &ContainerDeclarationOrigin,
     search_roots: &[PathBuf],
 ) -> bool {
+    let (Ok(source), Ok(manifest)) = (
+        origin.source_root.canonicalize(),
+        origin.manifest_path.canonicalize(),
+    ) else {
+        return false;
+    };
     search_roots.iter().any(|root| {
-        let root = root.canonicalize().unwrap_or_else(|_| root.clone());
-        paths_related(&origin.source_root, &root) || origin.manifest_path.starts_with(&root)
+        let Ok(root) = root.canonicalize() else {
+            return false;
+        };
+        source.starts_with(&root) && manifest.starts_with(&source) && manifest.is_file()
     })
-}
-
-fn paths_related(path: &Path, root: &Path) -> bool {
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    path == *root || path.starts_with(root)
 }
 
 /// Recover declaration provenance from registry metadata.
@@ -2026,6 +2037,42 @@ pub fn refuse_loopback(url: &str) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_and_stored_origin_refuse_symlink_escape_from_approved_roots() {
+        use std::os::unix::fs::symlink;
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("approved");
+        let nested = root.join("nested");
+        let outside = directory.path().join("outside");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let valid = nested.join(CONTAINERS_FILE);
+        let escaped = outside.join(CONTAINERS_FILE);
+        fs::write(&valid, "# valid path fixture").unwrap();
+        fs::write(&escaped, "# outside path fixture").unwrap();
+        symlink(&escaped, root.join(CONTAINERS_FILE)).unwrap();
+        symlink(&outside, root.join("escaped-folder")).unwrap();
+        let roots = vec![root.canonicalize().unwrap()];
+        assert_eq!(
+            discover_container_manifests(&roots).unwrap(),
+            vec![valid.canonicalize().unwrap()]
+        );
+        let mut origin = ContainerDeclarationOrigin {
+            source_root: root.clone(),
+            manifest_path: root.join(CONTAINERS_FILE),
+            declaration_id: "fixture".into(),
+            source_revision: None,
+            source_digest: None,
+        };
+        assert!(!origin_is_under_approved_roots(&origin, &roots));
+        origin.source_root = nested;
+        origin.manifest_path = valid;
+        assert!(origin_is_under_approved_roots(&origin, &roots));
+        origin.source_root = outside;
+        assert!(!origin_is_under_approved_roots(&origin, &roots));
+    }
 
     fn write_workspace() -> (tempfile::TempDir, PathBuf) {
         let dir = tempdir().unwrap();
