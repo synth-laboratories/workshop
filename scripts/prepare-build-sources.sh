@@ -26,9 +26,9 @@ fetch_build_source() {
   [[ "$(git -C "$destination" rev-parse HEAD)" == "$revision" ]] || return 1
 }
 
-fetch_build_source containers be173da210c116c0013b7e9d6baf2d1531e07d5f
-fetch_build_source optimizers 137fe713fc485687d9176ea4d50cddeba2f5fb44
+fetch_build_source containers f64dbe94d224b923f24cfccf48d83fad7bf9015d
+fetch_build_source optimizers c34bb0ccfcbbe510d0caf6f45f05d9d12c1a06b7
 fetch_build_source synth-mlx-rl 5d6db14330babcff170d2afbb8535de2138385a9
-export SYNTH_CONTAINERS_PROJECT_ROOT="$BUILD_SOURCE_ROOT/containers-be173da210c116c0013b7e9d6baf2d1531e07d5f"
+export SYNTH_CONTAINERS_PROJECT_ROOT="$BUILD_SOURCE_ROOT/containers-f64dbe94d224b923f24cfccf48d83fad7bf9015d"
 export SYNTH_MLX_RL_PROJECT_ROOT="$BUILD_SOURCE_ROOT/synth-mlx-rl-5d6db14330babcff170d2afbb8535de2138385a9"
-export SYNTH_OPTIMIZER_DISTRIBUTION_SOURCE="$BUILD_SOURCE_ROOT/optimizers-137fe713fc485687d9176ea4d50cddeba2f5fb44"
+export SYNTH_OPTIMIZER_DISTRIBUTION_SOURCE="$BUILD_SOURCE_ROOT/optimizers-c34bb0ccfcbbe510d0caf6f45f05d9d12c1a06b7"

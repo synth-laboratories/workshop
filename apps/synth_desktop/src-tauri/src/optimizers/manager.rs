@@ -52,7 +52,7 @@ pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = OPTIMIZERS_CONTRACT.recipe_schem
 /// `{package}-{official}`. Spelled out because `format!` is not const and ten
 /// call sites want `&'static str`; `algorithm_version_matches_the_contract`
 /// fails if it drifts from the table.
-pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.21";
+pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.22";
 /// Optimizer-family visuals bind this slot. `live` and `jobs` are refused.
 pub const OPTIMIZER_VISUAL_SLOT: &str = "optimizer_run";
 const MAX_CONCURRENT_GEPA_RECIPES: usize = 2;
@@ -64,9 +64,9 @@ const MANIFEST_FILE: &str = "manifest.json";
 const WHEELHOUSE_MANIFEST_FILE: &str = "wheelhouse-manifest.json";
 const EMBEDDED_DISTRIBUTION_MANIFEST_FILE: &str = "manifest.json";
 const EMBEDDED_DISTRIBUTION_SCHEMA: &str = "synth.optimizer-runtime-distribution.v1";
-const OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "137fe713fc485687d9176ea4d50cddeba2f5fb44";
+const OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "c34bb0ccfcbbe510d0caf6f45f05d9d12c1a06b7";
 const OPTIMIZER_DISTRIBUTION_LOCK_SHA256: &str =
-    "5b7303983a4eb004b8284b0335abb18a020c7c5cadcc991ce3d4d0d3be7bffe2";
+    "69c62fd0d2fdfc5a64f33677e6af76e56b666a6835bf04669a8cd47ebb2be081";
 const RUNTIME_LEASE_FILE: &str = "runtime-lease.json";
 #[cfg(test)]
 const TEST_REAL_CHILD_SENTINEL: &str = ".test-real-child";
