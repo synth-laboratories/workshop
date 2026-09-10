@@ -2593,10 +2593,10 @@
       "sha256": "d235803e4919c54d3b24baeacaed5899e10eb26b93956d0cebeaa57fdd9bde41"
     },
     {
-      "bytes": 45052,
+      "bytes": 45592,
       "mode": "100644",
       "path": "apps/synth_desktop/src-tauri/src/session/codex/event_pump.rs",
-      "sha256": "dbf4a0502422869d27794af7b2d1f9d31f5a3ae2b6285d043e4c88173fe152fb"
+      "sha256": "4ff1fdfe2c70a4cf8e9e3162dc9d92fd88d9c5c70a888cd2921e5b8a40a265e0"
     },
     {
       "bytes": 47523,
@@ -2617,10 +2617,10 @@
       "sha256": "1c4dde3dd33c466a18e0e491b6b5cb7868a4db9e5b39be217bc6e279baa8b370"
     },
     {
-      "bytes": 78960,
+      "bytes": 80126,
       "mode": "100644",
       "path": "apps/synth_desktop/src-tauri/src/session/codex/manager.rs",
-      "sha256": "f0e60028c487e972ff3d83a3417bbf142e3e0098daa245c367cc1936a97614b4"
+      "sha256": "cf315b1835377ea7f74b9e54383398d51746acdb6f6e3bd94b9d108a0a817763"
     },
     {
       "bytes": 874,
@@ -2629,10 +2629,10 @@
       "sha256": "8302dca4d00ba0b9a03bc87931228156d3861584ff69647cfa4222000d37fb61"
     },
     {
-      "bytes": 25197,
+      "bytes": 25336,
       "mode": "100644",
       "path": "apps/synth_desktop/src-tauri/src/session/codex/proto.rs",
-      "sha256": "8a531b4ad2ab7bb18ef2a14da6e4a3a2dbb3d6c64a9c8c8481190aa99772747a"
+      "sha256": "1f50e1bd6783e4c8280c0e2a3983e631e5308eda2f6b7957733c331b0709626e"
     },
     {
       "bytes": 18116,
@@ -7690,7 +7690,7 @@
   "policySha256": "f5ef8fbb4560ee9e401c26c94da6f6189732be76291915027bd7ee3f5f5684dd",
   "schema": "workshop.public-export-manifest.v1",
   "source": {
-    "commit": "005a84d4ff3ac2b12e288e735e911088b639127a",
-    "tree": "837e0769d96681a82cc9b0c5b181cdaf1796146d"
+    "commit": "543aec726c8d54565d82faaf9f35399e89e879d0",
+    "tree": "a7f439abe88e252972ccc0edd5d6784d3796c606"
   }
 }

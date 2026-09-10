@@ -111,6 +111,7 @@ pub(crate) struct SpawnServerRequest<'a> {
 /// Shared pump state cloned into the stdout reader task.
 #[derive(Clone)]
 pub(crate) struct EventPumpState {
+    pub notification_closed: Arc<Mutex<bool>>,
     pub records: Arc<RwLock<HashMap<String, CodexSessionRecord>>>,
     pub state_path: PathBuf,
     pub persistence: SessionPersistence,
@@ -415,6 +416,10 @@ async fn read_stdout<R: tauri::Runtime, T: AsyncRead + Unpin>(
             }
             continue;
         }
+        let notification_guard = persistence.notification_closed.lock().await;
+        if *notification_guard {
+            continue;
+        }
         let raw_method = message["method"].as_str().unwrap_or_default();
         let mut params = message.get("params").cloned().unwrap_or(Value::Null);
         crate::codex_oauth::redact_event_value(&mut params);
@@ -642,7 +647,8 @@ async fn read_stdout<R: tauri::Runtime, T: AsyncRead + Unpin>(
             .await;
         }
     }
-    if settlement.ready_for_eof_completion() {
+    let notification_guard = persistence.notification_closed.lock().await;
+    if !*notification_guard && settlement.ready_for_eof_completion() {
         // The child closed stdout after tools settled and an assistant item
         // completed, without `turn/completed` or `phase: final_answer`. That
         // is process-exit evidence, not a mid-turn commentary gap.
@@ -656,6 +662,7 @@ async fn read_stdout<R: tauri::Runtime, T: AsyncRead + Unpin>(
             .await;
         apply_codex_terminal(&app, &session_id, &persistence, "turn/completed", params).await;
     }
+    drop(notification_guard);
     let owned_attachment = {
         let mut sessions = persistence.sessions.write().await;
         let owns_current = sessions
@@ -1024,6 +1031,11 @@ pub(crate) fn normalized_turn_method<'a>(method: &'a str, params: &Value) -> &'a
         return method;
     }
     let turn = params.get("turn").unwrap_or(params);
+    if turn.get("status").and_then(Value::as_str).is_some_and(|status| {
+        matches!(status.to_ascii_lowercase().as_str(), "interrupted" | "cancelled" | "canceled")
+    }) {
+        return "turn/interrupted";
+    }
     let status_is_failure = turn
         .get("status")
         .and_then(Value::as_str)
