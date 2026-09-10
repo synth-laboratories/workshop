@@ -258,6 +258,7 @@ pub fn projection_payload(conn: &Connection, kind: &str, digest: &str) -> Result
                 "kind": kind,
                 "digest": row.digest,
                 "payload": row.summary,
+                "reviews": list_reviews_for_head(conn, digest)?,
             }))
         }
         "verifier_result_v2" => {
@@ -1402,6 +1403,28 @@ pub fn list_findings_for_trace(conn: &Connection, trace_digest: &str) -> Result<
     Ok(rows)
 }
 
+fn list_reviews_for_head(conn: &Connection, digest: &str) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT review_id, finding_id, decision, reviewer, rationale, created_at
+         FROM annotation_reviews
+         WHERE evidence_head_digest = ?1
+         ORDER BY rowid ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![digest], |row| {
+            Ok(json!({
+                "reviewId": row.get::<_, String>(0)?,
+                "findingId": row.get::<_, Option<String>>(1)?,
+                "decision": row.get::<_, String>(2)?,
+                "reviewer": row.get::<_, Option<String>>(3)?,
+                "rationale": row.get::<_, Option<String>>(4)?,
+                "createdAt": row.get::<_, String>(5)?,
+            }))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 pub fn record_local_review(
     conn: &Connection,
     finding_id: &str,
@@ -1410,7 +1433,7 @@ pub fn record_local_review(
     reviewer: &str,
     rationale: &str,
 ) -> Result<String> {
-    let review_id = format!("arev_{}", chrono::Utc::now().timestamp_millis());
+    let review_id = format!("arev_{}", uuid::Uuid::new_v4().simple());
     conn.execute(
         "INSERT INTO annotation_reviews(
             review_id, finding_id, evidence_head_digest, decision, reviewer, rationale, created_at
@@ -1678,6 +1701,71 @@ mod tests {
         )
         .unwrap();
         assert!(review_id.starts_with("arev_"));
+    }
+
+    #[test]
+    fn local_reviews_overlay_projection_without_rewriting_sealed_evidence() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        apply_migrations(&conn).unwrap();
+        upsert_campaign(
+            &conn,
+            "acmp_review",
+            "sealed",
+            &json!({
+                "containerId": "ctr_review",
+                "evalRunId": "opt_eval_review",
+                "domain": "craftax",
+                "label": "post_rollout",
+                "coverage": { "jobs": 1, "sealed": 1 }
+            }),
+        )
+        .unwrap();
+        let sealed = json!({
+            "schemaVersion": WORKBENCH_SCHEMA,
+            "campaign": { "id": "acmp_review", "status": "sealed" },
+            "findings": [{
+                "id": "ann_pos_1",
+                "label": "recovery.failure_not_detected",
+                "target": { "kind": "span", "id": "span_42", "selector": "span:span_42" }
+            }],
+            "rubric": { "available": true, "score": 0.47, "passed": false },
+            "cost": { "usd": 1.25 }
+        });
+        upsert_evidence_head(&conn, "sha256:review-head", "sha256:review-trace", &sealed).unwrap();
+        let before = projection_payload(&conn, "annotation_evidence_head", "sha256:review-head").unwrap();
+        assert_eq!(before["payload"]["rubric"]["score"], json!(0.47));
+        assert_eq!(before["payload"]["cost"]["usd"], json!(1.25));
+        assert_eq!(before["reviews"], json!([]));
+        assert!(before["payload"].get("reviews").is_none());
+
+        record_local_review(
+            &conn,
+            "ann_pos_1",
+            "sha256:review-head",
+            "accept",
+            "workshop",
+            "source-anchored span_42",
+        )
+        .unwrap();
+        record_local_review(
+            &conn,
+            "ann_pos_1",
+            "sha256:review-head",
+            "supersede",
+            "workshop",
+            "later correction",
+        )
+        .unwrap();
+
+        // Equal timestamps and reverse-sorted UUIDs must not reorder decisions.
+        conn.execute("UPDATE annotation_reviews SET created_at = '2026-09-10T00:00:00Z', review_id = CASE decision WHEN 'accept' THEN 'arev_z' ELSE 'arev_a' END", []).unwrap();
+        let after = projection_payload(&conn, "annotation_evidence_head", "sha256:review-head").unwrap();
+        assert_eq!(after["payload"], sealed, "sealed evidence must stay byte-identical");
+        assert_eq!(after["payload"]["rubric"]["score"], json!(0.47));
+        assert_eq!(after["reviews"].as_array().unwrap().len(), 2);
+        assert_eq!(after["reviews"][0]["decision"], json!("accept"));
+        assert_eq!(after["reviews"][1]["decision"], json!("supersede"));
+        assert_eq!(after["reviews"][0]["findingId"], json!("ann_pos_1"));
     }
 
     #[test]

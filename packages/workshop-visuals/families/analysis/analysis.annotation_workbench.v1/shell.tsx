@@ -1,5 +1,5 @@
 import { useVisualState } from "@synth/visuals-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MetricStrip, VisualChrome } from "../../../chrome/VisualChrome.tsx";
 import type { VisualBinding } from "../../../runtime/types.ts";
 import craftaxFixture from "../../../fixtures/annotation_workbench_craftax.json";
@@ -22,6 +22,14 @@ type Finding = {
 };
 type Milestone = { id: string; label: string; state: MilestoneState; engineVerified?: boolean };
 type SpanRow = { id: string; sequence?: number; title: string; kind?: string };
+type LocalReview = {
+  reviewId?: string;
+  findingId?: string | null;
+  decision: string;
+  reviewer?: string | null;
+  rationale?: string | null;
+  createdAt?: string;
+};
 type WorkbenchProjection = {
   schemaVersion?: string;
   campaign?: {
@@ -59,6 +67,7 @@ type WorkbenchProjection = {
     criteria?: RubricCriterionInput[];
   };
   findings?: Finding[];
+  reviews?: LocalReview[];
   taxonomy?: { label: string; count: number }[];
   milestones?: Milestone[];
   spans?: SpanRow[];
@@ -173,6 +182,14 @@ export function Shell(props: ShellProps) {
   const [reviewDecision, setReviewDecision] = useState("flag");
   const [reviewRationale, setReviewRationale] = useState("");
   const [reviewStatus, setReviewStatus] = useState<string | null>(null);
+  const [reviews, setReviews] = useState<LocalReview[]>(projection.reviews ?? []);
+  const reviewHead = useRef(projection.evidenceHead?.digest);
+  reviewHead.current = projection.evidenceHead?.digest;
+
+  useEffect(() => {
+    setReviews(projection.reviews ?? []);
+    setReviewStatus(null);
+  }, [projection.reviews, projection.evidenceHead?.digest]);
 
   const focusedSpan = selectedSpan || selectorKey(findings.find((row) => row.id === selectedFinding)?.target);
   const citing = useMemo(
@@ -513,15 +530,28 @@ export function Shell(props: ShellProps) {
                 return;
               }
               setReviewStatus("Saving…");
-              void Promise.resolve(props.onReviewFinding({
+              const head = projection.evidenceHead?.digest;
+              void Promise.resolve().then(() => props.onReviewFinding!({
                 findingId,
                 decision: reviewDecision,
                 rationale: reviewRationale,
                 evidenceHeadDigest: projection.evidenceHead?.digest
               })).then(() => {
+                if (reviewHead.current !== head) return;
+                setReviews((current) => [
+                  ...current,
+                  {
+                    findingId,
+                    decision: reviewDecision,
+                    reviewer: "workshop",
+                    rationale: reviewRationale,
+                    createdAt: new Date().toISOString()
+                  }
+                ]);
                 setReviewStatus(`Recorded ${reviewDecision} on ${findingId}`);
                 setReviewRationale("");
               }).catch((reason) => {
+                if (reviewHead.current !== head) return;
                 setReviewStatus(reason instanceof Error ? reason.message : "Review failed");
               });
             }}
@@ -545,8 +575,10 @@ export function Shell(props: ShellProps) {
               <select data-testid="analysis-review-decision" value={reviewDecision} onChange={(event) => setReviewDecision(event.target.value)}>
                 <option value="flag">Flag</option>
                 <option value="confirm">Confirm</option>
+                <option value="accept">Accept</option>
                 <option value="reject">Reject</option>
                 <option value="needs_human">Needs human</option>
+                <option value="supersede">Supersede</option>
               </select>
             </label>
             <label style={{ display: "grid", gap: 4, fontSize: "var(--sv-fs-meta)" }}>
@@ -564,6 +596,23 @@ export function Shell(props: ShellProps) {
             </button>
             {reviewStatus ? <p className="sv-mono" data-testid="analysis-review-status" style={{ margin: 0 }}>{reviewStatus}</p> : null}
           </form>
+          <h3 style={{ fontSize: "var(--sv-fs-strong)", margin: "0 0 8px" }}>Local reviews</h3>
+          {reviews.length === 0 ? (
+            <p data-testid="analysis-reviews-empty" style={{ color: "var(--sv-text-muted)" }}>
+              No local reviews recorded yet. Reviews overlay this projection; they do not rewrite sealed evidence.
+            </p>
+          ) : (
+            <ul data-testid="analysis-reviews" style={{ listStyle: "none", padding: 0, margin: "0 0 16px", display: "grid", gap: 8 }}>
+              {reviews.map((review, index) => (
+                <li key={review.reviewId ?? `${review.findingId}-${review.decision}-${index}`} data-testid={`analysis-review-${review.decision}`}>
+                  <strong>{review.decision}</strong>
+                  {" · "}
+                  {review.findingId ?? "unspecified finding"}
+                  {review.rationale ? <div style={{ color: "var(--sv-text-muted)", fontSize: "var(--sv-fs-meta)" }}>{review.rationale}</div> : null}
+                </li>
+              ))}
+            </ul>
+          )}
           <h3 style={{ fontSize: "var(--sv-fs-strong)", margin: "0 0 8px" }}>Abstentions</h3>
           <ul>
             {(projection.audit?.abstentions ?? []).map((row, index) => (
